@@ -63,7 +63,7 @@ keyring = "3.2"
 oauth2 = "4.4"
 
 # Tauri
-tauri = { version = "2.2", features = [] }
+tauri = { version = "2.2", features = ["tray-icon"] }
 tauri-plugin-shell = "2.2"
 
 [profile.release]
