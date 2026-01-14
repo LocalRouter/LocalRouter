@@ -30,6 +30,9 @@ pub enum AppError {
 
     #[error("Serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
+
+    #[error("Cryptography error: {0}")]
+    Crypto(#[from] anyhow::Error),
 }
 
 pub type AppResult<T> = Result<T, AppError>;
