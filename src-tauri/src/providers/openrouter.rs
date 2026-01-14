@@ -13,7 +13,7 @@ use std::time::Instant;
 use crate::utils::errors::{AppError, AppResult};
 
 use super::{
-    Capability, ChatMessage, ChunkChoice, ChunkDelta, CompletionChunk, CompletionChoice,
+    Capability, ChatMessage, ChunkChoice, ChunkDelta, CompletionChoice, CompletionChunk,
     CompletionRequest, CompletionResponse, HealthStatus, ModelInfo, ModelProvider, PricingInfo,
     ProviderHealth, TokenUsage,
 };
@@ -298,7 +298,10 @@ impl ModelProvider for OpenRouterProvider {
             .send()
             .await
             .map_err(|e| {
-                AppError::Provider(format!("Failed to send streaming completion request: {}", e))
+                AppError::Provider(format!(
+                    "Failed to send streaming completion request: {}",
+                    e
+                ))
             })?;
 
         if !response.status().is_success() {
@@ -327,8 +330,8 @@ impl ModelProvider for OpenRouterProvider {
                                 continue;
                             }
 
-                            let chunk: OpenRouterChunk = serde_json::from_str(json_str)
-                                .map_err(|e| {
+                            let chunk: OpenRouterChunk =
+                                serde_json::from_str(json_str).map_err(|e| {
                                     AppError::Provider(format!("Failed to parse chunk: {}", e))
                                 })?;
 
@@ -441,8 +444,8 @@ mod tests {
 
     #[test]
     fn test_with_app_name() {
-        let provider = OpenRouterProvider::new("test-key".to_string())
-            .with_app_name("Test App".to_string());
+        let provider =
+            OpenRouterProvider::new("test-key".to_string()).with_app_name("Test App".to_string());
         assert_eq!(provider.app_name, Some("Test App".to_string()));
     }
 
@@ -478,10 +481,7 @@ mod tests {
     async fn test_get_pricing() {
         let api_key = std::env::var("OPENROUTER_API_KEY").expect("OPENROUTER_API_KEY not set");
         let provider = OpenRouterProvider::new(api_key);
-        let pricing = provider
-            .get_pricing("openai/gpt-3.5-turbo")
-            .await
-            .unwrap();
+        let pricing = provider.get_pricing("openai/gpt-3.5-turbo").await.unwrap();
         assert!(pricing.input_cost_per_1k >= 0.0);
         assert!(pricing.output_cost_per_1k >= 0.0);
         assert_eq!(pricing.currency, "USD");

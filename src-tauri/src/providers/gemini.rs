@@ -12,7 +12,7 @@ use std::time::Instant;
 use tracing::{debug, error, warn};
 
 use super::{
-    Capability, ChatMessage, ChunkChoice, ChunkDelta, CompletionChunk, CompletionChoice,
+    Capability, ChatMessage, ChunkChoice, ChunkDelta, CompletionChoice, CompletionChunk,
     CompletionRequest, CompletionResponse, HealthStatus, ModelInfo, ModelProvider, PricingInfo,
     ProviderHealth, TokenUsage,
 };
@@ -71,7 +71,8 @@ impl GeminiProvider {
         // Handle system message by prepending to first user message
         if let Some(system_msg) = messages.iter().find(|m| m.role == "system") {
             if let Some(first_user) = gemini_contents.iter_mut().find(|c| c.role == "user") {
-                first_user.parts[0].text = format!("{}\n\n{}", system_msg.content, first_user.parts[0].text);
+                first_user.parts[0].text =
+                    format!("{}\n\n{}", system_msg.content, first_user.parts[0].text);
             }
         }
 
@@ -83,8 +84,8 @@ impl GeminiProvider {
         // Pricing as of 2025 (per 1M tokens, converted to per 1K)
         match model {
             m if m.contains("gemini-1.5-pro") => PricingInfo {
-                input_cost_per_1k: 0.00125,  // $1.25 per 1M tokens
-                output_cost_per_1k: 0.005,   // $5.00 per 1M tokens
+                input_cost_per_1k: 0.00125, // $1.25 per 1M tokens
+                output_cost_per_1k: 0.005,  // $5.00 per 1M tokens
                 currency: "USD".to_string(),
             },
             m if m.contains("gemini-1.5-flash") => PricingInfo {
@@ -93,7 +94,7 @@ impl GeminiProvider {
                 currency: "USD".to_string(),
             },
             m if m.contains("gemini-2.0-flash") => PricingInfo {
-                input_cost_per_1k: 0.0,      // Free during preview
+                input_cost_per_1k: 0.0, // Free during preview
                 output_cost_per_1k: 0.0,
                 currency: "USD".to_string(),
             },
@@ -153,12 +154,10 @@ impl ModelProvider for GeminiProvider {
         let url = format!("{}/models?key={}", self.base_url, self.api_key);
         debug!("Fetching Gemini models from: {}", url);
 
-        let response = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| AppError::Provider(format!("Failed to connect to Gemini API: {}", e)))?;
+        let response =
+            self.client.get(&url).send().await.map_err(|e| {
+                AppError::Provider(format!("Failed to connect to Gemini API: {}", e))
+            })?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -179,7 +178,9 @@ impl ModelProvider for GeminiProvider {
             .into_iter()
             .filter(|model| {
                 // Only include models that support generateContent
-                model.supported_generation_methods.contains(&"generateContent".to_string())
+                model
+                    .supported_generation_methods
+                    .contains(&"generateContent".to_string())
             })
             .map(|model| {
                 // Extract capabilities
@@ -261,7 +262,9 @@ impl ModelProvider for GeminiProvider {
 
         // Convert Gemini response to OpenAI format
         if gemini_response.candidates.is_empty() {
-            return Err(AppError::Provider("No candidates in Gemini response".to_string()));
+            return Err(AppError::Provider(
+                "No candidates in Gemini response".to_string(),
+            ));
         }
 
         let candidate = &gemini_response.candidates[0];
@@ -302,7 +305,10 @@ impl ModelProvider for GeminiProvider {
             },
         };
 
-        debug!("Completion successful, tokens: {}", completion_response.usage.total_tokens);
+        debug!(
+            "Completion successful, tokens: {}",
+            completion_response.usage.total_tokens
+        );
         Ok(completion_response)
     }
 
@@ -381,7 +387,8 @@ impl ModelProvider for GeminiProvider {
                                             .collect::<Vec<_>>()
                                             .join("");
 
-                                        let finish_reason = match candidate.finish_reason.as_deref() {
+                                        let finish_reason = match candidate.finish_reason.as_deref()
+                                        {
                                             Some("STOP") => Some("stop".to_string()),
                                             Some("MAX_TOKENS") => Some("length".to_string()),
                                             Some("SAFETY") => Some("content_filter".to_string()),

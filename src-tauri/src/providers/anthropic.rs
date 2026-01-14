@@ -14,7 +14,7 @@ use std::time::Instant;
 use crate::utils::errors::{AppError, AppResult};
 
 use super::{
-    Capability, ChatMessage, ChunkChoice, ChunkDelta, CompletionChunk, CompletionChoice,
+    Capability, ChatMessage, ChunkChoice, ChunkDelta, CompletionChoice, CompletionChunk,
     CompletionRequest, CompletionResponse, HealthStatus, ModelInfo, ModelProvider, PricingInfo,
     ProviderHealth, TokenUsage,
 };
@@ -40,7 +40,9 @@ impl AnthropicProvider {
     }
 
     /// Convert OpenAI format messages to Anthropic format
-    fn convert_messages(messages: &[ChatMessage]) -> AppResult<(Option<String>, Vec<AnthropicMessage>)> {
+    fn convert_messages(
+        messages: &[ChatMessage],
+    ) -> AppResult<(Option<String>, Vec<AnthropicMessage>)> {
         let mut system_prompt = None;
         let mut anthropic_messages = Vec::new();
 
@@ -336,7 +338,11 @@ impl ModelProvider for AnthropicProvider {
                     role: "assistant".to_string(),
                     content,
                 },
-                finish_reason: Some(anthropic_response.stop_reason.unwrap_or_else(|| "stop".to_string())),
+                finish_reason: Some(
+                    anthropic_response
+                        .stop_reason
+                        .unwrap_or_else(|| "stop".to_string()),
+                ),
             }],
             usage: TokenUsage {
                 prompt_tokens: anthropic_response.usage.input_tokens,
