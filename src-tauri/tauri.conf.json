@@ -44,9 +44,11 @@
         "fullscreen": false,
         "transparent": false,
         "decorations": true,
-        "center": true
+        "center": true,
+        "label": "main"
       }
     ],
+    "withGlobalTauri": true,
     "security": {
       "csp": null
     }

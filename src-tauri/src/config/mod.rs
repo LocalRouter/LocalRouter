@@ -1,13 +1,17 @@
 //! Configuration management module
 //!
 //! Handles loading, saving, and managing application configuration.
+//! Supports file watching and event emission for real-time config updates.
 
 use crate::utils::errors::{AppError, AppResult};
 use chrono::{DateTime, Utc};
+use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
+use tauri::{AppHandle, Emitter};
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 mod migration;
@@ -224,11 +228,63 @@ pub struct ProviderConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
 
-    /// API endpoint (for custom providers)
+    /// Provider-specific configuration (flexible JSON/YAML object)
+    ///
+    /// Each provider can define its own configuration structure. Common examples:
+    ///
+    /// **OpenAI:**
+    /// ```yaml
+    /// provider_config:
+    ///   endpoint: "https://api.openai.com/v1"  # Custom endpoint
+    ///   organization: "org-xyz"                 # Organization ID
+    ///   timeout_seconds: 30                     # Request timeout
+    /// ```
+    ///
+    /// **Anthropic:**
+    /// ```yaml
+    /// provider_config:
+    ///   endpoint: "https://api.anthropic.com/v1"
+    ///   version: "2023-06-01"                   # API version
+    /// ```
+    ///
+    /// **Gemini:**
+    /// ```yaml
+    /// provider_config:
+    ///   base_url: "https://generativelanguage.googleapis.com/v1beta"
+    /// ```
+    ///
+    /// **OpenRouter:**
+    /// ```yaml
+    /// provider_config:
+    ///   app_name: "My Application"
+    ///   app_url: "https://myapp.com"
+    ///   extra_headers:
+    ///     X-Custom: "value"
+    /// ```
+    ///
+    /// **Ollama:**
+    /// ```yaml
+    /// provider_config:
+    ///   base_url: "http://localhost:11434"
+    ///   timeout_seconds: 120
+    /// ```
+    ///
+    /// If `None`, providers use their default configuration.
+    /// Providers should implement `from_config()` to parse this field.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub endpoint: Option<String>,
+    pub provider_config: Option<serde_json::Value>,
 
-    /// API key reference (stored separately in encrypted storage)
+    /// API key reference name for system keyring lookup
+    ///
+    /// This is the name used to store/retrieve the actual API key from the system keyring:
+    /// - macOS: Keychain
+    /// - Windows: Credential Manager
+    /// - Linux: Secret Service / keyutils
+    ///
+    /// If `None`, the provider's `name` field is used as the keyring lookup name.
+    /// The actual API key is NEVER stored in this config - only in the secure system keyring.
+    ///
+    /// Use `providers::key_storage` module to manage provider API keys.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub api_key_ref: Option<String>,
 }
@@ -281,11 +337,23 @@ pub enum LogLevel {
     Error,
 }
 
-/// Thread-safe configuration manager
-#[derive(Debug, Clone)]
+/// Thread-safe configuration manager with file watching and event emission
+#[derive(Clone)]
 pub struct ConfigManager {
     config: Arc<RwLock<AppConfig>>,
     config_path: PathBuf,
+    app_handle: Option<AppHandle>,
+}
+
+// Manual Debug implementation since AppHandle doesn't implement Debug
+impl std::fmt::Debug for ConfigManager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConfigManager")
+            .field("config", &self.config)
+            .field("config_path", &self.config_path)
+            .field("app_handle", &self.app_handle.is_some())
+            .finish()
+    }
 }
 
 impl ConfigManager {
@@ -294,6 +362,7 @@ impl ConfigManager {
         Self {
             config: Arc::new(RwLock::new(config)),
             config_path,
+            app_handle: None,
         }
     }
 
@@ -310,26 +379,139 @@ impl ConfigManager {
         Ok(Self::new(config, path))
     }
 
+    /// Set the Tauri app handle for event emission
+    ///
+    /// This enables the config manager to emit events to the frontend when the config changes.
+    /// Call this during app setup, after the ConfigManager is created.
+    pub fn set_app_handle(&mut self, app_handle: AppHandle) {
+        self.app_handle = Some(app_handle);
+    }
+
+    /// Start watching the configuration file for changes
+    ///
+    /// When the config file changes externally (e.g., user edits it), this will:
+    /// 1. Reload the configuration from disk
+    /// 2. Emit a "config-changed" event to the frontend
+    ///
+    /// Returns a file watcher that must be kept alive. Drop it to stop watching.
+    pub fn start_watching(&self) -> AppResult<RecommendedWatcher> {
+        let config_path = self.config_path.clone();
+        let config_arc = self.config.clone();
+        let app_handle = self.app_handle.clone();
+
+        let mut watcher = notify::recommended_watcher(move |result: Result<Event, notify::Error>| {
+            match result {
+                Ok(event) => {
+                    // Only respond to modify events
+                    if matches!(event.kind, EventKind::Modify(_)) {
+                        info!("Configuration file changed, reloading...");
+
+                        // Reload config from disk (blocking operation in event handler)
+                        let config_path_clone = config_path.clone();
+                        let config_arc_clone = config_arc.clone();
+                        let app_handle_clone = app_handle.clone();
+
+                        tokio::spawn(async move {
+                            match load_config(&config_path_clone).await {
+                                Ok(new_config) => {
+                                    // Update in-memory config
+                                    *config_arc_clone.write() = new_config.clone();
+
+                                    info!("Configuration reloaded successfully");
+
+                                    // Emit event to frontend
+                                    if let Some(handle) = app_handle_clone {
+                                        if let Err(e) = handle.emit("config-changed", &new_config) {
+                                            error!("Failed to emit config-changed event: {}", e);
+                                        } else {
+                                            debug!("Emitted config-changed event to frontend");
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    error!("Failed to reload configuration: {}", e);
+                                }
+                            }
+                        });
+                    }
+                }
+                Err(e) => {
+                    error!("File watch error: {}", e);
+                }
+            }
+        })
+        .map_err(|e| AppError::Config(format!("Failed to create file watcher: {}", e)))?;
+
+        // Watch the config file
+        watcher
+            .watch(&self.config_path, RecursiveMode::NonRecursive)
+            .map_err(|e| AppError::Config(format!("Failed to watch config file: {}", e)))?;
+
+        info!("Started watching configuration file: {:?}", self.config_path);
+        Ok(watcher)
+    }
+
     /// Get a read-only copy of the configuration
     pub fn get(&self) -> AppConfig {
         self.config.read().clone()
     }
 
     /// Update configuration with a function
+    ///
+    /// Updates the in-memory configuration and validates it.
+    /// To persist changes, call `save()` afterwards.
+    /// Emits "config-changed" event to frontend if app handle is set.
     pub fn update<F>(&self, f: F) -> AppResult<()>
     where
         F: FnOnce(&mut AppConfig),
     {
-        let mut config = self.config.write();
-        f(&mut config);
-        validation::validate_config(&config)?;
+        let updated_config = {
+            let mut config = self.config.write();
+            f(&mut config);
+            validation::validate_config(&config)?;
+            config.clone()
+        };
+
+        // Emit event to frontend
+        self.emit_config_changed(&updated_config);
+
         Ok(())
     }
 
     /// Save configuration to disk
+    ///
+    /// Writes the current in-memory configuration to the config file.
+    /// Does NOT emit event (file watcher will handle that).
     pub async fn save(&self) -> AppResult<()> {
         let config = self.config.read().clone();
         save_config(&config, &self.config_path).await
+    }
+
+    /// Manually reload configuration from disk
+    ///
+    /// Useful for forcing a reload without waiting for file watcher.
+    /// Emits "config-changed" event to frontend.
+    pub async fn reload(&self) -> AppResult<()> {
+        let new_config = load_config(&self.config_path).await?;
+        *self.config.write() = new_config.clone();
+
+        info!("Configuration reloaded manually");
+
+        // Emit event to frontend
+        self.emit_config_changed(&new_config);
+
+        Ok(())
+    }
+
+    /// Emit config-changed event to frontend
+    fn emit_config_changed(&self, config: &AppConfig) {
+        if let Some(ref handle) = self.app_handle {
+            if let Err(e) = handle.emit("config-changed", config) {
+                error!("Failed to emit config-changed event: {}", e);
+            } else {
+                debug!("Emitted config-changed event to frontend");
+            }
+        }
     }
 
     /// Get the configuration file path
@@ -427,7 +609,9 @@ impl ProviderConfig {
             name: "Ollama".to_string(),
             provider_type: ProviderType::Ollama,
             enabled: true,
-            endpoint: Some("http://localhost:11434".to_string()),
+            provider_config: Some(serde_json::json!({
+                "base_url": "http://localhost:11434"
+            })),
             api_key_ref: None,
         }
     }

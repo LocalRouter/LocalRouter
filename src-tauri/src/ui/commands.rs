@@ -2,8 +2,12 @@
 //!
 //! Functions exposed to the frontend via Tauri IPC.
 
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use crate::api_keys::ApiKeyManager;
 use crate::config::{ConfigManager, ModelSelection, RouterConfig};
+use crate::providers::registry::ProviderRegistry;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
@@ -39,11 +43,17 @@ pub async fn create_api_key(
     name: Option<String>,
     model_selection: ModelSelection,
     key_manager: State<'_, ApiKeyManager>,
+    app: tauri::AppHandle,
 ) -> Result<(String, ApiKeyInfo), String> {
     let (key, config) = key_manager
         .create_key(name, model_selection)
         .await
         .map_err(|e| e.to_string())?;
+
+    // Rebuild tray menu with new API key
+    if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
+        tracing::error!("Failed to rebuild tray menu: {}", e);
+    }
 
     Ok((
         key,
@@ -69,4 +79,226 @@ pub async fn list_routers(config_manager: State<'_, ConfigManager>) -> Result<Ve
 pub async fn get_config(config_manager: State<'_, ConfigManager>) -> Result<serde_json::Value, String> {
     let config = config_manager.get();
     serde_json::to_value(config).map_err(|e| e.to_string())
+}
+
+/// Manually reload configuration from disk
+///
+/// Forces a reload of the configuration file.
+/// The file watcher will automatically reload on external changes, but this command
+/// can be used to force a reload on demand.
+///
+/// Emits "config-changed" event to all frontend listeners.
+#[tauri::command]
+pub async fn reload_config(config_manager: State<'_, ConfigManager>) -> Result<(), String> {
+    config_manager.reload().await.map_err(|e| e.to_string())
+}
+
+// ============================================================================
+// Provider API Key Management Commands
+// ============================================================================
+
+/// Store a provider API key in the system keyring
+///
+/// # Arguments
+/// * `provider` - Provider name (e.g., "openai", "anthropic", "gemini")
+/// * `api_key` - The API key to store securely
+///
+/// # Security
+/// The API key is stored directly in the system keyring:
+/// - macOS: Keychain (may prompt for Touch ID/password)
+/// - Windows: Credential Manager
+/// - Linux: Secret Service
+#[tauri::command]
+pub async fn set_provider_api_key(provider: String, api_key: String) -> Result<(), String> {
+    crate::providers::key_storage::store_provider_key(&provider, &api_key)
+        .map_err(|e| e.to_string())
+}
+
+/// Check if a provider has an API key stored
+///
+/// # Arguments
+/// * `provider` - Provider name to check
+///
+/// # Returns
+/// * `true` if the provider has an API key stored in the system keyring
+/// * `false` if no key is stored
+///
+/// # Security
+/// This command only returns whether a key exists, not the actual key value.
+#[tauri::command]
+pub async fn has_provider_api_key(provider: String) -> Result<bool, String> {
+    crate::providers::key_storage::has_provider_key(&provider)
+        .map_err(|e| e.to_string())
+}
+
+/// Delete a provider API key from the system keyring
+///
+/// # Arguments
+/// * `provider` - Provider name whose key should be deleted
+///
+/// # Returns
+/// * `Ok(())` if successful (even if the key didn't exist)
+#[tauri::command]
+pub async fn delete_provider_api_key(provider: String) -> Result<(), String> {
+    crate::providers::key_storage::delete_provider_key(&provider)
+        .map_err(|e| e.to_string())
+}
+
+/// List all providers (from config) with their key status
+///
+/// Returns a list of provider names from the configuration along with
+/// whether each has an API key stored in the system keyring.
+#[tauri::command]
+pub async fn list_providers_with_key_status(
+    config_manager: State<'_, ConfigManager>,
+) -> Result<Vec<ProviderKeyStatus>, String> {
+    let config = config_manager.get();
+
+    let mut result = Vec::new();
+    for provider_config in config.providers {
+        // Check if key exists for this provider
+        let key_ref = provider_config.api_key_ref.as_deref()
+            .unwrap_or(&provider_config.name)
+            .to_string();
+
+        let has_key = crate::providers::key_storage::has_provider_key(&key_ref)
+            .unwrap_or(false);
+
+        result.push(ProviderKeyStatus {
+            name: provider_config.name,
+            provider_type: format!("{:?}", provider_config.provider_type),
+            enabled: provider_config.enabled,
+            has_api_key: has_key,
+            key_ref,
+        });
+    }
+
+    Ok(result)
+}
+
+/// Provider key status information
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderKeyStatus {
+    pub name: String,
+    pub provider_type: String,
+    pub enabled: bool,
+    pub has_api_key: bool,
+    pub key_ref: String,
+}
+
+// ============================================================================
+// Provider Registry Management Commands
+// ============================================================================
+
+/// List all available provider types with their setup parameters
+///
+/// Used by the UI to show available provider types when adding a new provider.
+/// Returns factory information for all registered provider types.
+#[tauri::command]
+pub async fn list_provider_types(
+    registry: State<'_, Arc<ProviderRegistry>>,
+) -> Result<Vec<crate::providers::registry::ProviderTypeInfo>, String> {
+    Ok(registry.list_provider_types())
+}
+
+/// List all provider instances
+///
+/// Returns information about all registered provider instances,
+/// including their status (enabled/disabled).
+#[tauri::command]
+pub async fn list_provider_instances(
+    registry: State<'_, Arc<ProviderRegistry>>,
+) -> Result<Vec<crate::providers::registry::ProviderInstanceInfo>, String> {
+    Ok(registry.list_providers())
+}
+
+/// Create a new provider instance
+///
+/// # Arguments
+/// * `instance_name` - User-defined name for this provider instance
+/// * `provider_type` - Type of provider (e.g., "ollama", "openai", "anthropic")
+/// * `config` - Configuration parameters (e.g., {"api_key": "sk-...", "base_url": "..."})
+///
+/// # Returns
+/// * `Ok(())` if the provider was created successfully
+/// * `Err(String)` with error message if creation failed
+#[tauri::command]
+pub async fn create_provider_instance(
+    registry: State<'_, Arc<ProviderRegistry>>,
+    instance_name: String,
+    provider_type: String,
+    config: HashMap<String, String>,
+) -> Result<(), String> {
+    registry
+        .create_provider(instance_name, provider_type, config)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Remove a provider instance
+///
+/// # Arguments
+/// * `instance_name` - Name of the provider instance to remove
+///
+/// # Returns
+/// * `Ok(())` if the provider was removed successfully
+/// * `Err(String)` if the provider doesn't exist
+#[tauri::command]
+pub async fn remove_provider_instance(
+    registry: State<'_, Arc<ProviderRegistry>>,
+    instance_name: String,
+) -> Result<(), String> {
+    registry
+        .remove_provider(&instance_name)
+        .map_err(|e| e.to_string())
+}
+
+/// Enable or disable a provider instance
+///
+/// # Arguments
+/// * `instance_name` - Name of the provider instance
+/// * `enabled` - Whether to enable (true) or disable (false) the provider
+///
+/// # Returns
+/// * `Ok(())` if the provider state was updated successfully
+/// * `Err(String)` if the provider doesn't exist
+#[tauri::command]
+pub async fn set_provider_enabled(
+    registry: State<'_, Arc<ProviderRegistry>>,
+    instance_name: String,
+    enabled: bool,
+) -> Result<(), String> {
+    registry
+        .set_provider_enabled(&instance_name, enabled)
+        .map_err(|e| e.to_string())
+}
+
+/// Get health status for all provider instances
+///
+/// Returns a map of provider names to their health status.
+/// Includes latency, status (healthy/degraded/unhealthy), and error messages.
+#[tauri::command]
+pub async fn get_providers_health(
+    registry: State<'_, Arc<ProviderRegistry>>,
+) -> Result<HashMap<String, crate::providers::ProviderHealth>, String> {
+    Ok(registry.get_all_health().await)
+}
+
+/// List models from a specific provider instance
+///
+/// # Arguments
+/// * `instance_name` - Name of the provider instance
+///
+/// # Returns
+/// * `Ok(Vec<ModelInfo>)` with the list of available models
+/// * `Err(String)` if the provider doesn't exist or model listing failed
+#[tauri::command]
+pub async fn list_provider_models(
+    registry: State<'_, Arc<ProviderRegistry>>,
+    instance_name: String,
+) -> Result<Vec<crate::providers::ModelInfo>, String> {
+    registry
+        .list_provider_models(&instance_name)
+        .await
+        .map_err(|e| e.to_string())
 }

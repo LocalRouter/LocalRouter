@@ -44,6 +44,21 @@ impl GeminiProvider {
         }
     }
 
+    /// Create a new Gemini provider from stored API key
+    ///
+    /// # Arguments
+    /// * `provider_name` - The provider name used to store the key (defaults to "gemini")
+    ///
+    /// # Returns
+    /// * `Ok(Self)` if key exists and provider created successfully
+    /// * `Err(AppError)` if key doesn't exist or keyring access fails
+    pub fn from_stored_key(provider_name: Option<&str>) -> AppResult<Self> {
+        let name = provider_name.unwrap_or("gemini");
+        let api_key = super::key_storage::get_provider_key(name)?
+            .ok_or_else(|| AppError::Provider(format!("No API key found for provider '{}'", name)))?;
+        Ok(Self::new(api_key))
+    }
+
     /// Convert OpenAI messages to Gemini format
     fn convert_messages_to_gemini(&self, messages: &[ChatMessage]) -> Vec<GeminiContent> {
         let mut gemini_contents = Vec::new();

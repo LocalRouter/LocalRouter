@@ -66,6 +66,12 @@ oauth2 = "4.4"
 tauri = { version = "2.2", features = ["tray-icon"] }
 tauri-plugin-shell = "2.2"
 
+# File watching
+notify = "6.1"
+
+# Ollama SDK
+ollama-rs = "0.2"
+
 [profile.release]
 opt-level = "z"
 lto = true

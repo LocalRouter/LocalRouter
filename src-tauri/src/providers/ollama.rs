@@ -41,6 +41,47 @@ impl OllamaProvider {
         }
     }
 
+    /// Create a new Ollama provider from configuration
+    ///
+    /// Parses the provider_config JSON to extract Ollama-specific settings.
+    ///
+    /// # Configuration Format
+    /// ```yaml
+    /// provider_config:
+    ///   base_url: "http://localhost:11434"  # Optional, defaults to localhost:11434
+    ///   timeout_seconds: 120                 # Optional, request timeout
+    /// ```
+    ///
+    /// # Arguments
+    /// * `config` - The provider_config JSON value from ProviderConfig
+    ///
+    /// # Returns
+    /// * `Ok(Self)` with parsed configuration, or defaults if config is None
+    pub fn from_config(config: Option<&serde_json::Value>) -> AppResult<Self> {
+        let base_url = if let Some(cfg) = config {
+            // Try to extract base_url from config
+            cfg.get("base_url")
+                .and_then(|v| v.as_str())
+                .unwrap_or("http://localhost:11434")
+                .to_string()
+        } else {
+            "http://localhost:11434".to_string()
+        };
+
+        Ok(Self::with_base_url(base_url))
+    }
+
+    /// Create a new Ollama provider (no stored key needed for local provider)
+    ///
+    /// Ollama is a local provider and doesn't typically require API keys.
+    /// This method exists for API consistency but simply returns a default instance.
+    ///
+    /// # Returns
+    /// * `Ok(Self)` - Always succeeds with default configuration
+    pub fn from_stored_key(_provider_name: Option<&str>) -> AppResult<Self> {
+        Ok(Self::new())
+    }
+
     /// Parses model size from tags (e.g., "7b", "13b", "70b")
     fn parse_parameter_count(name: &str) -> Option<u64> {
         // Look for patterns like "7b", "13b", "70b" in the model name

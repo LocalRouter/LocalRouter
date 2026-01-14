@@ -8,14 +8,18 @@ use futures::Stream;
 use serde::{Deserialize, Serialize};
 use std::pin::Pin;
 
-use crate::utils::errors::AppResult;
+use crate::utils::errors::{AppError, AppResult};
 
 pub mod anthropic;
+pub mod factory;
 pub mod gemini;
 pub mod health;
+pub mod key_storage;
 pub mod ollama;
 pub mod openai;
+pub mod openai_compatible;
 pub mod openrouter;
+pub mod registry;
 
 /// Common provider trait for all AI model providers
 #[async_trait]
@@ -40,6 +44,19 @@ pub trait ModelProvider: Send + Sync {
         &self,
         request: CompletionRequest,
     ) -> AppResult<Pin<Box<dyn Stream<Item = AppResult<CompletionChunk>> + Send>>>;
+
+    /// Generate embeddings for text
+    ///
+    /// Used by: POST /v1/embeddings endpoint
+    ///
+    /// Default implementation returns an error indicating embeddings are not supported.
+    /// Providers that support embeddings should override this method.
+    async fn embed(&self, _request: EmbeddingRequest) -> AppResult<EmbeddingResponse> {
+        Err(AppError::Provider(format!(
+            "Provider '{}' does not support embeddings",
+            self.name()
+        )))
+    }
 }
 
 /// Information about a model
@@ -227,4 +244,80 @@ pub struct ChunkDelta {
     /// Content delta
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
+}
+
+// ==================== EMBEDDING TYPES ====================
+
+/// Embedding request
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmbeddingRequest {
+    /// Model to use for embeddings
+    pub model: String,
+    /// Input text(s) to embed
+    pub input: EmbeddingInput,
+    /// Encoding format for the embeddings
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encoding_format: Option<EncodingFormat>,
+    /// Custom dimensions (if supported by model)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dimensions: Option<u32>,
+    /// User identifier for tracking
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+}
+
+/// Input for embedding request (can be single string, array of strings, or token arrays)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum EmbeddingInput {
+    /// Single text string
+    Single(String),
+    /// Multiple text strings
+    Multiple(Vec<String>),
+    /// Pre-tokenized input
+    Tokens(Vec<Vec<u32>>),
+}
+
+/// Encoding format for embeddings
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EncodingFormat {
+    /// Floating point array
+    Float,
+    /// Base64-encoded string
+    Base64,
+}
+
+/// Embedding response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmbeddingResponse {
+    /// Object type ("list")
+    pub object: String,
+    /// Array of embeddings
+    pub data: Vec<Embedding>,
+    /// Model used
+    pub model: String,
+    /// Token usage information
+    pub usage: EmbeddingUsage,
+}
+
+/// Single embedding
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Embedding {
+    /// Object type ("embedding")
+    pub object: String,
+    /// Embedding vector (float array or base64 string)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub embedding: Option<Vec<f32>>,
+    /// Index in the input array
+    pub index: usize,
+}
+
+/// Token usage for embeddings
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmbeddingUsage {
+    /// Number of prompt tokens
+    pub prompt_tokens: u32,
+    /// Total tokens (same as prompt_tokens for embeddings)
+    pub total_tokens: u32,
 }

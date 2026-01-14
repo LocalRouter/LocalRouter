@@ -156,19 +156,14 @@ fn validate_providers(providers: &[ProviderConfig]) -> AppResult<()> {
             ));
         }
 
-        // Validate endpoint format if present
-        if let Some(endpoint) = &provider.endpoint {
-            if endpoint.is_empty() {
+        // Validate provider_config format if present
+        // Note: Each provider is responsible for validating its own configuration structure
+        // We only do basic checks here to ensure the JSON is valid (already validated by serde)
+        if let Some(config) = &provider.provider_config {
+            // Check that it's an object (not a primitive)
+            if !config.is_object() {
                 return Err(AppError::Config(format!(
-                    "Provider '{}' has empty endpoint",
-                    provider.name
-                )));
-            }
-
-            // Basic URL validation
-            if !endpoint.starts_with("http://") && !endpoint.starts_with("https://") {
-                return Err(AppError::Config(format!(
-                    "Provider '{}' endpoint must start with http:// or https://",
+                    "Provider '{}' config must be a JSON object, not a primitive value",
                     provider.name
                 )));
             }

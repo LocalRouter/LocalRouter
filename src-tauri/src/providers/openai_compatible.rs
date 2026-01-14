@@ -1,4 +1,7 @@
-//! OpenAI provider implementation
+//! Generic OpenAI-compatible provider implementation
+//!
+//! This provider works with any service that implements the OpenAI API specification,
+//! including LocalAI, LM Studio, vLLM, and other compatible services.
 
 use super::{
     Capability, ChatMessage, ChunkChoice, ChunkDelta, CompletionChoice, CompletionChunk,
@@ -14,119 +17,46 @@ use serde::{Deserialize, Serialize};
 use std::pin::Pin;
 use std::time::Instant;
 
-const OPENAI_API_BASE: &str = "https://api.openai.com/v1";
-
-/// OpenAI provider implementation
-pub struct OpenAIProvider {
-    api_key: String,
+/// Generic OpenAI-compatible provider with configurable endpoint
+pub struct OpenAICompatibleProvider {
+    name: String,
+    api_key: Option<String>,
+    base_url: String,
     client: Client,
 }
 
-impl OpenAIProvider {
-    /// Create a new OpenAI provider with the given API key
-    pub fn new(api_key: String) -> Self {
+impl OpenAICompatibleProvider {
+    /// Create a new OpenAI-compatible provider
+    ///
+    /// # Arguments
+    /// * `name` - Instance name for this provider
+    /// * `base_url` - Base URL for the API (e.g., "http://localhost:8080/v1")
+    /// * `api_key` - Optional API key (some services like LocalAI don't require one)
+    pub fn new(name: String, base_url: String, api_key: Option<String>) -> Self {
         Self {
+            name,
             api_key,
+            base_url: base_url.trim_end_matches('/').to_string(),
             client: Client::new(),
         }
     }
 
-    /// Create a new OpenAI provider from stored API key
-    ///
-    /// # Arguments
-    /// * `provider_name` - The provider name used to store the key (defaults to "openai")
-    ///
-    /// # Returns
-    /// * `Ok(Self)` if key exists and provider created successfully
-    /// * `Err(AppError)` if key doesn't exist or keyring access fails
-    pub fn from_stored_key(provider_name: Option<&str>) -> AppResult<Self> {
-        let name = provider_name.unwrap_or("openai");
-        let api_key = super::key_storage::get_provider_key(name)?
-            .ok_or_else(|| AppError::Provider(format!("No API key found for provider '{}'", name)))?;
-        Ok(Self::new(api_key))
-    }
-
-    /// Get pricing information for known OpenAI models
-    fn get_model_pricing(model: &str) -> Option<PricingInfo> {
-        // Pricing information as of January 2025
-        // Source: https://openai.com/api/pricing/
-        match model {
-            // GPT-4 Turbo models
-            "gpt-4-turbo" | "gpt-4-turbo-2024-04-09" => Some(PricingInfo {
-                input_cost_per_1k: 0.01,
-                output_cost_per_1k: 0.03,
-                currency: "USD".to_string(),
-            }),
-            "gpt-4-turbo-preview" | "gpt-4-0125-preview" | "gpt-4-1106-preview" => {
-                Some(PricingInfo {
-                    input_cost_per_1k: 0.01,
-                    output_cost_per_1k: 0.03,
-                    currency: "USD".to_string(),
-                })
-            }
-            // GPT-4 models
-            "gpt-4" | "gpt-4-0613" => Some(PricingInfo {
-                input_cost_per_1k: 0.03,
-                output_cost_per_1k: 0.06,
-                currency: "USD".to_string(),
-            }),
-            "gpt-4-32k" | "gpt-4-32k-0613" => Some(PricingInfo {
-                input_cost_per_1k: 0.06,
-                output_cost_per_1k: 0.12,
-                currency: "USD".to_string(),
-            }),
-            // GPT-3.5 Turbo models
-            "gpt-3.5-turbo" | "gpt-3.5-turbo-0125" | "gpt-3.5-turbo-1106" => Some(PricingInfo {
-                input_cost_per_1k: 0.0005,
-                output_cost_per_1k: 0.0015,
-                currency: "USD".to_string(),
-            }),
-            "gpt-3.5-turbo-instruct" => Some(PricingInfo {
-                input_cost_per_1k: 0.0015,
-                output_cost_per_1k: 0.002,
-                currency: "USD".to_string(),
-            }),
-            // GPT-4o models (newest)
-            "gpt-4o" | "gpt-4o-2024-11-20" | "gpt-4o-2024-08-06" | "gpt-4o-2024-05-13" => {
-                Some(PricingInfo {
-                    input_cost_per_1k: 0.0025,
-                    output_cost_per_1k: 0.01,
-                    currency: "USD".to_string(),
-                })
-            }
-            "gpt-4o-mini" | "gpt-4o-mini-2024-07-18" => Some(PricingInfo {
-                input_cost_per_1k: 0.00015,
-                output_cost_per_1k: 0.0006,
-                currency: "USD".to_string(),
-            }),
-            // o1 models (reasoning models)
-            "o1-preview" | "o1-preview-2024-09-12" => Some(PricingInfo {
-                input_cost_per_1k: 0.015,
-                output_cost_per_1k: 0.06,
-                currency: "USD".to_string(),
-            }),
-            "o1-mini" | "o1-mini-2024-09-12" => Some(PricingInfo {
-                input_cost_per_1k: 0.003,
-                output_cost_per_1k: 0.012,
-                currency: "USD".to_string(),
-            }),
-            _ => None,
-        }
-    }
-
-    /// Build authorization header
-    fn auth_header(&self) -> String {
-        format!("Bearer {}", self.api_key)
+    /// Build authorization header if API key is present
+    fn auth_header(&self) -> Option<String> {
+        self.api_key.as_ref().map(|key| format!("Bearer {}", key))
     }
 }
 
-// OpenAI API response types
+// OpenAI API response types (reused from OpenAI provider)
 
 #[derive(Debug, Deserialize)]
 struct OpenAIModel {
     id: String,
+    #[allow(dead_code)]
     object: String,
+    #[allow(dead_code)]
     created: i64,
+    #[allow(dead_code)]
     owned_by: String,
 }
 
@@ -204,21 +134,22 @@ struct OpenAIDelta {
 }
 
 #[async_trait]
-impl ModelProvider for OpenAIProvider {
+impl ModelProvider for OpenAICompatibleProvider {
     fn name(&self) -> &str {
-        "openai"
+        &self.name
     }
 
     async fn health_check(&self) -> ProviderHealth {
         let start = Instant::now();
 
-        // Use /v1/models endpoint for health check
-        let result = self
-            .client
-            .get(format!("{}/models", OPENAI_API_BASE))
-            .header("Authorization", self.auth_header())
-            .send()
-            .await;
+        // Use /models endpoint for health check
+        let mut request = self.client.get(format!("{}/models", self.base_url));
+
+        if let Some(auth) = self.auth_header() {
+            request = request.header("Authorization", auth);
+        }
+
+        let result = request.send().await;
 
         let latency_ms = start.elapsed().as_millis() as u64;
 
@@ -250,10 +181,13 @@ impl ModelProvider for OpenAIProvider {
     }
 
     async fn list_models(&self) -> AppResult<Vec<ModelInfo>> {
-        let response = self
-            .client
-            .get(format!("{}/models", OPENAI_API_BASE))
-            .header("Authorization", self.auth_header())
+        let mut request = self.client.get(format!("{}/models", self.base_url));
+
+        if let Some(auth) = self.auth_header() {
+            request = request.header("Authorization", auth);
+        }
+
+        let response = request
             .send()
             .await
             .map_err(|e| AppError::Provider(format!("Failed to fetch models: {}", e)))?;
@@ -270,74 +204,27 @@ impl ModelProvider for OpenAIProvider {
             .await
             .map_err(|e| AppError::Provider(format!("Failed to parse models response: {}", e)))?;
 
-        let mut models = Vec::new();
-
-        for model in models_response.data {
-            // Only include chat completion models
-            if !model.id.starts_with("gpt-")
-                && !model.id.starts_with("o1-")
-                && !model.id.starts_with("text-")
-            {
-                continue;
-            }
-
-            // Determine context window based on model name
-            let context_window = if model.id.contains("32k") {
-                32768
-            } else if model.id.contains("turbo") {
-                16384
-            } else if model.id.starts_with("gpt-4o") {
-                128000
-            } else if model.id.starts_with("o1") {
-                128000
-            } else if model.id.starts_with("gpt-4") {
-                8192
-            } else if model.id.starts_with("gpt-3.5") {
-                4096
-            } else {
-                4096
-            };
-
-            // Determine parameter count (estimates)
-            let parameter_count = if model.id.starts_with("gpt-4") {
-                Some(1_760_000_000_000) // 1.76T parameters (estimated)
-            } else if model.id.starts_with("gpt-3.5") {
-                Some(175_000_000_000) // 175B parameters
-            } else {
-                None
-            };
-
-            // Determine capabilities
-            let mut capabilities = vec![Capability::Chat, Capability::Completion];
-            if !model.id.starts_with("o1") {
-                capabilities.push(Capability::FunctionCalling);
-            }
-            // GPT-4 Vision models
-            if model.id.contains("vision") || model.id.starts_with("gpt-4o") {
-                capabilities.push(Capability::Vision);
-            }
-
-            models.push(ModelInfo {
+        let models = models_response
+            .data
+            .into_iter()
+            .map(|model| ModelInfo {
                 id: model.id.clone(),
                 name: model.id,
-                provider: "openai".to_string(),
-                parameter_count,
-                context_window,
+                provider: self.name.clone(),
+                parameter_count: None, // Not available from API
+                context_window: 4096,  // Default, actual value depends on model
                 supports_streaming: true,
-                capabilities,
-            });
-        }
+                capabilities: vec![Capability::Chat, Capability::Completion],
+            })
+            .collect();
 
         Ok(models)
     }
 
-    async fn get_pricing(&self, model: &str) -> AppResult<PricingInfo> {
-        Self::get_model_pricing(model).ok_or_else(|| {
-            AppError::Provider(format!(
-                "Pricing information not available for model: {}",
-                model
-            ))
-        })
+    async fn get_pricing(&self, _model: &str) -> AppResult<PricingInfo> {
+        // Generic providers don't have standard pricing
+        // Return free by default, can be overridden by configuration
+        Ok(PricingInfo::free())
     }
 
     async fn complete(&self, request: CompletionRequest) -> AppResult<CompletionResponse> {
@@ -353,12 +240,17 @@ impl ModelProvider for OpenAIProvider {
             stream: false,
         };
 
-        let response = self
+        let mut req = self
             .client
-            .post(format!("{}/chat/completions", OPENAI_API_BASE))
-            .header("Authorization", self.auth_header())
+            .post(format!("{}/chat/completions", self.base_url))
             .header("Content-Type", "application/json")
-            .json(&openai_request)
+            .json(&openai_request);
+
+        if let Some(auth) = self.auth_header() {
+            req = req.header("Authorization", auth);
+        }
+
+        let response = req
             .send()
             .await
             .map_err(|e| AppError::Provider(format!("Request failed: {}", e)))?;
@@ -420,12 +312,17 @@ impl ModelProvider for OpenAIProvider {
             stream: true,
         };
 
-        let response = self
+        let mut req = self
             .client
-            .post(format!("{}/chat/completions", OPENAI_API_BASE))
-            .header("Authorization", self.auth_header())
+            .post(format!("{}/chat/completions", self.base_url))
             .header("Content-Type", "application/json")
-            .json(&openai_request)
+            .json(&openai_request);
+
+        if let Some(auth) = self.auth_header() {
+            req = req.header("Authorization", auth);
+        }
+
+        let response = req
             .send()
             .await
             .map_err(|e| AppError::Provider(format!("Request failed: {}", e)))?;
@@ -502,44 +399,54 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_pricing_info_gpt4() {
-        let pricing = OpenAIProvider::get_model_pricing("gpt-4").unwrap();
-        assert_eq!(pricing.input_cost_per_1k, 0.03);
-        assert_eq!(pricing.output_cost_per_1k, 0.06);
-        assert_eq!(pricing.currency, "USD");
-    }
-
-    #[test]
-    fn test_pricing_info_gpt35_turbo() {
-        let pricing = OpenAIProvider::get_model_pricing("gpt-3.5-turbo").unwrap();
-        assert_eq!(pricing.input_cost_per_1k, 0.0005);
-        assert_eq!(pricing.output_cost_per_1k, 0.0015);
-        assert_eq!(pricing.currency, "USD");
-    }
-
-    #[test]
-    fn test_pricing_info_gpt4o() {
-        let pricing = OpenAIProvider::get_model_pricing("gpt-4o").unwrap();
-        assert_eq!(pricing.input_cost_per_1k, 0.0025);
-        assert_eq!(pricing.output_cost_per_1k, 0.01);
-        assert_eq!(pricing.currency, "USD");
-    }
-
-    #[test]
-    fn test_pricing_info_unknown_model() {
-        let pricing = OpenAIProvider::get_model_pricing("unknown-model");
-        assert!(pricing.is_none());
-    }
-
-    #[test]
     fn test_provider_name() {
-        let provider = OpenAIProvider::new("test-key".to_string());
-        assert_eq!(provider.name(), "openai");
+        let provider = OpenAICompatibleProvider::new(
+            "my-local-ai".to_string(),
+            "http://localhost:8080/v1".to_string(),
+            None,
+        );
+        assert_eq!(provider.name(), "my-local-ai");
     }
 
     #[test]
-    fn test_auth_header() {
-        let provider = OpenAIProvider::new("sk-test123".to_string());
-        assert_eq!(provider.auth_header(), "Bearer sk-test123");
+    fn test_auth_header_with_key() {
+        let provider = OpenAICompatibleProvider::new(
+            "test".to_string(),
+            "http://localhost:8080/v1".to_string(),
+            Some("test-key-123".to_string()),
+        );
+        assert_eq!(provider.auth_header(), Some("Bearer test-key-123".to_string()));
+    }
+
+    #[test]
+    fn test_auth_header_without_key() {
+        let provider = OpenAICompatibleProvider::new(
+            "test".to_string(),
+            "http://localhost:8080/v1".to_string(),
+            None,
+        );
+        assert_eq!(provider.auth_header(), None);
+    }
+
+    #[test]
+    fn test_base_url_trailing_slash() {
+        let provider = OpenAICompatibleProvider::new(
+            "test".to_string(),
+            "http://localhost:8080/v1/".to_string(),
+            None,
+        );
+        assert_eq!(provider.base_url, "http://localhost:8080/v1");
+    }
+
+    #[tokio::test]
+    async fn test_pricing_is_free() {
+        let provider = OpenAICompatibleProvider::new(
+            "test".to_string(),
+            "http://localhost:8080/v1".to_string(),
+            None,
+        );
+        let pricing = provider.get_pricing("any-model").await.unwrap();
+        assert_eq!(pricing.input_cost_per_1k, 0.0);
+        assert_eq!(pricing.output_cost_per_1k, 0.0);
     }
 }

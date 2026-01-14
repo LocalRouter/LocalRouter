@@ -87,29 +87,35 @@
 ---
 
 ### 1.3 Encrypted Storage
-**Status**: ⬜ Not Started
+**Status**: ✅ Completed
 
 **Features**:
-- [ ] Integrate `keyring-rs` for system keyring access
-- [ ] Encrypt API keys before storage
-- [ ] Decrypt API keys on load
-- [ ] Encrypt provider API keys
-- [ ] Secure in-memory key handling (zero on drop)
-- [ ] Fallback to file-based encryption if keyring unavailable
+- [x] Integrate `keyring-rs` for system keyring access
+- [x] Encrypt API keys before storage
+- [x] Decrypt API keys on load
+- [x] Encrypt provider API keys
+- [x] Secure in-memory key handling (zero on drop)
+- [x] Fallback to file-based encryption if keyring unavailable
 
 **Success Criteria**:
-- [ ] API keys stored encrypted on disk
-- [ ] Keys successfully decrypted on load
-- [ ] Keys never appear in logs or debug output
-- [ ] Cross-platform keyring integration works
-- [ ] Graceful fallback when keyring unavailable
+- [x] API keys stored encrypted on disk
+- [x] Keys successfully decrypted on load
+- [x] Keys never appear in logs or debug output
+- [x] Cross-platform keyring integration works
+- [x] Graceful fallback when keyring unavailable
 
 **Testing**:
-- [ ] Unit test: Encrypt and decrypt API key
-- [ ] Unit test: Key storage and retrieval
-- [ ] Unit test: Invalid decryption fails safely
-- [ ] Integration test: Store key, restart app, retrieve key
+- [x] Unit test: Encrypt and decrypt API key
+- [x] Unit test: Key storage and retrieval
+- [x] Unit test: Invalid decryption fails safely
+- [x] Integration test: Store key, restart app, retrieve key
 - [ ] Security test: Verify keys not in memory dumps
+
+**Implementation Notes**:
+- **LocalRouter API keys**: Encrypted file storage (`~/.localrouter/api_keys.json`) with AES-256-GCM. Encryption key stored in system keyring with fallback to machine-ID-based key. Already implemented in Phase 5.2.
+- **Provider API keys**: Direct system keyring storage (new in this phase). No file storage - keys never touch disk. Implemented in `providers/key_storage.rs` with factory methods in all providers (OpenAI, Anthropic, Gemini, OpenRouter, Ollama). Tauri commands added for UI integration: `set_provider_api_key`, `has_provider_api_key`, `delete_provider_api_key`, `list_providers_with_key_status`.
+- **Cross-platform support**: macOS Keychain, Windows Credential Manager, Linux Secret Service/keyutils
+- **Tests**: 8 unit tests in `key_storage.rs` covering store, retrieve, delete, overwrite, multiple providers, and custom naming
 
 ---
 

@@ -51,6 +51,21 @@ impl OpenRouterProvider {
         self
     }
 
+    /// Create a new OpenRouter provider from stored API key
+    ///
+    /// # Arguments
+    /// * `provider_name` - The provider name used to store the key (defaults to "openrouter")
+    ///
+    /// # Returns
+    /// * `Ok(Self)` if key exists and provider created successfully
+    /// * `Err(AppError)` if key doesn't exist or keyring access fails
+    pub fn from_stored_key(provider_name: Option<&str>) -> AppResult<Self> {
+        let name = provider_name.unwrap_or("openrouter");
+        let api_key = super::key_storage::get_provider_key(name)?
+            .ok_or_else(|| AppError::Provider(format!("No API key found for provider '{}'", name)))?;
+        Ok(Self::new(api_key))
+    }
+
     /// Builds request with authentication and routing headers
     fn build_request(&self, url: &str) -> reqwest::RequestBuilder {
         let mut req = self

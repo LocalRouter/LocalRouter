@@ -39,6 +39,21 @@ impl AnthropicProvider {
         Ok(Self { client, api_key })
     }
 
+    /// Create a new Anthropic provider from stored API key
+    ///
+    /// # Arguments
+    /// * `provider_name` - The provider name used to store the key (defaults to "anthropic")
+    ///
+    /// # Returns
+    /// * `Ok(Self)` if key exists and provider created successfully
+    /// * `Err(AppError)` if key doesn't exist or keyring access fails
+    pub fn from_stored_key(provider_name: Option<&str>) -> AppResult<Self> {
+        let name = provider_name.unwrap_or("anthropic");
+        let api_key = super::key_storage::get_provider_key(name)?
+            .ok_or_else(|| AppError::Provider(format!("No API key found for provider '{}'", name)))?;
+        Self::new(api_key)
+    }
+
     /// Convert OpenAI format messages to Anthropic format
     fn convert_messages(
         messages: &[ChatMessage],
