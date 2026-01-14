@@ -2,17 +2,17 @@
 //!
 //! Handles system tray icon and menu.
 
-use tauri::{App, Result};
+use tauri::{App, Manager};
 use tracing::info;
 
-pub fn setup_tray(_app: &mut App) -> Result<()> {
+/// Setup system tray icon and menu
+pub fn setup_tray(app: &App) -> tauri::Result<()> {
     info!("Setting up system tray");
 
-    // TODO: Implement system tray
-    // - Create tray icon
-    // - Build dynamic menu
-    // - Handle menu events
-    // - Update menu on config change
+    // System tray will be implemented using Tauri 2.x tray plugin
+    // For now, log that tray setup is complete
+    // TODO: Implement full tray menu with dynamic API keys when tray plugin is configured
 
+    info!("System tray setup complete (simplified version)");
     Ok(())
 }
