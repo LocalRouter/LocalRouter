@@ -692,49 +692,53 @@
 ## Phase 5: API Key Management
 
 ### 5.1 API Key Generation
-**Status**: ⬜ Not Started
+**Status**: ✅ Completed
 
 **Features**:
-- [ ] Generate cryptographically secure keys
-- [ ] Key format: `lr-` + base64url(32 bytes)
-- [ ] Assign unique ID (UUID)
-- [ ] Default name: "my-app-{number}"
-- [ ] Hash key before storage (bcrypt)
+- [x] Generate cryptographically secure keys
+- [x] Key format: `lr-` + base64url(32 bytes)
+- [x] Assign unique ID (UUID)
+- [x] Default name: "my-app-{number}"
+- [x] Hash key before storage (bcrypt)
 
 **Success Criteria**:
-- [ ] Keys are cryptographically secure
-- [ ] Keys follow format specification
-- [ ] Keys are unique
-- [ ] Only hashed version stored
+- [x] Keys are cryptographically secure
+- [x] Keys follow format specification
+- [x] Keys are unique
+- [x] Only hashed version stored
 
 **Testing**:
-- [ ] Unit test: Key generation format
-- [ ] Unit test: Key uniqueness
-- [ ] Unit test: Key hashing
+- [x] Unit test: Key generation format
+- [x] Unit test: Key uniqueness
+- [x] Unit test: Key hashing
+
+**Implementation Notes**: Used existing crypto utilities from `src-tauri/src/utils/crypto.rs`. API key generation uses ring's `SystemRandom` for cryptographic security. Keys are hashed with bcrypt before storage.
 
 ---
 
 ### 5.2 API Key Storage
-**Status**: ⬜ Not Started
+**Status**: ✅ Completed
 
 **Features**:
-- [ ] Store keys in `api_keys.json`
-- [ ] Encrypt file contents
-- [ ] CRUD operations (Create, Read, Update, Delete)
-- [ ] Thread-safe access
-- [ ] Atomic writes
+- [x] Store keys in `api_keys.json`
+- [x] Encrypt file contents
+- [x] CRUD operations (Create, Read, Update, Delete)
+- [x] Thread-safe access
+- [x] Atomic writes
 
 **Success Criteria**:
-- [ ] Keys persist across restarts
-- [ ] File is encrypted
-- [ ] Concurrent access is safe
-- [ ] No data corruption on write
+- [x] Keys persist across restarts
+- [x] File is encrypted
+- [x] Concurrent access is safe
+- [x] No data corruption on write
 
 **Testing**:
-- [ ] Unit test: Key CRUD operations
-- [ ] Integration test: Key persistence
-- [ ] Integration test: Concurrent access
-- [ ] Integration test: Encryption/decryption
+- [x] Unit test: Key CRUD operations
+- [x] Integration test: Key persistence
+- [x] Integration test: Concurrent access
+- [x] Integration test: Encryption/decryption
+
+**Implementation Notes**: Implemented `ApiKeyManager` with thread-safe access using `Arc<RwLock<>>`. Encrypted storage using AES-256-GCM with keys stored in system keyring (with fallback to machine-ID-based key). All file writes are atomic using temp file + rename. Tests use `serial_test` to avoid concurrent file access conflicts.
 
 ---
 
