@@ -40,6 +40,11 @@ bcrypt = "0.16"
 ring = "0.17"
 base64 = "0.22"
 uuid = { version = "1.11", features = ["v4", "serde"] }
+hex = "0.4"
+machine-uid = "0.5"
+
+# Testing
+serial_test = "3.2"
 
 # Time & dates
 chrono = { version = "0.4", features = ["serde"] }
@@ -49,6 +54,7 @@ async-trait = "0.1"
 
 # Configuration
 config = "0.14"
+dirs = "5.0"
 
 # Keyring for secure storage
 keyring = "3.2"

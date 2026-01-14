@@ -51,6 +51,7 @@ machine-uid = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3.8"
+serial_test = { workspace = true }
 
 [features]
 # This feature is used for production builds or when a dev server is not specified, DO NOT REMOVE!!

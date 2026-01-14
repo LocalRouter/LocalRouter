@@ -1,0 +1,359 @@
+//! Configuration validation
+
+use super::{ApiKeyConfig, AppConfig, ModelSelection, ProviderConfig, RouterConfig};
+use crate::utils::errors::{AppError, AppResult};
+use std::collections::HashSet;
+
+/// Validate the entire configuration
+pub fn validate_config(config: &AppConfig) -> AppResult<()> {
+    // Validate server configuration
+    validate_server_config(config)?;
+
+    // Validate API keys
+    validate_api_keys(&config.api_keys)?;
+
+    // Validate routers
+    validate_routers(&config.routers)?;
+
+    // Validate providers
+    validate_providers(&config.providers)?;
+
+    // Validate cross-references
+    validate_cross_references(config)?;
+
+    Ok(())
+}
+
+/// Validate server configuration
+fn validate_server_config(config: &AppConfig) -> AppResult<()> {
+    let server = &config.server;
+
+    // Validate host is not empty
+    if server.host.is_empty() {
+        return Err(AppError::Config("Server host cannot be empty".to_string()));
+    }
+
+    // Validate port is in valid range (1-65535)
+    if server.port == 0 {
+        return Err(AppError::Config(
+            "Server port must be greater than 0".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+/// Validate API keys
+fn validate_api_keys(api_keys: &[ApiKeyConfig]) -> AppResult<()> {
+    if api_keys.is_empty() {
+        // No API keys is valid (user hasn't created any yet)
+        return Ok(());
+    }
+
+    // Check for duplicate IDs
+    let mut ids = HashSet::new();
+    for key in api_keys {
+        if !ids.insert(&key.id) {
+            return Err(AppError::Config(format!(
+                "Duplicate API key ID: {}",
+                key.id
+            )));
+        }
+
+        // Validate name is not empty
+        if key.name.is_empty() {
+            return Err(AppError::Config(format!(
+                "API key {} has empty name",
+                key.id
+            )));
+        }
+
+        // Validate key_hash is not empty
+        if key.key_hash.is_empty() {
+            return Err(AppError::Config(format!(
+                "API key {} has empty key_hash",
+                key.id
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+/// Validate routers
+fn validate_routers(routers: &[RouterConfig]) -> AppResult<()> {
+    if routers.is_empty() {
+        return Err(AppError::Config(
+            "At least one router must be configured".to_string(),
+        ));
+    }
+
+    // Check for duplicate router names
+    let mut names = HashSet::new();
+    for router in routers {
+        if !names.insert(&router.name) {
+            return Err(AppError::Config(format!(
+                "Duplicate router name: {}",
+                router.name
+            )));
+        }
+
+        // Validate name is not empty
+        if router.name.is_empty() {
+            return Err(AppError::Config("Router name cannot be empty".to_string()));
+        }
+
+        // Validate strategies are not empty
+        if router.strategies.is_empty() {
+            return Err(AppError::Config(format!(
+                "Router '{}' has no strategies configured",
+                router.name
+            )));
+        }
+
+        // Validate rate limiters
+        for limiter in &router.rate_limiters {
+            if limiter.value <= 0.0 {
+                return Err(AppError::Config(format!(
+                    "Router '{}' has invalid rate limit value: {}",
+                    router.name, limiter.value
+                )));
+            }
+            if limiter.time_window_seconds == 0 {
+                return Err(AppError::Config(format!(
+                    "Router '{}' has invalid time window: 0",
+                    router.name
+                )));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Validate providers
+fn validate_providers(providers: &[ProviderConfig]) -> AppResult<()> {
+    if providers.is_empty() {
+        return Err(AppError::Config(
+            "At least one provider must be configured".to_string(),
+        ));
+    }
+
+    // Check for duplicate provider names
+    let mut names = HashSet::new();
+    for provider in providers {
+        if !names.insert(&provider.name) {
+            return Err(AppError::Config(format!(
+                "Duplicate provider name: {}",
+                provider.name
+            )));
+        }
+
+        // Validate name is not empty
+        if provider.name.is_empty() {
+            return Err(AppError::Config(
+                "Provider name cannot be empty".to_string(),
+            ));
+        }
+
+        // Validate endpoint format if present
+        if let Some(endpoint) = &provider.endpoint {
+            if endpoint.is_empty() {
+                return Err(AppError::Config(format!(
+                    "Provider '{}' has empty endpoint",
+                    provider.name
+                )));
+            }
+
+            // Basic URL validation
+            if !endpoint.starts_with("http://") && !endpoint.starts_with("https://") {
+                return Err(AppError::Config(format!(
+                    "Provider '{}' endpoint must start with http:// or https://",
+                    provider.name
+                )));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Validate cross-references between configuration sections
+fn validate_cross_references(config: &AppConfig) -> AppResult<()> {
+    // Build set of router names
+    let router_names: HashSet<&str> = config.routers.iter().map(|r| r.name.as_str()).collect();
+
+    // Build set of provider names
+    let provider_names: HashSet<&str> = config.providers.iter().map(|p| p.name.as_str()).collect();
+
+    // Validate API key model selections reference valid routers/providers
+    for key in &config.api_keys {
+        match &key.model_selection {
+            ModelSelection::Router { router_name } => {
+                if !router_names.contains(router_name.as_str()) {
+                    return Err(AppError::Config(format!(
+                        "API key '{}' references non-existent router '{}'",
+                        key.name, router_name
+                    )));
+                }
+            }
+            ModelSelection::DirectModel { provider, .. } => {
+                if !provider_names.contains(provider.as_str()) {
+                    return Err(AppError::Config(format!(
+                        "API key '{}' references non-existent provider '{}'",
+                        key.name, provider
+                    )));
+                }
+            }
+        }
+    }
+
+    // Validate router provider filters reference valid providers
+    for router in &config.routers {
+        if let super::ModelSelectionStrategy::Automatic { providers, .. } = &router.model_selection
+        {
+            for filter in providers {
+                if !provider_names.contains(filter.provider_name.as_str()) {
+                    return Err(AppError::Config(format!(
+                        "Router '{}' references non-existent provider '{}'",
+                        router.name, filter.provider_name
+                    )));
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{ModelSelectionStrategy, ProviderType, RoutingStrategy, ServerConfig};
+
+    #[test]
+    fn test_validate_default_config() {
+        let config = AppConfig::default();
+        assert!(validate_config(&config).is_ok());
+    }
+
+    #[test]
+    fn test_validate_empty_server_host() {
+        let mut config = AppConfig::default();
+        config.server.host = String::new();
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn test_validate_invalid_port() {
+        let mut config = AppConfig::default();
+        config.server.port = 0;
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn test_validate_duplicate_api_key_ids() {
+        let mut config = AppConfig::default();
+        let key1 = ApiKeyConfig::new(
+            "key1".to_string(),
+            "hash1".to_string(),
+            ModelSelection::Router {
+                router_name: "Minimum Cost".to_string(),
+            },
+        );
+        let mut key2 = key1.clone();
+        key2.name = "key2".to_string();
+
+        config.api_keys = vec![key1, key2];
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn test_validate_empty_api_key_name() {
+        let mut config = AppConfig::default();
+        let mut key = ApiKeyConfig::new(
+            String::new(),
+            "hash".to_string(),
+            ModelSelection::Router {
+                router_name: "Minimum Cost".to_string(),
+            },
+        );
+        config.api_keys = vec![key];
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn test_validate_no_routers() {
+        let mut config = AppConfig::default();
+        config.routers.clear();
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn test_validate_duplicate_router_names() {
+        let mut config = AppConfig::default();
+        let router1 = RouterConfig::default_minimum_cost();
+        let router2 = RouterConfig::default_minimum_cost();
+        config.routers = vec![router1, router2];
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn test_validate_router_no_strategies() {
+        let mut config = AppConfig::default();
+        config.routers[0].strategies.clear();
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn test_validate_no_providers() {
+        let mut config = AppConfig::default();
+        config.providers.clear();
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn test_validate_duplicate_provider_names() {
+        let mut config = AppConfig::default();
+        let provider1 = ProviderConfig::default_ollama();
+        let provider2 = ProviderConfig::default_ollama();
+        config.providers = vec![provider1, provider2];
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn test_validate_invalid_endpoint() {
+        let mut config = AppConfig::default();
+        config.providers[0].endpoint = Some("invalid-url".to_string());
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn test_validate_api_key_references_nonexistent_router() {
+        let mut config = AppConfig::default();
+        let key = ApiKeyConfig::new(
+            "test".to_string(),
+            "hash".to_string(),
+            ModelSelection::Router {
+                router_name: "NonExistent".to_string(),
+            },
+        );
+        config.api_keys = vec![key];
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn test_validate_api_key_references_nonexistent_provider() {
+        let mut config = AppConfig::default();
+        let key = ApiKeyConfig::new(
+            "test".to_string(),
+            "hash".to_string(),
+            ModelSelection::DirectModel {
+                provider: "NonExistent".to_string(),
+                model: "model".to_string(),
+            },
+        );
+        config.api_keys = vec![key];
+        assert!(validate_config(&config).is_err());
+    }
+}
