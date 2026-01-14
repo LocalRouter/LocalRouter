@@ -256,25 +256,34 @@
 ---
 
 ### 2.6 Google Gemini Provider
-**Status**: ⬜ Not Started
+**Status**: ✅ Completed
 
 **Features**:
-- [ ] Implement `ModelProvider` for Gemini
-- [ ] API key authentication
-- [ ] Model listing
-- [ ] Chat completion
-- [ ] Streaming support
-- [ ] Pricing information
+- [x] Implement `ModelProvider` for Gemini
+- [x] API key authentication
+- [x] Model listing
+- [x] Chat completion
+- [x] Streaming support
+- [x] Pricing information
 
 **Success Criteria**:
-- [ ] Can list Gemini models
-- [ ] Can send chat completions
-- [ ] Streaming works
-- [ ] Pricing calculated
+- [x] Can list Gemini models
+- [x] Can send chat completions
+- [x] Streaming works
+- [x] Pricing calculated
 
 **Testing**:
-- [ ] Integration test: List models
-- [ ] Integration test: Chat completion
+- [x] Integration test: List models
+- [x] Integration test: Chat completion
+
+**Implementation Notes**:
+- Implemented in `src-tauri/src/providers/gemini.rs`
+- Uses Google AI Gemini API (generativelanguage.googleapis.com)
+- API key authentication via query parameter
+- Supports streaming via SSE format
+- Pricing includes Gemini 1.5 Pro, 1.5 Flash, and 2.0 Flash models
+- Converts OpenAI message format to Gemini format (system messages prepended to first user message)
+- Includes unit tests and integration tests (require GEMINI_API_KEY env var)
 
 ---
 
