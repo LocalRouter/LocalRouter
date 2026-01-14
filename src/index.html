@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>LocalRouter AI</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        margin: 0;
+        padding: 20px;
+        box-sizing: border-box;
+      }
+
+      .container {
+        max-width: 800px;
+        margin: 0 auto;
+        padding: 2rem;
+        text-align: center;
+      }
+
+      .card {
+        background: white;
+        border-radius: 12px;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        padding: 2rem;
+        margin-bottom: 2rem;
+      }
+
+      .title {
+        font-size: 2.5rem;
+        font-weight: bold;
+        margin-bottom: 1rem;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+      }
+
+      .subtitle {
+        color: #666;
+        margin-bottom: 2rem;
+      }
+
+      .status {
+        padding: 1rem;
+        background: #f0f9ff;
+        border-left: 4px solid #3b82f6;
+        border-radius: 4px;
+        margin: 2rem 0;
+      }
+
+      .status h2 {
+        margin-top: 0;
+        color: #2563eb;
+      }
+
+      .features {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+        gap: 1rem;
+        margin: 2rem 0;
+      }
+
+      .feature {
+        padding: 1rem;
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        background: #f9fafb;
+      }
+
+      .feature h3 {
+        margin-top: 0;
+        color: #2563eb;
+      }
+
+      .code-block {
+        background: #1e1e1e;
+        color: #d4d4d4;
+        padding: 1rem;
+        border-radius: 4px;
+        font-family: 'Courier New', monospace;
+        font-size: 14px;
+        overflow-x: auto;
+      }
+
+      .status {
+        display: inline-block;
+        padding: 4px 12px;
+        border-radius: 12px;
+        font-size: 0.875rem;
+        font-weight: 500;
+        margin-top: 1rem;
+      }
+
+      .status.running {
+        background: #10b981;
+        color: white;
+      }
+
+      .status.stopped {
+        background: #ef4444;
+        color: white;
+      }
+
+      footer {
+        margin-top: 3rem;
+        padding-top: 1rem;
+        border-top: 1px solid #e5e7eb;
+        text-align: center;
+        color: #6b7280;
+        font-size: 0.875rem;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <header>
+        <h1>🤖 LocalRouter AI</h1>
+        <p class="subtitle">Intelligent AI Model Routing</p>
+      </header>
+
+      <div class="status">
+        <div class="status-badge">
+          <span class="status-dot"></span>
+          Server Running on <strong>http://localhost:3000</strong>
+        </div>
+      </div>
+
+      <div class="welcome">
+        <h2>Welcome to LocalRouter AI</h2>
+        <p>
+          Your local OpenAI-compatible API gateway is running. Use the system tray
+          icon to manage API keys, configure routers, and view metrics.
+        </p>
+      </div>
+
+      <div class="features">
+        <div class="feature-card">
+          <h3>OpenAI Compatible</h3>
+          <p>Drop-in replacement for OpenAI API</p>
+        </div>
+
+        <div class="feature-card">
+          <h3>Smart Routing</h3>
+          <p>Intelligent model selection based on cost, performance, and availability</p>
+        </div>
+
+        <div class="feature-card">
+          <h3>Multi-Provider</h3>
+          <p>Support for Ollama, OpenAI, Anthropic, Gemini, OpenRouter, and more</p>
+        </div>
+
+        <div class="feature-card">
+          <h3>Monitoring</h3>
+          <p>Real-time metrics and historical analytics</p>
+        </div>
+      </div>
+
+      <div class="actions">
+        <button onclick="openApp()">Open Dashboard</button>
+        <button onclick="openSettings()">Settings</button>
+      </div>
+    </div>
+
+    <script>
+      // Placeholder for future frontend framework
+      console.log('LocalRouter AI frontend loaded');
+    </script>
+  </body>
+</html>

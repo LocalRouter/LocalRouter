@@ -1,0 +1,47 @@
+[package]
+name = "localrouter-ai"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "LocalRouter AI - Intelligent AI model routing with OpenAI-compatible API"
+
+[build-dependencies]
+tauri-build = { version = "2.2", features = [] }
+
+[dependencies]
+# Workspace dependencies
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+bcrypt = { workspace = true }
+ring = { workspace = true }
+base64 = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+async-trait = { workspace = true }
+config = { workspace = true }
+keyring = { workspace = true }
+oauth2 = { workspace = true }
+tauri = { workspace = true }
+tauri-plugin-shell = { workspace = true }
+
+# Additional dependencies
+futures = "0.3"
+parking_lot = "0.12"
+dashmap = "6.1"
+
+[features]
+# This feature is used for production builds or when a dev server is not specified, DO NOT REMOVE!!
+custom-protocol = ["tauri/custom-protocol"]
