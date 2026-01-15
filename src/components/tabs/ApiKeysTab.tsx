@@ -6,6 +6,7 @@ import Badge from '../ui/Badge'
 import Modal from '../ui/Modal'
 import Input from '../ui/Input'
 import ModelSelectionTable, { ModelSelectionValue } from '../ModelSelectionTable'
+import ApiKeyDetailPage from '../apikeys/ApiKeyDetailPage'
 
 interface ApiKey {
   id: string
@@ -373,12 +374,7 @@ export default function ApiKeysTab({ activeSubTab }: ApiKeysTabProps) {
       )
     }
 
-    return (
-      <div className="bg-white rounded-lg shadow-sm p-6">
-        <h2 className="text-2xl font-bold text-gray-800 mb-4">{key.name}</h2>
-        <p className="text-gray-600">API Key detail page - Coming soon...</p>
-      </div>
-    )
+    return <ApiKeyDetailPage keyId={key.id} />
   }
 
   return (

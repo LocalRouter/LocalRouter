@@ -7,6 +7,7 @@ import Modal from '../ui/Modal'
 import { OAuthModal } from '../OAuthModal'
 import ProviderForm, { ProviderType as ProviderTypeInfo } from '../ProviderForm'
 import ProviderIcon from '../ProviderIcon'
+import ProviderDetailPage from '../providers/ProviderDetailPage'
 
 interface ProviderInstance {
   instance_name: string
@@ -288,13 +289,10 @@ export default function ProvidersTab({ activeSubTab }: ProvidersTabProps) {
     }
 
     return (
-      <div className="bg-white rounded-lg shadow-sm p-6">
-        <div className="flex items-center gap-3 mb-4">
-          <ProviderIcon providerId={instance.provider_type} size={32} />
-          <h2 className="text-2xl font-bold text-gray-800">{instance.instance_name}</h2>
-        </div>
-        <p className="text-gray-600">Provider detail page - Coming soon...</p>
-      </div>
+      <ProviderDetailPage
+        instanceName={instance.instance_name}
+        providerType={instance.provider_type}
+      />
     )
   }
 
