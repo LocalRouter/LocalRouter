@@ -183,7 +183,7 @@ impl LogParser {
 
             let point = points_map.entry(minute_ts).or_insert_with(|| {
                 let rounded_time =
-                    DateTime::from_timestamp(minute_ts, 0).unwrap_or_else(|| Utc::now());
+                    DateTime::from_timestamp(minute_ts, 0).unwrap_or_else(Utc::now);
                 MetricDataPoint {
                     timestamp: rounded_time,
                     requests: 0,

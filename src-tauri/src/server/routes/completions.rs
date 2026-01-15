@@ -12,7 +12,6 @@ use chrono::Utc;
 use uuid::Uuid;
 
 use crate::providers::{ChatMessage as ProviderChatMessage, CompletionRequest as ProviderCompletionRequest};
-use crate::router::UsageInfo;
 use crate::server::middleware::error::{ApiErrorResponse, ApiResult};
 use crate::server::state::{AppState, AuthContext, GenerationDetails};
 use crate::server::types::{

@@ -148,11 +148,6 @@ impl HealthCheckManager {
         }
     }
 
-    /// Create a new health check manager with default configuration
-    pub fn default() -> Self {
-        Self::new(HealthCheckConfig::default())
-    }
-
     /// Register a provider for health checking
     pub async fn register_provider(&self, provider: Arc<dyn ModelProvider>) {
         let provider_name = provider.name().to_string();
@@ -340,6 +335,12 @@ impl HealthCheckManager {
         tokio::spawn(async move {
             self.run_background_checks().await;
         })
+    }
+}
+
+impl Default for HealthCheckManager {
+    fn default() -> Self {
+        Self::new(HealthCheckConfig::default())
     }
 }
 

@@ -339,8 +339,7 @@ impl ModelProvider for OpenRouterProvider {
 
                     // Parse SSE format (data: {...}\n\n)
                     for line in text.lines() {
-                        if line.starts_with("data: ") {
-                            let json_str = &line[6..];
+                        if let Some(json_str) = line.strip_prefix("data: ") {
                             if json_str == "[DONE]" {
                                 continue;
                             }

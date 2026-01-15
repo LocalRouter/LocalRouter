@@ -3,28 +3,13 @@
 use crate::utils::errors::{AppError, AppResult};
 use std::path::PathBuf;
 
-/// Get the configuration directory based on OS
+/// Get the configuration directory
 ///
-/// - Linux: `~/.config/localrouter/` or `~/.localrouter/`
-/// - macOS: `~/Library/Application Support/LocalRouter/`
-/// - Windows: `%APPDATA%\LocalRouter\`
+/// All platforms: `~/.localrouter/`
 pub fn config_dir() -> AppResult<PathBuf> {
-    let dir = if cfg!(target_os = "macos") {
-        dirs::home_dir()
-            .ok_or_else(|| AppError::Config("Could not determine home directory".to_string()))?
-            .join("Library")
-            .join("Application Support")
-            .join("LocalRouter")
-    } else if cfg!(target_os = "windows") {
-        dirs::config_dir()
-            .ok_or_else(|| AppError::Config("Could not determine config directory".to_string()))?
-            .join("LocalRouter")
-    } else {
-        // Linux and other Unix-like systems
-        dirs::home_dir()
-            .ok_or_else(|| AppError::Config("Could not determine home directory".to_string()))?
-            .join(".localrouter")
-    };
+    let dir = dirs::home_dir()
+        .ok_or_else(|| AppError::Config("Could not determine home directory".to_string()))?
+        .join(".localrouter");
 
     Ok(dir)
 }
@@ -49,52 +34,18 @@ pub fn providers_file() -> AppResult<PathBuf> {
     Ok(config_dir()?.join("providers.yaml"))
 }
 
-/// Get the logs directory based on OS
+/// Get the logs directory
 ///
-/// - Linux: `/var/log/localrouter/` (if permissions) or `~/.localrouter/logs/`
-/// - macOS: `~/Library/Logs/LocalRouter/`
-/// - Windows: `%APPDATA%\LocalRouter\logs\`
+/// All platforms: `~/.localrouter/logs/`
 pub fn logs_dir() -> AppResult<PathBuf> {
-    let dir = if cfg!(target_os = "macos") {
-        dirs::home_dir()
-            .ok_or_else(|| AppError::Config("Could not determine home directory".to_string()))?
-            .join("Library")
-            .join("Logs")
-            .join("LocalRouter")
-    } else if cfg!(target_os = "windows") {
-        config_dir()?.join("logs")
-    } else {
-        // Linux - try user directory since /var/log requires sudo
-        config_dir()?.join("logs")
-    };
-
-    Ok(dir)
+    Ok(config_dir()?.join("logs"))
 }
 
-/// Get the cache directory based on OS
+/// Get the cache directory
 ///
-/// - Linux: `~/.cache/localrouter/`
-/// - macOS: `~/Library/Caches/LocalRouter/`
-/// - Windows: `%LOCALAPPDATA%\LocalRouter\`
+/// All platforms: `~/.localrouter/cache/`
 pub fn cache_dir() -> AppResult<PathBuf> {
-    let dir = if cfg!(target_os = "macos") {
-        dirs::home_dir()
-            .ok_or_else(|| AppError::Config("Could not determine home directory".to_string()))?
-            .join("Library")
-            .join("Caches")
-            .join("LocalRouter")
-    } else if cfg!(target_os = "windows") {
-        dirs::cache_dir()
-            .ok_or_else(|| AppError::Config("Could not determine cache directory".to_string()))?
-            .join("LocalRouter")
-    } else {
-        // Linux
-        dirs::cache_dir()
-            .ok_or_else(|| AppError::Config("Could not determine cache directory".to_string()))?
-            .join("localrouter")
-    };
-
-    Ok(dir)
+    Ok(config_dir()?.join("cache"))
 }
 
 /// Ensure a directory exists, creating it if necessary
@@ -119,16 +70,7 @@ mod tests {
     fn test_config_dir() {
         let dir = config_dir().unwrap();
         assert!(!dir.as_os_str().is_empty());
-
-        if cfg!(target_os = "macos") {
-            assert!(dir
-                .to_string_lossy()
-                .contains("Library/Application Support/LocalRouter"));
-        } else if cfg!(target_os = "windows") {
-            assert!(dir.to_string_lossy().contains("LocalRouter"));
-        } else {
-            assert!(dir.to_string_lossy().contains(".localrouter"));
-        }
+        assert!(dir.to_string_lossy().ends_with(".localrouter"));
     }
 
     #[test]
@@ -147,23 +89,15 @@ mod tests {
     fn test_logs_dir() {
         let dir = logs_dir().unwrap();
         assert!(!dir.as_os_str().is_empty());
-
-        if cfg!(target_os = "macos") {
-            assert!(dir.to_string_lossy().contains("Library/Logs/LocalRouter"));
-        } else {
-            assert!(dir.to_string_lossy().contains("logs"));
-        }
+        assert!(dir.to_string_lossy().contains(".localrouter"));
+        assert!(dir.to_string_lossy().ends_with("logs"));
     }
 
     #[test]
     fn test_cache_dir() {
         let dir = cache_dir().unwrap();
         assert!(!dir.as_os_str().is_empty());
-
-        if cfg!(target_os = "macos") {
-            assert!(dir.to_string_lossy().contains("Library/Caches/LocalRouter"));
-        } else {
-            assert!(dir.to_string_lossy().contains("localrouter"));
-        }
+        assert!(dir.to_string_lossy().contains(".localrouter"));
+        assert!(dir.to_string_lossy().ends_with("cache"));
     }
 }

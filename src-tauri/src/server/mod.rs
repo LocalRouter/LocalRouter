@@ -13,13 +13,12 @@ use std::sync::Arc;
 use axum::{
     extract::Request,
     http::{header, Method, StatusCode},
-    middleware::{from_fn_with_state, Next},
+    middleware::Next,
     response::Response,
     routing::{get, post},
     Router,
 };
 use tokio::net::TcpListener;
-use tower::ServiceBuilder;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::{error, info};
 
@@ -27,7 +26,7 @@ use crate::api_keys::ApiKeyManager;
 use crate::providers::registry::ProviderRegistry;
 use crate::router::{RateLimiterManager, Router as AppRouter};
 
-use self::middleware::auth_middleware;
+use self::middleware::auth_layer::AuthLayer;
 use self::state::AppState;
 
 /// Web server configuration
@@ -68,8 +67,8 @@ pub async fn start_server(
     // Create shared state
     let state = AppState::new(router, api_key_manager, rate_limiter, provider_registry);
 
-    // Build the router
-    let app = build_app(state.clone(), config.enable_cors);
+    // Build the router with auth layer applied
+    let app = build_app(state, config.enable_cors);
 
     // Create TCP listener
     let addr = SocketAddr::from((
@@ -80,11 +79,6 @@ pub async fn start_server(
 
     info!("Web server listening on http://{}", addr);
     info!("OpenAI-compatible endpoints available at:");
-    info!("  - POST http://{}/v1/chat/completions", addr);
-    info!("  - POST http://{}/v1/completions", addr);
-    info!("  - POST http://{}/v1/embeddings", addr);
-    info!("  - GET  http://{}/v1/models", addr);
-    info!("  - GET  http://{}/v1/generation?id={{id}}", addr);
 
     // Start server
     axum::serve(listener, app)
@@ -96,26 +90,22 @@ pub async fn start_server(
 
 /// Build the Axum app with all routes and middleware
 fn build_app(state: AppState, enable_cors: bool) -> Router {
-    // Public routes (no auth required)
-    let public_routes = Router::new()
+    // Build the Axum router with all routes
+    let mut router = Router::new()
         .route("/health", get(health_check))
-        .route("/", get(root_handler));
-
-    // Protected routes (require authentication)
-    let protected_routes = Router::new()
+        .route("/", get(root_handler))
         .route("/v1/chat/completions", post(routes::chat_completions))
         .route("/v1/completions", post(routes::completions))
         .route("/v1/embeddings", post(routes::embeddings))
         .route("/v1/models", get(routes::list_models))
         .route("/v1/generation", get(routes::get_generation))
-        .route_layer(axum::middleware::from_fn(auth_middleware));
+        .with_state(state.clone());
 
-    // Combine routes
-    let mut app = Router::new()
-        .merge(public_routes)
-        .merge(protected_routes)
-        .with_state(state)
-        .layer(ServiceBuilder::new().layer(axum::middleware::from_fn(logging_middleware)));
+    // Apply auth layer (checks /v1/* routes)
+    router = router.layer(AuthLayer::new(state));
+
+    // Add logging middleware
+    router = router.layer(axum::middleware::from_fn(logging_middleware));
 
     // Add CORS if enabled
     if enable_cors {
@@ -128,10 +118,10 @@ fn build_app(state: AppState, enable_cors: bool) -> Router {
             ])
             .allow_credentials(false);
 
-        app = app.layer(cors);
+        router = router.layer(cors);
     }
 
-    app
+    router
 }
 
 /// Health check endpoint

@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 use uuid::Uuid;
 
 mod migration;
@@ -65,16 +65,16 @@ pub struct ServerConfig {
 }
 
 /// API key configuration
+///
+/// The actual API key is stored in the OS keychain.
+/// This struct contains only metadata.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ApiKeyConfig {
-    /// Unique identifier
+    /// Unique identifier (also used as keyring username)
     pub id: String,
 
     /// Human-readable name
     pub name: String,
-
-    /// Hashed API key (bcrypt)
-    pub key_hash: String,
 
     /// Model selection for this key
     pub model_selection: ModelSelection,
@@ -553,7 +553,7 @@ impl Default for ServerConfig {
     fn default() -> Self {
         Self {
             host: "127.0.0.1".to_string(),
-            port: 3000,
+            port: 3625,
             enable_cors: true,
         }
     }
@@ -619,11 +619,10 @@ impl ProviderConfig {
 
 impl ApiKeyConfig {
     /// Create a new API key configuration
-    pub fn new(name: String, key_hash: String, model_selection: ModelSelection) -> Self {
+    pub fn new(name: String, model_selection: ModelSelection) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
             name,
-            key_hash,
             model_selection,
             enabled: true,
             created_at: Utc::now(),

@@ -125,8 +125,11 @@ impl OpenAIProvider {
 #[derive(Debug, Deserialize)]
 struct OpenAIModel {
     id: String,
+    #[allow(dead_code)]
     object: String,
+    #[allow(dead_code)]
     created: i64,
+    #[allow(dead_code)]
     owned_by: String,
 }
 
@@ -286,15 +289,12 @@ impl ModelProvider for OpenAIProvider {
                 32768
             } else if model.id.contains("turbo") {
                 16384
-            } else if model.id.starts_with("gpt-4o") {
-                128000
-            } else if model.id.starts_with("o1") {
+            } else if model.id.starts_with("gpt-4o") || model.id.starts_with("o1") {
                 128000
             } else if model.id.starts_with("gpt-4") {
                 8192
-            } else if model.id.starts_with("gpt-3.5") {
-                4096
             } else {
+                // Default for gpt-3.5 and others
                 4096
             };
 

@@ -13,7 +13,7 @@ pub fn generate_api_key() -> Result<String> {
     rng.fill(&mut bytes)
         .map_err(|_| anyhow::anyhow!("Failed to generate random bytes"))?;
 
-    let encoded = URL_SAFE_NO_PAD.encode(&bytes);
+    let encoded = URL_SAFE_NO_PAD.encode(bytes);
     Ok(format!("lr-{}", encoded))
 }
 

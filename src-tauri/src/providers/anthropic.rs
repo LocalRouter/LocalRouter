@@ -418,9 +418,7 @@ impl ModelProvider for AnthropicProvider {
 
                     // Parse each SSE event
                     for line in text.lines() {
-                        if line.starts_with("data: ") {
-                            let data = &line[6..];
-
+                        if let Some(data) = line.strip_prefix("data: ") {
                             // Skip [DONE] marker
                             if data == "[DONE]" {
                                 continue;

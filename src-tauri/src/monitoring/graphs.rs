@@ -366,7 +366,7 @@ impl GraphGenerator {
             };
 
             filled.push(point);
-            current = current + Duration::minutes(interval_minutes);
+            current += Duration::minutes(interval_minutes);
         }
 
         filled

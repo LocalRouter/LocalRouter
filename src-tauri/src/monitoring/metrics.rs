@@ -137,6 +137,7 @@ impl TimeSeries {
     }
 
     /// Get or create a data point for a given timestamp
+    #[allow(dead_code)]
     fn get_or_create_point(&self, timestamp: DateTime<Utc>) -> MetricDataPoint {
         let minute_ts = Self::get_minute_timestamp(timestamp);
 
@@ -144,7 +145,7 @@ impl TimeSeries {
             .entry(minute_ts)
             .or_insert_with(|| {
                 let rounded_time =
-                    DateTime::from_timestamp(minute_ts, 0).unwrap_or_else(|| Utc::now());
+                    DateTime::from_timestamp(minute_ts, 0).unwrap_or_else(Utc::now);
                 MetricDataPoint::new(rounded_time)
             })
             .clone()
@@ -168,7 +169,7 @@ impl TimeSeries {
             })
             .or_insert_with(|| {
                 let rounded_time =
-                    DateTime::from_timestamp(minute_ts, 0).unwrap_or_else(|| Utc::now());
+                    DateTime::from_timestamp(minute_ts, 0).unwrap_or_else(Utc::now);
                 let mut point = MetricDataPoint::new(rounded_time);
                 point.add_success(input_tokens, output_tokens, cost_usd, latency_ms);
                 point
@@ -186,7 +187,7 @@ impl TimeSeries {
             })
             .or_insert_with(|| {
                 let rounded_time =
-                    DateTime::from_timestamp(minute_ts, 0).unwrap_or_else(|| Utc::now());
+                    DateTime::from_timestamp(minute_ts, 0).unwrap_or_else(Utc::now);
                 let mut point = MetricDataPoint::new(rounded_time);
                 point.add_failure(latency_ms);
                 point

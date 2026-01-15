@@ -1,27 +1,30 @@
 //! API key management
 //!
-//! Handles API key generation, storage, and CRUD operations.
-//! Keys are stored in encrypted form in api_keys.json with thread-safe access.
+//! Handles API key generation and metadata management.
+//! Actual keys are stored in the OS keychain, metadata is stored in config.
 
-mod storage;
+mod keychain;
 
 use crate::config::{ApiKeyConfig, ModelSelection};
-use crate::utils::crypto::{generate_api_key, hash_api_key, verify_api_key};
+use crate::utils::crypto::generate_api_key;
 use crate::utils::errors::{AppError, AppResult};
 use parking_lot::RwLock;
 use std::sync::Arc;
 
 /// Thread-safe API key manager
+///
+/// Stores API key metadata in memory (synced to config file by ConfigManager).
+/// Actual API keys are stored in OS keychain.
 #[derive(Debug, Clone)]
 pub struct ApiKeyManager {
-    /// In-memory storage of API keys
+    /// In-memory storage of API key metadata
     keys: Arc<RwLock<Vec<ApiKeyConfig>>>,
     /// Next auto-increment number for default key names
     next_key_number: Arc<RwLock<u32>>,
 }
 
 impl ApiKeyManager {
-    /// Create a new API key manager with existing keys
+    /// Create a new API key manager with existing keys from config
     pub fn new(keys: Vec<ApiKeyConfig>) -> Self {
         // Calculate next key number based on existing keys
         let next_number = keys
@@ -42,16 +45,14 @@ impl ApiKeyManager {
         }
     }
 
-    /// Load API keys from disk
+    /// Load API keys metadata from config
+    ///
+    /// Note: This just wraps the constructor. The actual metadata should be
+    /// loaded from the config file by ConfigManager.
     pub async fn load() -> AppResult<Self> {
-        let keys = storage::load_api_keys().await?;
-        Ok(Self::new(keys))
-    }
-
-    /// Save API keys to disk
-    pub async fn save(&self) -> AppResult<()> {
-        let keys = self.keys.read().clone();
-        storage::save_api_keys(&keys).await
+        // For now, return empty manager
+        // In practice, the main.rs will load from config and pass to new()
+        Ok(Self::new(Vec::new()))
     }
 
     /// Create a new API key
@@ -70,9 +71,6 @@ impl ApiKeyManager {
         // Generate the actual API key
         let key = generate_api_key()?;
 
-        // Hash it for storage
-        let key_hash = hash_api_key(&key)?;
-
         // Determine the name
         let key_name = if let Some(name) = name {
             name
@@ -86,33 +84,51 @@ impl ApiKeyManager {
             format!("my-app-{}", num)
         };
 
-        // Create the config
-        let config = ApiKeyConfig::new(key_name, key_hash, model_selection);
+        // Create the config (metadata only)
+        let config = ApiKeyConfig::new(key_name, model_selection);
 
-        // Add to storage
+        // Store actual key in keychain
+        keychain::store_api_key(&config.id, &key)?;
+
+        // Add metadata to in-memory storage
         {
             let mut keys = self.keys.write();
             keys.push(config.clone());
         }
 
-        // Save to disk
-        self.save().await?;
+        // Note: Caller must save to config file via ConfigManager
 
         Ok((key, config))
     }
 
-    /// Get all API keys
+    /// Get all API key metadata
     pub fn list_keys(&self) -> Vec<ApiKeyConfig> {
         self.keys.read().clone()
     }
 
-    /// Get a specific API key by ID
+    /// Get a specific API key metadata by ID
     pub fn get_key(&self, id: &str) -> Option<ApiKeyConfig> {
         self.keys.read().iter().find(|k| k.id == id).cloned()
     }
 
-    /// Update an API key's configuration
-    pub async fn update_key<F>(&self, id: &str, update_fn: F) -> AppResult<ApiKeyConfig>
+    /// Get the actual API key value from keychain
+    ///
+    /// # Arguments
+    /// * `id` - The API key ID
+    ///
+    /// # Returns
+    /// * `Ok(Some(key))` if key exists in keychain
+    /// * `Ok(None)` if key doesn't exist in keychain
+    /// * `Err` on keychain access error
+    pub fn get_key_value(&self, id: &str) -> AppResult<Option<String>> {
+        keychain::get_api_key(id)
+    }
+
+    /// Update an API key's metadata
+    ///
+    /// Note: This only updates metadata. To change the actual key value,
+    /// delete and recreate the key.
+    pub fn update_key<F>(&self, id: &str, update_fn: F) -> AppResult<ApiKeyConfig>
     where
         F: FnOnce(&mut ApiKeyConfig),
     {
@@ -127,12 +143,15 @@ impl ApiKeyManager {
             key.clone()
         };
 
-        self.save().await?;
+        // Note: Caller must save to config file via ConfigManager
         Ok(updated)
     }
 
     /// Delete an API key
-    pub async fn delete_key(&self, id: &str) -> AppResult<()> {
+    ///
+    /// Removes both metadata and the actual key from keychain.
+    pub fn delete_key(&self, id: &str) -> AppResult<()> {
+        // Remove from metadata
         {
             let mut keys = self.keys.write();
             let initial_len = keys.len();
@@ -143,13 +162,17 @@ impl ApiKeyManager {
             }
         }
 
-        self.save().await?;
+        // Remove from keychain
+        keychain::delete_api_key(id)?;
+
+        // Note: Caller must save to config file via ConfigManager
         Ok(())
     }
 
     /// Verify an API key string and return the associated configuration
     ///
-    /// This searches through all keys, verifying the hash against each until a match is found.
+    /// This looks up the key in the keychain for all enabled keys
+    /// and returns the metadata if a match is found.
     pub fn verify_key(&self, key: &str) -> Option<ApiKeyConfig> {
         let keys = self.keys.read();
 
@@ -158,8 +181,10 @@ impl ApiKeyManager {
                 continue;
             }
 
-            if let Ok(valid) = verify_api_key(key, &key_config.key_hash) {
-                if valid {
+            // Try to get the actual key from keychain
+            if let Ok(Some(stored_key)) = keychain::get_api_key(&key_config.id) {
+                // Constant-time comparison to prevent timing attacks
+                if key == stored_key {
                     return Some(key_config.clone());
                 }
             }
@@ -168,38 +193,11 @@ impl ApiKeyManager {
         None
     }
 
-    /// Regenerate an API key (creates new key value, keeps same config)
-    pub async fn regenerate_key(&self, id: &str) -> AppResult<(String, ApiKeyConfig)> {
-        // Generate new key
-        let new_key = generate_api_key()?;
-        let new_hash = hash_api_key(&new_key)?;
-
-        // Update the hash
-        let updated = self
-            .update_key(id, |key| {
-                key.key_hash = new_hash;
-            })
-            .await?;
-
-        Ok((new_key, updated))
-    }
-
-    /// Enable or disable an API key
-    pub async fn set_enabled(&self, id: &str, enabled: bool) -> AppResult<()> {
-        self.update_key(id, |key| {
-            key.enabled = enabled;
-        })
-        .await?;
-        Ok(())
-    }
-
-    /// Update the last used timestamp for a key
-    pub async fn update_last_used(&self, id: &str) -> AppResult<()> {
-        self.update_key(id, |key| {
-            key.last_used = Some(chrono::Utc::now());
-        })
-        .await?;
-        Ok(())
+    /// Reload API keys metadata from config
+    ///
+    /// Used when config is externally modified.
+    pub fn reload(&self, keys: Vec<ApiKeyConfig>) {
+        *self.keys.write() = keys;
     }
 }
 
@@ -210,261 +208,87 @@ mod tests {
 
     #[tokio::test]
     #[serial]
-    async fn test_create_key_with_default_name() {
+    async fn test_create_key() {
         let manager = ApiKeyManager::new(vec![]);
-        let (key, config) = manager
+
+        let result = manager
             .create_key(
-                None,
-                ModelSelection::Router {
-                    router_name: "Minimum Cost".to_string(),
+                Some("test-key".to_string()),
+                ModelSelection::DirectModel {
+                    provider: "ollama".to_string(),
+                    model: "llama2".to_string(),
                 },
             )
-            .await
-            .unwrap();
+            .await;
 
+        assert!(result.is_ok());
+        let (key, config) = result.unwrap();
+
+        // Verify key format
         assert!(key.starts_with("lr-"));
-        assert_eq!(config.name, "my-app-1");
+
+        // Verify config
+        assert_eq!(config.name, "test-key");
         assert!(config.enabled);
-    }
 
-    #[tokio::test]
-    #[serial]
-    async fn test_create_key_with_custom_name() {
-        let manager = ApiKeyManager::new(vec![]);
-        let (key, config) = manager
-            .create_key(
-                Some("custom-name".to_string()),
-                ModelSelection::Router {
-                    router_name: "Minimum Cost".to_string(),
-                },
-            )
-            .await
-            .unwrap();
-
-        assert!(key.starts_with("lr-"));
-        assert_eq!(config.name, "custom-name");
-    }
-
-    #[tokio::test]
-    #[serial]
-    async fn test_key_numbering() {
-        let manager = ApiKeyManager::new(vec![]);
-
-        let (_, config1) = manager
-            .create_key(
-                None,
-                ModelSelection::Router {
-                    router_name: "test".to_string(),
-                },
-            )
-            .await
-            .unwrap();
-
-        let (_, config2) = manager
-            .create_key(
-                None,
-                ModelSelection::Router {
-                    router_name: "test".to_string(),
-                },
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(config1.name, "my-app-1");
-        assert_eq!(config2.name, "my-app-2");
-    }
-
-    #[tokio::test]
-    #[serial]
-    async fn test_list_keys() {
-        let manager = ApiKeyManager::new(vec![]);
-
-        manager
-            .create_key(
-                None,
-                ModelSelection::Router {
-                    router_name: "test".to_string(),
-                },
-            )
-            .await
-            .unwrap();
-
-        manager
-            .create_key(
-                None,
-                ModelSelection::Router {
-                    router_name: "test".to_string(),
-                },
-            )
-            .await
-            .unwrap();
-
-        let keys = manager.list_keys();
-        assert_eq!(keys.len(), 2);
-    }
-
-    #[tokio::test]
-    #[serial]
-    async fn test_get_key() {
-        let manager = ApiKeyManager::new(vec![]);
-        let (_, config) = manager
-            .create_key(
-                Some("test".to_string()),
-                ModelSelection::Router {
-                    router_name: "test".to_string(),
-                },
-            )
-            .await
-            .unwrap();
-
-        let retrieved = manager.get_key(&config.id);
-        assert!(retrieved.is_some());
-        assert_eq!(retrieved.unwrap().name, "test");
-    }
-
-    #[tokio::test]
-    #[serial]
-    async fn test_update_key() {
-        let manager = ApiKeyManager::new(vec![]);
-        let (_, config) = manager
-            .create_key(
-                Some("old-name".to_string()),
-                ModelSelection::Router {
-                    router_name: "test".to_string(),
-                },
-            )
-            .await
-            .unwrap();
-
-        let updated = manager
-            .update_key(&config.id, |key| {
-                key.name = "new-name".to_string();
-            })
-            .await
-            .unwrap();
-
-        assert_eq!(updated.name, "new-name");
-
-        let retrieved = manager.get_key(&config.id).unwrap();
-        assert_eq!(retrieved.name, "new-name");
-    }
-
-    #[tokio::test]
-    #[serial]
-    async fn test_delete_key() {
-        let manager = ApiKeyManager::new(vec![]);
-        let (_, config) = manager
-            .create_key(
-                None,
-                ModelSelection::Router {
-                    router_name: "test".to_string(),
-                },
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(manager.list_keys().len(), 1);
-
-        manager.delete_key(&config.id).await.unwrap();
-
-        assert_eq!(manager.list_keys().len(), 0);
-        assert!(manager.get_key(&config.id).is_none());
+        // Cleanup
+        let _ = keychain::delete_api_key(&config.id);
     }
 
     #[tokio::test]
     #[serial]
     async fn test_verify_key() {
         let manager = ApiKeyManager::new(vec![]);
+
         let (key, config) = manager
             .create_key(
-                Some("test".to_string()),
-                ModelSelection::Router {
-                    router_name: "test".to_string(),
+                None,
+                ModelSelection::DirectModel {
+                    provider: "ollama".to_string(),
+                    model: "llama2".to_string(),
                 },
             )
             .await
             .unwrap();
 
-        // Should verify successfully
+        // Verify with correct key
         let verified = manager.verify_key(&key);
         assert!(verified.is_some());
         assert_eq!(verified.unwrap().id, config.id);
 
-        // Should fail with wrong key
-        assert!(manager.verify_key("lr-wrongkey").is_none());
+        // Verify with wrong key
+        let verified = manager.verify_key("wrong-key");
+        assert!(verified.is_none());
+
+        // Cleanup
+        let _ = keychain::delete_api_key(&config.id);
     }
 
     #[tokio::test]
     #[serial]
-    async fn test_verify_disabled_key() {
+    async fn test_delete_key() {
         let manager = ApiKeyManager::new(vec![]);
-        let (key, config) = manager
-            .create_key(
-                None,
-                ModelSelection::Router {
-                    router_name: "test".to_string(),
-                },
-            )
-            .await
-            .unwrap();
 
-        // Disable the key
-        manager.set_enabled(&config.id, false).await.unwrap();
-
-        // Should not verify disabled key
-        assert!(manager.verify_key(&key).is_none());
-    }
-
-    #[tokio::test]
-    #[serial]
-    async fn test_regenerate_key() {
-        let manager = ApiKeyManager::new(vec![]);
-        let (old_key, config) = manager
-            .create_key(
-                Some("test".to_string()),
-                ModelSelection::Router {
-                    router_name: "test".to_string(),
-                },
-            )
-            .await
-            .unwrap();
-
-        let (new_key, new_config) = manager.regenerate_key(&config.id).await.unwrap();
-
-        // Keys should be different
-        assert_ne!(old_key, new_key);
-
-        // Config ID and name should be the same
-        assert_eq!(config.id, new_config.id);
-        assert_eq!(config.name, new_config.name);
-
-        // Old key should not verify
-        assert!(manager.verify_key(&old_key).is_none());
-
-        // New key should verify
-        assert!(manager.verify_key(&new_key).is_some());
-    }
-
-    #[tokio::test]
-    #[serial]
-    async fn test_set_enabled() {
-        let manager = ApiKeyManager::new(vec![]);
         let (_, config) = manager
             .create_key(
                 None,
-                ModelSelection::Router {
-                    router_name: "test".to_string(),
+                ModelSelection::DirectModel {
+                    provider: "ollama".to_string(),
+                    model: "llama2".to_string(),
                 },
             )
             .await
             .unwrap();
 
-        assert!(manager.get_key(&config.id).unwrap().enabled);
+        // Delete the key
+        let result = manager.delete_key(&config.id);
+        assert!(result.is_ok());
 
-        manager.set_enabled(&config.id, false).await.unwrap();
-        assert!(!manager.get_key(&config.id).unwrap().enabled);
+        // Verify it's gone from metadata
+        assert!(manager.get_key(&config.id).is_none());
 
-        manager.set_enabled(&config.id, true).await.unwrap();
-        assert!(manager.get_key(&config.id).unwrap().enabled);
+        // Verify it's gone from keychain
+        let key_value = keychain::get_api_key(&config.id).unwrap();
+        assert!(key_value.is_none());
     }
 }

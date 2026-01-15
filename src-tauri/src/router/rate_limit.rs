@@ -11,6 +11,7 @@ use chrono::{DateTime, Duration, Utc};
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
+use std::fmt;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::fs;
@@ -124,21 +125,25 @@ pub enum RateLimiterKey {
     },
 }
 
-impl RateLimiterKey {
-    fn to_string(&self) -> String {
+impl fmt::Display for RateLimiterKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             RateLimiterKey::ApiKey { key_id, limit_type } => {
-                format!("apikey:{}:{:?}", key_id, limit_type)
+                write!(f, "apikey:{}:{:?}", key_id, limit_type)
             }
             RateLimiterKey::Router {
                 router_name,
                 limit_type,
             } => {
-                format!("router:{}:{:?}", router_name, limit_type)
+                write!(f, "router:{}:{:?}", router_name, limit_type)
             }
         }
     }
+}
 
+impl RateLimiterKey {
+
+    #[allow(dead_code)]
     fn from_string(s: &str) -> Option<Self> {
         let parts: Vec<&str> = s.split(':').collect();
         if parts.len() != 3 {

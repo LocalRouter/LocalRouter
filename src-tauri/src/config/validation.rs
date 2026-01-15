@@ -68,13 +68,7 @@ fn validate_api_keys(api_keys: &[ApiKeyConfig]) -> AppResult<()> {
             )));
         }
 
-        // Validate key_hash is not empty
-        if key.key_hash.is_empty() {
-            return Err(AppError::Config(format!(
-                "API key {} has empty key_hash",
-                key.id
-            )));
-        }
+        // Note: Actual API keys are stored in OS keychain, not in config
     }
 
     Ok(())
@@ -224,7 +218,6 @@ fn validate_cross_references(config: &AppConfig) -> AppResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{ModelSelectionStrategy, ProviderType, RoutingStrategy, ServerConfig};
 
     #[test]
     fn test_validate_default_config() {
@@ -251,7 +244,6 @@ mod tests {
         let mut config = AppConfig::default();
         let key1 = ApiKeyConfig::new(
             "key1".to_string(),
-            "hash1".to_string(),
             ModelSelection::Router {
                 router_name: "Minimum Cost".to_string(),
             },
@@ -266,9 +258,8 @@ mod tests {
     #[test]
     fn test_validate_empty_api_key_name() {
         let mut config = AppConfig::default();
-        let mut key = ApiKeyConfig::new(
+        let key = ApiKeyConfig::new(
             String::new(),
-            "hash".to_string(),
             ModelSelection::Router {
                 router_name: "Minimum Cost".to_string(),
             },
@@ -317,9 +308,11 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_invalid_endpoint() {
+    fn test_validate_invalid_provider_config() {
+        use serde_json::json;
         let mut config = AppConfig::default();
-        config.providers[0].endpoint = Some("invalid-url".to_string());
+        // Provider config must be an object, not a primitive
+        config.providers[0].provider_config = Some(json!("not an object"));
         assert!(validate_config(&config).is_err());
     }
 
@@ -328,7 +321,6 @@ mod tests {
         let mut config = AppConfig::default();
         let key = ApiKeyConfig::new(
             "test".to_string(),
-            "hash".to_string(),
             ModelSelection::Router {
                 router_name: "NonExistent".to_string(),
             },
@@ -342,7 +334,6 @@ mod tests {
         let mut config = AppConfig::default();
         let key = ApiKeyConfig::new(
             "test".to_string(),
-            "hash".to_string(),
             ModelSelection::DirectModel {
                 provider: "NonExistent".to_string(),
                 model: "model".to_string(),

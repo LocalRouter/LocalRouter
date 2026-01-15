@@ -5,9 +5,9 @@
 use crate::api_keys::ApiKeyManager;
 use crate::config::ModelSelection;
 use tauri::{
-    menu::{MenuBuilder, SubmenuBuilder},
+    menu::MenuBuilder,
     tray::TrayIconBuilder,
-    App, AppHandle, Manager, Runtime, State,
+    App, AppHandle, Manager, Runtime,
 };
 use tracing::info;
 
@@ -24,7 +24,7 @@ pub fn setup_tray<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
         .menu(&menu)
         .tooltip("LocalRouter AI")
         .icon_as_template(true)
-        .menu_on_left_click(false)
+        .show_menu_on_left_click(false)
         .on_menu_event(|app, event| {
             let id = event.id().as_ref();
             info!("Tray menu event: {}", id);

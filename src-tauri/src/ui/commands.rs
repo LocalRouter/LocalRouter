@@ -9,7 +9,7 @@ use crate::api_keys::ApiKeyManager;
 use crate::config::{ConfigManager, ModelSelection, RouterConfig};
 use crate::providers::registry::ProviderRegistry;
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{Emitter, State};
 
 /// API key information for display
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,11 +43,19 @@ pub async fn create_api_key(
     name: Option<String>,
     model_selection: ModelSelection,
     key_manager: State<'_, ApiKeyManager>,
+    config_manager: State<'_, ConfigManager>,
     app: tauri::AppHandle,
 ) -> Result<(String, ApiKeyInfo), String> {
     let (key, config) = key_manager
         .create_key(name, model_selection)
         .await
+        .map_err(|e| e.to_string())?;
+
+    // Save to config file
+    config_manager
+        .update(|cfg| {
+            cfg.api_keys.push(config.clone());
+        })
         .map_err(|e| e.to_string())?;
 
     // Rebuild tray menu with new API key
@@ -65,6 +73,60 @@ pub async fn create_api_key(
             created_at: config.created_at.to_rfc3339(),
         },
     ))
+}
+
+/// Get the actual API key value from keychain
+///
+/// # Arguments
+/// * `id` - The API key ID
+///
+/// # Returns
+/// * The actual API key string if it exists
+/// * Error if key doesn't exist or keychain access fails
+#[tauri::command]
+pub async fn get_api_key_value(
+    id: String,
+    key_manager: State<'_, ApiKeyManager>,
+) -> Result<String, String> {
+    key_manager
+        .get_key_value(&id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("API key not found in keychain: {}", id))
+}
+
+/// Delete an API key
+///
+/// # Arguments
+/// * `id` - The API key ID to delete
+///
+/// # Returns
+/// * Ok(()) if the key was deleted successfully
+/// * Error if the key doesn't exist or deletion fails
+#[tauri::command]
+pub async fn delete_api_key(
+    id: String,
+    key_manager: State<'_, ApiKeyManager>,
+    config_manager: State<'_, ConfigManager>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    // Delete from keychain
+    key_manager
+        .delete_key(&id)
+        .map_err(|e| e.to_string())?;
+
+    // Remove from config file
+    config_manager
+        .update(|cfg| {
+            cfg.api_keys.retain(|k| k.id != id);
+        })
+        .map_err(|e| e.to_string())?;
+
+    // Rebuild tray menu
+    if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
+        tracing::error!("Failed to rebuild tray menu: {}", e);
+    }
+
+    Ok(())
 }
 
 /// List all routers
@@ -301,4 +363,88 @@ pub async fn list_provider_models(
         .list_provider_models(&instance_name)
         .await
         .map_err(|e| e.to_string())
+}
+
+/// List all models from all enabled providers
+///
+/// Returns a combined list of all models available across all enabled providers.
+/// Used by the UI to populate the model selection dropdown.
+///
+/// # Returns
+/// * `Ok(Vec<ModelInfo>)` with the aggregated list of models
+/// * Models are grouped by provider
+#[tauri::command]
+pub async fn list_all_models(
+    registry: State<'_, Arc<ProviderRegistry>>,
+) -> Result<Vec<crate::providers::ModelInfo>, String> {
+    registry
+        .list_all_models()
+        .await
+        .map_err(|e| e.to_string())
+}
+
+// ============================================================================
+// Server Configuration Commands
+// ============================================================================
+
+/// Get server configuration (host and port)
+#[tauri::command]
+pub async fn get_server_config(
+    config_manager: State<'_, ConfigManager>,
+) -> Result<ServerConfigInfo, String> {
+    let config = config_manager.get();
+    Ok(ServerConfigInfo {
+        host: config.server.host.clone(),
+        port: config.server.port,
+        enable_cors: config.server.enable_cors,
+    })
+}
+
+/// Update server configuration
+///
+/// # Arguments
+/// * `host` - Host/interface to listen on (e.g., "127.0.0.1", "0.0.0.0")
+/// * `port` - Port number to listen on
+///
+/// # Note
+/// Changes are saved to configuration file but the server needs to be restarted for them to take effect.
+/// Use `restart_server` command after calling this.
+#[tauri::command]
+pub async fn update_server_config(
+    host: Option<String>,
+    port: Option<u16>,
+    config_manager: State<'_, ConfigManager>,
+) -> Result<(), String> {
+    config_manager
+        .update(|config| {
+            if let Some(host) = host {
+                config.server.host = host;
+            }
+            if let Some(port) = port {
+                config.server.port = port;
+            }
+        })
+        .map_err(|e| e.to_string())
+}
+
+/// Restart the web server
+///
+/// Stops the current server and starts a new one with the current configuration.
+/// This is needed after changing server host/port settings.
+#[tauri::command]
+pub async fn restart_server(app: tauri::AppHandle) -> Result<(), String> {
+    // Emit an event to trigger server restart
+    // The main.rs will listen for this event and restart the server
+    app.emit("server-restart-requested", ())
+        .map_err(|e| format!("Failed to emit restart event: {}", e))?;
+
+    Ok(())
+}
+
+/// Server configuration info for display
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerConfigInfo {
+    pub host: String,
+    pub port: u16,
+    pub enable_cors: bool,
 }

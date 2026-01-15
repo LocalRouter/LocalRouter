@@ -3,8 +3,8 @@
 //! Handles migrating configuration files between versions.
 
 use super::{AppConfig, CONFIG_VERSION};
-use crate::utils::errors::{AppError, AppResult};
-use tracing::{info, warn};
+use crate::utils::errors::AppResult;
+use tracing::info;
 
 /// Migrate configuration from an older version to the current version
 pub fn migrate_config(mut config: AppConfig) -> AppResult<AppConfig> {

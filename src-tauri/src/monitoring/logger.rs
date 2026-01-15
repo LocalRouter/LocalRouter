@@ -55,6 +55,7 @@ pub struct AccessLogEntry {
 
 impl AccessLogEntry {
     /// Create a new access log entry for a successful request
+    #[allow(clippy::too_many_arguments)]
     pub fn success(
         api_key_name: impl Into<String>,
         provider: impl Into<String>,
