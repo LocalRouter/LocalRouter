@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use futures::Stream;
+use futures::{Stream, StreamExt};
 use std::pin::Pin;
 use tracing::{debug, info, warn};
 
@@ -19,6 +19,85 @@ pub mod rate_limit;
 pub use rate_limit::{
     RateLimiterManager, UsageInfo,
 };
+
+/// Wraps a completion stream to count tokens and record usage when complete
+///
+/// This is an approximation: we estimate tokens based on content length
+/// since streaming chunks don't include token counts.
+async fn wrap_stream_with_usage_tracking(
+    stream: Pin<Box<dyn Stream<Item = AppResult<CompletionChunk>> + Send>>,
+    api_key_id: String,
+    rate_limiter: Arc<RateLimiterManager>,
+) -> Pin<Box<dyn Stream<Item = AppResult<CompletionChunk>> + Send>> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    // Track token counts as stream progresses
+    let completion_chars = Arc::new(AtomicU64::new(0));
+
+    // Clone for inspect closure
+    let completion_chars_for_inspect = completion_chars.clone();
+
+    // Clone for then closure
+    let completion_chars_for_then = completion_chars.clone();
+    let api_key_id_for_then = api_key_id.clone();
+    let rate_limiter_for_then = rate_limiter.clone();
+
+    let wrapped = stream.inspect(move |chunk_result| {
+        if let Ok(chunk) = chunk_result {
+            // Count content characters in this chunk
+            for choice in &chunk.choices {
+                if let Some(content) = &choice.delta.content {
+                    let char_count = content.len() as u64;
+                    completion_chars_for_inspect.fetch_add(char_count, Ordering::Relaxed);
+                }
+            }
+        }
+    }).then(move |chunk_result| {
+        let api_key_id = api_key_id_for_then.clone();
+        let rate_limiter = rate_limiter_for_then.clone();
+        let completion_chars = completion_chars_for_then.clone();
+
+        async move {
+            // Check if this is an error or the last chunk
+            let is_last = chunk_result.as_ref().map_or(true, |chunk| {
+                chunk.choices.iter().any(|c| c.finish_reason.is_some())
+            });
+
+            // If stream is ending, record usage
+            if is_last {
+                // Estimate tokens: rough approximation is 1 token ≈ 4 characters
+                // We'll use prompt_tokens=10 as baseline (can't know actual from stream)
+                // and estimate completion tokens from character count
+                let est_prompt = 10; // Baseline estimate since we don't know actual prompt tokens
+                let est_completion = (completion_chars.load(Ordering::Relaxed) / 4).max(1);
+
+                let usage = UsageInfo {
+                    input_tokens: est_prompt,
+                    output_tokens: est_completion,
+                    cost_usd: 0.0,
+                };
+
+                // Record usage (best effort, don't fail the stream)
+                if let Err(e) = rate_limiter.record_api_key_usage(&api_key_id, &usage).await {
+                    warn!(
+                        "Failed to record streaming usage for API key '{}': {}. \
+                         Estimated {} tokens (approximate).",
+                        api_key_id, e, est_prompt + est_completion
+                    );
+                } else {
+                    debug!(
+                        "Recorded estimated streaming usage for API key '{}': {} tokens (approximate)",
+                        api_key_id, est_prompt + est_completion
+                    );
+                }
+            }
+
+            chunk_result
+        }
+    });
+
+    Box::pin(wrapped)
+}
 
 /// Router for handling completion requests with API key-based model selection
 pub struct Router {
@@ -97,9 +176,14 @@ impl Router {
                         cost_usd: 0.0, // TODO: Calculate actual cost from pricing
                     };
 
-                    self.rate_limiter
-                        .record_api_key_usage(api_key_id, &usage)
-                        .await?;
+                    // Log error but don't fail the request if usage recording fails
+                    // The provider already succeeded and consumed tokens/cost
+                    if let Err(e) = self.rate_limiter.record_api_key_usage(api_key_id, &usage).await {
+                        warn!(
+                            "Failed to record usage for API key '{}': {}. Request succeeded but usage not tracked.",
+                            api_key_id, e
+                        );
+                    }
 
                     return Ok(response);
                 }
@@ -299,18 +383,9 @@ impl Router {
                     }
                 }
                 ActiveRoutingStrategy::PrioritizedList => {
-                    // Use the first model in the prioritized list (retry logic will handle failures)
-                    if let Some((first_provider, first_model)) = config.prioritized_models.first() {
-                        debug!(
-                            "Using first prioritized model: provider='{}', model='{}' (requested was '{}')",
-                            first_provider, first_model, request.model
-                        );
-                        (first_provider.clone(), first_model.clone())
-                    } else {
-                        return Err(AppError::Router(
-                            "Prioritized List strategy is active but no models are configured".to_string()
-                        ));
-                    }
+                    // This is unreachable due to early return at line 229-231
+                    // Added here only to satisfy exhaustive match checking
+                    unreachable!("PrioritizedList should be handled by early return")
                 }
             }
         } else {
@@ -478,9 +553,14 @@ impl Router {
             cost_usd: 0.0, // TODO: Calculate actual cost from pricing
         };
 
-        self.rate_limiter
-            .record_api_key_usage(api_key_id, &usage)
-            .await?;
+        // Log error but don't fail the request if usage recording fails
+        // The provider already succeeded and consumed tokens/cost
+        if let Err(e) = self.rate_limiter.record_api_key_usage(api_key_id, &usage).await {
+            warn!(
+                "Failed to record usage for API key '{}': {}. Request succeeded but usage not tracked.",
+                api_key_id, e
+            );
+        }
 
         info!(
             "Completion request successful for API key '{}': {} tokens",
@@ -544,6 +624,18 @@ impl Router {
         // 3. Determine provider and model based on API key configuration
         let routing_config = api_key.get_routing_config();
 
+        // Check for PrioritizedList strategy - not fully supported for streaming
+        if let Some(ref config) = routing_config {
+            if config.active_strategy == ActiveRoutingStrategy::PrioritizedList {
+                warn!(
+                    "PrioritizedList strategy does not support automatic retry for streaming requests. \
+                     Will use first model only. API key: '{}'",
+                    api_key_id
+                );
+                // Continue with first model, but no retry on failure
+            }
+        }
+
         let (provider, expected_model) = if let Some(ref config) = routing_config {
             // New routing config system (same logic as complete())
             match config.active_strategy {
@@ -599,7 +691,9 @@ impl Router {
                     }
                 }
                 ActiveRoutingStrategy::PrioritizedList => {
-                    // Use first model in prioritized list
+                    // LIMITATION: Streaming doesn't support automatic retry
+                    // Use first model in prioritized list only (no failover)
+                    // TODO: Implement retry logic by buffering or switching streams mid-flight
                     if let Some((first_provider, first_model)) = config.prioritized_models.first() {
                         (first_provider.clone(), first_model.clone())
                     } else {
@@ -735,11 +829,14 @@ impl Router {
             api_key_id
         );
 
-        // TODO: Record usage after stream completes
-        // This is challenging because we need to count tokens as they stream
-        // For now, usage recording is skipped for streaming requests
+        // Wrap stream to track usage (approximate token counting)
+        let tracked_stream = wrap_stream_with_usage_tracking(
+            stream,
+            api_key_id.to_string(),
+            self.rate_limiter.clone(),
+        ).await;
 
-        Ok(stream)
+        Ok(tracked_stream)
     }
 }
 
