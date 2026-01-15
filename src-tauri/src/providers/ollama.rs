@@ -1,7 +1,7 @@
-//! Ollama provider implementation using SDK for health/models and HTTP for chat
+//! Ollama provider implementation using direct HTTP API
 //!
-//! Uses the ollama-rs SDK for health checks and model listing, and direct HTTP
-//! for chat completions to maintain full control over the OpenAI-compatible format.
+//! Uses direct HTTP calls for all operations to enable comprehensive testing
+//! and maintain full control over the OpenAI-compatible format.
 
 use async_trait::async_trait;
 use chrono::Utc;
@@ -155,6 +155,35 @@ struct OllamaStreamResponse {
     done: bool,
 }
 
+// Types for /api/tags endpoint
+#[derive(Debug, Serialize, Deserialize)]
+struct OllamaTagsResponse {
+    models: Vec<OllamaModel>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct OllamaModel {
+    name: String,
+    #[allow(dead_code)]
+    modified_at: String,
+    #[allow(dead_code)]
+    size: i64,
+    #[allow(dead_code)]
+    digest: String,
+    #[serde(default)]
+    details: Option<OllamaModelDetails>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct OllamaModelDetails {
+    #[allow(dead_code)]
+    format: Option<String>,
+    #[allow(dead_code)]
+    family: Option<String>,
+    #[allow(dead_code)]
+    parameter_size: Option<String>,
+}
+
 #[async_trait]
 impl ModelProvider for OllamaProvider {
     fn name(&self) -> &str {
@@ -164,15 +193,25 @@ impl ModelProvider for OllamaProvider {
     async fn health_check(&self) -> ProviderHealth {
         let start = Instant::now();
 
-        // Use SDK for health check
-        match self.sdk_client.list_local_models().await {
-            Ok(_models) => {
+        // Use direct HTTP call instead of SDK to enable testing
+        let url = format!("{}/api/tags", self.base_url);
+        match self.http_client.get(&url).send().await {
+            Ok(response) => {
                 let latency = start.elapsed().as_millis() as u64;
-                ProviderHealth {
-                    status: HealthStatus::Healthy,
-                    latency_ms: Some(latency),
-                    last_checked: Utc::now(),
-                    error_message: None,
+                if response.status().is_success() {
+                    ProviderHealth {
+                        status: HealthStatus::Healthy,
+                        latency_ms: Some(latency),
+                        last_checked: Utc::now(),
+                        error_message: None,
+                    }
+                } else {
+                    ProviderHealth {
+                        status: HealthStatus::Unhealthy,
+                        latency_ms: Some(latency),
+                        last_checked: Utc::now(),
+                        error_message: Some(format!("API returned status: {}", response.status())),
+                    }
                 }
             }
             Err(e) => {
@@ -188,16 +227,31 @@ impl ModelProvider for OllamaProvider {
     }
 
     async fn list_models(&self) -> AppResult<Vec<ModelInfo>> {
-        debug!("Fetching Ollama models using SDK");
+        debug!("Fetching Ollama models using HTTP API");
 
-        // Use SDK for model listing
-        let local_models = self
-            .sdk_client
-            .list_local_models()
+        // Use direct HTTP call instead of SDK to enable testing
+        let url = format!("{}/api/tags", self.base_url);
+        let response = self
+            .http_client
+            .get(&url)
+            .send()
             .await
-            .map_err(|e| AppError::Provider(format!("Failed to list Ollama models: {}", e)))?;
+            .map_err(|e| AppError::Provider(format!("Failed to fetch models: {}", e)))?;
 
-        let models: Vec<ModelInfo> = local_models
+        if !response.status().is_success() {
+            return Err(AppError::Provider(format!(
+                "API returned status: {}",
+                response.status()
+            )));
+        }
+
+        let tags_response: OllamaTagsResponse = response
+            .json()
+            .await
+            .map_err(|e| AppError::Provider(format!("Failed to parse models response: {}", e)))?;
+
+        let models: Vec<ModelInfo> = tags_response
+            .models
             .into_iter()
             .map(|model| {
                 let parameter_count = Self::parse_parameter_count(&model.name);

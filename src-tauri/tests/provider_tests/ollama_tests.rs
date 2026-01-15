@@ -14,9 +14,10 @@ async fn test_ollama_health_check() {
 
     let health = provider.health_check().await;
 
-    // Health check uses SDK which may not work with mock, but test the structure
-    // In real scenario with proper mock, this should be Healthy
+    assert_eq!(health.status, localrouter_ai::providers::HealthStatus::Healthy);
+    assert!(health.latency_ms.is_some());
     assert!(health.last_checked > chrono::Utc::now() - chrono::Duration::seconds(5));
+    assert!(health.error_message.is_none());
 }
 
 #[tokio::test]
@@ -25,9 +26,13 @@ async fn test_ollama_list_models() {
 
     let provider = OllamaProvider::with_base_url(mock.base_url());
 
-    // Note: Ollama provider uses the SDK for list_models, which may not work with simple HTTP mocks
-    // This test validates the structure but may not pass without a more sophisticated mock
-    // In production, use integration tests with real Ollama instance
+    let models = provider.list_models().await.unwrap();
+
+    assert!(!models.is_empty());
+    assert_eq!(models[0].provider, "ollama");
+    assert_eq!(models[0].id, "llama3.3:latest");
+    assert_eq!(models[0].name, "llama3.3:latest");
+    assert!(models[0].supports_streaming);
 }
 
 #[tokio::test]
