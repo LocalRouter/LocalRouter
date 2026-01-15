@@ -409,15 +409,36 @@ impl ModelProvider for AnthropicProvider {
         }
 
         let model = request.model.clone();
-        let stream = response.bytes_stream().map(move |result| {
-            let model = model.clone();
-            match result {
-                Ok(bytes) => {
-                    // Parse SSE format
-                    let text = String::from_utf8_lossy(&bytes);
+        let stream = response.bytes_stream();
 
-                    // Parse each SSE event
-                    for line in text.lines() {
+        // Buffer for incomplete lines across byte chunks
+        use std::sync::{Arc, Mutex};
+        let line_buffer = Arc::new(Mutex::new(String::new()));
+
+        let converted_stream = stream.flat_map(move |result| {
+            let model = model.clone();
+            let line_buffer = line_buffer.clone();
+
+            let chunks: Vec<AppResult<CompletionChunk>> = match result {
+                Ok(bytes) => {
+                    let text = String::from_utf8_lossy(&bytes);
+                    let mut buffer = line_buffer.lock().unwrap();
+
+                    // Append new data to buffer
+                    buffer.push_str(&text);
+
+                    let mut chunks = Vec::new();
+
+                    // Process complete lines (those ending with \n)
+                    while let Some(newline_pos) = buffer.find('\n') {
+                        let line = buffer[..newline_pos].to_string();
+                        *buffer = buffer[newline_pos + 1..].to_string();
+
+                        if line.trim().is_empty() {
+                            continue;
+                        }
+
+                        // Parse SSE format: "data: {...}"
                         if let Some(data) = line.strip_prefix("data: ") {
                             // Skip [DONE] marker
                             if data == "[DONE]" {
@@ -425,64 +446,71 @@ impl ModelProvider for AnthropicProvider {
                             }
 
                             // Parse JSON event
-                            if let Ok(event) = serde_json::from_str::<AnthropicStreamEvent>(data) {
-                                match event.event_type.as_str() {
-                                    "content_block_delta" => {
-                                        if let Some(delta) = event.delta {
-                                            if let Some(text) = delta.text {
-                                                return Ok(CompletionChunk {
-                                                    id: event.message_id.unwrap_or_default(),
-                                                    object: "chat.completion.chunk".to_string(),
-                                                    created: Utc::now().timestamp(),
-                                                    model: model.clone(),
-                                                    choices: vec![ChunkChoice {
-                                                        index: 0,
-                                                        delta: ChunkDelta {
-                                                            role: None,
-                                                            content: Some(text),
-                                                        },
-                                                        finish_reason: None,
-                                                    }],
-                                                });
+                            match serde_json::from_str::<AnthropicStreamEvent>(data) {
+                                Ok(event) => {
+                                    match event.event_type.as_str() {
+                                        "content_block_delta" => {
+                                            if let Some(delta) = event.delta {
+                                                if let Some(text) = delta.text {
+                                                    // Anthropic sends delta chunks, not cumulative
+                                                    let chunk = CompletionChunk {
+                                                        id: event.message_id.unwrap_or_default(),
+                                                        object: "chat.completion.chunk".to_string(),
+                                                        created: Utc::now().timestamp(),
+                                                        model: model.clone(),
+                                                        choices: vec![ChunkChoice {
+                                                            index: 0,
+                                                            delta: ChunkDelta {
+                                                                role: None,
+                                                                content: Some(text),
+                                                            },
+                                                            finish_reason: None,
+                                                        }],
+                                                    };
+                                                    chunks.push(Ok(chunk));
+                                                }
                                             }
                                         }
+                                        "message_stop" => {
+                                            let chunk = CompletionChunk {
+                                                id: event.message_id.unwrap_or_default(),
+                                                object: "chat.completion.chunk".to_string(),
+                                                created: Utc::now().timestamp(),
+                                                model: model.clone(),
+                                                choices: vec![ChunkChoice {
+                                                    index: 0,
+                                                    delta: ChunkDelta {
+                                                        role: None,
+                                                        content: None,
+                                                    },
+                                                    finish_reason: Some("stop".to_string()),
+                                                }],
+                                            };
+                                            chunks.push(Ok(chunk));
+                                        }
+                                        _ => {}
                                     }
-                                    "message_stop" => {
-                                        return Ok(CompletionChunk {
-                                            id: event.message_id.unwrap_or_default(),
-                                            object: "chat.completion.chunk".to_string(),
-                                            created: Utc::now().timestamp(),
-                                            model: model.clone(),
-                                            choices: vec![ChunkChoice {
-                                                index: 0,
-                                                delta: ChunkDelta {
-                                                    role: None,
-                                                    content: None,
-                                                },
-                                                finish_reason: Some("stop".to_string()),
-                                            }],
-                                        });
-                                    }
-                                    _ => {}
+                                }
+                                Err(e) => {
+                                    tracing::error!(
+                                        "Failed to parse Anthropic stream event: {} - Line: {}",
+                                        e,
+                                        data
+                                    );
                                 }
                             }
                         }
                     }
 
-                    // Return empty chunk if we couldn't parse anything useful
-                    Ok(CompletionChunk {
-                        id: String::new(),
-                        object: "chat.completion.chunk".to_string(),
-                        created: Utc::now().timestamp(),
-                        model: model.clone(),
-                        choices: vec![],
-                    })
+                    chunks
                 }
-                Err(e) => Err(AppError::Provider(format!("Stream error: {}", e))),
-            }
+                Err(e) => vec![Err(AppError::Provider(format!("Stream error: {}", e)))],
+            };
+
+            futures::stream::iter(chunks)
         });
 
-        Ok(Box::pin(stream))
+        Ok(Box::pin(converted_stream))
     }
 }
 

@@ -325,20 +325,62 @@ impl ModelProvider for OllamaProvider {
         let model = request.model.clone();
         let stream = response.bytes_stream();
 
+        // Track previous content to compute deltas (Ollama sends cumulative content)
+        use std::sync::{Arc, Mutex};
+        let previous_content = Arc::new(Mutex::new(String::new()));
+
+        // Buffer for incomplete lines across byte chunks
+        let line_buffer = Arc::new(Mutex::new(String::new()));
+
         let converted_stream = stream
-            .map(move |result| {
+            .flat_map(move |result| {
                 let model = model.clone();
-                match result {
+                let previous_content = previous_content.clone();
+                let line_buffer = line_buffer.clone();
+
+                let chunks: Vec<AppResult<CompletionChunk>> = match result {
                     Ok(bytes) => {
                         let text = String::from_utf8_lossy(&bytes);
+                        let mut buffer = line_buffer.lock().unwrap();
 
-                        for line in text.lines() {
-                            if line.is_empty() {
+                        // Append new data to buffer
+                        buffer.push_str(&text);
+
+                        let mut chunks = Vec::new();
+
+                        // Process complete lines (those ending with \n)
+                        while let Some(newline_pos) = buffer.find('\n') {
+                            let line = buffer[..newline_pos].to_string();
+                            *buffer = buffer[newline_pos + 1..].to_string();
+
+                            if line.trim().is_empty() {
                                 continue;
                             }
 
-                            match serde_json::from_str::<OllamaStreamResponse>(line) {
+                            match serde_json::from_str::<OllamaStreamResponse>(&line) {
                                 Ok(ollama_chunk) => {
+                                    // Ollama sends cumulative content, so we need to compute the delta
+                                    let current_content = ollama_chunk.message.content;
+                                    let mut prev = previous_content.lock().unwrap();
+
+                                    let is_first_chunk = prev.is_empty();
+
+                                    let delta_content = if current_content.starts_with(&*prev) {
+                                        // Extract only the new part
+                                        current_content[prev.len()..].to_string()
+                                    } else {
+                                        // If content doesn't start with previous (shouldn't happen), send full content
+                                        error!(
+                                            "Ollama content mismatch! Previous: {:?}, Current: {:?}",
+                                            prev.as_str(),
+                                            current_content.as_str()
+                                        );
+                                        current_content.clone()
+                                    };
+
+                                    // Update previous content
+                                    *prev = current_content;
+
                                     let chunk = CompletionChunk {
                                         id: format!("chatcmpl-{}", uuid::Uuid::new_v4()),
                                         object: "chat.completion.chunk".to_string(),
@@ -347,14 +389,13 @@ impl ModelProvider for OllamaProvider {
                                         choices: vec![ChunkChoice {
                                             index: 0,
                                             delta: ChunkDelta {
-                                                role: if ollama_chunk.message.role == "assistant" {
+                                                role: if is_first_chunk && !delta_content.is_empty() {
                                                     Some("assistant".to_string())
                                                 } else {
                                                     None
                                                 },
-                                                content: if !ollama_chunk.message.content.is_empty()
-                                                {
-                                                    Some(ollama_chunk.message.content)
+                                                content: if !delta_content.is_empty() {
+                                                    Some(delta_content)
                                                 } else {
                                                     None
                                                 },
@@ -366,26 +407,20 @@ impl ModelProvider for OllamaProvider {
                                             },
                                         }],
                                     };
-                                    return Ok(chunk);
+                                    chunks.push(Ok(chunk));
                                 }
                                 Err(e) => {
-                                    error!("Failed to parse Ollama stream chunk: {}", e);
-                                    continue;
+                                    error!("Failed to parse Ollama stream chunk: {} - Line: {}", e, line);
                                 }
                             }
                         }
 
-                        Err(AppError::Provider("No valid chunk in response".to_string()))
+                        chunks
                     }
-                    Err(e) => Err(AppError::Provider(format!("Stream error: {}", e))),
-                }
-            })
-            .filter_map(|result| async move {
-                match result {
-                    Ok(chunk) => Some(Ok(chunk)),
-                    Err(e) if e.to_string().contains("No valid chunk") => None,
-                    Err(e) => Some(Err(e)),
-                }
+                    Err(e) => vec![Err(AppError::Provider(format!("Stream error: {}", e)))],
+                };
+
+                futures::stream::iter(chunks)
             });
 
         Ok(Box::pin(converted_stream))

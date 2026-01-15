@@ -444,15 +444,36 @@ impl ModelProvider for OpenAIProvider {
             });
         }
 
-        // Parse SSE (Server-Sent Events) stream
-        let stream = response.bytes_stream().map(|result| {
-            result
-                .map_err(|e| AppError::Provider(format!("Stream error: {}", e)))
-                .and_then(|bytes| {
-                    let text = String::from_utf8_lossy(&bytes);
+        // Parse SSE (Server-Sent Events) stream with proper line buffering
+        let stream = response.bytes_stream();
 
-                    // Parse SSE format: "data: {...}\n\n"
-                    for line in text.lines() {
+        // Buffer for incomplete lines across byte chunks
+        use std::sync::{Arc, Mutex};
+        let line_buffer = Arc::new(Mutex::new(String::new()));
+
+        let converted_stream = stream.flat_map(move |result| {
+            let line_buffer = line_buffer.clone();
+
+            let chunks: Vec<AppResult<CompletionChunk>> = match result {
+                Ok(bytes) => {
+                    let text = String::from_utf8_lossy(&bytes);
+                    let mut buffer = line_buffer.lock().unwrap();
+
+                    // Append new data to buffer
+                    buffer.push_str(&text);
+
+                    let mut chunks = Vec::new();
+
+                    // Process complete lines (those ending with \n)
+                    while let Some(newline_pos) = buffer.find('\n') {
+                        let line = buffer[..newline_pos].to_string();
+                        *buffer = buffer[newline_pos + 1..].to_string();
+
+                        if line.trim().is_empty() {
+                            continue;
+                        }
+
+                        // Parse SSE format: "data: {...}"
                         if let Some(json_str) = line.strip_prefix("data: ") {
                             // Check for [DONE] marker
                             if json_str.trim() == "[DONE]" {
@@ -460,40 +481,49 @@ impl ModelProvider for OpenAIProvider {
                             }
 
                             // Parse JSON chunk
-                            let openai_chunk: OpenAIStreamChunk = serde_json::from_str(json_str)
-                                .map_err(|e| {
-                                    AppError::Provider(format!("Failed to parse chunk: {}", e))
-                                })?;
-
-                            return Ok(CompletionChunk {
-                                id: openai_chunk.id,
-                                object: openai_chunk.object,
-                                created: openai_chunk.created,
-                                model: openai_chunk.model,
-                                choices: openai_chunk
-                                    .choices
-                                    .into_iter()
-                                    .map(|choice| ChunkChoice {
-                                        index: choice.index,
-                                        delta: ChunkDelta {
-                                            role: choice.delta.role,
-                                            content: choice.delta.content,
-                                        },
-                                        finish_reason: choice.finish_reason,
-                                    })
-                                    .collect(),
-                            });
+                            match serde_json::from_str::<OpenAIStreamChunk>(json_str) {
+                                Ok(openai_chunk) => {
+                                    // OpenAI sends delta chunks, not cumulative
+                                    let chunk = CompletionChunk {
+                                        id: openai_chunk.id,
+                                        object: openai_chunk.object,
+                                        created: openai_chunk.created,
+                                        model: openai_chunk.model,
+                                        choices: openai_chunk
+                                            .choices
+                                            .into_iter()
+                                            .map(|choice| ChunkChoice {
+                                                index: choice.index,
+                                                delta: ChunkDelta {
+                                                    role: choice.delta.role,
+                                                    content: choice.delta.content,
+                                                },
+                                                finish_reason: choice.finish_reason,
+                                            })
+                                            .collect(),
+                                    };
+                                    chunks.push(Ok(chunk));
+                                }
+                                Err(e) => {
+                                    tracing::error!(
+                                        "Failed to parse OpenAI stream chunk: {} - Line: {}",
+                                        e,
+                                        json_str
+                                    );
+                                }
+                            }
                         }
                     }
 
-                    // No valid chunk found in this batch
-                    Err(AppError::Provider(
-                        "No valid chunk found in stream".to_string(),
-                    ))
-                })
+                    chunks
+                }
+                Err(e) => vec![Err(AppError::Provider(format!("Stream error: {}", e)))],
+            };
+
+            futures::stream::iter(chunks)
         });
 
-        Ok(Box::pin(stream))
+        Ok(Box::pin(converted_stream))
     }
 }
 

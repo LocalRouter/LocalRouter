@@ -14,3 +14,146 @@ body {
   height: 100vh;
   overflow: hidden;
 }
+
+@keyframes slide-in {
+  from {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+.animate-slide-in {
+  animation: slide-in 0.3s ease-out;
+}
+
+/* Markdown styling for chat messages */
+.prose {
+  color: inherit;
+}
+
+.prose p {
+  margin-top: 0.5em;
+  margin-bottom: 0.5em;
+}
+
+.prose p:first-child {
+  margin-top: 0;
+}
+
+.prose p:last-child {
+  margin-bottom: 0;
+}
+
+.prose code {
+  background-color: rgba(0, 0, 0, 0.1);
+  padding: 0.125rem 0.25rem;
+  border-radius: 0.25rem;
+  font-size: 0.875em;
+}
+
+.prose pre {
+  background-color: rgba(0, 0, 0, 0.1);
+  padding: 0.75rem;
+  border-radius: 0.375rem;
+  overflow-x: auto;
+  margin-top: 0.5em;
+  margin-bottom: 0.5em;
+}
+
+.prose pre code {
+  background-color: transparent;
+  padding: 0;
+}
+
+.prose ul,
+.prose ol {
+  margin-top: 0.5em;
+  margin-bottom: 0.5em;
+  padding-left: 1.5em;
+}
+
+.prose li {
+  margin-top: 0.25em;
+  margin-bottom: 0.25em;
+}
+
+.prose a {
+  color: inherit;
+  text-decoration: underline;
+  font-weight: 500;
+}
+
+.prose a:hover {
+  opacity: 0.8;
+}
+
+.prose h1,
+.prose h2,
+.prose h3,
+.prose h4,
+.prose h5,
+.prose h6 {
+  margin-top: 0.75em;
+  margin-bottom: 0.5em;
+  font-weight: 600;
+}
+
+.prose h1:first-child,
+.prose h2:first-child,
+.prose h3:first-child {
+  margin-top: 0;
+}
+
+.prose blockquote {
+  border-left: 2px solid currentColor;
+  padding-left: 1em;
+  opacity: 0.8;
+  margin-top: 0.5em;
+  margin-bottom: 0.5em;
+}
+
+.prose table {
+  margin-top: 0.5em;
+  margin-bottom: 0.5em;
+  border-collapse: collapse;
+  width: 100%;
+}
+
+.prose th,
+.prose td {
+  border: 1px solid rgba(0, 0, 0, 0.2);
+  padding: 0.375rem 0.5rem;
+}
+
+.prose th {
+  background-color: rgba(0, 0, 0, 0.1);
+  font-weight: 600;
+}
+
+.prose hr {
+  margin-top: 0.75em;
+  margin-bottom: 0.75em;
+  border-color: rgba(0, 0, 0, 0.2);
+}
+
+/* User message specific styles (blue background) */
+.bg-blue-600 .prose code {
+  background-color: rgba(255, 255, 255, 0.2);
+}
+
+.bg-blue-600 .prose pre {
+  background-color: rgba(255, 255, 255, 0.15);
+}
+
+.bg-blue-600 .prose th,
+.bg-blue-600 .prose td {
+  border-color: rgba(255, 255, 255, 0.3);
+}
+
+.bg-blue-600 .prose th {
+  background-color: rgba(255, 255, 255, 0.15);
+}
