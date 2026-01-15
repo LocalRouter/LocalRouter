@@ -17,8 +17,11 @@ use tracing::{error, info};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use providers::factory::{
-    AnthropicProviderFactory, GeminiProviderFactory, OllamaProviderFactory,
+    AnthropicProviderFactory, CerebrasProviderFactory, CohereProviderFactory,
+    DeepInfraProviderFactory, GeminiProviderFactory, GroqProviderFactory,
+    LMStudioProviderFactory, MistralProviderFactory, OllamaProviderFactory,
     OpenAICompatibleProviderFactory, OpenAIProviderFactory, OpenRouterProviderFactory,
+    PerplexityProviderFactory, TogetherAIProviderFactory, XAIProviderFactory,
 };
 use providers::health::HealthCheckManager;
 use providers::registry::ProviderRegistry;
@@ -67,7 +70,16 @@ async fn main() -> anyhow::Result<()> {
     provider_registry.register_factory(Arc::new(AnthropicProviderFactory));
     provider_registry.register_factory(Arc::new(GeminiProviderFactory));
     provider_registry.register_factory(Arc::new(OpenRouterProviderFactory));
-    info!("Registered 6 provider factories");
+    provider_registry.register_factory(Arc::new(GroqProviderFactory));
+    provider_registry.register_factory(Arc::new(MistralProviderFactory));
+    provider_registry.register_factory(Arc::new(CohereProviderFactory));
+    provider_registry.register_factory(Arc::new(TogetherAIProviderFactory));
+    provider_registry.register_factory(Arc::new(PerplexityProviderFactory));
+    provider_registry.register_factory(Arc::new(DeepInfraProviderFactory));
+    provider_registry.register_factory(Arc::new(CerebrasProviderFactory));
+    provider_registry.register_factory(Arc::new(XAIProviderFactory));
+    provider_registry.register_factory(Arc::new(LMStudioProviderFactory));
+    info!("Registered 15 provider factories");
 
     // Load provider instances from configuration
     info!("Loading provider instances from configuration...");
@@ -79,6 +91,14 @@ async fn main() -> anyhow::Result<()> {
             config::ProviderType::Anthropic => "anthropic",
             config::ProviderType::Gemini => "gemini",
             config::ProviderType::OpenRouter => "openrouter",
+            config::ProviderType::Groq => "groq",
+            config::ProviderType::Mistral => "mistral",
+            config::ProviderType::Cohere => "cohere",
+            config::ProviderType::TogetherAI => "togetherai",
+            config::ProviderType::Perplexity => "perplexity",
+            config::ProviderType::DeepInfra => "deepinfra",
+            config::ProviderType::Cerebras => "cerebras",
+            config::ProviderType::XAI => "xai",
             config::ProviderType::Custom => "openai_compatible",
         };
 
@@ -126,6 +146,25 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     info!("Loaded {} provider instances", config_manager.get().providers.len());
+
+    // Initialize OAuth manager for subscription-based providers
+    info!("Initializing OAuth manager...");
+    let oauth_storage_path = config::paths::config_dir()
+        .expect("Failed to get config directory")
+        .join("oauth_credentials.json");
+    let oauth_storage = Arc::new(
+        providers::oauth::storage::OAuthStorage::new(oauth_storage_path)
+            .await
+            .expect("Failed to initialize OAuth storage"),
+    );
+    let oauth_manager = Arc::new(providers::oauth::OAuthManager::new(oauth_storage));
+
+    // Register OAuth providers
+    info!("Registering OAuth providers...");
+    oauth_manager.register_provider(Arc::new(providers::oauth::github_copilot::GitHubCopilotOAuthProvider::new()));
+    oauth_manager.register_provider(Arc::new(providers::oauth::openai_codex::OpenAICodexOAuthProvider::new()));
+    oauth_manager.register_provider(Arc::new(providers::oauth::anthropic_claude::AnthropicClaudeOAuthProvider::new()));
+    info!("Registered 3 OAuth providers");
 
     // Initialize rate limiter
     info!("Initializing rate limiter...");
@@ -190,6 +229,7 @@ async fn main() -> anyhow::Result<()> {
             app.manage(server_manager.clone());
             app.manage(app_router.clone());
             app.manage(rate_limiter.clone());
+            app.manage(oauth_manager.clone());
 
             // Set up server restart event listener
             let server_manager_clone = server_manager.clone();
@@ -241,6 +281,22 @@ async fn main() -> anyhow::Result<()> {
                 state.set_app_handle(app.handle().clone());
             }
 
+            // Refresh model cache for tray menu
+            info!("Refreshing model cache...");
+            let provider_registry_clone = provider_registry.clone();
+            let app_handle_clone = app.handle().clone();
+            tokio::spawn(async move {
+                if let Err(e) = provider_registry_clone.refresh_model_cache().await {
+                    error!("Failed to refresh model cache: {}", e);
+                } else {
+                    info!("Model cache refreshed successfully");
+                    // Rebuild tray menu with models
+                    if let Err(e) = ui::tray::rebuild_tray_menu(&app_handle_clone) {
+                        error!("Failed to rebuild tray menu after model refresh: {}", e);
+                    }
+                }
+            });
+
             // Setup system tray
             ui::tray::setup_tray(app)?;
 
@@ -270,6 +326,8 @@ async fn main() -> anyhow::Result<()> {
             ui::commands::get_api_key_value,
             ui::commands::delete_api_key,
             ui::commands::update_api_key_model,
+            ui::commands::update_api_key_name,
+            ui::commands::toggle_api_key_enabled,
             ui::commands::rotate_api_key,
             ui::commands::list_routers,
             ui::commands::get_config,
@@ -282,6 +340,8 @@ async fn main() -> anyhow::Result<()> {
             ui::commands::list_provider_types,
             ui::commands::list_provider_instances,
             ui::commands::create_provider_instance,
+            ui::commands::get_provider_config,
+            ui::commands::update_provider_instance,
             ui::commands::remove_provider_instance,
             ui::commands::set_provider_enabled,
             ui::commands::get_providers_health,
@@ -299,6 +359,19 @@ async fn main() -> anyhow::Result<()> {
             ui::commands::get_server_status,
             ui::commands::start_server,
             ui::commands::stop_server,
+            // OAuth commands
+            ui::commands::list_oauth_providers,
+            ui::commands::start_oauth_flow,
+            ui::commands::poll_oauth_status,
+            ui::commands::cancel_oauth_flow,
+            ui::commands::list_oauth_credentials,
+            ui::commands::delete_oauth_credentials,
+            // Visualization commands
+            ui::commands::get_visualization_graph,
+            // Routing strategy commands
+            ui::commands::get_routing_config,
+            ui::commands::update_prioritized_list,
+            ui::commands::set_routing_strategy,
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {

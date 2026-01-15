@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::api_keys::ApiKeyManager;
-use crate::config::{ConfigManager, ModelSelection, RouterConfig};
+use crate::config::{ActiveRoutingStrategy, ConfigManager, ModelSelection, ModelRoutingConfig, RouterConfig};
 use crate::providers::registry::ProviderRegistry;
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager, State};
@@ -216,6 +216,105 @@ pub async fn update_api_key_model(
     })
 }
 
+/// Update an API key's name
+///
+/// # Arguments
+/// * `id` - The API key ID to update
+/// * `name` - The new name for the API key
+///
+/// # Returns
+/// * Ok(()) if the update succeeded
+/// * Error if the key doesn't exist or update fails
+#[tauri::command]
+pub async fn update_api_key_name(
+    id: String,
+    name: String,
+    key_manager: State<'_, ApiKeyManager>,
+    config_manager: State<'_, ConfigManager>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    // Validate name is not empty
+    if name.trim().is_empty() {
+        return Err("API key name cannot be empty".to_string());
+    }
+
+    // Update in memory
+    key_manager
+        .update_key(&id, |cfg| {
+            cfg.name = name.clone();
+        })
+        .map_err(|e| e.to_string())?;
+
+    // Update in config file
+    config_manager
+        .update(|cfg| {
+            if let Some(key) = cfg.api_keys.iter_mut().find(|k| k.id == id) {
+                key.name = name.clone();
+            }
+        })
+        .map_err(|e| e.to_string())?;
+
+    // Persist to disk
+    config_manager
+        .save()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Rebuild tray menu to show updated name
+    if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
+        tracing::error!("Failed to rebuild tray menu: {}", e);
+    }
+
+    Ok(())
+}
+
+/// Toggle an API key's enabled state
+///
+/// # Arguments
+/// * `id` - The API key ID to toggle
+/// * `enabled` - Whether to enable (true) or disable (false) the key
+///
+/// # Returns
+/// * Ok(()) if the toggle succeeded
+/// * Error if the key doesn't exist or toggle fails
+#[tauri::command]
+pub async fn toggle_api_key_enabled(
+    id: String,
+    enabled: bool,
+    key_manager: State<'_, ApiKeyManager>,
+    config_manager: State<'_, ConfigManager>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    // Update in memory
+    key_manager
+        .update_key(&id, |cfg| {
+            cfg.enabled = enabled;
+        })
+        .map_err(|e| e.to_string())?;
+
+    // Update in config file
+    config_manager
+        .update(|cfg| {
+            if let Some(key) = cfg.api_keys.iter_mut().find(|k| k.id == id) {
+                key.enabled = enabled;
+            }
+        })
+        .map_err(|e| e.to_string())?;
+
+    // Persist to disk
+    config_manager
+        .save()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Rebuild tray menu to show updated enabled/disabled state
+    if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
+        tracing::error!("Failed to rebuild tray menu: {}", e);
+    }
+
+    Ok(())
+}
+
 /// Rotate an API key
 ///
 /// Generates a new API key value while keeping the same ID, name, and settings.
@@ -411,15 +510,7 @@ pub async fn create_provider_instance(
     config_manager
         .update(|cfg| {
             // Convert provider_type string to ProviderType enum
-            let provider_type_enum = match provider_type.as_str() {
-                "ollama" => crate::config::ProviderType::Ollama,
-                "openai" => crate::config::ProviderType::OpenAI,
-                "openai_compatible" => crate::config::ProviderType::Custom,
-                "anthropic" => crate::config::ProviderType::Anthropic,
-                "gemini" => crate::config::ProviderType::Gemini,
-                "openrouter" => crate::config::ProviderType::OpenRouter,
-                _ => crate::config::ProviderType::Custom,
-            };
+            let provider_type_enum = provider_type_str_to_enum(&provider_type);
 
             // Convert config HashMap to provider_config JSON
             let provider_config = if !config.is_empty() {
@@ -443,6 +534,90 @@ pub async fn create_provider_instance(
         .save()
         .await
         .map_err(|e| e.to_string())
+}
+
+/// Get provider instance configuration
+///
+/// # Arguments
+/// * `instance_name` - Name of the provider instance
+///
+/// # Returns
+/// * `Ok(HashMap<String, String>)` with the provider's configuration
+/// * `Err(String)` if the provider doesn't exist
+#[tauri::command]
+pub async fn get_provider_config(
+    registry: State<'_, Arc<ProviderRegistry>>,
+    instance_name: String,
+) -> Result<HashMap<String, String>, String> {
+    registry
+        .get_provider_config(&instance_name)
+        .ok_or_else(|| format!("Provider instance '{}' not found", instance_name))
+}
+
+/// Update an existing provider instance
+///
+/// # Arguments
+/// * `instance_name` - Name of the provider instance to update
+/// * `provider_type` - Type of provider (must match the existing type)
+/// * `config` - Updated configuration parameters
+///
+/// # Returns
+/// * `Ok(())` if the provider was updated successfully
+/// * `Err(String)` with error message if update failed
+#[tauri::command]
+pub async fn update_provider_instance(
+    registry: State<'_, Arc<ProviderRegistry>>,
+    config_manager: State<'_, ConfigManager>,
+    instance_name: String,
+    provider_type: String,
+    config: HashMap<String, String>,
+) -> Result<(), String> {
+    // Update provider in registry (in-memory)
+    registry
+        .update_provider(instance_name.clone(), provider_type.clone(), config.clone())
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Update in config file
+    config_manager
+        .update(|cfg| {
+            if let Some(provider) = cfg.providers.iter_mut().find(|p| p.name == instance_name) {
+                provider.provider_type = provider_type_str_to_enum(&provider_type);
+                provider.provider_config = if !config.is_empty() {
+                    Some(serde_json::to_value(&config).unwrap_or(serde_json::Value::Null))
+                } else {
+                    None
+                };
+            }
+        })
+        .map_err(|e| e.to_string())?;
+
+    // Persist to disk
+    config_manager
+        .save()
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Helper function to convert provider type string to enum
+fn provider_type_str_to_enum(provider_type: &str) -> crate::config::ProviderType {
+    match provider_type {
+        "ollama" => crate::config::ProviderType::Ollama,
+        "openai" => crate::config::ProviderType::OpenAI,
+        "anthropic" => crate::config::ProviderType::Anthropic,
+        "gemini" => crate::config::ProviderType::Gemini,
+        "openrouter" => crate::config::ProviderType::OpenRouter,
+        "groq" => crate::config::ProviderType::Groq,
+        "mistral" => crate::config::ProviderType::Mistral,
+        "cohere" => crate::config::ProviderType::Cohere,
+        "togetherai" => crate::config::ProviderType::TogetherAI,
+        "perplexity" => crate::config::ProviderType::Perplexity,
+        "deepinfra" => crate::config::ProviderType::DeepInfra,
+        "cerebras" => crate::config::ProviderType::Cerebras,
+        "xai" => crate::config::ProviderType::XAI,
+        "openai_compatible" => crate::config::ProviderType::Custom,
+        _ => crate::config::ProviderType::Custom,
+    }
 }
 
 /// Remove a provider instance
@@ -649,11 +824,14 @@ pub struct ServerConfigInfo {
 /// Returns statistics computed from all tracked generations in the retention period.
 #[tauri::command]
 pub async fn get_aggregate_stats(
-    app: tauri::AppHandle,
+    server_manager: State<'_, Arc<crate::server::ServerManager>>,
 ) -> Result<crate::server::state::AggregateStats, String> {
-    // Get the generation tracker from app state
-    let state = app.state::<crate::server::state::AppState>();
-    Ok(state.generation_tracker.get_stats())
+    // Get the app state from server manager
+    let app_state = server_manager
+        .get_state()
+        .ok_or_else(|| "Server is not running".to_string())?;
+
+    Ok(app_state.generation_tracker.get_stats())
 }
 
 // ============================================================================
@@ -781,6 +959,319 @@ pub async fn stop_server(
 
     // Emit event to update tray icon
     let _ = app.emit("server-status-changed", "stopped");
+
+    Ok(())
+}
+
+// ============================================================================
+// OAuth Commands
+// ============================================================================
+
+/// OAuth provider information for display
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OAuthProviderInfo {
+    pub provider_id: String,
+    pub provider_name: String,
+}
+
+/// List available OAuth providers
+///
+/// Returns a list of all OAuth providers that can be authenticated with.
+#[tauri::command]
+pub async fn list_oauth_providers(
+    oauth_manager: State<'_, Arc<crate::providers::oauth::OAuthManager>>,
+) -> Result<Vec<OAuthProviderInfo>, String> {
+    let providers = oauth_manager.list_providers();
+    Ok(providers
+        .into_iter()
+        .map(|(id, name)| OAuthProviderInfo {
+            provider_id: id,
+            provider_name: name,
+        })
+        .collect())
+}
+
+/// Start OAuth flow for a provider
+///
+/// # Arguments
+/// * `provider_id` - The OAuth provider ID (e.g., "github-copilot", "openai-codex")
+///
+/// # Returns
+/// * `OAuthFlowResult` with instructions for the user
+#[tauri::command]
+pub async fn start_oauth_flow(
+    provider_id: String,
+    oauth_manager: State<'_, Arc<crate::providers::oauth::OAuthManager>>,
+) -> Result<crate::providers::oauth::OAuthFlowResult, String> {
+    oauth_manager
+        .start_oauth(&provider_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Poll OAuth status for a provider
+///
+/// # Arguments
+/// * `provider_id` - The OAuth provider ID
+///
+/// # Returns
+/// * `OAuthFlowResult::Success` when authentication is complete
+/// * `OAuthFlowResult::Pending` while waiting for user action
+/// * `OAuthFlowResult::Error` if authentication failed or expired
+#[tauri::command]
+pub async fn poll_oauth_status(
+    provider_id: String,
+    oauth_manager: State<'_, Arc<crate::providers::oauth::OAuthManager>>,
+) -> Result<crate::providers::oauth::OAuthFlowResult, String> {
+    oauth_manager
+        .poll_oauth(&provider_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Cancel OAuth flow for a provider
+///
+/// # Arguments
+/// * `provider_id` - The OAuth provider ID
+#[tauri::command]
+pub async fn cancel_oauth_flow(
+    provider_id: String,
+    oauth_manager: State<'_, Arc<crate::providers::oauth::OAuthManager>>,
+) -> Result<(), String> {
+    oauth_manager
+        .cancel_oauth(&provider_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// List providers with stored OAuth credentials
+///
+/// Returns a list of provider IDs that have OAuth credentials stored.
+#[tauri::command]
+pub async fn list_oauth_credentials(
+    oauth_manager: State<'_, Arc<crate::providers::oauth::OAuthManager>>,
+) -> Result<Vec<String>, String> {
+    oauth_manager
+        .list_authenticated_providers()
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Delete OAuth credentials for a provider
+///
+/// # Arguments
+/// * `provider_id` - The OAuth provider ID whose credentials should be deleted
+#[tauri::command]
+pub async fn delete_oauth_credentials(
+    provider_id: String,
+    oauth_manager: State<'_, Arc<crate::providers::oauth::OAuthManager>>,
+) -> Result<(), String> {
+    oauth_manager
+        .delete_credentials(&provider_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+// ============================================================================
+// Visualization Commands
+// ============================================================================
+
+/// Get the visualization graph data
+///
+/// Returns a graph structure containing nodes (providers, models, API keys)
+/// and edges (relationships between them) for visualization.
+#[tauri::command]
+pub async fn get_visualization_graph(
+    provider_registry: State<'_, Arc<ProviderRegistry>>,
+    key_manager: State<'_, ApiKeyManager>,
+    config_manager: State<'_, ConfigManager>,
+) -> Result<crate::ui::visualization::VisualizationGraph, String> {
+    // Get all providers
+    let providers = provider_registry.list_providers();
+
+    // Get all models from all providers
+    let models = provider_registry
+        .list_all_models()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Get health statuses
+    let health_statuses = provider_registry.get_all_health().await;
+
+    // Get API keys
+    let api_keys = list_api_keys(key_manager.clone()).await?;
+
+    // Get full API key configs (with routing info)
+    let config = config_manager.get();
+    let api_key_configs = config.api_keys.clone();
+
+    // Build the graph
+    let graph = crate::ui::visualization::build_graph(
+        providers,
+        models,
+        api_keys,
+        api_key_configs,
+        health_statuses,
+    );
+
+    Ok(graph)
+}
+
+// ============================================================================
+// Routing Strategy Commands
+// ============================================================================
+
+/// Get the routing configuration for an API key
+///
+/// # Arguments
+/// * `id` - The API key ID
+///
+/// # Returns
+/// * The routing configuration if it exists, or None
+#[tauri::command]
+pub async fn get_routing_config(
+    id: String,
+    key_manager: State<'_, ApiKeyManager>,
+) -> Result<Option<ModelRoutingConfig>, String> {
+    let key = key_manager
+        .get_key(&id)
+        .ok_or_else(|| format!("API key not found: {}", id))?;
+
+    Ok(key.get_routing_config())
+}
+
+/// Update the prioritized models list for an API key
+///
+/// # Arguments
+/// * `id` - The API key ID
+/// * `prioritized_models` - The new prioritized models list as (provider, model) pairs
+///
+/// # Returns
+/// * Ok(()) if successful
+#[tauri::command]
+pub async fn update_prioritized_list(
+    id: String,
+    prioritized_models: Vec<(String, String)>,
+    key_manager: State<'_, ApiKeyManager>,
+    config_manager: State<'_, ConfigManager>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    tracing::info!(
+        "Updating prioritized list for key {}: {} models",
+        id,
+        prioritized_models.len()
+    );
+
+    // Get or create routing config
+    let current_key = key_manager
+        .get_key(&id)
+        .ok_or_else(|| format!("API key not found: {}", id))?;
+
+    let mut routing_config = current_key
+        .get_routing_config()
+        .unwrap_or_else(|| ModelRoutingConfig::new_prioritized_list(prioritized_models.clone()));
+
+    // Update prioritized models
+    routing_config.prioritized_models = prioritized_models;
+
+    // Update in memory
+    key_manager
+        .update_key(&id, |cfg| {
+            cfg.routing_config = Some(routing_config.clone());
+        })
+        .map_err(|e| e.to_string())?;
+
+    // Update in config file
+    config_manager
+        .update(|cfg| {
+            if let Some(key) = cfg.api_keys.iter_mut().find(|k| k.id == id) {
+                key.routing_config = Some(routing_config);
+            }
+        })
+        .map_err(|e| e.to_string())?;
+
+    // Persist to disk
+    config_manager
+        .save()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Rebuild tray menu
+    if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
+        tracing::error!("Failed to rebuild tray menu: {}", e);
+    }
+
+    tracing::info!("Prioritized list updated for key {}", id);
+
+    Ok(())
+}
+
+/// Set the active routing strategy for an API key
+///
+/// # Arguments
+/// * `id` - The API key ID
+/// * `strategy` - The routing strategy to activate ("available_models", "force_model", "prioritized_list")
+///
+/// # Returns
+/// * Ok(()) if successful
+#[tauri::command]
+pub async fn set_routing_strategy(
+    id: String,
+    strategy: String,
+    key_manager: State<'_, ApiKeyManager>,
+    config_manager: State<'_, ConfigManager>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    tracing::info!("Setting routing strategy for key {}: {}", id, strategy);
+
+    // Parse strategy
+    let active_strategy = match strategy.as_str() {
+        "available_models" => ActiveRoutingStrategy::AvailableModels,
+        "force_model" => ActiveRoutingStrategy::ForceModel,
+        "prioritized_list" => ActiveRoutingStrategy::PrioritizedList,
+        _ => return Err(format!("Invalid routing strategy: {}", strategy)),
+    };
+
+    // Get or create routing config
+    let current_key = key_manager
+        .get_key(&id)
+        .ok_or_else(|| format!("API key not found: {}", id))?;
+
+    let mut routing_config = current_key
+        .get_routing_config()
+        .unwrap_or_else(|| ModelRoutingConfig::new_available_models());
+
+    // Update strategy
+    routing_config.active_strategy = active_strategy;
+
+    // Update in memory
+    key_manager
+        .update_key(&id, |cfg| {
+            cfg.routing_config = Some(routing_config.clone());
+        })
+        .map_err(|e| e.to_string())?;
+
+    // Update in config file
+    config_manager
+        .update(|cfg| {
+            if let Some(key) = cfg.api_keys.iter_mut().find(|k| k.id == id) {
+                key.routing_config = Some(routing_config);
+            }
+        })
+        .map_err(|e| e.to_string())?;
+
+    // Persist to disk
+    config_manager
+        .save()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Rebuild tray menu
+    if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
+        tracing::error!("Failed to rebuild tray menu: {}", e);
+    }
+
+    tracing::info!("Routing strategy set for key {}: {:?}", id, active_strategy);
 
     Ok(())
 }

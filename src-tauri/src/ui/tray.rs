@@ -1228,13 +1228,19 @@ pub fn update_tray_icon<R: Runtime>(app: &AppHandle<R>, status: &str) -> tauri::
     if let Some(tray) = app.tray_by_id("main") {
         match status {
             "stopped" => {
-                // Stopped: Show as template (monochrome/dimmed)
+                // Stopped: Use default icon in template mode (monochrome/dimmed)
+                if let Some(icon) = app.default_window_icon() {
+                    tray.set_icon(Some(icon.clone()))?;
+                }
                 tray.set_icon_as_template(true)?;
                 tray.set_tooltip(Some("LocalRouter AI - Server Stopped"))?;
                 info!("Tray icon updated: stopped (template mode)");
             }
             "running" => {
-                // Running: Show as template (monochrome)
+                // Running: Use default icon in template mode (monochrome)
+                if let Some(icon) = app.default_window_icon() {
+                    tray.set_icon(Some(icon.clone()))?;
+                }
                 tray.set_icon_as_template(true)?;
                 tray.set_tooltip(Some("LocalRouter AI - Server Running"))?;
                 info!("Tray icon updated: running (template mode)");
