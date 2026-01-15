@@ -2,10 +2,14 @@
 //!
 //! Provides OpenAI-compatible HTTP API endpoints using Axum.
 
+pub mod manager;
 pub mod middleware;
 pub mod routes;
 pub mod state;
 pub mod types;
+
+// Re-export manager types for convenience
+pub use manager::{ServerManager, ServerStatus};
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -55,20 +59,22 @@ impl Default for ServerConfig {
 /// - POST /v1/embeddings
 /// - GET /v1/models
 /// - GET /v1/generation
+///
+/// Returns the AppState and a JoinHandle to the server task
 pub async fn start_server(
     config: ServerConfig,
     router: Arc<AppRouter>,
     api_key_manager: ApiKeyManager,
     rate_limiter: Arc<RateLimiterManager>,
     provider_registry: Arc<ProviderRegistry>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<(AppState, tokio::task::JoinHandle<()>)> {
     info!("Starting web server on {}:{}", config.host, config.port);
 
     // Create shared state
     let state = AppState::new(router, api_key_manager, rate_limiter, provider_registry);
 
     // Build the router with auth layer applied
-    let app = build_app(state, config.enable_cors);
+    let app = build_app(state.clone(), config.enable_cors);
 
     // Create TCP listener
     let addr = SocketAddr::from((
@@ -80,12 +86,17 @@ pub async fn start_server(
     info!("Web server listening on http://{}", addr);
     info!("OpenAI-compatible endpoints available at:");
 
-    // Start server
-    axum::serve(listener, app)
-        .await
-        .map_err(|e| anyhow::anyhow!("Server error: {}", e))?;
+    // Clone state to return before starting server (which runs forever)
+    let state_clone = state.clone();
 
-    Ok(())
+    // Start server (this runs forever)
+    let handle = tokio::spawn(async move {
+        if let Err(e) = axum::serve(listener, app).await {
+            error!("Server error: {}", e);
+        }
+    });
+
+    Ok((state_clone, handle))
 }
 
 /// Build the Axum app with all routes and middleware
@@ -112,10 +123,7 @@ fn build_app(state: AppState, enable_cors: bool) -> Router {
         let cors = CorsLayer::new()
             .allow_origin(Any)
             .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
-            .allow_headers([
-                header::CONTENT_TYPE,
-                header::AUTHORIZATION,
-            ])
+            .allow_headers(Any) // Allow all headers for OpenAI SDK compatibility
             .allow_credentials(false);
 
         router = router.layer(cors);

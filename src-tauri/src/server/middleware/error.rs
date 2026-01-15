@@ -51,6 +51,10 @@ impl ApiErrorResponse {
         Self::new(StatusCode::SERVICE_UNAVAILABLE, "service_unavailable", message)
     }
 
+    pub fn not_found(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::NOT_FOUND, "not_found_error", message)
+    }
+
     pub fn with_param(mut self, param: impl Into<String>) -> Self {
         self.error = self.error.with_param(param);
         self

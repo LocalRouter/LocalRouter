@@ -12,9 +12,7 @@ mod utils;
 
 use std::sync::Arc;
 
-use parking_lot::RwLock;
 use tauri::{Listener, Manager};
-use tokio::task::JoinHandle;
 use tracing::{error, info};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -24,56 +22,7 @@ use providers::factory::{
 };
 use providers::health::HealthCheckManager;
 use providers::registry::ProviderRegistry;
-
-/// Manages the web server task
-struct ServerManager {
-    task_handle: Option<JoinHandle<()>>,
-}
-
-impl ServerManager {
-    fn new() -> Self {
-        Self { task_handle: None }
-    }
-
-    /// Start the web server in a background task
-    fn start(
-        &mut self,
-        config: server::ServerConfig,
-        router: Arc<router::Router>,
-        api_key_manager: api_keys::ApiKeyManager,
-        rate_limiter: Arc<router::RateLimiterManager>,
-        provider_registry: Arc<ProviderRegistry>,
-    ) {
-        // Cancel previous task if running
-        if let Some(handle) = self.task_handle.take() {
-            handle.abort();
-        }
-
-        // Spawn new server task
-        let handle = tokio::spawn(async move {
-            if let Err(e) = server::start_server(
-                config,
-                router,
-                api_key_manager,
-                rate_limiter,
-                provider_registry,
-            )
-            .await
-            {
-                error!("Server error: {}", e);
-            }
-        });
-
-        self.task_handle = Some(handle);
-    }
-
-    /// Stop the web server
-    fn stop(&mut self) {
-        if let Some(handle) = self.task_handle.take() {
-            handle.abort();
-        }
-    }
-}
+use server::ServerManager;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -106,6 +55,10 @@ async fn main() -> anyhow::Result<()> {
     let health_manager = Arc::new(HealthCheckManager::default());
     let provider_registry = Arc::new(ProviderRegistry::new(health_manager.clone()));
 
+    // Start background health check task
+    info!("Starting background health checks...");
+    let _health_task = health_manager.clone().start_background_task();
+
     // Register provider factories
     info!("Registering provider factories...");
     provider_registry.register_factory(Arc::new(OllamaProviderFactory));
@@ -116,8 +69,63 @@ async fn main() -> anyhow::Result<()> {
     provider_registry.register_factory(Arc::new(OpenRouterProviderFactory));
     info!("Registered 6 provider factories");
 
-    // TODO: Load provider instances from configuration
-    // provider_registry.load_from_config(...).await?;
+    // Load provider instances from configuration
+    info!("Loading provider instances from configuration...");
+    let providers = config_manager.get().providers;
+    for provider_config in providers {
+        let provider_type = match provider_config.provider_type {
+            config::ProviderType::Ollama => "ollama",
+            config::ProviderType::OpenAI => "openai",
+            config::ProviderType::Anthropic => "anthropic",
+            config::ProviderType::Gemini => "gemini",
+            config::ProviderType::OpenRouter => "openrouter",
+            config::ProviderType::Custom => "openai_compatible",
+        };
+
+        // Convert provider_config JSON to HashMap
+        let mut config_map = std::collections::HashMap::new();
+        if let Some(provider_cfg) = provider_config.provider_config {
+            if let Some(obj) = provider_cfg.as_object() {
+                for (key, value) in obj {
+                    if let Some(value_str) = value.as_str() {
+                        config_map.insert(key.clone(), value_str.to_string());
+                    } else {
+                        config_map.insert(key.clone(), value.to_string());
+                    }
+                }
+            }
+        }
+
+        // Create the provider instance
+        if let Err(e) = provider_registry
+            .create_provider(
+                provider_config.name.clone(),
+                provider_type.to_string(),
+                config_map,
+            )
+            .await
+        {
+            tracing::warn!(
+                "Failed to load provider '{}': {}",
+                provider_config.name,
+                e
+            );
+            continue;
+        }
+
+        // Set enabled state
+        if let Err(e) = provider_registry.set_provider_enabled(
+            &provider_config.name,
+            provider_config.enabled,
+        ) {
+            tracing::warn!(
+                "Failed to set provider '{}' enabled state: {}",
+                provider_config.name,
+                e
+            );
+        }
+    }
+    info!("Loaded {} provider instances", config_manager.get().providers.len());
 
     // Initialize rate limiter
     info!("Initializing rate limiter...");
@@ -134,7 +142,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Initialize server manager and start server
     info!("Initializing web server...");
-    let server_manager = Arc::new(RwLock::new(ServerManager::new()));
+    let server_manager = Arc::new(ServerManager::new());
 
     // Get server config from configuration
     let server_config = {
@@ -147,13 +155,15 @@ async fn main() -> anyhow::Result<()> {
     };
 
     // Start the server
-    server_manager.write().start(
-        server_config,
-        app_router.clone(),
-        api_key_manager.clone(),
-        rate_limiter.clone(),
-        provider_registry.clone(),
-    );
+    server_manager
+        .start(
+            server_config,
+            app_router.clone(),
+            api_key_manager.clone(),
+            rate_limiter.clone(),
+            provider_registry.clone(),
+        )
+        .await?;
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -178,6 +188,8 @@ async fn main() -> anyhow::Result<()> {
             app.manage(provider_registry.clone());
             app.manage(health_manager.clone());
             app.manage(server_manager.clone());
+            app.manage(app_router.clone());
+            app.manage(rate_limiter.clone());
 
             // Set up server restart event listener
             let server_manager_clone = server_manager.clone();
@@ -200,20 +212,55 @@ async fn main() -> anyhow::Result<()> {
                     }
                 };
 
-                // Restart the server
-                server_manager_clone.write().start(
-                    server_config,
-                    app_router_clone.clone(),
-                    api_key_manager_clone.clone(),
-                    rate_limiter_clone.clone(),
-                    provider_registry_clone.clone(),
-                );
+                // Restart the server (spawn async task)
+                let server_manager_clone2 = server_manager_clone.clone();
+                let app_router_clone2 = app_router_clone.clone();
+                let api_key_manager_clone2 = api_key_manager_clone.clone();
+                let rate_limiter_clone2 = rate_limiter_clone.clone();
+                let provider_registry_clone2 = provider_registry_clone.clone();
 
-                info!("Server restarted successfully");
+                tokio::spawn(async move {
+                    match server_manager_clone2
+                        .start(
+                            server_config,
+                            app_router_clone2,
+                            api_key_manager_clone2,
+                            rate_limiter_clone2,
+                            provider_registry_clone2,
+                        )
+                        .await
+                    {
+                        Ok(_) => info!("Server restarted successfully"),
+                        Err(e) => error!("Failed to restart server: {}", e),
+                    }
+                });
             });
+
+            // Set app handle on server state for event emission
+            if let Some(state) = server_manager.get_state() {
+                state.set_app_handle(app.handle().clone());
+            }
 
             // Setup system tray
             ui::tray::setup_tray(app)?;
+
+            // Listen for server status changes to update tray icon
+            let app_handle = app.handle().clone();
+            app.listen("server-status-changed", move |event| {
+                let status = event.payload();
+                info!("Server status changed to: {}", status);
+                if let Err(e) = ui::tray::update_tray_icon(&app_handle, status) {
+                    error!("Failed to update tray icon: {}", e);
+                }
+            });
+
+            // Listen for LLM request events to blink tray icon
+            let app_handle2 = app.handle().clone();
+            app.listen("llm-request", move |_event| {
+                if let Err(e) = ui::tray::update_tray_icon(&app_handle2, "active") {
+                    error!("Failed to update tray icon for LLM request: {}", e);
+                }
+            });
 
             Ok(())
         })
@@ -222,6 +269,8 @@ async fn main() -> anyhow::Result<()> {
             ui::commands::create_api_key,
             ui::commands::get_api_key_value,
             ui::commands::delete_api_key,
+            ui::commands::update_api_key_model,
+            ui::commands::rotate_api_key,
             ui::commands::list_routers,
             ui::commands::get_config,
             ui::commands::reload_config,
@@ -242,7 +291,28 @@ async fn main() -> anyhow::Result<()> {
             ui::commands::get_server_config,
             ui::commands::update_server_config,
             ui::commands::restart_server,
+            // Monitoring & statistics commands
+            ui::commands::get_aggregate_stats,
+            // Network interface commands
+            ui::commands::get_network_interfaces,
+            // Server control commands
+            ui::commands::get_server_status,
+            ui::commands::start_server,
+            ui::commands::stop_server,
         ])
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                // Prevent the window from closing
+                api.prevent_close();
+
+                // Hide the window instead
+                if let Err(e) = window.hide() {
+                    tracing::error!("Failed to hide window: {}", e);
+                }
+
+                tracing::info!("Window close intercepted - app minimized to system tray");
+            }
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 

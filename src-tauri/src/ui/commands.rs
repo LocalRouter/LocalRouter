@@ -9,14 +9,15 @@ use crate::api_keys::ApiKeyManager;
 use crate::config::{ConfigManager, ModelSelection, RouterConfig};
 use crate::providers::registry::ProviderRegistry;
 use serde::{Deserialize, Serialize};
-use tauri::{Emitter, State};
+use tauri::{Emitter, Manager, State};
 
 /// API key information for display
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiKeyInfo {
     pub id: String,
     pub name: String,
-    pub model_selection: ModelSelection,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_selection: Option<ModelSelection>,
     pub enabled: bool,
     pub created_at: String,
 }
@@ -25,38 +26,71 @@ pub struct ApiKeyInfo {
 #[tauri::command]
 pub async fn list_api_keys(key_manager: State<'_, ApiKeyManager>) -> Result<Vec<ApiKeyInfo>, String> {
     let keys = key_manager.list_keys();
+    // TODO: DELETE THIS DEBUG LOG LATER
+    tracing::warn!("📋 LIST_KEYS: {} keys", keys.len());
     Ok(keys
         .into_iter()
         .map(|k| ApiKeyInfo {
-            id: k.id,
-            name: k.name,
-            model_selection: k.model_selection,
+            id: k.id.clone(),
+            name: k.name.clone(),
+            model_selection: k.model_selection.clone(),
             enabled: k.enabled,
             created_at: k.created_at.to_rfc3339(),
         })
         .collect())
 }
 
-/// Create a new API key
+/// Create a new API key with optional model selection
 #[tauri::command]
 pub async fn create_api_key(
     name: Option<String>,
-    model_selection: ModelSelection,
+    model_selection: Option<ModelSelection>,
     key_manager: State<'_, ApiKeyManager>,
     config_manager: State<'_, ConfigManager>,
     app: tauri::AppHandle,
 ) -> Result<(String, ApiKeyInfo), String> {
-    let (key, config) = key_manager
-        .create_key(name, model_selection)
+    tracing::info!("Creating new API key with name: {:?}, model_selection: {:?}", name, model_selection.is_some());
+
+    let (key, mut config) = key_manager
+        .create_key(name)
         .await
         .map_err(|e| e.to_string())?;
 
+    tracing::info!("API key created: {} ({})", config.name, config.id);
+
+    // Set model selection if provided
+    if model_selection.is_some() {
+        config.model_selection = model_selection.clone();
+        // Update in-memory key manager
+        key_manager
+            .update_key(&config.id, |cfg| {
+                cfg.model_selection = model_selection.clone();
+            })
+            .map_err(|e| e.to_string())?;
+    }
+
     // Save to config file
+    tracing::warn!("📝 BEFORE UPDATE: about to add key to config");
     config_manager
         .update(|cfg| {
             cfg.api_keys.push(config.clone());
         })
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| {
+            tracing::error!("UPDATE FAILED: {}", e);
+            e.to_string()
+        })?;
+    tracing::warn!("📝 AFTER UPDATE: key added to config in memory");
+
+    // Persist to disk
+    tracing::warn!("📝 BEFORE SAVE: about to save config to disk");
+    config_manager
+        .save()
+        .await
+        .map_err(|e| {
+            tracing::error!("SAVE FAILED: {}", e);
+            e.to_string()
+        })?;
+    tracing::warn!("📝 AFTER SAVE: config saved to disk");
 
     // Rebuild tray menu with new API key
     if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
@@ -121,12 +155,87 @@ pub async fn delete_api_key(
         })
         .map_err(|e| e.to_string())?;
 
+    // Persist to disk
+    config_manager
+        .save()
+        .await
+        .map_err(|e| e.to_string())?;
+
     // Rebuild tray menu
     if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
         tracing::error!("Failed to rebuild tray menu: {}", e);
     }
 
     Ok(())
+}
+
+/// Update an API key's model selection
+///
+/// # Arguments
+/// * `id` - The API key ID to update
+/// * `model_selection` - The new model selection (or None to clear it)
+///
+/// # Returns
+/// * The updated API key info if successful
+/// * Error if the key doesn't exist or update fails
+#[tauri::command]
+pub async fn update_api_key_model(
+    id: String,
+    model_selection: Option<ModelSelection>,
+    key_manager: State<'_, ApiKeyManager>,
+    config_manager: State<'_, ConfigManager>,
+) -> Result<ApiKeyInfo, String> {
+    // Update in memory
+    let updated_config = key_manager
+        .update_key(&id, |cfg| {
+            cfg.model_selection = model_selection.clone();
+        })
+        .map_err(|e| e.to_string())?;
+
+    // Update in config file
+    config_manager
+        .update(|cfg| {
+            if let Some(key) = cfg.api_keys.iter_mut().find(|k| k.id == id) {
+                key.model_selection = model_selection.clone();
+            }
+        })
+        .map_err(|e| e.to_string())?;
+
+    // Persist to disk
+    config_manager
+        .save()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(ApiKeyInfo {
+        id: updated_config.id,
+        name: updated_config.name,
+        model_selection: updated_config.model_selection,
+        enabled: updated_config.enabled,
+        created_at: updated_config.created_at.to_rfc3339(),
+    })
+}
+
+/// Rotate an API key
+///
+/// Generates a new API key value while keeping the same ID, name, and settings.
+/// The old key is immediately invalidated.
+///
+/// # Arguments
+/// * `id` - The API key ID to rotate
+///
+/// # Returns
+/// * The new API key string if rotation succeeded
+/// * Error if the key doesn't exist or rotation fails
+#[tauri::command]
+pub async fn rotate_api_key(
+    id: String,
+    key_manager: State<'_, ApiKeyManager>,
+) -> Result<String, String> {
+    key_manager
+        .rotate_key(&id)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// List all routers
@@ -287,12 +396,51 @@ pub async fn list_provider_instances(
 #[tauri::command]
 pub async fn create_provider_instance(
     registry: State<'_, Arc<ProviderRegistry>>,
+    config_manager: State<'_, ConfigManager>,
     instance_name: String,
     provider_type: String,
     config: HashMap<String, String>,
 ) -> Result<(), String> {
+    // Create provider in registry (in-memory)
     registry
-        .create_provider(instance_name, provider_type, config)
+        .create_provider(instance_name.clone(), provider_type.clone(), config.clone())
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Save to config file for persistence
+    config_manager
+        .update(|cfg| {
+            // Convert provider_type string to ProviderType enum
+            let provider_type_enum = match provider_type.as_str() {
+                "ollama" => crate::config::ProviderType::Ollama,
+                "openai" => crate::config::ProviderType::OpenAI,
+                "openai_compatible" => crate::config::ProviderType::Custom,
+                "anthropic" => crate::config::ProviderType::Anthropic,
+                "gemini" => crate::config::ProviderType::Gemini,
+                "openrouter" => crate::config::ProviderType::OpenRouter,
+                _ => crate::config::ProviderType::Custom,
+            };
+
+            // Convert config HashMap to provider_config JSON
+            let provider_config = if !config.is_empty() {
+                Some(serde_json::to_value(&config).unwrap_or(serde_json::Value::Null))
+            } else {
+                None
+            };
+
+            cfg.providers.push(crate::config::ProviderConfig {
+                name: instance_name.clone(),
+                provider_type: provider_type_enum,
+                enabled: true,
+                provider_config,
+                api_key_ref: None,
+            });
+        })
+        .map_err(|e| e.to_string())?;
+
+    // Persist to disk
+    config_manager
+        .save()
         .await
         .map_err(|e| e.to_string())
 }
@@ -308,10 +456,25 @@ pub async fn create_provider_instance(
 #[tauri::command]
 pub async fn remove_provider_instance(
     registry: State<'_, Arc<ProviderRegistry>>,
+    config_manager: State<'_, ConfigManager>,
     instance_name: String,
 ) -> Result<(), String> {
+    // Remove from registry (in-memory)
     registry
         .remove_provider(&instance_name)
+        .map_err(|e| e.to_string())?;
+
+    // Remove from config file
+    config_manager
+        .update(|cfg| {
+            cfg.providers.retain(|p| p.name != instance_name);
+        })
+        .map_err(|e| e.to_string())?;
+
+    // Persist to disk
+    config_manager
+        .save()
+        .await
         .map_err(|e| e.to_string())
 }
 
@@ -327,11 +490,28 @@ pub async fn remove_provider_instance(
 #[tauri::command]
 pub async fn set_provider_enabled(
     registry: State<'_, Arc<ProviderRegistry>>,
+    config_manager: State<'_, ConfigManager>,
     instance_name: String,
     enabled: bool,
 ) -> Result<(), String> {
+    // Update in registry (in-memory)
     registry
         .set_provider_enabled(&instance_name, enabled)
+        .map_err(|e| e.to_string())?;
+
+    // Update in config file
+    config_manager
+        .update(|cfg| {
+            if let Some(provider) = cfg.providers.iter_mut().find(|p| p.name == instance_name) {
+                provider.enabled = enabled;
+            }
+        })
+        .map_err(|e| e.to_string())?;
+
+    // Persist to disk
+    config_manager
+        .save()
+        .await
         .map_err(|e| e.to_string())
 }
 
@@ -405,6 +585,7 @@ pub async fn get_server_config(
 /// # Arguments
 /// * `host` - Host/interface to listen on (e.g., "127.0.0.1", "0.0.0.0")
 /// * `port` - Port number to listen on
+/// * `enable_cors` - Whether to enable CORS
 ///
 /// # Note
 /// Changes are saved to configuration file but the server needs to be restarted for them to take effect.
@@ -413,6 +594,7 @@ pub async fn get_server_config(
 pub async fn update_server_config(
     host: Option<String>,
     port: Option<u16>,
+    enable_cors: Option<bool>,
     config_manager: State<'_, ConfigManager>,
 ) -> Result<(), String> {
     config_manager
@@ -423,7 +605,16 @@ pub async fn update_server_config(
             if let Some(port) = port {
                 config.server.port = port;
             }
+            if let Some(enable_cors) = enable_cors {
+                config.server.enable_cors = enable_cors;
+            }
         })
+        .map_err(|e| e.to_string())?;
+
+    // Persist to disk
+    config_manager
+        .save()
+        .await
         .map_err(|e| e.to_string())
 }
 
@@ -447,4 +638,149 @@ pub struct ServerConfigInfo {
     pub host: String,
     pub port: u16,
     pub enable_cors: bool,
+}
+
+// ============================================================================
+// Monitoring & Statistics Commands
+// ============================================================================
+
+/// Get aggregate statistics (requests, tokens, cost)
+///
+/// Returns statistics computed from all tracked generations in the retention period.
+#[tauri::command]
+pub async fn get_aggregate_stats(
+    app: tauri::AppHandle,
+) -> Result<crate::server::state::AggregateStats, String> {
+    // Get the generation tracker from app state
+    let state = app.state::<crate::server::state::AppState>();
+    Ok(state.generation_tracker.get_stats())
+}
+
+// ============================================================================
+// Network Interface Commands
+// ============================================================================
+
+/// Network interface information
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NetworkInterface {
+    pub name: String,
+    pub ip: String,
+    pub is_loopback: bool,
+}
+
+/// Get list of network interfaces
+///
+/// Returns a list of all network interfaces on the system, including loopback.
+/// Always includes "0.0.0.0" (all interfaces) and "127.0.0.1" (loopback) as options.
+#[tauri::command]
+pub async fn get_network_interfaces() -> Result<Vec<NetworkInterface>, String> {
+    let mut interfaces = vec![
+        NetworkInterface {
+            name: "All Interfaces".to_string(),
+            ip: "0.0.0.0".to_string(),
+            is_loopback: false,
+        },
+        NetworkInterface {
+            name: "Loopback".to_string(),
+            ip: "127.0.0.1".to_string(),
+            is_loopback: true,
+        },
+    ];
+
+    // Try to get system interfaces
+    if let Ok(addrs) = if_addrs::get_if_addrs() {
+        for iface in addrs {
+            if iface.is_loopback() {
+                continue; // Skip loopback, we already added it
+            }
+
+            let ip = iface.ip().to_string();
+
+            // Only include IPv4 addresses
+            if iface.ip().is_ipv4() {
+                interfaces.push(NetworkInterface {
+                    name: iface.name.clone(),
+                    ip,
+                    is_loopback: false,
+                });
+            }
+        }
+    }
+
+    Ok(interfaces)
+}
+
+// ============================================================================
+// Server Control Commands
+// ============================================================================
+
+/// Get the current server status
+#[tauri::command]
+pub async fn get_server_status(
+    server_manager: State<'_, Arc<crate::server::ServerManager>>,
+) -> Result<String, String> {
+    let status = server_manager.get_status();
+    Ok(match status {
+        crate::server::ServerStatus::Stopped => "stopped".to_string(),
+        crate::server::ServerStatus::Running => "running".to_string(),
+    })
+}
+
+/// Start the web server
+#[tauri::command]
+pub async fn start_server(
+    server_manager: State<'_, Arc<crate::server::ServerManager>>,
+    config_manager: State<'_, ConfigManager>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    tracing::info!("Start server command received");
+
+    // Get dependencies from app state
+    let router = app.state::<Arc<crate::router::Router>>();
+    let api_key_manager = app.state::<ApiKeyManager>();
+    let rate_limiter = app.state::<Arc<crate::router::RateLimiterManager>>();
+    let provider_registry = app.state::<Arc<ProviderRegistry>>();
+
+    // Get server config from configuration
+    let server_config = {
+        let config = config_manager.get();
+        crate::server::ServerConfig {
+            host: config.server.host.clone(),
+            port: config.server.port,
+            enable_cors: config.server.enable_cors,
+        }
+    };
+
+    // Start the server
+    server_manager
+        .start(
+            server_config,
+            router.inner().clone(),
+            (*api_key_manager.inner()).clone(),
+            rate_limiter.inner().clone(),
+            provider_registry.inner().clone(),
+        )
+        .await
+        .map_err(|e| format!("Failed to start server: {}", e))?;
+
+    // Emit event to update tray icon
+    let _ = app.emit("server-status-changed", "running");
+
+    Ok(())
+}
+
+/// Stop the web server
+#[tauri::command]
+pub async fn stop_server(
+    server_manager: State<'_, Arc<crate::server::ServerManager>>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    tracing::info!("Stop server command received");
+
+    server_manager.stop().await;
+
+    // Emit event to update tray icon
+    let _ = app.emit("server-status-changed", "stopped");
+
+    Ok(())
 }

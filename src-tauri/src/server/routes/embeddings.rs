@@ -11,10 +11,13 @@ use crate::server::types::EmbeddingRequest;
 /// POST /v1/embeddings
 /// Generate embeddings for input text(s)
 pub async fn embeddings(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Extension(_auth): Extension<AuthContext>,
     Json(request): Json<EmbeddingRequest>,
 ) -> ApiResult<Response> {
+    // Emit LLM request event to trigger tray icon indicator
+    state.emit_event("llm-request", "embedding");
+
     // Validate request
     validate_request(&request)?;
 

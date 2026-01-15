@@ -33,8 +33,14 @@ pub async fn chat_completions(
     Extension(auth): Extension<AuthContext>,
     Json(request): Json<ChatCompletionRequest>,
 ) -> ApiResult<Response> {
+    // Emit LLM request event to trigger tray icon indicator
+    state.emit_event("llm-request", "chat");
+
     // Validate request
     validate_request(&request)?;
+
+    // Validate model access based on API key's model selection
+    validate_model_access(&state, &auth, &request).await?;
 
     // Check rate limits
     check_rate_limits(&state, &auth, &request).await?;
@@ -77,6 +83,57 @@ fn validate_request(request: &ChatCompletionRequest) -> ApiResult<()> {
             return Err(
                 ApiErrorResponse::bad_request("top_p must be between 0 and 1").with_param("top_p"),
             );
+        }
+    }
+
+    Ok(())
+}
+
+/// Validate that the requested model is allowed by the API key's model selection
+async fn validate_model_access(
+    state: &AppState,
+    auth: &AuthContext,
+    request: &ChatCompletionRequest,
+) -> ApiResult<()> {
+    // If no model selection is configured, allow all models
+    let Some(ref selection) = auth.model_selection else {
+        return Ok(());
+    };
+
+    // Parse the model string to extract provider and model ID
+    // The model can be in format "provider/model" or just "model"
+    if let Some((provider, model_id)) = request.model.split_once('/') {
+        // Provider specified in request
+        if !selection.is_model_allowed(provider, model_id) {
+            return Err(ApiErrorResponse::forbidden(format!(
+                "Model '{}' is not accessible with this API key. Check your API key's model selection settings.",
+                request.model
+            ))
+            .with_param("model"));
+        }
+    } else {
+        // No provider specified - need to find which provider has this model
+        let all_models = state
+            .provider_registry
+            .list_all_models()
+            .await
+            .map_err(|e| ApiErrorResponse::internal_error(format!("Failed to list models: {}", e)))?;
+
+        let matching_model = all_models
+            .iter()
+            .find(|m| m.id.eq_ignore_ascii_case(&request.model))
+            .ok_or_else(|| {
+                ApiErrorResponse::bad_request(format!("Model not found: {}", request.model))
+                    .with_param("model")
+            })?;
+
+        // Check if allowed
+        if !selection.is_model_allowed(&matching_model.provider, &matching_model.id) {
+            return Err(ApiErrorResponse::forbidden(format!(
+                "Model '{}' is not accessible with this API key. Check your API key's model selection settings.",
+                request.model
+            ))
+            .with_param("model"));
         }
     }
 
@@ -238,11 +295,12 @@ async fn handle_non_streaming(
 async fn handle_streaming(
     state: AppState,
     auth: AuthContext,
-    _request: ChatCompletionRequest,
+    request: ChatCompletionRequest,
     provider_request: ProviderCompletionRequest,
 ) -> ApiResult<Response> {
     let generation_id = format!("gen-{}", Uuid::new_v4());
     let created_at = Utc::now();
+    let started_at = Instant::now();
 
     // Clone model before moving provider_request
     let model = provider_request.model.clone();
@@ -258,9 +316,40 @@ async fn handle_streaming(
     let created_timestamp = created_at.timestamp();
     let gen_id = generation_id.clone();
 
+    // Track token usage across stream
+    use std::sync::Arc;
+    use parking_lot::Mutex;
+    let content_accumulator = Arc::new(Mutex::new(String::new())); // Track completion content
+    let finish_reason = Arc::new(Mutex::new(String::from("stop")));
+
+    // Clone for the stream.map closure
+    let content_accumulator_map = content_accumulator.clone();
+    let finish_reason_map = finish_reason.clone();
+
+    // Clone for tracking after stream completes
+    let state_clone = state.clone();
+    let auth_clone = auth.clone();
+    let gen_id_clone = generation_id.clone();
+    let model_clone = model.clone();
+    let created_at_clone = created_at;
+    let request_user = request.user.clone();
+    let request_messages = request.messages.clone();
+
     let sse_stream = stream.map(move |chunk_result| -> Result<Event, std::convert::Infallible> {
         match chunk_result {
             Ok(provider_chunk) => {
+                // Track content for token estimation
+                if let Some(choice) = provider_chunk.choices.first() {
+                    if let Some(content) = &choice.delta.content {
+                        content_accumulator_map.lock().push_str(content);
+                    }
+
+                    // Track finish reason
+                    if let Some(reason) = &choice.finish_reason {
+                        *finish_reason_map.lock() = reason.clone();
+                    }
+                }
+
                 let api_chunk = ChatCompletionChunk {
                     id: gen_id.clone(),
                     object: "chat.completion.chunk".to_string(),
@@ -278,7 +367,7 @@ async fn handle_streaming(
                             finish_reason: choice.finish_reason,
                         })
                         .collect(),
-                    usage: None, // Usage sent in final chunk
+                    usage: None, // Not available in streaming chunks
                 };
 
                 let json = serde_json::to_string(&api_chunk).unwrap_or_default();
@@ -289,6 +378,45 @@ async fn handle_streaming(
                 Ok(Event::default().data("[ERROR]"))
             }
         }
+    });
+
+    // Record generation details after stream completes
+    tokio::spawn(async move {
+        // Wait a bit to ensure stream has completed and tokens were accumulated
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
+        let completed_at = Instant::now();
+        let completion_content = content_accumulator.lock().clone();
+        let finish_reason_final = finish_reason.lock().clone();
+
+        // Estimate tokens (rough estimate: ~4 chars per token)
+        let prompt_tokens = estimate_token_count(&request_messages) as u32;
+        let completion_tokens = (completion_content.len() / 4).max(1) as u32;
+        let total_tokens = prompt_tokens + completion_tokens;
+
+        let generation_details = GenerationDetails {
+            id: gen_id_clone,
+            model: model_clone,
+            provider: "router".to_string(),
+            created_at: created_at_clone,
+            finish_reason: finish_reason_final,
+            tokens: TokenUsage {
+                prompt_tokens,
+                completion_tokens,
+                total_tokens,
+            },
+            cost: None, // TODO: Calculate cost
+            started_at,
+            completed_at,
+            provider_health: None,
+            api_key_id: auth_clone.api_key_id,
+            user: request_user,
+            stream: true,
+        };
+
+        state_clone
+            .generation_tracker
+            .record(generation_details.id.clone(), generation_details);
     });
 
     Ok(Sse::new(sse_stream)

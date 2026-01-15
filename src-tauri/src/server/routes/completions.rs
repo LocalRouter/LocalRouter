@@ -25,6 +25,9 @@ pub async fn completions(
     Extension(auth): Extension<AuthContext>,
     Json(request): Json<CompletionRequest>,
 ) -> ApiResult<Response> {
+    // Emit LLM request event to trigger tray icon indicator
+    state.emit_event("llm-request", "completion");
+
     // Validate request
     validate_request(&request)?;
 
