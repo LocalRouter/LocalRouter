@@ -76,8 +76,14 @@ pub struct ApiKeyConfig {
     /// Human-readable name
     pub name: String,
 
-    /// Model selection for this key
-    pub model_selection: ModelSelection,
+    /// Model selection for this key (optional - can be set after creation)
+    /// DEPRECATED: Use routing_config instead
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_selection: Option<ModelSelection>,
+
+    /// Model routing configuration (replaces model_selection)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub routing_config: Option<ModelRoutingConfig>,
 
     /// Whether the key is enabled
     #[serde(default = "default_true")]
@@ -91,22 +97,103 @@ pub struct ApiKeyConfig {
     pub last_used: Option<DateTime<Utc>>,
 }
 
-/// Model selection type
+/// Model selection type for API keys
+///
+/// Determines which models are accessible when using this API key.
+/// This affects both the /v1/models list and which models can be used in /v1/chat/completions.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ModelSelection {
-    /// Direct model selection
+    /// All models from all providers (including future models)
+    ///
+    /// When new providers are added or new models become available,
+    /// they will automatically be accessible with this API key.
+    All,
+
+    /// Custom selection of providers and/or individual models
+    ///
+    /// Allows fine-grained control over which models are accessible.
+    /// - `all_provider_models`: Provider names where ALL models are selected (including future models)
+    /// - `individual_models`: Specific (provider, model) pairs
+    ///
+    /// Examples:
+    /// - All Ollama models: `Custom { all_provider_models: ["Ollama"], individual_models: [] }`
+    /// - Just GPT-4: `Custom { all_provider_models: [], individual_models: [("OpenAI", "gpt-4")] }`
+    /// - All Ollama + GPT-4: `Custom { all_provider_models: ["Ollama"], individual_models: [("OpenAI", "gpt-4")] }`
+    Custom {
+        /// Providers where ALL models are selected (including future models)
+        #[serde(default)]
+        all_provider_models: Vec<String>,
+        /// Individual models selected as (provider, model) pairs
+        #[serde(default)]
+        individual_models: Vec<(String, String)>,
+    },
+
+    /// Legacy: Direct model selection (deprecated, use Custom instead)
+    #[deprecated(note = "Use ModelSelection::Custom instead")]
     DirectModel {
         /// Provider name
         provider: String,
         /// Model identifier
         model: String,
     },
-    /// Router-based selection
+
+    /// Legacy: Router-based selection (deprecated)
+    #[deprecated(note = "Router-based selection is deprecated")]
     Router {
         /// Router name
         router_name: String,
     },
+}
+
+/// Model routing configuration for API keys
+///
+/// Supports three routing strategies:
+/// 1. Available Models: Request model must be in the selected list
+/// 2. Force Model: Always use a specific model, ignore request
+/// 3. Prioritized List: Try models in order, retry on failure
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ModelRoutingConfig {
+    /// The currently active routing strategy
+    pub active_strategy: ActiveRoutingStrategy,
+
+    /// Configuration for "Available Models" strategy
+    /// Models are preserved even when switching to other strategies
+    #[serde(default)]
+    pub available_models: AvailableModelsSelection,
+
+    /// Configuration for "Force Model" strategy
+    /// The forced model is preserved even when switching to other strategies
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub forced_model: Option<(String, String)>,
+
+    /// Configuration for "Prioritized List" strategy
+    /// Models are in priority order; preserved even when switching to other strategies
+    #[serde(default)]
+    pub prioritized_models: Vec<(String, String)>,
+}
+
+/// Active routing strategy for an API key
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ActiveRoutingStrategy {
+    /// Available Models: Request model must be in the selected list
+    AvailableModels,
+    /// Force Model: Always use a specific model, ignore request
+    ForceModel,
+    /// Prioritized List: Try models in order, retry on failure
+    PrioritizedList,
+}
+
+/// Available models selection configuration
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct AvailableModelsSelection {
+    /// Providers where ALL models are selected (including future models)
+    #[serde(default)]
+    pub all_provider_models: Vec<String>,
+    /// Individual models selected as (provider, model) pairs
+    #[serde(default)]
+    pub individual_models: Vec<(String, String)>,
 }
 
 /// Router configuration
@@ -303,6 +390,22 @@ pub enum ProviderType {
     Anthropic,
     /// Google Gemini API
     Gemini,
+    /// Groq API
+    Groq,
+    /// Mistral API
+    Mistral,
+    /// Cohere API
+    Cohere,
+    /// Together AI API
+    TogetherAI,
+    /// Perplexity API
+    Perplexity,
+    /// DeepInfra API
+    DeepInfra,
+    /// Cerebras API
+    Cerebras,
+    /// xAI API
+    XAI,
     /// Custom provider
     Custom,
 }
@@ -399,6 +502,9 @@ impl ConfigManager {
         let config_arc = self.config.clone();
         let app_handle = self.app_handle.clone();
 
+        // Capture the Tokio runtime handle for spawning tasks from the file watcher thread
+        let runtime_handle = tokio::runtime::Handle::current();
+
         let mut watcher = notify::recommended_watcher(move |result: Result<Event, notify::Error>| {
             match result {
                 Ok(event) => {
@@ -411,7 +517,8 @@ impl ConfigManager {
                         let config_arc_clone = config_arc.clone();
                         let app_handle_clone = app_handle.clone();
 
-                        tokio::spawn(async move {
+                        // Use the captured runtime handle to spawn the task
+                        runtime_handle.spawn(async move {
                             match load_config(&config_path_clone).await {
                                 Ok(new_config) => {
                                     // Update in-memory config
@@ -484,6 +591,8 @@ impl ConfigManager {
     /// Does NOT emit event (file watcher will handle that).
     pub async fn save(&self) -> AppResult<()> {
         let config = self.config.read().clone();
+        // TODO: DELETE THIS DEBUG LOG LATER
+        tracing::warn!("💾 SAVE_TO_DISK: {} api_keys", config.api_keys.len());
         save_config(&config, &self.config_path).await
     }
 
@@ -617,16 +726,276 @@ impl ProviderConfig {
     }
 }
 
+impl ModelSelection {
+    /// Check if a model is allowed by this selection
+    ///
+    /// # Arguments
+    /// * `provider_name` - Name of the provider (e.g., "Ollama", "OpenAI")
+    /// * `model_id` - Model identifier (e.g., "llama2", "gpt-4")
+    ///
+    /// # Returns
+    /// `true` if the model is allowed, `false` otherwise
+    pub fn is_model_allowed(&self, provider_name: &str, model_id: &str) -> bool {
+        match self {
+            ModelSelection::All => true,
+            ModelSelection::Custom {
+                all_provider_models,
+                individual_models,
+            } => {
+                // Check if the provider is in the all_provider_models list
+                if all_provider_models
+                    .iter()
+                    .any(|p| p.eq_ignore_ascii_case(provider_name))
+                {
+                    return true;
+                }
+
+                // Check if the specific (provider, model) pair is in individual_models
+                individual_models.iter().any(|(p, m)| {
+                    p.eq_ignore_ascii_case(provider_name) && m.eq_ignore_ascii_case(model_id)
+                })
+            }
+            #[allow(deprecated)]
+            ModelSelection::DirectModel { provider, model } => {
+                provider.eq_ignore_ascii_case(provider_name)
+                    && model.eq_ignore_ascii_case(model_id)
+            }
+            #[allow(deprecated)]
+            ModelSelection::Router { .. } => {
+                // Router-based selection is deprecated
+                // For now, allow all models (will be handled by router logic)
+                true
+            }
+        }
+    }
+
+    /// Check if a provider has all its models selected
+    ///
+    /// # Arguments
+    /// * `provider_name` - Name of the provider
+    ///
+    /// # Returns
+    /// `true` if all models from this provider are selected, `false` otherwise
+    pub fn is_provider_all_selected(&self, provider_name: &str) -> bool {
+        match self {
+            ModelSelection::All => true,
+            ModelSelection::Custom {
+                all_provider_models,
+                ..
+            } => all_provider_models
+                .iter()
+                .any(|p| p.eq_ignore_ascii_case(provider_name)),
+            _ => false,
+        }
+    }
+}
+
+impl ModelRoutingConfig {
+    /// Create a new routing config with "Available Models" as default strategy
+    pub fn new_available_models() -> Self {
+        Self {
+            active_strategy: ActiveRoutingStrategy::AvailableModels,
+            available_models: AvailableModelsSelection::default(),
+            forced_model: None,
+            prioritized_models: Vec::new(),
+        }
+    }
+
+    /// Create a new routing config with "Force Model" strategy
+    pub fn new_force_model(provider: String, model: String) -> Self {
+        Self {
+            active_strategy: ActiveRoutingStrategy::ForceModel,
+            available_models: AvailableModelsSelection::default(),
+            forced_model: Some((provider, model)),
+            prioritized_models: Vec::new(),
+        }
+    }
+
+    /// Create a new routing config with "Prioritized List" strategy
+    pub fn new_prioritized_list(models: Vec<(String, String)>) -> Self {
+        Self {
+            active_strategy: ActiveRoutingStrategy::PrioritizedList,
+            available_models: AvailableModelsSelection::default(),
+            forced_model: None,
+            prioritized_models: models,
+        }
+    }
+
+    /// Check if a model is allowed by the current active strategy
+    pub fn is_model_allowed(&self, provider_name: &str, model_id: &str) -> bool {
+        match self.active_strategy {
+            ActiveRoutingStrategy::AvailableModels => {
+                self.available_models.is_model_allowed(provider_name, model_id)
+            }
+            ActiveRoutingStrategy::ForceModel => {
+                // Only the forced model is allowed
+                if let Some((forced_provider, forced_model)) = &self.forced_model {
+                    forced_provider.eq_ignore_ascii_case(provider_name)
+                        && forced_model.eq_ignore_ascii_case(model_id)
+                } else {
+                    false
+                }
+            }
+            ActiveRoutingStrategy::PrioritizedList => {
+                // Any model in the prioritized list is "allowed" for listing purposes
+                self.prioritized_models.iter().any(|(p, m)| {
+                    p.eq_ignore_ascii_case(provider_name) && m.eq_ignore_ascii_case(model_id)
+                })
+            }
+        }
+    }
+
+    /// Get the model to use for a request (ignoring the requested model for Force and Prioritized strategies)
+    pub fn get_model_for_request(&self, requested_model: &str) -> Option<(String, String)> {
+        match self.active_strategy {
+            ActiveRoutingStrategy::AvailableModels => {
+                // Use the requested model (caller should validate it's allowed)
+                None // Signal to use requested model
+            }
+            ActiveRoutingStrategy::ForceModel => {
+                // Always use the forced model
+                self.forced_model.clone()
+            }
+            ActiveRoutingStrategy::PrioritizedList => {
+                // Use the first model in the prioritized list
+                self.prioritized_models.first().cloned()
+            }
+        }
+    }
+
+    /// Migrate from old ModelSelection to new ModelRoutingConfig
+    pub fn from_model_selection(selection: ModelSelection) -> Self {
+        match selection {
+            ModelSelection::All => {
+                // All models - use Available Models strategy with all providers selected
+                Self {
+                    active_strategy: ActiveRoutingStrategy::AvailableModels,
+                    available_models: AvailableModelsSelection {
+                        all_provider_models: vec![], // Empty means all (we'll handle this in code)
+                        individual_models: vec![],
+                    },
+                    forced_model: None,
+                    prioritized_models: Vec::new(),
+                }
+            }
+            ModelSelection::Custom {
+                all_provider_models,
+                individual_models,
+            } => Self {
+                active_strategy: ActiveRoutingStrategy::AvailableModels,
+                available_models: AvailableModelsSelection {
+                    all_provider_models,
+                    individual_models,
+                },
+                forced_model: None,
+                prioritized_models: Vec::new(),
+            },
+            #[allow(deprecated)]
+            ModelSelection::DirectModel { provider, model } => Self {
+                active_strategy: ActiveRoutingStrategy::ForceModel,
+                available_models: AvailableModelsSelection::default(),
+                forced_model: Some((provider, model)),
+                prioritized_models: Vec::new(),
+            },
+            #[allow(deprecated)]
+            ModelSelection::Router { .. } => {
+                // Router-based - default to Available Models
+                Self::new_available_models()
+            }
+        }
+    }
+}
+
+impl AvailableModelsSelection {
+    /// Check if a model is allowed by this selection
+    pub fn is_model_allowed(&self, provider_name: &str, model_id: &str) -> bool {
+        // Check if the provider is in the all_provider_models list
+        if self
+            .all_provider_models
+            .iter()
+            .any(|p| p.eq_ignore_ascii_case(provider_name))
+        {
+            return true;
+        }
+
+        // Check if the specific (provider, model) pair is in individual_models
+        self.individual_models.iter().any(|(p, m)| {
+            p.eq_ignore_ascii_case(provider_name) && m.eq_ignore_ascii_case(model_id)
+        })
+    }
+}
+
 impl ApiKeyConfig {
-    /// Create a new API key configuration
-    pub fn new(name: String, model_selection: ModelSelection) -> Self {
+    /// Create a new API key configuration with just a name
+    /// Model selection can be set later via update
+    pub fn new(name: String) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
             name,
-            model_selection,
+            model_selection: None,
+            routing_config: None,
             enabled: true,
             created_at: Utc::now(),
             last_used: None,
+        }
+    }
+
+    /// Create a new API key configuration with model selection (deprecated)
+    #[deprecated(note = "Use with_routing_config instead")]
+    pub fn with_model(name: String, model_selection: ModelSelection) -> Self {
+        Self {
+            id: Uuid::new_v4().to_string(),
+            name,
+            model_selection: Some(model_selection),
+            routing_config: None,
+            enabled: true,
+            created_at: Utc::now(),
+            last_used: None,
+        }
+    }
+
+    /// Create a new API key configuration with routing config
+    pub fn with_routing_config(name: String, routing_config: ModelRoutingConfig) -> Self {
+        Self {
+            id: Uuid::new_v4().to_string(),
+            name,
+            model_selection: None,
+            routing_config: Some(routing_config),
+            enabled: true,
+            created_at: Utc::now(),
+            last_used: None,
+        }
+    }
+
+    /// Get the effective routing config (handles migration from old model_selection)
+    pub fn get_routing_config(&self) -> Option<ModelRoutingConfig> {
+        if let Some(ref config) = self.routing_config {
+            Some(config.clone())
+        } else if let Some(ref selection) = self.model_selection {
+            // Migrate from old model_selection
+            Some(ModelRoutingConfig::from_model_selection(selection.clone()))
+        } else {
+            None
+        }
+    }
+
+    /// Check if a model is allowed by this API key
+    ///
+    /// # Arguments
+    /// * `provider_name` - Name of the provider
+    /// * `model_id` - Model identifier
+    ///
+    /// # Returns
+    /// `true` if the model is allowed (or if no model selection is set), `false` otherwise
+    pub fn is_model_allowed(&self, provider_name: &str, model_id: &str) -> bool {
+        if let Some(config) = self.get_routing_config() {
+            config.is_model_allowed(provider_name, model_id)
+        } else {
+            // Legacy: check old model_selection
+            match &self.model_selection {
+                Some(selection) => selection.is_model_allowed(provider_name, model_id),
+                None => true, // No selection means all models allowed
+            }
         }
     }
 }
@@ -640,7 +1009,7 @@ mod tests {
         let config = AppConfig::default();
         assert_eq!(config.version, CONFIG_VERSION);
         assert_eq!(config.server.host, "127.0.0.1");
-        assert_eq!(config.server.port, 3000);
+        assert_eq!(config.server.port, 3625);
         assert_eq!(config.routers.len(), 2);
         assert_eq!(config.providers.len(), 1);
     }
@@ -649,7 +1018,7 @@ mod tests {
     fn test_server_config_default() {
         let server = ServerConfig::default();
         assert_eq!(server.host, "127.0.0.1");
-        assert_eq!(server.port, 3000);
+        assert_eq!(server.port, 3625);
         assert!(server.enable_cors);
     }
 
@@ -663,16 +1032,24 @@ mod tests {
 
     #[test]
     fn test_api_key_config_new() {
-        let key = ApiKeyConfig::new(
+        let key = ApiKeyConfig::new("test-key".to_string());
+        assert_eq!(key.name, "test-key");
+        assert!(key.enabled);
+        assert!(key.model_selection.is_none());
+        assert!(Uuid::parse_str(&key.id).is_ok());
+    }
+
+    #[test]
+    fn test_api_key_config_with_model() {
+        let key = ApiKeyConfig::with_model(
             "test-key".to_string(),
-            "hash".to_string(),
             ModelSelection::Router {
                 router_name: "Minimum Cost".to_string(),
             },
         );
         assert_eq!(key.name, "test-key");
-        assert_eq!(key.key_hash, "hash");
         assert!(key.enabled);
+        assert!(key.model_selection.is_some());
         assert!(Uuid::parse_str(&key.id).is_ok());
     }
 
