@@ -26,16 +26,23 @@ pub struct OpenRouterProvider {
     api_key: String,
     app_name: Option<String>,
     app_url: Option<String>,
+    base_url: String,
 }
 
 impl OpenRouterProvider {
     /// Creates a new OpenRouter provider with the given API key
     pub fn new(api_key: String) -> Self {
+        Self::with_base_url(api_key, OPENROUTER_API_BASE.to_string())
+    }
+
+    /// Creates a new OpenRouter provider with a custom base URL (for testing)
+    pub fn with_base_url(api_key: String, base_url: String) -> Self {
         Self {
             client: Client::new(),
             api_key,
             app_name: Some("LocalRouter AI".to_string()),
             app_url: Some("https://github.com/localrouter/localrouter-ai".to_string()),
+            base_url: base_url.trim_end_matches('/').to_string(),
         }
     }
 
@@ -112,7 +119,7 @@ impl ModelProvider for OpenRouterProvider {
 
     async fn health_check(&self) -> ProviderHealth {
         let start = Instant::now();
-        let url = format!("{}/models", OPENROUTER_API_BASE);
+        let url = format!("{}/models", self.base_url);
 
         match self.build_request(&url).send().await {
             Ok(response) => {
@@ -154,7 +161,7 @@ impl ModelProvider for OpenRouterProvider {
     }
 
     async fn list_models(&self) -> AppResult<Vec<ModelInfo>> {
-        let url = format!("{}/models", OPENROUTER_API_BASE);
+        let url = format!("{}/models", self.base_url);
 
         let response = self
             .build_request(&url)
@@ -198,7 +205,7 @@ impl ModelProvider for OpenRouterProvider {
     }
 
     async fn get_pricing(&self, model: &str) -> AppResult<PricingInfo> {
-        let url = format!("{}/models", OPENROUTER_API_BASE);
+        let url = format!("{}/models", self.base_url);
         let response = self
             .build_request(&url)
             .send()
@@ -233,7 +240,7 @@ impl ModelProvider for OpenRouterProvider {
     }
 
     async fn complete(&self, request: CompletionRequest) -> AppResult<CompletionResponse> {
-        let url = format!("{}/chat/completions", OPENROUTER_API_BASE);
+        let url = format!("{}/chat/completions", self.base_url);
 
         let openrouter_request = OpenRouterRequest {
             model: request.model.clone(),
@@ -293,7 +300,7 @@ impl ModelProvider for OpenRouterProvider {
         &self,
         request: CompletionRequest,
     ) -> AppResult<Pin<Box<dyn Stream<Item = AppResult<CompletionChunk>> + Send>>> {
-        let url = format!("{}/chat/completions", OPENROUTER_API_BASE);
+        let url = format!("{}/chat/completions", self.base_url);
 
         let openrouter_request = OpenRouterRequest {
             model: request.model.clone(),

@@ -232,11 +232,11 @@ fn build_tray_menu<R: Runtime>(app: &App<R>) -> tauri::Result<tauri::menu::Menu<
                 };
 
                 if !models.is_empty() {
-                    // 1. "Force Model" submenu
+                    // 1. "Forced model" submenu
                     let force_model_text = if matches!(active_strategy, Some(ActiveRoutingStrategy::ForceModel)) {
-                        "✓ Force Model"
+                        "✓ Forced model"
                     } else {
-                        "Force Model"
+                        "Forced model"
                     };
                     let mut force_model_submenu_builder = SubmenuBuilder::new(app, force_model_text);
 
@@ -265,22 +265,22 @@ fn build_tray_menu<R: Runtime>(app: &App<R>) -> tauri::Result<tauri::menu::Menu<
                     let force_model_submenu = force_model_submenu_builder.build()?;
                     submenu_builder = submenu_builder.item(&force_model_submenu);
 
-                    // 2. "Available Models" submenu
+                    // 2. "Multi model" submenu
                     let available_models_text = if matches!(active_strategy, Some(ActiveRoutingStrategy::AvailableModels)) {
-                        "✓ Available Models"
+                        "✓ Multi model"
                     } else {
-                        "Available Models"
+                        "Multi model"
                     };
                     let mut available_models_submenu_builder = SubmenuBuilder::new(app, available_models_text);
 
                     // Add strategy toggle at the top
-                    let toggle_text = if matches!(active_strategy, Some(ActiveRoutingStrategy::AvailableModels)) {
-                        "✓ Use This Strategy (Active)"
+                    let (toggle_text, toggle_id) = if matches!(active_strategy, Some(ActiveRoutingStrategy::AvailableModels)) {
+                        ("✓ Client can choose any model", format!("disabled_strategy_{}", key.id))
                     } else {
-                        "Use This Strategy"
+                        ("Enable to use any selected model", format!("enable_available_models_{}", key.id))
                     };
                     available_models_submenu_builder = available_models_submenu_builder.text(
-                        format!("enable_available_models_{}", key.id),
+                        toggle_id,
                         toggle_text
                     );
 
@@ -342,11 +342,11 @@ fn build_tray_menu<R: Runtime>(app: &App<R>) -> tauri::Result<tauri::menu::Menu<
                     let available_models_submenu = available_models_submenu_builder.build()?;
                     submenu_builder = submenu_builder.item(&available_models_submenu);
 
-                    // 3. "Prioritized List..." menu item
+                    // 3. "Priority-based..." menu item
                     let prioritized_list_text = if matches!(active_strategy, Some(ActiveRoutingStrategy::PrioritizedList)) {
-                        "✓ Prioritized List..."
+                        "✓ Priority-based..."
                     } else {
-                        "Prioritized List..."
+                        "Priority-based..."
                     };
                     submenu_builder = submenu_builder.text(
                         format!("prioritized_list_{}", key.id),
@@ -476,11 +476,11 @@ fn build_tray_menu_from_handle<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<
                 };
 
                 if !models.is_empty() {
-                    // 1. "Force Model" submenu
+                    // 1. "Forced model" submenu
                     let force_model_text = if matches!(active_strategy, Some(ActiveRoutingStrategy::ForceModel)) {
-                        "✓ Force Model"
+                        "✓ Forced model"
                     } else {
-                        "Force Model"
+                        "Forced model"
                     };
                     let mut force_model_submenu_builder = SubmenuBuilder::new(app, force_model_text);
 
@@ -509,22 +509,22 @@ fn build_tray_menu_from_handle<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<
                     let force_model_submenu = force_model_submenu_builder.build()?;
                     submenu_builder = submenu_builder.item(&force_model_submenu);
 
-                    // 2. "Available Models" submenu
+                    // 2. "Multi model" submenu
                     let available_models_text = if matches!(active_strategy, Some(ActiveRoutingStrategy::AvailableModels)) {
-                        "✓ Available Models"
+                        "✓ Multi model"
                     } else {
-                        "Available Models"
+                        "Multi model"
                     };
                     let mut available_models_submenu_builder = SubmenuBuilder::new(app, available_models_text);
 
                     // Add strategy toggle at the top
-                    let toggle_text = if matches!(active_strategy, Some(ActiveRoutingStrategy::AvailableModels)) {
-                        "✓ Use This Strategy (Active)"
+                    let (toggle_text, toggle_id) = if matches!(active_strategy, Some(ActiveRoutingStrategy::AvailableModels)) {
+                        ("✓ Client can choose any model", format!("disabled_strategy_{}", key.id))
                     } else {
-                        "Use This Strategy"
+                        ("Enable to use any selected model", format!("enable_available_models_{}", key.id))
                     };
                     available_models_submenu_builder = available_models_submenu_builder.text(
-                        format!("enable_available_models_{}", key.id),
+                        toggle_id,
                         toggle_text
                     );
 
@@ -586,11 +586,11 @@ fn build_tray_menu_from_handle<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<
                     let available_models_submenu = available_models_submenu_builder.build()?;
                     submenu_builder = submenu_builder.item(&available_models_submenu);
 
-                    // 3. "Prioritized List..." menu item
+                    // 3. "Priority-based..." menu item
                     let prioritized_list_text = if matches!(active_strategy, Some(ActiveRoutingStrategy::PrioritizedList)) {
-                        "✓ Prioritized List..."
+                        "✓ Priority-based..."
                     } else {
-                        "Prioritized List..."
+                        "Priority-based..."
                     };
                     submenu_builder = submenu_builder.text(
                         format!("prioritized_list_{}", key.id),

@@ -318,7 +318,8 @@ impl AnthropicMockBuilder {
     }
 
     pub fn base_url(&self) -> String {
-        self.server.uri()
+        // Anthropic provider expects base_url to include /v1
+        format!("{}/v1", self.server.uri())
     }
 
     /// Mock the /v1/models endpoint (Anthropic doesn't have this, returns error or empty)
@@ -528,7 +529,8 @@ impl CohereMockBuilder {
     }
 
     pub fn base_url(&self) -> String {
-        self.server.uri()
+        // Cohere provider expects base_url to include /v2
+        format!("{}/v2", self.server.uri())
     }
 
     /// Mock the /v2/models endpoint (Cohere format) - returns static list
@@ -548,14 +550,13 @@ impl CohereMockBuilder {
         let response = json!({
             "id": "test-chat-id",
             "message": {
-                "role": "assistant",
                 "content": [
                     {"type": "text", "text": "Hello! How can I help you today?"}
                 ]
             },
             "finish_reason": "COMPLETE",
             "usage": {
-                "billed_units": {
+                "tokens": {
                     "input_tokens": 10,
                     "output_tokens": 9
                 }

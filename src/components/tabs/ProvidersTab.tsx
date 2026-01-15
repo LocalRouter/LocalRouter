@@ -61,7 +61,11 @@ const PROVIDER_DISPLAY_INFO: Record<string, { name: string; icon: string; catego
   openai_compatible: { name: 'OpenAI Compatible', icon: '🔌', category: 'Custom' },
 }
 
-export default function ProvidersTab() {
+interface ProvidersTabProps {
+  activeSubTab: string | null
+}
+
+export default function ProvidersTab({ activeSubTab }: ProvidersTabProps) {
   const [providerInstances, setProviderInstances] = useState<ProviderInstance[]>([])
   const [providerTypes, setProviderTypes] = useState<ProviderTypeInfo[]>([])
   const [providersHealth, setProvidersHealth] = useState<Record<string, ProviderHealth>>({})
@@ -261,6 +265,38 @@ export default function ProvidersTab() {
   const selectedProviderTypeObject = selectedProviderType
     ? getProviderTypeObject(selectedProviderType)
     : null
+
+  // If a sub-tab is selected, show detail page for that specific provider instance
+  if (activeSubTab) {
+    const instance = providerInstances.find(p => p.instance_name === activeSubTab)
+
+    if (!instance && !loading) {
+      return (
+        <div className="bg-white rounded-lg shadow-sm p-6">
+          <h2 className="text-2xl font-bold text-gray-800 mb-4">Provider Not Found</h2>
+          <p className="text-gray-600">The requested provider instance could not be found.</p>
+        </div>
+      )
+    }
+
+    if (loading || !instance) {
+      return (
+        <div className="bg-white rounded-lg shadow-sm p-6">
+          <div className="text-center py-8 text-gray-500">Loading provider details...</div>
+        </div>
+      )
+    }
+
+    return (
+      <div className="bg-white rounded-lg shadow-sm p-6">
+        <div className="flex items-center gap-3 mb-4">
+          <ProviderIcon providerId={instance.provider_type} size={32} />
+          <h2 className="text-2xl font-bold text-gray-800">{instance.instance_name}</h2>
+        </div>
+        <p className="text-gray-600">Provider detail page - Coming soon...</p>
+      </div>
+    )
+  }
 
   return (
     <div className="space-y-6">

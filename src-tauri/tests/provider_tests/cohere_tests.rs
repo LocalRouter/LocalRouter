@@ -24,19 +24,38 @@ async fn test_cohere_list_models() {
 async fn test_cohere_completion() {
     let mock = CohereMockBuilder::new().await.mock_completion().await;
 
-    // Note: CohereProvider uses hardcoded base URL
-    // TODO: Refactor to accept custom base_url for testing
+    let provider = CohereProvider::with_base_url(
+        "test-key".to_string(),
+        mock.base_url(),
+    )
+    .unwrap();
+
+    let request = standard_completion_request();
+    let response = provider.complete(request).await.unwrap();
+
+    assert_eq!(response.choices.len(), 1);
+    assert_eq!(response.choices[0].message.role, "assistant");
+    assert!(!response.choices[0].message.content.is_empty());
 }
 
 #[tokio::test]
 async fn test_cohere_streaming() {
-    let mock = CohereMockBuilder::new()
+    let _mock = CohereMockBuilder::new()
         .await
         .mock_streaming_completion()
         .await;
 
-    // Similar limitation - needs refactoring to accept custom base URL
-    // TODO: Refactor to accept custom base_url
+    let provider = CohereProvider::with_base_url(
+        "test-key".to_string(),
+        _mock.base_url(),
+    )
+    .unwrap();
+
+    let request = standard_streaming_request();
+    let result = provider.stream_complete(request).await;
+
+    // Cohere streaming is not yet implemented
+    assert!(result.is_err(), "Cohere streaming should return an error as it's not implemented");
 }
 
 #[tokio::test]

@@ -20,7 +20,11 @@ interface Model {
   provider: string
 }
 
-export default function ApiKeysTab() {
+interface ApiKeysTabProps {
+  activeSubTab: string | null
+}
+
+export default function ApiKeysTab({ activeSubTab }: ApiKeysTabProps) {
   const [apiKeys, setApiKeys] = useState<ApiKey[]>([])
   const [loading, setLoading] = useState(true)
   const [showCreateModal, setShowCreateModal] = useState(false)
@@ -346,6 +350,35 @@ export default function ApiKeysTab() {
     }
 
     return ['Unknown selection']
+  }
+
+  // If a sub-tab is selected, show detail page for that specific API key
+  if (activeSubTab) {
+    const key = apiKeys.find(k => k.id === activeSubTab)
+
+    if (!key && !loading) {
+      return (
+        <div className="bg-white rounded-lg shadow-sm p-6">
+          <h2 className="text-2xl font-bold text-gray-800 mb-4">API Key Not Found</h2>
+          <p className="text-gray-600">The requested API key could not be found.</p>
+        </div>
+      )
+    }
+
+    if (loading || !key) {
+      return (
+        <div className="bg-white rounded-lg shadow-sm p-6">
+          <div className="text-center py-8 text-gray-500">Loading API key details...</div>
+        </div>
+      )
+    }
+
+    return (
+      <div className="bg-white rounded-lg shadow-sm p-6">
+        <h2 className="text-2xl font-bold text-gray-800 mb-4">{key.name}</h2>
+        <p className="text-gray-600">API Key detail page - Coming soon...</p>
+      </div>
+    )
   }
 
   return (

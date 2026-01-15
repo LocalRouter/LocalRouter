@@ -81,3 +81,4 @@ mod gemini_tests;
 mod cohere_tests;
 mod http_scenarios;
 mod sse_scenarios;
+mod bug_detection_tests;

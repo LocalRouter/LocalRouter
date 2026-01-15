@@ -26,17 +26,27 @@ const ANTHROPIC_VERSION: &str = "2023-06-01";
 pub struct AnthropicProvider {
     client: Client,
     api_key: String,
+    base_url: String,
 }
 
 impl AnthropicProvider {
     /// Create a new Anthropic provider with an API key
     pub fn new(api_key: String) -> AppResult<Self> {
+        Self::with_base_url(api_key, ANTHROPIC_API_BASE.to_string())
+    }
+
+    /// Create a new Anthropic provider with a custom base URL (for testing)
+    pub fn with_base_url(api_key: String, base_url: String) -> AppResult<Self> {
         let client = Client::builder()
             .timeout(std::time::Duration::from_secs(120))
             .build()
             .map_err(|e| AppError::Provider(format!("Failed to create HTTP client: {}", e)))?;
 
-        Ok(Self { client, api_key })
+        Ok(Self {
+            client,
+            api_key,
+            base_url: base_url.trim_end_matches('/').to_string(),
+        })
     }
 
     /// Create a new Anthropic provider from stored API key
@@ -235,7 +245,7 @@ impl ModelProvider for AnthropicProvider {
         // Try to list models as a health check
         let result = self
             .client
-            .get(format!("{}/models", ANTHROPIC_API_BASE))
+            .get(format!("{}/models", self.base_url))
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", ANTHROPIC_VERSION)
             .send()
@@ -309,7 +319,7 @@ impl ModelProvider for AnthropicProvider {
 
         let response = self
             .client
-            .post(format!("{}/messages", ANTHROPIC_API_BASE))
+            .post(format!("{}/messages", self.base_url))
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", ANTHROPIC_VERSION)
             .header("content-type", "application/json")
@@ -387,7 +397,7 @@ impl ModelProvider for AnthropicProvider {
 
         let response = self
             .client
-            .post(format!("{}/messages", ANTHROPIC_API_BASE))
+            .post(format!("{}/messages", self.base_url))
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", ANTHROPIC_VERSION)
             .header("content-type", "application/json")

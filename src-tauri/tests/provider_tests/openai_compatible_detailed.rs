@@ -20,21 +20,26 @@ use wiremock::{
 async fn test_request_has_correct_headers() {
     let mock_server = MockServer::start().await;
 
+    let captured_request = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let captured_clone = captured_request.clone();
+
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "id": "test",
-            "object": "chat.completion",
-            "created": 1234567890,
-            "model": "test-model",
-            "choices": [{
-                "index": 0,
-                "message": {"role": "assistant", "content": "Hi"},
-                "finish_reason": "stop"
-            }],
-            "usage": {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7}
-        })))
-        .expect(1)
+        .respond_with(move |req: &wiremock::Request| {
+            *captured_clone.lock().unwrap() = Some(req.clone());
+            ResponseTemplate::new(200).set_body_json(json!({
+                "id": "test",
+                "object": "chat.completion",
+                "created": 1234567890,
+                "model": "test-model",
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "Hi"},
+                    "finish_reason": "stop"
+                }],
+                "usage": {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7}
+            }))
+        })
         .mount(&mock_server)
         .await;
 
@@ -47,7 +52,12 @@ async fn test_request_has_correct_headers() {
     let request = standard_completion_request();
     let _response = provider.complete(request).await.unwrap();
 
-    // Verification happens via wiremock's expect() - if headers were wrong, test would fail
+    // Verify actual headers were sent correctly
+    let req = captured_request.lock().unwrap();
+    let req = req.as_ref().expect("Request should have been captured");
+
+    assert_bearer_token(req, "test-api-key");
+    assert_content_type_json(req);
 }
 
 #[tokio::test]

@@ -366,8 +366,6 @@ async fn main() -> anyhow::Result<()> {
             ui::commands::cancel_oauth_flow,
             ui::commands::list_oauth_credentials,
             ui::commands::delete_oauth_credentials,
-            // Visualization commands
-            ui::commands::get_visualization_graph,
             // Routing strategy commands
             ui::commands::get_routing_config,
             ui::commands::update_prioritized_list,

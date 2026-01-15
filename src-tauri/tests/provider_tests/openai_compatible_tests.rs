@@ -163,9 +163,18 @@ async fn test_groq_completion() {
         .mock_completion()
         .await;
 
-    // Groq uses OpenAI format but we can't easily override the base URL
-    // This is a placeholder for future refactoring
-    // TODO: Refactor GroqProvider to accept custom base URL for testing
+    let provider = GroqProvider::with_base_url(
+        "test-key".to_string(),
+        mock.base_url(),
+    )
+    .unwrap();
+
+    let request = standard_completion_request();
+    let response = provider.complete(request).await.unwrap();
+
+    assert_eq!(response.choices.len(), 1);
+    assert_eq!(response.choices[0].message.role, "assistant");
+    assert!(!response.choices[0].message.content.is_empty());
 }
 
 // ==================== OPENROUTER TESTS ====================
@@ -177,8 +186,17 @@ async fn test_openrouter_completion() {
         .mock_completion()
         .await;
 
-    // Similar to Groq - OpenRouter uses OpenAI format but hardcoded base URL
-    // TODO: Refactor OpenRouterProvider to accept custom base URL for testing
+    let provider = OpenRouterProvider::with_base_url(
+        "test-key".to_string(),
+        mock.base_url(),
+    );
+
+    let request = standard_completion_request();
+    let response = provider.complete(request).await.unwrap();
+
+    assert_eq!(response.choices.len(), 1);
+    assert_eq!(response.choices[0].message.role, "assistant");
+    assert!(!response.choices[0].message.content.is_empty());
 }
 
 // ==================== LM STUDIO TESTS ====================

@@ -25,17 +25,27 @@ const GROQ_API_BASE: &str = "https://api.groq.com/openai/v1";
 pub struct GroqProvider {
     client: Client,
     api_key: String,
+    base_url: String,
 }
 
 impl GroqProvider {
     /// Create a new Groq provider with an API key
     pub fn new(api_key: String) -> AppResult<Self> {
+        Self::with_base_url(api_key, GROQ_API_BASE.to_string())
+    }
+
+    /// Create a new Groq provider with a custom base URL (for testing)
+    pub fn with_base_url(api_key: String, base_url: String) -> AppResult<Self> {
         let client = Client::builder()
             .timeout(std::time::Duration::from_secs(120))
             .build()
             .map_err(|e| AppError::Provider(format!("Failed to create HTTP client: {}", e)))?;
 
-        Ok(Self { client, api_key })
+        Ok(Self {
+            client,
+            api_key,
+            base_url: base_url.trim_end_matches('/').to_string(),
+        })
     }
 
     /// Create a new Groq provider from stored API key
@@ -215,7 +225,7 @@ impl ModelProvider for GroqProvider {
     }
 
     async fn complete(&self, request: CompletionRequest) -> AppResult<CompletionResponse> {
-        let url = format!("{}/chat/completions", GROQ_API_BASE);
+        let url = format!("{}/chat/completions", self.base_url);
 
         let response = self
             .client
@@ -263,7 +273,7 @@ impl ModelProvider for GroqProvider {
         &self,
         request: CompletionRequest,
     ) -> AppResult<Pin<Box<dyn Stream<Item = AppResult<CompletionChunk>> + Send>>> {
-        let url = format!("{}/chat/completions", GROQ_API_BASE);
+        let url = format!("{}/chat/completions", self.base_url);
 
         let response = self
             .client

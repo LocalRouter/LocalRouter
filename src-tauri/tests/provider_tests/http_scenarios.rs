@@ -291,13 +291,19 @@ async fn test_empty_choices_array() {
     let request = standard_completion_request();
     let result = provider.complete(request).await;
 
-    // This should succeed but have empty choices
-    if let Ok(response) = result {
-        assert_eq!(response.choices.len(), 0);
-    } else {
-        // Some providers might error on empty choices
-        assert!(result.is_err());
-    }
+    // Empty choices should return an error
+    // An empty choices array means the API didn't generate any response,
+    // which is an error condition that should be surfaced to the caller
+    assert!(
+        result.is_err(),
+        "Provider should return error when choices array is empty"
+    );
+
+    let err = result.unwrap_err();
+    assert!(
+        matches!(err, AppError::Provider(_)),
+        "Expected Provider error for empty choices"
+    );
 }
 
 // ==================== NETWORK ERROR TESTS ====================

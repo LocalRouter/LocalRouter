@@ -1073,51 +1073,6 @@ pub async fn delete_oauth_credentials(
 }
 
 // ============================================================================
-// Visualization Commands
-// ============================================================================
-
-/// Get the visualization graph data
-///
-/// Returns a graph structure containing nodes (providers, models, API keys)
-/// and edges (relationships between them) for visualization.
-#[tauri::command]
-pub async fn get_visualization_graph(
-    provider_registry: State<'_, Arc<ProviderRegistry>>,
-    key_manager: State<'_, ApiKeyManager>,
-    config_manager: State<'_, ConfigManager>,
-) -> Result<crate::ui::visualization::VisualizationGraph, String> {
-    // Get all providers
-    let providers = provider_registry.list_providers();
-
-    // Get all models from all providers
-    let models = provider_registry
-        .list_all_models()
-        .await
-        .map_err(|e| e.to_string())?;
-
-    // Get health statuses
-    let health_statuses = provider_registry.get_all_health().await;
-
-    // Get API keys
-    let api_keys = list_api_keys(key_manager.clone()).await?;
-
-    // Get full API key configs (with routing info)
-    let config = config_manager.get();
-    let api_key_configs = config.api_keys.clone();
-
-    // Build the graph
-    let graph = crate::ui::visualization::build_graph(
-        providers,
-        models,
-        api_keys,
-        api_key_configs,
-        health_statuses,
-    );
-
-    Ok(graph)
-}
-
-// ============================================================================
 // Routing Strategy Commands
 // ============================================================================
 

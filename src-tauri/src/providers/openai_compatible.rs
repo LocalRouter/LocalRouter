@@ -274,20 +274,29 @@ impl ModelProvider for OpenAICompatibleProvider {
             .await
             .map_err(|e| AppError::Provider(format!("Failed to parse response: {}", e)))?;
 
+        // Validate choices array is not empty
+        let choices: Vec<CompletionChoice> = openai_response
+            .choices
+            .into_iter()
+            .map(|choice| CompletionChoice {
+                index: choice.index,
+                message: choice.message,
+                finish_reason: choice.finish_reason,
+            })
+            .collect();
+
+        if choices.is_empty() {
+            return Err(AppError::Provider(
+                "API returned no choices in response".to_string(),
+            ));
+        }
+
         Ok(CompletionResponse {
             id: openai_response.id,
             object: openai_response.object,
             created: openai_response.created,
             model: openai_response.model,
-            choices: openai_response
-                .choices
-                .into_iter()
-                .map(|choice| CompletionChoice {
-                    index: choice.index,
-                    message: choice.message,
-                    finish_reason: choice.finish_reason,
-                })
-                .collect(),
+            choices,
             usage: TokenUsage {
                 prompt_tokens: openai_response.usage.prompt_tokens,
                 completion_tokens: openai_response.usage.completion_tokens,
@@ -343,14 +352,32 @@ impl ModelProvider for OpenAICompatibleProvider {
 
         // Parse SSE (Server-Sent Events) stream
         // Use flat_map to handle multiple SSE events in a single byte chunk
-        let stream = response.bytes_stream().flat_map(|result| {
+        // Buffer incomplete lines across HTTP chunks
+        use std::sync::{Arc, Mutex};
+        let line_buffer = Arc::new(Mutex::new(String::new()));
+
+        let stream = response.bytes_stream().flat_map(move |result| {
+            let line_buffer = line_buffer.clone();
+
             let chunks: Vec<AppResult<CompletionChunk>> = match result {
                 Ok(bytes) => {
                     let text = String::from_utf8_lossy(&bytes);
+                    let mut buffer = line_buffer.lock().unwrap();
                     let mut parsed_chunks = Vec::new();
 
-                    // Parse SSE format: "data: {...}\n\n"
-                    for line in text.lines() {
+                    // Append new data to buffer
+                    buffer.push_str(&text);
+
+                    // Process complete lines (those ending with \n)
+                    while let Some(newline_pos) = buffer.find('\n') {
+                        let line = buffer[..newline_pos].to_string();
+                        *buffer = buffer[newline_pos + 1..].to_string();
+
+                        if line.trim().is_empty() {
+                            continue;
+                        }
+
+                        // Parse SSE format: "data: {...}"
                         if let Some(json_str) = line.strip_prefix("data: ") {
                             // Check for [DONE] marker
                             if json_str.trim() == "[DONE]" {

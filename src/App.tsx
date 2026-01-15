@@ -6,11 +6,11 @@ import HomeTab from './components/tabs/HomeTab'
 import ApiKeysTab from './components/tabs/ApiKeysTab'
 import ProvidersTab from './components/tabs/ProvidersTab'
 import ServerTab from './components/tabs/ServerTab'
-import { VisualizationTab } from './components/tabs/VisualizationTab'
+import ModelsTab from './components/tabs/ModelsTab'
 import { PrioritizedListModal } from './components/PrioritizedListModal'
 import { invoke } from '@tauri-apps/api/core'
 
-type Tab = 'home' | 'api-keys' | 'providers' | 'server' | 'visualization'
+type Tab = 'home' | 'server' | 'api-keys' | 'providers' | 'models'
 
 interface ApiKeyInfo {
   id: string
@@ -21,6 +21,7 @@ interface ApiKeyInfo {
 
 function App() {
   const [activeTab, setActiveTab] = useState<Tab>('home')
+  const [activeSubTab, setActiveSubTab] = useState<string | null>(null)
   const [prioritizedListModal, setPrioritizedListModal] = useState<{
     isOpen: boolean
     apiKeyId: string
@@ -30,6 +31,11 @@ function App() {
     apiKeyId: '',
     apiKeyName: '',
   })
+
+  const handleTabChange = (tab: Tab, subTab?: string) => {
+    setActiveTab(tab)
+    setActiveSubTab(subTab || null)
+  }
 
   useEffect(() => {
     // Subscribe to configuration changes
@@ -74,14 +80,22 @@ function App() {
       <Header />
 
       <div className="flex flex-1 overflow-hidden">
-        <Sidebar activeTab={activeTab} onTabChange={setActiveTab} />
+        <Sidebar
+          activeTab={activeTab}
+          activeSubTab={activeSubTab}
+          onTabChange={handleTabChange}
+        />
 
         <main className="flex-1 p-8 overflow-y-auto">
           {activeTab === 'home' && <HomeTab />}
-          {activeTab === 'api-keys' && <ApiKeysTab />}
-          {activeTab === 'providers' && <ProvidersTab />}
           {activeTab === 'server' && <ServerTab />}
-          {activeTab === 'visualization' && <VisualizationTab />}
+          {activeTab === 'api-keys' && (
+            <ApiKeysTab activeSubTab={activeSubTab} />
+          )}
+          {activeTab === 'providers' && (
+            <ProvidersTab activeSubTab={activeSubTab} />
+          )}
+          {activeTab === 'models' && <ModelsTab />}
         </main>
       </div>
 

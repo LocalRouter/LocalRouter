@@ -24,9 +24,18 @@ async fn test_anthropic_list_models() {
 async fn test_anthropic_completion() {
     let mock = AnthropicMockBuilder::new().await.mock_completion().await;
 
-    // Note: We can't easily test this without modifying AnthropicProvider to accept custom base URL
-    // This is a structural test showing how it would work
-    // TODO: Refactor AnthropicProvider to accept custom base_url for testing
+    let provider = AnthropicProvider::with_base_url(
+        "test-key".to_string(),
+        mock.base_url(),
+    )
+    .unwrap();
+
+    let request = standard_completion_request();
+    let response = provider.complete(request).await.unwrap();
+
+    assert_eq!(response.choices.len(), 1);
+    assert_eq!(response.choices[0].message.role, "assistant");
+    assert!(!response.choices[0].message.content.is_empty());
 }
 
 #[tokio::test]
@@ -36,8 +45,22 @@ async fn test_anthropic_streaming() {
         .mock_streaming_completion()
         .await;
 
-    // Similar limitation - AnthropicProvider uses hardcoded base URL
-    // TODO: Refactor to accept custom base_url
+    let provider = AnthropicProvider::with_base_url(
+        "test-key".to_string(),
+        mock.base_url(),
+    )
+    .unwrap();
+
+    let request = standard_streaming_request();
+    let mut stream = provider.stream_complete(request).await.unwrap();
+
+    let mut chunks = Vec::new();
+    while let Some(result) = stream.next().await {
+        chunks.push(result.unwrap());
+    }
+
+    assert!(!chunks.is_empty());
+    assert!(chunks.iter().any(|c| !c.choices.is_empty()));
 }
 
 #[tokio::test]
