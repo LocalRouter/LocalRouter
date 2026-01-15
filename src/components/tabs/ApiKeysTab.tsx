@@ -5,7 +5,7 @@ import Button from '../ui/Button'
 import Badge from '../ui/Badge'
 import Modal from '../ui/Modal'
 import Input from '../ui/Input'
-import Select from '../ui/Select'
+import ModelSelectionTable, { ModelSelectionValue } from '../ModelSelectionTable'
 
 interface ApiKey {
   id: string
@@ -20,24 +20,31 @@ interface Model {
   provider: string
 }
 
-interface Router {
-  name: string
-}
-
 export default function ApiKeysTab() {
   const [apiKeys, setApiKeys] = useState<ApiKey[]>([])
   const [loading, setLoading] = useState(true)
   const [showCreateModal, setShowCreateModal] = useState(false)
   const [showKeyModal, setShowKeyModal] = useState(false)
+  const [showRotateConfirm, setShowRotateConfirm] = useState(false)
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+  const [showEditModelsModal, setShowEditModelsModal] = useState(false)
+  const [rotateKeyId, setRotateKeyId] = useState<string | null>(null)
+  const [deleteKeyId, setDeleteKeyId] = useState<string | null>(null)
+  const [editKeyId, setEditKeyId] = useState<string | null>(null)
   const [newKeyValue, setNewKeyValue] = useState('')
   const [models, setModels] = useState<Model[]>([])
-  const [routers, setRouters] = useState<Router[]>([])
   const [keyCache, setKeyCache] = useState<Map<string, string>>(new Map())
   const [keychainErrors, setKeychainErrors] = useState<Set<string>>(new Set())
+  const [visibleKeys, setVisibleKeys] = useState<Set<string>>(new Set())
+  const [copiedKeyId, setCopiedKeyId] = useState<string | null>(null)
+
+  // Name editing state
+  const [editingNameId, setEditingNameId] = useState<string | null>(null)
+  const [editingNameValue, setEditingNameValue] = useState('')
 
   // Form state
   const [keyName, setKeyName] = useState('')
-  const [selectedModel, setSelectedModel] = useState('')
+  const [modelSelection, setModelSelection] = useState<ModelSelectionValue>({ type: 'all' })
   const [isCreating, setIsCreating] = useState(false)
 
   useEffect(() => {
@@ -66,41 +73,12 @@ export default function ApiKeysTab() {
     }
   }
 
-  const loadRouters = async () => {
-    try {
-      const routerList = await invoke<Router[]>('list_routers')
-      setRouters(routerList)
-    } catch (error) {
-      console.error('Failed to load routers:', error)
-    }
-  }
-
   const handleCreateKey = async (e: React.FormEvent) => {
     e.preventDefault()
-
-    if (!selectedModel) {
-      alert('Please select a model')
-      return
-    }
 
     setIsCreating(true)
 
     try {
-      let modelSelection: any
-
-      if (selectedModel === 'any') {
-        // Use the first available router
-        if (routers.length === 0) {
-          alert('No routers configured. Please configure a router first.')
-          return
-        }
-        modelSelection = { type: 'router', router_name: routers[0].name }
-      } else {
-        const [provider, ...modelParts] = selectedModel.split('/')
-        const model = modelParts.join('/')
-        modelSelection = { type: 'direct_model', provider, model }
-      }
-
       const result = await invoke<[string, ApiKey]>('create_api_key', {
         name: keyName || null,
         modelSelection,
@@ -113,7 +91,7 @@ export default function ApiKeysTab() {
       setShowCreateModal(false)
       setShowKeyModal(true)
       setKeyName('')
-      setSelectedModel('')
+      setModelSelection({ type: 'all' })
       await loadApiKeys()
     } catch (error) {
       console.error('Failed to create API key:', error)
@@ -123,37 +101,96 @@ export default function ApiKeysTab() {
     }
   }
 
-  const handleDeleteKey = async (id: string) => {
-    if (!confirm('Delete this API key? This action cannot be undone and will immediately revoke access.')) {
-      return
-    }
+  const handleDeleteKeyRequest = (id: string) => {
+    setDeleteKeyId(id)
+    setShowDeleteConfirm(true)
+  }
+
+  const handleDeleteKeyConfirm = async () => {
+    if (!deleteKeyId) return
+
+    setShowDeleteConfirm(false)
 
     try {
-      await invoke('delete_api_key', { id })
+      await invoke('delete_api_key', { id: deleteKeyId })
       setKeyCache((cache) => {
         const newCache = new Map(cache)
-        newCache.delete(id)
+        newCache.delete(deleteKeyId)
         return newCache
       })
       await loadApiKeys()
+      setDeleteKeyId(null)
       alert('API key deleted successfully')
     } catch (error) {
       console.error('Failed to delete API key:', error)
       alert(`Error deleting API key: ${error}`)
+      setDeleteKeyId(null)
     }
   }
 
-  const handleShowKey = async (id: string) => {
-    if (keyCache.has(id) || keychainErrors.has(id)) return
+  const handleDeleteKeyCancel = () => {
+    setShowDeleteConfirm(false)
+    setDeleteKeyId(null)
+  }
+
+  const handleRotateKeyRequest = (id: string) => {
+    setRotateKeyId(id)
+    setShowRotateConfirm(true)
+  }
+
+  const handleRotateKeyConfirm = async () => {
+    if (!rotateKeyId) return
+
+    setShowRotateConfirm(false)
 
     try {
-      const key = await invoke<string>('get_api_key_value', { id })
-      setKeyCache(new Map(keyCache.set(id, key)))
+      const newKey = await invoke<string>('rotate_api_key', { id: rotateKeyId })
+      setNewKeyValue(newKey)
+      setKeyCache(new Map(keyCache.set(rotateKeyId, newKey)))
+      setVisibleKeys(prev => new Set(prev.add(rotateKeyId)))
+      setShowKeyModal(true)
+      setRotateKeyId(null)
+      alert('API key rotated successfully. Make sure to update your applications with the new key.')
     } catch (error) {
-      console.error('Failed to load API key:', error)
-      setKeychainErrors(new Set(keychainErrors.add(id)))
-      alert(`Failed to load API key: ${error}`)
+      console.error('Failed to rotate API key:', error)
+      alert(`Error rotating API key: ${error}`)
+      setRotateKeyId(null)
     }
+  }
+
+  const handleRotateKeyCancel = () => {
+    setShowRotateConfirm(false)
+    setRotateKeyId(null)
+  }
+
+  const handleToggleKeyVisibility = async (id: string) => {
+    if (keychainErrors.has(id)) return
+
+    // If already visible, just hide it
+    if (visibleKeys.has(id)) {
+      setVisibleKeys(prev => {
+        const newSet = new Set(prev)
+        newSet.delete(id)
+        return newSet
+      })
+      return
+    }
+
+    // If not in cache, fetch it
+    if (!keyCache.has(id)) {
+      try {
+        const key = await invoke<string>('get_api_key_value', { id })
+        setKeyCache(new Map(keyCache.set(id, key)))
+      } catch (error) {
+        console.error('Failed to load API key:', error)
+        setKeychainErrors(new Set(keychainErrors.add(id)))
+        alert(`Failed to load API key: ${error}`)
+        return
+      }
+    }
+
+    // Show the key
+    setVisibleKeys(prev => new Set(prev.add(id)))
   }
 
   const handleCopyKey = async (id: string) => {
@@ -178,23 +215,17 @@ export default function ApiKeysTab() {
 
     try {
       await navigator.clipboard.writeText(key)
-      alert('API key copied to clipboard!')
+      setCopiedKeyId(id)
+      setTimeout(() => setCopiedKeyId(null), 2000)
     } catch (error) {
       console.error('Failed to copy:', error)
       alert('Failed to copy key to clipboard')
     }
   }
 
-  const formatModelSelection = (selection: any) => {
-    if (typeof selection === 'string') return selection
-    if (selection.type === 'router') return 'All'
-    if (selection.type === 'direct_model') return `${selection.provider}/${selection.model}`
-    return 'Unknown'
-  }
-
   const handleOpenCreateModal = async () => {
     await loadModels()
-    await loadRouters()
+    setModelSelection({ type: 'all' }) // Reset to "All" when opening
     setShowCreateModal(true)
   }
 
@@ -207,12 +238,115 @@ export default function ApiKeysTab() {
     }
   }
 
-  // Group models by provider
-  const groupedModels: Record<string, Model[]> = models.reduce((acc, model) => {
-    if (!acc[model.provider]) acc[model.provider] = []
-    acc[model.provider].push(model)
-    return acc
-  }, {} as Record<string, Model[]>)
+  const handleOpenEditModelsModal = async (keyId: string) => {
+    const key = apiKeys.find(k => k.id === keyId)
+    if (!key) return
+
+    await loadModels()
+    setEditKeyId(keyId)
+    setModelSelection(key.model_selection || { type: 'all' })
+    setShowEditModelsModal(true)
+  }
+
+  const handleSaveModelSelection = async () => {
+    if (!editKeyId) return
+
+    setIsCreating(true)
+
+    try {
+      await invoke('update_api_key_model', {
+        id: editKeyId,
+        modelSelection,
+      })
+
+      await loadApiKeys()
+      setShowEditModelsModal(false)
+      setEditKeyId(null)
+      alert('Model selection updated successfully')
+    } catch (error) {
+      console.error('Failed to update model selection:', error)
+      alert(`Error updating model selection: ${error}`)
+    } finally {
+      setIsCreating(false)
+    }
+  }
+
+  const handleToggleEnabled = async (id: string, currentEnabled: boolean) => {
+    try {
+      await invoke('toggle_api_key_enabled', {
+        id,
+        enabled: !currentEnabled,
+      })
+
+      await loadApiKeys()
+    } catch (error) {
+      console.error('Failed to toggle API key:', error)
+      alert(`Error toggling API key: ${error}`)
+    }
+  }
+
+  const handleStartEditName = (id: string, currentName: string) => {
+    setEditingNameId(id)
+    setEditingNameValue(currentName)
+  }
+
+  const handleCancelEditName = () => {
+    setEditingNameId(null)
+    setEditingNameValue('')
+  }
+
+  const handleSaveName = async (id: string) => {
+    if (editingNameValue.trim() === '') {
+      alert('API key name cannot be empty')
+      return
+    }
+
+    try {
+      await invoke('update_api_key_name', {
+        id,
+        name: editingNameValue.trim(),
+      })
+
+      await loadApiKeys()
+      setEditingNameId(null)
+      setEditingNameValue('')
+    } catch (error) {
+      console.error('Failed to update API key name:', error)
+      alert(`Error updating API key name: ${error}`)
+    }
+  }
+
+  const handleNameKeyDown = (e: React.KeyboardEvent, id: string) => {
+    if (e.key === 'Enter') {
+      handleSaveName(id)
+    } else if (e.key === 'Escape') {
+      handleCancelEditName()
+    }
+  }
+
+  const formatModelSelectionDetailed = (selection: any) => {
+    if (!selection) return []
+    if (selection.type === 'all') return ['All providers and models']
+
+    if (selection.type === 'custom') {
+      const providers = selection.all_provider_models || []
+      const models = selection.individual_models || []
+
+      const items: string[] = []
+
+      if (providers.length > 0) {
+        items.push(...providers.map((p: string) => `${p}/* (all models)`))
+      }
+
+      if (models.length > 0) {
+        items.push(...models.map(([provider, model]: [string, string]) => `${provider}/${model}`))
+      }
+
+      return items.length > 0 ? items : ['No models selected']
+    }
+
+    return ['Unknown selection']
+  }
 
   return (
     <div>
@@ -235,24 +369,95 @@ export default function ApiKeysTab() {
               const keyValue = keyCache.get(key.id) || ''
               const hasError = keychainErrors.has(key.id)
 
+              const modelDetails = formatModelSelectionDetailed(key.model_selection)
+
               return (
                 <li key={key.id} className="bg-gray-50 border border-gray-200 rounded-lg p-4">
                   <div className="flex justify-between items-start mb-2">
-                    <div>
-                      <h3 className="text-base font-semibold text-gray-900">{key.name}</h3>
+                    <div className="flex-1">
+                      {editingNameId === key.id ? (
+                        <div className="flex items-center gap-2 mb-1">
+                          <input
+                            type="text"
+                            value={editingNameValue}
+                            onChange={(e) => setEditingNameValue(e.target.value)}
+                            onKeyDown={(e) => handleNameKeyDown(e, key.id)}
+                            onBlur={() => handleSaveName(key.id)}
+                            autoFocus
+                            className="text-base font-semibold text-gray-900 px-2 py-1 border border-blue-500 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          />
+                          <button
+                            onClick={() => handleSaveName(key.id)}
+                            className="px-2 py-1 bg-blue-600 text-white text-sm rounded hover:bg-blue-700"
+                          >
+                            Save
+                          </button>
+                          <button
+                            onClick={handleCancelEditName}
+                            className="px-2 py-1 bg-gray-300 text-gray-700 text-sm rounded hover:bg-gray-400"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-2 group mb-1">
+                          <h3 className="text-base font-semibold text-gray-900">{key.name}</h3>
+                          <button
+                            onClick={() => handleStartEditName(key.id, key.name)}
+                            className="opacity-0 group-hover:opacity-100 transition-opacity px-1.5 py-0.5 text-xs text-gray-600 hover:text-blue-600"
+                            title="Edit name"
+                          >
+                            ✏️
+                          </button>
+                        </div>
+                      )}
                       <p className="text-sm text-gray-500 mt-1">
                         ID: {key.id.substring(0, 8)}... |{' '}
-                        {formatModelSelection(key.model_selection)} |{' '}
                         Created: {new Date(key.created_at).toLocaleDateString()}
                       </p>
+
+                      {/* Model Selection - Always Visible */}
+                      <div className="mt-2">
+                        <p className="text-sm font-medium text-gray-700 mb-1">
+                          Model Selection:
+                        </p>
+                        <div className="pl-2 border-l-2 border-gray-300">
+                          <div className="text-sm text-gray-600 space-y-0.5">
+                            {modelDetails.map((item, idx) => (
+                              <div key={idx} className="font-mono">{item}</div>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
                     </div>
                     <div className="flex gap-2 items-center">
                       <Badge variant={key.enabled ? 'success' : 'error'}>
                         {key.enabled ? 'Enabled' : 'Disabled'}
                       </Badge>
                       <Button
+                        variant={key.enabled ? 'secondary' : 'primary'}
+                        onClick={() => handleToggleEnabled(key.id, key.enabled)}
+                        className="px-3 py-1.5 text-xs"
+                      >
+                        {key.enabled ? 'Disable' : 'Enable'}
+                      </Button>
+                      <Button
+                        variant="secondary"
+                        onClick={() => handleOpenEditModelsModal(key.id)}
+                        className="px-3 py-1.5 text-xs"
+                      >
+                        Edit Models
+                      </Button>
+                      <Button
+                        variant="secondary"
+                        onClick={() => handleRotateKeyRequest(key.id)}
+                        className="px-3 py-1.5 text-xs"
+                      >
+                        Rotate
+                      </Button>
+                      <Button
                         variant="danger"
-                        onClick={() => handleDeleteKey(key.id)}
+                        onClick={() => handleDeleteKeyRequest(key.id)}
                         className="px-3 py-1.5 text-xs"
                       >
                         Delete
@@ -262,31 +467,29 @@ export default function ApiKeysTab() {
 
                   {hasError ? (
                     <div className="mt-3 px-3 py-2 bg-red-50 border border-red-200 rounded-md text-sm text-red-700">
-                      ⚠️ Key not found in keychain. This key may have been created before keychain support was added.
+                      ⚠️ Key not found in keychain. This key may have expired.
                     </div>
                   ) : (
                     <div className="flex items-center gap-2 mt-3 px-2 py-2 bg-white border border-gray-200 rounded-md">
                       <input
-                        type={hasKey ? 'password' : 'password'}
+                        type={visibleKeys.has(key.id) ? 'text' : 'password'}
                         value={hasKey ? keyValue : '••••••••••••••••'}
                         readOnly
                         className="flex-1 font-mono text-sm px-2 bg-transparent text-gray-900 border-none outline-none"
                       />
-                      {!hasKey ? (
-                        <button
-                          onClick={() => handleShowKey(key.id)}
-                          className="px-2 py-1 hover:bg-gray-100 rounded text-xl"
-                          title="Show"
-                        >
-                          👁️
-                        </button>
-                      ) : null}
+                      <button
+                        onClick={() => handleToggleKeyVisibility(key.id)}
+                        className="px-2 py-1 hover:bg-gray-100 rounded text-xl"
+                        title={visibleKeys.has(key.id) ? "Hide" : "Show"}
+                      >
+                        {visibleKeys.has(key.id) ? '🙈' : '👁️'}
+                      </button>
                       <button
                         onClick={() => handleCopyKey(key.id)}
                         className="px-2 py-1 hover:bg-gray-100 rounded text-xl"
                         title="Copy"
                       >
-                        📋
+                        {copiedKeyId === key.id ? '✅' : '📋'}
                       </button>
                     </div>
                   )}
@@ -311,31 +514,20 @@ export default function ApiKeysTab() {
             onChange={(e) => setKeyName(e.target.value)}
           />
 
-          <Select
-            label="Select Model"
-            value={selectedModel}
-            onChange={(e) => setSelectedModel(e.target.value)}
-            required
-            helperText="Select 'All' for smart routing, or choose a specific model. Make sure the provider is enabled in the Providers tab."
-          >
-            <option value="">Select a model...</option>
-            <option value="any">All</option>
-            <option disabled>──────────</option>
-            {Object.keys(groupedModels).sort().map((provider) => (
-              <optgroup key={provider} label={provider}>
-                {groupedModels[provider].map((model) => (
-                  <option key={`${provider}/${model.id}`} value={`${provider}/${model.id}`}>
-                    {model.id}
-                  </option>
-                ))}
-              </optgroup>
-            ))}
-            {models.length === 0 && (
-              <option disabled className="text-gray-400 text-sm">
-                No specific models available - enable providers in Providers tab
-              </option>
-            )}
-          </Select>
+          <div className="mt-4">
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Model Selection
+            </label>
+            <p className="text-sm text-gray-500 mb-3">
+              Select which models this API key can access. Check "All" to allow all providers and models (including future ones),
+              check individual providers to allow all their models, or check specific models for fine-grained control.
+            </p>
+            <ModelSelectionTable
+              models={models}
+              value={modelSelection}
+              onChange={setModelSelection}
+            />
+          </div>
 
           <div className="flex gap-2 mt-6">
             <Button type="submit" disabled={isCreating}>
@@ -368,6 +560,82 @@ export default function ApiKeysTab() {
           <Button onClick={copyNewKey}>Copy to Clipboard</Button>
           <Button variant="secondary" onClick={() => setShowKeyModal(false)}>
             Close
+          </Button>
+        </div>
+      </Modal>
+
+      {/* Rotate Key Confirmation Modal */}
+      <Modal
+        isOpen={showRotateConfirm}
+        onClose={handleRotateKeyCancel}
+        title="Rotate API Key"
+      >
+        <p className="text-gray-600 mb-4">
+          Are you sure you want to rotate this API key?
+        </p>
+        <p className="text-gray-700 mb-6 font-semibold">
+          The old key will be immediately invalidated and a new key will be generated.
+          You'll need to update all applications using this key.
+        </p>
+        <div className="flex gap-2">
+          <Button onClick={handleRotateKeyConfirm}>
+            Yes, Rotate Key
+          </Button>
+          <Button variant="secondary" onClick={handleRotateKeyCancel}>
+            Cancel
+          </Button>
+        </div>
+      </Modal>
+
+      {/* Delete Key Confirmation Modal */}
+      <Modal
+        isOpen={showDeleteConfirm}
+        onClose={handleDeleteKeyCancel}
+        title="Delete API Key"
+      >
+        <p className="text-gray-600 mb-4">
+          Are you sure you want to delete this API key?
+        </p>
+        <p className="text-red-700 mb-6 font-semibold">
+          This action cannot be undone and will immediately revoke access for all applications using this key.
+        </p>
+        <div className="flex gap-2">
+          <Button variant="danger" onClick={handleDeleteKeyConfirm}>
+            Yes, Delete Key
+          </Button>
+          <Button variant="secondary" onClick={handleDeleteKeyCancel}>
+            Cancel
+          </Button>
+        </div>
+      </Modal>
+
+      {/* Edit Models Modal */}
+      <Modal
+        isOpen={showEditModelsModal}
+        onClose={() => setShowEditModelsModal(false)}
+        title="Edit Model Selection"
+      >
+        <div className="mb-4">
+          <p className="text-sm text-gray-600 mb-3">
+            Update which models this API key can access. Check "All" to allow all providers and models,
+            check individual providers to allow all their models, or check specific models for fine-grained control.
+          </p>
+          <ModelSelectionTable
+            models={models}
+            value={modelSelection}
+            onChange={setModelSelection}
+          />
+        </div>
+
+        <div className="flex gap-2 mt-6">
+          <Button onClick={handleSaveModelSelection} disabled={isCreating}>
+            {isCreating ? 'Saving...' : 'Save Changes'}
+          </Button>
+          <Button
+            variant="secondary"
+            onClick={() => setShowEditModelsModal(false)}
+          >
+            Cancel
           </Button>
         </div>
       </Modal>

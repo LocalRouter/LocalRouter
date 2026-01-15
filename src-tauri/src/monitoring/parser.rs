@@ -505,7 +505,6 @@ mod tests {
     fn test_aggregate_by_minute() {
         let parser = LogParser::new(PathBuf::from("/tmp"), 300);
 
-        let now = Utc::now();
         let entries = vec![
             AccessLogEntry::success("key1", "openai", "gpt-4", 100, 200, 0.05, 1000, "req1"),
             AccessLogEntry::success("key1", "openai", "gpt-4", 150, 250, 0.06, 1100, "req2"),

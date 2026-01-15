@@ -10,7 +10,7 @@ export default defineConfig({
 
   server: {
     port: 1420,
-    strictPort: true,
+    strictPort: false, // Allow automatic port selection if 1420 is in use
     watch: {
       ignored: ['**/src-tauri/**'],
     },

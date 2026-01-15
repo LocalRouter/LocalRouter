@@ -177,21 +177,52 @@ fn validate_cross_references(config: &AppConfig) -> AppResult<()> {
 
     // Validate API key model selections reference valid routers/providers
     for key in &config.api_keys {
-        match &key.model_selection {
-            ModelSelection::Router { router_name } => {
-                if !router_names.contains(router_name.as_str()) {
-                    return Err(AppError::Config(format!(
-                        "API key '{}' references non-existent router '{}'",
-                        key.name, router_name
-                    )));
+        // Model selection is optional - only validate if present
+        if let Some(model_selection) = &key.model_selection {
+            match model_selection {
+                ModelSelection::All => {
+                    // All models allowed - nothing to validate
                 }
-            }
-            ModelSelection::DirectModel { provider, .. } => {
-                if !provider_names.contains(provider.as_str()) {
-                    return Err(AppError::Config(format!(
-                        "API key '{}' references non-existent provider '{}'",
-                        key.name, provider
-                    )));
+                ModelSelection::Custom {
+                    all_provider_models,
+                    individual_models,
+                } => {
+                    // Validate provider names
+                    for provider in all_provider_models {
+                        if !provider_names.contains(provider.as_str()) {
+                            return Err(AppError::Config(format!(
+                                "API key '{}' references non-existent provider '{}' in model selection",
+                                key.name, provider
+                            )));
+                        }
+                    }
+                    // Validate individual model providers
+                    for (provider, _model) in individual_models {
+                        if !provider_names.contains(provider.as_str()) {
+                            return Err(AppError::Config(format!(
+                                "API key '{}' references non-existent provider '{}' in model selection",
+                                key.name, provider
+                            )));
+                        }
+                    }
+                }
+                #[allow(deprecated)]
+                ModelSelection::Router { router_name } => {
+                    if !router_names.contains(router_name.as_str()) {
+                        return Err(AppError::Config(format!(
+                            "API key '{}' references non-existent router '{}'",
+                            key.name, router_name
+                        )));
+                    }
+                }
+                #[allow(deprecated)]
+                ModelSelection::DirectModel { provider, .. } => {
+                    if !provider_names.contains(provider.as_str()) {
+                        return Err(AppError::Config(format!(
+                            "API key '{}' references non-existent provider '{}'",
+                            key.name, provider
+                        )));
+                    }
                 }
             }
         }
@@ -242,7 +273,7 @@ mod tests {
     #[test]
     fn test_validate_duplicate_api_key_ids() {
         let mut config = AppConfig::default();
-        let key1 = ApiKeyConfig::new(
+        let key1 = ApiKeyConfig::with_model(
             "key1".to_string(),
             ModelSelection::Router {
                 router_name: "Minimum Cost".to_string(),
@@ -258,7 +289,7 @@ mod tests {
     #[test]
     fn test_validate_empty_api_key_name() {
         let mut config = AppConfig::default();
-        let key = ApiKeyConfig::new(
+        let key = ApiKeyConfig::with_model(
             String::new(),
             ModelSelection::Router {
                 router_name: "Minimum Cost".to_string(),
@@ -319,7 +350,7 @@ mod tests {
     #[test]
     fn test_validate_api_key_references_nonexistent_router() {
         let mut config = AppConfig::default();
-        let key = ApiKeyConfig::new(
+        let key = ApiKeyConfig::with_model(
             "test".to_string(),
             ModelSelection::Router {
                 router_name: "NonExistent".to_string(),
@@ -332,7 +363,7 @@ mod tests {
     #[test]
     fn test_validate_api_key_references_nonexistent_provider() {
         let mut config = AppConfig::default();
-        let key = ApiKeyConfig::new(
+        let key = ApiKeyConfig::with_model(
             "test".to_string(),
             ModelSelection::DirectModel {
                 provider: "NonExistent".to_string(),

@@ -342,11 +342,12 @@ impl ModelProvider for OpenAICompatibleProvider {
         }
 
         // Parse SSE (Server-Sent Events) stream
-        let stream = response.bytes_stream().map(|result| {
-            result
-                .map_err(|e| AppError::Provider(format!("Stream error: {}", e)))
-                .and_then(|bytes| {
+        // Use flat_map to handle multiple SSE events in a single byte chunk
+        let stream = response.bytes_stream().flat_map(|result| {
+            let chunks: Vec<AppResult<CompletionChunk>> = match result {
+                Ok(bytes) => {
                     let text = String::from_utf8_lossy(&bytes);
+                    let mut parsed_chunks = Vec::new();
 
                     // Parse SSE format: "data: {...}\n\n"
                     for line in text.lines() {
@@ -357,37 +358,43 @@ impl ModelProvider for OpenAICompatibleProvider {
                             }
 
                             // Parse JSON chunk
-                            let openai_chunk: OpenAIStreamChunk = serde_json::from_str(json_str)
-                                .map_err(|e| {
-                                    AppError::Provider(format!("Failed to parse chunk: {}", e))
-                                })?;
-
-                            return Ok(CompletionChunk {
-                                id: openai_chunk.id,
-                                object: openai_chunk.object,
-                                created: openai_chunk.created,
-                                model: openai_chunk.model,
-                                choices: openai_chunk
-                                    .choices
-                                    .into_iter()
-                                    .map(|choice| ChunkChoice {
-                                        index: choice.index,
-                                        delta: ChunkDelta {
-                                            role: choice.delta.role,
-                                            content: choice.delta.content,
-                                        },
-                                        finish_reason: choice.finish_reason,
-                                    })
-                                    .collect(),
-                            });
+                            match serde_json::from_str::<OpenAIStreamChunk>(json_str) {
+                                Ok(openai_chunk) => {
+                                    parsed_chunks.push(Ok(CompletionChunk {
+                                        id: openai_chunk.id,
+                                        object: openai_chunk.object,
+                                        created: openai_chunk.created,
+                                        model: openai_chunk.model,
+                                        choices: openai_chunk
+                                            .choices
+                                            .into_iter()
+                                            .map(|choice| ChunkChoice {
+                                                index: choice.index,
+                                                delta: ChunkDelta {
+                                                    role: choice.delta.role,
+                                                    content: choice.delta.content,
+                                                },
+                                                finish_reason: choice.finish_reason,
+                                            })
+                                            .collect(),
+                                    }));
+                                }
+                                Err(e) => {
+                                    parsed_chunks.push(Err(AppError::Provider(format!(
+                                        "Failed to parse chunk: {}",
+                                        e
+                                    ))));
+                                }
+                            }
                         }
                     }
 
-                    // No valid chunk found in this batch
-                    Err(AppError::Provider(
-                        "No valid chunk found in stream".to_string(),
-                    ))
-                })
+                    parsed_chunks
+                }
+                Err(e) => vec![Err(AppError::Provider(format!("Stream error: {}", e)))],
+            };
+
+            futures::stream::iter(chunks)
         });
 
         Ok(Box::pin(stream))

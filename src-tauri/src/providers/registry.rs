@@ -29,6 +29,9 @@ pub struct ProviderRegistry {
 
     /// Health check manager for all providers
     health_manager: Arc<HealthCheckManager>,
+
+    /// Cached models from all providers (for synchronous access in UI)
+    cached_models: RwLock<Vec<ModelInfo>>,
 }
 
 /// A registered provider instance
@@ -81,6 +84,7 @@ impl ProviderRegistry {
             factories: RwLock::new(HashMap::new()),
             instances: RwLock::new(HashMap::new()),
             health_manager,
+            cached_models: RwLock::new(Vec::new()),
         }
     }
 
@@ -213,6 +217,74 @@ impl ProviderRegistry {
             .collect()
     }
 
+    /// Get provider instance configuration
+    ///
+    /// Used by: UI for editing provider configuration
+    pub fn get_provider_config(&self, instance_name: &str) -> Option<HashMap<String, String>> {
+        self.instances
+            .read()
+            .get(instance_name)
+            .map(|inst| inst.config.clone())
+    }
+
+    /// Update a provider instance configuration
+    ///
+    /// This method:
+    /// 1. Removes the old instance
+    /// 2. Creates a new instance with the updated config
+    /// 3. Preserves the enabled state and created_at timestamp
+    ///
+    /// Used by: UI provider management
+    pub async fn update_provider(
+        &self,
+        instance_name: String,
+        provider_type: String,
+        config: HashMap<String, String>,
+    ) -> AppResult<()> {
+        info!(
+            "Updating provider instance '{}' of type '{}'",
+            instance_name, provider_type
+        );
+
+        // Get the old instance to preserve state
+        let (enabled, created_at) = {
+            let instances = self.instances.read();
+            let instance = instances.get(&instance_name).ok_or_else(|| {
+                AppError::Config(format!("Provider instance '{}' not found", instance_name))
+            })?;
+            (instance.enabled, instance.created_at)
+        };
+
+        // Remove the old instance
+        self.instances.write().remove(&instance_name);
+
+        // Get factory
+        let factory = self.get_factory(&provider_type).ok_or_else(|| {
+            AppError::Config(format!("Unknown provider type: {}", provider_type))
+        })?;
+
+        // Create new provider with updated config
+        let provider = factory.create(instance_name.clone(), config.clone())?;
+
+        // Register with health check manager
+        self.health_manager.register_provider(provider.clone()).await;
+
+        // Store updated instance
+        let instance = ProviderInstance {
+            instance_name: instance_name.clone(),
+            provider_type,
+            provider,
+            config,
+            created_at, // Preserve original creation time
+            enabled,    // Preserve enabled state
+        };
+
+        self.instances.write().insert(instance_name.clone(), instance);
+
+        info!("Successfully updated provider instance: {}", instance_name);
+        Ok(())
+    }
+
     /// Get all enabled providers
     ///
     /// Used by: Smart router for finding available providers
@@ -259,6 +331,25 @@ impl ProviderRegistry {
 
     // ===== MODEL AGGREGATION (for /v1/models endpoint) =====
 
+    /// Get cached models (synchronous, for UI)
+    ///
+    /// Returns the last fetched models without making any network calls.
+    /// If the cache is empty, returns an empty list.
+    /// Call `refresh_model_cache()` to update the cache.
+    pub fn get_cached_models(&self) -> Vec<ModelInfo> {
+        self.cached_models.read().clone()
+    }
+
+    /// Refresh the model cache (asynchronous)
+    ///
+    /// Fetches models from all enabled providers and updates the cache.
+    /// This should be called after providers are loaded or when models change.
+    pub async fn refresh_model_cache(&self) -> AppResult<()> {
+        let models = self.list_all_models().await?;
+        *self.cached_models.write() = models;
+        Ok(())
+    }
+
     /// List all models from all enabled providers
     ///
     /// This is the main method for GET /v1/models endpoint.
@@ -266,19 +357,29 @@ impl ProviderRegistry {
     ///
     /// Returns: Combined list of ModelInfo from all providers
     pub async fn list_all_models(&self) -> AppResult<Vec<ModelInfo>> {
-        let enabled_providers = self.get_enabled_providers();
+        let enabled_instances: Vec<(String, Arc<dyn ModelProvider>)> = self
+            .instances
+            .read()
+            .values()
+            .filter(|inst| inst.enabled)
+            .map(|inst| (inst.instance_name.clone(), inst.provider.clone()))
+            .collect();
 
         let mut all_models = Vec::new();
 
-        for provider in enabled_providers {
+        for (instance_name, provider) in enabled_instances {
             match provider.list_models().await {
-                Ok(models) => {
+                Ok(mut models) => {
+                    // Override provider field with instance name
+                    for model in &mut models {
+                        model.provider = instance_name.clone();
+                    }
                     all_models.extend(models);
                 }
                 Err(e) => {
                     warn!(
                         "Failed to list models from provider '{}': {}",
-                        provider.name(),
+                        instance_name,
                         e
                     );
                     // Continue with other providers
@@ -298,7 +399,14 @@ impl ProviderRegistry {
             AppError::Config(format!("Provider instance '{}' not found", instance_name))
         })?;
 
-        provider.list_models().await
+        let mut models = provider.list_models().await?;
+
+        // Override provider field with instance name
+        for model in &mut models {
+            model.provider = instance_name.to_string();
+        }
+
+        Ok(models)
     }
 
     // ===== HEALTH CHECKS =====

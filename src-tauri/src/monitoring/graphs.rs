@@ -381,7 +381,8 @@ mod tests {
         let now = Utc::now();
         (0..count)
             .map(|i| {
-                let point = MetricDataPoint {
+                
+                MetricDataPoint {
                     timestamp: now - Duration::minutes((count - i - 1) as i64),
                     requests: (i + 1) as u64,
                     input_tokens: (i + 1) as u64 * 100,
@@ -392,8 +393,7 @@ mod tests {
                     successful_requests: (i + 1) as u64,
                     failed_requests: 0,
                     latency_samples: vec![(i + 1) as u64 * 100],
-                };
-                point
+                }
             })
             .collect()
     }

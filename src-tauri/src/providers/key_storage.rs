@@ -6,11 +6,24 @@
 //! - Linux: Secret Service / keyutils
 //!
 //! Keys are stored with service="LocalRouter-Providers" and username=provider_name.
+//!
+//! Uses CachedKeychain to avoid repeated password prompts.
 
+use crate::api_keys::keychain_trait::{CachedKeychain, KeychainStorage};
 use crate::utils::errors::{AppError, AppResult};
+use std::sync::OnceLock;
 use tracing::{debug, warn};
 
 const KEYRING_SERVICE: &str = "LocalRouter-Providers";
+
+/// Global cached keychain instance for provider keys
+/// This ensures all provider key access goes through a single cached instance
+static PROVIDER_KEYCHAIN: OnceLock<CachedKeychain> = OnceLock::new();
+
+/// Get the global provider keychain instance (with caching)
+fn get_keychain() -> &'static CachedKeychain {
+    PROVIDER_KEYCHAIN.get_or_init(|| CachedKeychain::system())
+}
 
 /// Store a provider API key in the system keyring
 ///
@@ -21,16 +34,14 @@ const KEYRING_SERVICE: &str = "LocalRouter-Providers";
 /// # Returns
 /// * `Ok(())` if successful
 /// * `Err(AppError)` if keyring access fails
+///
+/// Note: Uses CachedKeychain which automatically caches the key in memory
 pub fn store_provider_key(provider_name: &str, api_key: &str) -> AppResult<()> {
-    let entry = keyring::Entry::new(KEYRING_SERVICE, provider_name)
-        .map_err(|e| AppError::Internal(format!("Failed to access keyring: {}", e)))?;
-
-    entry
-        .set_password(api_key)
-        .map_err(|e| AppError::Internal(format!("Failed to store provider key: {}", e)))?;
+    let keychain = get_keychain();
+    keychain.store(KEYRING_SERVICE, provider_name, api_key)?;
 
     debug!(
-        "Stored API key for provider '{}' in system keyring",
+        "Stored API key for provider '{}' in system keyring (cached)",
         provider_name
     );
     Ok(())
@@ -45,27 +56,23 @@ pub fn store_provider_key(provider_name: &str, api_key: &str) -> AppResult<()> {
 /// * `Ok(Some(key))` if key exists
 /// * `Ok(None)` if key doesn't exist
 /// * `Err(AppError)` if keyring access fails
+///
+/// Note: First access prompts for keychain password, then cached in memory
+/// for the lifetime of the application process.
 pub fn get_provider_key(provider_name: &str) -> AppResult<Option<String>> {
-    let entry = keyring::Entry::new(KEYRING_SERVICE, provider_name)
-        .map_err(|e| AppError::Internal(format!("Failed to access keyring: {}", e)))?;
+    let keychain = get_keychain();
+    let result = keychain.get(KEYRING_SERVICE, provider_name)?;
 
-    match entry.get_password() {
-        Ok(key) => {
-            debug!(
-                "Retrieved API key for provider '{}' from system keyring",
-                provider_name
-            );
-            Ok(Some(key))
-        }
-        Err(keyring::Error::NoEntry) => {
-            debug!("No API key found for provider '{}'", provider_name);
-            Ok(None)
-        }
-        Err(e) => Err(AppError::Internal(format!(
-            "Failed to retrieve provider key: {}",
-            e
-        ))),
+    if result.is_some() {
+        debug!(
+            "Retrieved API key for provider '{}' (from cache or keyring)",
+            provider_name
+        );
+    } else {
+        debug!("No API key found for provider '{}'", provider_name);
     }
+
+    Ok(result)
 }
 
 /// Delete a provider API key from the system keyring
@@ -76,30 +83,17 @@ pub fn get_provider_key(provider_name: &str) -> AppResult<Option<String>> {
 /// # Returns
 /// * `Ok(())` if successful (even if key didn't exist)
 /// * `Err(AppError)` if keyring access fails
+///
+/// Note: Also removes the key from the in-memory cache
 pub fn delete_provider_key(provider_name: &str) -> AppResult<()> {
-    let entry = keyring::Entry::new(KEYRING_SERVICE, provider_name)
-        .map_err(|e| AppError::Internal(format!("Failed to access keyring: {}", e)))?;
+    let keychain = get_keychain();
+    keychain.delete(KEYRING_SERVICE, provider_name)?;
 
-    match entry.delete_credential() {
-        Ok(()) => {
-            debug!(
-                "Deleted API key for provider '{}' from system keyring",
-                provider_name
-            );
-            Ok(())
-        }
-        Err(keyring::Error::NoEntry) => {
-            debug!(
-                "No API key to delete for provider '{}' (already absent)",
-                provider_name
-            );
-            Ok(())
-        }
-        Err(e) => Err(AppError::Internal(format!(
-            "Failed to delete provider key: {}",
-            e
-        ))),
-    }
+    debug!(
+        "Deleted API key for provider '{}' from system keyring and cache",
+        provider_name
+    );
+    Ok(())
 }
 
 /// Check if a provider has an API key stored

@@ -153,20 +153,18 @@ impl HealthCheckManager {
         let provider_name = provider.name().to_string();
         info!("Registering provider for health checks: {}", provider_name);
 
+        // Perform initial health check
+        let initial_health = self.check_provider_health(provider.clone()).await;
+
         // Add to providers list
         self.providers.write().await.push(provider);
 
-        // Initialize cache entry
+        // Initialize cache entry with real health status
         let mut cache = self.cache.write().await;
         cache.insert(
             provider_name.clone(),
             CachedHealth {
-                health: ProviderHealth {
-                    status: HealthStatus::Healthy,
-                    latency_ms: None,
-                    last_checked: Utc::now(),
-                    error_message: None,
-                },
+                health: initial_health,
                 circuit_breaker: CircuitBreaker::new(self.config.clone()),
             },
         );

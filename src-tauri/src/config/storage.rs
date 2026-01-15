@@ -144,7 +144,7 @@ mod tests {
 
         // Verify it's the default
         assert_eq!(config.server.host, "127.0.0.1");
-        assert_eq!(config.server.port, 3000);
+        assert_eq!(config.server.port, 3625);
 
         // Verify file was created
         assert!(config_path.exists());
@@ -171,7 +171,7 @@ mod tests {
         // Verify backup contains original config
         let backup_contents = fs::read_to_string(&backup_path).await.unwrap();
         let backup_config: AppConfig = serde_yaml::from_str(&backup_contents).unwrap();
-        assert_eq!(backup_config.server.port, 3000);
+        assert_eq!(backup_config.server.port, 3625);
     }
 
     #[tokio::test]

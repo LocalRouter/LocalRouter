@@ -4,6 +4,7 @@
 
 pub mod commands;
 pub mod tray;
+pub mod visualization;
 
 // TODO: Implement UI integration
 // - Tauri command handlers

@@ -17,6 +17,15 @@ use super::{
     anthropic::AnthropicProvider,
     gemini::GeminiProvider,
     openrouter::OpenRouterProvider,
+    groq::GroqProvider,
+    mistral::MistralProvider,
+    cohere::CohereProvider,
+    togetherai::TogetherAIProvider,
+    perplexity::PerplexityProvider,
+    deepinfra::DeepInfraProvider,
+    cerebras::CerebrasProvider,
+    xai::XAIProvider,
+    lmstudio::LMStudioProvider,
 };
 use crate::utils::errors::{AppResult, AppError};
 
@@ -459,6 +468,421 @@ impl ProviderFactory for OpenAICompatibleProviderFactory {
             }
         }
 
+        Ok(())
+    }
+}
+
+/// Factory for Groq providers
+pub struct GroqProviderFactory;
+
+impl ProviderFactory for GroqProviderFactory {
+    fn provider_type(&self) -> &str {
+        "groq"
+    }
+
+    fn description(&self) -> &str {
+        "Groq fast inference for open-source models"
+    }
+
+    fn setup_parameters(&self) -> Vec<SetupParameter> {
+        vec![SetupParameter::required(
+            "api_key",
+            ParameterType::ApiKey,
+            "Groq API key",
+            true,
+        )]
+    }
+
+    fn create(
+        &self,
+        _instance_name: String,
+        config: HashMap<String, String>,
+    ) -> AppResult<Arc<dyn ModelProvider>> {
+        self.validate_config(&config)?;
+
+        let api_key = config
+            .get("api_key")
+            .ok_or_else(|| AppError::Config("api_key is required".to_string()))?
+            .clone();
+
+        Ok(Arc::new(GroqProvider::new(api_key)?))
+    }
+
+    fn validate_config(&self, config: &HashMap<String, String>) -> AppResult<()> {
+        if !config.contains_key("api_key") {
+            return Err(AppError::Config("api_key is required".to_string()));
+        }
+        Ok(())
+    }
+}
+
+/// Factory for Mistral providers
+pub struct MistralProviderFactory;
+
+impl ProviderFactory for MistralProviderFactory {
+    fn provider_type(&self) -> &str {
+        "mistral"
+    }
+
+    fn description(&self) -> &str {
+        "Mistral AI models including Mistral Large and Codestral"
+    }
+
+    fn setup_parameters(&self) -> Vec<SetupParameter> {
+        vec![SetupParameter::required(
+            "api_key",
+            ParameterType::ApiKey,
+            "Mistral API key",
+            true,
+        )]
+    }
+
+    fn create(
+        &self,
+        _instance_name: String,
+        config: HashMap<String, String>,
+    ) -> AppResult<Arc<dyn ModelProvider>> {
+        self.validate_config(&config)?;
+
+        let api_key = config
+            .get("api_key")
+            .ok_or_else(|| AppError::Config("api_key is required".to_string()))?
+            .clone();
+
+        Ok(Arc::new(MistralProvider::new(api_key)?))
+    }
+
+    fn validate_config(&self, config: &HashMap<String, String>) -> AppResult<()> {
+        if !config.contains_key("api_key") {
+            return Err(AppError::Config("api_key is required".to_string()));
+        }
+        Ok(())
+    }
+}
+
+/// Factory for Cohere providers
+pub struct CohereProviderFactory;
+
+impl ProviderFactory for CohereProviderFactory {
+    fn provider_type(&self) -> &str {
+        "cohere"
+    }
+
+    fn description(&self) -> &str {
+        "Cohere AI including Command R+ and specialized models"
+    }
+
+    fn setup_parameters(&self) -> Vec<SetupParameter> {
+        vec![SetupParameter::required(
+            "api_key",
+            ParameterType::ApiKey,
+            "Cohere API key",
+            true,
+        )]
+    }
+
+    fn create(
+        &self,
+        _instance_name: String,
+        config: HashMap<String, String>,
+    ) -> AppResult<Arc<dyn ModelProvider>> {
+        self.validate_config(&config)?;
+
+        let api_key = config
+            .get("api_key")
+            .ok_or_else(|| AppError::Config("api_key is required".to_string()))?
+            .clone();
+
+        Ok(Arc::new(CohereProvider::new(api_key)?))
+    }
+
+    fn validate_config(&self, config: &HashMap<String, String>) -> AppResult<()> {
+        if !config.contains_key("api_key") {
+            return Err(AppError::Config("api_key is required".to_string()));
+        }
+        Ok(())
+    }
+}
+
+/// Factory for Together AI providers
+pub struct TogetherAIProviderFactory;
+
+impl ProviderFactory for TogetherAIProviderFactory {
+    fn provider_type(&self) -> &str {
+        "togetherai"
+    }
+
+    fn description(&self) -> &str {
+        "Together AI platform for open-source models"
+    }
+
+    fn setup_parameters(&self) -> Vec<SetupParameter> {
+        vec![SetupParameter::required(
+            "api_key",
+            ParameterType::ApiKey,
+            "Together AI API key",
+            true,
+        )]
+    }
+
+    fn create(
+        &self,
+        _instance_name: String,
+        config: HashMap<String, String>,
+    ) -> AppResult<Arc<dyn ModelProvider>> {
+        self.validate_config(&config)?;
+
+        let api_key = config
+            .get("api_key")
+            .ok_or_else(|| AppError::Config("api_key is required".to_string()))?
+            .clone();
+
+        Ok(Arc::new(TogetherAIProvider::new(api_key)?))
+    }
+
+    fn validate_config(&self, config: &HashMap<String, String>) -> AppResult<()> {
+        if !config.contains_key("api_key") {
+            return Err(AppError::Config("api_key is required".to_string()));
+        }
+        Ok(())
+    }
+}
+
+/// Factory for Perplexity providers
+pub struct PerplexityProviderFactory;
+
+impl ProviderFactory for PerplexityProviderFactory {
+    fn provider_type(&self) -> &str {
+        "perplexity"
+    }
+
+    fn description(&self) -> &str {
+        "Perplexity AI search-augmented models"
+    }
+
+    fn setup_parameters(&self) -> Vec<SetupParameter> {
+        vec![SetupParameter::required(
+            "api_key",
+            ParameterType::ApiKey,
+            "Perplexity API key",
+            true,
+        )]
+    }
+
+    fn create(
+        &self,
+        _instance_name: String,
+        config: HashMap<String, String>,
+    ) -> AppResult<Arc<dyn ModelProvider>> {
+        self.validate_config(&config)?;
+
+        let api_key = config
+            .get("api_key")
+            .ok_or_else(|| AppError::Config("api_key is required".to_string()))?
+            .clone();
+
+        Ok(Arc::new(PerplexityProvider::new(api_key)?))
+    }
+
+    fn validate_config(&self, config: &HashMap<String, String>) -> AppResult<()> {
+        if !config.contains_key("api_key") {
+            return Err(AppError::Config("api_key is required".to_string()));
+        }
+        Ok(())
+    }
+}
+
+/// Factory for DeepInfra providers
+pub struct DeepInfraProviderFactory;
+
+impl ProviderFactory for DeepInfraProviderFactory {
+    fn provider_type(&self) -> &str {
+        "deepinfra"
+    }
+
+    fn description(&self) -> &str {
+        "DeepInfra cost-effective hosting for open-source models"
+    }
+
+    fn setup_parameters(&self) -> Vec<SetupParameter> {
+        vec![SetupParameter::required(
+            "api_key",
+            ParameterType::ApiKey,
+            "DeepInfra API key",
+            true,
+        )]
+    }
+
+    fn create(
+        &self,
+        _instance_name: String,
+        config: HashMap<String, String>,
+    ) -> AppResult<Arc<dyn ModelProvider>> {
+        self.validate_config(&config)?;
+
+        let api_key = config
+            .get("api_key")
+            .ok_or_else(|| AppError::Config("api_key is required".to_string()))?
+            .clone();
+
+        Ok(Arc::new(DeepInfraProvider::new(api_key)?))
+    }
+
+    fn validate_config(&self, config: &HashMap<String, String>) -> AppResult<()> {
+        if !config.contains_key("api_key") {
+            return Err(AppError::Config("api_key is required".to_string()));
+        }
+        Ok(())
+    }
+}
+
+/// Factory for Cerebras providers
+pub struct CerebrasProviderFactory;
+
+impl ProviderFactory for CerebrasProviderFactory {
+    fn provider_type(&self) -> &str {
+        "cerebras"
+    }
+
+    fn description(&self) -> &str {
+        "Cerebras ultra-fast inference platform"
+    }
+
+    fn setup_parameters(&self) -> Vec<SetupParameter> {
+        vec![SetupParameter::required(
+            "api_key",
+            ParameterType::ApiKey,
+            "Cerebras API key",
+            true,
+        )]
+    }
+
+    fn create(
+        &self,
+        _instance_name: String,
+        config: HashMap<String, String>,
+    ) -> AppResult<Arc<dyn ModelProvider>> {
+        self.validate_config(&config)?;
+
+        let api_key = config
+            .get("api_key")
+            .ok_or_else(|| AppError::Config("api_key is required".to_string()))?
+            .clone();
+
+        Ok(Arc::new(CerebrasProvider::new(api_key)?))
+    }
+
+    fn validate_config(&self, config: &HashMap<String, String>) -> AppResult<()> {
+        if !config.contains_key("api_key") {
+            return Err(AppError::Config("api_key is required".to_string()));
+        }
+        Ok(())
+    }
+}
+
+/// Factory for xAI providers
+pub struct XAIProviderFactory;
+
+impl ProviderFactory for XAIProviderFactory {
+    fn provider_type(&self) -> &str {
+        "xai"
+    }
+
+    fn description(&self) -> &str {
+        "xAI Grok models with real-time knowledge access"
+    }
+
+    fn setup_parameters(&self) -> Vec<SetupParameter> {
+        vec![SetupParameter::required(
+            "api_key",
+            ParameterType::ApiKey,
+            "xAI API key",
+            true,
+        )]
+    }
+
+    fn create(
+        &self,
+        _instance_name: String,
+        config: HashMap<String, String>,
+    ) -> AppResult<Arc<dyn ModelProvider>> {
+        self.validate_config(&config)?;
+
+        let api_key = config
+            .get("api_key")
+            .ok_or_else(|| AppError::Config("api_key is required".to_string()))?
+            .clone();
+
+        Ok(Arc::new(XAIProvider::new(api_key)?))
+    }
+
+    fn validate_config(&self, config: &HashMap<String, String>) -> AppResult<()> {
+        if !config.contains_key("api_key") {
+            return Err(AppError::Config("api_key is required".to_string()));
+        }
+        Ok(())
+    }
+}
+
+/// Factory for LM Studio providers
+pub struct LMStudioProviderFactory;
+
+impl ProviderFactory for LMStudioProviderFactory {
+    fn provider_type(&self) -> &str {
+        "lmstudio"
+    }
+
+    fn description(&self) -> &str {
+        "LM Studio local inference with OpenAI-compatible API"
+    }
+
+    fn setup_parameters(&self) -> Vec<SetupParameter> {
+        vec![
+            SetupParameter::optional(
+                "base_url",
+                ParameterType::BaseUrl,
+                "LM Studio API base URL",
+                Some("http://localhost:1234/v1"),
+                false,
+            ),
+            SetupParameter::optional(
+                "api_key",
+                ParameterType::ApiKey,
+                "API key (optional, not required for local LM Studio)",
+                None::<String>,
+                true,
+            ),
+        ]
+    }
+
+    fn create(
+        &self,
+        _instance_name: String,
+        config: HashMap<String, String>,
+    ) -> AppResult<Arc<dyn ModelProvider>> {
+        self.validate_config(&config)?;
+
+        let base_url = config
+            .get("base_url")
+            .cloned()
+            .unwrap_or_else(|| "http://localhost:1234/v1".to_string());
+
+        let api_key = config.get("api_key").cloned();
+
+        Ok(Arc::new(
+            LMStudioProvider::with_base_url(base_url).with_api_key(api_key),
+        ))
+    }
+
+    fn validate_config(&self, config: &HashMap<String, String>) -> AppResult<()> {
+        // Validate base_url format if provided
+        if let Some(url) = config.get("base_url") {
+            if !url.starts_with("http://") && !url.starts_with("https://") {
+                return Err(AppError::Config(
+                    "base_url must start with http:// or https://".to_string(),
+                ));
+            }
+        }
         Ok(())
     }
 }

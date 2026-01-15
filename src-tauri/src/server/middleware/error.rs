@@ -91,6 +91,9 @@ impl From<AppError> for ApiErrorResponse {
             AppError::ApiKey(msg) => {
                 ApiErrorResponse::unauthorized(format!("API key error: {}", msg))
             }
+            AppError::Storage(msg) => {
+                ApiErrorResponse::internal_error(format!("Storage error: {}", msg))
+            }
             AppError::Router(msg) => {
                 ApiErrorResponse::bad_gateway(format!("Router error: {}", msg))
             }

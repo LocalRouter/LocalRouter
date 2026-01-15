@@ -1,4 +1,4 @@
-type Tab = 'home' | 'api-keys' | 'providers'
+type Tab = 'home' | 'api-keys' | 'providers' | 'server' | 'visualization'
 
 interface SidebarProps {
   activeTab: Tab
@@ -10,6 +10,8 @@ export default function Sidebar({ activeTab, onTabChange }: SidebarProps) {
     { id: 'home' as Tab, label: 'Home' },
     { id: 'api-keys' as Tab, label: 'API Keys' },
     { id: 'providers' as Tab, label: 'Providers' },
+    { id: 'server' as Tab, label: 'Server' },
+    { id: 'visualization' as Tab, label: 'Graph View' },
   ]
 
   return (

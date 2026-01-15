@@ -16,6 +16,9 @@ pub enum AppError {
     #[error("API key error: {0}")]
     ApiKey(String),
 
+    #[error("Storage error: {0}")]
+    Storage(String),
+
     #[error("Authentication failed")]
     Unauthorized,
 

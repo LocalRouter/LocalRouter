@@ -4,8 +4,11 @@
 //! Actual keys are stored in the OS keychain, metadata is stored in config.
 
 mod keychain;
+pub mod keychain_trait;
 
-use crate::config::{ApiKeyConfig, ModelSelection};
+pub use keychain_trait::{CachedKeychain, KeychainStorage, MockKeychain, SystemKeychain};
+
+use crate::config::ApiKeyConfig;
 use crate::utils::crypto::generate_api_key;
 use crate::utils::errors::{AppError, AppResult};
 use parking_lot::RwLock;
@@ -14,18 +17,33 @@ use std::sync::Arc;
 /// Thread-safe API key manager
 ///
 /// Stores API key metadata in memory (synced to config file by ConfigManager).
-/// Actual API keys are stored in OS keychain.
-#[derive(Debug, Clone)]
+/// Actual API keys are stored in OS keychain (or mock for testing).
+/// Key values are cached by CachedKeychain to avoid repeated keychain access.
+#[derive(Clone)]
 pub struct ApiKeyManager {
     /// In-memory storage of API key metadata
     keys: Arc<RwLock<Vec<ApiKeyConfig>>>,
     /// Next auto-increment number for default key names
     next_key_number: Arc<RwLock<u32>>,
+    /// Keychain storage implementation (with caching)
+    keychain: Arc<dyn KeychainStorage>,
 }
+
+const API_KEY_SERVICE: &str = "LocalRouter-APIKeys";
 
 impl ApiKeyManager {
     /// Create a new API key manager with existing keys from config
+    /// Uses the cached system keychain by default
     pub fn new(keys: Vec<ApiKeyConfig>) -> Self {
+        Self::with_keychain(keys, Arc::new(CachedKeychain::system()))
+    }
+
+    /// Create a new API key manager with a custom keychain implementation
+    /// Useful for testing with MockKeychain
+    pub fn with_keychain(
+        keys: Vec<ApiKeyConfig>,
+        keychain: Arc<dyn KeychainStorage>,
+    ) -> Self {
         // Calculate next key number based on existing keys
         let next_number = keys
             .iter()
@@ -42,6 +60,7 @@ impl ApiKeyManager {
         Self {
             keys: Arc::new(RwLock::new(keys)),
             next_key_number: Arc::new(RwLock::new(next_number)),
+            keychain,
         }
     }
 
@@ -59,14 +78,14 @@ impl ApiKeyManager {
     ///
     /// # Arguments
     /// * `name` - Optional name for the key. If None, generates "my-app-{number}"
-    /// * `model_selection` - Model or router to use for this key
     ///
     /// # Returns
     /// The generated API key string (lr-...) and the key configuration
+    ///
+    /// Note: Model selection can be set later using update_key()
     pub async fn create_key(
         &self,
         name: Option<String>,
-        model_selection: ModelSelection,
     ) -> AppResult<(String, ApiKeyConfig)> {
         // Generate the actual API key
         let key = generate_api_key()?;
@@ -85,10 +104,14 @@ impl ApiKeyManager {
         };
 
         // Create the config (metadata only)
-        let config = ApiKeyConfig::new(key_name, model_selection);
+        let config = ApiKeyConfig::new(key_name);
 
-        // Store actual key in keychain
-        keychain::store_api_key(&config.id, &key)?;
+        tracing::info!("Storing API key in keychain: service={}, account={}", API_KEY_SERVICE, config.id);
+
+        // Store actual key in keychain (will be cached by CachedKeychain)
+        self.keychain.store(API_KEY_SERVICE, &config.id, &key)?;
+
+        tracing::info!("Successfully stored API key in keychain");
 
         // Add metadata to in-memory storage
         {
@@ -111,17 +134,27 @@ impl ApiKeyManager {
         self.keys.read().iter().find(|k| k.id == id).cloned()
     }
 
-    /// Get the actual API key value from keychain
+    /// Get the actual API key value from keychain (with caching)
     ///
     /// # Arguments
     /// * `id` - The API key ID
     ///
     /// # Returns
-    /// * `Ok(Some(key))` if key exists in keychain
-    /// * `Ok(None)` if key doesn't exist in keychain
+    /// * `Ok(Some(key))` if key exists
+    /// * `Ok(None)` if key doesn't exist
     /// * `Err` on keychain access error
+    ///
+    /// Note: The CachedKeychain automatically caches retrieved values to avoid
+    /// repeated keychain access and password prompts.
     pub fn get_key_value(&self, id: &str) -> AppResult<Option<String>> {
-        keychain::get_api_key(id)
+        tracing::debug!("Retrieving API key: service={}, account={}", API_KEY_SERVICE, id);
+        let result = self.keychain.get(API_KEY_SERVICE, id)?;
+
+        if result.is_none() {
+            tracing::warn!("API key not found in keychain: {}", id);
+        }
+
+        Ok(result)
     }
 
     /// Update an API key's metadata
@@ -149,7 +182,7 @@ impl ApiKeyManager {
 
     /// Delete an API key
     ///
-    /// Removes both metadata and the actual key from keychain.
+    /// Removes both metadata and the actual key from keychain (and cache).
     pub fn delete_key(&self, id: &str) -> AppResult<()> {
         // Remove from metadata
         {
@@ -162,16 +195,49 @@ impl ApiKeyManager {
             }
         }
 
-        // Remove from keychain
-        keychain::delete_api_key(id)?;
+        // Remove from keychain (CachedKeychain will also remove from cache)
+        self.keychain.delete(API_KEY_SERVICE, id)?;
 
         // Note: Caller must save to config file via ConfigManager
         Ok(())
     }
 
+    /// Rotate an API key
+    ///
+    /// Generates a new API key value while keeping the same ID and metadata.
+    /// This is useful for security purposes when a key might have been compromised.
+    ///
+    /// # Arguments
+    /// * `id` - The API key ID to rotate
+    ///
+    /// # Returns
+    /// The new API key string (lr-...)
+    pub async fn rotate_key(&self, id: &str) -> AppResult<String> {
+        // Verify the key exists
+        {
+            let keys = self.keys.read();
+            if !keys.iter().any(|k| k.id == id) {
+                return Err(AppError::ApiKey(format!("API key not found: {}", id)));
+            }
+        }
+
+        tracing::info!("Rotating API key: {}", id);
+
+        // Generate a new API key
+        let new_key = generate_api_key()?;
+
+        // Update keychain with new key (same ID)
+        // CachedKeychain will automatically update the cache
+        self.keychain.store(API_KEY_SERVICE, id, &new_key)?;
+
+        tracing::info!("Successfully rotated API key in keychain");
+
+        Ok(new_key)
+    }
+
     /// Verify an API key string and return the associated configuration
     ///
-    /// This looks up the key in the keychain for all enabled keys
+    /// This looks up the key in keychain (with caching) for all enabled keys
     /// and returns the metadata if a match is found.
     pub fn verify_key(&self, key: &str) -> Option<ApiKeyConfig> {
         let keys = self.keys.read();
@@ -181,15 +247,27 @@ impl ApiKeyManager {
                 continue;
             }
 
-            // Try to get the actual key from keychain
-            if let Ok(Some(stored_key)) = keychain::get_api_key(&key_config.id) {
-                // Constant-time comparison to prevent timing attacks
-                if key == stored_key {
-                    return Some(key_config.clone());
+            // Fetch from keychain (CachedKeychain will use cache if available)
+            let stored_key = match self.get_key_value(&key_config.id) {
+                Ok(Some(k)) => k,
+                Ok(None) => {
+                    tracing::warn!("API key {} not found in keychain", key_config.id);
+                    continue;
                 }
+                Err(e) => {
+                    tracing::error!("Error retrieving key {} from keychain: {:?}", key_config.id, e);
+                    continue;
+                }
+            };
+
+            // Constant-time comparison to prevent timing attacks
+            if key == stored_key {
+                tracing::info!("API key verified successfully: {}", key_config.id);
+                return Some(key_config.clone());
             }
         }
 
+        tracing::warn!("API key verification failed - no matching key found");
         None
     }
 
@@ -204,21 +282,14 @@ impl ApiKeyManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serial_test::serial;
 
     #[tokio::test]
-    #[serial]
     async fn test_create_key() {
-        let manager = ApiKeyManager::new(vec![]);
+        let keychain = Arc::new(MockKeychain::new());
+        let manager = ApiKeyManager::with_keychain(vec![], keychain.clone());
 
         let result = manager
-            .create_key(
-                Some("test-key".to_string()),
-                ModelSelection::DirectModel {
-                    provider: "ollama".to_string(),
-                    model: "llama2".to_string(),
-                },
-            )
+            .create_key(Some("test-key".to_string()))
             .await;
 
         assert!(result.is_ok());
@@ -231,23 +302,18 @@ mod tests {
         assert_eq!(config.name, "test-key");
         assert!(config.enabled);
 
-        // Cleanup
-        let _ = keychain::delete_api_key(&config.id);
+        // Verify key is in mock keychain
+        let stored_key = keychain.get(API_KEY_SERVICE, &config.id).unwrap().unwrap();
+        assert_eq!(stored_key, key);
     }
 
     #[tokio::test]
-    #[serial]
     async fn test_verify_key() {
-        let manager = ApiKeyManager::new(vec![]);
+        let keychain = Arc::new(MockKeychain::new());
+        let manager = ApiKeyManager::with_keychain(vec![], keychain);
 
         let (key, config) = manager
-            .create_key(
-                None,
-                ModelSelection::DirectModel {
-                    provider: "ollama".to_string(),
-                    model: "llama2".to_string(),
-                },
-            )
+            .create_key(None)
             .await
             .unwrap();
 
@@ -259,24 +325,15 @@ mod tests {
         // Verify with wrong key
         let verified = manager.verify_key("wrong-key");
         assert!(verified.is_none());
-
-        // Cleanup
-        let _ = keychain::delete_api_key(&config.id);
     }
 
     #[tokio::test]
-    #[serial]
     async fn test_delete_key() {
-        let manager = ApiKeyManager::new(vec![]);
+        let keychain = Arc::new(MockKeychain::new());
+        let manager = ApiKeyManager::with_keychain(vec![], keychain.clone());
 
         let (_, config) = manager
-            .create_key(
-                None,
-                ModelSelection::DirectModel {
-                    provider: "ollama".to_string(),
-                    model: "llama2".to_string(),
-                },
-            )
+            .create_key(None)
             .await
             .unwrap();
 
@@ -288,7 +345,7 @@ mod tests {
         assert!(manager.get_key(&config.id).is_none());
 
         // Verify it's gone from keychain
-        let key_value = keychain::get_api_key(&config.id).unwrap();
+        let key_value = keychain.get(API_KEY_SERVICE, &config.id).unwrap();
         assert!(key_value.is_none());
     }
 }

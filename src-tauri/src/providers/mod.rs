@@ -11,15 +11,25 @@ use std::pin::Pin;
 use crate::utils::errors::{AppError, AppResult};
 
 pub mod anthropic;
+pub mod cerebras;
+pub mod cohere;
+pub mod deepinfra;
 pub mod factory;
 pub mod gemini;
+pub mod groq;
 pub mod health;
 pub mod key_storage;
+pub mod lmstudio;
+pub mod mistral;
+pub mod oauth;
 pub mod ollama;
 pub mod openai;
 pub mod openai_compatible;
 pub mod openrouter;
+pub mod perplexity;
 pub mod registry;
+pub mod togetherai;
+pub mod xai;
 
 /// Common provider trait for all AI model providers
 #[async_trait]

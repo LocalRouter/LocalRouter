@@ -102,17 +102,25 @@ pub async fn start_server(
 /// Build the Axum app with all routes and middleware
 fn build_app(state: AppState, enable_cors: bool) -> Router {
     // Build the Axum router with all routes
+    // Support both /v1 prefix and without for OpenAI compatibility
     let mut router = Router::new()
         .route("/health", get(health_check))
         .route("/", get(root_handler))
+        // Routes with /v1 prefix
         .route("/v1/chat/completions", post(routes::chat_completions))
         .route("/v1/completions", post(routes::completions))
         .route("/v1/embeddings", post(routes::embeddings))
         .route("/v1/models", get(routes::list_models))
         .route("/v1/generation", get(routes::get_generation))
+        // Routes without /v1 prefix (for compatibility)
+        .route("/chat/completions", post(routes::chat_completions))
+        .route("/completions", post(routes::completions))
+        .route("/embeddings", post(routes::embeddings))
+        .route("/models", get(routes::list_models))
+        .route("/generation", get(routes::get_generation))
         .with_state(state.clone());
 
-    // Apply auth layer (checks /v1/* routes)
+    // Apply auth layer (checks all API routes with or without /v1 prefix)
     router = router.layer(AuthLayer::new(state));
 
     // Add logging middleware
@@ -141,12 +149,12 @@ async fn health_check() -> StatusCode {
 async fn root_handler() -> &'static str {
     "LocalRouter AI - OpenAI-compatible API Gateway\n\
      \n\
-     Endpoints:\n\
-       POST /v1/chat/completions\n\
-       POST /v1/completions\n\
-       POST /v1/embeddings\n\
-       GET  /v1/models\n\
-       GET  /v1/generation?id={id}\n\
+     Endpoints (both /v1 prefix and without are supported):\n\
+       POST /v1/chat/completions or /chat/completions\n\
+       POST /v1/completions or /completions\n\
+       POST /v1/embeddings or /embeddings\n\
+       GET  /v1/models or /models\n\
+       GET  /v1/generation?id={id} or /generation?id={id}\n\
      \n\
      Authentication: Include 'Authorization: Bearer <your-api-key>' header\n"
 }

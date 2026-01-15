@@ -4,11 +4,14 @@ import Card from '../ui/Card'
 import Button from '../ui/Button'
 import Badge from '../ui/Badge'
 import Modal from '../ui/Modal'
-import Input from '../ui/Input'
+import { OAuthModal } from '../OAuthModal'
+import ProviderForm, { ProviderType as ProviderTypeInfo } from '../ProviderForm'
+import ProviderIcon from '../ProviderIcon'
 
 interface ProviderInstance {
   instance_name: string
   provider_type: string
+  provider_name: string
   enabled: boolean
   created_at: string
 }
@@ -18,156 +21,175 @@ interface ProviderHealth {
   latency_ms?: number
 }
 
-interface ServerConfig {
-  host: string
-  port: number
-  enable_cors: boolean
+// ProviderType and SetupParameter are now imported from ProviderForm
+
+interface OAuthProvider {
+  provider_id: string
+  provider_name: string
+}
+
+const OAUTH_PROVIDER_DISPLAY: Record<string, { icon: string; description: string }> = {
+  'github-copilot': {
+    icon: '🐙',
+    description: 'GitHub Copilot subscription access via OAuth',
+  },
+  'openai-codex': {
+    icon: '🤖',
+    description: 'OpenAI ChatGPT Plus/Pro subscription via OAuth',
+  },
+  'anthropic-claude': {
+    icon: '🧠',
+    description: 'Anthropic Claude Pro subscription via OAuth',
+  },
+}
+
+const PROVIDER_DISPLAY_INFO: Record<string, { name: string; icon: string; category: string }> = {
+  ollama: { name: 'Ollama', icon: '🦙', category: 'Local' },
+  lmstudio: { name: 'LM Studio', icon: '💻', category: 'Local' },
+  openai: { name: 'OpenAI', icon: '🤖', category: 'Cloud' },
+  anthropic: { name: 'Anthropic', icon: '🧠', category: 'Cloud' },
+  gemini: { name: 'Google Gemini', icon: '✨', category: 'Cloud' },
+  groq: { name: 'Groq', icon: '⚡', category: 'Cloud' },
+  mistral: { name: 'Mistral AI', icon: '🌬️', category: 'Cloud' },
+  cohere: { name: 'Cohere', icon: '🎯', category: 'Cloud' },
+  togetherai: { name: 'Together AI', icon: '🤝', category: 'Cloud' },
+  perplexity: { name: 'Perplexity', icon: '🔍', category: 'Cloud' },
+  deepinfra: { name: 'DeepInfra', icon: '🏗️', category: 'Cloud' },
+  cerebras: { name: 'Cerebras', icon: '🧮', category: 'Cloud' },
+  xai: { name: 'xAI (Grok)', icon: '🚀', category: 'Cloud' },
+  openrouter: { name: 'OpenRouter', icon: '🌐', category: 'Gateway' },
+  openai_compatible: { name: 'OpenAI Compatible', icon: '🔌', category: 'Custom' },
 }
 
 export default function ProvidersTab() {
-  const [ollamaEnabled, setOllamaEnabled] = useState(false)
-  const [ollamaStatus, setOllamaStatus] = useState<'Not Configured' | 'Enabled' | 'Disabled'>('Not Configured')
-  const [ollamaHealth, setOllamaHealth] = useState<ProviderHealth | null>(null)
-  const [ollamaModelsCount, setOllamaModelsCount] = useState<number>(0)
-
-  const [openaiProviders, setOpenaiProviders] = useState<ProviderInstance[]>([])
+  const [providerInstances, setProviderInstances] = useState<ProviderInstance[]>([])
+  const [providerTypes, setProviderTypes] = useState<ProviderTypeInfo[]>([])
   const [providersHealth, setProvidersHealth] = useState<Record<string, ProviderHealth>>({})
   const [loading, setLoading] = useState(true)
 
-  const [serverConfig, setServerConfig] = useState<ServerConfig | null>(null)
-  const [serverLoading, setServerLoading] = useState(true)
+  const [showProviderModal, setShowProviderModal] = useState(false)
+  const [modalMode, setModalMode] = useState<'create' | 'edit'>('create')
+  const [selectedProviderType, setSelectedProviderType] = useState<string | null>(null)
+  const [selectedInstanceName, setSelectedInstanceName] = useState<string | null>(null)
+  const [providerConfig, setProviderConfig] = useState<Record<string, string>>({})
+  const [isSubmitting, setIsSubmitting] = useState(false)
 
-  const [showAddProviderModal, setShowAddProviderModal] = useState(false)
-  const [showEditServerModal, setShowEditServerModal] = useState(false)
-
-  // Add provider form state
-  const [providerName, setProviderName] = useState('')
-  const [providerUrl, setProviderUrl] = useState('')
-  const [providerApiKey, setProviderApiKey] = useState('')
-
-  // Edit server form state
-  const [editHost, setEditHost] = useState('')
-  const [editPort, setEditPort] = useState(3625)
+  // OAuth state
+  const [oauthProviders, setOAuthProviders] = useState<OAuthProvider[]>([])
+  const [authenticatedOAuthProviders, setAuthenticatedOAuthProviders] = useState<string[]>([])
+  const [showOAuthModal, setShowOAuthModal] = useState(false)
+  const [selectedOAuthProvider, setSelectedOAuthProvider] = useState<OAuthProvider | null>(null)
 
   useEffect(() => {
     loadProviders()
-    loadServerConfig()
   }, [])
 
   const loadProviders = async () => {
     setLoading(true)
     try {
-      const instances = await invoke<ProviderInstance[]>('list_provider_instances')
-      const health = await invoke<Record<string, ProviderHealth>>('get_providers_health')
+      const [instances, types, health, oauthList, oauthAuth] = await Promise.all([
+        invoke<ProviderInstance[]>('list_provider_instances'),
+        invoke<ProviderTypeInfo[]>('list_provider_types'),
+        invoke<Record<string, ProviderHealth>>('get_providers_health'),
+        invoke<OAuthProvider[]>('list_oauth_providers'),
+        invoke<string[]>('list_oauth_credentials'),
+      ])
+
+      setProviderInstances(instances)
+      setProviderTypes(types)
       setProvidersHealth(health)
-
-      // Load Ollama
-      const ollamaInstance = instances.find((i: ProviderInstance) => i.provider_type === 'ollama')
-      if (ollamaInstance) {
-        setOllamaEnabled(ollamaInstance.enabled)
-        setOllamaStatus(ollamaInstance.enabled ? 'Enabled' : 'Disabled')
-
-        if (ollamaInstance.enabled) {
-          const ollamaHealthData = health[ollamaInstance.instance_name]
-          setOllamaHealth(ollamaHealthData || null)
-
-          try {
-            const models = await invoke<any[]>('list_provider_models', {
-              instanceName: ollamaInstance.instance_name,
-            })
-            setOllamaModelsCount(models.length)
-          } catch (error) {
-            console.error('Failed to load Ollama models:', error)
-          }
-        } else {
-          setOllamaHealth(null)
-          setOllamaModelsCount(0)
-        }
-      } else {
-        setOllamaEnabled(false)
-        setOllamaStatus('Not Configured')
-        setOllamaHealth(null)
-        setOllamaModelsCount(0)
-      }
-
-      // Load OpenAI-compatible providers
-      const openaiCompatible = instances.filter((i: ProviderInstance) => i.provider_type === 'openai_compatible')
-      setOpenaiProviders(openaiCompatible)
+      setOAuthProviders(oauthList)
+      setAuthenticatedOAuthProviders(oauthAuth)
     } catch (error) {
       console.error('Failed to load providers:', error)
+      alert(`Error loading providers: ${error}`)
     } finally {
       setLoading(false)
     }
   }
 
-  const loadServerConfig = async () => {
-    setServerLoading(true)
+  const handleOpenCreateModal = (providerType: string) => {
+    setModalMode('create')
+    setSelectedProviderType(providerType)
+    setSelectedInstanceName(null)
+    setProviderConfig({})
+    setShowProviderModal(true)
+  }
+
+  const handleOpenEditModal = async (instanceName: string, providerType: string) => {
     try {
-      const config = await invoke<ServerConfig>('get_server_config')
-      setServerConfig(config)
+      // Fetch the current config
+      const config = await invoke<Record<string, string>>('get_provider_config', { instanceName })
+
+      setModalMode('edit')
+      setSelectedProviderType(providerType)
+      setSelectedInstanceName(instanceName)
+      setProviderConfig(config)
+      setShowProviderModal(true)
     } catch (error) {
-      console.error('Failed to load server config:', error)
-    } finally {
-      setServerLoading(false)
+      console.error('Failed to load provider config:', error)
+      alert(`Error loading provider config: ${error}`)
     }
   }
 
-  const handleToggleOllama = async (checked: boolean) => {
-    try {
-      const instances = await invoke<ProviderInstance[]>('list_provider_instances')
-      const ollamaInstance = instances.find((i: ProviderInstance) => i.provider_type === 'ollama')
-
-      if (!ollamaInstance && checked) {
-        await invoke('create_provider_instance', {
-          instanceName: 'ollama',
-          providerType: 'ollama',
-          config: {},
-        })
-      } else if (ollamaInstance) {
-        await invoke('set_provider_enabled', {
-          instanceName: ollamaInstance.instance_name,
-          enabled: checked,
-        })
-      }
-
-      await loadProviders()
-    } catch (error) {
-      console.error('Failed to toggle Ollama:', error)
-      alert(`Error toggling Ollama: ${error}`)
-      setOllamaEnabled(!checked) // Revert
-    }
-  }
-
-  const handleAddProvider = async (e: React.FormEvent) => {
-    e.preventDefault()
-
-    if (!providerName || !providerUrl) {
-      alert('Instance name and base URL are required')
+  const handleProviderSubmit = async (instanceName: string, config: Record<string, string>) => {
+    if (!selectedProviderType) {
+      alert('Provider type is required')
       return
     }
 
+    setIsSubmitting(true)
     try {
-      const config: any = { base_url: providerUrl }
-      if (providerApiKey) {
-        config.api_key = providerApiKey
+      if (modalMode === 'create') {
+        await invoke('create_provider_instance', {
+          instanceName,
+          providerType: selectedProviderType,
+          config,
+        })
+        alert(`Provider "${instanceName}" added successfully!`)
+      } else {
+        // Check if name has changed - if so, we need to delete old and create new
+        const nameChanged = selectedInstanceName && instanceName !== selectedInstanceName
+
+        if (nameChanged) {
+          // Delete the old instance
+          await invoke('remove_provider_instance', { instanceName: selectedInstanceName })
+          // Create new instance with new name
+          await invoke('create_provider_instance', {
+            instanceName,
+            providerType: selectedProviderType,
+            config,
+          })
+          alert(`Provider renamed from "${selectedInstanceName}" to "${instanceName}" successfully!`)
+        } else {
+          // Just update the existing instance
+          await invoke('update_provider_instance', {
+            instanceName,
+            providerType: selectedProviderType,
+            config,
+          })
+          alert(`Provider "${instanceName}" updated successfully!`)
+        }
       }
 
-      await invoke('create_provider_instance', {
-        instanceName: providerName,
-        providerType: 'openai_compatible',
-        config,
-      })
-
-      setShowAddProviderModal(false)
-      setProviderName('')
-      setProviderUrl('')
-      setProviderApiKey('')
+      setShowProviderModal(false)
+      setSelectedProviderType(null)
+      setSelectedInstanceName(null)
+      setProviderConfig({})
       await loadProviders()
-      alert(`Provider "${providerName}" added successfully!`)
     } catch (error) {
-      console.error('Failed to add provider:', error)
-      alert(`Error adding provider: ${error}`)
+      console.error(`Failed to ${modalMode} provider:`, error)
+      alert(`Error ${modalMode === 'create' ? 'adding' : 'updating'} provider: ${error}`)
+    } finally {
+      setIsSubmitting(false)
     }
+  }
+
+  const handleModalCancel = () => {
+    setShowProviderModal(false)
+    setSelectedProviderType(null)
+    setSelectedInstanceName(null)
+    setProviderConfig({})
   }
 
   const handleToggleProviderEnabled = async (instanceName: string, enabled: boolean) => {
@@ -195,319 +217,294 @@ export default function ProvidersTab() {
     }
   }
 
-  const handleSaveServerConfig = async (e: React.FormEvent) => {
-    e.preventDefault()
+  const handleConnectOAuth = (provider: OAuthProvider) => {
+    setSelectedOAuthProvider(provider)
+    setShowOAuthModal(true)
+  }
 
-    if (!editHost || !editPort || editPort < 1 || editPort > 65535) {
-      alert('Please provide valid host and port values')
+  const handleDisconnectOAuth = async (providerId: string) => {
+    if (!confirm('Disconnect this OAuth provider? You will need to re-authenticate to use it again.')) {
       return
     }
 
     try {
-      await invoke('update_server_config', { host: editHost, port: editPort })
-      alert('Server configuration saved! Click "Restart Server" for changes to take effect.')
-      setShowEditServerModal(false)
-      await loadServerConfig()
+      await invoke('delete_oauth_credentials', { providerId })
+      await loadProviders()
+      alert('OAuth provider disconnected successfully!')
     } catch (error) {
-      console.error('Failed to save server config:', error)
-      alert(`Error saving config: ${error}`)
+      console.error('Failed to disconnect OAuth provider:', error)
+      alert(`Error disconnecting OAuth provider: ${error}`)
     }
   }
 
-  const handleRestartServer = async () => {
-    if (!confirm('Restart the server? Active connections will be interrupted.')) {
-      return
-    }
-
-    try {
-      await invoke('restart_server')
-      alert('Server restart requested. The server will restart momentarily.')
-    } catch (error) {
-      console.error('Failed to restart server:', error)
-      alert(`Error restarting server: ${error}`)
-    }
+  const handleOAuthSuccess = async () => {
+    await loadProviders()
   }
 
-  const handleOpenEditServerModal = () => {
-    if (serverConfig) {
-      setEditHost(serverConfig.host)
-      setEditPort(serverConfig.port)
-      setShowEditServerModal(true)
-    }
+  const getProviderTypeInfo = (typeId: string) => {
+    return PROVIDER_DISPLAY_INFO[typeId] || { name: typeId, icon: '📦', category: 'Other' }
   }
+
+  const getProviderTypeObject = (typeId: string) => {
+    return providerTypes.find((t) => t.provider_type === typeId)
+  }
+
+  const groupedProviders = providerTypes.reduce((acc, type) => {
+    const info = getProviderTypeInfo(type.provider_type)
+    if (!acc[info.category]) {
+      acc[info.category] = []
+    }
+    acc[info.category].push(type)
+    return acc
+  }, {} as Record<string, ProviderTypeInfo[]>)
+
+  const selectedProviderTypeObject = selectedProviderType
+    ? getProviderTypeObject(selectedProviderType)
+    : null
 
   return (
     <div className="space-y-6">
-      {/* Ollama Provider */}
       <Card>
-        <div className="flex justify-between items-center mb-4">
-          <div>
-            <h2 className="text-xl font-bold text-gray-900">Ollama (Local)</h2>
-            <p className="text-sm text-gray-500 mt-1">
-              Local Ollama instance at http://localhost:11434
-            </p>
-          </div>
-          <div className="flex items-center gap-4">
-            <Badge variant={ollamaStatus === 'Enabled' ? 'success' : 'warning'}>
-              {ollamaStatus}
-            </Badge>
-            <label className="flex items-center cursor-pointer">
-              <input
-                type="checkbox"
-                checked={ollamaEnabled}
-                onChange={(e) => handleToggleOllama(e.target.checked)}
-                className="mr-2 w-5 h-5 cursor-pointer"
-              />
-              <span className="text-sm font-medium">Enabled</span>
-            </label>
-          </div>
-        </div>
-
-        {ollamaHealth && (
-          <div className="mt-4 p-4 bg-gray-50 rounded-md">
-            <div className="grid grid-cols-3 gap-4">
-              <div>
-                <label className="text-xs font-medium text-gray-500 uppercase">Status</label>
-                <p className="text-sm text-gray-900 mt-1">{ollamaHealth.status}</p>
-              </div>
-              <div>
-                <label className="text-xs font-medium text-gray-500 uppercase">Latency</label>
-                <p className="text-sm text-gray-900 mt-1">
-                  {ollamaHealth.latency_ms ? `${ollamaHealth.latency_ms}ms` : '-'}
-                </p>
-              </div>
-              <div>
-                <label className="text-xs font-medium text-gray-500 uppercase">Models</label>
-                <p className="text-sm text-gray-900 mt-1">{ollamaModelsCount}</p>
-              </div>
-            </div>
-          </div>
-        )}
-      </Card>
-
-      {/* OpenAI-Compatible Providers */}
-      <Card>
-        <div className="flex justify-between items-center mb-4">
-          <div>
-            <h2 className="text-xl font-bold text-gray-900">OpenAI-Compatible Providers</h2>
-            <p className="text-sm text-gray-500 mt-1">
-              Connect to LocalAI, LM Studio, vLLM, or any OpenAI-compatible API
-            </p>
-          </div>
-          <Button onClick={() => setShowAddProviderModal(true)} className="px-3 py-2 text-xs">
-            + Add Provider
-          </Button>
+        <div className="mb-4">
+          <h2 className="text-2xl font-bold text-gray-900">LLM Providers</h2>
+          <p className="text-sm text-gray-500 mt-1">
+            Configure providers to access various LLM services. Each provider can have multiple instances.
+          </p>
         </div>
 
         {loading ? (
           <div className="text-center py-8 text-gray-500">Loading providers...</div>
-        ) : openaiProviders.length === 0 ? (
-          <div className="text-center py-12 text-gray-500">
-            <p>No OpenAI-compatible providers configured. Click "Add Provider" to get started.</p>
-          </div>
         ) : (
-          <ul className="space-y-3">
-            {openaiProviders.map((provider) => {
-              const health = providersHealth[provider.instance_name]
-              const healthStatus = health?.status || 'Unknown'
-              const healthVariant =
-                healthStatus === 'Healthy'
-                  ? 'success'
-                  : healthStatus === 'Degraded'
-                  ? 'warning'
-                  : 'error'
+          <div className="space-y-6">
+            {/* Active Provider Instances */}
+            {providerInstances.length > 0 && (
+              <div>
+                <h3 className="text-lg font-semibold text-gray-700 mb-3 border-b pb-2">
+                  Active Provider Instances
+                </h3>
+                <div className="overflow-x-auto">
+                  <table className="min-w-full divide-y divide-gray-200">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          Provider
+                        </th>
+                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          Instance Name
+                        </th>
+                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          Health
+                        </th>
+                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          Status
+                        </th>
+                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          Created
+                        </th>
+                        <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          Actions
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody className="bg-white divide-y divide-gray-200">
+                      {providerInstances.map((instance) => {
+                        const info = getProviderTypeInfo(instance.provider_type)
+                        const health = providersHealth[instance.instance_name]
+                        const healthStatus = health?.status || 'Unknown'
+                        const healthVariant =
+                          healthStatus === 'Healthy'
+                            ? 'success'
+                            : healthStatus === 'Degraded'
+                            ? 'warning'
+                            : 'error'
 
-              return (
-                <li
-                  key={provider.instance_name}
-                  className="bg-gray-50 border border-gray-200 rounded-lg p-4 flex justify-between items-center"
-                >
-                  <div>
-                    <h3 className="text-base font-semibold text-gray-900">
-                      {provider.instance_name}
-                    </h3>
-                    <p className="text-xs text-gray-500 mt-1">
-                      Created: {new Date(provider.created_at).toLocaleDateString()}
-                    </p>
+                        return (
+                          <tr key={instance.instance_name} className="hover:bg-gray-50">
+                            <td className="px-4 py-3 whitespace-nowrap">
+                              <div className="flex items-center gap-2">
+                                <ProviderIcon providerId={instance.provider_type} size={24} />
+                                <span className="text-sm font-medium text-gray-900">{info.name}</span>
+                              </div>
+                            </td>
+                            <td className="px-4 py-3 whitespace-nowrap">
+                              <span className="text-sm text-gray-900">{instance.instance_name}</span>
+                            </td>
+                            <td className="px-4 py-3 whitespace-nowrap">
+                              <Badge variant={healthVariant}>{healthStatus}</Badge>
+                              {health?.latency_ms && (
+                                <div className="text-xs text-gray-500 mt-1">{health.latency_ms}ms</div>
+                              )}
+                            </td>
+                            <td className="px-4 py-3 whitespace-nowrap">
+                              <Badge variant={instance.enabled ? 'success' : 'warning'}>
+                                {instance.enabled ? 'Enabled' : 'Disabled'}
+                              </Badge>
+                            </td>
+                            <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
+                              {new Date(instance.created_at).toLocaleDateString()}
+                            </td>
+                            <td className="px-4 py-3 whitespace-nowrap text-right text-sm">
+                              <div className="flex gap-1 justify-end">
+                                <Button
+                                  variant="secondary"
+                                  onClick={() => handleOpenEditModal(instance.instance_name, instance.provider_type)}
+                                  className="px-2 py-1 text-xs"
+                                >
+                                  Edit
+                                </Button>
+                                <Button
+                                  variant="secondary"
+                                  onClick={() =>
+                                    handleToggleProviderEnabled(instance.instance_name, !instance.enabled)
+                                  }
+                                  className="px-2 py-1 text-xs"
+                                >
+                                  {instance.enabled ? 'Disable' : 'Enable'}
+                                </Button>
+                                <Button
+                                  variant="danger"
+                                  onClick={() => handleRemoveProvider(instance.instance_name)}
+                                  className="px-2 py-1 text-xs"
+                                >
+                                  Remove
+                                </Button>
+                              </div>
+                            </td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* Available Provider Types */}
+            <div>
+              <h3 className="text-lg font-semibold text-gray-700 mb-3 border-b pb-2">
+                Add New Provider
+              </h3>
+              {Object.entries(groupedProviders).map(([category, types]) => (
+                <div key={category} className="mb-4">
+                  <h4 className="text-sm font-semibold text-gray-600 mb-2">{category} Providers</h4>
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                    {types.map((type) => {
+                      const info = getProviderTypeInfo(type.provider_type)
+
+                      return (
+                        <button
+                          key={type.provider_type}
+                          onClick={() => handleOpenCreateModal(type.provider_type)}
+                          className="flex items-start gap-3 p-4 bg-gray-50 border border-gray-200 rounded-lg hover:bg-gray-100 hover:border-gray-300 transition-colors text-left"
+                        >
+                          <ProviderIcon providerId={type.provider_type} size={32} />
+                          <div className="flex-1 min-w-0">
+                            <h5 className="text-sm font-semibold text-gray-900">{info.name}</h5>
+                            <p className="text-xs text-gray-600 mt-0.5 line-clamp-2">{type.description}</p>
+                          </div>
+                        </button>
+                      )
+                    })}
                   </div>
-                  <div className="flex gap-2 items-center">
-                    <Badge variant={healthVariant}>{healthStatus}</Badge>
-                    <Badge variant={provider.enabled ? 'success' : 'warning'}>
-                      {provider.enabled ? 'Enabled' : 'Disabled'}
-                    </Badge>
-                    <Button
-                      variant="secondary"
-                      onClick={() =>
-                        handleToggleProviderEnabled(provider.instance_name, !provider.enabled)
-                      }
-                      className="px-3 py-1.5 text-xs"
-                    >
-                      {provider.enabled ? 'Disable' : 'Enable'}
-                    </Button>
-                    <Button
-                      variant="danger"
-                      onClick={() => handleRemoveProvider(provider.instance_name)}
-                      className="px-3 py-1.5 text-xs"
-                    >
-                      Remove
-                    </Button>
-                  </div>
-                </li>
-              )
-            })}
-          </ul>
+                </div>
+              ))}
+            </div>
+
+            {/* OAuth Providers Section */}
+            {oauthProviders.length > 0 && (
+              <div>
+                <h3 className="text-lg font-semibold text-gray-700 mb-3 border-b pb-2">
+                  Subscription Providers (OAuth)
+                </h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                  {oauthProviders.map((provider) => {
+                    const isAuthenticated = authenticatedOAuthProviders.includes(provider.provider_id)
+                    const displayInfo = OAUTH_PROVIDER_DISPLAY[provider.provider_id] || {
+                      icon: '🔐',
+                      description: provider.provider_name,
+                    }
+
+                    return (
+                      <div
+                        key={provider.provider_id}
+                        className="bg-gray-50 border border-gray-200 rounded-lg p-4"
+                      >
+                        <div className="flex items-start gap-3 mb-3">
+                          <ProviderIcon providerId={provider.provider_id} size={32} />
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 mb-1">
+                              <h5 className="text-sm font-semibold text-gray-900">
+                                {provider.provider_name}
+                              </h5>
+                              {isAuthenticated && <Badge variant="success">Connected</Badge>}
+                            </div>
+                            <p className="text-xs text-gray-600">{displayInfo.description}</p>
+                          </div>
+                        </div>
+                        <div className="flex justify-end">
+                          {isAuthenticated ? (
+                            <Button
+                              variant="danger"
+                              onClick={() => handleDisconnectOAuth(provider.provider_id)}
+                              className="px-3 py-1.5 text-xs"
+                            >
+                              Disconnect
+                            </Button>
+                          ) : (
+                            <Button
+                              onClick={() => handleConnectOAuth(provider)}
+                              className="px-3 py-1.5 text-xs"
+                            >
+                              Connect
+                            </Button>
+                          )}
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
         )}
       </Card>
 
-      {/* Server Configuration */}
-      <Card>
-        <div className="flex justify-between items-center mb-4">
-          <div>
-            <h2 className="text-xl font-bold text-gray-900">Server Configuration</h2>
-            <p className="text-sm text-gray-500 mt-1">
-              API Gateway listens on this address. Default: localhost:3625
-            </p>
-          </div>
-          <div className="flex gap-2">
-            <Button onClick={handleOpenEditServerModal} className="px-3 py-2 text-xs">
-              Edit
-            </Button>
-            <Button
-              onClick={handleRestartServer}
-              className="px-3 py-2 text-xs bg-yellow-500 hover:bg-yellow-600"
-            >
-              Restart Server
-            </Button>
-          </div>
-        </div>
-
-        {serverLoading ? (
-          <div className="text-center py-8 text-gray-500">Loading...</div>
-        ) : serverConfig ? (
-          <div className="p-4 bg-gray-50 rounded-md">
-            <div className="grid grid-cols-3 gap-4">
-              <div>
-                <label className="text-xs font-medium text-gray-500 uppercase">
-                  Host / Interface
-                </label>
-                <p className="text-base text-gray-900 mt-1 font-mono">{serverConfig.host}</p>
-                <p className="text-xs text-gray-500 mt-1">
-                  127.0.0.1 = localhost only, 0.0.0.0 = all interfaces
-                </p>
-              </div>
-              <div>
-                <label className="text-xs font-medium text-gray-500 uppercase">Port</label>
-                <p className="text-base text-gray-900 mt-1 font-mono">{serverConfig.port}</p>
-                <p className="text-xs text-gray-500 mt-1">
-                  OpenAI-compatible endpoint: http://{serverConfig.host}:{serverConfig.port}/v1
-                </p>
-              </div>
-              <div>
-                <label className="text-xs font-medium text-gray-500 uppercase">CORS</label>
-                <p className="text-base text-gray-900 mt-1">
-                  {serverConfig.enable_cors ? 'Enabled' : 'Disabled'}
-                </p>
-                <p className="text-xs text-gray-500 mt-1">Cross-origin requests</p>
-              </div>
-            </div>
-          </div>
-        ) : null}
-      </Card>
-
-      {/* Add Provider Modal */}
+      {/* Provider Modal (Create/Edit) */}
       <Modal
-        isOpen={showAddProviderModal}
-        onClose={() => setShowAddProviderModal(false)}
-        title="Add OpenAI-Compatible Provider"
+        isOpen={showProviderModal}
+        onClose={handleModalCancel}
+        title={
+          modalMode === 'create'
+            ? `Add ${selectedProviderTypeObject ? getProviderTypeInfo(selectedProviderTypeObject.provider_type).name : 'Provider'}`
+            : `Edit ${selectedInstanceName}`
+        }
       >
-        <form onSubmit={handleAddProvider}>
-          <Input
-            label="Instance Name *"
-            placeholder="e.g., my-localai, lm-studio"
-            value={providerName}
-            onChange={(e) => setProviderName(e.target.value)}
-            required
-            helperText="Unique name to identify this provider instance"
+        {selectedProviderTypeObject && (
+          <ProviderForm
+            mode={modalMode}
+            providerType={selectedProviderTypeObject}
+            initialInstanceName={selectedInstanceName || undefined}
+            initialConfig={providerConfig}
+            onSubmit={handleProviderSubmit}
+            onCancel={handleModalCancel}
+            isSubmitting={isSubmitting}
           />
-
-          <Input
-            label="Base URL *"
-            placeholder="http://localhost:8080/v1"
-            value={providerUrl}
-            onChange={(e) => setProviderUrl(e.target.value)}
-            required
-            helperText="API endpoint (must include /v1 suffix for OpenAI compatibility)"
-          />
-
-          <Input
-            label="API Key (Optional)"
-            type="password"
-            placeholder="Leave empty if not required"
-            value={providerApiKey}
-            onChange={(e) => setProviderApiKey(e.target.value)}
-            helperText="Some services like LocalAI don't require an API key"
-          />
-
-          <div className="flex gap-2 mt-6">
-            <Button type="submit">Add Provider</Button>
-            <Button
-              type="button"
-              variant="secondary"
-              onClick={() => setShowAddProviderModal(false)}
-            >
-              Cancel
-            </Button>
-          </div>
-        </form>
+        )}
       </Modal>
 
-      {/* Edit Server Config Modal */}
-      <Modal
-        isOpen={showEditServerModal}
-        onClose={() => setShowEditServerModal(false)}
-        title="Edit Server Configuration"
-      >
-        <form onSubmit={handleSaveServerConfig}>
-          <Input
-            label="Host / Interface *"
-            placeholder="127.0.0.1"
-            value={editHost}
-            onChange={(e) => setEditHost(e.target.value)}
-            required
-            helperText="127.0.0.1 = localhost only (recommended for security) | 0.0.0.0 = all network interfaces (allows external access)"
-          />
-
-          <Input
-            label="Port *"
-            type="number"
-            placeholder="3625"
-            min={1}
-            max={65535}
-            value={editPort}
-            onChange={(e) => setEditPort(parseInt(e.target.value))}
-            required
-            helperText="Port number between 1-65535. Default: 3625"
-          />
-
-          <div className="bg-yellow-50 border border-yellow-400 rounded-md p-4 my-4">
-            <p className="text-sm text-yellow-900">
-              ⚠️ <strong>Note:</strong> You must restart the server for these changes to take
-              effect. Click "Restart Server" after saving.
-            </p>
-          </div>
-
-          <div className="flex gap-2 mt-6">
-            <Button type="submit">Save Changes</Button>
-            <Button
-              type="button"
-              variant="secondary"
-              onClick={() => setShowEditServerModal(false)}
-            >
-              Cancel
-            </Button>
-          </div>
-        </form>
-      </Modal>
+      {/* OAuth Modal */}
+      {selectedOAuthProvider && (
+        <OAuthModal
+          isOpen={showOAuthModal}
+          onClose={() => {
+            setShowOAuthModal(false)
+            setSelectedOAuthProvider(null)
+          }}
+          providerId={selectedOAuthProvider.provider_id}
+          providerName={selectedOAuthProvider.provider_name}
+          onSuccess={handleOAuthSuccess}
+        />
+      )}
     </div>
   )
 }
