@@ -62,7 +62,16 @@ where
         Box::pin(async move {
             // Check if this is a protected route
             let path = req.uri().path();
-            if !path.starts_with("/v1/") {
+
+            // Protected routes (with or without /v1 prefix)
+            let is_protected = path.starts_with("/v1/")
+                || path == "/chat/completions"
+                || path == "/completions"
+                || path == "/embeddings"
+                || path == "/models"
+                || path.starts_with("/generation");
+
+            if !is_protected {
                 // Public route - skip authentication
                 return inner.call(req).await;
             }
@@ -115,24 +124,38 @@ where
                 };
 
                 // Parse model selection and clone data before lock is released
-                let model_selection = match &api_key_info.model_selection {
+                let model_selection = api_key_info.model_selection.as_ref().map(|sel| match sel {
+                    ModelSelection::All => crate::server::state::ModelSelection::All,
+                    ModelSelection::Custom {
+                        all_provider_models,
+                        individual_models,
+                    } => crate::server::state::ModelSelection::Custom {
+                        all_provider_models: all_provider_models.clone(),
+                        individual_models: individual_models.clone(),
+                    },
+                    #[allow(deprecated)]
                     ModelSelection::DirectModel { provider, model } => {
                         crate::server::state::ModelSelection::DirectModel {
                             provider: provider.clone(),
                             model: model.clone(),
                         }
                     }
+                    #[allow(deprecated)]
                     ModelSelection::Router { router_name } => {
                         crate::server::state::ModelSelection::Router {
                             router_name: router_name.clone(),
                         }
                     }
-                };
+                });
+
+                // Get routing config
+                let routing_config = api_key_info.get_routing_config();
 
                 // Create auth context with cloned data
                 AuthContext {
                     api_key_id: api_key_info.id.clone(),
                     model_selection,
+                    routing_config,
                 }
             }; // Lock is automatically dropped here
 

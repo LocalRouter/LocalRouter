@@ -46,7 +46,7 @@ pub async fn auth_middleware(
         let api_key = &auth_header[7..]; // Skip "Bearer "
 
         // Validate the API key and extract needed info
-        let (api_key_id, model_selection) = {
+        let (api_key_id, model_selection, routing_config) = {
             let api_key_manager = state.api_key_manager.read();
             let api_key_info = api_key_manager
                 .verify_key(api_key)
@@ -56,13 +56,15 @@ pub async fn auth_middleware(
 
             // Parse model selection and extract data before dropping the lock
             let model_selection = parse_model_selection(&api_key_info.model_selection);
-            (api_key_info.id.clone(), model_selection)
+            let routing_config = api_key_info.get_routing_config();
+            (api_key_info.id.clone(), model_selection, routing_config)
         }; // Lock is dropped here
 
         // Create auth context
         let auth_context = AuthContext {
             api_key_id,
             model_selection,
+            routing_config,
         };
 
         // Insert auth context into request extensions
@@ -79,18 +81,28 @@ pub async fn auth_middleware(
 }
 
 /// Parse model selection from API key config
-fn parse_model_selection(selection: &ModelSelection) -> crate::server::state::ModelSelection {
-    match selection {
+fn parse_model_selection(selection: &Option<ModelSelection>) -> Option<crate::server::state::ModelSelection> {
+    selection.as_ref().map(|sel| match sel {
+        ModelSelection::All => crate::server::state::ModelSelection::All,
+        ModelSelection::Custom {
+            all_provider_models,
+            individual_models,
+        } => crate::server::state::ModelSelection::Custom {
+            all_provider_models: all_provider_models.clone(),
+            individual_models: individual_models.clone(),
+        },
+        #[allow(deprecated)]
         ModelSelection::DirectModel { provider, model } => {
             crate::server::state::ModelSelection::DirectModel {
                 provider: provider.clone(),
                 model: model.clone(),
             }
         }
+        #[allow(deprecated)]
         ModelSelection::Router { router_name } => {
             crate::server::state::ModelSelection::Router {
                 router_name: router_name.clone(),
             }
         }
-    }
+    })
 }

@@ -27,18 +27,62 @@ pub async fn list_models<B>(
         .await
         .map_err(|e| ApiErrorResponse::internal_error(format!("Failed to list models: {}", e)))?;
 
-    // Filter models based on API key's model selection
-    let filtered_models = match &auth_context.model_selection {
-        Some(selection) => {
-            // Use the is_model_allowed method to filter models
-            all_models
-                .into_iter()
-                .filter(|m| selection.is_model_allowed(&m.provider, &m.id))
-                .collect()
+    // Filter models based on API key's routing configuration
+    let filtered_models = if let Some(routing_config) = &auth_context.routing_config {
+        // Use new routing config system
+        use crate::config::ActiveRoutingStrategy;
+
+        match routing_config.active_strategy {
+            ActiveRoutingStrategy::AvailableModels => {
+                // Filter to only available models
+                all_models
+                    .into_iter()
+                    .filter(|m| routing_config.is_model_allowed(&m.provider, &m.id))
+                    .collect()
+            }
+            ActiveRoutingStrategy::ForceModel => {
+                // Return only the forced model
+                if let Some((forced_provider, forced_model)) = &routing_config.forced_model {
+                    all_models
+                        .into_iter()
+                        .filter(|m| {
+                            m.provider.eq_ignore_ascii_case(forced_provider)
+                                && m.id.eq_ignore_ascii_case(forced_model)
+                        })
+                        .collect()
+                } else {
+                    // No forced model configured - return empty
+                    vec![]
+                }
+            }
+            ActiveRoutingStrategy::PrioritizedList => {
+                // Return models in the prioritized list order
+                let mut prioritized = Vec::new();
+                for (provider, model) in &routing_config.prioritized_models {
+                    if let Some(model_info) = all_models.iter().find(|m| {
+                        m.provider.eq_ignore_ascii_case(provider)
+                            && m.id.eq_ignore_ascii_case(model)
+                    }) {
+                        prioritized.push(model_info.clone());
+                    }
+                }
+                prioritized
+            }
         }
-        None => {
-            // No model selection configured - allow all models
-            all_models
+    } else {
+        // Fallback to old model_selection for backward compatibility
+        match &auth_context.model_selection {
+            Some(selection) => {
+                // Use the is_model_allowed method to filter models
+                all_models
+                    .into_iter()
+                    .filter(|m| selection.is_model_allowed(&m.provider, &m.id))
+                    .collect()
+            }
+            None => {
+                // No model selection configured - allow all models
+                all_models
+            }
         }
     };
 
