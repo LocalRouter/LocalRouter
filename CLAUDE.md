@@ -410,7 +410,12 @@ The user has a global `~/.claude/CLAUDE.md` file with specific requirements:
 1. **Read Before Writing**: Always check `ARCHITECTURE.md` before implementing
 2. **Update as You Go**: Mark progress in `PROGRESS.md` immediately
 3. **Test Early**: Write tests alongside implementation
-4. **Small Commits**: Commit completed features frequently
+4. **Commit Frequently**:
+   - Commit changes after completing each logical unit of work
+   - Don't wait until everything is perfect - commit working increments
+   - Smaller, more frequent commits are better than large monolithic ones
+   - Commit after fixing a bug, adding a feature, or refactoring a component
+   - This makes it easier to track changes, revert if needed, and understand history
 5. **Follow the Plan**: Stick to the phase order unless there's a good reason
 6. **Document Decisions**: Add notes in `PROGRESS.md` for non-obvious choices
 7. **Ask Questions**: If unclear, check this guide or ask for clarification
