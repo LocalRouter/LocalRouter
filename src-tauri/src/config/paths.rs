@@ -5,11 +5,18 @@ use std::path::PathBuf;
 
 /// Get the configuration directory
 ///
-/// All platforms: `~/.localrouter/`
+/// Development mode: `~/.localrouter-dev/`
+/// Production mode: `~/.localrouter/`
 pub fn config_dir() -> AppResult<PathBuf> {
-    let dir = dirs::home_dir()
-        .ok_or_else(|| AppError::Config("Could not determine home directory".to_string()))?
-        .join(".localrouter");
+    let home = dirs::home_dir()
+        .ok_or_else(|| AppError::Config("Could not determine home directory".to_string()))?;
+
+    // Use separate directory for development/debug builds
+    #[cfg(debug_assertions)]
+    let dir = home.join(".localrouter-dev");
+
+    #[cfg(not(debug_assertions))]
+    let dir = home.join(".localrouter");
 
     Ok(dir)
 }
@@ -48,6 +55,13 @@ pub fn cache_dir() -> AppResult<PathBuf> {
     Ok(config_dir()?.join("cache"))
 }
 
+/// Get the secrets file path (for file-based keychain storage in development)
+///
+/// All platforms: `~/.localrouter/secrets.json`
+pub fn secrets_file() -> AppResult<PathBuf> {
+    Ok(config_dir()?.join("secrets.json"))
+}
+
 /// Ensure a directory exists, creating it if necessary
 pub fn ensure_dir_exists(path: &PathBuf) -> AppResult<()> {
     if !path.exists() {
@@ -70,6 +84,12 @@ mod tests {
     fn test_config_dir() {
         let dir = config_dir().unwrap();
         assert!(!dir.as_os_str().is_empty());
+
+        // In debug builds, uses .localrouter-dev; in release, uses .localrouter
+        #[cfg(debug_assertions)]
+        assert!(dir.to_string_lossy().ends_with(".localrouter-dev"));
+
+        #[cfg(not(debug_assertions))]
         assert!(dir.to_string_lossy().ends_with(".localrouter"));
     }
 
@@ -89,7 +109,13 @@ mod tests {
     fn test_logs_dir() {
         let dir = logs_dir().unwrap();
         assert!(!dir.as_os_str().is_empty());
+
+        #[cfg(debug_assertions)]
+        assert!(dir.to_string_lossy().contains(".localrouter-dev"));
+
+        #[cfg(not(debug_assertions))]
         assert!(dir.to_string_lossy().contains(".localrouter"));
+
         assert!(dir.to_string_lossy().ends_with("logs"));
     }
 
@@ -97,7 +123,13 @@ mod tests {
     fn test_cache_dir() {
         let dir = cache_dir().unwrap();
         assert!(!dir.as_os_str().is_empty());
+
+        #[cfg(debug_assertions)]
+        assert!(dir.to_string_lossy().contains(".localrouter-dev"));
+
+        #[cfg(not(debug_assertions))]
         assert!(dir.to_string_lossy().contains(".localrouter"));
+
         assert!(dir.to_string_lossy().ends_with("cache"));
     }
 }

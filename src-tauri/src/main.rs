@@ -40,6 +40,14 @@ async fn main() -> anyhow::Result<()> {
 
     info!("Starting LocalRouter AI...");
 
+    // Log configuration directory
+    let config_dir = config::paths::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("unknown"));
+    #[cfg(debug_assertions)]
+    info!("Running in DEVELOPMENT mode");
+    #[cfg(not(debug_assertions))]
+    info!("Running in PRODUCTION mode");
+    info!("Configuration directory: {}", config_dir.display());
+
     // Initialize managers
     let mut config_manager = config::ConfigManager::load().await.unwrap_or_else(|e| {
         tracing::warn!("Failed to load config, using defaults: {}", e);
