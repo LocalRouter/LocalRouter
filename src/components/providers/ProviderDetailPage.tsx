@@ -52,25 +52,38 @@ export default function ProviderDetailPage({
   const loadProviderData = async () => {
     setLoading(true)
     try {
-      const [healthData, modelList, configData, instances] = await Promise.all([
+      const [healthData, basicModels, configData, instances] = await Promise.all([
         invoke<Record<string, ProviderHealth>>('get_providers_health'),
-        invoke<Model[]>('list_all_models_detailed').catch(() => []),
+        invoke<Array<{ id: string; provider: string }>>('list_all_models').catch(() => []),
         invoke<Record<string, string>>('get_provider_config', { instanceName }),
         invoke<Array<{ instance_name: string; enabled: boolean }>>('list_provider_instances'),
       ])
 
       setHealth(healthData[instanceName] || null)
-      setModels(modelList.filter((m) => m.provider_instance === instanceName))
+
+      // Convert basic model list to detailed format and filter by provider
+      const providerModels = basicModels
+        .filter((m) => m.provider === instanceName)
+        .map((m) => ({
+          model_id: m.id,
+          provider_instance: m.provider,
+          context_window: 0,
+          capabilities: [],
+          supports_streaming: true,
+        }))
+
+      setModels(providerModels)
       setConfig(configData)
 
       const instance = instances.find((i) => i.instance_name === instanceName)
       setEnabled(instance?.enabled ?? true)
 
-      if (modelList.length > 0 && !selectedModel) {
-        setSelectedModel(modelList[0].model_id)
+      if (providerModels.length > 0 && !selectedModel) {
+        setSelectedModel(providerModels[0].model_id)
       }
     } catch (error) {
       console.error('Failed to load provider data:', error)
+      alert(`Error loading provider data: ${error}`)
     } finally {
       setLoading(false)
     }
@@ -100,7 +113,13 @@ export default function ProviderDetailPage({
 
   const handleRefreshModels = async () => {
     try {
-      await invoke('refresh_provider_models', { instanceName })
+      // Try to refresh models from the provider (if supported)
+      try {
+        await invoke('refresh_provider_models', { instanceName })
+      } catch (refreshError) {
+        console.warn('refresh_provider_models not available, just reloading data')
+      }
+
       await loadProviderData()
       alert('Models refreshed successfully!')
     } catch (error) {

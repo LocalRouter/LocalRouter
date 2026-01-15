@@ -95,7 +95,9 @@ function App() {
           {activeTab === 'providers' && (
             <ProvidersTab activeSubTab={activeSubTab} />
           )}
-          {activeTab === 'models' && <ModelsTab />}
+          {activeTab === 'models' && (
+            <ModelsTab activeSubTab={activeSubTab} />
+          )}
         </main>
       </div>
 

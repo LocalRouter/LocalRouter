@@ -27,6 +27,8 @@ export default function ApiKeyDetailPage({ keyId }: ApiKeyDetailPageProps) {
   const [apiKey, setApiKey] = useState<ApiKey | null>(null)
   const [keyValue, setKeyValue] = useState<string>('')
   const [showKey, setShowKey] = useState(false)
+  const [keyLoaded, setKeyLoaded] = useState(false)
+  const [keyLoadError, setKeyLoadError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [activeTab, setActiveTab] = useState<'settings' | 'chat'>('chat')
   const [isSaving, setIsSaving] = useState(false)
@@ -47,9 +49,8 @@ export default function ApiKeyDetailPage({ keyId }: ApiKeyDetailPageProps) {
   const loadApiKeyData = async () => {
     setLoading(true)
     try {
-      const [keys, value, models] = await Promise.all([
+      const [keys, models] = await Promise.all([
         invoke<ApiKey[]>('list_api_keys'),
-        invoke<string>('get_api_key_value', { id: keyId }),
         invoke<Model[]>('list_all_models').catch(() => []),
       ])
 
@@ -60,7 +61,6 @@ export default function ApiKeyDetailPage({ keyId }: ApiKeyDetailPageProps) {
         setEnabled(key.enabled)
       }
 
-      setKeyValue(value)
       setAvailableModels(models)
     } catch (error) {
       console.error('Failed to load API key data:', error)
@@ -69,17 +69,51 @@ export default function ApiKeyDetailPage({ keyId }: ApiKeyDetailPageProps) {
     }
   }
 
+  const loadKeyValue = async () => {
+    if (keyLoaded) {
+      setShowKey(!showKey)
+      return
+    }
+
+    try {
+      setKeyLoadError(null)
+      const value = await invoke<string>('get_api_key_value', { id: keyId })
+      setKeyValue(value)
+      setKeyLoaded(true)
+      setShowKey(true)
+    } catch (error: any) {
+      console.error('Failed to load API key value:', error)
+      const errorMsg = error?.toString() || 'Unknown error'
+      if (errorMsg.includes('passphrase') || errorMsg.includes('keychain')) {
+        setKeyLoadError('Keychain access denied. Please approve keychain access or enter your password to view the API key.')
+      } else {
+        setKeyLoadError(`Failed to load key: ${errorMsg}`)
+      }
+    }
+  }
+
   const loadServerConfig = async () => {
     try {
       const serverConfig = await invoke<{ host: string; port: number }>('get_server_config')
-      const value = await invoke<string>('get_api_key_value', { id: keyId })
 
-      const newClient = new OpenAI({
-        apiKey: value,
-        baseURL: `http://${serverConfig.host}:${serverConfig.port}/v1`,
-        dangerouslyAllowBrowser: true,
-      })
-      setChatClient(newClient)
+      // Try to load the key value for chat, but don't fail if keychain access is denied
+      try {
+        const value = await invoke<string>('get_api_key_value', { id: keyId })
+
+        const newClient = new OpenAI({
+          apiKey: value,
+          baseURL: `http://${serverConfig.host}:${serverConfig.port}/v1`,
+          dangerouslyAllowBrowser: true,
+        })
+        setChatClient(newClient)
+
+        // Also cache the key value for the settings tab
+        setKeyValue(value)
+        setKeyLoaded(true)
+      } catch (keyErr) {
+        console.warn('Could not load API key for chat (keychain access may be denied):', keyErr)
+        // Continue without chat functionality
+      }
     } catch (err) {
       console.error('Failed to load server config:', err)
     }
@@ -107,6 +141,12 @@ export default function ApiKeyDetailPage({ keyId }: ApiKeyDetailPageProps) {
   }
 
   const handleCopyKey = async () => {
+    // Load key if not already loaded
+    if (!keyLoaded) {
+      await loadKeyValue()
+      if (!keyLoaded) return // Failed to load
+    }
+
     try {
       await navigator.clipboard.writeText(keyValue)
       alert('API key copied to clipboard!')
@@ -248,8 +288,12 @@ export default function ApiKeyDetailPage({ keyId }: ApiKeyDetailPageProps) {
           ) : (
             <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
               <p className="text-yellow-900 text-sm">
-                <strong>Note:</strong> To use chat, make sure the server is running.
+                <strong>Note:</strong> Chat is not available. This usually happens if:
               </p>
+              <ul className="list-disc list-inside text-yellow-900 text-sm mt-2">
+                <li>The server is not running</li>
+                <li>Keychain access was denied (you can approve it when prompted)</li>
+              </ul>
             </div>
           )}
         </Card>
@@ -260,31 +304,49 @@ export default function ApiKeyDetailPage({ keyId }: ApiKeyDetailPageProps) {
           <Card>
             <h3 className="text-lg font-semibold text-gray-900 mb-4">API Key Value</h3>
             <div className="space-y-3">
-              <div className="flex items-center gap-2 px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg">
-                <input
-                  type={showKey ? 'text' : 'password'}
-                  value={keyValue}
-                  readOnly
-                  className="flex-1 font-mono text-sm bg-transparent outline-none"
-                />
-                <button
-                  onClick={() => setShowKey(!showKey)}
-                  className="px-2 py-1 hover:bg-gray-200 rounded text-xl"
-                  title={showKey ? 'Hide' : 'Show'}
-                >
-                  {showKey ? '🙈' : '👁️'}
-                </button>
-                <button
-                  onClick={handleCopyKey}
-                  className="px-2 py-1 hover:bg-gray-200 rounded text-xl"
-                  title="Copy"
-                >
-                  📋
-                </button>
-              </div>
-              <p className="text-xs text-gray-500">
-                Keep this key secret and secure. Anyone with access to this key can use your API access.
-              </p>
+              {keyLoadError && (
+                <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
+                  {keyLoadError}
+                </div>
+              )}
+              {!keyLoaded ? (
+                <div className="text-center py-4">
+                  <Button onClick={loadKeyValue}>
+                    Load API Key from Keychain
+                  </Button>
+                  <p className="text-xs text-gray-500 mt-2">
+                    This will prompt for your system password to access the secure keychain.
+                  </p>
+                </div>
+              ) : (
+                <>
+                  <div className="flex items-center gap-2 px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg">
+                    <input
+                      type={showKey ? 'text' : 'password'}
+                      value={keyValue}
+                      readOnly
+                      className="flex-1 font-mono text-sm bg-transparent outline-none"
+                    />
+                    <button
+                      onClick={() => setShowKey(!showKey)}
+                      className="px-2 py-1 hover:bg-gray-200 rounded text-xl"
+                      title={showKey ? 'Hide' : 'Show'}
+                    >
+                      {showKey ? '🙈' : '👁️'}
+                    </button>
+                    <button
+                      onClick={handleCopyKey}
+                      className="px-2 py-1 hover:bg-gray-200 rounded text-xl"
+                      title="Copy"
+                    >
+                      📋
+                    </button>
+                  </div>
+                  <p className="text-xs text-gray-500">
+                    Keep this key secret and secure. Anyone with access to this key can use your API access.
+                  </p>
+                </>
+              )}
             </div>
           </Card>
 

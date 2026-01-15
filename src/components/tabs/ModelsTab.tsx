@@ -4,6 +4,7 @@ import Card from '../ui/Card'
 import Badge from '../ui/Badge'
 import Button from '../ui/Button'
 import ProviderIcon from '../ProviderIcon'
+import ModelDetailPage from '../models/ModelDetailPage'
 
 interface Model {
   model_id: string
@@ -20,7 +21,11 @@ interface Model {
 type SortField = 'name' | 'provider' | 'price' | 'context' | 'parameters'
 type SortDirection = 'asc' | 'desc'
 
-export default function ModelsTab() {
+interface ModelsTabProps {
+  activeSubTab: string | null
+}
+
+export default function ModelsTab({ activeSubTab }: ModelsTabProps) {
   const [models, setModels] = useState<Model[]>([])
   const [loading, setLoading] = useState(true)
   const [searchTerm, setSearchTerm] = useState('')
@@ -156,6 +161,11 @@ export default function ModelsTab() {
       )}
     </button>
   )
+
+  // If a sub-tab is selected, show detail page for that specific model
+  if (activeSubTab) {
+    return <ModelDetailPage modelKey={activeSubTab} />
+  }
 
   return (
     <div>

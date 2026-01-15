@@ -22,19 +22,27 @@ interface ApiKey {
   enabled: boolean
 }
 
+interface Model {
+  id: string
+  provider: string
+}
+
 export default function Sidebar({ activeTab, activeSubTab, onTabChange }: SidebarProps) {
   const [providers, setProviders] = useState<ProviderInstance[]>([])
   const [apiKeys, setApiKeys] = useState<ApiKey[]>([])
-  const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set(['providers', 'api-keys']))
+  const [models, setModels] = useState<Model[]>([])
+  const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set(['providers', 'api-keys', 'models']))
 
   useEffect(() => {
     loadProviders()
     loadApiKeys()
+    loadModels()
 
     // Refresh when config changes
     const interval = setInterval(() => {
       loadProviders()
       loadApiKeys()
+      loadModels()
     }, 2000)
 
     return () => clearInterval(interval)
@@ -58,6 +66,15 @@ export default function Sidebar({ activeTab, activeSubTab, onTabChange }: Sideba
     }
   }
 
+  const loadModels = async () => {
+    try {
+      const modelList = await invoke<Model[]>('list_all_models')
+      setModels(modelList)
+    } catch (err) {
+      console.error('Failed to load models:', err)
+    }
+  }
+
   const toggleSection = (section: string) => {
     const newExpanded = new Set(expandedSections)
     if (newExpanded.has(section)) {
@@ -73,7 +90,7 @@ export default function Sidebar({ activeTab, activeSubTab, onTabChange }: Sideba
     { id: 'server' as MainTab, label: 'Server' },
     { id: 'api-keys' as MainTab, label: 'API Keys', hasSubTabs: true },
     { id: 'providers' as MainTab, label: 'Providers', hasSubTabs: true },
-    { id: 'models' as MainTab, label: 'Models' },
+    { id: 'models' as MainTab, label: 'Models', hasSubTabs: true },
   ]
 
   return (
@@ -151,6 +168,28 @@ export default function Sidebar({ activeTab, activeSubTab, onTabChange }: Sideba
                   {!key.enabled && (
                     <span className="w-2 h-2 bg-red-500 rounded-full" title="Disabled" />
                   )}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Sub Tabs for Models */}
+          {tab.id === 'models' && expandedSections.has('models') && (
+            <div className="bg-gray-50">
+              {models.map((model) => (
+                <div
+                  key={`${model.provider}-${model.id}`}
+                  onClick={() => onTabChange('models', `${model.provider}/${model.id}`)}
+                  className={`
+                    px-4 py-2 cursor-pointer transition-all text-sm border-l-4 flex items-center gap-2
+                    ${
+                      activeTab === 'models' && activeSubTab === `${model.provider}/${model.id}`
+                        ? 'bg-blue-50 text-blue-600 border-blue-600'
+                        : 'text-gray-600 border-transparent hover:bg-gray-100'
+                    }
+                  `}
+                >
+                  <span className="truncate flex-1 text-xs">{model.provider}/{model.id}</span>
                 </div>
               ))}
             </div>
