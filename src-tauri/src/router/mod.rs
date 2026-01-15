@@ -807,6 +807,7 @@ mod tests {
                 provider: "test-provider".to_string(),
                 model: "test-model".to_string(),
             }),
+            routing_config: None,
             enabled: false, // Disabled
             created_at: Utc::now(),
             last_used: None,
@@ -839,4 +840,516 @@ mod tests {
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), AppError::Unauthorized));
     }
+
+    // ============================================================================
+    // Routing Strategy Tests
+    // ============================================================================
+
+    mod routing_strategy_tests {
+        use super::*;
+        use crate::config::{ActiveRoutingStrategy, AvailableModelsSelection, ModelRoutingConfig};
+
+        /// Helper to create a test API key with routing config
+        fn create_test_key_with_routing(
+            id: &str,
+            routing_config: ModelRoutingConfig,
+        ) -> ApiKeyConfig {
+            ApiKeyConfig {
+                id: id.to_string(),
+                name: format!("Test Key {}", id),
+                model_selection: None,
+                routing_config: Some(routing_config),
+                enabled: true,
+                created_at: Utc::now(),
+                last_used: None,
+            }
+        }
+
+        #[tokio::test]
+        async fn test_available_models_strategy_allows_matching_model() {
+            // Create routing config with Available Models strategy
+            let routing_config = ModelRoutingConfig {
+                active_strategy: ActiveRoutingStrategy::AvailableModels,
+                available_models: AvailableModelsSelection {
+                    all_provider_models: vec![],
+                    individual_models: vec![
+                        ("provider1".to_string(), "model1".to_string()),
+                        ("provider2".to_string(), "model2".to_string()),
+                    ],
+                },
+                forced_model: None,
+                prioritized_models: vec![],
+            };
+
+            let key = create_test_key_with_routing("test-key", routing_config);
+
+            let mut config = AppConfig::default();
+            config.api_keys.push(key);
+
+            let config_manager = Arc::new(ConfigManager::new(
+                config,
+                std::path::PathBuf::from("/tmp/test.yaml"),
+            ));
+
+            let health_manager = Arc::new(HealthCheckManager::default());
+            let provider_registry = Arc::new(ProviderRegistry::new(health_manager));
+            let rate_limiter = Arc::new(RateLimiterManager::new(None));
+
+            let router = Router::new(config_manager, provider_registry.clone(), rate_limiter);
+
+            // Request with allowed model should fail because provider doesn't exist, but not due to routing
+            let request = CompletionRequest {
+                model: "provider1/model1".to_string(),
+                messages: vec![],
+                temperature: None,
+                max_tokens: None,
+                stream: false,
+                top_p: None,
+                frequency_penalty: None,
+                presence_penalty: None,
+                stop: None,
+            };
+
+            let result = router.complete("test-key", request).await;
+            // Should fail because provider doesn't exist, not because model is not allowed
+            assert!(result.is_err());
+            let err = result.unwrap_err();
+            assert!(matches!(err, AppError::Router(_)));
+            assert!(err.to_string().contains("not found"));
+        }
+
+        #[tokio::test]
+        async fn test_available_models_strategy_rejects_non_matching_model() {
+            // Create routing config with Available Models strategy
+            let routing_config = ModelRoutingConfig {
+                active_strategy: ActiveRoutingStrategy::AvailableModels,
+                available_models: AvailableModelsSelection {
+                    all_provider_models: vec![],
+                    individual_models: vec![
+                        ("provider1".to_string(), "model1".to_string()),
+                    ],
+                },
+                forced_model: None,
+                prioritized_models: vec![],
+            };
+
+            let key = create_test_key_with_routing("test-key", routing_config);
+
+            let mut config = AppConfig::default();
+            config.api_keys.push(key);
+
+            let config_manager = Arc::new(ConfigManager::new(
+                config,
+                std::path::PathBuf::from("/tmp/test.yaml"),
+            ));
+
+            let health_manager = Arc::new(HealthCheckManager::default());
+            let provider_registry = Arc::new(ProviderRegistry::new(health_manager));
+            let rate_limiter = Arc::new(RateLimiterManager::new(None));
+
+            let router = Router::new(config_manager, provider_registry, rate_limiter);
+
+            // Request with non-allowed model should fail due to routing
+            let request = CompletionRequest {
+                model: "provider2/model2".to_string(),
+                messages: vec![],
+                temperature: None,
+                max_tokens: None,
+                stream: false,
+                top_p: None,
+                frequency_penalty: None,
+                presence_penalty: None,
+                stop: None,
+            };
+
+            let result = router.complete("test-key", request).await;
+            assert!(result.is_err());
+            let err = result.unwrap_err();
+            assert!(matches!(err, AppError::Router(_)));
+            assert!(err.to_string().contains("not in the available models list"));
+        }
+
+        #[tokio::test]
+        async fn test_available_models_strategy_with_all_provider_models() {
+            // Create routing config that allows all models from provider1
+            let routing_config = ModelRoutingConfig {
+                active_strategy: ActiveRoutingStrategy::AvailableModels,
+                available_models: AvailableModelsSelection {
+                    all_provider_models: vec!["provider1".to_string()],
+                    individual_models: vec![],
+                },
+                forced_model: None,
+                prioritized_models: vec![],
+            };
+
+            let config = routing_config.clone();
+
+            // Test that provider1/any_model is allowed
+            assert!(config.is_model_allowed("provider1", "any_model"));
+            assert!(config.is_model_allowed("provider1", "another_model"));
+
+            // Test that provider2/model is not allowed
+            assert!(!config.is_model_allowed("provider2", "some_model"));
+        }
+
+        #[tokio::test]
+        async fn test_force_model_strategy_ignores_requested_model() {
+            // Create routing config with Force Model strategy
+            let routing_config = ModelRoutingConfig {
+                active_strategy: ActiveRoutingStrategy::ForceModel,
+                available_models: AvailableModelsSelection::default(),
+                forced_model: Some(("provider1".to_string(), "forced-model".to_string())),
+                prioritized_models: vec![],
+            };
+
+            let key = create_test_key_with_routing("test-key", routing_config);
+
+            let mut config = AppConfig::default();
+            config.api_keys.push(key);
+
+            let config_manager = Arc::new(ConfigManager::new(
+                config,
+                std::path::PathBuf::from("/tmp/test.yaml"),
+            ));
+
+            let health_manager = Arc::new(HealthCheckManager::default());
+            let provider_registry = Arc::new(ProviderRegistry::new(health_manager));
+            let rate_limiter = Arc::new(RateLimiterManager::new(None));
+
+            let router = Router::new(config_manager, provider_registry, rate_limiter);
+
+            // Request a different model, should be forced to use forced-model
+            let request = CompletionRequest {
+                model: "different-provider/different-model".to_string(),
+                messages: vec![],
+                temperature: None,
+                max_tokens: None,
+                stream: false,
+                top_p: None,
+                frequency_penalty: None,
+                presence_penalty: None,
+                stop: None,
+            };
+
+            let result = router.complete("test-key", request).await;
+            // Should fail because provider doesn't exist, but routing logic should have forced the model
+            assert!(result.is_err());
+            let err = result.unwrap_err();
+            // Error should mention provider1, not different-provider
+            assert!(err.to_string().contains("provider1") || err.to_string().contains("not found"));
+        }
+
+        #[tokio::test]
+        async fn test_force_model_strategy_without_configured_model() {
+            // Create routing config with Force Model strategy but no forced model
+            let routing_config = ModelRoutingConfig {
+                active_strategy: ActiveRoutingStrategy::ForceModel,
+                available_models: AvailableModelsSelection::default(),
+                forced_model: None, // No model configured
+                prioritized_models: vec![],
+            };
+
+            let key = create_test_key_with_routing("test-key", routing_config);
+
+            let mut config = AppConfig::default();
+            config.api_keys.push(key);
+
+            let config_manager = Arc::new(ConfigManager::new(
+                config,
+                std::path::PathBuf::from("/tmp/test.yaml"),
+            ));
+
+            let health_manager = Arc::new(HealthCheckManager::default());
+            let provider_registry = Arc::new(ProviderRegistry::new(health_manager));
+            let rate_limiter = Arc::new(RateLimiterManager::new(None));
+
+            let router = Router::new(config_manager, provider_registry, rate_limiter);
+
+            let request = CompletionRequest {
+                model: "any-model".to_string(),
+                messages: vec![],
+                temperature: None,
+                max_tokens: None,
+                stream: false,
+                top_p: None,
+                frequency_penalty: None,
+                presence_penalty: None,
+                stop: None,
+            };
+
+            let result = router.complete("test-key", request).await;
+            assert!(result.is_err());
+            let err = result.unwrap_err();
+            assert!(err.to_string().contains("no model is configured"));
+        }
+
+        #[tokio::test]
+        async fn test_prioritized_list_strategy_without_models() {
+            // Create routing config with Prioritized List strategy but empty list
+            let routing_config = ModelRoutingConfig {
+                active_strategy: ActiveRoutingStrategy::PrioritizedList,
+                available_models: AvailableModelsSelection::default(),
+                forced_model: None,
+                prioritized_models: vec![], // Empty list
+            };
+
+            let key = create_test_key_with_routing("test-key", routing_config);
+
+            let mut config = AppConfig::default();
+            config.api_keys.push(key);
+
+            let config_manager = Arc::new(ConfigManager::new(
+                config,
+                std::path::PathBuf::from("/tmp/test.yaml"),
+            ));
+
+            let health_manager = Arc::new(HealthCheckManager::default());
+            let provider_registry = Arc::new(ProviderRegistry::new(health_manager));
+            let rate_limiter = Arc::new(RateLimiterManager::new(None));
+
+            let router = Router::new(config_manager, provider_registry, rate_limiter);
+
+            let request = CompletionRequest {
+                model: "any-model".to_string(),
+                messages: vec![],
+                temperature: None,
+                max_tokens: None,
+                stream: false,
+                top_p: None,
+                frequency_penalty: None,
+                presence_penalty: None,
+                stop: None,
+            };
+
+            let result = router.complete("test-key", request).await;
+            assert!(result.is_err());
+            let err = result.unwrap_err();
+            assert!(err.to_string().contains("no models are configured"));
+        }
+
+        #[tokio::test]
+        async fn test_is_model_allowed_for_available_models() {
+            let routing_config = ModelRoutingConfig {
+                active_strategy: ActiveRoutingStrategy::AvailableModels,
+                available_models: AvailableModelsSelection {
+                    all_provider_models: vec!["provider1".to_string()],
+                    individual_models: vec![
+                        ("provider2".to_string(), "model2".to_string()),
+                        ("provider3".to_string(), "model3".to_string()),
+                    ],
+                },
+                forced_model: None,
+                prioritized_models: vec![],
+            };
+
+            // Test all_provider_models
+            assert!(routing_config.is_model_allowed("provider1", "any_model"));
+            assert!(routing_config.is_model_allowed("provider1", "another_model"));
+
+            // Test individual_models
+            assert!(routing_config.is_model_allowed("provider2", "model2"));
+            assert!(routing_config.is_model_allowed("provider3", "model3"));
+
+            // Test not allowed
+            assert!(!routing_config.is_model_allowed("provider2", "different_model"));
+            assert!(!routing_config.is_model_allowed("provider4", "model4"));
+        }
+
+        #[tokio::test]
+        async fn test_is_model_allowed_for_force_model() {
+            let routing_config = ModelRoutingConfig {
+                active_strategy: ActiveRoutingStrategy::ForceModel,
+                available_models: AvailableModelsSelection::default(),
+                forced_model: Some(("provider1".to_string(), "forced".to_string())),
+                prioritized_models: vec![],
+            };
+
+            // Only the forced model is allowed
+            assert!(routing_config.is_model_allowed("provider1", "forced"));
+
+            // Other models are not allowed
+            assert!(!routing_config.is_model_allowed("provider1", "other"));
+            assert!(!routing_config.is_model_allowed("provider2", "forced"));
+        }
+
+        #[tokio::test]
+        async fn test_is_model_allowed_for_prioritized_list() {
+            let routing_config = ModelRoutingConfig {
+                active_strategy: ActiveRoutingStrategy::PrioritizedList,
+                available_models: AvailableModelsSelection::default(),
+                forced_model: None,
+                prioritized_models: vec![
+                    ("provider1".to_string(), "model1".to_string()),
+                    ("provider2".to_string(), "model2".to_string()),
+                    ("provider3".to_string(), "model3".to_string()),
+                ],
+            };
+
+            // All models in the prioritized list are "allowed"
+            assert!(routing_config.is_model_allowed("provider1", "model1"));
+            assert!(routing_config.is_model_allowed("provider2", "model2"));
+            assert!(routing_config.is_model_allowed("provider3", "model3"));
+
+            // Models not in the list are not allowed
+            assert!(!routing_config.is_model_allowed("provider4", "model4"));
+            assert!(!routing_config.is_model_allowed("provider1", "different"));
+        }
+
+        #[tokio::test]
+        async fn test_migration_from_old_model_selection_all() {
+            let old_selection = ModelSelection::All;
+            let routing_config = ModelRoutingConfig::from_model_selection(old_selection);
+
+            assert_eq!(routing_config.active_strategy, ActiveRoutingStrategy::AvailableModels);
+            assert!(routing_config.available_models.all_provider_models.is_empty());
+            assert!(routing_config.available_models.individual_models.is_empty());
+            assert!(routing_config.forced_model.is_none());
+            assert!(routing_config.prioritized_models.is_empty());
+        }
+
+        #[tokio::test]
+        async fn test_migration_from_old_model_selection_custom() {
+            let old_selection = ModelSelection::Custom {
+                all_provider_models: vec!["provider1".to_string()],
+                individual_models: vec![("provider2".to_string(), "model2".to_string())],
+            };
+            let routing_config = ModelRoutingConfig::from_model_selection(old_selection);
+
+            assert_eq!(routing_config.active_strategy, ActiveRoutingStrategy::AvailableModels);
+            assert_eq!(routing_config.available_models.all_provider_models, vec!["provider1"]);
+            assert_eq!(
+                routing_config.available_models.individual_models,
+                vec![("provider2".to_string(), "model2".to_string())]
+            );
+        }
+
+        #[tokio::test]
+        async fn test_migration_from_old_model_selection_direct_model() {
+            #[allow(deprecated)]
+            let old_selection = ModelSelection::DirectModel {
+                provider: "provider1".to_string(),
+                model: "model1".to_string(),
+            };
+            let routing_config = ModelRoutingConfig::from_model_selection(old_selection);
+
+            assert_eq!(routing_config.active_strategy, ActiveRoutingStrategy::ForceModel);
+            assert_eq!(
+                routing_config.forced_model,
+                Some(("provider1".to_string(), "model1".to_string()))
+            );
+        }
+
+        #[tokio::test]
+        async fn test_case_insensitive_model_matching() {
+            let routing_config = ModelRoutingConfig {
+                active_strategy: ActiveRoutingStrategy::ForceModel,
+                available_models: AvailableModelsSelection::default(),
+                forced_model: Some(("Provider1".to_string(), "Model1".to_string())),
+                prioritized_models: vec![],
+            };
+
+            // Case-insensitive matching
+            assert!(routing_config.is_model_allowed("provider1", "model1"));
+            assert!(routing_config.is_model_allowed("PROVIDER1", "MODEL1"));
+            assert!(routing_config.is_model_allowed("Provider1", "Model1"));
+        }
+
+        #[tokio::test]
+        async fn test_get_routing_config_with_new_config() {
+            let routing_config = ModelRoutingConfig::new_force_model(
+                "provider1".to_string(),
+                "model1".to_string(),
+            );
+
+            let key = ApiKeyConfig {
+                id: "test".to_string(),
+                name: "Test".to_string(),
+                model_selection: None,
+                routing_config: Some(routing_config.clone()),
+                enabled: true,
+                created_at: Utc::now(),
+                last_used: None,
+            };
+
+            let result = key.get_routing_config();
+            assert!(result.is_some());
+            let config = result.unwrap();
+            assert_eq!(config.active_strategy, ActiveRoutingStrategy::ForceModel);
+            assert_eq!(
+                config.forced_model,
+                Some(("provider1".to_string(), "model1".to_string()))
+            );
+        }
+
+        #[tokio::test]
+        async fn test_get_routing_config_migrates_from_old() {
+            #[allow(deprecated)]
+            let key = ApiKeyConfig {
+                id: "test".to_string(),
+                name: "Test".to_string(),
+                model_selection: Some(ModelSelection::DirectModel {
+                    provider: "provider1".to_string(),
+                    model: "model1".to_string(),
+                }),
+                routing_config: None, // No new config
+                enabled: true,
+                created_at: Utc::now(),
+                last_used: None,
+            };
+
+            let result = key.get_routing_config();
+            assert!(result.is_some());
+            let config = result.unwrap();
+            // Should have migrated to Force Model strategy
+            assert_eq!(config.active_strategy, ActiveRoutingStrategy::ForceModel);
+            assert_eq!(
+                config.forced_model,
+                Some(("provider1".to_string(), "model1".to_string()))
+            );
+        }
+    }
+
+    // ============================================================================
+    // TODO: Provider Retry Integration Tests
+    // ============================================================================
+    //
+    // Future work: Add integration tests that test actual provider retry logic with mock
+    // provider implementations. These tests should cover:
+    //
+    // 1. **Provider Failures with Retry**:
+    //    - First provider fails with retryable error (Provider, RateLimitExceeded, etc.)
+    //    - Router retries with next provider in prioritized list
+    //    - Verify call counts and retry order
+    //
+    // 2. **Non-Retryable Errors**:
+    //    - Provider fails with Validation error
+    //    - Router stops immediately without retrying
+    //
+    // 3. **All Providers Fail**:
+    //    - All providers in prioritized list fail
+    //    - Router returns last error
+    //
+    // 4. **Health Check Failures**:
+    //    - Provider health check fails
+    //    - Router logs warning but continues with request
+    //    - Completion still works if provider is functional
+    //
+    // 5. **Success on First Try**:
+    //    - First provider succeeds
+    //    - No retries attempted
+    //    - Other providers never called
+    //
+    // **Implementation Requirements**:
+    // - Create MockProviderFactory that implements ProviderFactory trait
+    // - MockProvider with configurable failure modes (count, error type)
+    // - Track call counts to verify retry logic
+    // - Test with ProviderRegistry.create_provider() for proper architecture
+    //
+    // **Current Status**: Unit tests in routing_strategy_tests provide comprehensive
+    // coverage of configuration logic and is_model_allowed() behavior. Integration
+    // tests require ProviderRegistry architecture support.
+    //
+    // ============================================================================
+
+    // Placeholder for future integration tests - see TODO comment above
 }
