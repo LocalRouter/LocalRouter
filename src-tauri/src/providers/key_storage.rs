@@ -22,7 +22,12 @@ static PROVIDER_KEYCHAIN: OnceLock<CachedKeychain> = OnceLock::new();
 
 /// Get the global provider keychain instance (with caching)
 fn get_keychain() -> &'static CachedKeychain {
-    PROVIDER_KEYCHAIN.get_or_init(|| CachedKeychain::system())
+    PROVIDER_KEYCHAIN.get_or_init(|| {
+        CachedKeychain::auto().unwrap_or_else(|e| {
+            warn!("Failed to create auto keychain: {}, falling back to system", e);
+            CachedKeychain::system()
+        })
+    })
 }
 
 /// Store a provider API key in the system keyring

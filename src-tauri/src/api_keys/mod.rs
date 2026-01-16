@@ -6,7 +6,7 @@
 mod keychain;
 pub mod keychain_trait;
 
-pub use keychain_trait::{CachedKeychain, KeychainStorage, MockKeychain, SystemKeychain};
+pub use keychain_trait::{CachedKeychain, FileKeychain, KeychainStorage, MockKeychain, SystemKeychain};
 
 use crate::config::ApiKeyConfig;
 use crate::utils::crypto::generate_api_key;
@@ -33,9 +33,14 @@ const API_KEY_SERVICE: &str = "LocalRouter-APIKeys";
 
 impl ApiKeyManager {
     /// Create a new API key manager with existing keys from config
-    /// Uses the cached system keychain by default
+    /// Uses the auto-detected keychain (system or file-based depending on LOCALROUTER_KEYCHAIN env var)
     pub fn new(keys: Vec<ApiKeyConfig>) -> Self {
-        Self::with_keychain(keys, Arc::new(CachedKeychain::system()))
+        let keychain = CachedKeychain::auto()
+            .unwrap_or_else(|e| {
+                tracing::warn!("Failed to create auto keychain: {}, falling back to system", e);
+                CachedKeychain::system()
+            });
+        Self::with_keychain(keys, Arc::new(keychain))
     }
 
     /// Create a new API key manager with a custom keychain implementation

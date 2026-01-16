@@ -6,7 +6,7 @@ use crate::api_keys::ApiKeyManager;
 use crate::config::{ActiveRoutingStrategy, ConfigManager, ModelSelection};
 use crate::providers::registry::ProviderRegistry;
 use tauri::{
-    menu::{MenuBuilder, SubmenuBuilder},
+    menu::{MenuBuilder, MenuItem, SubmenuBuilder},
     tray::TrayIconBuilder,
     App, AppHandle, Emitter, Manager, Runtime,
 };
@@ -182,8 +182,9 @@ pub fn setup_tray<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
 fn build_tray_menu<R: Runtime>(app: &App<R>) -> tauri::Result<tauri::menu::Menu<R>> {
     let mut menu_builder = MenuBuilder::new(app);
 
-    // Add API Keys section header
-    menu_builder = menu_builder.text("api_keys_header", "API Keys");
+    // Add API Keys section header (disabled/non-clickable)
+    let api_keys_header = MenuItem::with_id(app, "api_keys_header", "API Keys", false, None::<&str>)?;
+    menu_builder = menu_builder.item(&api_keys_header);
 
     // Get API keys from manager and provider registry
     if let Some(key_manager) = app.try_state::<ApiKeyManager>() {
@@ -382,8 +383,9 @@ fn build_tray_menu<R: Runtime>(app: &App<R>) -> tauri::Result<tauri::menu::Menu<
         ("✗", "▶️ Start Server")
     };
 
-    // Add Server section header with status indicator
-    menu_builder = menu_builder.text("server_header", format!("Server {}", server_status_icon));
+    // Add Server section header with status indicator (disabled/non-clickable)
+    let server_header = MenuItem::with_id(app, "server_header", format!("Server {}", server_status_icon), false, None::<&str>)?;
+    menu_builder = menu_builder.item(&server_header);
 
     // Get port for URL display
     let port = if let Some(config_manager) = app.try_state::<ConfigManager>() {
@@ -427,8 +429,9 @@ pub fn rebuild_tray_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
 fn build_tray_menu_from_handle<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu::Menu<R>> {
     let mut menu_builder = MenuBuilder::new(app);
 
-    // Add API Keys section header
-    menu_builder = menu_builder.text("api_keys_header", "API Keys");
+    // Add API Keys section header (disabled/non-clickable)
+    let api_keys_header = MenuItem::with_id(app, "api_keys_header", "API Keys", false, None::<&str>)?;
+    menu_builder = menu_builder.item(&api_keys_header);
 
     // Get API keys from manager
     if let Some(key_manager) = app.try_state::<ApiKeyManager>() {
@@ -626,8 +629,9 @@ fn build_tray_menu_from_handle<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<
         ("✗", "▶️ Start Server")
     };
 
-    // Add Server section header with status indicator
-    menu_builder = menu_builder.text("server_header", format!("Server {}", server_status_icon));
+    // Add Server section header with status indicator (disabled/non-clickable)
+    let server_header = MenuItem::with_id(app, "server_header", format!("Server {}", server_status_icon), false, None::<&str>)?;
+    menu_builder = menu_builder.item(&server_header);
 
     // Get port for URL display
     let port = if let Some(config_manager) = app.try_state::<ConfigManager>() {
