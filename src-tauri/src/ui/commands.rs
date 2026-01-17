@@ -968,6 +968,8 @@ pub async fn start_server(
     // Get dependencies from app state
     let router = app.state::<Arc<crate::router::Router>>();
     let api_key_manager = app.state::<ApiKeyManager>();
+    let oauth_client_manager = app.state::<crate::oauth_clients::OAuthClientManager>();
+    let mcp_server_manager = app.state::<Arc<crate::mcp::McpServerManager>>();
     let rate_limiter = app.state::<Arc<crate::router::RateLimiterManager>>();
     let provider_registry = app.state::<Arc<ProviderRegistry>>();
 
@@ -987,6 +989,8 @@ pub async fn start_server(
             server_config,
             router.inner().clone(),
             (*api_key_manager.inner()).clone(),
+            (*oauth_client_manager.inner()).clone(),
+            mcp_server_manager.inner().clone(),
             rate_limiter.inner().clone(),
             provider_registry.inner().clone(),
         )

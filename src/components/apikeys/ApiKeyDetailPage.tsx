@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import Card from '../ui/Card'
-import Badge from '../ui/Badge'
 import Button from '../ui/Button'
+import DetailPageLayout from '../layouts/DetailPageLayout'
 import { ContextualChat } from '../chat/ContextualChat'
+import ModelSelectionTable, { ModelSelectionValue } from '../ModelSelectionTable'
 
 interface ApiKeyDetailPageProps {
   keyId: string
@@ -17,6 +18,11 @@ interface ApiKey {
   model_selection: any
 }
 
+interface Model {
+  id: string
+  provider: string
+}
+
 export default function ApiKeyDetailPage({ keyId }: ApiKeyDetailPageProps) {
   const [apiKey, setApiKey] = useState<ApiKey | null>(null)
   const [keyValue, setKeyValue] = useState<string>('')
@@ -24,12 +30,16 @@ export default function ApiKeyDetailPage({ keyId }: ApiKeyDetailPageProps) {
   const [keyLoaded, setKeyLoaded] = useState(false)
   const [keyLoadError, setKeyLoadError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
-  const [activeTab, setActiveTab] = useState<'settings' | 'chat'>('chat')
+  const [activeTab, setActiveTab] = useState<string>('settings')
   const [isSaving, setIsSaving] = useState(false)
 
   // Form state
   const [name, setName] = useState('')
   const [enabled, setEnabled] = useState(true)
+
+  // Model selection state
+  const [models, setModels] = useState<Model[]>([])
+  const [modelSelection, setModelSelection] = useState<ModelSelectionValue>({ type: 'all' })
 
   useEffect(() => {
     loadApiKeyData()
@@ -38,14 +48,20 @@ export default function ApiKeyDetailPage({ keyId }: ApiKeyDetailPageProps) {
   const loadApiKeyData = async () => {
     setLoading(true)
     try {
-      const keys = await invoke<ApiKey[]>('list_api_keys')
+      const [keys, modelList] = await Promise.all([
+        invoke<ApiKey[]>('list_api_keys'),
+        invoke<Model[]>('list_all_models').catch(() => []),
+      ])
 
       const key = keys.find((k) => k.id === keyId)
       if (key) {
         setApiKey(key)
         setName(key.name)
         setEnabled(key.enabled)
+        setModelSelection(key.model_selection || { type: 'all' })
       }
+
+      setModels(modelList)
     } catch (error) {
       console.error('Failed to load API key data:', error)
     } finally {
@@ -97,6 +113,24 @@ export default function ApiKeyDetailPage({ keyId }: ApiKeyDetailPageProps) {
     }
   }
 
+  const handleSaveModelSelection = async () => {
+    setIsSaving(true)
+    try {
+      await invoke('update_api_key_model', {
+        id: keyId,
+        modelSelection,
+      })
+
+      await loadApiKeyData()
+      alert('Model selection updated successfully!')
+    } catch (error) {
+      console.error('Failed to update model selection:', error)
+      alert(`Error updating model selection: ${error}`)
+    } finally {
+      setIsSaving(false)
+    }
+  }
+
   const handleCopyKey = async () => {
     // Load key if not already loaded
     if (!keyLoaded) {
@@ -113,28 +147,6 @@ export default function ApiKeyDetailPage({ keyId }: ApiKeyDetailPageProps) {
     }
   }
 
-  const formatModelSelection = (selection: any): string => {
-    if (!selection) return 'Not configured'
-    if (selection.type === 'all') return 'All providers and models'
-
-    if (selection.type === 'custom') {
-      const providers = selection.all_provider_models || []
-      const models = selection.individual_models || []
-
-      const parts: string[] = []
-      if (providers.length > 0) {
-        parts.push(`${providers.length} provider(s)`)
-      }
-      if (models.length > 0) {
-        parts.push(`${models.length} specific model(s)`)
-      }
-
-      return parts.length > 0 ? parts.join(', ') : 'No models selected'
-    }
-
-    return 'Unknown configuration'
-  }
-
   if (loading || !apiKey) {
     return (
       <div className="bg-white rounded-lg shadow-sm p-6">
@@ -143,66 +155,11 @@ export default function ApiKeyDetailPage({ keyId }: ApiKeyDetailPageProps) {
     )
   }
 
-  return (
-    <div className="space-y-6">
-      {/* Header */}
-      <Card>
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="text-2xl font-bold text-gray-900">{apiKey.name}</h2>
-            <p className="text-sm text-gray-500 mt-1">
-              ID: {apiKey.id.substring(0, 16)}... | Created: {new Date(apiKey.created_at).toLocaleDateString()}
-            </p>
-          </div>
-          <div className="flex items-center gap-3">
-            <Badge variant={apiKey.enabled ? 'success' : 'warning'}>
-              {apiKey.enabled ? 'Enabled' : 'Disabled'}
-            </Badge>
-          </div>
-        </div>
-      </Card>
-
-      {/* Tabs */}
-      <div className="flex border-b border-gray-200">
-        <button
-          onClick={() => setActiveTab('chat')}
-          className={`px-6 py-3 font-medium transition-colors ${
-            activeTab === 'chat'
-              ? 'border-b-2 border-blue-500 text-blue-600'
-              : 'text-gray-600 hover:text-gray-900'
-          }`}
-        >
-          Chat
-        </button>
-        <button
-          onClick={() => setActiveTab('settings')}
-          className={`px-6 py-3 font-medium transition-colors ${
-            activeTab === 'settings'
-              ? 'border-b-2 border-blue-500 text-blue-600'
-              : 'text-gray-600 hover:text-gray-900'
-          }`}
-        >
-          Settings
-        </button>
-      </div>
-
-      {/* Tab Content */}
-      {activeTab === 'chat' && (
-        <Card>
-          <h3 className="text-lg font-semibold text-gray-900 mb-4">Chat</h3>
-          <ContextualChat
-            context={{
-              type: 'api_key',
-              apiKeyId: keyId,
-              apiKeyName: apiKey.name,
-              modelSelection: apiKey.model_selection,
-            }}
-            disabled={!apiKey.enabled}
-          />
-        </Card>
-      )}
-
-      {activeTab === 'settings' && (
+  const tabs = [
+    {
+      id: 'settings',
+      label: 'Settings',
+      content: (
         <div className="space-y-6">
           <Card>
             <h3 className="text-lg font-semibold text-gray-900 mb-4">API Key Value</h3>
@@ -290,19 +247,66 @@ export default function ApiKeyDetailPage({ keyId }: ApiKeyDetailPageProps) {
               </Button>
             </div>
           </Card>
-
-          <Card>
-            <h3 className="text-lg font-semibold text-gray-900 mb-4">Model Selection</h3>
-            <div className="p-3 bg-gray-50 border border-gray-200 rounded-lg">
-              <p className="text-sm text-gray-700 font-medium mb-2">Current Configuration:</p>
-              <p className="text-sm text-gray-600">{formatModelSelection(apiKey.model_selection)}</p>
-            </div>
-            <p className="text-xs text-gray-500 mt-3">
-              To modify model selection, use the main API Keys page.
-            </p>
-          </Card>
         </div>
-      )}
-    </div>
+      ),
+    },
+    {
+      id: 'models',
+      label: 'Model Selection',
+      content: (
+        <Card>
+          <h3 className="text-lg font-semibold text-gray-900 mb-4">Model Selection</h3>
+          <p className="text-sm text-gray-500 mb-4">
+            Configure which models this API key can access. Select "All" to allow all providers and models,
+            select individual providers to allow all their models, or select specific models for fine-grained control.
+          </p>
+          <ModelSelectionTable
+            models={models}
+            value={modelSelection}
+            onChange={setModelSelection}
+          />
+          <div className="mt-6 flex justify-end">
+            <Button onClick={handleSaveModelSelection} disabled={isSaving}>
+              {isSaving ? 'Saving...' : 'Save Changes'}
+            </Button>
+          </div>
+        </Card>
+      ),
+    },
+    {
+      id: 'chat',
+      label: 'Chat',
+      content: (
+        <Card>
+          <h3 className="text-lg font-semibold text-gray-900 mb-4">Chat</h3>
+          <ContextualChat
+            context={{
+              type: 'api_key',
+              apiKeyId: keyId,
+              apiKeyName: apiKey.name,
+              modelSelection: apiKey.model_selection,
+            }}
+            disabled={!apiKey.enabled}
+          />
+        </Card>
+      ),
+    },
+  ]
+
+  return (
+    <DetailPageLayout
+      title={apiKey.name}
+      subtitle={`ID: ${apiKey.id.substring(0, 16)}... | Created: ${new Date(apiKey.created_at).toLocaleDateString()}`}
+      badges={[
+        {
+          label: apiKey.enabled ? 'Enabled' : 'Disabled',
+          variant: apiKey.enabled ? 'success' : 'warning',
+        },
+      ]}
+      tabs={tabs}
+      activeTab={activeTab}
+      onTabChange={setActiveTab}
+      loading={loading}
+    />
   )
 }

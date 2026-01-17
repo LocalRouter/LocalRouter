@@ -10,7 +10,7 @@ use axum::{
     Json,
 };
 
-use crate::mcp::protocol::{JsonRpcRequest, JsonRpcResponse, JsonRpcError};
+use crate::mcp::protocol::{JsonRpcRequest, JsonRpcResponse};
 use crate::server::middleware::error::ApiErrorResponse;
 use crate::server::state::{AppState, OAuthContext};
 
