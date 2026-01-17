@@ -307,15 +307,10 @@ async fn handle_non_streaming(
     let completed_at = Instant::now();
 
     // Calculate cost from router (get pricing info)
-    let pricing = state
-        .provider_registry
-        .get_provider(&response.provider)
-        .and_then(|p| {
-            let model = response.model.clone();
-            async move { p.get_pricing(&model).await.ok() }
-        })
-        .await
-        .unwrap_or_else(|| crate::providers::PricingInfo::free());
+    let pricing = match state.provider_registry.get_provider(&response.provider) {
+        Some(p) => p.get_pricing(&response.model).await.ok(),
+        None => None,
+    }.unwrap_or_else(|| crate::providers::PricingInfo::free());
 
     let cost = {
         let input_cost = (response.usage.prompt_tokens as f64 / 1000.0) * pricing.input_cost_per_1k;
@@ -523,15 +518,10 @@ async fn handle_streaming(
         };
 
         // Estimate cost (using approximation since streaming doesn't return exact counts)
-        let pricing = state_clone
-            .provider_registry
-            .get_provider(&provider)
-            .and_then(|p| {
-                let model = model_clone.clone();
-                async move { p.get_pricing(&model).await.ok() }
-            })
-            .await
-            .unwrap_or_else(|| crate::providers::PricingInfo::free());
+        let pricing = match state_clone.provider_registry.get_provider(&provider) {
+            Some(p) => p.get_pricing(&model_clone).await.ok(),
+            None => None,
+        }.unwrap_or_else(|| crate::providers::PricingInfo::free());
 
         let cost = {
             let input_cost = (prompt_tokens as f64 / 1000.0) * pricing.input_cost_per_1k;

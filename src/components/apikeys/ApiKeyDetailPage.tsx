@@ -5,6 +5,8 @@ import Button from '../ui/Button'
 import DetailPageLayout from '../layouts/DetailPageLayout'
 import { ContextualChat } from '../chat/ContextualChat'
 import ModelSelectionTable, { ModelSelectionValue } from '../ModelSelectionTable'
+import { MetricsChart } from '../charts/MetricsChart'
+import { useMetricsSubscription } from '../../hooks/useMetricsSubscription'
 
 interface ApiKeyDetailPageProps {
   keyId: string
@@ -24,6 +26,7 @@ interface Model {
 }
 
 export default function ApiKeyDetailPage({ keyId }: ApiKeyDetailPageProps) {
+  const refreshKey = useMetricsSubscription()
   const [apiKey, setApiKey] = useState<ApiKey | null>(null)
   const [keyValue, setKeyValue] = useState<string>('')
   const [showKey, setShowKey] = useState(false)
@@ -271,6 +274,51 @@ export default function ApiKeyDetailPage({ keyId }: ApiKeyDetailPageProps) {
             </Button>
           </div>
         </Card>
+      ),
+    },
+    {
+      id: 'metrics',
+      label: 'Metrics',
+      content: (
+        <div className="space-y-6">
+          <div className="grid grid-cols-2 gap-6">
+            <MetricsChart
+              scope="api_key"
+              scopeId={keyId}
+              timeRange="day"
+              metricType="requests"
+              title="Requests"
+              refreshTrigger={refreshKey}
+            />
+
+            <MetricsChart
+              scope="api_key"
+              scopeId={keyId}
+              timeRange="day"
+              metricType="tokens"
+              title="Tokens"
+              refreshTrigger={refreshKey}
+            />
+
+            <MetricsChart
+              scope="api_key"
+              scopeId={keyId}
+              timeRange="day"
+              metricType="cost"
+              title="Cost"
+              refreshTrigger={refreshKey}
+            />
+
+            <MetricsChart
+              scope="api_key"
+              scopeId={keyId}
+              timeRange="day"
+              metricType="latency"
+              title="Latency"
+              refreshTrigger={refreshKey}
+            />
+          </div>
+        </div>
       ),
     },
     {
