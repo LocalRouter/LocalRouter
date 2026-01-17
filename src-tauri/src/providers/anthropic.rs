@@ -553,6 +553,12 @@ impl ModelProvider for AnthropicProvider {
             "structured_outputs" => {
                 Some(Box::new(crate::providers::features::structured_outputs::StructuredOutputsAdapter))
             }
+            "prompt_caching" => {
+                Some(Box::new(crate::providers::features::prompt_caching::PromptCachingAdapter))
+            }
+            "json_mode" => {
+                Some(Box::new(crate::providers::features::json_mode::JsonModeAdapter))
+            }
             _ => None,
         }
     }

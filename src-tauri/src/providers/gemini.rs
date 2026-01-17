@@ -474,6 +474,9 @@ impl ModelProvider for GeminiProvider {
             "thinking_level" => {
                 Some(Box::new(crate::providers::features::gemini_thinking::GeminiThinkingAdapter))
             }
+            "json_mode" => {
+                Some(Box::new(crate::providers::features::json_mode::JsonModeAdapter))
+            }
             _ => None,
         }
     }

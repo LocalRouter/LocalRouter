@@ -7,6 +7,9 @@ pub mod anthropic_thinking;
 pub mod openai_reasoning;
 pub mod gemini_thinking;
 pub mod structured_outputs;
+pub mod prompt_caching;
+pub mod logprobs;
+pub mod json_mode;
 
 use async_trait::async_trait;
 use serde_json::Value;
@@ -20,6 +23,9 @@ pub use anthropic_thinking::AnthropicThinkingAdapter;
 pub use openai_reasoning::OpenAIReasoningAdapter;
 pub use gemini_thinking::GeminiThinkingAdapter;
 pub use structured_outputs::StructuredOutputsAdapter;
+pub use prompt_caching::PromptCachingAdapter;
+pub use logprobs::LogprobsAdapter;
+pub use json_mode::JsonModeAdapter;
 
 /// Feature parameters passed from the API request
 pub type FeatureParams = HashMap<String, Value>;

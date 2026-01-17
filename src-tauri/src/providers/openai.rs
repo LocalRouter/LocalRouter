@@ -549,6 +549,12 @@ impl ModelProvider for OpenAIProvider {
             "structured_outputs" => {
                 Some(Box::new(crate::providers::features::structured_outputs::StructuredOutputsAdapter))
             }
+            "logprobs" => {
+                Some(Box::new(crate::providers::features::logprobs::LogprobsAdapter))
+            }
+            "json_mode" => {
+                Some(Box::new(crate::providers::features::json_mode::JsonModeAdapter))
+            }
             _ => None,
         }
     }
