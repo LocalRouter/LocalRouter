@@ -3,7 +3,7 @@
 //! Manages MCP server instances, their lifecycle, and health checks.
 
 use crate::config::{McpServerConfig, McpTransportConfig, McpTransportType};
-use crate::mcp::transport::{StdioTransport, Transport};
+use crate::mcp::transport::{SseTransport, StdioTransport, Transport, WebSocketTransport};
 use crate::mcp::protocol::{JsonRpcRequest, JsonRpcResponse};
 use crate::utils::errors::{AppError, AppResult};
 use dashmap::DashMap;
@@ -18,6 +18,12 @@ use std::sync::Arc;
 pub struct McpServerManager {
     /// Active STDIO transports (server_id -> transport)
     stdio_transports: Arc<DashMap<String, Arc<StdioTransport>>>,
+
+    /// Active SSE transports (server_id -> transport)
+    sse_transports: Arc<DashMap<String, Arc<SseTransport>>>,
+
+    /// Active WebSocket transports (server_id -> transport)
+    websocket_transports: Arc<DashMap<String, Arc<WebSocketTransport>>>,
 
     /// Server configurations (server_id -> config)
     configs: Arc<DashMap<String, McpServerConfig>>,
@@ -57,6 +63,8 @@ impl McpServerManager {
     pub fn new() -> Self {
         Self {
             stdio_transports: Arc::new(DashMap::new()),
+            sse_transports: Arc::new(DashMap::new()),
+            websocket_transports: Arc::new(DashMap::new()),
             configs: Arc::new(DashMap::new()),
         }
     }
@@ -115,14 +123,10 @@ impl McpServerManager {
                 self.start_stdio_server(server_id, &config).await?;
             }
             McpTransportType::Sse => {
-                return Err(AppError::Mcp(
-                    "SSE transport not yet implemented".to_string(),
-                ));
+                self.start_sse_server(server_id, &config).await?;
             }
             McpTransportType::WebSocket => {
-                return Err(AppError::Mcp(
-                    "WebSocket transport not yet implemented".to_string(),
-                ));
+                self.start_websocket_server(server_id, &config).await?;
             }
         }
 
@@ -158,6 +162,62 @@ impl McpServerManager {
         Ok(())
     }
 
+    /// Start an SSE MCP server
+    async fn start_sse_server(
+        &self,
+        server_id: &str,
+        config: &McpServerConfig,
+    ) -> AppResult<()> {
+        // Extract SSE config
+        let (url, headers) = match &config.transport_config {
+            McpTransportConfig::Sse { url, headers } => {
+                (url.clone(), headers.clone())
+            }
+            _ => {
+                return Err(AppError::Mcp(
+                    "Invalid transport config for SSE".to_string(),
+                ))
+            }
+        };
+
+        // Connect to the SSE server
+        let transport = SseTransport::connect(url, headers).await?;
+
+        // Store the transport
+        self.sse_transports
+            .insert(server_id.to_string(), Arc::new(transport));
+
+        Ok(())
+    }
+
+    /// Start a WebSocket MCP server
+    async fn start_websocket_server(
+        &self,
+        server_id: &str,
+        config: &McpServerConfig,
+    ) -> AppResult<()> {
+        // Extract WebSocket config
+        let (url, headers) = match &config.transport_config {
+            McpTransportConfig::WebSocket { url, headers } => {
+                (url.clone(), headers.clone())
+            }
+            _ => {
+                return Err(AppError::Mcp(
+                    "Invalid transport config for WebSocket".to_string(),
+                ))
+            }
+        };
+
+        // Connect to the WebSocket server
+        let transport = WebSocketTransport::connect(url, headers).await?;
+
+        // Store the transport
+        self.websocket_transports
+            .insert(server_id.to_string(), Arc::new(transport));
+
+        Ok(())
+    }
+
     /// Stop an MCP server
     ///
     /// # Arguments
@@ -173,6 +233,20 @@ impl McpServerManager {
         if let Some((_, transport)) = self.stdio_transports.remove(server_id) {
             transport.close().await?;
             tracing::info!("MCP STDIO server stopped: {}", server_id);
+            return Ok(());
+        }
+
+        // Try to stop SSE transport
+        if let Some((_, transport)) = self.sse_transports.remove(server_id) {
+            transport.close().await?;
+            tracing::info!("MCP SSE server stopped: {}", server_id);
+            return Ok(());
+        }
+
+        // Try to stop WebSocket transport
+        if let Some((_, transport)) = self.websocket_transports.remove(server_id) {
+            transport.close().await?;
+            tracing::info!("MCP WebSocket server stopped: {}", server_id);
             return Ok(());
         }
 
@@ -193,8 +267,18 @@ impl McpServerManager {
         server_id: &str,
         request: JsonRpcRequest,
     ) -> AppResult<JsonRpcResponse> {
-        // Check if server is running
+        // Check STDIO transport
         if let Some(transport) = self.stdio_transports.get(server_id) {
+            return transport.send_request(request).await;
+        }
+
+        // Check SSE transport
+        if let Some(transport) = self.sse_transports.get(server_id) {
+            return transport.send_request(request).await;
+        }
+
+        // Check WebSocket transport
+        if let Some(transport) = self.websocket_transports.get(server_id) {
             return transport.send_request(request).await;
         }
 
@@ -212,12 +296,30 @@ impl McpServerManager {
         let config = self.get_config(server_id);
 
         let (status, error) = if let Some(transport) = self.stdio_transports.get(server_id) {
-            if transport.is_healthy().await {
+            if transport.is_alive() {
                 (HealthStatus::Healthy, None)
             } else {
                 (
                     HealthStatus::Unhealthy,
                     Some("Process not running".to_string()),
+                )
+            }
+        } else if let Some(transport) = self.sse_transports.get(server_id) {
+            if transport.is_healthy() {
+                (HealthStatus::Healthy, None)
+            } else {
+                (
+                    HealthStatus::Unhealthy,
+                    Some("SSE connection lost".to_string()),
+                )
+            }
+        } else if let Some(transport) = self.websocket_transports.get(server_id) {
+            if transport.is_healthy() {
+                (HealthStatus::Healthy, None)
+            } else {
+                (
+                    HealthStatus::Unhealthy,
+                    Some("WebSocket connection lost".to_string()),
                 )
             }
         } else {
@@ -249,6 +351,8 @@ impl McpServerManager {
     /// Check if a server is running
     pub fn is_running(&self, server_id: &str) -> bool {
         self.stdio_transports.contains_key(server_id)
+            || self.sse_transports.contains_key(server_id)
+            || self.websocket_transports.contains_key(server_id)
     }
 
     /// Shutdown all servers

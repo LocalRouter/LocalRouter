@@ -284,13 +284,61 @@ async fn handle_non_streaming(
     let created_at = Utc::now();
 
     // Call router to get completion
-    let response = state
+    let response = match state
         .router
         .complete(&auth.api_key_id, provider_request)
         .await
-        .map_err(|e| ApiErrorResponse::bad_gateway(format!("Provider error: {}", e)))?;
+    {
+        Ok(resp) => resp,
+        Err(e) => {
+            // Record failure metrics
+            let latency = Instant::now().duration_since(started_at).as_millis() as u64;
+            state.metrics_collector.record_failure(
+                &auth.api_key_id,
+                "unknown",
+                "unknown",
+                latency,
+            );
+
+            return Err(ApiErrorResponse::bad_gateway(format!("Provider error: {}", e)));
+        }
+    };
 
     let completed_at = Instant::now();
+
+    // Calculate cost from router (get pricing info)
+    let pricing = state
+        .provider_registry
+        .get_provider(&response.provider)
+        .and_then(|p| {
+            let model = response.model.clone();
+            async move { p.get_pricing(&model).await.ok() }
+        })
+        .await
+        .unwrap_or_else(|| crate::providers::PricingInfo::free());
+
+    let cost = {
+        let input_cost = (response.usage.prompt_tokens as f64 / 1000.0) * pricing.input_cost_per_1k;
+        let output_cost = (response.usage.completion_tokens as f64 / 1000.0) * pricing.output_cost_per_1k;
+        input_cost + output_cost
+    };
+
+    // Record success metrics for all four tiers
+    let latency_ms = completed_at.duration_since(started_at).as_millis() as u64;
+    state.metrics_collector.record_success(
+        &auth.api_key_id,
+        &response.provider,
+        &response.model,
+        response.usage.prompt_tokens as u64,
+        response.usage.completion_tokens as u64,
+        cost,
+        latency_ms,
+    );
+
+    // Emit event for real-time UI updates
+    state.emit_event("metrics-updated", &serde_json::json!({
+        "timestamp": created_at.to_rfc3339(),
+    }).to_string());
 
     // Note: Router already records usage for rate limiting, so we don't need to do it here
 
@@ -325,11 +373,16 @@ async fn handle_non_streaming(
     let generation_details = GenerationDetails {
         id: generation_id,
         model: response.model.clone(),
-        provider: "router".to_string(), // Router determines actual provider
+        provider: response.provider.clone(),
         created_at,
         finish_reason: api_response.choices.first().and_then(|c| c.finish_reason.clone()).unwrap_or_else(|| "unknown".to_string()),
         tokens: api_response.usage.clone(),
-        cost: None, // TODO: Calculate cost
+        cost: Some(crate::server::types::CostDetails {
+            prompt_cost: (response.usage.prompt_tokens as f64 / 1000.0) * pricing.input_cost_per_1k,
+            completion_cost: (response.usage.completion_tokens as f64 / 1000.0) * pricing.output_cost_per_1k,
+            total_cost: cost,
+            currency: "USD".to_string(),
+        }),
         started_at,
         completed_at,
         provider_health: None,
@@ -360,11 +413,25 @@ async fn handle_streaming(
     let model = provider_request.model.clone();
 
     // Call router to get streaming completion
-    let stream = state
+    let stream = match state
         .router
         .stream_complete(&auth.api_key_id, provider_request)
         .await
-        .map_err(|e| ApiErrorResponse::bad_gateway(format!("Provider error: {}", e)))?;
+    {
+        Ok(s) => s,
+        Err(e) => {
+            // Record failure metrics
+            let latency = Instant::now().duration_since(started_at).as_millis() as u64;
+            state.metrics_collector.record_failure(
+                &auth.api_key_id,
+                "unknown",
+                &model,
+                latency,
+            );
+
+            return Err(ApiErrorResponse::bad_gateway(format!("Provider error: {}", e)));
+        }
+    };
 
     // Convert provider stream to SSE stream
     let created_timestamp = created_at.timestamp();
@@ -448,10 +515,51 @@ async fn handle_streaming(
         let completion_tokens = (completion_content.len() / 4).max(1) as u32;
         let total_tokens = prompt_tokens + completion_tokens;
 
+        // Infer provider from model name (format: "provider/model" or just "model")
+        let provider = if let Some((p, _)) = model_clone.split_once('/') {
+            p.to_string()
+        } else {
+            "router".to_string()
+        };
+
+        // Estimate cost (using approximation since streaming doesn't return exact counts)
+        let pricing = state_clone
+            .provider_registry
+            .get_provider(&provider)
+            .and_then(|p| {
+                let model = model_clone.clone();
+                async move { p.get_pricing(&model).await.ok() }
+            })
+            .await
+            .unwrap_or_else(|| crate::providers::PricingInfo::free());
+
+        let cost = {
+            let input_cost = (prompt_tokens as f64 / 1000.0) * pricing.input_cost_per_1k;
+            let output_cost = (completion_tokens as f64 / 1000.0) * pricing.output_cost_per_1k;
+            input_cost + output_cost
+        };
+
+        // Record success metrics for streaming (with estimated tokens)
+        let latency_ms = completed_at.duration_since(started_at).as_millis() as u64;
+        state_clone.metrics_collector.record_success(
+            &auth_clone.api_key_id,
+            &provider,
+            &model_clone,
+            prompt_tokens as u64,
+            completion_tokens as u64,
+            cost,
+            latency_ms,
+        );
+
+        // Emit event for real-time UI updates
+        state_clone.emit_event("metrics-updated", &serde_json::json!({
+            "timestamp": created_at_clone.to_rfc3339(),
+        }).to_string());
+
         let generation_details = GenerationDetails {
             id: gen_id_clone,
             model: model_clone,
-            provider: "router".to_string(),
+            provider: provider.clone(),
             created_at: created_at_clone,
             finish_reason: finish_reason_final,
             tokens: TokenUsage {
@@ -459,7 +567,12 @@ async fn handle_streaming(
                 completion_tokens,
                 total_tokens,
             },
-            cost: None, // TODO: Calculate cost
+            cost: Some(crate::server::types::CostDetails {
+                prompt_cost: (prompt_tokens as f64 / 1000.0) * pricing.input_cost_per_1k,
+                completion_cost: (completion_tokens as f64 / 1000.0) * pricing.output_cost_per_1k,
+                total_cost: cost,
+                currency: "USD".to_string(),
+            }),
             started_at,
             completed_at,
             provider_health: None,

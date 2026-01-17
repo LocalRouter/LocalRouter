@@ -5,9 +5,13 @@
 //! - SSE: Server-Sent Events over HTTP
 //! - WebSocket: Bidirectional WebSocket connection
 
+pub mod sse;
 pub mod stdio;
+pub mod websocket;
 
+pub use sse::SseTransport;
 pub use stdio::StdioTransport;
+pub use websocket::WebSocketTransport;
 
 use crate::mcp::protocol::{JsonRpcRequest, JsonRpcResponse};
 use crate::utils::errors::AppResult;

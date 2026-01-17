@@ -4,6 +4,7 @@
 //! features without polluting the base ModelProvider trait.
 
 pub mod anthropic_thinking;
+pub mod openai_reasoning;
 
 use async_trait::async_trait;
 use serde_json::Value;
@@ -14,6 +15,7 @@ use super::{CompletionRequest, CompletionResponse};
 
 // Re-export feature adapters
 pub use anthropic_thinking::AnthropicThinkingAdapter;
+pub use openai_reasoning::OpenAIReasoningAdapter;
 
 /// Feature parameters passed from the API request
 pub type FeatureParams = HashMap<String, Value>;

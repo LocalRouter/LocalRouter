@@ -294,6 +294,7 @@ export default function ProvidersTab({ activeSubTab, onTabChange }: ProvidersTab
       <ProviderDetailPage
         instanceName={instance.instance_name}
         providerType={instance.provider_type}
+        onTabChange={onTabChange}
       />
     )
   }

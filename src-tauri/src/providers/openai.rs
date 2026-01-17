@@ -531,6 +531,22 @@ impl ModelProvider for OpenAIProvider {
 
         Ok(Box::pin(converted_stream))
     }
+
+    fn supports_feature(&self, feature: &str) -> bool {
+        matches!(
+            feature,
+            "reasoning_tokens" | "structured_outputs" | "logprobs"
+        )
+    }
+
+    fn get_feature_adapter(&self, feature: &str) -> Option<Box<dyn crate::providers::features::FeatureAdapter>> {
+        match feature {
+            "reasoning_tokens" => {
+                Some(Box::new(crate::providers::features::openai_reasoning::OpenAIReasoningAdapter))
+            }
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]

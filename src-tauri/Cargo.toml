@@ -50,6 +50,8 @@ urlencoding = { workspace = true }
 
 # Additional dependencies
 futures = "0.3"
+futures-util = "0.3"
+tokio-tungstenite = "0.21"
 parking_lot = "0.12"
 dashmap = "6.1"
 hex = { workspace = true }

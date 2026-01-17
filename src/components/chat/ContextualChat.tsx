@@ -289,6 +289,13 @@ export const ContextualChat: React.FC<ContextualChatProps> = ({ context, disable
           contextType={context.type}
         />
       )}
+
+      {/* Note about persistence */}
+      <div className="mt-3 px-3 py-2 rounded-lg bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700">
+        <p className="text-xs text-gray-600 dark:text-gray-400">
+          Note: Chat conversations are not persisted and will be lost when you navigate away or refresh the page.
+        </p>
+      </div>
     </div>
   );
 };

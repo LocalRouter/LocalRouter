@@ -388,6 +388,15 @@ async fn main() -> anyhow::Result<()> {
             ui::commands::restart_server,
             // Monitoring & statistics commands
             ui::commands::get_aggregate_stats,
+            // Metrics commands
+            ui::commands_metrics::get_global_metrics,
+            ui::commands_metrics::get_api_key_metrics,
+            ui::commands_metrics::get_provider_metrics,
+            ui::commands_metrics::get_model_metrics,
+            ui::commands_metrics::list_tracked_models,
+            ui::commands_metrics::list_tracked_providers,
+            ui::commands_metrics::compare_api_keys,
+            ui::commands_metrics::compare_providers,
             // Network interface commands
             ui::commands::get_network_interfaces,
             // Server control commands
