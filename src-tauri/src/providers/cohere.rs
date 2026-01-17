@@ -313,6 +313,8 @@ impl ModelProvider for CohereProvider {
                 completion_tokens: cohere_response.usage.tokens.output_tokens,
                 total_tokens: cohere_response.usage.tokens.input_tokens
                     + cohere_response.usage.tokens.output_tokens,
+                prompt_tokens_details: None,
+                completion_tokens_details: None,
             },
             extensions: None,
         })

@@ -384,6 +384,8 @@ impl ModelProvider for AnthropicProvider {
                 completion_tokens: anthropic_response.usage.output_tokens,
                 total_tokens: anthropic_response.usage.input_tokens
                     + anthropic_response.usage.output_tokens,
+                prompt_tokens_details: None,
+                completion_tokens_details: None,
             },
             extensions: None,
         })
@@ -547,6 +549,9 @@ impl ModelProvider for AnthropicProvider {
         match feature {
             "extended_thinking" => {
                 Some(Box::new(crate::providers::features::anthropic_thinking::AnthropicThinkingAdapter))
+            }
+            "structured_outputs" => {
+                Some(Box::new(crate::providers::features::structured_outputs::StructuredOutputsAdapter))
             }
             _ => None,
         }

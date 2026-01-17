@@ -536,6 +536,7 @@ mod tests {
             top_k: None,
             seed: None,
             repetition_penalty: None,
+            extensions: None,
         };
 
         let response = provider.complete(request).await.unwrap();

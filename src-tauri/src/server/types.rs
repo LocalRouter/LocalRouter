@@ -160,6 +160,12 @@ pub struct TokenUsage {
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
     pub total_tokens: u32,
+    /// Detailed prompt token breakdown (optional)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_tokens_details: Option<crate::providers::PromptTokensDetails>,
+    /// Detailed completion token breakdown (optional)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completion_tokens_details: Option<crate::providers::CompletionTokensDetails>,
 }
 
 // Streaming chunk

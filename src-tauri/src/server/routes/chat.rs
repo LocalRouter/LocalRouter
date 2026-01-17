@@ -360,6 +360,8 @@ async fn handle_non_streaming(
             prompt_tokens: response.usage.prompt_tokens,
             completion_tokens: response.usage.completion_tokens,
             total_tokens: response.usage.total_tokens,
+            prompt_tokens_details: response.usage.prompt_tokens_details,
+            completion_tokens_details: response.usage.completion_tokens_details,
         },
         extensions: None, // Provider-specific extensions (Phase 1)
     };
@@ -556,6 +558,8 @@ async fn handle_streaming(
                 prompt_tokens,
                 completion_tokens,
                 total_tokens,
+                prompt_tokens_details: None,
+                completion_tokens_details: None,
             },
             cost: Some(crate::server::types::CostDetails {
                 prompt_cost: (prompt_tokens as f64 / 1000.0) * pricing.input_cost_per_1k,

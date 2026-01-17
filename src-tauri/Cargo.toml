@@ -57,6 +57,7 @@ dashmap = "6.1"
 hex = { workspace = true }
 machine-uid = { workspace = true }
 ollama-rs = { workspace = true }
+jsonschema = "0.18"  # JSON Schema validation for structured outputs
 
 [dev-dependencies]
 tempfile = "3.8"

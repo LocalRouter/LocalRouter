@@ -989,6 +989,7 @@ mod tests {
             top_k: None,
             seed: None,
             repetition_penalty: None,
+            extensions: None,
         };
 
         let result = router.complete("invalid-key-id", request).await;
@@ -1036,6 +1037,7 @@ mod tests {
             top_k: None,
             seed: None,
             repetition_penalty: None,
+            extensions: None,
         };
 
         let result = router.complete("test-key", request).await;
@@ -1113,6 +1115,7 @@ mod tests {
             top_k: None,
             seed: None,
             repetition_penalty: None,
+            extensions: None,
             };
 
             let result = router.complete("test-key", request).await;
@@ -1168,6 +1171,7 @@ mod tests {
             top_k: None,
             seed: None,
             repetition_penalty: None,
+            extensions: None,
             };
 
             let result = router.complete("test-key", request).await;
@@ -1240,6 +1244,7 @@ mod tests {
             top_k: None,
             seed: None,
             repetition_penalty: None,
+            extensions: None,
             };
 
             let result = router.complete("test-key", request).await;
@@ -1289,6 +1294,7 @@ mod tests {
             top_k: None,
             seed: None,
             repetition_penalty: None,
+            extensions: None,
             };
 
             let result = router.complete("test-key", request).await;
@@ -1336,6 +1342,7 @@ mod tests {
             top_k: None,
             seed: None,
             repetition_penalty: None,
+            extensions: None,
             };
 
             let result = router.complete("test-key", request).await;

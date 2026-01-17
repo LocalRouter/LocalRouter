@@ -343,6 +343,8 @@ impl ModelProvider for OllamaProvider {
                 prompt_tokens,
                 completion_tokens,
                 total_tokens: prompt_tokens + completion_tokens,
+                prompt_tokens_details: None,
+                completion_tokens_details: None,
             },
             extensions: None,
         })

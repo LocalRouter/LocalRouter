@@ -207,6 +207,8 @@ mod tests {
                 prompt_tokens: 100,
                 completion_tokens: 50,
                 total_tokens: 150,
+                prompt_tokens_details: None,
+                completion_tokens_details: None,
             },
             extensions: None,
         };

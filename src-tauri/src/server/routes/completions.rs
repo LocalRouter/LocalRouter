@@ -155,6 +155,8 @@ async fn handle_non_streaming(
             prompt_tokens: response.usage.prompt_tokens,
             completion_tokens: response.usage.completion_tokens,
             total_tokens: response.usage.total_tokens,
+            prompt_tokens_details: response.usage.prompt_tokens_details,
+            completion_tokens_details: response.usage.completion_tokens_details,
         },
     };
 

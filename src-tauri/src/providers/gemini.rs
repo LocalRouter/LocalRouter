@@ -321,6 +321,8 @@ impl ModelProvider for GeminiProvider {
                 prompt_tokens: usage.map(|u| u.prompt_token_count).unwrap_or(0),
                 completion_tokens: usage.map(|u| u.candidates_token_count).unwrap_or(0),
                 total_tokens: usage.map(|u| u.total_token_count).unwrap_or(0),
+                prompt_tokens_details: None,
+                completion_tokens_details: None,
             },
             extensions: None,
         };
@@ -661,6 +663,7 @@ mod tests {
             top_k: None,
             seed: None,
             repetition_penalty: None,
+            extensions: None,
         };
 
         let response = provider.complete(request).await.unwrap();

@@ -303,6 +303,8 @@ impl ModelProvider for OpenAICompatibleProvider {
                 prompt_tokens: openai_response.usage.prompt_tokens,
                 completion_tokens: openai_response.usage.completion_tokens,
                 total_tokens: openai_response.usage.total_tokens,
+                prompt_tokens_details: None,
+                completion_tokens_details: None,
             },
             extensions: None,
         })

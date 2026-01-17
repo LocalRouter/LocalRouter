@@ -386,6 +386,46 @@ pub struct TokenUsage {
     pub completion_tokens: u32,
     /// Total tokens
     pub total_tokens: u32,
+    /// Detailed prompt token breakdown (optional)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_tokens_details: Option<PromptTokensDetails>,
+    /// Detailed completion token breakdown (optional)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completion_tokens_details: Option<CompletionTokensDetails>,
+}
+
+/// Detailed breakdown of prompt token usage
+///
+/// Used to track advanced token metrics like prompt caching.
+/// All fields are optional to maintain compatibility across providers.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptTokensDetails {
+    /// Number of cached tokens (tokens already in cache)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cached_tokens: Option<u32>,
+    /// Number of tokens written to cache (cache creation)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_creation_tokens: Option<u32>,
+    /// Number of tokens read from cache (cache hits)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_read_tokens: Option<u32>,
+}
+
+/// Detailed breakdown of completion token usage
+///
+/// Used to track special token types like reasoning tokens, thinking tokens, and audio tokens.
+/// All fields are optional to maintain compatibility across providers.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompletionTokensDetails {
+    /// Number of reasoning tokens (e.g., OpenAI o1 series)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_tokens: Option<u32>,
+    /// Number of thinking tokens (e.g., Anthropic extended thinking)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking_tokens: Option<u32>,
+    /// Number of audio tokens (for TTS/STT models)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audio_tokens: Option<u32>,
 }
 
 /// Streaming completion chunk
@@ -508,4 +548,234 @@ pub struct EmbeddingUsage {
     pub prompt_tokens: u32,
     /// Total tokens (same as prompt_tokens for embeddings)
     pub total_tokens: u32,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json;
+
+    #[test]
+    fn test_token_usage_basic_serialization() {
+        let usage = TokenUsage {
+            prompt_tokens: 100,
+            completion_tokens: 50,
+            total_tokens: 150,
+            prompt_tokens_details: None,
+            completion_tokens_details: None,
+        };
+
+        let json = serde_json::to_value(&usage).unwrap();
+
+        // Verify basic fields
+        assert_eq!(json["prompt_tokens"], 100);
+        assert_eq!(json["completion_tokens"], 50);
+        assert_eq!(json["total_tokens"], 150);
+
+        // Verify optional fields are NOT present (OpenAI compatibility)
+        assert!(json.get("prompt_tokens_details").is_none());
+        assert!(json.get("completion_tokens_details").is_none());
+    }
+
+    #[test]
+    fn test_token_usage_with_prompt_details() {
+        let usage = TokenUsage {
+            prompt_tokens: 1000,
+            completion_tokens: 200,
+            total_tokens: 1200,
+            prompt_tokens_details: Some(PromptTokensDetails {
+                cached_tokens: Some(500),
+                cache_creation_tokens: Some(300),
+                cache_read_tokens: Some(200),
+            }),
+            completion_tokens_details: None,
+        };
+
+        let json = serde_json::to_value(&usage).unwrap();
+
+        // Verify basic fields
+        assert_eq!(json["prompt_tokens"], 1000);
+        assert_eq!(json["completion_tokens"], 200);
+        assert_eq!(json["total_tokens"], 1200);
+
+        // Verify prompt details are present
+        let prompt_details = json["prompt_tokens_details"].as_object().unwrap();
+        assert_eq!(prompt_details["cached_tokens"], 500);
+        assert_eq!(prompt_details["cache_creation_tokens"], 300);
+        assert_eq!(prompt_details["cache_read_tokens"], 200);
+
+        // Verify completion details are NOT present
+        assert!(json.get("completion_tokens_details").is_none());
+    }
+
+    #[test]
+    fn test_token_usage_with_completion_details() {
+        let usage = TokenUsage {
+            prompt_tokens: 100,
+            completion_tokens: 250,
+            total_tokens: 350,
+            prompt_tokens_details: None,
+            completion_tokens_details: Some(CompletionTokensDetails {
+                reasoning_tokens: Some(50),
+                thinking_tokens: Some(30),
+                audio_tokens: Some(20),
+            }),
+        };
+
+        let json = serde_json::to_value(&usage).unwrap();
+
+        // Verify completion details are present
+        let completion_details = json["completion_tokens_details"].as_object().unwrap();
+        assert_eq!(completion_details["reasoning_tokens"], 50);
+        assert_eq!(completion_details["thinking_tokens"], 30);
+        assert_eq!(completion_details["audio_tokens"], 20);
+
+        // Verify prompt details are NOT present
+        assert!(json.get("prompt_tokens_details").is_none());
+    }
+
+    #[test]
+    fn test_token_usage_with_all_details() {
+        let usage = TokenUsage {
+            prompt_tokens: 1000,
+            completion_tokens: 300,
+            total_tokens: 1300,
+            prompt_tokens_details: Some(PromptTokensDetails {
+                cached_tokens: Some(600),
+                cache_creation_tokens: Some(200),
+                cache_read_tokens: Some(200),
+            }),
+            completion_tokens_details: Some(CompletionTokensDetails {
+                reasoning_tokens: Some(100),
+                thinking_tokens: Some(50),
+                audio_tokens: None,
+            }),
+        };
+
+        let json = serde_json::to_value(&usage).unwrap();
+
+        // Verify all fields are present
+        assert_eq!(json["prompt_tokens"], 1000);
+        assert_eq!(json["completion_tokens"], 300);
+        assert_eq!(json["total_tokens"], 1300);
+
+        let prompt_details = json["prompt_tokens_details"].as_object().unwrap();
+        assert_eq!(prompt_details["cached_tokens"], 500);
+
+        let completion_details = json["completion_tokens_details"].as_object().unwrap();
+        assert_eq!(completion_details["reasoning_tokens"], 100);
+        assert_eq!(completion_details["thinking_tokens"], 50);
+        // audio_tokens should not be present since it's None
+        assert!(completion_details.get("audio_tokens").is_none());
+    }
+
+    #[test]
+    fn test_token_usage_deserialization_basic() {
+        // Test that old format (without details) deserializes correctly
+        let json = r#"{
+            "prompt_tokens": 100,
+            "completion_tokens": 50,
+            "total_tokens": 150
+        }"#;
+
+        let usage: TokenUsage = serde_json::from_str(json).unwrap();
+
+        assert_eq!(usage.prompt_tokens, 100);
+        assert_eq!(usage.completion_tokens, 50);
+        assert_eq!(usage.total_tokens, 150);
+        assert!(usage.prompt_tokens_details.is_none());
+        assert!(usage.completion_tokens_details.is_none());
+    }
+
+    #[test]
+    fn test_token_usage_deserialization_with_details() {
+        let json = r#"{
+            "prompt_tokens": 1000,
+            "completion_tokens": 200,
+            "total_tokens": 1200,
+            "prompt_tokens_details": {
+                "cached_tokens": 500,
+                "cache_creation_tokens": 300,
+                "cache_read_tokens": 200
+            },
+            "completion_tokens_details": {
+                "reasoning_tokens": 50,
+                "thinking_tokens": 30
+            }
+        }"#;
+
+        let usage: TokenUsage = serde_json::from_str(json).unwrap();
+
+        assert_eq!(usage.prompt_tokens, 1000);
+        assert_eq!(usage.completion_tokens, 200);
+        assert_eq!(usage.total_tokens, 1200);
+
+        let prompt_details = usage.prompt_tokens_details.unwrap();
+        assert_eq!(prompt_details.cached_tokens, Some(500));
+        assert_eq!(prompt_details.cache_creation_tokens, Some(300));
+        assert_eq!(prompt_details.cache_read_tokens, Some(200));
+
+        let completion_details = usage.completion_tokens_details.unwrap();
+        assert_eq!(completion_details.reasoning_tokens, Some(50));
+        assert_eq!(completion_details.thinking_tokens, Some(30));
+        assert_eq!(completion_details.audio_tokens, None);
+    }
+
+    #[test]
+    fn test_prompt_tokens_details_partial_fields() {
+        // Test that PromptTokensDetails with some None values works correctly
+        let details = PromptTokensDetails {
+            cached_tokens: Some(100),
+            cache_creation_tokens: None,
+            cache_read_tokens: Some(50),
+        };
+
+        let json = serde_json::to_value(&details).unwrap();
+
+        assert_eq!(json["cached_tokens"], 100);
+        assert_eq!(json["cache_read_tokens"], 50);
+        // cache_creation_tokens should not be serialized
+        assert!(json.get("cache_creation_tokens").is_none());
+    }
+
+    #[test]
+    fn test_completion_tokens_details_partial_fields() {
+        // Test that CompletionTokensDetails with some None values works correctly
+        let details = CompletionTokensDetails {
+            reasoning_tokens: Some(75),
+            thinking_tokens: None,
+            audio_tokens: None,
+        };
+
+        let json = serde_json::to_value(&details).unwrap();
+
+        assert_eq!(json["reasoning_tokens"], 75);
+        // Other fields should not be serialized
+        assert!(json.get("thinking_tokens").is_none());
+        assert!(json.get("audio_tokens").is_none());
+    }
+
+    #[test]
+    fn test_openai_compatibility() {
+        // Verify that TokenUsage without details matches OpenAI's exact format
+        let usage = TokenUsage {
+            prompt_tokens: 10,
+            completion_tokens: 5,
+            total_tokens: 15,
+            prompt_tokens_details: None,
+            completion_tokens_details: None,
+        };
+
+        let json_str = serde_json::to_string(&usage).unwrap();
+
+        // Parse back to verify only expected fields are present
+        let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        let obj = parsed.as_object().unwrap();
+
+        // Should have exactly 3 fields
+        assert_eq!(obj.len(), 3);
+        assert!(obj.contains_key("prompt_tokens"));
+        assert!(obj.contains_key("completion_tokens"));
+        assert!(obj.contains_key("total_tokens"));
+    }
 }
