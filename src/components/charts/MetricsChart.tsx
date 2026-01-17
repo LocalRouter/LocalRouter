@@ -6,7 +6,7 @@ interface MetricsChartProps {
   scope: 'global' | 'api_key' | 'provider' | 'model'
   scopeId?: string
   timeRange: 'hour' | 'day' | 'week' | 'month'
-  metricType: 'tokens' | 'cost' | 'requests' | 'latency' | 'success_rate'
+  metricType: 'tokens' | 'cost' | 'requests' | 'latency' | 'successrate'
   title?: string
   refreshTrigger?: number
 }

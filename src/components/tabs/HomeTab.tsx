@@ -143,7 +143,7 @@ export default function HomeTab() {
         <MetricsChart
           scope="global"
           timeRange={timeRange}
-          metricType="success_rate"
+          metricType="successrate"
           title="Success Rate"
           refreshTrigger={refreshKey}
         />
