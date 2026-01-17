@@ -101,7 +101,7 @@ impl Transport for SseTransport {
         }
 
         // Generate request ID if not present
-        let request_id = if request.id.is_none() {
+        let _request_id = if request.id.is_none() {
             let id = self.next_request_id();
             request.id = Some(Value::Number(id.into()));
             id.to_string()

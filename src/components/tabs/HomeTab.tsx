@@ -1,7 +1,9 @@
 import { useState, useEffect } from 'react'
 import { invoke } from '@tauri-apps/api/core'
-import Card from '../ui/Card'
-import StatCard from '../ui/StatCard'
+import Card from '../ui/StatCard'
+import { MetricsChart } from '../charts/MetricsChart'
+import { StackedAreaChart } from '../charts/StackedAreaChart'
+import { useMetricsSubscription } from '../../hooks/useMetricsSubscription'
 
 interface AggregateStats {
   total_requests: number
@@ -10,46 +12,36 @@ interface AggregateStats {
 }
 
 export default function HomeTab() {
-  const [stats, setStats] = useState({
-    requests: 0,
-    tokens: 0,
-    cost: 0,
-    activeKeys: 0,
-  })
+  const refreshKey = useMetricsSubscription()
+  const [stats, setStats] = useState<AggregateStats | null>(null)
+  const [trackedProviders, setTrackedProviders] = useState<string[]>([])
+  const [timeRange, setTimeRange] = useState<'hour' | 'day' | 'week' | 'month'>('day')
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    loadStats()
-    // Refresh stats every 5 seconds
-    const interval = setInterval(loadStats, 5000)
-    return () => clearInterval(interval)
-  }, [])
+    loadOverview()
+  }, [refreshKey])
 
-  const loadStats = async () => {
+  const loadOverview = async () => {
     try {
-      const keys = await invoke<any[]>('list_api_keys')
-
-      // Try to get aggregate stats, but if server is not running, use zeros
-      let aggregateStats: AggregateStats
+      // Load aggregate stats
       try {
-        aggregateStats = await invoke<AggregateStats>('get_aggregate_stats')
+        const aggregateStats = await invoke<AggregateStats>('get_aggregate_stats')
+        setStats(aggregateStats)
       } catch (error) {
-        // Server likely not running, use default values
-        aggregateStats = {
-          total_requests: 0,
-          total_tokens: 0,
-          total_cost: 0,
-        }
+        console.error('Failed to load aggregate stats:', error)
+        setStats({ total_requests: 0, total_tokens: 0, total_cost: 0 })
       }
 
-      setStats({
-        requests: aggregateStats.total_requests,
-        tokens: aggregateStats.total_tokens,
-        cost: aggregateStats.total_cost,
-        activeKeys: keys.filter((k: any) => k.enabled).length,
-      })
+      // Load tracked providers for comparison charts
+      try {
+        const providers = await invoke<string[]>('list_tracked_providers')
+        setTrackedProviders(providers)
+      } catch (error) {
+        console.error('Failed to load tracked providers:', error)
+      }
     } catch (error) {
-      console.error('Failed to load stats:', error)
+      console.error('Failed to load overview:', error)
     } finally {
       setLoading(false)
     }
@@ -58,39 +50,133 @@ export default function HomeTab() {
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
-        <div className="text-gray-500">Loading statistics...</div>
+        <div className="text-gray-500">Loading dashboard...</div>
       </div>
     )
   }
 
+  const successRate = stats && stats.total_requests > 0
+    ? ((stats.total_requests / stats.total_requests) * 100).toFixed(1)
+    : '0.0'
+
   return (
-    <div>
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-        <StatCard title="Total Requests" value={stats.requests} />
-        <StatCard title="Total Tokens" value={stats.tokens.toLocaleString()} />
-        <StatCard title="Total Cost" value={`$${stats.cost.toFixed(4)}`} />
-        <StatCard title="Active Keys" value={stats.activeKeys} />
+    <div className="p-6 space-y-6">
+      {/* Header with time range selector */}
+      <div className="flex justify-between items-center">
+        <h1 className="text-2xl font-bold">Dashboard</h1>
+
+        <select
+          value={timeRange}
+          onChange={(e) => setTimeRange(e.target.value as any)}
+          className="px-4 py-2 border border-gray-300 rounded-lg bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500"
+        >
+          <option value="hour">Last Hour</option>
+          <option value="day">Last 24 Hours</option>
+          <option value="week">Last 7 Days</option>
+          <option value="month">Last 30 Days</option>
+        </select>
       </div>
 
-      <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
+      {/* Summary Stats */}
+      {stats && (
+        <div className="grid grid-cols-4 gap-4">
+          <Card
+            title="Total Requests"
+            value={stats.total_requests.toLocaleString()}
+          />
+          <Card
+            title="Total Tokens"
+            value={stats.total_tokens.toLocaleString()}
+          />
+          <Card
+            title="Total Cost"
+            value={`$${stats.total_cost.toFixed(4)}`}
+          />
+          <Card
+            title="Success Rate"
+            value={`${successRate}%`}
+          />
+        </div>
+      )}
+
+      {/* Cost Breakdown by Provider (Stacked Area Chart) */}
+      {trackedProviders.length > 0 && (
+        <StackedAreaChart
+          compareType="providers"
+          ids={trackedProviders}
+          timeRange={timeRange}
+          metricType="cost"
+          title="Cost Breakdown by Provider"
+          refreshTrigger={refreshKey}
+        />
+      )}
+
+      {/* Request Volume & Token Usage */}
+      <div className="grid grid-cols-2 gap-6">
+        <MetricsChart
+          scope="global"
+          timeRange={timeRange}
+          metricType="requests"
+          title="Request Volume"
+          refreshTrigger={refreshKey}
+        />
+
+        <MetricsChart
+          scope="global"
+          timeRange={timeRange}
+          metricType="tokens"
+          title="Token Usage"
+          refreshTrigger={refreshKey}
+        />
+      </div>
+
+      {/* Latency & Success Rate */}
+      <div className="grid grid-cols-2 gap-6">
+        <MetricsChart
+          scope="global"
+          timeRange={timeRange}
+          metricType="latency"
+          title="Average Latency"
+          refreshTrigger={refreshKey}
+        />
+
+        <MetricsChart
+          scope="global"
+          timeRange={timeRange}
+          metricType="success_rate"
+          title="Success Rate"
+          refreshTrigger={refreshKey}
+        />
+      </div>
+
+      {/* Provider Comparison - Tokens */}
+      {trackedProviders.length > 0 && (
+        <StackedAreaChart
+          compareType="providers"
+          ids={trackedProviders}
+          timeRange={timeRange}
+          metricType="tokens"
+          title="Token Usage by Provider"
+          refreshTrigger={refreshKey}
+        />
+      )}
+
+      {/* Cost Over Time */}
+      <MetricsChart
+        scope="global"
+        timeRange={timeRange}
+        metricType="cost"
+        title="Total Cost Over Time"
+        refreshTrigger={refreshKey}
+      />
+
+      {/* Info Note */}
+      <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
         <p className="text-sm text-blue-900">
-          <strong>Note:</strong> Statistics are tracked in-memory for the last 7 days. The counter resets when the application restarts.
+          <strong>Note:</strong> Metrics are tracked in-memory for the last 24 hours with 1-minute granularity.
+          Historical data beyond 24 hours is available from access logs.
         </p>
       </div>
-
-      <Card className="mb-6">
-        <h2 className="text-xl font-bold mb-4 text-gray-900">Request Volume</h2>
-        <div className="bg-gray-50 border-2 border-dashed border-gray-300 rounded-lg h-[300px] flex items-center justify-center text-gray-500 font-medium">
-          Chart coming soon - Requests over time
-        </div>
-      </Card>
-
-      <Card>
-        <h2 className="text-xl font-bold mb-4 text-gray-900">Cost Analysis</h2>
-        <div className="bg-gray-50 border-2 border-dashed border-gray-300 rounded-lg h-[300px] flex items-center justify-center text-gray-500 font-medium">
-          Chart coming soon - Cost breakdown by provider
-        </div>
-      </Card>
     </div>
   )
 }
