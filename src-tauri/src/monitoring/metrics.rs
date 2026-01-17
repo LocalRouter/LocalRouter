@@ -2,6 +2,8 @@
 //!
 //! Tracks usage metrics for the last 24 hours at 1-minute granularity.
 
+#![allow(dead_code)]
+
 use chrono::{DateTime, Duration, Utc};
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
@@ -238,6 +240,9 @@ pub struct MetricsCollector {
     /// Per-provider metrics
     per_provider: Arc<DashMap<String, TimeSeries>>,
 
+    /// Per-model metrics
+    per_model: Arc<DashMap<String, TimeSeries>>,
+
     /// Retention period in hours
     retention_hours: i64,
 }
@@ -249,6 +254,7 @@ impl MetricsCollector {
             global: TimeSeries::new(),
             per_key: Arc::new(DashMap::new()),
             per_provider: Arc::new(DashMap::new()),
+            per_model: Arc::new(DashMap::new()),
             retention_hours,
         }
     }
@@ -263,6 +269,7 @@ impl MetricsCollector {
         &self,
         api_key_name: &str,
         provider: &str,
+        model: &str,
         input_tokens: u64,
         output_tokens: u64,
         cost_usd: f64,
@@ -285,10 +292,16 @@ impl MetricsCollector {
             .entry(provider.to_string())
             .or_insert_with(TimeSeries::new)
             .record_success(timestamp, input_tokens, output_tokens, cost_usd, latency_ms);
+
+        // Record in per-model metrics
+        self.per_model
+            .entry(model.to_string())
+            .or_insert_with(TimeSeries::new)
+            .record_success(timestamp, input_tokens, output_tokens, cost_usd, latency_ms);
     }
 
     /// Record a failed request
-    pub fn record_failure(&self, api_key_name: &str, provider: &str, latency_ms: u64) {
+    pub fn record_failure(&self, api_key_name: &str, provider: &str, model: &str, latency_ms: u64) {
         let timestamp = Utc::now();
 
         // Record in global metrics
@@ -303,6 +316,12 @@ impl MetricsCollector {
         // Record in per-provider metrics
         self.per_provider
             .entry(provider.to_string())
+            .or_insert_with(TimeSeries::new)
+            .record_failure(timestamp, latency_ms);
+
+        // Record in per-model metrics
+        self.per_model
+            .entry(model.to_string())
             .or_insert_with(TimeSeries::new)
             .record_failure(timestamp, latency_ms);
     }
@@ -358,6 +377,27 @@ impl MetricsCollector {
             .collect()
     }
 
+    /// Get metrics for a specific model
+    pub fn get_model_range(
+        &self,
+        model: &str,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> Vec<MetricDataPoint> {
+        self.per_model
+            .get(model)
+            .map(|ts| ts.get_range(start, end))
+            .unwrap_or_default()
+    }
+
+    /// Get all model names
+    pub fn get_model_names(&self) -> Vec<String> {
+        self.per_model
+            .iter()
+            .map(|entry| entry.key().clone())
+            .collect()
+    }
+
     /// Clean up old metrics data
     pub fn cleanup(&self) {
         self.global.cleanup(self.retention_hours);
@@ -367,6 +407,10 @@ impl MetricsCollector {
         }
 
         for entry in self.per_provider.iter() {
+            entry.value().cleanup(self.retention_hours);
+        }
+
+        for entry in self.per_model.iter() {
             entry.value().cleanup(self.retention_hours);
         }
     }
@@ -506,7 +550,7 @@ mod tests {
     fn test_metrics_collector_record_success() {
         let collector = MetricsCollector::with_default_retention();
 
-        collector.record_success("key1", "openai", 100, 200, 0.05, 1000);
+        collector.record_success("key1", "openai", "gpt-4", 100, 200, 0.05, 1000);
 
         let now = Utc::now();
         let start = now - Duration::hours(1);
@@ -523,13 +567,17 @@ mod tests {
         let provider_metrics = collector.get_provider_range("openai", start, end);
         assert_eq!(provider_metrics.len(), 1);
         assert_eq!(provider_metrics[0].requests, 1);
+
+        let model_metrics = collector.get_model_range("gpt-4", start, end);
+        assert_eq!(model_metrics.len(), 1);
+        assert_eq!(model_metrics[0].requests, 1);
     }
 
     #[test]
     fn test_metrics_collector_record_failure() {
         let collector = MetricsCollector::with_default_retention();
 
-        collector.record_failure("key1", "openai", 500);
+        collector.record_failure("key1", "openai", "gpt-4", 500);
 
         let now = Utc::now();
         let start = now - Duration::hours(1);
@@ -544,8 +592,8 @@ mod tests {
     fn test_metrics_collector_get_names() {
         let collector = MetricsCollector::with_default_retention();
 
-        collector.record_success("key1", "openai", 100, 200, 0.05, 1000);
-        collector.record_success("key2", "ollama", 100, 200, 0.0, 1000);
+        collector.record_success("key1", "openai", "gpt-4", 100, 200, 0.05, 1000);
+        collector.record_success("key2", "ollama", "llama3.3", 100, 200, 0.0, 1000);
 
         let key_names = collector.get_api_key_names();
         assert_eq!(key_names.len(), 2);
@@ -556,5 +604,10 @@ mod tests {
         assert_eq!(provider_names.len(), 2);
         assert!(provider_names.contains(&"openai".to_string()));
         assert!(provider_names.contains(&"ollama".to_string()));
+
+        let model_names = collector.get_model_names();
+        assert_eq!(model_names.len(), 2);
+        assert!(model_names.contains(&"gpt-4".to_string()));
+        assert!(model_names.contains(&"llama3.3".to_string()));
     }
 }

@@ -27,6 +27,7 @@ pub struct PerplexityProvider {
     api_key: String,
 }
 
+#[allow(dead_code)]
 impl PerplexityProvider {
     /// Create a new Perplexity provider with an API key
     pub fn new(api_key: String) -> AppResult<Self> {
@@ -57,6 +58,7 @@ impl PerplexityProvider {
                 context_window: 128_000,
                 supports_streaming: true,
                 capabilities: vec![Capability::Chat],
+                detailed_capabilities: None,
             },
             ModelInfo {
                 id: "sonar-pro".to_string(),
@@ -66,6 +68,7 @@ impl PerplexityProvider {
                 context_window: 200_000,
                 supports_streaming: true,
                 capabilities: vec![Capability::Chat],
+                detailed_capabilities: None,
             },
             ModelInfo {
                 id: "sonar-reasoning-pro".to_string(),
@@ -75,6 +78,7 @@ impl PerplexityProvider {
                 context_window: 128_000,
                 supports_streaming: true,
                 capabilities: vec![Capability::Chat],
+                detailed_capabilities: None,
             },
             ModelInfo {
                 id: "sonar-deep-research".to_string(),
@@ -84,6 +88,7 @@ impl PerplexityProvider {
                 context_window: 128_000,
                 supports_streaming: true,
                 capabilities: vec![Capability::Chat],
+                detailed_capabilities: None,
             },
         ]
     }
@@ -124,6 +129,7 @@ struct OpenAIStreamChoice {
 }
 
 #[async_trait]
+#[allow(dead_code)]
 impl ModelProvider for PerplexityProvider {
     fn name(&self) -> &str {
         "perplexity"
@@ -220,6 +226,7 @@ impl ModelProvider for PerplexityProvider {
             object: perplexity_response.object,
             created: perplexity_response.created,
             model: perplexity_response.model,
+            provider: self.name().to_string(),
             choices: perplexity_response
                 .choices
                 .into_iter()
@@ -230,6 +237,7 @@ impl ModelProvider for PerplexityProvider {
                 })
                 .collect(),
             usage: perplexity_response.usage,
+            extensions: None,
         })
     }
 
@@ -303,6 +311,7 @@ impl ModelProvider for PerplexityProvider {
                                             finish_reason: choice.finish_reason,
                                         })
                                         .collect(),
+                                    extensions: None,
                                 };
                                 chunks.push(Ok(chunk));
                             }

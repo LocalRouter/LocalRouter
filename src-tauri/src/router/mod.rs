@@ -99,6 +99,17 @@ async fn wrap_stream_with_usage_tracking(
     Box::pin(wrapped)
 }
 
+/// Calculate cost in USD from token usage and pricing info
+fn calculate_cost(
+    input_tokens: u64,
+    output_tokens: u64,
+    pricing: &crate::providers::PricingInfo,
+) -> f64 {
+    let input_cost = (input_tokens as f64 / 1000.0) * pricing.input_cost_per_1k;
+    let output_cost = (output_tokens as f64 / 1000.0) * pricing.output_cost_per_1k;
+    input_cost + output_cost
+}
+
 /// Router for handling completion requests with API key-based model selection
 pub struct Router {
     config_manager: Arc<ConfigManager>,
@@ -169,11 +180,22 @@ impl Router {
                         provider_name, model_name
                     );
 
-                    // Record usage for rate limiting
+                    // Calculate cost and record usage for rate limiting
+                    let pricing = provider_instance
+                        .get_pricing(&model_name)
+                        .await
+                        .unwrap_or_else(|_| crate::providers::PricingInfo::free());
+
+                    let cost = calculate_cost(
+                        response.usage.prompt_tokens as u64,
+                        response.usage.completion_tokens as u64,
+                        &pricing,
+                    );
+
                     let usage = UsageInfo {
                         input_tokens: response.usage.prompt_tokens as u64,
                         output_tokens: response.usage.completion_tokens as u64,
-                        cost_usd: 0.0, // TODO: Calculate actual cost from pricing
+                        cost_usd: cost,
                     };
 
                     // Log error but don't fail the request if usage recording fails
@@ -321,7 +343,7 @@ impl Router {
                         debug!("Using provider/model from request: {}/{}", p, m);
 
                         // Validate the model is in the available list
-                        if !config.is_model_allowed(&p, &m) {
+                        if !config.is_model_allowed(p, m) {
                             return Err(AppError::Router(format!(
                                 "Model '{}' is not in the available models list for this API key",
                                 request.model
@@ -535,10 +557,55 @@ impl Router {
         // Modify the request to use just the model name (without provider prefix)
         // The expected_model already has the provider prefix stripped during routing
         // This ensures all providers receive just the model ID they expect
-        let mut modified_request = request;
+        let mut modified_request = request.clone();
         modified_request.model = expected_model.clone();
 
-        let response = provider_instance.complete(modified_request).await.map_err(|e| {
+        // Apply feature adapters if extensions are present
+        let mut response_extensions = std::collections::HashMap::new();
+
+        if let Some(ref extensions) = request.extensions {
+            for (feature_name, feature_params) in extensions {
+                // Check if provider supports this feature
+                if provider_instance.supports_feature(feature_name) {
+                    debug!("Provider '{}' supports feature '{}'", provider, feature_name);
+
+                    // Get the feature adapter
+                    if let Some(adapter) = provider_instance.get_feature_adapter(feature_name) {
+                        // Validate parameters
+                        let mut params: crate::providers::features::FeatureParams = std::collections::HashMap::new();
+                        if let serde_json::Value::Object(map) = feature_params {
+                            for (k, v) in map {
+                                params.insert(k.clone(), v.clone());
+                            }
+                        }
+                        adapter.validate_params(&params).map_err(|e| {
+                            warn!("Feature '{}' parameter validation failed: {}", feature_name, e);
+                            e
+                        })?;
+
+                        // Adapt the request
+                        adapter.adapt_request(&mut modified_request, &params).map_err(|e| {
+                            warn!("Feature '{}' request adaptation failed: {}", feature_name, e);
+                            e
+                        })?;
+
+                        debug!("Successfully applied feature adapter for '{}'", feature_name);
+                    } else {
+                        warn!(
+                            "Provider '{}' claims to support feature '{}' but no adapter available",
+                            provider, feature_name
+                        );
+                    }
+                } else {
+                    warn!(
+                        "Provider '{}' does not support feature '{}' - ignoring",
+                        provider, feature_name
+                    );
+                }
+            }
+        }
+
+        let mut response = provider_instance.complete(modified_request).await.map_err(|e| {
             warn!(
                 "Completion request failed for provider '{}': {}",
                 provider, e
@@ -546,11 +613,43 @@ impl Router {
             e
         })?;
 
-        // 7. Record usage for rate limiting
+        // Apply feature adapters to response if extensions were present
+        if let Some(ref extensions) = request.extensions {
+            for (feature_name, _) in extensions {
+                if provider_instance.supports_feature(feature_name) {
+                    if let Some(adapter) = provider_instance.get_feature_adapter(feature_name) {
+                        // Adapt the response
+                        if let Ok(Some(feature_data)) = adapter.adapt_response(&mut response) {
+                            response_extensions.insert(feature_name.clone(), feature_data.data);
+                            debug!("Extracted feature data for '{}'", feature_name);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Add extensions to response if any were collected
+        if !response_extensions.is_empty() {
+            response.extensions = Some(response_extensions);
+            debug!("Added {} feature extensions to response", response.extensions.as_ref().unwrap().len());
+        }
+
+        // 7. Calculate cost and record usage for rate limiting
+        let pricing = provider_instance
+            .get_pricing(&expected_model)
+            .await
+            .unwrap_or_else(|_| crate::providers::PricingInfo::free());
+
+        let cost = calculate_cost(
+            response.usage.prompt_tokens as u64,
+            response.usage.completion_tokens as u64,
+            &pricing,
+        );
+
         let usage = UsageInfo {
             input_tokens: response.usage.prompt_tokens as u64,
             output_tokens: response.usage.completion_tokens as u64,
-            cost_usd: 0.0, // TODO: Calculate actual cost from pricing
+            cost_usd: cost,
         };
 
         // Log error but don't fail the request if usage recording fails
@@ -642,7 +741,7 @@ impl Router {
                 ActiveRoutingStrategy::AvailableModels => {
                     // Allow any model in the available list
                     if let Some((p, m)) = request.model.split_once('/') {
-                        if !config.is_model_allowed(&p, &m) {
+                        if !config.is_model_allowed(p, m) {
                             return Err(AppError::Router(format!(
                                 "Model '{}' is not in the available models list for this API key",
                                 request.model
@@ -887,6 +986,9 @@ mod tests {
             frequency_penalty: None,
             presence_penalty: None,
             stop: None,
+            top_k: None,
+            seed: None,
+            repetition_penalty: None,
         };
 
         let result = router.complete("invalid-key-id", request).await;
@@ -931,6 +1033,9 @@ mod tests {
             frequency_penalty: None,
             presence_penalty: None,
             stop: None,
+            top_k: None,
+            seed: None,
+            repetition_penalty: None,
         };
 
         let result = router.complete("test-key", request).await;
@@ -1005,6 +1110,9 @@ mod tests {
                 frequency_penalty: None,
                 presence_penalty: None,
                 stop: None,
+            top_k: None,
+            seed: None,
+            repetition_penalty: None,
             };
 
             let result = router.complete("test-key", request).await;
@@ -1057,6 +1165,9 @@ mod tests {
                 frequency_penalty: None,
                 presence_penalty: None,
                 stop: None,
+            top_k: None,
+            seed: None,
+            repetition_penalty: None,
             };
 
             let result = router.complete("test-key", request).await;
@@ -1126,6 +1237,9 @@ mod tests {
                 frequency_penalty: None,
                 presence_penalty: None,
                 stop: None,
+            top_k: None,
+            seed: None,
+            repetition_penalty: None,
             };
 
             let result = router.complete("test-key", request).await;
@@ -1172,6 +1286,9 @@ mod tests {
                 frequency_penalty: None,
                 presence_penalty: None,
                 stop: None,
+            top_k: None,
+            seed: None,
+            repetition_penalty: None,
             };
 
             let result = router.complete("test-key", request).await;
@@ -1216,6 +1333,9 @@ mod tests {
                 frequency_penalty: None,
                 presence_penalty: None,
                 stop: None,
+            top_k: None,
+            seed: None,
+            repetition_penalty: None,
             };
 
             let result = router.complete("test-key", request).await;

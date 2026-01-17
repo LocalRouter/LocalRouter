@@ -6,8 +6,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::api_keys::ApiKeyManager;
-use crate::config::{ActiveRoutingStrategy, ConfigManager, ModelSelection, ModelRoutingConfig, RouterConfig};
+use crate::config::{ActiveRoutingStrategy, ConfigManager, McpServerConfig, McpTransportConfig, McpTransportType, ModelSelection, ModelRoutingConfig, RouterConfig};
+use crate::mcp::McpServerManager;
+use crate::oauth_clients::OAuthClientManager;
 use crate::providers::registry::ProviderRegistry;
+use crate::server::ServerManager;
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager, State};
 
@@ -26,8 +29,6 @@ pub struct ApiKeyInfo {
 #[tauri::command]
 pub async fn list_api_keys(key_manager: State<'_, ApiKeyManager>) -> Result<Vec<ApiKeyInfo>, String> {
     let keys = key_manager.list_keys();
-    // TODO: DELETE THIS DEBUG LOG LATER
-    tracing::warn!("📋 LIST_KEYS: {} keys", keys.len());
     Ok(keys
         .into_iter()
         .map(|k| ApiKeyInfo {
@@ -96,6 +97,9 @@ pub async fn create_api_key(
     if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
         tracing::error!("Failed to rebuild tray menu: {}", e);
     }
+
+    // Notify frontend that API keys changed
+    let _ = app.emit("api-keys-changed", ());
 
     Ok((
         key,
@@ -166,6 +170,9 @@ pub async fn delete_api_key(
         tracing::error!("Failed to rebuild tray menu: {}", e);
     }
 
+    // Notify frontend that API keys changed
+    let _ = app.emit("api-keys-changed", ());
+
     Ok(())
 }
 
@@ -184,6 +191,7 @@ pub async fn update_api_key_model(
     model_selection: Option<ModelSelection>,
     key_manager: State<'_, ApiKeyManager>,
     config_manager: State<'_, ConfigManager>,
+    app: tauri::AppHandle,
 ) -> Result<ApiKeyInfo, String> {
     // Update in memory
     let updated_config = key_manager
@@ -206,6 +214,9 @@ pub async fn update_api_key_model(
         .save()
         .await
         .map_err(|e| e.to_string())?;
+
+    // Notify frontend that API keys changed
+    let _ = app.emit("api-keys-changed", ());
 
     Ok(ApiKeyInfo {
         id: updated_config.id,
@@ -312,6 +323,9 @@ pub async fn toggle_api_key_enabled(
         tracing::error!("Failed to rebuild tray menu: {}", e);
     }
 
+    // Notify frontend that API keys changed
+    let _ = app.emit("api-keys-changed", ());
+
     Ok(())
 }
 
@@ -330,11 +344,17 @@ pub async fn toggle_api_key_enabled(
 pub async fn rotate_api_key(
     id: String,
     key_manager: State<'_, ApiKeyManager>,
+    app: tauri::AppHandle,
 ) -> Result<String, String> {
-    key_manager
+    let result = key_manager
         .rotate_key(&id)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+
+    // Notify frontend that API keys changed
+    let _ = app.emit("api-keys-changed", ());
+
+    Ok(result)
 }
 
 /// List all routers
@@ -496,6 +516,7 @@ pub async fn list_provider_instances(
 pub async fn create_provider_instance(
     registry: State<'_, Arc<ProviderRegistry>>,
     config_manager: State<'_, ConfigManager>,
+    app: tauri::AppHandle,
     instance_name: String,
     provider_type: String,
     config: HashMap<String, String>,
@@ -533,7 +554,13 @@ pub async fn create_provider_instance(
     config_manager
         .save()
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+
+    // Notify frontend that providers and models changed
+    let _ = app.emit("providers-changed", ());
+    let _ = app.emit("models-changed", ());
+
+    Ok(())
 }
 
 /// Get provider instance configuration
@@ -568,6 +595,7 @@ pub async fn get_provider_config(
 pub async fn update_provider_instance(
     registry: State<'_, Arc<ProviderRegistry>>,
     config_manager: State<'_, ConfigManager>,
+    app: tauri::AppHandle,
     instance_name: String,
     provider_type: String,
     config: HashMap<String, String>,
@@ -596,7 +624,13 @@ pub async fn update_provider_instance(
     config_manager
         .save()
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+
+    // Notify frontend that providers and models changed
+    let _ = app.emit("providers-changed", ());
+    let _ = app.emit("models-changed", ());
+
+    Ok(())
 }
 
 /// Helper function to convert provider type string to enum
@@ -632,6 +666,7 @@ fn provider_type_str_to_enum(provider_type: &str) -> crate::config::ProviderType
 pub async fn remove_provider_instance(
     registry: State<'_, Arc<ProviderRegistry>>,
     config_manager: State<'_, ConfigManager>,
+    app: tauri::AppHandle,
     instance_name: String,
 ) -> Result<(), String> {
     // Remove from registry (in-memory)
@@ -650,7 +685,13 @@ pub async fn remove_provider_instance(
     config_manager
         .save()
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+
+    // Notify frontend that providers and models changed
+    let _ = app.emit("providers-changed", ());
+    let _ = app.emit("models-changed", ());
+
+    Ok(())
 }
 
 /// Enable or disable a provider instance
@@ -666,6 +707,7 @@ pub async fn remove_provider_instance(
 pub async fn set_provider_enabled(
     registry: State<'_, Arc<ProviderRegistry>>,
     config_manager: State<'_, ConfigManager>,
+    app: tauri::AppHandle,
     instance_name: String,
     enabled: bool,
 ) -> Result<(), String> {
@@ -687,7 +729,13 @@ pub async fn set_provider_enabled(
     config_manager
         .save()
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+
+    // Notify frontend that providers and models changed
+    let _ = app.emit("providers-changed", ());
+    let _ = app.emit("models-changed", ());
+
+    Ok(())
 }
 
 /// Get health status for all provider instances
@@ -746,11 +794,14 @@ pub async fn list_all_models(
 #[tauri::command]
 pub async fn get_server_config(
     config_manager: State<'_, ConfigManager>,
+    server_manager: State<'_, Arc<ServerManager>>,
 ) -> Result<ServerConfigInfo, String> {
     let config = config_manager.get();
+    let actual_port = server_manager.get_actual_port();
     Ok(ServerConfigInfo {
         host: config.server.host.clone(),
         port: config.server.port,
+        actual_port,
         enable_cors: config.server.enable_cors,
     })
 }
@@ -812,6 +863,7 @@ pub async fn restart_server(app: tauri::AppHandle) -> Result<(), String> {
 pub struct ServerConfigInfo {
     pub host: String,
     pub port: u16,
+    pub actual_port: Option<u16>,
     pub enable_cors: bool,
 }
 
@@ -1156,6 +1208,9 @@ pub async fn update_prioritized_list(
         tracing::error!("Failed to rebuild tray menu: {}", e);
     }
 
+    // Notify frontend that API keys changed
+    let _ = app.emit("api-keys-changed", ());
+
     tracing::info!("Prioritized list updated for key {}", id);
 
     Ok(())
@@ -1194,7 +1249,7 @@ pub async fn set_routing_strategy(
 
     let mut routing_config = current_key
         .get_routing_config()
-        .unwrap_or_else(|| ModelRoutingConfig::new_available_models());
+        .unwrap_or_else(ModelRoutingConfig::new_available_models);
 
     // Update strategy
     routing_config.active_strategy = active_strategy;
@@ -1226,7 +1281,703 @@ pub async fn set_routing_strategy(
         tracing::error!("Failed to rebuild tray menu: {}", e);
     }
 
+    // Notify frontend that API keys changed
+    let _ = app.emit("api-keys-changed", ());
+
     tracing::info!("Routing strategy set for key {}: {:?}", id, active_strategy);
+
+    Ok(())
+}
+
+// ============================================================================
+// OAuth Client Commands (for MCP)
+// ============================================================================
+
+/// OAuth client information for display
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OAuthClientInfo {
+    pub id: String,
+    pub name: String,
+    pub client_id: String,
+    pub linked_server_ids: Vec<String>,
+    pub enabled: bool,
+    pub created_at: String,
+}
+
+/// List all OAuth clients
+#[tauri::command]
+pub async fn list_oauth_clients(
+    oauth_client_manager: State<'_, OAuthClientManager>,
+) -> Result<Vec<OAuthClientInfo>, String> {
+    let clients = oauth_client_manager.list_clients();
+    Ok(clients
+        .into_iter()
+        .map(|c| OAuthClientInfo {
+            id: c.id.clone(),
+            name: c.name.clone(),
+            client_id: c.client_id.clone(),
+            linked_server_ids: c.linked_server_ids.clone(),
+            enabled: c.enabled,
+            created_at: c.created_at.to_rfc3339(),
+        })
+        .collect())
+}
+
+/// Create a new OAuth client
+///
+/// # Arguments
+/// * `name` - Optional name for the client. If None, generates "mcp-client-{number}"
+///
+/// # Returns
+/// * Tuple of (client_id, client_secret, OAuthClientInfo)
+/// * client_secret is only returned once at creation time
+#[tauri::command]
+pub async fn create_oauth_client(
+    name: Option<String>,
+    oauth_client_manager: State<'_, OAuthClientManager>,
+    config_manager: State<'_, ConfigManager>,
+    app: tauri::AppHandle,
+) -> Result<(String, String, OAuthClientInfo), String> {
+    tracing::info!("Creating new OAuth client with name: {:?}", name);
+
+    let (client_id, client_secret, config) = oauth_client_manager
+        .create_client(name)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    tracing::info!("OAuth client created: {} ({})", config.name, config.id);
+
+    // Save to config file
+    config_manager
+        .update(|cfg| {
+            cfg.oauth_clients.push(config.clone());
+        })
+        .map_err(|e| e.to_string())?;
+
+    // Persist to disk
+    config_manager
+        .save()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Rebuild tray menu
+    if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
+        tracing::error!("Failed to rebuild tray menu: {}", e);
+    }
+
+    // Notify frontend
+    let _ = app.emit("oauth-clients-changed", ());
+
+    Ok((
+        client_id,
+        client_secret,
+        OAuthClientInfo {
+            id: config.id,
+            name: config.name,
+            client_id: config.client_id,
+            linked_server_ids: config.linked_server_ids,
+            enabled: config.enabled,
+            created_at: config.created_at.to_rfc3339(),
+        },
+    ))
+}
+
+/// Get the OAuth client secret from keychain
+///
+/// # Arguments
+/// * `id` - The OAuth client ID (internal UUID, not client_id)
+///
+/// # Returns
+/// * The client_secret string if it exists
+/// * Error if secret doesn't exist or keychain access fails
+#[tauri::command]
+pub async fn get_oauth_client_secret(
+    id: String,
+    oauth_client_manager: State<'_, OAuthClientManager>,
+) -> Result<String, String> {
+    oauth_client_manager
+        .get_client_secret(&id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("OAuth client secret not found in keychain: {}", id))
+}
+
+/// Delete an OAuth client
+///
+/// # Arguments
+/// * `id` - The OAuth client ID to delete
+///
+/// # Returns
+/// * Ok(()) if the client was deleted successfully
+/// * Error if the client doesn't exist or deletion fails
+#[tauri::command]
+pub async fn delete_oauth_client(
+    id: String,
+    oauth_client_manager: State<'_, OAuthClientManager>,
+    config_manager: State<'_, ConfigManager>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    // Delete from keychain
+    oauth_client_manager
+        .delete_client(&id)
+        .map_err(|e| e.to_string())?;
+
+    // Remove from config file
+    config_manager
+        .update(|cfg| {
+            cfg.oauth_clients.retain(|c| c.id != id);
+        })
+        .map_err(|e| e.to_string())?;
+
+    // Persist to disk
+    config_manager
+        .save()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Rebuild tray menu
+    if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
+        tracing::error!("Failed to rebuild tray menu: {}", e);
+    }
+
+    // Notify frontend
+    let _ = app.emit("oauth-clients-changed", ());
+
+    Ok(())
+}
+
+/// Update an OAuth client's name
+///
+/// # Arguments
+/// * `id` - The OAuth client ID to update
+/// * `name` - The new name for the OAuth client
+///
+/// # Returns
+/// * Ok(()) if the update succeeded
+/// * Error if the client doesn't exist or update fails
+#[tauri::command]
+pub async fn update_oauth_client_name(
+    id: String,
+    name: String,
+    oauth_client_manager: State<'_, OAuthClientManager>,
+    config_manager: State<'_, ConfigManager>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    // Validate name is not empty
+    if name.trim().is_empty() {
+        return Err("OAuth client name cannot be empty".to_string());
+    }
+
+    // Update in memory
+    oauth_client_manager
+        .update_client(&id, |cfg| {
+            cfg.name = name.clone();
+        })
+        .map_err(|e| e.to_string())?;
+
+    // Update in config file
+    config_manager
+        .update(|cfg| {
+            if let Some(client) = cfg.oauth_clients.iter_mut().find(|c| c.id == id) {
+                client.name = name.clone();
+            }
+        })
+        .map_err(|e| e.to_string())?;
+
+    // Persist to disk
+    config_manager
+        .save()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Rebuild tray menu
+    if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
+        tracing::error!("Failed to rebuild tray menu: {}", e);
+    }
+
+    // Notify frontend
+    let _ = app.emit("oauth-clients-changed", ());
+
+    Ok(())
+}
+
+/// Toggle an OAuth client's enabled state
+///
+/// # Arguments
+/// * `id` - The OAuth client ID to toggle
+/// * `enabled` - Whether to enable (true) or disable (false) the client
+///
+/// # Returns
+/// * Ok(()) if the toggle succeeded
+/// * Error if the client doesn't exist or toggle fails
+#[tauri::command]
+pub async fn toggle_oauth_client_enabled(
+    id: String,
+    enabled: bool,
+    oauth_client_manager: State<'_, OAuthClientManager>,
+    config_manager: State<'_, ConfigManager>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    // Update in memory
+    oauth_client_manager
+        .update_client(&id, |cfg| {
+            cfg.enabled = enabled;
+        })
+        .map_err(|e| e.to_string())?;
+
+    // Update in config file
+    config_manager
+        .update(|cfg| {
+            if let Some(client) = cfg.oauth_clients.iter_mut().find(|c| c.id == id) {
+                client.enabled = enabled;
+            }
+        })
+        .map_err(|e| e.to_string())?;
+
+    // Persist to disk
+    config_manager
+        .save()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Rebuild tray menu
+    if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
+        tracing::error!("Failed to rebuild tray menu: {}", e);
+    }
+
+    // Notify frontend
+    let _ = app.emit("oauth-clients-changed", ());
+
+    Ok(())
+}
+
+/// Link an MCP server to an OAuth client
+///
+/// # Arguments
+/// * `client_id` - The OAuth client ID
+/// * `server_id` - The MCP server ID to link
+///
+/// # Returns
+/// * Ok(()) if linking succeeded
+/// * Error if the client doesn't exist or linking fails
+#[tauri::command]
+pub async fn link_mcp_server(
+    client_id: String,
+    server_id: String,
+    oauth_client_manager: State<'_, OAuthClientManager>,
+    config_manager: State<'_, ConfigManager>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    // Link in memory
+    oauth_client_manager
+        .link_server(&client_id, server_id.clone())
+        .map_err(|e| e.to_string())?;
+
+    // Update in config file
+    config_manager
+        .update(|cfg| {
+            if let Some(client) = cfg.oauth_clients.iter_mut().find(|c| c.id == client_id) {
+                if !client.linked_server_ids.contains(&server_id) {
+                    client.linked_server_ids.push(server_id);
+                }
+            }
+        })
+        .map_err(|e| e.to_string())?;
+
+    // Persist to disk
+    config_manager
+        .save()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Notify frontend
+    let _ = app.emit("oauth-clients-changed", ());
+
+    Ok(())
+}
+
+/// Unlink an MCP server from an OAuth client
+///
+/// # Arguments
+/// * `client_id` - The OAuth client ID
+/// * `server_id` - The MCP server ID to unlink
+///
+/// # Returns
+/// * Ok(()) if unlinking succeeded
+/// * Error if the client doesn't exist or unlinking fails
+#[tauri::command]
+pub async fn unlink_mcp_server(
+    client_id: String,
+    server_id: String,
+    oauth_client_manager: State<'_, OAuthClientManager>,
+    config_manager: State<'_, ConfigManager>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    // Unlink in memory
+    oauth_client_manager
+        .unlink_server(&client_id, &server_id)
+        .map_err(|e| e.to_string())?;
+
+    // Update in config file
+    config_manager
+        .update(|cfg| {
+            if let Some(client) = cfg.oauth_clients.iter_mut().find(|c| c.id == client_id) {
+                client.linked_server_ids.retain(|id| id != &server_id);
+            }
+        })
+        .map_err(|e| e.to_string())?;
+
+    // Persist to disk
+    config_manager
+        .save()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Notify frontend
+    let _ = app.emit("oauth-clients-changed", ());
+
+    Ok(())
+}
+
+/// Get all MCP servers linked to an OAuth client
+///
+/// # Arguments
+/// * `client_id` - The OAuth client ID
+///
+/// # Returns
+/// * List of MCP server IDs linked to this client
+/// * Empty list if the client doesn't exist or has no linked servers
+#[tauri::command]
+pub async fn get_oauth_client_linked_servers(
+    client_id: String,
+    oauth_client_manager: State<'_, OAuthClientManager>,
+) -> Result<Vec<String>, String> {
+    if let Some(client) = oauth_client_manager.get_client(&client_id) {
+        Ok(client.linked_server_ids)
+    } else {
+        Ok(Vec::new())
+    }
+}
+
+// ============================================================================
+// MCP Server Commands
+// ============================================================================
+
+/// MCP server information for display
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpServerInfo {
+    pub id: String,
+    pub name: String,
+    pub transport: String,
+    pub enabled: bool,
+    pub running: bool,
+    pub created_at: String,
+}
+
+/// List all MCP servers
+#[tauri::command]
+pub async fn list_mcp_servers(
+    mcp_manager: State<'_, Arc<McpServerManager>>,
+) -> Result<Vec<McpServerInfo>, String> {
+    let configs = mcp_manager.list_configs();
+    let mut servers = Vec::new();
+
+    for config in configs {
+        servers.push(McpServerInfo {
+            id: config.id.clone(),
+            name: config.name.clone(),
+            transport: format!("{:?}", config.transport),
+            enabled: config.enabled,
+            running: mcp_manager.is_running(&config.id),
+            created_at: config.created_at.to_rfc3339(),
+        });
+    }
+
+    Ok(servers)
+}
+
+/// Create a new MCP server
+///
+/// # Arguments
+/// * `name` - Server name
+/// * `transport` - Transport type ("stdio", "sse", "websocket")
+/// * `transport_config` - Transport-specific configuration as JSON
+///
+/// # Returns
+/// * The created server info
+#[tauri::command]
+pub async fn create_mcp_server(
+    name: String,
+    transport: String,
+    transport_config: serde_json::Value,
+    mcp_manager: State<'_, Arc<McpServerManager>>,
+    config_manager: State<'_, ConfigManager>,
+    app: tauri::AppHandle,
+) -> Result<McpServerInfo, String> {
+    tracing::info!("Creating new MCP server: {} ({})", name, transport);
+
+    // Parse transport type
+    let transport_type = match transport.as_str() {
+        "stdio" => McpTransportType::Stdio,
+        "sse" => McpTransportType::Sse,
+        "websocket" => McpTransportType::WebSocket,
+        _ => return Err(format!("Invalid transport type: {}", transport)),
+    };
+
+    // Parse transport config
+    let parsed_config: McpTransportConfig = serde_json::from_value(transport_config)
+        .map_err(|e| format!("Invalid transport config: {}", e))?;
+
+    // Create server config
+    let config = McpServerConfig::new(name, transport_type, parsed_config);
+
+    let server_info = McpServerInfo {
+        id: config.id.clone(),
+        name: config.name.clone(),
+        transport: format!("{:?}", config.transport),
+        enabled: config.enabled,
+        running: false,
+        created_at: config.created_at.to_rfc3339(),
+    };
+
+    // Add to manager
+    mcp_manager.add_config(config.clone());
+
+    // Save to config file
+    config_manager
+        .update(|cfg| {
+            cfg.mcp_servers.push(config);
+        })
+        .map_err(|e| e.to_string())?;
+
+    // Persist to disk
+    config_manager
+        .save()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Rebuild tray menu
+    if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
+        tracing::error!("Failed to rebuild tray menu: {}", e);
+    }
+
+    // Notify frontend
+    let _ = app.emit("mcp-servers-changed", ());
+
+    Ok(server_info)
+}
+
+/// Delete an MCP server
+///
+/// # Arguments
+/// * `server_id` - The server ID to delete
+///
+/// # Returns
+/// * Ok(()) if successful
+#[tauri::command]
+pub async fn delete_mcp_server(
+    server_id: String,
+    mcp_manager: State<'_, Arc<McpServerManager>>,
+    config_manager: State<'_, ConfigManager>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    tracing::info!("Deleting MCP server: {}", server_id);
+
+    // Stop if running
+    if mcp_manager.is_running(&server_id) {
+        mcp_manager
+            .stop_server(&server_id)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+
+    // Remove from manager
+    mcp_manager.remove_config(&server_id);
+
+    // Remove from config file
+    config_manager
+        .update(|cfg| {
+            cfg.mcp_servers.retain(|s| s.id != server_id);
+        })
+        .map_err(|e| e.to_string())?;
+
+    // Persist to disk
+    config_manager
+        .save()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Rebuild tray menu
+    if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
+        tracing::error!("Failed to rebuild tray menu: {}", e);
+    }
+
+    // Notify frontend
+    let _ = app.emit("mcp-servers-changed", ());
+
+    Ok(())
+}
+
+/// Start an MCP server
+///
+/// # Arguments
+/// * `server_id` - The server ID to start
+///
+/// # Returns
+/// * Ok(()) if successful
+#[tauri::command]
+pub async fn start_mcp_server(
+    server_id: String,
+    mcp_manager: State<'_, Arc<McpServerManager>>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    tracing::info!("Starting MCP server: {}", server_id);
+
+    mcp_manager
+        .start_server(&server_id)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Notify frontend
+    let _ = app.emit("mcp-servers-changed", ());
+
+    Ok(())
+}
+
+/// Stop an MCP server
+///
+/// # Arguments
+/// * `server_id` - The server ID to stop
+///
+/// # Returns
+/// * Ok(()) if successful
+#[tauri::command]
+pub async fn stop_mcp_server(
+    server_id: String,
+    mcp_manager: State<'_, Arc<McpServerManager>>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    tracing::info!("Stopping MCP server: {}", server_id);
+
+    mcp_manager
+        .stop_server(&server_id)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Notify frontend
+    let _ = app.emit("mcp-servers-changed", ());
+
+    Ok(())
+}
+
+/// Get health status for an MCP server
+///
+/// # Arguments
+/// * `server_id` - The server ID to check
+///
+/// # Returns
+/// * The health status
+#[tauri::command]
+pub async fn get_mcp_server_health(
+    server_id: String,
+    mcp_manager: State<'_, Arc<McpServerManager>>,
+) -> Result<crate::mcp::manager::McpServerHealth, String> {
+    Ok(mcp_manager.get_server_health(&server_id).await)
+}
+
+/// Get health status for all MCP servers
+///
+/// # Returns
+/// * List of health statuses for all servers
+#[tauri::command]
+pub async fn get_all_mcp_server_health(
+    mcp_manager: State<'_, Arc<McpServerManager>>,
+) -> Result<Vec<crate::mcp::manager::McpServerHealth>, String> {
+    Ok(mcp_manager.get_all_health().await)
+}
+
+/// Update an MCP server's name
+///
+/// # Arguments
+/// * `server_id` - The server ID to update
+/// * `name` - The new name
+///
+/// # Returns
+/// * Ok(()) if successful
+#[tauri::command]
+pub async fn update_mcp_server_name(
+    server_id: String,
+    name: String,
+    config_manager: State<'_, ConfigManager>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    // Validate name is not empty
+    if name.trim().is_empty() {
+        return Err("MCP server name cannot be empty".to_string());
+    }
+
+    // Update in config file
+    config_manager
+        .update(|cfg| {
+            if let Some(server) = cfg.mcp_servers.iter_mut().find(|s| s.id == server_id) {
+                server.name = name.clone();
+            }
+        })
+        .map_err(|e| e.to_string())?;
+
+    // Persist to disk
+    config_manager
+        .save()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Rebuild tray menu
+    if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
+        tracing::error!("Failed to rebuild tray menu: {}", e);
+    }
+
+    // Notify frontend
+    let _ = app.emit("mcp-servers-changed", ());
+
+    Ok(())
+}
+
+/// Toggle an MCP server's enabled state
+///
+/// # Arguments
+/// * `server_id` - The server ID to toggle
+/// * `enabled` - Whether to enable (true) or disable (false)
+///
+/// # Returns
+/// * Ok(()) if successful
+#[tauri::command]
+pub async fn toggle_mcp_server_enabled(
+    server_id: String,
+    enabled: bool,
+    config_manager: State<'_, ConfigManager>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    // Update in config file
+    config_manager
+        .update(|cfg| {
+            if let Some(server) = cfg.mcp_servers.iter_mut().find(|s| s.id == server_id) {
+                server.enabled = enabled;
+            }
+        })
+        .map_err(|e| e.to_string())?;
+
+    // Persist to disk
+    config_manager
+        .save()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Rebuild tray menu
+    if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
+        tracing::error!("Failed to rebuild tray menu: {}", e);
+    }
+
+    // Notify frontend
+    let _ = app.emit("mcp-servers-changed", ());
 
     Ok(())
 }

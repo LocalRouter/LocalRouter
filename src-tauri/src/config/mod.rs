@@ -49,6 +49,14 @@ pub struct AppConfig {
     /// Logging configuration
     #[serde(default)]
     pub logging: LoggingConfig,
+
+    /// OAuth clients for MCP
+    #[serde(default)]
+    pub oauth_clients: Vec<OAuthClientConfig>,
+
+    /// MCP server configurations
+    #[serde(default)]
+    pub mcp_servers: Vec<McpServerConfig>,
 }
 
 /// Server configuration
@@ -194,6 +202,134 @@ pub struct AvailableModelsSelection {
     /// Individual models selected as (provider, model) pairs
     #[serde(default)]
     pub individual_models: Vec<(String, String)>,
+}
+
+/// OAuth client configuration for MCP
+///
+/// The actual client_secret is stored in the OS keychain.
+/// This struct contains only metadata and the client_id (which is public).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OAuthClientConfig {
+    /// Unique identifier (also used as keyring username)
+    pub id: String,
+
+    /// Human-readable name
+    pub name: String,
+
+    /// OAuth client_id (public identifier, lr-... format)
+    pub client_id: String,
+
+    /// MCP servers this client can access
+    #[serde(default)]
+    pub linked_server_ids: Vec<String>,
+
+    /// Whether the client is enabled
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    /// Creation timestamp
+    pub created_at: DateTime<Utc>,
+
+    /// Last used timestamp
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_used: Option<DateTime<Utc>>,
+}
+
+/// MCP server configuration
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct McpServerConfig {
+    /// Unique identifier
+    pub id: String,
+
+    /// Human-readable name
+    pub name: String,
+
+    /// Transport type (STDIO, SSE, WebSocket)
+    pub transport: McpTransportType,
+
+    /// Transport-specific configuration
+    pub transport_config: McpTransportConfig,
+
+    /// OAuth configuration for MCP server (auto-discovered)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oauth_config: Option<McpOAuthConfig>,
+
+    /// Whether the server is enabled
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    /// Creation timestamp
+    pub created_at: DateTime<Utc>,
+}
+
+/// MCP transport type
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum McpTransportType {
+    /// STDIO transport (spawn subprocess with piped stdin/stdout)
+    Stdio,
+    /// Server-Sent Events (HTTP + SSE)
+    Sse,
+    /// WebSocket transport
+    WebSocket,
+}
+
+/// Transport-specific configuration
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum McpTransportConfig {
+    /// STDIO process configuration
+    Stdio {
+        /// Command to execute
+        command: String,
+        /// Command arguments
+        #[serde(default)]
+        args: Vec<String>,
+        /// Environment variables
+        #[serde(default)]
+        env: std::collections::HashMap<String, String>,
+    },
+    /// SSE configuration
+    Sse {
+        /// Server URL
+        url: String,
+        /// HTTP headers
+        #[serde(default)]
+        headers: std::collections::HashMap<String, String>,
+    },
+    /// WebSocket configuration
+    WebSocket {
+        /// WebSocket URL
+        url: String,
+        /// HTTP headers for upgrade request
+        #[serde(default)]
+        headers: std::collections::HashMap<String, String>,
+    },
+}
+
+/// OAuth configuration for MCP server
+///
+/// Discovered via /.well-known/oauth-protected-resource endpoint
+/// Client credentials stored in keychain service "LocalRouter-McpServerTokens"
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct McpOAuthConfig {
+    /// Authorization endpoint URL
+    pub auth_url: String,
+
+    /// Token endpoint URL
+    pub token_url: String,
+
+    /// OAuth scopes
+    #[serde(default)]
+    pub scopes: Vec<String>,
+
+    /// OAuth client_id for this MCP server
+    pub client_id: String,
+
+    /// Reference to client_secret in keychain (using server ID as key)
+    /// Actual secret stored in keychain, not here
+    #[serde(skip)]
+    pub client_secret_ref: String,
 }
 
 /// Router configuration
@@ -405,6 +541,7 @@ pub enum ProviderType {
     /// Cerebras API
     Cerebras,
     /// xAI API
+    #[allow(clippy::upper_case_acronyms)]
     XAI,
     /// Custom provider
     Custom,
@@ -654,15 +791,24 @@ impl Default for AppConfig {
             ],
             providers: vec![ProviderConfig::default_ollama()],
             logging: LoggingConfig::default(),
+            oauth_clients: Vec::new(),
+            mcp_servers: Vec::new(),
         }
     }
 }
 
 impl Default for ServerConfig {
     fn default() -> Self {
+        // Use different port for development to avoid conflicts
+        #[cfg(debug_assertions)]
+        let default_port = 33625;
+
+        #[cfg(not(debug_assertions))]
+        let default_port = 3625;
+
         Self {
             host: "127.0.0.1".to_string(),
-            port: 3625,
+            port: default_port,
             enable_cors: true,
         }
     }
@@ -846,7 +992,7 @@ impl ModelRoutingConfig {
     }
 
     /// Get the model to use for a request (ignoring the requested model for Force and Prioritized strategies)
-    pub fn get_model_for_request(&self, requested_model: &str) -> Option<(String, String)> {
+    pub fn get_model_for_request(&self, _requested_model: &str) -> Option<(String, String)> {
         match self.active_strategy {
             ActiveRoutingStrategy::AvailableModels => {
                 // Use the requested model (caller should validate it's allowed)
@@ -925,6 +1071,36 @@ impl AvailableModelsSelection {
     }
 }
 
+impl OAuthClientConfig {
+    /// Create a new OAuth client configuration
+    pub fn new(name: String, client_id: String) -> Self {
+        Self {
+            id: Uuid::new_v4().to_string(),
+            name,
+            client_id,
+            linked_server_ids: Vec::new(),
+            enabled: true,
+            created_at: Utc::now(),
+            last_used: None,
+        }
+    }
+}
+
+impl McpServerConfig {
+    /// Create a new MCP server configuration
+    pub fn new(name: String, transport: McpTransportType, transport_config: McpTransportConfig) -> Self {
+        Self {
+            id: Uuid::new_v4().to_string(),
+            name,
+            transport,
+            transport_config,
+            oauth_config: None,
+            enabled: true,
+            created_at: Utc::now(),
+        }
+    }
+}
+
 impl ApiKeyConfig {
     /// Create a new API key configuration with just a name
     /// Model selection can be set later via update
@@ -971,11 +1147,8 @@ impl ApiKeyConfig {
     pub fn get_routing_config(&self) -> Option<ModelRoutingConfig> {
         if let Some(ref config) = self.routing_config {
             Some(config.clone())
-        } else if let Some(ref selection) = self.model_selection {
-            // Migrate from old model_selection
-            Some(ModelRoutingConfig::from_model_selection(selection.clone()))
         } else {
-            None
+            self.model_selection.as_ref().map(|selection| ModelRoutingConfig::from_model_selection(selection.clone()))
         }
     }
 

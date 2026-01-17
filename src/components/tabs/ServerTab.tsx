@@ -11,6 +11,7 @@ import remarkGfm from 'remark-gfm'
 interface ServerConfig {
   host: string
   port: number
+  actual_port?: number
   enable_cors: boolean
 }
 
@@ -82,14 +83,16 @@ export default function ServerTab() {
 
   useEffect(() => {
     if (apiKey && config.host && config.port) {
+      // Use actual_port if available (server might be running on a different port if configured port was taken)
+      const port = config.actual_port ?? config.port
       const newClient = new OpenAI({
         apiKey: apiKey,
-        baseURL: `http://${config.host}:${config.port}/v1`,
+        baseURL: `http://${config.host}:${port}/v1`,
         dangerouslyAllowBrowser: true,
       })
       setClient(newClient)
     }
-  }, [apiKey, config.host, config.port])
+  }, [apiKey, config.host, config.port, config.actual_port])
 
   // Auto-select first API key and auto-fetch models
   useEffect(() => {
@@ -331,13 +334,18 @@ export default function ServerTab() {
             <div className="flex flex-col">
               <span className="text-xs text-gray-500 mb-1">Server URL</span>
               <code className="text-sm font-mono bg-gray-100 px-3 py-2 rounded border border-gray-200">
-                http://{config.host}:{config.port}/v1
+                http://{config.host}:{config.actual_port ?? config.port}/v1
               </code>
+              {config.actual_port && config.actual_port !== config.port && (
+                <span className="text-xs text-amber-600 mt-1">
+                  (configured: {config.port}, using: {config.actual_port})
+                </span>
+              )}
             </div>
             <div className="flex gap-2 self-end mb-2">
               <Button
                 variant="secondary"
-                onClick={() => copyToClipboard(`http://${config.host}:${config.port}/v1`)}
+                onClick={() => copyToClipboard(`http://${config.host}:${config.actual_port ?? config.port}/v1`)}
                 title="Copy URL"
               >
                 ⎘

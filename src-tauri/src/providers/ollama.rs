@@ -22,11 +22,13 @@ use crate::utils::errors::{AppError, AppResult};
 
 /// Ollama provider using hybrid SDK + HTTP approach
 pub struct OllamaProvider {
+    #[allow(dead_code)]
     sdk_client: OllamaClient,
     http_client: Client,
     base_url: String,
 }
 
+#[allow(dead_code)]
 impl OllamaProvider {
     /// Creates a new Ollama provider with default settings
     pub fn new() -> Self {
@@ -102,6 +104,7 @@ impl OllamaProvider {
     }
 }
 
+#[allow(dead_code)]
 impl Default for OllamaProvider {
     fn default() -> Self {
         Self::new()
@@ -185,6 +188,7 @@ struct OllamaModelDetails {
 }
 
 #[async_trait]
+#[allow(dead_code)]
 impl ModelProvider for OllamaProvider {
     fn name(&self) -> &str {
         "ollama"
@@ -264,6 +268,7 @@ impl ModelProvider for OllamaProvider {
                     context_window: 4096,
                     supports_streaming: true,
                     capabilities: vec![Capability::Chat, Capability::Completion],
+                detailed_capabilities: None,
                 }
             })
             .collect();
@@ -328,6 +333,7 @@ impl ModelProvider for OllamaProvider {
             object: "chat.completion".to_string(),
             created: Utc::now().timestamp(),
             model: request.model,
+            provider: self.name().to_string(),
             choices: vec![CompletionChoice {
                 index: 0,
                 message: ollama_response.message,
@@ -338,6 +344,7 @@ impl ModelProvider for OllamaProvider {
                 completion_tokens,
                 total_tokens: prompt_tokens + completion_tokens,
             },
+            extensions: None,
         })
     }
 
@@ -460,6 +467,7 @@ impl ModelProvider for OllamaProvider {
                                                 None
                                             },
                                         }],
+                                        extensions: None,
                                     };
                                     chunks.push(Ok(chunk));
                                 }

@@ -26,6 +26,7 @@ pub struct LMStudioProvider {
     client: Client,
 }
 
+#[allow(dead_code)]
 impl LMStudioProvider {
     /// Creates a new LM Studio provider with default settings
     pub fn new() -> Self {
@@ -76,6 +77,7 @@ impl LMStudioProvider {
     }
 }
 
+#[allow(dead_code)]
 impl Default for LMStudioProvider {
     fn default() -> Self {
         Self::new()
@@ -169,6 +171,7 @@ struct LMStudioDelta {
 }
 
 #[async_trait]
+#[allow(dead_code)]
 impl ModelProvider for LMStudioProvider {
     fn name(&self) -> &str {
         "lmstudio"
@@ -251,6 +254,7 @@ impl ModelProvider for LMStudioProvider {
                 context_window: 4096,  // Default, actual value depends on loaded model
                 supports_streaming: true,
                 capabilities: vec![Capability::Chat, Capability::Completion],
+                detailed_capabilities: None,
             })
             .collect();
 
@@ -314,6 +318,7 @@ impl ModelProvider for LMStudioProvider {
             object: lmstudio_response.object,
             created: lmstudio_response.created,
             model: lmstudio_response.model,
+            provider: self.name().to_string(),
             choices: lmstudio_response
                 .choices
                 .into_iter()
@@ -328,6 +333,7 @@ impl ModelProvider for LMStudioProvider {
                 completion_tokens: lmstudio_response.usage.completion_tokens,
                 total_tokens: lmstudio_response.usage.total_tokens,
             },
+            extensions: None,
         })
     }
 
@@ -410,6 +416,7 @@ impl ModelProvider for LMStudioProvider {
                                                 finish_reason: choice.finish_reason,
                                             })
                                             .collect(),
+                                        extensions: None,
                                     }));
                                 }
                                 Err(e) => {

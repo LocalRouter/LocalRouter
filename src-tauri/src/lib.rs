@@ -4,7 +4,9 @@
 
 pub mod api_keys;
 pub mod config;
+pub mod mcp;
 pub mod monitoring;
+pub mod oauth_clients;
 pub mod providers;
 pub mod router;
 pub mod server;

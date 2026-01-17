@@ -27,6 +27,7 @@ pub struct XAIProvider {
     api_key: String,
 }
 
+#[allow(dead_code)]
 impl XAIProvider {
     /// Create a new xAI provider with an API key
     pub fn new(api_key: String) -> AppResult<Self> {
@@ -57,6 +58,7 @@ impl XAIProvider {
                 context_window: 131_072,
                 supports_streaming: true,
                 capabilities: vec![Capability::Chat, Capability::FunctionCalling],
+                detailed_capabilities: None,
             },
             ModelInfo {
                 id: "grok-2-mini".to_string(),
@@ -66,6 +68,7 @@ impl XAIProvider {
                 context_window: 131_072,
                 supports_streaming: true,
                 capabilities: vec![Capability::Chat, Capability::FunctionCalling],
+                detailed_capabilities: None,
             },
             ModelInfo {
                 id: "grok-beta".to_string(),
@@ -75,6 +78,7 @@ impl XAIProvider {
                 context_window: 131_072,
                 supports_streaming: true,
                 capabilities: vec![Capability::Chat],
+                detailed_capabilities: None,
             },
         ]
     }
@@ -115,6 +119,7 @@ struct OpenAIStreamChoice {
 }
 
 #[async_trait]
+#[allow(dead_code)]
 impl ModelProvider for XAIProvider {
     fn name(&self) -> &str {
         "xai"
@@ -206,6 +211,7 @@ impl ModelProvider for XAIProvider {
             object: xai_response.object,
             created: xai_response.created,
             model: xai_response.model,
+            provider: self.name().to_string(),
             choices: xai_response
                 .choices
                 .into_iter()
@@ -216,6 +222,7 @@ impl ModelProvider for XAIProvider {
                 })
                 .collect(),
             usage: xai_response.usage,
+            extensions: None,
         })
     }
 
@@ -289,6 +296,7 @@ impl ModelProvider for XAIProvider {
                                             finish_reason: choice.finish_reason,
                                         })
                                         .collect(),
+                                    extensions: None,
                                 };
                                 chunks.push(Ok(chunk));
                             }

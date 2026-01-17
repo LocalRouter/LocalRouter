@@ -3,8 +3,7 @@ import { invoke } from '@tauri-apps/api/core'
 import Card from '../ui/Card'
 import Badge from '../ui/Badge'
 import Button from '../ui/Button'
-import { ChatInterface } from '../visualization/ChatInterface'
-import OpenAI from 'openai'
+import { ContextualChat } from '../chat/ContextualChat'
 
 interface ApiKeyDetailPageProps {
   keyId: string
@@ -16,11 +15,6 @@ interface ApiKey {
   enabled: boolean
   created_at: string
   model_selection: any
-}
-
-interface Model {
-  model_id: string
-  provider_instance: string
 }
 
 export default function ApiKeyDetailPage({ keyId }: ApiKeyDetailPageProps) {
@@ -37,22 +31,14 @@ export default function ApiKeyDetailPage({ keyId }: ApiKeyDetailPageProps) {
   const [name, setName] = useState('')
   const [enabled, setEnabled] = useState(true)
 
-  // Chat state
-  const [chatClient, setChatClient] = useState<OpenAI | null>(null)
-  const [_availableModels, setAvailableModels] = useState<Model[]>([])
-
   useEffect(() => {
     loadApiKeyData()
-    loadServerConfig()
   }, [keyId])
 
   const loadApiKeyData = async () => {
     setLoading(true)
     try {
-      const [keys, models] = await Promise.all([
-        invoke<ApiKey[]>('list_api_keys'),
-        invoke<Model[]>('list_all_models').catch(() => []),
-      ])
+      const keys = await invoke<ApiKey[]>('list_api_keys')
 
       const key = keys.find((k) => k.id === keyId)
       if (key) {
@@ -60,8 +46,6 @@ export default function ApiKeyDetailPage({ keyId }: ApiKeyDetailPageProps) {
         setName(key.name)
         setEnabled(key.enabled)
       }
-
-      setAvailableModels(models)
     } catch (error) {
       console.error('Failed to load API key data:', error)
     } finally {
@@ -89,33 +73,6 @@ export default function ApiKeyDetailPage({ keyId }: ApiKeyDetailPageProps) {
       } else {
         setKeyLoadError(`Failed to load key: ${errorMsg}`)
       }
-    }
-  }
-
-  const loadServerConfig = async () => {
-    try {
-      const serverConfig = await invoke<{ host: string; port: number }>('get_server_config')
-
-      // Try to load the key value for chat, but don't fail if keychain access is denied
-      try {
-        const value = await invoke<string>('get_api_key_value', { id: keyId })
-
-        const newClient = new OpenAI({
-          apiKey: value,
-          baseURL: `http://${serverConfig.host}:${serverConfig.port}/v1`,
-          dangerouslyAllowBrowser: true,
-        })
-        setChatClient(newClient)
-
-        // Also cache the key value for the settings tab
-        setKeyValue(value)
-        setKeyLoaded(true)
-      } catch (keyErr) {
-        console.warn('Could not load API key for chat (keychain access may be denied):', keyErr)
-        // Continue without chat functionality
-      }
-    } catch (err) {
-      console.error('Failed to load server config:', err)
     }
   }
 
@@ -154,39 +111,6 @@ export default function ApiKeyDetailPage({ keyId }: ApiKeyDetailPageProps) {
       console.error('Failed to copy:', error)
       alert('Failed to copy key to clipboard')
     }
-  }
-
-  const handleSendMessage = async (
-    messages: Array<{ role: 'user' | 'assistant'; content: string }>,
-    userMessage: string
-  ) => {
-    if (!chatClient) {
-      throw new Error('Chat client not initialized')
-    }
-
-    // Use 'gpt-4' as a generic model identifier - routing will handle the actual model
-    const stream = await chatClient.chat.completions.create({
-      model: 'gpt-4',
-      messages: [
-        ...messages,
-        {
-          role: 'user',
-          content: userMessage,
-        },
-      ],
-      stream: true,
-    })
-
-    async function* generateChunks() {
-      for await (const chunk of stream) {
-        const content = chunk.choices[0]?.delta?.content || ''
-        if (content) {
-          yield content
-        }
-      }
-    }
-
-    return generateChunks()
   }
 
   const formatModelSelection = (selection: any): string => {
@@ -266,36 +190,15 @@ export default function ApiKeyDetailPage({ keyId }: ApiKeyDetailPageProps) {
       {activeTab === 'chat' && (
         <Card>
           <h3 className="text-lg font-semibold text-gray-900 mb-4">Chat</h3>
-          {!apiKey.enabled && (
-            <div className="mb-4 p-3 bg-yellow-50 border border-yellow-200 rounded-lg text-sm text-yellow-700">
-              This API key is disabled. Enable it in Settings to use chat.
-            </div>
-          )}
-          <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg text-sm text-blue-700">
-            <p>
-              <strong>Routing:</strong> {formatModelSelection(apiKey.model_selection)}
-            </p>
-            <p className="mt-1 text-xs">
-              This API key will route requests according to its model selection configuration.
-            </p>
-          </div>
-          {chatClient ? (
-            <ChatInterface
-              onSendMessage={handleSendMessage}
-              placeholder={`Chat using ${apiKey.name}...`}
-              disabled={!apiKey.enabled}
-            />
-          ) : (
-            <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
-              <p className="text-yellow-900 text-sm">
-                <strong>Note:</strong> Chat is not available. This usually happens if:
-              </p>
-              <ul className="list-disc list-inside text-yellow-900 text-sm mt-2">
-                <li>The server is not running</li>
-                <li>Keychain access was denied (you can approve it when prompted)</li>
-              </ul>
-            </div>
-          )}
+          <ContextualChat
+            context={{
+              type: 'api_key',
+              apiKeyId: keyId,
+              apiKeyName: apiKey.name,
+              modelSelection: apiKey.model_selection,
+            }}
+            disabled={!apiKey.enabled}
+          />
         </Card>
       )}
 

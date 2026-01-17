@@ -1,5 +1,7 @@
 //! Authentication middleware for API key validation
 
+#![allow(dead_code)]
+
 use axum::{
     extract::Request,
     middleware::Next,

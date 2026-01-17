@@ -1,8 +1,8 @@
-//! GET /v1/models endpoint
+//! GET /v1/models endpoints
 //!
 //! Lists available models filtered by API key's model selection.
 
-use axum::{extract::State, http::Request, Json};
+use axum::{extract::{Path, State}, http::Request, Json};
 
 use crate::server::middleware::error::{ApiErrorResponse, ApiResult};
 use crate::server::state::{AppState, AuthContext};
@@ -109,5 +109,121 @@ pub async fn list_models<B>(
     Ok(Json(ModelsResponse {
         object: "list".to_string(),
         data: model_data_vec,
+    }))
+}
+
+/// GET /v1/models/{id}
+/// Get detailed information about a specific model
+pub async fn get_model<B>(
+    State(state): State<AppState>,
+    Path(model_id): Path<String>,
+    req: Request<B>,
+) -> ApiResult<Json<ModelData>> {
+    // Get auth context from request extensions
+    let auth_context = req
+        .extensions()
+        .get::<AuthContext>()
+        .ok_or_else(|| ApiErrorResponse::unauthorized("Authentication required"))?;
+
+    // Get all models from provider registry
+    let all_models = state
+        .provider_registry
+        .list_all_models()
+        .await
+        .map_err(|e| ApiErrorResponse::internal_error(format!("Failed to list models: {}", e)))?;
+
+    // Find the requested model
+    let model_info = all_models
+        .iter()
+        .find(|m| m.id == model_id)
+        .ok_or_else(|| ApiErrorResponse::not_found(format!("Model '{}' not found", model_id)))?;
+
+    // Check if API key has access to this model
+    if let Some(routing_config) = &auth_context.routing_config {
+        if !routing_config.is_model_allowed(&model_info.provider, &model_info.id) {
+            return Err(ApiErrorResponse::forbidden(format!(
+                "API key does not have access to model '{}'",
+                model_id
+            )));
+        }
+    } else if let Some(selection) = &auth_context.model_selection {
+        if !selection.is_model_allowed(&model_info.provider, &model_info.id) {
+            return Err(ApiErrorResponse::forbidden(format!(
+                "API key does not have access to model '{}'",
+                model_id
+            )));
+        }
+    }
+
+    // Convert to API response format with enhanced details
+    let mut model_data: ModelData = model_info.into();
+
+    // Fetch pricing information
+    if let Some(provider) = state.provider_registry.get_provider(&model_info.provider) {
+        if let Ok(pricing_info) = provider.get_pricing(&model_info.id).await {
+            model_data.pricing = Some(ModelPricing {
+                input_cost_per_1k: pricing_info.input_cost_per_1k,
+                output_cost_per_1k: pricing_info.output_cost_per_1k,
+                currency: pricing_info.currency,
+            });
+        }
+    }
+
+    Ok(Json(model_data))
+}
+
+/// GET /v1/models/{provider}/{model}/pricing
+/// Get pricing information for a specific model from a provider
+pub async fn get_model_pricing<B>(
+    State(state): State<AppState>,
+    Path((provider, model)): Path<(String, String)>,
+    req: Request<B>,
+) -> ApiResult<Json<ModelPricing>> {
+    // Get auth context from request extensions
+    let auth_context = req
+        .extensions()
+        .get::<AuthContext>()
+        .ok_or_else(|| ApiErrorResponse::unauthorized("Authentication required"))?;
+
+    // Check if API key has access to this model
+    if let Some(routing_config) = &auth_context.routing_config {
+        if !routing_config.is_model_allowed(&provider, &model) {
+            return Err(ApiErrorResponse::forbidden(format!(
+                "API key does not have access to model '{}/{}'",
+                provider, model
+            )));
+        }
+    } else if let Some(selection) = &auth_context.model_selection {
+        if !selection.is_model_allowed(&provider, &model) {
+            return Err(ApiErrorResponse::forbidden(format!(
+                "API key does not have access to model '{}/{}'",
+                provider, model
+            )));
+        }
+    }
+
+    // Get provider instance
+    let provider_instance = state
+        .provider_registry
+        .get_provider(&provider)
+        .ok_or_else(|| {
+            ApiErrorResponse::not_found(format!("Provider '{}' not found", provider))
+        })?;
+
+    // Get pricing information
+    let pricing_info = provider_instance
+        .get_pricing(&model)
+        .await
+        .map_err(|e| {
+            ApiErrorResponse::internal_error(format!(
+                "Failed to get pricing for model '{}': {}",
+                model, e
+            ))
+        })?;
+
+    Ok(Json(ModelPricing {
+        input_cost_per_1k: pricing_info.input_cost_per_1k,
+        output_cost_per_1k: pricing_info.output_cost_per_1k,
+        currency: pricing_info.currency,
     }))
 }

@@ -15,6 +15,7 @@ pub mod cerebras;
 pub mod cohere;
 pub mod deepinfra;
 pub mod factory;
+pub mod features;
 pub mod gemini;
 pub mod groq;
 pub mod health;
@@ -61,11 +62,34 @@ pub trait ModelProvider: Send + Sync {
     ///
     /// Default implementation returns an error indicating embeddings are not supported.
     /// Providers that support embeddings should override this method.
+    #[allow(dead_code)]
     async fn embed(&self, _request: EmbeddingRequest) -> AppResult<EmbeddingResponse> {
         Err(AppError::Provider(format!(
             "Provider '{}' does not support embeddings",
             self.name()
         )))
+    }
+
+    /// Check if this provider supports a specific feature
+    ///
+    /// Features include things like:
+    /// - "extended_thinking" (Anthropic Claude)
+    /// - "reasoning_tokens" (OpenAI o1 series)
+    /// - "structured_outputs" (OpenAI, Anthropic, Gemini)
+    /// - "prompt_caching" (Anthropic, OpenRouter)
+    /// - "thinking_level" (Google Gemini 3)
+    ///
+    /// Default implementation returns false for all features.
+    fn supports_feature(&self, _feature: &str) -> bool {
+        false
+    }
+
+    /// Get a feature adapter for a specific feature
+    ///
+    /// Returns None if the feature is not supported.
+    /// Default implementation returns None for all features.
+    fn get_feature_adapter(&self, _feature: &str) -> Option<Box<dyn crate::providers::features::FeatureAdapter>> {
+        None
     }
 }
 
@@ -84,11 +108,14 @@ pub struct ModelInfo {
     pub context_window: u32,
     /// Whether the model supports streaming
     pub supports_streaming: bool,
-    /// Model capabilities
+    /// Model capabilities (basic)
     pub capabilities: Vec<Capability>,
+    /// Detailed capability information (Phase 1)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detailed_capabilities: Option<ModelCapabilities>,
 }
 
-/// Model capabilities
+/// Model capabilities (basic categorization)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum Capability {
     Chat,
@@ -96,6 +123,129 @@ pub enum Capability {
     Embedding,
     Vision,
     FunctionCalling,
+}
+
+/// Core capability categories (for backward compatibility)
+pub type CoreCapability = Capability;
+
+/// Advanced feature capability with metadata
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FeatureCapability {
+    /// Feature name (e.g., "structured_outputs", "thinking", "caching")
+    pub name: String,
+    /// Whether this feature is supported
+    pub supported: bool,
+    /// Feature version (if applicable)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// Cost multiplier for using this feature (1.0 = no extra cost)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost_multiplier: Option<f64>,
+}
+
+impl FeatureCapability {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            supported: true,
+            version: None,
+            cost_multiplier: None,
+        }
+    }
+
+    pub fn with_version(mut self, version: impl Into<String>) -> Self {
+        self.version = Some(version.into());
+        self
+    }
+
+    pub fn with_cost_multiplier(mut self, multiplier: f64) -> Self {
+        self.cost_multiplier = Some(multiplier);
+        self
+    }
+}
+
+/// Sampling parameter support information
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SamplingParameter {
+    Temperature { min: f32, max: f32, default: f32 },
+    TopP { min: f32, max: f32, default: f32 },
+    TopK { min: u32, max: u32, default: u32 },
+    RepetitionPenalty { min: f32, max: f32, default: f32 },
+    FrequencyPenalty { min: f32, max: f32, default: f32 },
+    PresencePenalty { min: f32, max: f32, default: f32 },
+    Seed { supported: bool },
+}
+
+/// Parameter support information
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ParameterSupport {
+    /// Sampling parameters supported
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub sampling: Vec<SamplingParameter>,
+}
+
+/// Performance metrics for a model
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PerformanceMetrics {
+    /// Average latency in milliseconds
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub avg_latency_ms: Option<u64>,
+    /// Throughput in tokens per second
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tokens_per_second: Option<f64>,
+    /// Cache hit rate (0.0 to 1.0)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_hit_rate: Option<f32>,
+}
+
+/// Enhanced model capabilities with detailed feature tracking
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ModelCapabilities {
+    /// Core capabilities (for backward compatibility)
+    pub core: Vec<CoreCapability>,
+
+    /// Advanced features with metadata
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub features: Vec<FeatureCapability>,
+
+    /// Supported parameters
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parameters: Option<ParameterSupport>,
+
+    /// Performance characteristics
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub performance: Option<PerformanceMetrics>,
+}
+
+impl ModelCapabilities {
+    /// Create capabilities from core capabilities only
+    pub fn from_core(core: Vec<CoreCapability>) -> Self {
+        Self {
+            core,
+            features: Vec::new(),
+            parameters: None,
+            performance: None,
+        }
+    }
+
+    /// Add a feature to this model's capabilities
+    pub fn with_feature(mut self, feature: FeatureCapability) -> Self {
+        self.features.push(feature);
+        self
+    }
+
+    /// Add parameter support
+    pub fn with_parameters(mut self, parameters: ParameterSupport) -> Self {
+        self.parameters = Some(parameters);
+        self
+    }
+
+    /// Add performance metrics
+    pub fn with_performance(mut self, performance: PerformanceMetrics) -> Self {
+        self.performance = Some(performance);
+        self
+    }
 }
 
 /// Pricing information for a model
@@ -169,6 +319,20 @@ pub struct CompletionRequest {
     /// Stop sequences
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stop: Option<Vec<String>>,
+
+    // Extended parameters (Phase 1)
+    /// Top-k sampling
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_k: Option<u32>,
+    /// Seed for deterministic generation
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seed: Option<i64>,
+    /// Repetition penalty
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repetition_penalty: Option<f32>,
+    /// Provider-specific extensions (Phase 3)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extensions: Option<std::collections::HashMap<String, serde_json::Value>>,
 }
 
 /// Chat message
@@ -191,10 +355,15 @@ pub struct CompletionResponse {
     pub created: i64,
     /// Model used
     pub model: String,
+    /// Provider name
+    pub provider: String,
     /// Response choices
     pub choices: Vec<CompletionChoice>,
     /// Token usage information
     pub usage: TokenUsage,
+    /// Provider-specific extensions (Phase 3)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extensions: Option<std::collections::HashMap<String, serde_json::Value>>,
 }
 
 /// Completion choice
@@ -232,6 +401,9 @@ pub struct CompletionChunk {
     pub model: String,
     /// Chunk choices
     pub choices: Vec<ChunkChoice>,
+    /// Provider-specific extensions (Phase 3)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extensions: Option<std::collections::HashMap<String, serde_json::Value>>,
 }
 
 /// Streaming chunk choice
@@ -259,6 +431,7 @@ pub struct ChunkDelta {
 // ==================== EMBEDDING TYPES ====================
 
 /// Embedding request
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmbeddingRequest {
     /// Model to use for embeddings
@@ -277,6 +450,7 @@ pub struct EmbeddingRequest {
 }
 
 /// Input for embedding request (can be single string, array of strings, or token arrays)
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum EmbeddingInput {
@@ -289,6 +463,7 @@ pub enum EmbeddingInput {
 }
 
 /// Encoding format for embeddings
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum EncodingFormat {
@@ -299,6 +474,7 @@ pub enum EncodingFormat {
 }
 
 /// Embedding response
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmbeddingResponse {
     /// Object type ("list")
@@ -312,6 +488,7 @@ pub struct EmbeddingResponse {
 }
 
 /// Single embedding
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Embedding {
     /// Object type ("embedding")
@@ -324,6 +501,7 @@ pub struct Embedding {
 }
 
 /// Token usage for embeddings
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmbeddingUsage {
     /// Number of prompt tokens

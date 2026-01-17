@@ -3,8 +3,7 @@ import { invoke } from '@tauri-apps/api/core'
 import Card from '../ui/Card'
 import Badge from '../ui/Badge'
 import ProviderIcon from '../ProviderIcon'
-import { ChatInterface } from '../visualization/ChatInterface'
-import OpenAI from 'openai'
+import { ContextualChat } from '../chat/ContextualChat'
 
 interface ModelDetailPageProps {
   modelKey: string // format: "provider/model_id"
@@ -26,11 +25,9 @@ export default function ModelDetailPage({ modelKey }: ModelDetailPageProps) {
   const [providerInstance, modelId] = modelKey.split('/')
   const [model, setModel] = useState<Model | null>(null)
   const [loading, setLoading] = useState(true)
-  const [chatClient, setChatClient] = useState<OpenAI | null>(null)
 
   useEffect(() => {
     loadModelData()
-    loadServerConfig()
   }, [modelKey])
 
   const loadModelData = async () => {
@@ -53,65 +50,6 @@ export default function ModelDetailPage({ modelKey }: ModelDetailPageProps) {
     } finally {
       setLoading(false)
     }
-  }
-
-  const loadServerConfig = async () => {
-    try {
-      const serverConfig = await invoke<{ host: string; port: number }>('get_server_config')
-
-      // Try to get an enabled API key for chat
-      try {
-        const keys = await invoke<Array<{ id: string; enabled: boolean }>>('list_api_keys')
-        const enabledKey = keys.find((k) => k.enabled)
-
-        if (enabledKey) {
-          const keyValue = await invoke<string>('get_api_key_value', { id: enabledKey.id })
-
-          const newClient = new OpenAI({
-            apiKey: keyValue,
-            baseURL: `http://${serverConfig.host}:${serverConfig.port}/v1`,
-            dangerouslyAllowBrowser: true,
-          })
-          setChatClient(newClient)
-        }
-      } catch (keyErr) {
-        console.warn('Could not load API key for chat:', keyErr)
-      }
-    } catch (err) {
-      console.error('Failed to load server config:', err)
-    }
-  }
-
-  const handleSendMessage = async (
-    messages: Array<{ role: 'user' | 'assistant'; content: string }>,
-    userMessage: string
-  ) => {
-    if (!chatClient || !model) {
-      throw new Error('Chat client or model not available')
-    }
-
-    const stream = await chatClient.chat.completions.create({
-      model: `${model.provider_instance}/${model.model_id}`,
-      messages: [
-        ...messages,
-        {
-          role: 'user',
-          content: userMessage,
-        },
-      ],
-      stream: true,
-    })
-
-    async function* generateChunks() {
-      for await (const chunk of stream) {
-        const content = chunk.choices[0]?.delta?.content || ''
-        if (content) {
-          yield content
-        }
-      }
-    }
-
-    return generateChunks()
   }
 
   const formatContextWindow = (tokens: number) => {
@@ -228,31 +166,13 @@ export default function ModelDetailPage({ modelKey }: ModelDetailPageProps) {
       <div className="space-y-6">
         <Card>
           <h3 className="text-lg font-semibold text-gray-900 mb-4">Chat with Model</h3>
-          {chatClient ? (
-            <div>
-              <div className="mb-4 p-3 bg-purple-50 border border-purple-200 rounded-lg text-sm text-purple-700">
-                <p>
-                  <strong>Direct Model Access:</strong> This chat bypasses routing and connects
-                  directly to this specific model.
-                </p>
-              </div>
-              <ChatInterface
-                onSendMessage={handleSendMessage}
-                placeholder={`Chat with ${model.model_id}...`}
-              />
-            </div>
-          ) : (
-            <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
-              <p className="text-yellow-900 text-sm">
-                <strong>Note:</strong> Chat is not available. This usually happens if:
-              </p>
-              <ul className="list-disc list-inside text-yellow-900 text-sm mt-2">
-                <li>The server is not running</li>
-                <li>No enabled API key is available</li>
-                <li>Keychain access was denied</li>
-              </ul>
-            </div>
-          )}
+          <ContextualChat
+            context={{
+              type: 'model',
+              providerInstance: model.provider_instance,
+              modelId: model.model_id,
+            }}
+          />
         </Card>
       </div>
     </div>

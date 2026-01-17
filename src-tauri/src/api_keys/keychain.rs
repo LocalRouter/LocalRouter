@@ -7,6 +7,8 @@
 //!
 //! Keys are stored with service="LocalRouter-APIKeys" and username=key_id.
 
+#![allow(dead_code)]
+
 use crate::utils::errors::{AppError, AppResult};
 use tracing::debug;
 

@@ -215,6 +215,7 @@ impl ModelProvider for OpenAICompatibleProvider {
                 context_window: 4096,  // Default, actual value depends on model
                 supports_streaming: true,
                 capabilities: vec![Capability::Chat, Capability::Completion],
+                detailed_capabilities: None,
             })
             .collect();
 
@@ -296,12 +297,14 @@ impl ModelProvider for OpenAICompatibleProvider {
             object: openai_response.object,
             created: openai_response.created,
             model: openai_response.model,
+            provider: self.name().to_string(),
             choices,
             usage: TokenUsage {
                 prompt_tokens: openai_response.usage.prompt_tokens,
                 completion_tokens: openai_response.usage.completion_tokens,
                 total_tokens: openai_response.usage.total_tokens,
             },
+            extensions: None,
         })
     }
 
@@ -404,6 +407,7 @@ impl ModelProvider for OpenAICompatibleProvider {
                                                 finish_reason: choice.finish_reason,
                                             })
                                             .collect(),
+                                        extensions: None,
                                     }));
                                 }
                                 Err(e) => {

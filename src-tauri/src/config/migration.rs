@@ -86,8 +86,10 @@ mod tests {
 
     #[test]
     fn test_migrate_from_future_version() {
-        let mut config = AppConfig::default();
-        config.version = CONFIG_VERSION + 1;
+        let config = AppConfig {
+            version: CONFIG_VERSION + 1,
+            ..Default::default()
+        };
 
         let result = migrate_config(config);
 

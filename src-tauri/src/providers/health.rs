@@ -171,6 +171,7 @@ impl HealthCheckManager {
     }
 
     /// Get the cached health status for a provider
+    #[allow(dead_code)]
     pub async fn get_health(&self, provider_name: &str) -> Option<ProviderHealth> {
         let cache = self.cache.read().await;
         cache.get(provider_name).map(|cached| cached.health.clone())

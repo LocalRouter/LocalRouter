@@ -2,6 +2,8 @@
 //!
 //! Parses access logs from disk and provides query capabilities.
 
+#![allow(dead_code)]
+
 use chrono::{DateTime, Utc};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
@@ -9,6 +11,8 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
+#[cfg(test)]
+use std::path::Path;
 use std::sync::Arc;
 use tracing::{error, warn};
 
@@ -441,7 +445,7 @@ mod tests {
     use tempfile::TempDir;
 
     fn create_test_log_file(
-        dir: &PathBuf,
+        dir: &Path,
         date: &str,
         entries: Vec<AccessLogEntry>,
     ) -> AppResult<()> {

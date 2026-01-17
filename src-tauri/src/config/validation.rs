@@ -1,5 +1,7 @@
 //! Configuration validation
 
+#![allow(deprecated)]
+
 use super::{ApiKeyConfig, AppConfig, ModelSelection, ProviderConfig, RouterConfig};
 use crate::utils::errors::{AppError, AppResult};
 use std::collections::HashSet;

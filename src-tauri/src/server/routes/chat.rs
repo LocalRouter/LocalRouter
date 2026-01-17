@@ -86,6 +86,54 @@ fn validate_request(request: &ChatCompletionRequest) -> ApiResult<()> {
         }
     }
 
+    // Validate top_k (extended parameter)
+    if let Some(top_k) = request.top_k {
+        if top_k == 0 {
+            return Err(
+                ApiErrorResponse::bad_request("top_k must be greater than 0").with_param("top_k"),
+            );
+        }
+    }
+
+    // Validate repetition_penalty (extended parameter)
+    if let Some(rep_penalty) = request.repetition_penalty {
+        if !(0.0..=2.0).contains(&rep_penalty) {
+            return Err(
+                ApiErrorResponse::bad_request("repetition_penalty must be between 0 and 2")
+                    .with_param("repetition_penalty"),
+            );
+        }
+    }
+
+    // Validate response_format if present
+    if let Some(ref format) = request.response_format {
+        match format {
+            crate::server::types::ResponseFormat::JsonObject { r#type } => {
+                if r#type != "json_object" {
+                    return Err(
+                        ApiErrorResponse::bad_request("response_format type must be 'json_object'")
+                            .with_param("response_format"),
+                    );
+                }
+            }
+            crate::server::types::ResponseFormat::JsonSchema { r#type, schema } => {
+                if r#type != "json_schema" {
+                    return Err(
+                        ApiErrorResponse::bad_request("response_format type must be 'json_schema'")
+                            .with_param("response_format"),
+                    );
+                }
+                // Basic validation that schema is an object
+                if !schema.is_object() {
+                    return Err(
+                        ApiErrorResponse::bad_request("response_format schema must be a JSON object")
+                            .with_param("response_format"),
+                    );
+                }
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -216,6 +264,11 @@ fn convert_to_provider_request(
             crate::server::types::StopSequence::Single(s) => vec![s.clone()],
             crate::server::types::StopSequence::Multiple(v) => v.clone(),
         }),
+        // Extended parameters
+        top_k: request.top_k,
+        seed: request.seed,
+        repetition_penalty: request.repetition_penalty,
+        extensions: request.extensions.clone(),
     })
 }
 
@@ -265,6 +318,7 @@ async fn handle_non_streaming(
             completion_tokens: response.usage.completion_tokens,
             total_tokens: response.usage.total_tokens,
         },
+        extensions: None, // Provider-specific extensions (Phase 1)
     };
 
     // Track generation details
@@ -441,4 +495,456 @@ fn estimate_token_count(messages: &[ChatMessage]) -> u64 {
             }
         })
         .sum()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::server::types::ResponseFormat;
+    use serde_json::json;
+
+    #[test]
+    fn test_validate_request_basic() {
+        let request = ChatCompletionRequest {
+            model: "gpt-4".to_string(),
+            messages: vec![ChatMessage {
+                role: "user".to_string(),
+                content: Some(MessageContent::Text("Hello".to_string())),
+                name: None,
+            }],
+            temperature: None,
+            max_tokens: None,
+            stream: false,
+            top_p: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+            stop: None,
+            top_k: None,
+            seed: None,
+            repetition_penalty: None,
+            response_format: None,
+            tools: None,
+            tool_choice: None,
+            extensions: None,
+            user: None,
+        };
+
+        assert!(validate_request(&request).is_ok());
+    }
+
+    #[test]
+    fn test_validate_request_empty_model() {
+        let request = ChatCompletionRequest {
+            model: "".to_string(),
+            messages: vec![ChatMessage {
+                role: "user".to_string(),
+                content: Some(MessageContent::Text("Hello".to_string())),
+                name: None,
+            }],
+            temperature: None,
+            max_tokens: None,
+            stream: false,
+            top_p: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+            stop: None,
+            top_k: None,
+            seed: None,
+            repetition_penalty: None,
+            response_format: None,
+            tools: None,
+            tool_choice: None,
+            extensions: None,
+            user: None,
+        };
+
+        assert!(validate_request(&request).is_err());
+    }
+
+    #[test]
+    fn test_validate_request_empty_messages() {
+        let request = ChatCompletionRequest {
+            model: "gpt-4".to_string(),
+            messages: vec![],
+            temperature: None,
+            max_tokens: None,
+            stream: false,
+            top_p: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+            stop: None,
+            top_k: None,
+            seed: None,
+            repetition_penalty: None,
+            response_format: None,
+            tools: None,
+            tool_choice: None,
+            extensions: None,
+            user: None,
+        };
+
+        assert!(validate_request(&request).is_err());
+    }
+
+    #[test]
+    fn test_validate_temperature_valid() {
+        let request = ChatCompletionRequest {
+            model: "gpt-4".to_string(),
+            messages: vec![ChatMessage {
+                role: "user".to_string(),
+                content: Some(MessageContent::Text("Hello".to_string())),
+                name: None,
+            }],
+            temperature: Some(0.7),
+            max_tokens: None,
+            stream: false,
+            top_p: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+            stop: None,
+            top_k: None,
+            seed: None,
+            repetition_penalty: None,
+            response_format: None,
+            tools: None,
+            tool_choice: None,
+            extensions: None,
+            user: None,
+        };
+
+        assert!(validate_request(&request).is_ok());
+    }
+
+    #[test]
+    fn test_validate_temperature_invalid_high() {
+        let request = ChatCompletionRequest {
+            model: "gpt-4".to_string(),
+            messages: vec![ChatMessage {
+                role: "user".to_string(),
+                content: Some(MessageContent::Text("Hello".to_string())),
+                name: None,
+            }],
+            temperature: Some(2.5),
+            max_tokens: None,
+            stream: false,
+            top_p: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+            stop: None,
+            top_k: None,
+            seed: None,
+            repetition_penalty: None,
+            response_format: None,
+            tools: None,
+            tool_choice: None,
+            extensions: None,
+            user: None,
+        };
+
+        assert!(validate_request(&request).is_err());
+    }
+
+    #[test]
+    fn test_validate_top_k_valid() {
+        let request = ChatCompletionRequest {
+            model: "gpt-4".to_string(),
+            messages: vec![ChatMessage {
+                role: "user".to_string(),
+                content: Some(MessageContent::Text("Hello".to_string())),
+                name: None,
+            }],
+            temperature: None,
+            max_tokens: None,
+            stream: false,
+            top_p: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+            stop: None,
+            top_k: Some(40),
+            seed: None,
+            repetition_penalty: None,
+            response_format: None,
+            tools: None,
+            tool_choice: None,
+            extensions: None,
+            user: None,
+        };
+
+        assert!(validate_request(&request).is_ok());
+    }
+
+    #[test]
+    fn test_validate_top_k_invalid_zero() {
+        let request = ChatCompletionRequest {
+            model: "gpt-4".to_string(),
+            messages: vec![ChatMessage {
+                role: "user".to_string(),
+                content: Some(MessageContent::Text("Hello".to_string())),
+                name: None,
+            }],
+            temperature: None,
+            max_tokens: None,
+            stream: false,
+            top_p: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+            stop: None,
+            top_k: Some(0),
+            seed: None,
+            repetition_penalty: None,
+            response_format: None,
+            tools: None,
+            tool_choice: None,
+            extensions: None,
+            user: None,
+        };
+
+        assert!(validate_request(&request).is_err());
+    }
+
+    #[test]
+    fn test_validate_repetition_penalty_valid() {
+        let request = ChatCompletionRequest {
+            model: "gpt-4".to_string(),
+            messages: vec![ChatMessage {
+                role: "user".to_string(),
+                content: Some(MessageContent::Text("Hello".to_string())),
+                name: None,
+            }],
+            temperature: None,
+            max_tokens: None,
+            stream: false,
+            top_p: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+            stop: None,
+            top_k: None,
+            seed: None,
+            repetition_penalty: Some(1.1),
+            response_format: None,
+            tools: None,
+            tool_choice: None,
+            extensions: None,
+            user: None,
+        };
+
+        assert!(validate_request(&request).is_ok());
+    }
+
+    #[test]
+    fn test_validate_repetition_penalty_invalid() {
+        let request = ChatCompletionRequest {
+            model: "gpt-4".to_string(),
+            messages: vec![ChatMessage {
+                role: "user".to_string(),
+                content: Some(MessageContent::Text("Hello".to_string())),
+                name: None,
+            }],
+            temperature: None,
+            max_tokens: None,
+            stream: false,
+            top_p: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+            stop: None,
+            top_k: None,
+            seed: None,
+            repetition_penalty: Some(2.5),
+            response_format: None,
+            tools: None,
+            tool_choice: None,
+            extensions: None,
+            user: None,
+        };
+
+        assert!(validate_request(&request).is_err());
+    }
+
+    #[test]
+    fn test_validate_response_format_json_object_valid() {
+        let request = ChatCompletionRequest {
+            model: "gpt-4".to_string(),
+            messages: vec![ChatMessage {
+                role: "user".to_string(),
+                content: Some(MessageContent::Text("Hello".to_string())),
+                name: None,
+            }],
+            temperature: None,
+            max_tokens: None,
+            stream: false,
+            top_p: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+            stop: None,
+            top_k: None,
+            seed: None,
+            repetition_penalty: None,
+            response_format: Some(ResponseFormat::JsonObject {
+                r#type: "json_object".to_string(),
+            }),
+            tools: None,
+            tool_choice: None,
+            extensions: None,
+            user: None,
+        };
+
+        assert!(validate_request(&request).is_ok());
+    }
+
+    #[test]
+    fn test_validate_response_format_json_object_invalid_type() {
+        let request = ChatCompletionRequest {
+            model: "gpt-4".to_string(),
+            messages: vec![ChatMessage {
+                role: "user".to_string(),
+                content: Some(MessageContent::Text("Hello".to_string())),
+                name: None,
+            }],
+            temperature: None,
+            max_tokens: None,
+            stream: false,
+            top_p: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+            stop: None,
+            top_k: None,
+            seed: None,
+            repetition_penalty: None,
+            response_format: Some(ResponseFormat::JsonObject {
+                r#type: "invalid_type".to_string(),
+            }),
+            tools: None,
+            tool_choice: None,
+            extensions: None,
+            user: None,
+        };
+
+        assert!(validate_request(&request).is_err());
+    }
+
+    #[test]
+    fn test_validate_response_format_json_schema_valid() {
+        let request = ChatCompletionRequest {
+            model: "gpt-4".to_string(),
+            messages: vec![ChatMessage {
+                role: "user".to_string(),
+                content: Some(MessageContent::Text("Hello".to_string())),
+                name: None,
+            }],
+            temperature: None,
+            max_tokens: None,
+            stream: false,
+            top_p: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+            stop: None,
+            top_k: None,
+            seed: None,
+            repetition_penalty: None,
+            response_format: Some(ResponseFormat::JsonSchema {
+                r#type: "json_schema".to_string(),
+                schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"}
+                    }
+                }),
+            }),
+            tools: None,
+            tool_choice: None,
+            extensions: None,
+            user: None,
+        };
+
+        assert!(validate_request(&request).is_ok());
+    }
+
+    #[test]
+    fn test_validate_response_format_json_schema_invalid_schema() {
+        let request = ChatCompletionRequest {
+            model: "gpt-4".to_string(),
+            messages: vec![ChatMessage {
+                role: "user".to_string(),
+                content: Some(MessageContent::Text("Hello".to_string())),
+                name: None,
+            }],
+            temperature: None,
+            max_tokens: None,
+            stream: false,
+            top_p: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+            stop: None,
+            top_k: None,
+            seed: None,
+            repetition_penalty: None,
+            response_format: Some(ResponseFormat::JsonSchema {
+                r#type: "json_schema".to_string(),
+                schema: json!("not an object"),
+            }),
+            tools: None,
+            tool_choice: None,
+            extensions: None,
+            user: None,
+        };
+
+        assert!(validate_request(&request).is_err());
+    }
+
+    #[test]
+    fn test_convert_to_provider_request_with_extended_params() {
+        let request = ChatCompletionRequest {
+            model: "gpt-4".to_string(),
+            messages: vec![ChatMessage {
+                role: "user".to_string(),
+                content: Some(MessageContent::Text("Hello".to_string())),
+                name: None,
+            }],
+            temperature: Some(0.7),
+            max_tokens: Some(100),
+            stream: false,
+            top_p: Some(0.9),
+            frequency_penalty: Some(0.5),
+            presence_penalty: Some(0.3),
+            stop: None,
+            top_k: Some(40),
+            seed: Some(12345),
+            repetition_penalty: Some(1.1),
+            response_format: None,
+            tools: None,
+            tool_choice: None,
+            extensions: None,
+            user: None,
+        };
+
+        let result = convert_to_provider_request(&request);
+        assert!(result.is_ok());
+
+        let provider_request = result.unwrap();
+        assert_eq!(provider_request.model, "gpt-4");
+        assert_eq!(provider_request.temperature, Some(0.7));
+        assert_eq!(provider_request.top_k, Some(40));
+        assert_eq!(provider_request.seed, Some(12345));
+        assert_eq!(provider_request.repetition_penalty, Some(1.1));
+    }
+
+    #[test]
+    fn test_estimate_token_count() {
+        let messages = vec![
+            ChatMessage {
+                role: "user".to_string(),
+                content: Some(MessageContent::Text("Hello, how are you?".to_string())), // ~20 chars = 5 tokens
+                name: None,
+            },
+            ChatMessage {
+                role: "assistant".to_string(),
+                content: Some(MessageContent::Text("I'm doing well!".to_string())), // ~15 chars = 3-4 tokens
+                name: None,
+            },
+        ];
+
+        let count = estimate_token_count(&messages);
+        assert!(count > 0);
+        assert!(count < 100); // Should be reasonable
+    }
 }

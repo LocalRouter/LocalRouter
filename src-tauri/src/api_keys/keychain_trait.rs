@@ -244,24 +244,42 @@ impl CachedKeychain {
         Ok(Self::new(Arc::new(file_keychain)))
     }
 
-    /// Create the appropriate keychain based on environment configuration
+    /// Create the appropriate keychain based on build type and environment configuration
     ///
-    /// Checks the `LOCALROUTER_KEYCHAIN` environment variable:
-    /// - "file" -> Use file-based storage (development mode)
-    /// - "system" or unset -> Use system keyring (production mode)
+    /// Automatically detects development vs production builds:
+    /// - Debug builds (cargo tauri dev) -> File-based storage in ~/.localrouter-dev/secrets.json
+    /// - Release builds -> System keyring (Keychain, Credential Manager, Secret Service)
     ///
-    /// File-based storage puts secrets in `~/.localrouter/secrets.json`
+    /// Can be overridden with `LOCALROUTER_KEYCHAIN` environment variable:
+    /// - "file" -> Force file-based storage
+    /// - "system" -> Force system keyring
     pub fn auto() -> AppResult<Self> {
+        // Check environment variable first (allows override)
         match std::env::var("LOCALROUTER_KEYCHAIN").as_deref() {
             Ok("file") => {
-                warn!("Using file-based keychain storage (DEVELOPMENT MODE ONLY)");
+                warn!("Using file-based keychain storage (env var override)");
                 let secrets_path = crate::config::paths::secrets_file()?;
-                Self::file(secrets_path)
+                return Self::file(secrets_path);
             }
-            _ => {
-                debug!("Using system keyring for secure storage");
-                Ok(Self::system())
+            Ok("system") => {
+                debug!("Using system keyring (env var override)");
+                return Ok(Self::system());
             }
+            _ => {}
+        }
+
+        // Auto-detect based on build type (development vs production)
+        #[cfg(debug_assertions)]
+        {
+            warn!("Using file-based keychain storage (DEVELOPMENT MODE)");
+            let secrets_path = crate::config::paths::secrets_file()?;
+            Self::file(secrets_path)
+        }
+
+        #[cfg(not(debug_assertions))]
+        {
+            debug!("Using system keyring for secure storage");
+            Ok(Self::system())
         }
     }
 

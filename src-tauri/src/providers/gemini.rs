@@ -25,6 +25,7 @@ pub struct GeminiProvider {
     base_url: String,
 }
 
+#[allow(dead_code)]
 impl GeminiProvider {
     /// Creates a new Gemini provider with the given API key
     pub fn new(api_key: String) -> Self {
@@ -124,6 +125,7 @@ impl GeminiProvider {
 }
 
 #[async_trait]
+#[allow(dead_code)]
 impl ModelProvider for GeminiProvider {
     fn name(&self) -> &str {
         "gemini"
@@ -216,6 +218,7 @@ impl ModelProvider for GeminiProvider {
                     context_window,
                     supports_streaming: true,
                     capabilities,
+                    detailed_capabilities: None,
                 }
             })
             .collect();
@@ -305,6 +308,7 @@ impl ModelProvider for GeminiProvider {
             object: "chat.completion".to_string(),
             created: Utc::now().timestamp(),
             model: request.model,
+            provider: self.name().to_string(),
             choices: vec![CompletionChoice {
                 index: 0,
                 message: ChatMessage {
@@ -318,6 +322,7 @@ impl ModelProvider for GeminiProvider {
                 completion_tokens: usage.map(|u| u.candidates_token_count).unwrap_or(0),
                 total_tokens: usage.map(|u| u.total_token_count).unwrap_or(0),
             },
+            extensions: None,
         };
 
         debug!(
@@ -427,6 +432,7 @@ impl ModelProvider for GeminiProvider {
                                                 },
                                                 finish_reason,
                                             }],
+                                            extensions: None,
                                         };
                                         return Ok(chunk);
                                     }
@@ -636,6 +642,9 @@ mod tests {
             frequency_penalty: None,
             presence_penalty: None,
             stop: None,
+            top_k: None,
+            seed: None,
+            repetition_penalty: None,
         };
 
         let response = provider.complete(request).await.unwrap();

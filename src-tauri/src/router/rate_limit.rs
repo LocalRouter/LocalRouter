@@ -7,6 +7,8 @@
 //!
 //! Supports per-API-key and per-router rate limiting.
 
+#![allow(dead_code)]
+
 use chrono::{DateTime, Duration, Utc};
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};

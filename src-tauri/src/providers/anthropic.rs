@@ -29,6 +29,7 @@ pub struct AnthropicProvider {
     base_url: String,
 }
 
+#[allow(dead_code)]
 impl AnthropicProvider {
     /// Create a new Anthropic provider with an API key
     pub fn new(api_key: String) -> AppResult<Self> {
@@ -115,6 +116,7 @@ impl AnthropicProvider {
                     Capability::Vision,
                     Capability::FunctionCalling,
                 ],
+                detailed_capabilities: None,
             }),
             "claude-sonnet-4-20250514" => Some(ModelInfo {
                 id: model_id.to_string(),
@@ -128,6 +130,7 @@ impl AnthropicProvider {
                     Capability::Vision,
                     Capability::FunctionCalling,
                 ],
+                detailed_capabilities: None,
             }),
             "claude-3-5-sonnet-20241022" => Some(ModelInfo {
                 id: model_id.to_string(),
@@ -141,6 +144,7 @@ impl AnthropicProvider {
                     Capability::Vision,
                     Capability::FunctionCalling,
                 ],
+                detailed_capabilities: None,
             }),
             "claude-3-5-haiku-20241022" => Some(ModelInfo {
                 id: model_id.to_string(),
@@ -150,6 +154,7 @@ impl AnthropicProvider {
                 context_window: 200_000,
                 supports_streaming: true,
                 capabilities: vec![Capability::Chat, Capability::Vision],
+                detailed_capabilities: None,
             }),
             "claude-3-opus-20240229" => Some(ModelInfo {
                 id: model_id.to_string(),
@@ -163,6 +168,7 @@ impl AnthropicProvider {
                     Capability::Vision,
                     Capability::FunctionCalling,
                 ],
+                detailed_capabilities: None,
             }),
             "claude-3-sonnet-20240229" => Some(ModelInfo {
                 id: model_id.to_string(),
@@ -172,6 +178,7 @@ impl AnthropicProvider {
                 context_window: 200_000,
                 supports_streaming: true,
                 capabilities: vec![Capability::Chat, Capability::Vision],
+                detailed_capabilities: None,
             }),
             "claude-3-haiku-20240307" => Some(ModelInfo {
                 id: model_id.to_string(),
@@ -181,6 +188,7 @@ impl AnthropicProvider {
                 context_window: 200_000,
                 supports_streaming: true,
                 capabilities: vec![Capability::Chat, Capability::Vision],
+                detailed_capabilities: None,
             }),
             _ => None,
         }
@@ -234,6 +242,7 @@ impl AnthropicProvider {
 }
 
 #[async_trait]
+#[allow(dead_code)]
 impl ModelProvider for AnthropicProvider {
     fn name(&self) -> &str {
         "anthropic"
@@ -357,6 +366,7 @@ impl ModelProvider for AnthropicProvider {
             object: "chat.completion".to_string(),
             created: Utc::now().timestamp(),
             model: anthropic_response.model,
+            provider: self.name().to_string(),
             choices: vec![CompletionChoice {
                 index: 0,
                 message: ChatMessage {
@@ -375,6 +385,7 @@ impl ModelProvider for AnthropicProvider {
                 total_tokens: anthropic_response.usage.input_tokens
                     + anthropic_response.usage.output_tokens,
             },
+            extensions: None,
         })
     }
 
@@ -476,6 +487,7 @@ impl ModelProvider for AnthropicProvider {
                                                             },
                                                             finish_reason: None,
                                                         }],
+                                                        extensions: None,
                                                     };
                                                     chunks.push(Ok(chunk));
                                                 }
@@ -495,6 +507,7 @@ impl ModelProvider for AnthropicProvider {
                                                     },
                                                     finish_reason: Some("stop".to_string()),
                                                 }],
+                                                extensions: None,
                                             };
                                             chunks.push(Ok(chunk));
                                         }
@@ -521,6 +534,22 @@ impl ModelProvider for AnthropicProvider {
         });
 
         Ok(Box::pin(converted_stream))
+    }
+
+    fn supports_feature(&self, feature: &str) -> bool {
+        matches!(
+            feature,
+            "extended_thinking" | "prompt_caching" | "structured_outputs"
+        )
+    }
+
+    fn get_feature_adapter(&self, feature: &str) -> Option<Box<dyn crate::providers::features::FeatureAdapter>> {
+        match feature {
+            "extended_thinking" => {
+                Some(Box::new(crate::providers::features::anthropic_thinking::AnthropicThinkingAdapter))
+            }
+            _ => None,
+        }
     }
 }
 

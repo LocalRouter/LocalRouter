@@ -90,13 +90,13 @@ function App() {
           {activeTab === 'home' && <HomeTab />}
           {activeTab === 'server' && <ServerTab />}
           {activeTab === 'api-keys' && (
-            <ApiKeysTab activeSubTab={activeSubTab} />
+            <ApiKeysTab activeSubTab={activeSubTab} onTabChange={handleTabChange} />
           )}
           {activeTab === 'providers' && (
-            <ProvidersTab activeSubTab={activeSubTab} />
+            <ProvidersTab activeSubTab={activeSubTab} onTabChange={handleTabChange} />
           )}
           {activeTab === 'models' && (
-            <ModelsTab activeSubTab={activeSubTab} />
+            <ModelsTab activeSubTab={activeSubTab} onTabChange={handleTabChange} />
           )}
         </main>
       </div>

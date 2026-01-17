@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use base64::{engine::general_purpose, Engine as _};
 use chrono::Utc;
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use tokio::sync::{RwLock, oneshot};
@@ -188,7 +188,7 @@ impl OAuthProvider for OpenAICodexOAuthProvider {
 
     async fn poll_oauth_status(&self) -> AppResult<OAuthFlowResult> {
         let flow = self.current_flow.read().await;
-        let flow_state = flow.as_ref().ok_or_else(|| {
+        let _flow_state = flow.as_ref().ok_or_else(|| {
             AppError::Provider("No OAuth flow in progress".to_string())
         })?;
 

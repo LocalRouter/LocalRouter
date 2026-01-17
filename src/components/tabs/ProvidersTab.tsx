@@ -64,13 +64,15 @@ const PROVIDER_DISPLAY_INFO: Record<string, { name: string; icon: string; catego
 
 interface ProvidersTabProps {
   activeSubTab: string | null
+  onTabChange?: (tab: 'providers', subTab: string) => void
 }
 
-export default function ProvidersTab({ activeSubTab }: ProvidersTabProps) {
+export default function ProvidersTab({ activeSubTab, onTabChange }: ProvidersTabProps) {
   const [providerInstances, setProviderInstances] = useState<ProviderInstance[]>([])
   const [providerTypes, setProviderTypes] = useState<ProviderTypeInfo[]>([])
   const [providersHealth, setProvidersHealth] = useState<Record<string, ProviderHealth>>({})
   const [loading, setLoading] = useState(true)
+  const [activeTab, setActiveTab] = useState<'add' | 'instances'>('instances')
 
   const [showProviderModal, setShowProviderModal] = useState(false)
   const [modalMode, setModalMode] = useState<'create' | 'edit'>('create')
@@ -306,200 +308,175 @@ export default function ProvidersTab({ activeSubTab }: ProvidersTabProps) {
           </p>
         </div>
 
+        {/* Tab Navigation */}
+        <div className="flex border-b border-gray-200 mb-6">
+          <button
+            onClick={() => setActiveTab('add')}
+            className={`px-6 py-3 font-medium transition-colors ${
+              activeTab === 'add'
+                ? 'border-b-2 border-blue-500 text-blue-600'
+                : 'text-gray-600 hover:text-gray-900'
+            }`}
+          >
+            Add Provider
+          </button>
+          <button
+            onClick={() => setActiveTab('instances')}
+            className={`px-6 py-3 font-medium transition-colors ${
+              activeTab === 'instances'
+                ? 'border-b-2 border-blue-500 text-blue-600'
+                : 'text-gray-600 hover:text-gray-900'
+            }`}
+          >
+            Active Instances ({providerInstances.length})
+          </button>
+        </div>
+
         {loading ? (
           <div className="text-center py-8 text-gray-500">Loading providers...</div>
         ) : (
-          <div className="space-y-6">
-            {/* Active Provider Instances */}
-            {providerInstances.length > 0 && (
-              <div>
-                <h3 className="text-lg font-semibold text-gray-700 mb-3 border-b pb-2">
-                  Active Provider Instances
-                </h3>
-                <div className="overflow-x-auto">
-                  <table className="min-w-full divide-y divide-gray-200">
-                    <thead className="bg-gray-50">
-                      <tr>
-                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                          Provider
-                        </th>
-                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                          Instance Name
-                        </th>
-                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                          Health
-                        </th>
-                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                          Status
-                        </th>
-                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                          Created
-                        </th>
-                        <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
-                          Actions
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody className="bg-white divide-y divide-gray-200">
-                      {providerInstances.map((instance) => {
-                        const info = getProviderTypeInfo(instance.provider_type)
-                        const health = providersHealth[instance.instance_name]
-                        const healthStatus = health?.status || 'Unknown'
-                        const healthVariant =
-                          healthStatus === 'Healthy'
-                            ? 'success'
-                            : healthStatus === 'Degraded'
-                            ? 'warning'
-                            : 'error'
+          <>
+            {/* Add Provider Tab */}
+            {activeTab === 'add' && (
+              <div className="space-y-6">
+                {/* Available Provider Types */}
+                <div>
+                  <h3 className="text-lg font-semibold text-gray-700 mb-3">
+                    Standard Providers
+                  </h3>
+                  {Object.entries(groupedProviders).map(([category, types]) => (
+                    <div key={category} className="mb-4">
+                      <h4 className="text-sm font-semibold text-gray-600 mb-2">{category} Providers</h4>
+                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                        {types.map((type) => {
+                          const info = getProviderTypeInfo(type.provider_type)
+
+                          return (
+                            <button
+                              key={type.provider_type}
+                              onClick={() => handleOpenCreateModal(type.provider_type)}
+                              className="flex items-start gap-3 p-4 bg-gray-50 border border-gray-200 rounded-lg hover:bg-gray-100 hover:border-gray-300 transition-colors text-left"
+                            >
+                              <ProviderIcon providerId={type.provider_type} size={32} />
+                              <div className="flex-1 min-w-0">
+                                <h5 className="text-sm font-semibold text-gray-900">{info.name}</h5>
+                                <p className="text-xs text-gray-600 mt-0.5 line-clamp-2">{type.description}</p>
+                              </div>
+                            </button>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* OAuth Providers Section */}
+                {oauthProviders.length > 0 && (
+                  <div>
+                    <h3 className="text-lg font-semibold text-gray-700 mb-3">
+                      Subscription Providers (OAuth)
+                    </h3>
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                      {oauthProviders.map((provider) => {
+                        const isAuthenticated = authenticatedOAuthProviders.includes(provider.provider_id)
+                        const displayInfo = OAUTH_PROVIDER_DISPLAY[provider.provider_id] || {
+                          icon: '🔐',
+                          description: provider.provider_name,
+                        }
 
                         return (
-                          <tr key={instance.instance_name} className="hover:bg-gray-50">
-                            <td className="px-4 py-3 whitespace-nowrap">
-                              <div className="flex items-center gap-2">
-                                <ProviderIcon providerId={instance.provider_type} size={24} />
-                                <span className="text-sm font-medium text-gray-900">{info.name}</span>
+                          <div
+                            key={provider.provider_id}
+                            className="bg-gray-50 border border-gray-200 rounded-lg p-4"
+                          >
+                            <div className="flex items-start gap-3 mb-3">
+                              <ProviderIcon providerId={provider.provider_id} size={32} />
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center gap-2 mb-1">
+                                  <h5 className="text-sm font-semibold text-gray-900">
+                                    {provider.provider_name}
+                                  </h5>
+                                  {isAuthenticated && <Badge variant="success">Connected</Badge>}
+                                </div>
+                                <p className="text-xs text-gray-600">{displayInfo.description}</p>
                               </div>
-                            </td>
-                            <td className="px-4 py-3 whitespace-nowrap">
-                              <span className="text-sm text-gray-900">{instance.instance_name}</span>
-                            </td>
-                            <td className="px-4 py-3 whitespace-nowrap">
-                              <Badge variant={healthVariant}>{healthStatus}</Badge>
-                              {health?.latency_ms && (
-                                <div className="text-xs text-gray-500 mt-1">{health.latency_ms}ms</div>
-                              )}
-                            </td>
-                            <td className="px-4 py-3 whitespace-nowrap">
-                              <Badge variant={instance.enabled ? 'success' : 'warning'}>
-                                {instance.enabled ? 'Enabled' : 'Disabled'}
-                              </Badge>
-                            </td>
-                            <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
-                              {new Date(instance.created_at).toLocaleDateString()}
-                            </td>
-                            <td className="px-4 py-3 whitespace-nowrap text-right text-sm">
-                              <div className="flex gap-1 justify-end">
-                                <Button
-                                  variant="secondary"
-                                  onClick={() => handleOpenEditModal(instance.instance_name, instance.provider_type)}
-                                  className="px-2 py-1 text-xs"
-                                >
-                                  Edit
-                                </Button>
-                                <Button
-                                  variant="secondary"
-                                  onClick={() =>
-                                    handleToggleProviderEnabled(instance.instance_name, !instance.enabled)
-                                  }
-                                  className="px-2 py-1 text-xs"
-                                >
-                                  {instance.enabled ? 'Disable' : 'Enable'}
-                                </Button>
+                            </div>
+                            <div className="flex justify-end">
+                              {isAuthenticated ? (
                                 <Button
                                   variant="danger"
-                                  onClick={() => handleRemoveProvider(instance.instance_name)}
-                                  className="px-2 py-1 text-xs"
+                                  onClick={() => handleDisconnectOAuth(provider.provider_id)}
+                                  className="px-3 py-1.5 text-xs"
                                 >
-                                  Remove
+                                  Disconnect
                                 </Button>
-                              </div>
-                            </td>
-                          </tr>
+                              ) : (
+                                <Button
+                                  onClick={() => handleConnectOAuth(provider)}
+                                  className="px-3 py-1.5 text-xs"
+                                >
+                                  Connect
+                                </Button>
+                              )}
+                            </div>
+                          </div>
                         )
                       })}
-                    </tbody>
-                  </table>
-                </div>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
-            {/* Available Provider Types */}
-            <div>
-              <h3 className="text-lg font-semibold text-gray-700 mb-3 border-b pb-2">
-                Add New Provider
-              </h3>
-              {Object.entries(groupedProviders).map(([category, types]) => (
-                <div key={category} className="mb-4">
-                  <h4 className="text-sm font-semibold text-gray-600 mb-2">{category} Providers</h4>
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-                    {types.map((type) => {
-                      const info = getProviderTypeInfo(type.provider_type)
+            {/* Active Instances Tab */}
+            {activeTab === 'instances' && (
+              <div>
+                {providerInstances.length === 0 ? (
+                  <div className="text-center py-12 text-gray-500">
+                    <p>No provider instances configured yet. Add a provider to get started.</p>
+                  </div>
+                ) : (
+                  <div className="grid gap-3">
+                    {providerInstances.map((instance) => {
+                      const info = getProviderTypeInfo(instance.provider_type)
+                      const health = providersHealth[instance.instance_name]
+                      const healthStatus = health?.status || 'Unknown'
+                      const healthVariant =
+                        healthStatus === 'Healthy'
+                          ? 'success'
+                          : healthStatus === 'Degraded'
+                          ? 'warning'
+                          : 'error'
 
                       return (
-                        <button
-                          key={type.provider_type}
-                          onClick={() => handleOpenCreateModal(type.provider_type)}
-                          className="flex items-start gap-3 p-4 bg-gray-50 border border-gray-200 rounded-lg hover:bg-gray-100 hover:border-gray-300 transition-colors text-left"
+                        <div
+                          key={instance.instance_name}
+                          onClick={() => onTabChange?.('providers', instance.instance_name)}
+                          className="bg-gray-50 border border-gray-200 rounded-lg p-4 hover:bg-gray-100 transition-colors cursor-pointer"
                         >
-                          <ProviderIcon providerId={type.provider_type} size={32} />
-                          <div className="flex-1 min-w-0">
-                            <h5 className="text-sm font-semibold text-gray-900">{info.name}</h5>
-                            <p className="text-xs text-gray-600 mt-0.5 line-clamp-2">{type.description}</p>
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-3">
+                              <ProviderIcon providerId={instance.provider_type} size={32} />
+                              <div>
+                                <h3 className="text-base font-semibold text-gray-900">{instance.instance_name}</h3>
+                                <p className="text-sm text-gray-500">{info.name}</p>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <Badge variant={healthVariant}>
+                                {healthStatus}
+                                {health?.latency_ms && ` (${health.latency_ms}ms)`}
+                              </Badge>
+                            </div>
                           </div>
-                        </button>
+                        </div>
                       )
                     })}
                   </div>
-                </div>
-              ))}
-            </div>
-
-            {/* OAuth Providers Section */}
-            {oauthProviders.length > 0 && (
-              <div>
-                <h3 className="text-lg font-semibold text-gray-700 mb-3 border-b pb-2">
-                  Subscription Providers (OAuth)
-                </h3>
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-                  {oauthProviders.map((provider) => {
-                    const isAuthenticated = authenticatedOAuthProviders.includes(provider.provider_id)
-                    const displayInfo = OAUTH_PROVIDER_DISPLAY[provider.provider_id] || {
-                      icon: '🔐',
-                      description: provider.provider_name,
-                    }
-
-                    return (
-                      <div
-                        key={provider.provider_id}
-                        className="bg-gray-50 border border-gray-200 rounded-lg p-4"
-                      >
-                        <div className="flex items-start gap-3 mb-3">
-                          <ProviderIcon providerId={provider.provider_id} size={32} />
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-2 mb-1">
-                              <h5 className="text-sm font-semibold text-gray-900">
-                                {provider.provider_name}
-                              </h5>
-                              {isAuthenticated && <Badge variant="success">Connected</Badge>}
-                            </div>
-                            <p className="text-xs text-gray-600">{displayInfo.description}</p>
-                          </div>
-                        </div>
-                        <div className="flex justify-end">
-                          {isAuthenticated ? (
-                            <Button
-                              variant="danger"
-                              onClick={() => handleDisconnectOAuth(provider.provider_id)}
-                              className="px-3 py-1.5 text-xs"
-                            >
-                              Disconnect
-                            </Button>
-                          ) : (
-                            <Button
-                              onClick={() => handleConnectOAuth(provider)}
-                              className="px-3 py-1.5 text-xs"
-                            >
-                              Connect
-                            </Button>
-                          )}
-                        </div>
-                      </div>
-                    )
-                  })}
-                </div>
+                )}
               </div>
             )}
-          </div>
+          </>
         )}
       </Card>
 

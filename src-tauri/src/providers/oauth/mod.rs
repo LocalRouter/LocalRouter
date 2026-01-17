@@ -6,6 +6,8 @@
 //!
 //! OAuth credentials are stored separately from API keys in encrypted storage.
 
+#![allow(dead_code)]
+
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;

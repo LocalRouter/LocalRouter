@@ -12,6 +12,9 @@ use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 
 use crate::api_keys::ApiKeyManager;
+use crate::mcp::McpServerManager;
+use crate::monitoring::metrics::MetricsCollector;
+use crate::oauth_clients::OAuthClientManager;
 use crate::providers::registry::ProviderRegistry;
 use crate::router::{RateLimiterManager, Router};
 
@@ -26,6 +29,12 @@ pub struct AppState {
     /// API key manager for authentication
     pub api_key_manager: Arc<RwLock<ApiKeyManager>>,
 
+    /// OAuth client manager for MCP authentication
+    pub oauth_client_manager: Arc<RwLock<OAuthClientManager>>,
+
+    /// MCP server manager
+    pub mcp_server_manager: Arc<McpServerManager>,
+
     /// Rate limiter manager
     pub rate_limiter: Arc<RateLimiterManager>,
 
@@ -34,6 +43,9 @@ pub struct AppState {
 
     /// Generation tracking for /v1/generation endpoint
     pub generation_tracker: Arc<GenerationTracker>,
+
+    /// Metrics collector for tracking usage
+    pub metrics_collector: Arc<MetricsCollector>,
 
     /// Tauri app handle for emitting events (set after initialization)
     pub app_handle: Arc<RwLock<Option<tauri::AppHandle>>>,
@@ -49,10 +61,26 @@ impl AppState {
         Self {
             router,
             api_key_manager: Arc::new(RwLock::new(api_key_manager)),
+            oauth_client_manager: Arc::new(RwLock::new(OAuthClientManager::new(vec![]))),
+            mcp_server_manager: Arc::new(McpServerManager::new()),
             rate_limiter,
             provider_registry,
             generation_tracker: Arc::new(GenerationTracker::new()),
+            metrics_collector: Arc::new(MetricsCollector::with_default_retention()),
             app_handle: Arc::new(RwLock::new(None)),
+        }
+    }
+
+    /// Add OAuth and MCP managers to the state
+    pub fn with_oauth_and_mcp(
+        self,
+        oauth_client_manager: OAuthClientManager,
+        mcp_server_manager: Arc<McpServerManager>,
+    ) -> Self {
+        Self {
+            oauth_client_manager: Arc::new(RwLock::new(oauth_client_manager)),
+            mcp_server_manager,
+            ..self
         }
     }
 
@@ -205,6 +233,16 @@ pub struct AuthContext {
     pub routing_config: Option<crate::config::ModelRoutingConfig>,
 }
 
+/// OAuth authenticated request context for MCP proxy
+/// This is attached to requests after OAuth authentication middleware
+#[derive(Clone)]
+pub struct OAuthContext {
+    /// OAuth client ID
+    pub client_id: String,
+    /// MCP servers this client can access
+    pub linked_server_ids: Vec<String>,
+}
+
 /// Model selection mode for an API key
 #[derive(Debug, Clone)]
 pub enum ModelSelection {
@@ -229,6 +267,7 @@ pub enum ModelSelection {
     /// Legacy: Router-based selection (deprecated)
     #[deprecated(note = "Router-based selection is deprecated")]
     Router {
+        #[allow(dead_code)]
         router_name: String,
     },
 }

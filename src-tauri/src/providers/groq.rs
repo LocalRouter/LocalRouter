@@ -28,6 +28,7 @@ pub struct GroqProvider {
     base_url: String,
 }
 
+#[allow(dead_code)]
 impl GroqProvider {
     /// Create a new Groq provider with an API key
     pub fn new(api_key: String) -> AppResult<Self> {
@@ -67,6 +68,7 @@ impl GroqProvider {
                 context_window: 128_000,
                 supports_streaming: true,
                 capabilities: vec![Capability::Chat, Capability::FunctionCalling],
+                detailed_capabilities: None,
             },
             ModelInfo {
                 id: "llama-3.1-70b-versatile".to_string(),
@@ -76,6 +78,7 @@ impl GroqProvider {
                 context_window: 128_000,
                 supports_streaming: true,
                 capabilities: vec![Capability::Chat, Capability::FunctionCalling],
+                detailed_capabilities: None,
             },
             ModelInfo {
                 id: "llama-3.1-8b-instant".to_string(),
@@ -85,6 +88,7 @@ impl GroqProvider {
                 context_window: 128_000,
                 supports_streaming: true,
                 capabilities: vec![Capability::Chat, Capability::FunctionCalling],
+                detailed_capabilities: None,
             },
             ModelInfo {
                 id: "llama3-70b-8192".to_string(),
@@ -94,6 +98,7 @@ impl GroqProvider {
                 context_window: 8192,
                 supports_streaming: true,
                 capabilities: vec![Capability::Chat, Capability::FunctionCalling],
+                detailed_capabilities: None,
             },
             ModelInfo {
                 id: "llama3-8b-8192".to_string(),
@@ -103,6 +108,7 @@ impl GroqProvider {
                 context_window: 8192,
                 supports_streaming: true,
                 capabilities: vec![Capability::Chat, Capability::FunctionCalling],
+                detailed_capabilities: None,
             },
             ModelInfo {
                 id: "mixtral-8x7b-32768".to_string(),
@@ -112,6 +118,7 @@ impl GroqProvider {
                 context_window: 32_768,
                 supports_streaming: true,
                 capabilities: vec![Capability::Chat, Capability::FunctionCalling],
+                detailed_capabilities: None,
             },
             ModelInfo {
                 id: "gemma2-9b-it".to_string(),
@@ -121,6 +128,7 @@ impl GroqProvider {
                 context_window: 8192,
                 supports_streaming: true,
                 capabilities: vec![Capability::Chat],
+                detailed_capabilities: None,
             },
         ]
     }
@@ -161,6 +169,7 @@ struct OpenAIStreamChoice {
 }
 
 #[async_trait]
+#[allow(dead_code)]
 impl ModelProvider for GroqProvider {
     fn name(&self) -> &str {
         "groq"
@@ -256,6 +265,7 @@ impl ModelProvider for GroqProvider {
             object: groq_response.object,
             created: groq_response.created,
             model: groq_response.model,
+            provider: self.name().to_string(),
             choices: groq_response
                 .choices
                 .into_iter()
@@ -266,6 +276,7 @@ impl ModelProvider for GroqProvider {
                 })
                 .collect(),
             usage: groq_response.usage,
+            extensions: None,
         })
     }
 
@@ -339,6 +350,7 @@ impl ModelProvider for GroqProvider {
                                             finish_reason: choice.finish_reason,
                                         })
                                         .collect(),
+                                    extensions: None,
                                 };
                                 chunks.push(Ok(chunk));
                             }

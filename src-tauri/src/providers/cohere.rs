@@ -5,7 +5,7 @@
 
 use async_trait::async_trait;
 use chrono::Utc;
-use futures::stream::{Stream, StreamExt};
+use futures::stream::Stream;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::pin::Pin;
@@ -14,7 +14,7 @@ use std::time::Instant;
 use crate::utils::errors::{AppError, AppResult};
 
 use super::{
-    Capability, ChatMessage, ChunkChoice, ChunkDelta, CompletionChoice, CompletionChunk,
+    Capability, ChatMessage, CompletionChoice, CompletionChunk,
     CompletionRequest, CompletionResponse, HealthStatus, ModelInfo, ModelProvider, PricingInfo,
     ProviderHealth, TokenUsage,
 };
@@ -28,6 +28,7 @@ pub struct CohereProvider {
     base_url: String,
 }
 
+#[allow(dead_code)]
 impl CohereProvider {
     /// Create a new Cohere provider with an API key
     pub fn new(api_key: String) -> AppResult<Self> {
@@ -67,6 +68,7 @@ impl CohereProvider {
                 context_window: 128_000,
                 supports_streaming: true,
                 capabilities: vec![Capability::Chat, Capability::FunctionCalling],
+                detailed_capabilities: None,
             },
             ModelInfo {
                 id: "command-r".to_string(),
@@ -76,6 +78,7 @@ impl CohereProvider {
                 context_window: 128_000,
                 supports_streaming: true,
                 capabilities: vec![Capability::Chat, Capability::FunctionCalling],
+                detailed_capabilities: None,
             },
             ModelInfo {
                 id: "command".to_string(),
@@ -85,6 +88,7 @@ impl CohereProvider {
                 context_window: 4096,
                 supports_streaming: true,
                 capabilities: vec![Capability::Chat],
+                detailed_capabilities: None,
             },
             ModelInfo {
                 id: "command-light".to_string(),
@@ -94,6 +98,7 @@ impl CohereProvider {
                 context_window: 4096,
                 supports_streaming: true,
                 capabilities: vec![Capability::Chat],
+                detailed_capabilities: None,
             },
         ]
     }
@@ -186,6 +191,7 @@ struct CohereTokens {
 }
 
 #[async_trait]
+#[allow(dead_code)]
 impl ModelProvider for CohereProvider {
     fn name(&self) -> &str {
         "cohere"
@@ -293,6 +299,7 @@ impl ModelProvider for CohereProvider {
             object: "chat.completion".to_string(),
             created: Utc::now().timestamp(),
             model: request.model,
+            provider: self.name().to_string(),
             choices: vec![CompletionChoice {
                 index: 0,
                 message: ChatMessage {
@@ -307,6 +314,7 @@ impl ModelProvider for CohereProvider {
                 total_tokens: cohere_response.usage.tokens.input_tokens
                     + cohere_response.usage.tokens.output_tokens,
             },
+            extensions: None,
         })
     }
 

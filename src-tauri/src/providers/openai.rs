@@ -22,6 +22,7 @@ pub struct OpenAIProvider {
     client: Client,
 }
 
+#[allow(dead_code)]
 impl OpenAIProvider {
     /// Create a new OpenAI provider with the given API key
     pub fn new(api_key: String) -> Self {
@@ -207,6 +208,7 @@ struct OpenAIDelta {
 }
 
 #[async_trait]
+#[allow(dead_code)]
 impl ModelProvider for OpenAIProvider {
     fn name(&self) -> &str {
         "openai"
@@ -325,6 +327,7 @@ impl ModelProvider for OpenAIProvider {
                 context_window,
                 supports_streaming: true,
                 capabilities,
+                detailed_capabilities: None,
             });
         }
 
@@ -387,6 +390,7 @@ impl ModelProvider for OpenAIProvider {
             object: openai_response.object,
             created: openai_response.created,
             model: openai_response.model,
+            provider: self.name().to_string(),
             choices: openai_response
                 .choices
                 .into_iter()
@@ -401,6 +405,7 @@ impl ModelProvider for OpenAIProvider {
                 completion_tokens: openai_response.usage.completion_tokens,
                 total_tokens: openai_response.usage.total_tokens,
             },
+            extensions: None,
         })
     }
 
@@ -501,6 +506,7 @@ impl ModelProvider for OpenAIProvider {
                                                 finish_reason: choice.finish_reason,
                                             })
                                             .collect(),
+                                        extensions: None,
                                     };
                                     chunks.push(Ok(chunk));
                                 }

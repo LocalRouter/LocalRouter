@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 
 // ==================== Chat Completions ====================
 
@@ -32,15 +33,38 @@ pub struct ChatCompletionRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub presence_penalty: Option<f32>,
 
+    // Extended sampling parameters (Layer 2 - Extended OpenAI Compatibility)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_k: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seed: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repetition_penalty: Option<f32>,
+
+    // Response format for structured outputs
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_format: Option<ResponseFormat>,
+
     // Tool calling
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<Tool>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<ToolChoice>,
 
+    // Provider-specific extensions (Layer 3)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extensions: Option<HashMap<String, Value>>,
+
     // User tracking
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ResponseFormat {
+    JsonObject { r#type: String },
+    JsonSchema { r#type: String, schema: Value },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -119,6 +143,9 @@ pub struct ChatCompletionResponse {
     pub model: String,
     pub choices: Vec<ChatCompletionChoice>,
     pub usage: TokenUsage,
+    /// Provider-specific extensions in the response
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extensions: Option<HashMap<String, Value>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -221,6 +248,7 @@ pub struct CompletionChoice {
     pub logprobs: Option<Value>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompletionChunk {
     pub id: String,
@@ -229,6 +257,7 @@ pub struct CompletionChunk {
     pub choices: Vec<CompletionChunkChoice>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompletionChunkChoice {
     pub text: String,
@@ -258,6 +287,7 @@ pub enum EmbeddingInput {
     Multiple(Vec<String>),
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmbeddingResponse {
     pub object: String,
@@ -266,6 +296,7 @@ pub struct EmbeddingResponse {
     pub usage: EmbeddingUsage,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmbeddingData {
     pub object: String,
@@ -273,6 +304,7 @@ pub struct EmbeddingData {
     pub index: u32,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum EmbeddingVector {
@@ -280,6 +312,7 @@ pub enum EmbeddingVector {
     Base64(String),
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmbeddingUsage {
     pub prompt_tokens: u32,
@@ -312,6 +345,23 @@ pub struct ModelData {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pricing: Option<ModelPricing>,
+
+    // Enhanced capability tracking (Phase 1)
+    /// Detailed capability information with parameters and features
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detailed_capabilities: Option<crate::providers::ModelCapabilities>,
+
+    /// List of supported advanced features (e.g., "structured_outputs", "thinking", "caching")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub features: Option<Vec<String>>,
+
+    /// List of supported sampling parameters (e.g., "top_k", "seed", "repetition_penalty")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supported_parameters: Option<Vec<String>>,
+
+    /// Performance metrics for this model
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub performance: Option<crate::providers::PerformanceMetrics>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -424,6 +474,10 @@ impl From<&crate::providers::ModelInfo> for ModelData {
             supports_streaming: info.supports_streaming,
             capabilities,
             pricing: None, // Will be filled separately
+            detailed_capabilities: None, // Will be filled by /v1/models endpoint
+            features: None, // Will be filled by /v1/models endpoint
+            supported_parameters: None, // Will be filled by /v1/models endpoint
+            performance: None, // Will be filled by /v1/models endpoint
         }
     }
 }

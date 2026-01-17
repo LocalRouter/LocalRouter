@@ -18,11 +18,13 @@ pub fn generate_api_key() -> Result<String> {
 }
 
 /// Hash an API key for storage
+#[allow(dead_code)]
 pub fn hash_api_key(key: &str) -> Result<String> {
     bcrypt::hash(key, bcrypt::DEFAULT_COST).map_err(Into::into)
 }
 
 /// Verify an API key against a stored hash
+#[allow(dead_code)]
 pub fn verify_api_key(key: &str, hash: &str) -> Result<bool> {
     bcrypt::verify(key, hash).map_err(Into::into)
 }

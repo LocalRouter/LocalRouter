@@ -288,6 +288,7 @@ impl ProviderRegistry {
     /// Get all enabled providers
     ///
     /// Used by: Smart router for finding available providers
+    #[allow(dead_code)]
     pub fn get_enabled_providers(&self) -> Vec<Arc<dyn ModelProvider>> {
         self.instances
             .read()
@@ -421,6 +422,7 @@ impl ProviderRegistry {
     /// Get health status for a specific provider
     ///
     /// Used by: Provider selection in router
+    #[allow(dead_code)]
     pub async fn get_provider_health(&self, instance_name: &str) -> Option<ProviderHealth> {
         if let Some(provider) = self.get_provider_unchecked(instance_name) {
             self.health_manager.get_health(provider.name()).await
@@ -443,6 +445,7 @@ impl ProviderRegistry {
     ///
     /// Note: This is a simplified version that doesn't integrate with encrypted storage yet.
     /// The full integration will be added when encrypted storage is ready.
+    #[allow(dead_code)]
     pub async fn load_from_config_simple(
         &self,
         provider_configs: Vec<SimpleProviderConfig>,
@@ -499,6 +502,7 @@ impl ProviderRegistry {
 }
 
 /// Simplified provider config for loading (without encrypted storage integration yet)
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SimpleProviderConfig {
     pub name: String,

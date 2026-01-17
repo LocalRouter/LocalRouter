@@ -27,6 +27,7 @@ pub struct CerebrasProvider {
     api_key: String,
 }
 
+#[allow(dead_code)]
 impl CerebrasProvider {
     /// Create a new Cerebras provider with an API key
     pub fn new(api_key: String) -> AppResult<Self> {
@@ -57,6 +58,7 @@ impl CerebrasProvider {
                 context_window: 128_000,
                 supports_streaming: true,
                 capabilities: vec![Capability::Chat, Capability::FunctionCalling],
+                detailed_capabilities: None,
             },
             ModelInfo {
                 id: "llama3.1-8b".to_string(),
@@ -66,6 +68,7 @@ impl CerebrasProvider {
                 context_window: 128_000,
                 supports_streaming: true,
                 capabilities: vec![Capability::Chat, Capability::FunctionCalling],
+                detailed_capabilities: None,
             },
         ]
     }
@@ -106,6 +109,7 @@ struct OpenAIStreamChoice {
 }
 
 #[async_trait]
+#[allow(dead_code)]
 impl ModelProvider for CerebrasProvider {
     fn name(&self) -> &str {
         "cerebras"
@@ -188,6 +192,7 @@ impl ModelProvider for CerebrasProvider {
             object: cerebras_response.object,
             created: cerebras_response.created,
             model: cerebras_response.model,
+            provider: self.name().to_string(),
             choices: cerebras_response
                 .choices
                 .into_iter()
@@ -198,6 +203,7 @@ impl ModelProvider for CerebrasProvider {
                 })
                 .collect(),
             usage: cerebras_response.usage,
+            extensions: None,
         })
     }
 
@@ -271,6 +277,7 @@ impl ModelProvider for CerebrasProvider {
                                             finish_reason: choice.finish_reason,
                                         })
                                         .collect(),
+                                    extensions: None,
                                 };
                                 chunks.push(Ok(chunk));
                             }

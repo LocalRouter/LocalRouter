@@ -1,0 +1,60 @@
+<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="outerGrad" x1="30%" y1="30%" x2="70%" y2="70%">
+      <stop offset="0%" style="stop-color:#1E88E5;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#0D47A1;stop-opacity:1" />
+    </linearGradient>
+
+    <linearGradient id="middleGrad" x1="20%" y1="20%" x2="80%" y2="80%">
+      <stop offset="0%" style="stop-color:#42A5F5;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#1976D2;stop-opacity:1" />
+    </linearGradient>
+
+    <linearGradient id="innerGrad" x1="40%" y1="40%" x2="60%" y2="60%">
+      <stop offset="0%" style="stop-color:#E3F2FD;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#BBDEFB;stop-opacity:1" />
+    </linearGradient>
+
+    <radialGradient id="highlightGrad" cx="40%" cy="30%">
+      <stop offset="0%" style="stop-color:#FFFFFF;stop-opacity:0.3" />
+      <stop offset="100%" style="stop-color:#FFFFFF;stop-opacity:0" />
+    </radialGradient>
+  </defs>
+
+  <!-- Shadow layer -->
+  <ellipse cx="256" cy="270" rx="210" ry="200" fill="#000000" opacity="0.2"/>
+
+  <!-- Outer circle -->
+  <circle cx="256" cy="256" r="220" fill="url(#outerGrad)"/>
+
+  <!-- Middle circle -->
+  <circle cx="256" cy="256" r="180" fill="url(#middleGrad)"/>
+
+  <!-- Signal wave circles -->
+  <circle cx="256" cy="256" r="130" fill="none" stroke="#64B5F6" stroke-width="2" opacity="0.4"/>
+  <circle cx="256" cy="256" r="100" fill="none" stroke="#90CAF9" stroke-width="3" opacity="0.5"/>
+
+  <!-- Inner core circle -->
+  <circle cx="256" cy="256" r="55" fill="url(#innerGrad)"/>
+
+  <!-- Center dot -->
+  <circle cx="256" cy="256" r="22" fill="#FFFFFF"/>
+
+  <!-- Arrow pointing right (0°) -->
+  <g transform="translate(256, 256)">
+    <polygon points="65,0 135,-15 135,-8 175,0 135,8 135,15" fill="#FFFFFF"/>
+  </g>
+
+  <!-- Arrow pointing lower-left (120°) -->
+  <g transform="translate(256, 256) rotate(120)">
+    <polygon points="65,0 135,-15 135,-8 175,0 135,8 135,15" fill="#FFFFFF"/>
+  </g>
+
+  <!-- Arrow pointing lower-right (240°) -->
+  <g transform="translate(256, 256) rotate(240)">
+    <polygon points="65,0 135,-15 135,-8 175,0 135,8 135,15" fill="#FFFFFF"/>
+  </g>
+
+  <!-- Highlight overlay for 3D effect -->
+  <ellipse cx="256" cy="200" rx="140" ry="90" fill="url(#highlightGrad)"/>
+</svg>

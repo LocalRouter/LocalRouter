@@ -20,9 +20,14 @@ pub fn setup_tray<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
     // Build the tray menu
     let menu = build_tray_menu(app)?;
 
+    // Load the tray icon
+    // On macOS, the 32x32.png should be a monochrome template icon
+    // Tauri will automatically use the smallest icon size (32x32.png) for the tray
+    let icon = app.default_window_icon().unwrap().clone();
+
     // Create the tray icon
     let _tray = TrayIconBuilder::with_id("main")
-        .icon(app.default_window_icon().unwrap().clone())
+        .icon(icon)
         .menu(&menu)
         .tooltip("LocalRouter AI")
         .icon_as_template(true)
@@ -715,7 +720,7 @@ async fn handle_toggle_server<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<(
                     provider_registry.inner().clone(),
                 )
                 .await
-                .map_err(|e| tauri::Error::Anyhow(e.into()))?;
+                .map_err(tauri::Error::Anyhow)?;
 
             let _ = app.emit("server-status-changed", "running");
         }
@@ -1031,7 +1036,7 @@ async fn handle_enable_available_models<R: Runtime>(
 
     let mut routing_config = current_key
         .get_routing_config()
-        .unwrap_or_else(|| ModelRoutingConfig::new_available_models());
+        .unwrap_or_else(ModelRoutingConfig::new_available_models);
 
     // Update to Available Models strategy
     routing_config.active_strategy = ActiveRoutingStrategy::AvailableModels;
@@ -1085,7 +1090,7 @@ async fn handle_toggle_provider<R: Runtime>(
 
     let mut routing_config = current_key
         .get_routing_config()
-        .unwrap_or_else(|| ModelRoutingConfig::new_available_models());
+        .unwrap_or_else(ModelRoutingConfig::new_available_models);
 
     // Toggle provider in the available models list
     if let Some(pos) = routing_config
@@ -1158,7 +1163,7 @@ async fn handle_toggle_available_model<R: Runtime>(
 
     let mut routing_config = current_key
         .get_routing_config()
-        .unwrap_or_else(|| ModelRoutingConfig::new_available_models());
+        .unwrap_or_else(ModelRoutingConfig::new_available_models);
 
     // Toggle model in the available models list
     let model_tuple = (provider.to_string(), model.to_string());

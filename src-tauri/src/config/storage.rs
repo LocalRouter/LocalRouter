@@ -115,11 +115,13 @@ mod tests {
         let config_path = temp_dir.path().join("settings.yaml");
 
         // Create a custom config
-        let mut config = AppConfig::default();
-        config.server = ServerConfig {
-            host: "0.0.0.0".to_string(),
-            port: 8080,
-            enable_cors: false,
+        let config = AppConfig {
+            server: ServerConfig {
+                host: "0.0.0.0".to_string(),
+                port: 8080,
+                enable_cors: false,
+            },
+            ..Default::default()
         };
 
         // Save config
@@ -196,12 +198,14 @@ mod tests {
         let config_path = temp_dir.path().join("settings.yaml");
 
         // Create config with various settings
-        let mut config = AppConfig::default();
-        config.logging = LoggingConfig {
-            level: LogLevel::Debug,
-            enable_access_log: false,
-            log_dir: Some(temp_dir.path().to_path_buf()),
-            retention_days: 7,
+        let config = AppConfig {
+            logging: LoggingConfig {
+                level: LogLevel::Debug,
+                enable_access_log: false,
+                log_dir: Some(temp_dir.path().to_path_buf()),
+                retention_days: 7,
+            },
+            ..Default::default()
         };
 
         // Save and load

@@ -10,7 +10,7 @@
 //! Uses CachedKeychain to avoid repeated password prompts.
 
 use crate::api_keys::keychain_trait::{CachedKeychain, KeychainStorage};
-use crate::utils::errors::{AppError, AppResult};
+use crate::utils::errors::AppResult;
 use std::sync::OnceLock;
 use tracing::{debug, warn};
 
@@ -123,6 +123,7 @@ pub fn has_provider_key(provider_name: &str) -> AppResult<bool> {
 /// # Returns
 /// * `Ok(Vec<String>)` with provider names
 /// * `Err(AppError)` if keyring access fails
+#[allow(dead_code)]
 pub fn list_provider_keys() -> AppResult<Vec<String>> {
     // Unfortunately, the keyring crate doesn't provide a way to enumerate entries
     // for a given service across all platforms. This is a limitation of the underlying

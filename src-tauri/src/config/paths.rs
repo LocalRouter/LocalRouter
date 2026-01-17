@@ -1,5 +1,7 @@
 //! OS-specific path resolution for configuration files
 
+#![allow(dead_code)]
+
 use crate::utils::errors::{AppError, AppResult};
 use std::path::PathBuf;
 

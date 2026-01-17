@@ -4,8 +4,7 @@ import Card from '../ui/Card'
 import Badge from '../ui/Badge'
 import Button from '../ui/Button'
 import ProviderIcon from '../ProviderIcon'
-import { ChatInterface } from '../visualization/ChatInterface'
-import OpenAI from 'openai'
+import { ContextualChat } from '../chat/ContextualChat'
 
 interface ProviderDetailPageProps {
   instanceName: string
@@ -39,14 +38,8 @@ export default function ProviderDetailPage({
   const [isSaving, setIsSaving] = useState(false)
   const [activeTab, setActiveTab] = useState<'details' | 'models' | 'chat'>('details')
 
-  // Chat state
-  const [selectedModel, setSelectedModel] = useState<string | null>(null)
-  const [chatClient, setChatClient] = useState<OpenAI | null>(null)
-  const [_apiKey, setApiKey] = useState<string>('')
-
   useEffect(() => {
     loadProviderData()
-    loadServerConfig()
   }, [instanceName])
 
   const loadProviderData = async () => {
@@ -77,37 +70,11 @@ export default function ProviderDetailPage({
 
       const instance = instances.find((i) => i.instance_name === instanceName)
       setEnabled(instance?.enabled ?? true)
-
-      if (providerModels.length > 0 && !selectedModel) {
-        setSelectedModel(providerModels[0].model_id)
-      }
     } catch (error) {
       console.error('Failed to load provider data:', error)
       alert(`Error loading provider data: ${error}`)
     } finally {
       setLoading(false)
-    }
-  }
-
-  const loadServerConfig = async () => {
-    try {
-      const serverConfig = await invoke<{ host: string; port: number }>('get_server_config')
-      const keys = await invoke<Array<{ id: string; enabled: boolean }>>('list_api_keys')
-      const enabledKey = keys.find((k) => k.enabled)
-
-      if (enabledKey) {
-        const keyValue = await invoke<string>('get_api_key_value', { id: enabledKey.id })
-        setApiKey(keyValue)
-
-        const newClient = new OpenAI({
-          apiKey: keyValue,
-          baseURL: `http://${serverConfig.host}:${serverConfig.port}/v1`,
-          dangerouslyAllowBrowser: true,
-        })
-        setChatClient(newClient)
-      }
-    } catch (err) {
-      console.error('Failed to load server config:', err)
     }
   }
 
@@ -157,38 +124,6 @@ export default function ProviderDetailPage({
 
   const handleConfigChange = (key: string, value: string) => {
     setConfig((prev) => ({ ...prev, [key]: value }))
-  }
-
-  const handleSendMessage = async (
-    messages: Array<{ role: 'user' | 'assistant'; content: string }>,
-    userMessage: string
-  ) => {
-    if (!chatClient || !selectedModel) {
-      throw new Error('Chat client or model not selected')
-    }
-
-    const stream = await chatClient.chat.completions.create({
-      model: `${instanceName}/${selectedModel}`,
-      messages: [
-        ...messages,
-        {
-          role: 'user',
-          content: userMessage,
-        },
-      ],
-      stream: true,
-    })
-
-    async function* generateChunks() {
-      for await (const chunk of stream) {
-        const content = chunk.choices[0]?.delta?.content || ''
-        if (content) {
-          yield content
-        }
-      }
-    }
-
-    return generateChunks()
   }
 
   const formatContextWindow = (tokens: number) => {
@@ -361,49 +296,15 @@ export default function ProviderDetailPage({
       {activeTab === 'chat' && (
         <Card>
           <h3 className="text-lg font-semibold text-gray-900 mb-4">Chat with Provider</h3>
-          {!enabled && (
-            <div className="mb-4 p-3 bg-yellow-50 border border-yellow-200 rounded-lg text-sm text-yellow-700">
-              This provider is disabled. Enable it to use chat.
-            </div>
-          )}
-          {models.length === 0 ? (
-            <div className="text-center py-8 text-gray-500">
-              No models available for chat.
-            </div>
-          ) : (
-            <div className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Select Model
-                </label>
-                <select
-                  value={selectedModel || ''}
-                  onChange={(e) => setSelectedModel(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                >
-                  {models.map((model) => (
-                    <option key={model.model_id} value={model.model_id}>
-                      {model.model_id}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              {chatClient && selectedModel ? (
-                <ChatInterface
-                  onSendMessage={handleSendMessage}
-                  placeholder={`Chat with ${selectedModel}...`}
-                  disabled={!enabled}
-                />
-              ) : (
-                <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
-                  <p className="text-yellow-900 text-sm">
-                    <strong>Note:</strong> To use chat, make sure the server is running and you
-                    have at least one enabled API key.
-                  </p>
-                </div>
-              )}
-            </div>
-          )}
+          <ContextualChat
+            context={{
+              type: 'provider',
+              instanceName,
+              providerType,
+              models,
+            }}
+            disabled={!enabled}
+          />
         </Card>
       )}
     </div>

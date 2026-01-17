@@ -3,7 +3,9 @@
 
 mod api_keys;
 mod config;
+mod mcp;
 mod monitoring;
+mod oauth_clients;
 mod providers;
 mod router;
 mod server;
@@ -59,6 +61,21 @@ async fn main() -> anyhow::Result<()> {
     let api_key_manager = {
         let config = config_manager.get();
         api_keys::ApiKeyManager::new(config.api_keys.clone())
+    };
+
+    // Initialize OAuth client manager for MCP
+    // Actual client secrets are stored in OS keychain, only metadata in config
+    let oauth_client_manager = {
+        let config = config_manager.get();
+        oauth_clients::OAuthClientManager::new(config.oauth_clients.clone())
+    };
+
+    // Initialize MCP server manager
+    let mcp_server_manager = {
+        let config = config_manager.get();
+        let manager = Arc::new(mcp::McpServerManager::new());
+        manager.load_configs(config.mcp_servers.clone());
+        manager
     };
 
     // Initialize provider registry
@@ -207,6 +224,8 @@ async fn main() -> anyhow::Result<()> {
             server_config,
             app_router.clone(),
             api_key_manager.clone(),
+            oauth_client_manager.clone(),
+            mcp_server_manager.clone(),
             rate_limiter.clone(),
             provider_registry.clone(),
         )
@@ -232,6 +251,8 @@ async fn main() -> anyhow::Result<()> {
             // Store managers
             app.manage(config_manager.clone());
             app.manage(api_key_manager.clone());
+            app.manage(oauth_client_manager.clone());
+            app.manage(mcp_server_manager.clone());
             app.manage(provider_registry.clone());
             app.manage(health_manager.clone());
             app.manage(server_manager.clone());
@@ -243,6 +264,8 @@ async fn main() -> anyhow::Result<()> {
             let server_manager_clone = server_manager.clone();
             let app_router_clone = app_router.clone();
             let api_key_manager_clone = api_key_manager.clone();
+            let oauth_client_manager_clone = oauth_client_manager.clone();
+            let mcp_server_manager_clone = mcp_server_manager.clone();
             let rate_limiter_clone = rate_limiter.clone();
             let provider_registry_clone = provider_registry.clone();
             let config_manager_clone = config_manager.clone();
@@ -264,6 +287,8 @@ async fn main() -> anyhow::Result<()> {
                 let server_manager_clone2 = server_manager_clone.clone();
                 let app_router_clone2 = app_router_clone.clone();
                 let api_key_manager_clone2 = api_key_manager_clone.clone();
+                let oauth_client_manager_clone2 = oauth_client_manager_clone.clone();
+                let mcp_server_manager_clone2 = mcp_server_manager_clone.clone();
                 let rate_limiter_clone2 = rate_limiter_clone.clone();
                 let provider_registry_clone2 = provider_registry_clone.clone();
 
@@ -273,6 +298,8 @@ async fn main() -> anyhow::Result<()> {
                             server_config,
                             app_router_clone2,
                             api_key_manager_clone2,
+                            oauth_client_manager_clone2,
+                            mcp_server_manager_clone2,
                             rate_limiter_clone2,
                             provider_registry_clone2,
                         )
@@ -378,6 +405,26 @@ async fn main() -> anyhow::Result<()> {
             ui::commands::get_routing_config,
             ui::commands::update_prioritized_list,
             ui::commands::set_routing_strategy,
+            // OAuth client commands (for MCP)
+            ui::commands::list_oauth_clients,
+            ui::commands::create_oauth_client,
+            ui::commands::get_oauth_client_secret,
+            ui::commands::delete_oauth_client,
+            ui::commands::update_oauth_client_name,
+            ui::commands::toggle_oauth_client_enabled,
+            ui::commands::link_mcp_server,
+            ui::commands::unlink_mcp_server,
+            ui::commands::get_oauth_client_linked_servers,
+            // MCP server commands
+            ui::commands::list_mcp_servers,
+            ui::commands::create_mcp_server,
+            ui::commands::delete_mcp_server,
+            ui::commands::start_mcp_server,
+            ui::commands::stop_mcp_server,
+            ui::commands::get_mcp_server_health,
+            ui::commands::get_all_mcp_server_health,
+            ui::commands::update_mcp_server_name,
+            ui::commands::toggle_mcp_server_enabled,
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {

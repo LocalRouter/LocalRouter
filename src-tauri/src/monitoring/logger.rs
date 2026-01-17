@@ -2,6 +2,8 @@
 //!
 //! Writes request/response logs in JSON Lines format with automatic daily rotation.
 
+#![allow(dead_code)]
+
 use chrono::{DateTime, Utc};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};

@@ -2,6 +2,8 @@
 //!
 //! Generates time-series data formatted for Chart.js and other visualization libraries.
 
+#![allow(dead_code)]
+
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 

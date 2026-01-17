@@ -10,6 +10,7 @@ use crate::server::types::ErrorResponse;
 use crate::utils::errors::AppError;
 
 /// Application error that can be converted to HTTP response
+#[derive(Debug)]
 pub struct ApiErrorResponse {
     pub status: StatusCode,
     pub error: ErrorResponse,
@@ -47,10 +48,12 @@ impl ApiErrorResponse {
         Self::new(StatusCode::BAD_GATEWAY, "provider_error", message)
     }
 
+    #[allow(dead_code)]
     pub fn service_unavailable(message: impl Into<String>) -> Self {
         Self::new(StatusCode::SERVICE_UNAVAILABLE, "service_unavailable", message)
     }
 
+    #[allow(dead_code)]
     pub fn not_found(message: impl Into<String>) -> Self {
         Self::new(StatusCode::NOT_FOUND, "not_found_error", message)
     }
@@ -60,6 +63,7 @@ impl ApiErrorResponse {
         self
     }
 
+    #[allow(dead_code)]
     pub fn with_code(mut self, code: impl Into<String>) -> Self {
         self.error = self.error.with_code(code);
         self
@@ -90,6 +94,9 @@ impl From<AppError> for ApiErrorResponse {
             }
             AppError::ApiKey(msg) => {
                 ApiErrorResponse::unauthorized(format!("API key error: {}", msg))
+            }
+            AppError::Mcp(msg) => {
+                ApiErrorResponse::bad_gateway(format!("MCP error: {}", msg))
             }
             AppError::Storage(msg) => {
                 ApiErrorResponse::internal_error(format!("Storage error: {}", msg))

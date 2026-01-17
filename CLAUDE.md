@@ -8,9 +8,27 @@ LocalRouter AI is a cross-platform desktop application built with Rust and Tauri
 
 **Tech Stack**: Rust (backend), Tauri 2.x (desktop framework), Axum (web server)
 
+## Documentation Organization
+
+All planning and architectural documents are stored in the `plan/` directory with a date prefix indicating when they were created. This helps track the evolution of project decisions and documentation over time.
+
+**Naming Convention**: `plan/YYYY-MM-DD-<DOCUMENT_NAME>.md`
+
+**Examples**:
+- `plan/2026-01-14-ARCHITECTURE.md` - System architecture and design
+- `plan/2026-01-14-PROGRESS.md` - Feature tracking and implementation progress
+- `plan/2026-01-14-CONTRIBUTING.md` - Development workflow and guidelines
+
+**Exceptions**: Only `README.md` and `CLAUDE.md` (this file) remain in the root directory for easy discovery.
+
+**When creating new planning documents**:
+1. Create them in the `plan/` directory
+2. Prefix the filename with the current date in `YYYY-MM-DD` format
+3. Use descriptive, uppercase filenames (e.g., `FEATURE_SPEC.md`, `API_DESIGN.md`)
+
 ## Key Documents and Their Purpose
 
-### 1. ARCHITECTURE.md
+### 1. plan/2026-01-14-ARCHITECTURE.md
 **Purpose**: Complete system design and technical specifications
 
 **What's Inside**:
@@ -36,7 +54,7 @@ LocalRouter AI is a cross-platform desktop application built with Rust and Tauri
 
 ---
 
-### 2. PROGRESS.md
+### 2. plan/2026-01-14-PROGRESS.md
 **Purpose**: Comprehensive feature tracking and implementation progress
 
 **What's Inside**:
@@ -94,7 +112,7 @@ LocalRouter AI is a cross-platform desktop application built with Rust and Tauri
 
 ---
 
-### 4. CONTRIBUTING.md
+### 4. plan/2026-01-14-CONTRIBUTING.md
 **Purpose**: Development workflow and contribution guidelines
 
 **What's Inside**:
@@ -129,36 +147,36 @@ LocalRouter AI is a cross-platform desktop application built with Rust and Tauri
 ### Starting a New Feature
 
 1. **Choose a Feature**:
-   - Open `PROGRESS.md`
+   - Open `plan/2026-01-14-PROGRESS.md`
    - Find a feature marked ⬜ Not Started
    - Prefer features in the current phase (Phase 1 → Phase 2 → etc.)
    - Check if the feature has dependencies on other features
 
 2. **Understand the Design**:
-   - Open `ARCHITECTURE.md`
+   - Open `plan/2026-01-14-ARCHITECTURE.md`
    - Read the relevant component section
    - Understand the interfaces, data structures, and relationships
    - Note any security or performance considerations
 
 3. **Update Progress**:
-   - In `PROGRESS.md`, change feature status to 🟨 In Progress
+   - In `plan/2026-01-14-PROGRESS.md`, change feature status to 🟨 In Progress
    - This signals to others that you're working on it
 
 4. **Implement**:
    - Follow the architecture design
-   - Follow code style guidelines from `CONTRIBUTING.md`
+   - Follow code style guidelines from `plan/2026-01-14-CONTRIBUTING.md`
    - Write tests that verify all success criteria
    - Keep functions small and focused
 
 5. **Test**:
-   - Verify all success criteria in `PROGRESS.md` are met
+   - Verify all success criteria in `plan/2026-01-14-PROGRESS.md` are met
    - Run unit tests: `cargo test`
    - Run integration tests if applicable
    - Check for linting issues: `cargo clippy`
    - Format code: `cargo fmt`
 
 6. **Complete**:
-   - Mark all checkboxes in `PROGRESS.md` success criteria
+   - Mark all checkboxes in `plan/2026-01-14-PROGRESS.md` success criteria
    - Change status to ✅ Completed
    - Add implementation notes if relevant
    - Commit with clear message following Conventional Commits
@@ -167,12 +185,12 @@ LocalRouter AI is a cross-platform desktop application built with Rust and Tauri
 
 ```bash
 # 1. Check what to work on
-cat PROGRESS.md | grep "Not Started" | head -5
+cat plan/2026-01-14-PROGRESS.md | grep "Not Started" | head -5
 
 # 2. Read architecture for that component
-# Open ARCHITECTURE.md, find the relevant section
+# Open plan/2026-01-14-ARCHITECTURE.md, find the relevant section
 
-# 3. Update PROGRESS.md status to "In Progress"
+# 3. Update plan/2026-01-14-PROGRESS.md status to "In Progress"
 
 # 4. Implement the feature
 # Write code in src-tauri/src/...
@@ -185,7 +203,7 @@ cargo test
 cargo clippy
 cargo fmt
 
-# 7. Update PROGRESS.md to "Completed"
+# 7. Update plan/2026-01-14-PROGRESS.md to "Completed"
 
 # 8. Commit
 git add .
@@ -257,31 +275,31 @@ src/
 - Tauri commands → `src-tauri/src/ui/commands.rs`
 
 **How does X work?**
-- Check `ARCHITECTURE.md` for the design
+- Check `plan/2026-01-14-ARCHITECTURE.md` for the design
 - Check the relevant module's `mod.rs` for implementation
 
 **What needs to be done for X?**
-- Check `PROGRESS.md` for the feature breakdown
+- Check `plan/2026-01-14-PROGRESS.md` for the feature breakdown
 
 ---
 
 ## Common Questions
 
 ### Q: Where do I start?
-**A**: Open `PROGRESS.md` and start with Phase 1 features. The configuration system (1.2) is a good starting point.
+**A**: Open `plan/2026-01-14-PROGRESS.md` and start with Phase 1 features. The configuration system (1.2) is a good starting point.
 
 ### Q: I want to add a new provider. What do I do?
 **A**:
-1. Read the Provider Trait System section in `ARCHITECTURE.md`
-2. Look at Phase 2 in `PROGRESS.md` for provider implementation tasks
+1. Read the Provider Trait System section in `plan/2026-01-14-ARCHITECTURE.md`
+2. Look at Phase 2 in `plan/2026-01-14-PROGRESS.md` for provider implementation tasks
 3. Check an existing provider (e.g., `src-tauri/src/providers/ollama.rs`) as a reference
 4. Implement the `ModelProvider` trait for your new provider
 
 ### Q: How do I know if a feature is complete?
-**A**: Check the success criteria in `PROGRESS.md`. All checkboxes should be marked, and all tests should pass.
+**A**: Check the success criteria in `plan/2026-01-14-PROGRESS.md`. All checkboxes should be marked, and all tests should pass.
 
 ### Q: Can I change the architecture?
-**A**: Yes, but update `ARCHITECTURE.md` to reflect the change. Discuss significant changes first.
+**A**: Yes, but update `plan/2026-01-14-ARCHITECTURE.md` to reflect the change. Discuss significant changes first.
 
 ### Q: How do I run the app?
 **A**:
@@ -303,10 +321,10 @@ cargo check
 **A**: Follow the Rust standard style:
 - Run `cargo fmt` before committing
 - Run `cargo clippy -- -D warnings` to catch issues
-- See `CONTRIBUTING.md` for detailed guidelines
+- See `plan/2026-01-14-CONTRIBUTING.md` for detailed guidelines
 
 ### Q: How do I update progress?
-**A**: Edit `PROGRESS.md` directly:
+**A**: Edit `plan/2026-01-14-PROGRESS.md` directly:
 - Change status from ⬜ to 🟨 when starting
 - Mark checkboxes with `[x]` when complete
 - Change status to ✅ when done
@@ -317,7 +335,7 @@ cargo check
 - Unit tests: Test individual functions/components
 - Integration tests: Test component interactions
 - E2E tests: Test full application flow
-- See each feature's "Testing" section in `PROGRESS.md`
+- See each feature's "Testing" section in `plan/2026-01-14-PROGRESS.md`
 
 ---
 
@@ -352,8 +370,8 @@ Comprehensive testing, documentation, and packaging.
 ## Quick Reference
 
 ### Files to Check Regularly
-- `PROGRESS.md` - Track your work
-- `ARCHITECTURE.md` - Understand the design
+- `plan/2026-01-14-PROGRESS.md` - Track your work
+- `plan/2026-01-14-ARCHITECTURE.md` - Understand the design
 - `src-tauri/src/utils/errors.rs` - Error types
 - `Cargo.toml` - Dependencies
 
@@ -407,8 +425,8 @@ The user has a global `~/.claude/CLAUDE.md` file with specific requirements:
 
 ## Tips for Efficient Development
 
-1. **Read Before Writing**: Always check `ARCHITECTURE.md` before implementing
-2. **Update as You Go**: Mark progress in `PROGRESS.md` immediately
+1. **Read Before Writing**: Always check `plan/2026-01-14-ARCHITECTURE.md` before implementing
+2. **Update as You Go**: Mark progress in `plan/2026-01-14-PROGRESS.md` immediately
 3. **Test Early**: Write tests alongside implementation
 4. **Commit Frequently**:
    - Commit changes after completing each logical unit of work
@@ -417,7 +435,7 @@ The user has a global `~/.claude/CLAUDE.md` file with specific requirements:
    - Commit after fixing a bug, adding a feature, or refactoring a component
    - This makes it easier to track changes, revert if needed, and understand history
 5. **Follow the Plan**: Stick to the phase order unless there's a good reason
-6. **Document Decisions**: Add notes in `PROGRESS.md` for non-obvious choices
+6. **Document Decisions**: Add notes in `plan/2026-01-14-PROGRESS.md` for non-obvious choices
 7. **Ask Questions**: If unclear, check this guide or ask for clarification
 
 ---
@@ -444,7 +462,7 @@ The user has a global `~/.claude/CLAUDE.md` file with specific requirements:
 
 ---
 
-**Last Updated**: 2026-01-14
+**Last Updated**: 2026-01-17
 **Project Version**: 0.1.0
 **Status**: Setup Complete, Ready for Development
 
@@ -455,13 +473,13 @@ The user has a global `~/.claude/CLAUDE.md` file with specific requirements:
 For each coding session:
 
 1. [ ] Read this file (CLAUDE.md) to orient yourself
-2. [ ] Check `PROGRESS.md` to see current status and pick a feature
-3. [ ] Review relevant section in `ARCHITECTURE.md`
-4. [ ] Update `PROGRESS.md` to mark feature as "In Progress"
+2. [ ] Check `plan/2026-01-14-PROGRESS.md` to see current status and pick a feature
+3. [ ] Review relevant section in `plan/2026-01-14-ARCHITECTURE.md`
+4. [ ] Update `plan/2026-01-14-PROGRESS.md` to mark feature as "In Progress"
 5. [ ] Implement the feature following the architecture
 6. [ ] Write tests to verify success criteria
 7. [ ] Run `cargo test && cargo clippy && cargo fmt`
-8. [ ] Update `PROGRESS.md` to mark feature as "Completed"
+8. [ ] Update `plan/2026-01-14-PROGRESS.md` to mark feature as "Completed"
 9. [ ] Commit with proper message format
 10. [ ] Repeat!
 

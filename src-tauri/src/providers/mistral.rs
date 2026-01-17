@@ -27,6 +27,7 @@ pub struct MistralProvider {
     api_key: String,
 }
 
+#[allow(dead_code)]
 impl MistralProvider {
     /// Create a new Mistral provider with an API key
     pub fn new(api_key: String) -> AppResult<Self> {
@@ -57,6 +58,7 @@ impl MistralProvider {
                 context_window: 128_000,
                 supports_streaming: true,
                 capabilities: vec![Capability::Chat, Capability::FunctionCalling],
+                detailed_capabilities: None,
             },
             ModelInfo {
                 id: "mistral-small-latest".to_string(),
@@ -66,6 +68,7 @@ impl MistralProvider {
                 context_window: 32_000,
                 supports_streaming: true,
                 capabilities: vec![Capability::Chat, Capability::FunctionCalling],
+                detailed_capabilities: None,
             },
             ModelInfo {
                 id: "codestral-latest".to_string(),
@@ -75,6 +78,7 @@ impl MistralProvider {
                 context_window: 32_000,
                 supports_streaming: true,
                 capabilities: vec![Capability::Chat, Capability::Completion],
+                detailed_capabilities: None,
             },
             ModelInfo {
                 id: "mistral-medium-latest".to_string(),
@@ -84,6 +88,7 @@ impl MistralProvider {
                 context_window: 32_000,
                 supports_streaming: true,
                 capabilities: vec![Capability::Chat, Capability::FunctionCalling],
+                detailed_capabilities: None,
             },
             ModelInfo {
                 id: "open-mistral-7b".to_string(),
@@ -93,6 +98,7 @@ impl MistralProvider {
                 context_window: 32_000,
                 supports_streaming: true,
                 capabilities: vec![Capability::Chat],
+                detailed_capabilities: None,
             },
             ModelInfo {
                 id: "open-mixtral-8x7b".to_string(),
@@ -102,6 +108,7 @@ impl MistralProvider {
                 context_window: 32_000,
                 supports_streaming: true,
                 capabilities: vec![Capability::Chat],
+                detailed_capabilities: None,
             },
             ModelInfo {
                 id: "open-mixtral-8x22b".to_string(),
@@ -111,6 +118,7 @@ impl MistralProvider {
                 context_window: 64_000,
                 supports_streaming: true,
                 capabilities: vec![Capability::Chat, Capability::FunctionCalling],
+                detailed_capabilities: None,
             },
         ]
     }
@@ -151,6 +159,7 @@ struct OpenAIStreamChoice {
 }
 
 #[async_trait]
+#[allow(dead_code)]
 impl ModelProvider for MistralProvider {
     fn name(&self) -> &str {
         "mistral"
@@ -263,6 +272,7 @@ impl ModelProvider for MistralProvider {
             object: mistral_response.object,
             created: mistral_response.created,
             model: mistral_response.model,
+            provider: self.name().to_string(),
             choices: mistral_response
                 .choices
                 .into_iter()
@@ -273,6 +283,7 @@ impl ModelProvider for MistralProvider {
                 })
                 .collect(),
             usage: mistral_response.usage,
+            extensions: None,
         })
     }
 
@@ -346,6 +357,7 @@ impl ModelProvider for MistralProvider {
                                             finish_reason: choice.finish_reason,
                                         })
                                         .collect(),
+                                    extensions: None,
                                 };
                                 chunks.push(Ok(chunk));
                             }

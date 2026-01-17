@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use axum::{
     extract::Request,
-    http::{header, Method, StatusCode},
+    http::{Method, StatusCode},
     middleware::Next,
     response::Response,
     routing::{get, post},
@@ -27,6 +27,8 @@ use tower_http::cors::{Any, CorsLayer};
 use tracing::{error, info};
 
 use crate::api_keys::ApiKeyManager;
+use crate::mcp::McpServerManager;
+use crate::oauth_clients::OAuthClientManager;
 use crate::providers::registry::ProviderRegistry;
 use crate::router::{RateLimiterManager, Router as AppRouter};
 
@@ -59,31 +61,58 @@ impl Default for ServerConfig {
 /// - POST /v1/embeddings
 /// - GET /v1/models
 /// - GET /v1/generation
+/// - POST /mcp/{client_id}/{server_id} (MCP proxy)
 ///
-/// Returns the AppState and a JoinHandle to the server task
+/// Returns the AppState, JoinHandle, and the actual port used
 pub async fn start_server(
     config: ServerConfig,
     router: Arc<AppRouter>,
     api_key_manager: ApiKeyManager,
+    oauth_client_manager: OAuthClientManager,
+    mcp_server_manager: Arc<McpServerManager>,
     rate_limiter: Arc<RateLimiterManager>,
     provider_registry: Arc<ProviderRegistry>,
-) -> anyhow::Result<(AppState, tokio::task::JoinHandle<()>)> {
+) -> anyhow::Result<(AppState, tokio::task::JoinHandle<()>, u16)> {
     info!("Starting web server on {}:{}", config.host, config.port);
 
     // Create shared state
-    let state = AppState::new(router, api_key_manager, rate_limiter, provider_registry);
+    let state = AppState::new(router, api_key_manager, rate_limiter, provider_registry)
+        .with_oauth_and_mcp(oauth_client_manager, mcp_server_manager);
 
     // Build the router with auth layer applied
     let app = build_app(state.clone(), config.enable_cors);
 
-    // Create TCP listener
-    let addr = SocketAddr::from((
-        config.host.parse::<std::net::IpAddr>()?,
-        config.port,
-    ));
-    let listener = TcpListener::bind(addr).await?;
+    // Try to bind to the configured port, incrementing if necessary
+    let host_ip = config.host.parse::<std::net::IpAddr>()?;
+    let mut port = config.port;
+    let max_attempts = 100; // Try up to 100 ports
 
-    info!("Web server listening on http://{}", addr);
+    let listener = loop {
+        let addr = SocketAddr::from((host_ip, port));
+
+        match TcpListener::bind(addr).await {
+            Ok(listener) => {
+                if port != config.port {
+                    info!("Port {} was taken, using port {} instead", config.port, port);
+                }
+                break listener;
+            }
+            Err(e) => {
+                if port - config.port >= max_attempts {
+                    return Err(anyhow::anyhow!(
+                        "Could not bind to any port between {} and {} (last error: {})",
+                        config.port,
+                        port,
+                        e
+                    ));
+                }
+                tracing::debug!("Port {} is taken, trying next port", port);
+                port += 1;
+            }
+        }
+    };
+
+    info!("Web server listening on http://{}:{}", config.host, port);
     info!("OpenAI-compatible endpoints available at:");
 
     // Clone state to return before starting server (which runs forever)
@@ -96,11 +125,19 @@ pub async fn start_server(
         }
     });
 
-    Ok((state_clone, handle))
+    Ok((state_clone, handle, port))
 }
 
 /// Build the Axum app with all routes and middleware
 fn build_app(state: AppState, enable_cors: bool) -> Router {
+    // Build MCP routes with OAuth auth middleware
+    let mcp_routes = Router::new()
+        .route("/mcp/health", get(routes::mcp_health_handler))
+        .route("/mcp/:client_id/:server_id", post(routes::mcp_proxy_handler))
+        .layer(axum::middleware::from_fn(middleware::oauth_auth::oauth_auth_middleware))
+        .layer(axum::Extension(state.clone()))
+        .with_state(state.clone());
+
     // Build the Axum router with all routes
     // Support both /v1 prefix and without for OpenAI compatibility
     let mut router = Router::new()
@@ -111,17 +148,24 @@ fn build_app(state: AppState, enable_cors: bool) -> Router {
         .route("/v1/completions", post(routes::completions))
         .route("/v1/embeddings", post(routes::embeddings))
         .route("/v1/models", get(routes::list_models))
+        .route("/v1/models/:id", get(routes::get_model))
+        .route("/v1/models/:provider/:model/pricing", get(routes::get_model_pricing))
         .route("/v1/generation", get(routes::get_generation))
         // Routes without /v1 prefix (for compatibility)
         .route("/chat/completions", post(routes::chat_completions))
         .route("/completions", post(routes::completions))
         .route("/embeddings", post(routes::embeddings))
         .route("/models", get(routes::list_models))
+        .route("/models/:id", get(routes::get_model))
+        .route("/models/:provider/:model/pricing", get(routes::get_model_pricing))
         .route("/generation", get(routes::get_generation))
         .with_state(state.clone());
 
     // Apply auth layer (checks all API routes with or without /v1 prefix)
-    router = router.layer(AuthLayer::new(state));
+    router = router.layer(AuthLayer::new(state.clone()));
+
+    // Merge MCP routes (these use OAuth auth, not API key auth)
+    router = router.merge(mcp_routes);
 
     // Add logging middleware
     router = router.layer(axum::middleware::from_fn(logging_middleware));
@@ -154,6 +198,8 @@ async fn root_handler() -> &'static str {
        POST /v1/completions or /completions\n\
        POST /v1/embeddings or /embeddings\n\
        GET  /v1/models or /models\n\
+       GET  /v1/models/{id} or /models/{id}\n\
+       GET  /v1/models/{provider}/{model}/pricing or /models/{provider}/{model}/pricing\n\
        GET  /v1/generation?id={id} or /generation?id={id}\n\
      \n\
      Authentication: Include 'Authorization: Bearer <your-api-key>' header\n"

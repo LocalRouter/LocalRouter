@@ -6,7 +6,7 @@
 mod keychain;
 pub mod keychain_trait;
 
-pub use keychain_trait::{CachedKeychain, FileKeychain, KeychainStorage, MockKeychain, SystemKeychain};
+pub use keychain_trait::{CachedKeychain, KeychainStorage};
 
 use crate::config::ApiKeyConfig;
 use crate::utils::crypto::generate_api_key;
@@ -287,6 +287,7 @@ impl ApiKeyManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api_keys::keychain_trait::MockKeychain;
 
     #[tokio::test]
     async fn test_create_key() {

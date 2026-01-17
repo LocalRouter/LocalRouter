@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { invoke } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
 import ProviderIcon from './ProviderIcon'
 
 type MainTab = 'home' | 'server' | 'api-keys' | 'providers' | 'models'
@@ -31,21 +32,32 @@ export default function Sidebar({ activeTab, activeSubTab, onTabChange }: Sideba
   const [providers, setProviders] = useState<ProviderInstance[]>([])
   const [apiKeys, setApiKeys] = useState<ApiKey[]>([])
   const [models, setModels] = useState<Model[]>([])
-  const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set(['providers', 'api-keys', 'models']))
+  const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set())
 
   useEffect(() => {
+    // Initial load
     loadProviders()
     loadApiKeys()
     loadModels()
 
-    // Refresh when config changes
-    const interval = setInterval(() => {
+    // Subscribe to data change events (no polling needed)
+    const unsubscribeProviders = listen('providers-changed', () => {
       loadProviders()
-      loadApiKeys()
-      loadModels()
-    }, 2000)
+    })
 
-    return () => clearInterval(interval)
+    const unsubscribeApiKeys = listen('api-keys-changed', () => {
+      loadApiKeys()
+    })
+
+    const unsubscribeModels = listen('models-changed', () => {
+      loadModels()
+    })
+
+    return () => {
+      unsubscribeProviders.then((fn: any) => fn())
+      unsubscribeApiKeys.then((fn: any) => fn())
+      unsubscribeModels.then((fn: any) => fn())
+    }
   }, [])
 
   const loadProviders = async () => {
@@ -87,7 +99,7 @@ export default function Sidebar({ activeTab, activeSubTab, onTabChange }: Sideba
 
   const mainTabs = [
     { id: 'home' as MainTab, label: 'Home' },
-    { id: 'server' as MainTab, label: 'Server' },
+    { id: 'server' as MainTab, label: 'Preferences' },
     { id: 'api-keys' as MainTab, label: 'API Keys', hasSubTabs: true },
     { id: 'providers' as MainTab, label: 'Providers', hasSubTabs: true },
     { id: 'models' as MainTab, label: 'Models', hasSubTabs: true },

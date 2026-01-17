@@ -9,6 +9,8 @@
 //! Tests use temporary directories and mock keychain for complete isolation.
 //! No system keychain or cleanup required!
 
+#![allow(deprecated)]
+
 use localrouter_ai::api_keys::{ApiKeyManager, KeychainStorage, MockKeychain, SystemKeychain};
 use localrouter_ai::config::{AppConfig, ConfigManager, LogLevel, ModelSelection};
 use serial_test::serial;

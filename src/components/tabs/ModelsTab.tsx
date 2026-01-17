@@ -23,9 +23,10 @@ type SortDirection = 'asc' | 'desc'
 
 interface ModelsTabProps {
   activeSubTab: string | null
+  onTabChange?: (tab: 'models', subTab: string) => void
 }
 
-export default function ModelsTab({ activeSubTab }: ModelsTabProps) {
+export default function ModelsTab({ activeSubTab, onTabChange }: ModelsTabProps) {
   const [models, setModels] = useState<Model[]>([])
   const [loading, setLoading] = useState(true)
   const [searchTerm, setSearchTerm] = useState('')
@@ -231,9 +232,10 @@ export default function ModelsTab({ activeSubTab }: ModelsTabProps) {
             {filteredAndSortedModels.map((model) => (
               <div
                 key={`${model.provider_instance}-${model.model_id}`}
-                className="bg-gray-50 border border-gray-200 rounded-lg p-4 hover:bg-gray-100 transition-colors"
+                onClick={() => onTabChange?.('models', `${model.provider_instance}/${model.model_id}`)}
+                className="bg-gray-50 border border-gray-200 rounded-lg p-4 hover:bg-gray-100 transition-colors cursor-pointer"
               >
-                <div className="flex items-start justify-between">
+                <div className="flex items-start">
                   <div className="flex-1">
                     <div className="flex items-center gap-3 mb-2">
                       <ProviderIcon providerId={model.provider_type} size={24} />
@@ -280,18 +282,6 @@ export default function ModelsTab({ activeSubTab }: ModelsTabProps) {
                         )}
                       </div>
                     )}
-                  </div>
-
-                  <div className="ml-4">
-                    <Button
-                      variant="secondary"
-                      className="px-3 py-1.5 text-xs"
-                      onClick={() => {
-                        /* TODO: Open chat modal */
-                      }}
-                    >
-                      Chat
-                    </Button>
                   </div>
                 </div>
               </div>

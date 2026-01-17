@@ -27,6 +27,7 @@ pub struct TogetherAIProvider {
     api_key: String,
 }
 
+#[allow(dead_code)]
 impl TogetherAIProvider {
     /// Create a new Together AI provider with an API key
     pub fn new(api_key: String) -> AppResult<Self> {
@@ -57,6 +58,7 @@ impl TogetherAIProvider {
                 context_window: 130_000,
                 supports_streaming: true,
                 capabilities: vec![Capability::Chat, Capability::FunctionCalling],
+                detailed_capabilities: None,
             },
             ModelInfo {
                 id: "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo".to_string(),
@@ -66,6 +68,7 @@ impl TogetherAIProvider {
                 context_window: 130_000,
                 supports_streaming: true,
                 capabilities: vec![Capability::Chat, Capability::FunctionCalling],
+                detailed_capabilities: None,
             },
             ModelInfo {
                 id: "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo".to_string(),
@@ -75,6 +78,7 @@ impl TogetherAIProvider {
                 context_window: 130_000,
                 supports_streaming: true,
                 capabilities: vec![Capability::Chat, Capability::FunctionCalling],
+                detailed_capabilities: None,
             },
             ModelInfo {
                 id: "Qwen/Qwen2.5-72B-Instruct-Turbo".to_string(),
@@ -84,6 +88,7 @@ impl TogetherAIProvider {
                 context_window: 32_000,
                 supports_streaming: true,
                 capabilities: vec![Capability::Chat, Capability::FunctionCalling],
+                detailed_capabilities: None,
             },
             ModelInfo {
                 id: "mistralai/Mixtral-8x7B-Instruct-v0.1".to_string(),
@@ -93,6 +98,7 @@ impl TogetherAIProvider {
                 context_window: 32_000,
                 supports_streaming: true,
                 capabilities: vec![Capability::Chat],
+                detailed_capabilities: None,
             },
         ]
     }
@@ -133,6 +139,7 @@ struct OpenAIStreamChoice {
 }
 
 #[async_trait]
+#[allow(dead_code)]
 impl ModelProvider for TogetherAIProvider {
     fn name(&self) -> &str {
         "togetherai"
@@ -221,6 +228,7 @@ impl ModelProvider for TogetherAIProvider {
             object: together_response.object,
             created: together_response.created,
             model: together_response.model,
+            provider: self.name().to_string(),
             choices: together_response
                 .choices
                 .into_iter()
@@ -231,6 +239,7 @@ impl ModelProvider for TogetherAIProvider {
                 })
                 .collect(),
             usage: together_response.usage,
+            extensions: None,
         })
     }
 
@@ -304,6 +313,7 @@ impl ModelProvider for TogetherAIProvider {
                                             finish_reason: choice.finish_reason,
                                         })
                                         .collect(),
+                                    extensions: None,
                                 };
                                 chunks.push(Ok(chunk));
                             }

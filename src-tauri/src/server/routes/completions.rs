@@ -48,6 +48,11 @@ pub async fn completions(
             crate::server::types::StopSequence::Single(s) => vec![s.clone()],
             crate::server::types::StopSequence::Multiple(v) => v.clone(),
         }),
+        // Extended parameters (not supported in legacy completions endpoint)
+        top_k: None,
+        seed: None,
+        repetition_penalty: None,
+        extensions: None,
     };
 
     if request.stream {

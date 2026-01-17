@@ -29,6 +29,7 @@ pub struct OpenRouterProvider {
     base_url: String,
 }
 
+#[allow(dead_code)]
 impl OpenRouterProvider {
     /// Creates a new OpenRouter provider with the given API key
     pub fn new(api_key: String) -> Self {
@@ -112,6 +113,7 @@ impl OpenRouterProvider {
 }
 
 #[async_trait]
+#[allow(dead_code)]
 impl ModelProvider for OpenRouterProvider {
     fn name(&self) -> &str {
         "openrouter"
@@ -199,6 +201,7 @@ impl ModelProvider for OpenRouterProvider {
                     context_window: model.context_length,
                     supports_streaming: true,
                     capabilities,
+                    detailed_capabilities: None,
                 }
             })
             .collect())
@@ -283,6 +286,7 @@ impl ModelProvider for OpenRouterProvider {
             object: "chat.completion".to_string(),
             created: openrouter_response.created,
             model: openrouter_response.model,
+            provider: self.name().to_string(),
             choices: openrouter_response
                 .choices
                 .into_iter()
@@ -293,6 +297,7 @@ impl ModelProvider for OpenRouterProvider {
                 })
                 .collect(),
             usage: openrouter_response.usage,
+            extensions: None,
         })
     }
 
@@ -370,6 +375,7 @@ impl ModelProvider for OpenRouterProvider {
                                         finish_reason: choice.finish_reason,
                                     })
                                     .collect(),
+                                extensions: None,
                             });
                         }
                     }
@@ -527,6 +533,9 @@ mod tests {
             frequency_penalty: None,
             presence_penalty: None,
             stop: None,
+            top_k: None,
+            seed: None,
+            repetition_penalty: None,
         };
 
         let response = provider.complete(request).await.unwrap();

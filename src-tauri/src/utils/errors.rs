@@ -16,6 +16,9 @@ pub enum AppError {
     #[error("API key error: {0}")]
     ApiKey(String),
 
+    #[error("MCP error: {0}")]
+    Mcp(String),
+
     #[error("Storage error: {0}")]
     Storage(String),
 

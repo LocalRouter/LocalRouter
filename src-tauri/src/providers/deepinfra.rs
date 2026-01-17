@@ -27,6 +27,7 @@ pub struct DeepInfraProvider {
     api_key: String,
 }
 
+#[allow(dead_code)]
 impl DeepInfraProvider {
     /// Create a new DeepInfra provider with an API key
     pub fn new(api_key: String) -> AppResult<Self> {
@@ -57,6 +58,7 @@ impl DeepInfraProvider {
                 context_window: 32_000,
                 supports_streaming: true,
                 capabilities: vec![Capability::Chat],
+                detailed_capabilities: None,
             },
             ModelInfo {
                 id: "meta-llama/Meta-Llama-3.1-70B-Instruct".to_string(),
@@ -66,6 +68,7 @@ impl DeepInfraProvider {
                 context_window: 128_000,
                 supports_streaming: true,
                 capabilities: vec![Capability::Chat],
+                detailed_capabilities: None,
             },
             ModelInfo {
                 id: "meta-llama/Meta-Llama-3.1-8B-Instruct".to_string(),
@@ -75,6 +78,7 @@ impl DeepInfraProvider {
                 context_window: 128_000,
                 supports_streaming: true,
                 capabilities: vec![Capability::Chat],
+                detailed_capabilities: None,
             },
             ModelInfo {
                 id: "Qwen/Qwen2.5-72B-Instruct".to_string(),
@@ -84,6 +88,7 @@ impl DeepInfraProvider {
                 context_window: 32_000,
                 supports_streaming: true,
                 capabilities: vec![Capability::Chat],
+                detailed_capabilities: None,
             },
             ModelInfo {
                 id: "mistralai/Mixtral-8x7B-Instruct-v0.1".to_string(),
@@ -93,6 +98,7 @@ impl DeepInfraProvider {
                 context_window: 32_000,
                 supports_streaming: true,
                 capabilities: vec![Capability::Chat],
+                detailed_capabilities: None,
             },
         ]
     }
@@ -133,6 +139,7 @@ struct OpenAIStreamChoice {
 }
 
 #[async_trait]
+#[allow(dead_code)]
 impl ModelProvider for DeepInfraProvider {
     fn name(&self) -> &str {
         "deepinfra"
@@ -221,6 +228,7 @@ impl ModelProvider for DeepInfraProvider {
             object: deepinfra_response.object,
             created: deepinfra_response.created,
             model: deepinfra_response.model,
+            provider: self.name().to_string(),
             choices: deepinfra_response
                 .choices
                 .into_iter()
@@ -231,6 +239,7 @@ impl ModelProvider for DeepInfraProvider {
                 })
                 .collect(),
             usage: deepinfra_response.usage,
+            extensions: None,
         })
     }
 
@@ -304,6 +313,7 @@ impl ModelProvider for DeepInfraProvider {
                                             finish_reason: choice.finish_reason,
                                         })
                                         .collect(),
+                                    extensions: None,
                                 };
                                 chunks.push(Ok(chunk));
                             }

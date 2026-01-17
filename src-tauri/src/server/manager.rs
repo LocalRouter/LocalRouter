@@ -6,6 +6,8 @@ use tokio::task::JoinHandle;
 use tracing::info;
 
 use crate::api_keys::ApiKeyManager;
+use crate::mcp::McpServerManager;
+use crate::oauth_clients::OAuthClientManager;
 use crate::providers::registry::ProviderRegistry;
 use crate::router::{RateLimiterManager, Router};
 use super::{ServerConfig, start_server, state::AppState};
@@ -22,6 +24,7 @@ pub struct ServerManager {
     app_state: Arc<RwLock<Option<AppState>>>,
     server_handle: Arc<RwLock<Option<JoinHandle<()>>>>,
     status: Arc<RwLock<ServerStatus>>,
+    actual_port: Arc<RwLock<Option<u16>>>,
 }
 
 impl ServerManager {
@@ -30,7 +33,13 @@ impl ServerManager {
             app_state: Arc::new(RwLock::new(None)),
             server_handle: Arc::new(RwLock::new(None)),
             status: Arc::new(RwLock::new(ServerStatus::Stopped)),
+            actual_port: Arc::new(RwLock::new(None)),
         }
+    }
+
+    /// Get the actual port the server is running on
+    pub fn get_actual_port(&self) -> Option<u16> {
+        *self.actual_port.read()
     }
 
     /// Start the web server
@@ -39,6 +48,8 @@ impl ServerManager {
         config: ServerConfig,
         router: Arc<Router>,
         api_key_manager: ApiKeyManager,
+        oauth_client_manager: OAuthClientManager,
+        mcp_server_manager: Arc<McpServerManager>,
         rate_limiter: Arc<RateLimiterManager>,
         provider_registry: Arc<ProviderRegistry>,
     ) -> anyhow::Result<()> {
@@ -51,10 +62,12 @@ impl ServerManager {
         // Stop any existing server first
         self.stop().await;
 
-        let (state, handle) = start_server(
+        let (state, handle, actual_port) = start_server(
             config,
             router,
             api_key_manager,
+            oauth_client_manager,
+            mcp_server_manager,
             rate_limiter,
             provider_registry,
         )
@@ -62,9 +75,10 @@ impl ServerManager {
 
         *self.app_state.write() = Some(state);
         *self.server_handle.write() = Some(handle);
+        *self.actual_port.write() = Some(actual_port);
         *self.status.write() = ServerStatus::Running;
 
-        info!("Server started successfully");
+        info!("Server started successfully on port {}", actual_port);
         Ok(())
     }
 
@@ -84,6 +98,7 @@ impl ServerManager {
 
         // Clear the app state
         *self.app_state.write() = None;
+        *self.actual_port.write() = None;
         *self.status.write() = ServerStatus::Stopped;
 
         info!("Server stopped");
