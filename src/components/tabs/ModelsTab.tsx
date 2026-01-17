@@ -165,7 +165,7 @@ export default function ModelsTab({ activeSubTab, onTabChange }: ModelsTabProps)
 
   // If a sub-tab is selected, show detail page for that specific model
   if (activeSubTab) {
-    return <ModelDetailPage modelKey={activeSubTab} />
+    return <ModelDetailPage modelKey={activeSubTab} onTabChange={onTabChange} />
   }
 
   return (

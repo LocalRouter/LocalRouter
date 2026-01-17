@@ -459,6 +459,22 @@ impl ModelProvider for GeminiProvider {
 
         Ok(Box::pin(converted_stream))
     }
+
+    fn supports_feature(&self, feature: &str) -> bool {
+        matches!(
+            feature,
+            "thinking_level" | "web_grounding" | "code_execution"
+        )
+    }
+
+    fn get_feature_adapter(&self, feature: &str) -> Option<Box<dyn crate::providers::features::FeatureAdapter>> {
+        match feature {
+            "thinking_level" => {
+                Some(Box::new(crate::providers::features::gemini_thinking::GeminiThinkingAdapter))
+            }
+            _ => None,
+        }
+    }
 }
 
 // Gemini API types

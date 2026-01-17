@@ -109,12 +109,6 @@ impl Transport for SseTransport {
             request.id.as_ref().unwrap().to_string()
         };
 
-        // Create channel for response
-        let (tx, rx) = oneshot::channel();
-
-        // Register pending request
-        self.pending.write().insert(request_id.clone(), tx);
-
         // Build request with custom headers
         let mut req_builder = self.client.post(&self.url).json(&request);
 
@@ -124,13 +118,11 @@ impl Transport for SseTransport {
 
         // Send POST request
         let response = req_builder.send().await.map_err(|e| {
-            self.pending.write().remove(&request_id);
             AppError::Mcp(format!("Failed to send request: {}", e))
         })?;
 
         // Check response status
         if !response.status().is_success() {
-            self.pending.write().remove(&request_id);
             return Err(AppError::Mcp(format!(
                 "Server returned error status: {}",
                 response.status()
@@ -139,12 +131,8 @@ impl Transport for SseTransport {
 
         // Parse JSON-RPC response from body
         let json_response: JsonRpcResponse = response.json().await.map_err(|e| {
-            self.pending.write().remove(&request_id);
             AppError::Mcp(format!("Failed to parse response: {}", e))
         })?;
-
-        // Remove pending request
-        self.pending.write().remove(&request_id);
 
         Ok(json_response)
     }

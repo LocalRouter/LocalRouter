@@ -5,6 +5,7 @@
 
 pub mod anthropic_thinking;
 pub mod openai_reasoning;
+pub mod gemini_thinking;
 
 use async_trait::async_trait;
 use serde_json::Value;
@@ -16,6 +17,7 @@ use super::{CompletionRequest, CompletionResponse};
 // Re-export feature adapters
 pub use anthropic_thinking::AnthropicThinkingAdapter;
 pub use openai_reasoning::OpenAIReasoningAdapter;
+pub use gemini_thinking::GeminiThinkingAdapter;
 
 /// Feature parameters passed from the API request
 pub type FeatureParams = HashMap<String, Value>;

@@ -4,9 +4,11 @@ import Card from '../ui/Card'
 import Badge from '../ui/Badge'
 import ProviderIcon from '../ProviderIcon'
 import { ContextualChat } from '../chat/ContextualChat'
+import DetailPageLayout from '../layouts/DetailPageLayout'
 
 interface ModelDetailPageProps {
   modelKey: string // format: "provider/model_id"
+  onTabChange?: (tab: 'providers' | 'api-keys', subTab: string) => void
 }
 
 interface Model {
@@ -21,10 +23,19 @@ interface Model {
   parameter_count?: string
 }
 
-export default function ModelDetailPage({ modelKey }: ModelDetailPageProps) {
+interface ApiKey {
+  id: string
+  name: string
+  enabled: boolean
+  model_selection: any
+}
+
+export default function ModelDetailPage({ modelKey, onTabChange }: ModelDetailPageProps) {
   const [providerInstance, modelId] = modelKey.split('/')
   const [model, setModel] = useState<Model | null>(null)
+  const [apiKeys, setApiKeys] = useState<ApiKey[]>([])
   const [loading, setLoading] = useState(true)
+  const [activeTab, setActiveTab] = useState<string>('details')
 
   useEffect(() => {
     loadModelData()
@@ -33,7 +44,11 @@ export default function ModelDetailPage({ modelKey }: ModelDetailPageProps) {
   const loadModelData = async () => {
     setLoading(true)
     try {
-      const basicModels = await invoke<Array<{ id: string; provider: string }>>('list_all_models')
+      const [basicModels, keys] = await Promise.all([
+        invoke<Array<{ id: string; provider: string }>>('list_all_models'),
+        invoke<ApiKey[]>('list_api_keys').catch(() => []),
+      ])
+
       const foundModel = basicModels.find((m) => m.provider === providerInstance && m.id === modelId)
 
       if (foundModel) {
@@ -45,6 +60,24 @@ export default function ModelDetailPage({ modelKey }: ModelDetailPageProps) {
           supports_streaming: true,
         })
       }
+
+      // Filter API keys that can use this model
+      const filteredKeys = keys.filter((key) => {
+        if (!key.model_selection) return false
+        if (key.model_selection.type === 'all') return true
+        if (key.model_selection.type === 'custom') {
+          const providers = key.model_selection.all_provider_models || []
+          const individualModels = key.model_selection.individual_models || []
+          // Check if this provider is in the all_provider_models list
+          if (providers.includes(providerInstance)) return true
+          // Check if this specific model is in individual_models
+          return individualModels.some(
+            ([provider, model]: [string, string]) => provider === providerInstance && model === modelId
+          )
+        }
+        return false
+      })
+      setApiKeys(filteredKeys)
     } catch (error) {
       console.error('Failed to load model data:', error)
     } finally {
@@ -83,63 +116,59 @@ export default function ModelDetailPage({ modelKey }: ModelDetailPageProps) {
     )
   }
 
-  return (
-    <div className="grid grid-cols-2 gap-6 h-full">
-      {/* Left Column: Model Details */}
-      <div className="space-y-6">
-        <Card>
-          <div className="flex items-center gap-4 mb-6">
-            <ProviderIcon providerId={model.provider_type || model.provider_instance} size={48} />
-            <div>
-              <h2 className="text-2xl font-bold text-gray-900">{model.model_id}</h2>
-              <p className="text-sm text-gray-500">{model.provider_instance}</p>
-            </div>
-          </div>
-
-          <div className="space-y-4">
-            <div className="border-t border-gray-200 pt-4">
-              <h3 className="text-lg font-semibold text-gray-900 mb-3">Specifications</h3>
-              <div className="space-y-2 text-sm">
-                <div className="flex justify-between">
-                  <span className="text-gray-600">Provider:</span>
-                  <span className="font-medium text-gray-900">{model.provider_instance}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-600">Model ID:</span>
-                  <span className="font-medium text-gray-900">{model.model_id}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-600">Context Window:</span>
-                  <span className="font-medium text-gray-900">
-                    {formatContextWindow(model.context_window)}
-                  </span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-600">Streaming:</span>
-                  <span className="font-medium text-gray-900">
-                    {model.supports_streaming ? 'Yes' : 'No'}
-                  </span>
-                </div>
-                {(model.input_price_per_million || model.output_price_per_million) && (
-                  <div className="flex justify-between">
-                    <span className="text-gray-600">Pricing:</span>
-                    <span className="font-medium text-gray-900 text-right">
-                      {formatPrice(model)}
-                    </span>
-                  </div>
-                )}
-                {model.parameter_count && (
-                  <div className="flex justify-between">
-                    <span className="text-gray-600">Parameters:</span>
-                    <span className="font-medium text-gray-900">{model.parameter_count}</span>
-                  </div>
-                )}
+  const tabs = [
+    {
+      id: 'details',
+      label: 'Details',
+      content: (
+        <div className="space-y-6">
+          <Card>
+            <h3 className="text-lg font-semibold text-gray-900 mb-4">Specifications</h3>
+            <div className="space-y-2 text-sm">
+              <div className="flex justify-between">
+                <span className="text-gray-600">Provider:</span>
+                <button
+                  onClick={() => onTabChange?.('providers', model.provider_instance)}
+                  className="font-medium text-blue-600 hover:text-blue-700 hover:underline"
+                >
+                  {model.provider_instance}
+                </button>
               </div>
+              <div className="flex justify-between">
+                <span className="text-gray-600">Model ID:</span>
+                <span className="font-medium text-gray-900">{model.model_id}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-600">Context Window:</span>
+                <span className="font-medium text-gray-900">
+                  {formatContextWindow(model.context_window)}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-600">Streaming:</span>
+                <span className="font-medium text-gray-900">
+                  {model.supports_streaming ? 'Yes' : 'No'}
+                </span>
+              </div>
+              {(model.input_price_per_million || model.output_price_per_million) && (
+                <div className="flex justify-between">
+                  <span className="text-gray-600">Pricing:</span>
+                  <span className="font-medium text-gray-900 text-right">
+                    {formatPrice(model)}
+                  </span>
+                </div>
+              )}
+              {model.parameter_count && (
+                <div className="flex justify-between">
+                  <span className="text-gray-600">Parameters:</span>
+                  <span className="font-medium text-gray-900">{model.parameter_count}</span>
+                </div>
+              )}
             </div>
 
             {model.capabilities.length > 0 && (
-              <div className="border-t border-gray-200 pt-4">
-                <h3 className="text-lg font-semibold text-gray-900 mb-3">Capabilities</h3>
+              <div className="mt-4 pt-4 border-t border-gray-200">
+                <h4 className="text-sm font-semibold text-gray-900 mb-2">Capabilities</h4>
                 <div className="flex flex-wrap gap-2">
                   {model.capabilities.map((cap) => (
                     <Badge key={cap} variant="warning">
@@ -150,7 +179,7 @@ export default function ModelDetailPage({ modelKey }: ModelDetailPageProps) {
               </div>
             )}
 
-            <div className="border-t border-gray-200 pt-4">
+            <div className="mt-4 pt-4 border-t border-gray-200">
               <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
                 <p className="text-xs text-blue-900">
                   <strong>Note:</strong> This model can be accessed via the OpenAI-compatible API
@@ -158,12 +187,40 @@ export default function ModelDetailPage({ modelKey }: ModelDetailPageProps) {
                 </p>
               </div>
             </div>
-          </div>
-        </Card>
-      </div>
+          </Card>
 
-      {/* Right Column: Chat Interface */}
-      <div className="space-y-6">
+          {apiKeys.length > 0 && (
+            <Card>
+              <h3 className="text-lg font-semibold text-gray-900 mb-4">
+                API Keys Using This Model ({apiKeys.length})
+              </h3>
+              <div className="space-y-2">
+                {apiKeys.map((key) => (
+                  <div
+                    key={key.id}
+                    onClick={() => onTabChange?.('api-keys', key.id)}
+                    className="bg-gray-50 border border-gray-200 rounded-lg p-3 hover:bg-gray-100 transition-colors cursor-pointer"
+                  >
+                    <div className="flex justify-between items-center">
+                      <div>
+                        <h4 className="text-sm font-semibold text-gray-900">{key.name}</h4>
+                      </div>
+                      <Badge variant={key.enabled ? 'success' : 'warning'}>
+                        {key.enabled ? 'Enabled' : 'Disabled'}
+                      </Badge>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          )}
+        </div>
+      ),
+    },
+    {
+      id: 'chat',
+      label: 'Chat',
+      content: (
         <Card>
           <h3 className="text-lg font-semibold text-gray-900 mb-4">Chat with Model</h3>
           <ContextualChat
@@ -174,7 +231,20 @@ export default function ModelDetailPage({ modelKey }: ModelDetailPageProps) {
             }}
           />
         </Card>
-      </div>
-    </div>
+      ),
+    },
+  ]
+
+  return (
+    <DetailPageLayout
+      icon={<ProviderIcon providerId={model.provider_type || model.provider_instance} size={48} />}
+      title={model.model_id}
+      subtitle={model.provider_instance}
+      badges={[]}
+      tabs={tabs}
+      activeTab={activeTab}
+      onTabChange={setActiveTab}
+      loading={loading}
+    />
   )
 }
