@@ -109,7 +109,7 @@ Contributions are welcome! Please read [CONTRIBUTING.md](./CONTRIBUTING.md) for 
 
 ## License
 
-[MIT License](./LICENSE)
+[AGPL-3.0-or-later License](./LICENSE)
 
 ## Roadmap
 
