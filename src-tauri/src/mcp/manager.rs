@@ -3,6 +3,7 @@
 //! Manages MCP server instances, their lifecycle, and health checks.
 
 use crate::config::{McpServerConfig, McpTransportConfig, McpTransportType};
+use crate::mcp::oauth::McpOAuthManager;
 use crate::mcp::transport::{SseTransport, StdioTransport, Transport, WebSocketTransport};
 use crate::mcp::protocol::{JsonRpcRequest, JsonRpcResponse};
 use crate::utils::errors::{AppError, AppResult};
@@ -14,6 +15,7 @@ use std::sync::Arc;
 ///
 /// Manages the lifecycle of MCP server instances.
 /// Supports STDIO, SSE, and WebSocket transports.
+/// Handles OAuth authentication for servers that require it.
 #[derive(Clone)]
 pub struct McpServerManager {
     /// Active STDIO transports (server_id -> transport)
@@ -27,6 +29,9 @@ pub struct McpServerManager {
 
     /// Server configurations (server_id -> config)
     configs: Arc<DashMap<String, McpServerConfig>>,
+
+    /// OAuth manager for MCP servers
+    oauth_manager: Arc<McpOAuthManager>,
 }
 
 /// Health status for an MCP server
@@ -66,7 +71,13 @@ impl McpServerManager {
             sse_transports: Arc::new(DashMap::new()),
             websocket_transports: Arc::new(DashMap::new()),
             configs: Arc::new(DashMap::new()),
+            oauth_manager: Arc::new(McpOAuthManager::new()),
         }
+    }
+
+    /// Get the OAuth manager
+    pub fn oauth_manager(&self) -> Arc<McpOAuthManager> {
+        self.oauth_manager.clone()
     }
 
     /// Load server configurations from config

@@ -6,6 +6,8 @@ import Button from '../ui/Button'
 import ProviderIcon from '../ProviderIcon'
 import { ContextualChat } from '../chat/ContextualChat'
 import DetailPageLayout from '../layouts/DetailPageLayout'
+import { MetricsChart } from '../charts/MetricsChart'
+import { useMetricsSubscription } from '../../hooks/useMetricsSubscription'
 
 interface ProviderDetailPageProps {
   instanceName: string
@@ -40,6 +42,7 @@ export default function ProviderDetailPage({
   providerType,
   onTabChange,
 }: ProviderDetailPageProps) {
+  const refreshKey = useMetricsSubscription()
   const [health, setHealth] = useState<ProviderHealth | null>(null)
   const [models, setModels] = useState<Model[]>([])
   const [apiKeys, setApiKeys] = useState<ApiKey[]>([])
@@ -285,6 +288,51 @@ export default function ProviderDetailPage({
             </div>
           )}
         </Card>
+      ),
+    },
+    {
+      id: 'metrics',
+      label: 'Metrics',
+      content: (
+        <div className="space-y-6">
+          <div className="grid grid-cols-2 gap-6">
+            <MetricsChart
+              scope="provider"
+              scopeId={instanceName}
+              timeRange="day"
+              metricType="requests"
+              title="Requests"
+              refreshTrigger={refreshKey}
+            />
+
+            <MetricsChart
+              scope="provider"
+              scopeId={instanceName}
+              timeRange="day"
+              metricType="tokens"
+              title="Tokens"
+              refreshTrigger={refreshKey}
+            />
+
+            <MetricsChart
+              scope="provider"
+              scopeId={instanceName}
+              timeRange="day"
+              metricType="cost"
+              title="Cost"
+              refreshTrigger={refreshKey}
+            />
+
+            <MetricsChart
+              scope="provider"
+              scopeId={instanceName}
+              timeRange="day"
+              metricType="latency"
+              title="Latency"
+              refreshTrigger={refreshKey}
+            />
+          </div>
+        </div>
       ),
     },
     {

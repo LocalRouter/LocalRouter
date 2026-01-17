@@ -5,6 +5,8 @@ import Badge from '../ui/Badge'
 import ProviderIcon from '../ProviderIcon'
 import { ContextualChat } from '../chat/ContextualChat'
 import DetailPageLayout from '../layouts/DetailPageLayout'
+import { MetricsChart } from '../charts/MetricsChart'
+import { useMetricsSubscription } from '../../hooks/useMetricsSubscription'
 
 interface ModelDetailPageProps {
   modelKey: string // format: "provider/model_id"
@@ -31,6 +33,7 @@ interface ApiKey {
 }
 
 export default function ModelDetailPage({ modelKey, onTabChange }: ModelDetailPageProps) {
+  const refreshKey = useMetricsSubscription()
   const [providerInstance, modelId] = modelKey.split('/')
   const [model, setModel] = useState<Model | null>(null)
   const [apiKeys, setApiKeys] = useState<ApiKey[]>([])
@@ -214,6 +217,51 @@ export default function ModelDetailPage({ modelKey, onTabChange }: ModelDetailPa
               </div>
             </Card>
           )}
+        </div>
+      ),
+    },
+    {
+      id: 'metrics',
+      label: 'Metrics',
+      content: (
+        <div className="space-y-6">
+          <div className="grid grid-cols-2 gap-6">
+            <MetricsChart
+              scope="model"
+              scopeId={modelKey}
+              timeRange="day"
+              metricType="requests"
+              title="Requests"
+              refreshTrigger={refreshKey}
+            />
+
+            <MetricsChart
+              scope="model"
+              scopeId={modelKey}
+              timeRange="day"
+              metricType="tokens"
+              title="Tokens"
+              refreshTrigger={refreshKey}
+            />
+
+            <MetricsChart
+              scope="model"
+              scopeId={modelKey}
+              timeRange="day"
+              metricType="cost"
+              title="Cost"
+              refreshTrigger={refreshKey}
+            />
+
+            <MetricsChart
+              scope="model"
+              scopeId={modelKey}
+              timeRange="day"
+              metricType="latency"
+              title="Latency"
+              refreshTrigger={refreshKey}
+            />
+          </div>
         </div>
       ),
     },
