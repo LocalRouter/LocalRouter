@@ -424,6 +424,16 @@ async fn main() -> anyhow::Result<()> {
             ui::commands_metrics::list_tracked_providers,
             ui::commands_metrics::compare_api_keys,
             ui::commands_metrics::compare_providers,
+            // MCP metrics commands
+            ui::commands_mcp_metrics::get_global_mcp_metrics,
+            ui::commands_mcp_metrics::get_client_mcp_metrics,
+            ui::commands_mcp_metrics::get_mcp_server_metrics,
+            ui::commands_mcp_metrics::get_mcp_method_breakdown,
+            ui::commands_mcp_metrics::list_tracked_mcp_clients,
+            ui::commands_mcp_metrics::list_tracked_mcp_servers,
+            ui::commands_mcp_metrics::compare_mcp_clients,
+            ui::commands_mcp_metrics::compare_mcp_servers,
+            ui::commands_mcp_metrics::get_mcp_latency_percentiles,
             // Network interface commands
             ui::commands::get_network_interfaces,
             // Server control commands
@@ -475,6 +485,8 @@ async fn main() -> anyhow::Result<()> {
             ui::commands::remove_client_mcp_server,
             // OpenAPI documentation commands
             ui::commands::get_openapi_spec,
+            // Internal testing commands
+            ui::commands::get_internal_test_secret,
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {

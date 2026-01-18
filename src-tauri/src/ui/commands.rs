@@ -20,6 +20,8 @@ pub struct ApiKeyInfo {
     pub id: String,
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub model_selection: Option<ModelSelection>,
     pub enabled: bool,
     pub created_at: String,
@@ -34,6 +36,7 @@ pub async fn list_api_keys(key_manager: State<'_, ApiKeyManager>) -> Result<Vec<
         .map(|k| ApiKeyInfo {
             id: k.id.clone(),
             name: k.name.clone(),
+            key: None, // Key is not accessible after creation for security
             model_selection: k.model_selection.clone(),
             enabled: k.enabled,
             created_at: k.created_at.to_rfc3339(),
@@ -102,10 +105,11 @@ pub async fn create_api_key(
     let _ = app.emit("api-keys-changed", ());
 
     Ok((
-        key,
+        key.clone(),
         ApiKeyInfo {
             id: config.id,
             name: config.name,
+            key: Some(key),
             model_selection: config.model_selection,
             enabled: config.enabled,
             created_at: config.created_at.to_rfc3339(),
@@ -221,6 +225,7 @@ pub async fn update_api_key_model(
     Ok(ApiKeyInfo {
         id: updated_config.id,
         name: updated_config.name,
+        key: None, // Key is not accessible after creation for security
         model_selection: updated_config.model_selection,
         enabled: updated_config.enabled,
         created_at: updated_config.created_at.to_rfc3339(),
@@ -1731,7 +1736,6 @@ pub async fn create_mcp_server(
     let transport_type = match transport.to_lowercase().as_str() {
         "stdio" => McpTransportType::Stdio,
         "sse" | "httpsse" | "http_sse" => McpTransportType::HttpSse,
-        "websocket" => McpTransportType::WebSocket,
         _ => return Err(format!("Invalid transport type: {}", transport)),
     };
 
@@ -2473,4 +2477,18 @@ pub async fn remove_client_mcp_server(
 #[tauri::command]
 pub async fn get_openapi_spec() -> Result<String, String> {
     crate::server::openapi::get_openapi_json().map_err(|e| e.to_string())
+}
+
+/// Get the internal test secret for UI model testing
+/// This secret is regenerated on each app start and allows the UI to bypass API key restrictions
+/// when testing models directly. Only accessible via Tauri IPC, never exposed over HTTP.
+#[tauri::command]
+pub async fn get_internal_test_secret(
+    server_manager: State<'_, Arc<crate::server::ServerManager>>,
+) -> Result<String, String> {
+    let state = server_manager
+        .get_state()
+        .ok_or_else(|| "Server not started".to_string())?;
+
+    Ok(state.get_internal_test_secret())
 }

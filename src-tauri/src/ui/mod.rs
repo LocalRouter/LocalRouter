@@ -3,6 +3,7 @@
 //! Tauri commands and system tray management.
 
 pub mod commands;
+pub mod commands_mcp_metrics;
 pub mod commands_metrics;
 pub mod tray;
 

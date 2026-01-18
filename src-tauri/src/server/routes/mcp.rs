@@ -9,8 +9,10 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
+use std::time::Instant;
 
 use crate::mcp::protocol::{JsonRpcRequest, JsonRpcResponse};
+use crate::monitoring::mcp_metrics::McpRequestMetrics;
 use crate::server::middleware::error::ApiErrorResponse;
 use crate::server::middleware::client_auth::ClientAuthContext;
 use crate::server::state::{AppState, OAuthContext};
@@ -27,6 +29,10 @@ async fn handle_request(
     oauth_context: Option<OAuthContext>,
     request: JsonRpcRequest,
 ) -> Result<JsonRpcResponse, ApiErrorResponse> {
+    // Start timing for metrics
+    let start_time = Instant::now();
+    let method = request.method.clone();
+
     // Determine which authentication method is being used and validate access
     if let Some(client_ctx) = client_context {
         // New unified client authentication
@@ -126,6 +132,17 @@ async fn handle_request(
         .map_err(|e| {
             ApiErrorResponse::bad_gateway(format!("MCP server error: {}", e))
         })?;
+
+    // Record metrics
+    let latency_ms = start_time.elapsed().as_millis() as u64;
+    state.metrics_collector.mcp().record(&McpRequestMetrics {
+        client_id: &client_id_param,
+        server_id: &server_id,
+        method: &method,
+        latency_ms,
+        success: response.error.is_none(),
+        error_code: response.error.as_ref().map(|e| e.code),
+    });
 
     Ok(response)
 }

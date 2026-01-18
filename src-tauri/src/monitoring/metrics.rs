@@ -9,6 +9,8 @@ use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+use super::mcp_metrics::McpMetricsCollector;
+
 /// Request metrics for recording
 #[derive(Debug, Clone)]
 pub struct RequestMetrics<'a> {
@@ -255,6 +257,9 @@ pub struct MetricsCollector {
     /// Per-model metrics
     per_model: Arc<DashMap<String, TimeSeries>>,
 
+    /// MCP metrics collector
+    mcp_metrics: McpMetricsCollector,
+
     /// Retention period in hours
     retention_hours: i64,
 }
@@ -267,6 +272,7 @@ impl MetricsCollector {
             per_key: Arc::new(DashMap::new()),
             per_provider: Arc::new(DashMap::new()),
             per_model: Arc::new(DashMap::new()),
+            mcp_metrics: McpMetricsCollector::new(retention_hours),
             retention_hours,
         }
     }
@@ -408,6 +414,11 @@ impl MetricsCollector {
             .collect()
     }
 
+    /// Get MCP metrics collector
+    pub fn mcp(&self) -> &McpMetricsCollector {
+        &self.mcp_metrics
+    }
+
     /// Clean up old metrics data
     pub fn cleanup(&self) {
         self.global.cleanup(self.retention_hours);
@@ -423,6 +434,9 @@ impl MetricsCollector {
         for entry in self.per_model.iter() {
             entry.value().cleanup(self.retention_hours);
         }
+
+        // Clean up MCP metrics
+        self.mcp_metrics.cleanup();
     }
 
     /// Get total number of data points in global metrics
