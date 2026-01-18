@@ -13,6 +13,7 @@ use uuid::Uuid;
 
 use crate::providers::{ChatMessage as ProviderChatMessage, CompletionRequest as ProviderCompletionRequest};
 use crate::server::middleware::error::{ApiErrorResponse, ApiResult};
+use crate::server::middleware::client_auth::ClientAuthContext;
 use crate::server::state::{AppState, AuthContext, GenerationDetails};
 use crate::server::types::{
     CompletionChoice, CompletionRequest, CompletionResponse, PromptInput, TokenUsage,
@@ -39,6 +40,7 @@ use crate::server::types::{
 pub async fn completions(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
+    client_auth: Option<Extension<ClientAuthContext>>,
     Json(request): Json<CompletionRequest>,
 ) -> ApiResult<Response> {
     // Emit LLM request event to trigger tray icon indicator
@@ -46,6 +48,9 @@ pub async fn completions(
 
     // Validate request
     validate_request(&request)?;
+
+    // Validate client provider access (if using client auth)
+    validate_client_provider_access(&state, client_auth.as_ref().map(|e| &e.0), &request).await?;
 
     // Convert prompt to chat messages format
     let messages = convert_prompt_to_messages(&request.prompt)?;
@@ -202,4 +207,76 @@ async fn handle_non_streaming(
         .record(generation_details.id.clone(), generation_details);
 
     Ok(Json(api_response).into_response())
+}
+
+/// Validate that the client has access to the requested LLM provider
+///
+/// This enforces the allowed_llm_providers access control list for clients.
+/// Returns 403 Forbidden if the client doesn't have access to the provider.
+async fn validate_client_provider_access(
+    state: &AppState,
+    client_context: Option<&ClientAuthContext>,
+    request: &CompletionRequest,
+) -> ApiResult<()> {
+    // If no client context, skip validation (using API key auth)
+    let Some(client_ctx) = client_context else {
+        return Ok(());
+    };
+
+    // Get the client to check allowed providers
+    let client = state
+        .client_manager
+        .get_client(&client_ctx.client_id)
+        .ok_or_else(|| ApiErrorResponse::unauthorized("Client not found"))?;
+
+    // If client is disabled, deny access
+    if !client.enabled {
+        return Err(ApiErrorResponse::forbidden("Client is disabled"));
+    }
+
+    // Extract provider from model string
+    // Format can be "provider/model" or just "model"
+    let provider = if let Some((prov, _model)) = request.model.split_once('/') {
+        prov.to_string()
+    } else {
+        // No provider specified - need to find which provider has this model
+        let all_models = state
+            .provider_registry
+            .list_all_models()
+            .await
+            .map_err(|e| ApiErrorResponse::internal_error(format!("Failed to list models: {}", e)))?;
+
+        let matching_model = all_models
+            .iter()
+            .find(|m| m.id.eq_ignore_ascii_case(&request.model))
+            .ok_or_else(|| {
+                ApiErrorResponse::bad_request(format!("Model not found: {}", request.model))
+                    .with_param("model")
+            })?;
+
+        matching_model.provider.clone()
+    };
+
+    // Check if provider is in allowed list
+    if !client.allowed_llm_providers.contains(&provider) {
+        tracing::warn!(
+            "Client {} attempted to access unauthorized LLM provider: {}",
+            client.client_id,
+            provider
+        );
+
+        return Err(ApiErrorResponse::forbidden(format!(
+            "Access denied: Client is not authorized to use provider '{}'. Contact administrator to grant access.",
+            provider
+        ))
+        .with_param("model"));
+    }
+
+    tracing::debug!(
+        "Client {} authorized for LLM provider: {}",
+        client.client_id,
+        provider
+    );
+
+    Ok(())
 }
