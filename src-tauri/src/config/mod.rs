@@ -342,11 +342,6 @@ pub enum McpTransportType {
     #[deprecated(note = "Use HttpSse instead")]
     #[serde(skip_deserializing)]
     Sse,
-
-    /// WebSocket transport - DEPRECATED
-    /// Will be removed in a future version
-    #[deprecated(note = "WebSocket transport is deprecated, use HttpSse or Stdio")]
-    WebSocket,
 }
 
 /// Transport-specific configuration
@@ -381,16 +376,6 @@ pub enum McpTransportConfig {
         /// Server URL
         url: String,
         /// HTTP headers
-        #[serde(default)]
-        headers: std::collections::HashMap<String, String>,
-    },
-
-    /// WebSocket configuration - DEPRECATED
-    #[serde(skip_deserializing)]
-    WebSocket {
-        /// WebSocket URL
-        url: String,
-        /// HTTP headers for upgrade request
         #[serde(default)]
         headers: std::collections::HashMap<String, String>,
     },

@@ -6,12 +6,13 @@ import Badge from '../ui/Badge'
 import Modal from '../ui/Modal'
 import Input from '../ui/Input'
 import Select from '../ui/Select'
+import KeyValueInput from '../ui/KeyValueInput'
 import McpServerDetailPage from '../mcp/McpServerDetailPage'
 
 interface McpServer {
   id: string
   name: string
-  transport: 'Stdio' | 'Sse' | 'WebSocket'
+  transport: 'Stdio' | 'Sse'
   enabled: boolean
   created_at: string
 }
@@ -37,23 +38,19 @@ export default function McpServersTab({ activeSubTab, onTabChange }: McpServersT
 
   // Form state
   const [serverName, setServerName] = useState('')
-  const [transportType, setTransportType] = useState<'Stdio' | 'Sse' | 'WebSocket'>('Stdio')
+  const [transportType, setTransportType] = useState<'Stdio' | 'Sse'>('Stdio')
   const [command, setCommand] = useState('')
   const [args, setArgs] = useState('')
-  const [envVars, setEnvVars] = useState('')
+  const [envVars, setEnvVars] = useState<Record<string, string>>({})
   const [url, setUrl] = useState('')
-  const [headers, setHeaders] = useState('')
+  const [headers, setHeaders] = useState<Record<string, string>>({})
   const [isCreating, setIsCreating] = useState(false)
 
   // Auth config state
-  const [authMethod, setAuthMethod] = useState<'none' | 'bearer' | 'custom_headers' | 'oauth' | 'env_vars'>('none')
+  const [authMethod, setAuthMethod] = useState<'none' | 'bearer' | 'oauth_preregistered' | 'oauth_browser'>('none')
   const [bearerToken, setBearerToken] = useState('')
-  const [authHeaders, setAuthHeaders] = useState('')
-  const [authEnvVars, setAuthEnvVars] = useState('')
   const [oauthClientId, setOauthClientId] = useState('')
   const [oauthClientSecret, setOauthClientSecret] = useState('')
-  const [oauthAuthUrl, setOauthAuthUrl] = useState('')
-  const [oauthTokenUrl, setOauthTokenUrl] = useState('')
   const [oauthScopes, setOauthScopes] = useState('')
 
   useEffect(() => {
@@ -104,55 +101,17 @@ export default function McpServersTab({ activeSubTab, onTabChange }: McpServersT
         // Parse args (newline or comma separated)
         const argsList = args.trim() ? args.split(/[\n,]/).map(a => a.trim()).filter(a => a) : []
 
-        // Parse env vars (KEY=VALUE format, one per line)
-        const envMap: Record<string, string> = {}
-        if (envVars.trim()) {
-          envVars.split('\n').forEach(line => {
-            const [key, ...valueParts] = line.split('=')
-            if (key && valueParts.length > 0) {
-              envMap[key.trim()] = valueParts.join('=').trim()
-            }
-          })
-        }
-
         transportConfig = {
           type: 'stdio',
           command,
           args: argsList,
-          env: envMap
+          env: envVars
         }
-      } else if (transportType === 'Sse') {
-        // Parse headers (KEY: VALUE format, one per line)
-        const headersMap: Record<string, string> = {}
-        if (headers.trim()) {
-          headers.split('\n').forEach(line => {
-            const [key, ...valueParts] = line.split(':')
-            if (key && valueParts.length > 0) {
-              headersMap[key.trim()] = valueParts.join(':').trim()
-            }
-          })
-        }
-
+      } else { // Sse (HTTP-SSE)
         transportConfig = {
-          type: 'sse',
+          type: 'http_sse',
           url,
-          headers: headersMap
-        }
-      } else { // WebSocket
-        const headersMap: Record<string, string> = {}
-        if (headers.trim()) {
-          headers.split('\n').forEach(line => {
-            const [key, ...valueParts] = line.split(':')
-            if (key && valueParts.length > 0) {
-              headersMap[key.trim()] = valueParts.join(':').trim()
-            }
-          })
-        }
-
-        transportConfig = {
-          type: 'web_socket',
-          url,
-          headers: headersMap
+          headers: headers
         }
       }
 
@@ -161,45 +120,19 @@ export default function McpServersTab({ activeSubTab, onTabChange }: McpServersT
       if (authMethod === 'bearer') {
         authConfig = {
           type: 'bearer_token',
-          token_ref: '' // Token will be stored in keychain by backend
+          token: bearerToken // Token will be stored in keychain by backend
         }
-      } else if (authMethod === 'custom_headers') {
-        const authHeadersMap: Record<string, string> = {}
-        if (authHeaders.trim()) {
-          authHeaders.split('\n').forEach(line => {
-            const [key, ...valueParts] = line.split(':')
-            if (key && valueParts.length > 0) {
-              authHeadersMap[key.trim()] = valueParts.join(':').trim()
-            }
-          })
-        }
+      } else if (authMethod === 'oauth_preregistered') {
+        const scopesList = oauthScopes.trim() ? oauthScopes.split(/[\s,]+/).map(s => s.trim()).filter(s => s) : []
         authConfig = {
-          type: 'custom_headers',
-          headers: authHeadersMap
-        }
-      } else if (authMethod === 'oauth') {
-        const scopesList = oauthScopes.trim() ? oauthScopes.split(/[\n,]/).map(s => s.trim()).filter(s => s) : []
-        authConfig = {
-          type: 'oauth',
+          type: 'oauth_preregistered',
           client_id: oauthClientId,
-          client_secret_ref: '', // Will be stored in keychain
-          auth_url: oauthAuthUrl,
-          token_url: oauthTokenUrl,
+          client_secret: oauthClientSecret, // Will be stored in keychain
           scopes: scopesList
         }
-      } else if (authMethod === 'env_vars') {
-        const authEnvMap: Record<string, string> = {}
-        if (authEnvVars.trim()) {
-          authEnvVars.split('\n').forEach(line => {
-            const [key, ...valueParts] = line.split('=')
-            if (key && valueParts.length > 0) {
-              authEnvMap[key.trim()] = valueParts.join('=').trim()
-            }
-          })
-        }
+      } else if (authMethod === 'oauth_browser') {
         authConfig = {
-          type: 'env_vars',
-          env: authEnvMap
+          type: 'oauth_browser'
         }
       }
 
@@ -218,17 +151,13 @@ export default function McpServersTab({ activeSubTab, onTabChange }: McpServersT
       setServerName('')
       setCommand('')
       setArgs('')
-      setEnvVars('')
+      setEnvVars({})
       setUrl('')
-      setHeaders('')
+      setHeaders({})
       setAuthMethod('none')
       setBearerToken('')
-      setAuthHeaders('')
-      setAuthEnvVars('')
       setOauthClientId('')
       setOauthClientSecret('')
-      setOauthAuthUrl('')
-      setOauthTokenUrl('')
       setOauthScopes('')
     } catch (error) {
       console.error('Failed to create MCP server:', error)
@@ -261,11 +190,11 @@ export default function McpServersTab({ activeSubTab, onTabChange }: McpServersT
   const getTransportBadge = (transport: string) => {
     const colors = {
       Stdio: 'info',
-      Sse: 'warning',
-      WebSocket: 'success'
+      Sse: 'warning'
     } as const
 
-    return <Badge variant={colors[transport as keyof typeof colors] || 'secondary'}>{transport}</Badge>
+    const displayName = transport === 'Sse' ? 'HTTP-SSE' : transport
+    return <Badge variant={colors[transport as keyof typeof colors] || 'secondary'}>{displayName}</Badge>
   }
 
   // If viewing a detail page
@@ -387,8 +316,7 @@ export default function McpServersTab({ activeSubTab, onTabChange }: McpServersT
               onChange={(e) => setTransportType(e.target.value as any)}
             >
               <option value="Stdio">STDIO (Subprocess)</option>
-              <option value="Sse">SSE (Server-Sent Events)</option>
-              <option value="WebSocket">WebSocket</option>
+              <option value="Sse">HTTP-SSE (Server-Sent Events)</option>
             </Select>
           </div>
 
@@ -402,9 +330,12 @@ export default function McpServersTab({ activeSubTab, onTabChange }: McpServersT
                 <Input
                   value={command}
                   onChange={(e) => setCommand(e.target.value)}
-                  placeholder="npx"
+                  placeholder="npx -y @modelcontextprotocol/server-everything"
                   required
                 />
+                <p className="text-xs text-gray-500 mt-1">
+                  Example: npx -y &lt;command&gt;
+                </p>
               </div>
 
               <div>
@@ -415,28 +346,27 @@ export default function McpServersTab({ activeSubTab, onTabChange }: McpServersT
                   value={args}
                   onChange={(e) => setArgs(e.target.value)}
                   placeholder="-y&#10;@modelcontextprotocol/server-everything"
-                  className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-md"
+                  className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-md text-gray-100"
                   rows={3}
                 />
               </div>
 
               <div>
                 <label className="block text-sm font-medium mb-2">
-                  Environment Variables (KEY=VALUE, one per line)
+                  Environment Variables
                 </label>
-                <textarea
+                <KeyValueInput
                   value={envVars}
-                  onChange={(e) => setEnvVars(e.target.value)}
-                  placeholder="API_KEY=your_key&#10;DEBUG=true"
-                  className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-md"
-                  rows={3}
+                  onChange={setEnvVars}
+                  keyPlaceholder="KEY"
+                  valuePlaceholder="VALUE"
                 />
               </div>
             </>
           )}
 
-          {/* SSE/WebSocket Config */}
-          {(transportType === 'Sse' || transportType === 'WebSocket') && (
+          {/* HTTP-SSE Config */}
+          {transportType === 'Sse' && (
             <>
               <div>
                 <label className="block text-sm font-medium mb-2">
@@ -445,185 +375,106 @@ export default function McpServersTab({ activeSubTab, onTabChange }: McpServersT
                 <Input
                   value={url}
                   onChange={(e) => setUrl(e.target.value)}
-                  placeholder={transportType === 'WebSocket' ? 'ws://localhost:3000' : 'http://localhost:3000'}
+                  placeholder="https://mcp.example.com/sse"
                   required
                 />
               </div>
 
               <div>
                 <label className="block text-sm font-medium mb-2">
-                  Headers (KEY: VALUE, one per line)
+                  Headers
                 </label>
-                <textarea
+                <KeyValueInput
                   value={headers}
-                  onChange={(e) => setHeaders(e.target.value)}
-                  placeholder="Authorization: Bearer token&#10;X-Custom-Header: value"
-                  className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-md"
-                  rows={3}
+                  onChange={setHeaders}
+                  keyPlaceholder="Header Name"
+                  valuePlaceholder="Header Value"
                 />
               </div>
             </>
           )}
 
           {/* Authentication Configuration */}
-          <div className="border-t border-gray-700 pt-4 mt-4">
-            <h3 className="text-md font-semibold mb-3">Authentication (Optional)</h3>
-            <p className="text-sm text-gray-400 mb-3">
-              Configure how LocalRouter authenticates to this MCP server
-            </p>
+          {transportType === 'Sse' && (
+            <div className="border-t border-gray-700 pt-4 mt-4">
+              <h3 className="text-md font-semibold mb-3">Authentication (Optional)</h3>
+              <p className="text-sm text-gray-400 mb-3">
+                Configure how LocalRouter authenticates to this MCP server
+              </p>
 
-            <div>
-              <label className="block text-sm font-medium mb-2">
-                Auth Method
-              </label>
-              <Select
-                value={authMethod}
-                onChange={(e) => setAuthMethod(e.target.value as any)}
-              >
-                <option value="none">None (No Authentication)</option>
-                {transportType !== 'Stdio' && <option value="bearer">Bearer Token</option>}
-                {transportType !== 'Stdio' && <option value="custom_headers">Custom Headers</option>}
-                {transportType !== 'Stdio' && <option value="oauth">OAuth (Pre-registered)</option>}
-                {transportType === 'Stdio' && <option value="env_vars">Environment Variables</option>}
-              </Select>
+              <div>
+                <label className="block text-sm font-medium mb-2">
+                  Authentication
+                </label>
+                <Select
+                  value={authMethod}
+                  onChange={(e) => setAuthMethod(e.target.value as any)}
+                >
+                  <option value="none">None / Via headers</option>
+                  <option value="oauth_preregistered">OAuth Pre-registered</option>
+                  <option value="oauth_browser">OAuth</option>
+                </Select>
+              </div>
+
+              {/* OAuth Pre-registered */}
+              {authMethod === 'oauth_preregistered' && (
+                <div className="mt-3 space-y-3">
+                  <div>
+                    <label className="block text-sm font-medium mb-2">
+                      Client ID
+                    </label>
+                    <Input
+                      value={oauthClientId}
+                      onChange={(e) => setOauthClientId(e.target.value)}
+                      placeholder="your-client-id"
+                      required
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium mb-2">
+                      Client Secret
+                    </label>
+                    <Input
+                      value={oauthClientSecret}
+                      onChange={(e) => setOauthClientSecret(e.target.value)}
+                      placeholder="your-client-secret"
+                      required
+                    />
+                    <p className="text-xs text-gray-500 mt-1">
+                      Secret will be stored securely in system keychain
+                    </p>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium mb-2">
+                      Scope
+                    </label>
+                    <Input
+                      value={oauthScopes}
+                      onChange={(e) => setOauthScopes(e.target.value)}
+                      placeholder="tools:read tools:execute"
+                    />
+                    <p className="text-xs text-gray-500 mt-1">
+                      Space or comma separated. The remaining OAuth details will be discovered from the MCP server.
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {/* OAuth Browser Flow */}
+              {authMethod === 'oauth_browser' && (
+                <div className="mt-3">
+                  <div className="bg-blue-900/20 border border-blue-700 rounded p-3">
+                    <p className="text-blue-200 text-sm">
+                      OAuth browser flow will be initiated when connecting to the MCP server.
+                      You'll be redirected to authenticate in your browser.
+                    </p>
+                  </div>
+                </div>
+              )}
             </div>
-
-            {/* Bearer Token Auth */}
-            {authMethod === 'bearer' && (
-              <div className="mt-3">
-                <label className="block text-sm font-medium mb-2">
-                  Bearer Token
-                </label>
-                <Input
-                  type="password"
-                  value={bearerToken}
-                  onChange={(e) => setBearerToken(e.target.value)}
-                  placeholder="your-bearer-token"
-                  required
-                />
-                <p className="text-xs text-gray-500 mt-1">
-                  Token will be stored securely in system keychain
-                </p>
-              </div>
-            )}
-
-            {/* Custom Headers Auth */}
-            {authMethod === 'custom_headers' && (
-              <div className="mt-3">
-                <label className="block text-sm font-medium mb-2">
-                  Auth Headers (KEY: VALUE, one per line)
-                </label>
-                <textarea
-                  value={authHeaders}
-                  onChange={(e) => setAuthHeaders(e.target.value)}
-                  placeholder="Authorization: Bearer token&#10;X-API-Key: your-key"
-                  className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-md"
-                  rows={3}
-                  required
-                />
-                <p className="text-xs text-gray-500 mt-1">
-                  These headers will be sent with every request
-                </p>
-              </div>
-            )}
-
-            {/* OAuth Auth */}
-            {authMethod === 'oauth' && (
-              <div className="mt-3 space-y-3">
-                <div>
-                  <label className="block text-sm font-medium mb-2">
-                    OAuth Client ID
-                  </label>
-                  <Input
-                    value={oauthClientId}
-                    onChange={(e) => setOauthClientId(e.target.value)}
-                    placeholder="your-client-id"
-                    required
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium mb-2">
-                    OAuth Client Secret
-                  </label>
-                  <Input
-                    type="password"
-                    value={oauthClientSecret}
-                    onChange={(e) => setOauthClientSecret(e.target.value)}
-                    placeholder="your-client-secret"
-                    required
-                  />
-                  <p className="text-xs text-gray-500 mt-1">
-                    Secret will be stored securely in system keychain
-                  </p>
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium mb-2">
-                    Authorization URL
-                  </label>
-                  <Input
-                    value={oauthAuthUrl}
-                    onChange={(e) => setOauthAuthUrl(e.target.value)}
-                    placeholder="https://auth.example.com/authorize"
-                    required
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium mb-2">
-                    Token URL
-                  </label>
-                  <Input
-                    value={oauthTokenUrl}
-                    onChange={(e) => setOauthTokenUrl(e.target.value)}
-                    placeholder="https://auth.example.com/token"
-                    required
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium mb-2">
-                    Scopes (comma or newline separated)
-                  </label>
-                  <textarea
-                    value={oauthScopes}
-                    onChange={(e) => setOauthScopes(e.target.value)}
-                    placeholder="read&#10;write"
-                    className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-md"
-                    rows={2}
-                  />
-                </div>
-
-                <div className="bg-yellow-900/20 border border-yellow-700 rounded p-3">
-                  <p className="text-yellow-200 text-sm">
-                    <strong>Note:</strong> This is for pre-registered OAuth credentials.
-                    OAuth flow authentication is not yet fully implemented.
-                  </p>
-                </div>
-              </div>
-            )}
-
-            {/* Environment Variables Auth (STDIO only) */}
-            {authMethod === 'env_vars' && (
-              <div className="mt-3">
-                <label className="block text-sm font-medium mb-2">
-                  Auth Environment Variables (KEY=VALUE, one per line)
-                </label>
-                <textarea
-                  value={authEnvVars}
-                  onChange={(e) => setAuthEnvVars(e.target.value)}
-                  placeholder="API_KEY=your-api-key&#10;AUTH_TOKEN=your-token"
-                  className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-md"
-                  rows={3}
-                  required
-                />
-                <p className="text-xs text-gray-500 mt-1">
-                  These will be merged with base environment variables
-                </p>
-              </div>
-            )}
-          </div>
+          )}
 
           <div className="flex justify-end gap-2">
             <Button

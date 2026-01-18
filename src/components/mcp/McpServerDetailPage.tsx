@@ -5,6 +5,7 @@ import Button from '../ui/Button'
 import Input from '../ui/Input'
 import Select from '../ui/Select'
 import Badge from '../ui/Badge'
+import KeyValueInput from '../ui/KeyValueInput'
 import DetailPageLayout from '../layouts/DetailPageLayout'
 
 interface McpServerDetailPageProps {
@@ -15,7 +16,7 @@ interface McpServerDetailPageProps {
 interface McpServer {
   id: string
   name: string
-  transport: 'Stdio' | 'Sse' | 'WebSocket'
+  transport: 'Stdio' | 'Sse'
   transport_config: TransportConfig
   auth_config: AuthConfig | null
   oauth_config: OAuthConfig | null
@@ -26,7 +27,6 @@ interface McpServer {
 type TransportConfig =
   | { Stdio: { command: string; args: string[]; env: Record<string, string> } }
   | { Sse: { url: string; headers: Record<string, string> } }
-  | { WebSocket: { url: string; headers: Record<string, string> } }
 
 type AuthConfig =
   | { None: {} }
@@ -66,9 +66,9 @@ export default function McpServerDetailPage({ serverId, onBack }: McpServerDetai
   const [enabled, setEnabled] = useState(true)
   const [command, setCommand] = useState('')
   const [args, setArgs] = useState('')
-  const [envVars, setEnvVars] = useState('')
+  const [envVars, setEnvVars] = useState<Record<string, string>>({})
   const [url, setUrl] = useState('')
-  const [headers, setHeaders] = useState('')
+  const [headers, setHeaders] = useState<Record<string, string>>({})
 
   useEffect(() => {
     loadServerData()
@@ -95,24 +95,11 @@ export default function McpServerDetailPage({ serverId, onBack }: McpServerDetai
           const config = serverData.transport_config.Stdio
           setCommand(config.command)
           setArgs(config.args.join('\n'))
-          const envStr = Object.entries(config.env)
-            .map(([k, v]) => `${k}=${v}`)
-            .join('\n')
-          setEnvVars(envStr)
+          setEnvVars(config.env)
         } else if ('Sse' in serverData.transport_config) {
           const config = serverData.transport_config.Sse
           setUrl(config.url)
-          const headersStr = Object.entries(config.headers)
-            .map(([k, v]) => `${k}: ${v}`)
-            .join('\n')
-          setHeaders(headersStr)
-        } else if ('WebSocket' in serverData.transport_config) {
-          const config = serverData.transport_config.WebSocket
-          setUrl(config.url)
-          const headersStr = Object.entries(config.headers)
-            .map(([k, v]) => `${k}: ${v}`)
-            .join('\n')
-          setHeaders(headersStr)
+          setHeaders(config.headers)
         }
       }
     } catch (error) {
@@ -143,38 +130,9 @@ export default function McpServerDetailPage({ serverId, onBack }: McpServerDetai
       let transportConfig
       if (server.transport === 'Stdio') {
         const argsList = args.trim() ? args.split('\n').map(a => a.trim()).filter(a => a) : []
-        const envMap: Record<string, string> = {}
-        if (envVars.trim()) {
-          envVars.split('\n').forEach(line => {
-            const [key, ...valueParts] = line.split('=')
-            if (key && valueParts.length > 0) {
-              envMap[key.trim()] = valueParts.join('=').trim()
-            }
-          })
-        }
-        transportConfig = { Stdio: { command, args: argsList, env: envMap } }
-      } else if (server.transport === 'Sse') {
-        const headersMap: Record<string, string> = {}
-        if (headers.trim()) {
-          headers.split('\n').forEach(line => {
-            const [key, ...valueParts] = line.split(':')
-            if (key && valueParts.length > 0) {
-              headersMap[key.trim()] = valueParts.join(':').trim()
-            }
-          })
-        }
-        transportConfig = { Sse: { url, headers: headersMap } }
+        transportConfig = { Stdio: { command, args: argsList, env: envVars } }
       } else {
-        const headersMap: Record<string, string> = {}
-        if (headers.trim()) {
-          headers.split('\n').forEach(line => {
-            const [key, ...valueParts] = line.split(':')
-            if (key && valueParts.length > 0) {
-              headersMap[key.trim()] = valueParts.join(':').trim()
-            }
-          })
-        }
-        transportConfig = { WebSocket: { url, headers: headersMap } }
+        transportConfig = { Sse: { url, headers: headers } }
       }
 
       await invoke('update_mcp_server', {
@@ -311,11 +269,11 @@ export default function McpServerDetailPage({ serverId, onBack }: McpServerDetai
   const getTransportBadge = (transport: string) => {
     const colors = {
       Stdio: 'info',
-      Sse: 'warning',
-      WebSocket: 'success'
+      Sse: 'warning'
     } as const
 
-    return <Badge variant={colors[transport as keyof typeof colors] || 'secondary'}>{transport}</Badge>
+    const displayName = transport === 'Sse' ? 'HTTP-SSE' : transport
+    return <Badge variant={colors[transport as keyof typeof colors] || 'secondary'}>{displayName}</Badge>
   }
 
   const maskSecret = (secret: string) => {
@@ -413,8 +371,11 @@ export default function McpServerDetailPage({ serverId, onBack }: McpServerDetai
                     <Input
                       value={command}
                       onChange={(e) => setCommand(e.target.value)}
-                      placeholder="npx"
+                      placeholder="npx -y @modelcontextprotocol/server-everything"
                     />
+                    <p className="text-xs text-gray-500 mt-1">
+                      Example: npx -y &lt;command&gt;
+                    </p>
                   </div>
 
                   <div>
@@ -423,48 +384,46 @@ export default function McpServerDetailPage({ serverId, onBack }: McpServerDetai
                       value={args}
                       onChange={(e) => setArgs(e.target.value)}
                       placeholder="-y&#10;@modelcontextprotocol/server-everything"
-                      className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-md"
+                      className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-md text-gray-100"
                       rows={3}
                     />
                   </div>
 
                   <div>
                     <label className="block text-sm font-medium mb-2">
-                      Environment Variables (KEY=VALUE, one per line)
+                      Environment Variables
                     </label>
-                    <textarea
+                    <KeyValueInput
                       value={envVars}
-                      onChange={(e) => setEnvVars(e.target.value)}
-                      placeholder="API_KEY=your_key&#10;DEBUG=true"
-                      className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-md"
-                      rows={3}
+                      onChange={setEnvVars}
+                      keyPlaceholder="KEY"
+                      valuePlaceholder="VALUE"
                     />
                   </div>
                 </>
               )}
 
-              {/* SSE/WebSocket Config */}
-              {(server.transport === 'Sse' || server.transport === 'WebSocket') && (
+              {/* HTTP-SSE Config */}
+              {server.transport === 'Sse' && (
                 <>
                   <div>
                     <label className="block text-sm font-medium mb-2">URL</label>
                     <Input
                       value={url}
                       onChange={(e) => setUrl(e.target.value)}
-                      placeholder={server.transport === 'WebSocket' ? 'ws://localhost:3000' : 'http://localhost:3000'}
+                      placeholder="https://mcp.example.com/sse"
                     />
                   </div>
 
                   <div>
                     <label className="block text-sm font-medium mb-2">
-                      Headers (KEY: VALUE, one per line)
+                      Headers
                     </label>
-                    <textarea
+                    <KeyValueInput
                       value={headers}
-                      onChange={(e) => setHeaders(e.target.value)}
-                      placeholder="Authorization: Bearer token&#10;X-Custom-Header: value"
-                      className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-md"
-                      rows={3}
+                      onChange={setHeaders}
+                      keyPlaceholder="Header Name"
+                      valuePlaceholder="Header Value"
                     />
                   </div>
                 </>
@@ -857,15 +816,7 @@ export default function McpServerDetailPage({ serverId, onBack }: McpServerDetai
     "type": "stdio",
     "command": "${command || 'npx'}",
     "args": ${JSON.stringify(args.split('\n').filter(a => a.trim()), null, 2)},
-    "env": ${JSON.stringify(
-      envVars.split('\n').reduce((acc, line) => {
-        const [key, ...value] = line.split('=')
-        if (key && value.length) acc[key.trim()] = value.join('=').trim()
-        return acc
-      }, {} as Record<string, string>),
-      null,
-      2
-    )}
+    "env": ${JSON.stringify(envVars, null, 2)}
   }
 }`}
                         </pre>
@@ -938,30 +889,22 @@ export default function McpServerDetailPage({ serverId, onBack }: McpServerDetai
                   </>
                 )}
 
-                {/* SSE Transport Examples */}
+                {/* HTTP-SSE Transport Examples */}
                 {server.transport === 'Sse' && (
                   <>
                     <div>
-                      <h4 className="text-md font-semibold mb-3">Direct SSE Connection</h4>
+                      <h4 className="text-md font-semibold mb-3">Direct HTTP-SSE Connection</h4>
                       <p className="text-sm text-gray-400 mb-3">
-                        Connect directly to the remote SSE endpoint:
+                        Connect directly to the remote HTTP-SSE endpoint:
                       </p>
                       <div className="bg-gray-800 rounded-md p-4 overflow-x-auto">
                         <pre className="text-sm text-gray-300">
 {`{
   "transport": "Sse",
   "config": {
-    "type": "sse",
+    "type": "http_sse",
     "url": "${url || 'https://mcp.example.com/sse'}",
-    "headers": ${JSON.stringify(
-      headers.split('\n').reduce((acc, line) => {
-        const [key, ...value] = line.split(':')
-        if (key && value.length) acc[key.trim()] = value.join(':').trim()
-        return acc
-      }, {} as Record<string, string>),
-      null,
-      2
-    )}
+    "headers": ${JSON.stringify(headers, null, 2)}
   }
 }`}
                         </pre>
@@ -971,7 +914,7 @@ export default function McpServerDetailPage({ serverId, onBack }: McpServerDetai
                     <div className="border-t border-gray-700 pt-6">
                       <h4 className="text-md font-semibold mb-3">Via Supergateway (STDIO Bridge)</h4>
                       <p className="text-sm text-gray-400 mb-3">
-                        If you prefer STDIO-based tools, use Supergateway to connect to this SSE server:
+                        If you prefer STDIO-based tools, use Supergateway to connect to this HTTP-SSE server:
                       </p>
                       <div className="bg-gray-800 rounded-md p-4 overflow-x-auto">
                         <pre className="text-sm text-gray-300">
@@ -993,46 +936,10 @@ export default function McpServerDetailPage({ serverId, onBack }: McpServerDetai
                         </pre>
                       </div>
                       <p className="text-sm text-gray-500 mt-3">
-                        This allows STDIO-based MCP clients (like Claude Desktop) to connect to this SSE server.
+                        This allows STDIO-based MCP clients (like Claude Desktop) to connect to this HTTP-SSE server.
                       </p>
                     </div>
                   </>
-                )}
-
-                {/* WebSocket Transport Examples */}
-                {server.transport === 'WebSocket' && (
-                  <div>
-                    <h4 className="text-md font-semibold mb-3">WebSocket Connection</h4>
-                    <p className="text-sm text-gray-400 mb-3">
-                      Connect to the WebSocket endpoint:
-                    </p>
-                    <div className="bg-gray-800 rounded-md p-4 overflow-x-auto">
-                      <pre className="text-sm text-gray-300">
-{`{
-  "transport": "WebSocket",
-  "config": {
-    "type": "web_socket",
-    "url": "${url || 'ws://localhost:3000'}",
-    "headers": ${JSON.stringify(
-      headers.split('\n').reduce((acc, line) => {
-        const [key, ...value] = line.split(':')
-        if (key && value.length) acc[key.trim()] = value.join(':').trim()
-        return acc
-      }, {} as Record<string, string>),
-      null,
-      2
-    )}
-  }
-}`}
-                      </pre>
-                    </div>
-                    <div className="bg-yellow-900/20 border border-yellow-700 rounded p-3 mt-3">
-                      <p className="text-yellow-200 text-sm">
-                        <strong>Note:</strong> WebSocket transport support may be deprecated in future versions.
-                        Consider using STDIO or SSE transports instead.
-                      </p>
-                    </div>
-                  </div>
                 )}
 
                 {/* General Tips */}

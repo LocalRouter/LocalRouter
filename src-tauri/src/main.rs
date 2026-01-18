@@ -461,6 +461,8 @@ async fn main() -> anyhow::Result<()> {
             ui::commands::get_all_mcp_server_health,
             ui::commands::update_mcp_server_name,
             ui::commands::toggle_mcp_server_enabled,
+            ui::commands::list_mcp_tools,
+            ui::commands::call_mcp_tool,
             // Unified client management commands
             ui::commands::list_clients,
             ui::commands::create_client,

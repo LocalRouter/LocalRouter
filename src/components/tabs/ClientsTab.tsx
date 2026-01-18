@@ -128,104 +128,59 @@ export default function ClientsTab({ activeSubTab, onTabChange }: ClientsTabProp
   }
 
   return (
-    <div className="p-6">
-      <div className="flex justify-between items-center mb-6">
-        <div>
-          <h2 className="text-2xl font-bold">Clients</h2>
-          <p className="text-gray-400 mt-1">
-            Manage API clients for LLM and MCP access
-          </p>
+    <div className="space-y-6">
+      <Card>
+        <div className="mb-6 flex justify-between items-start">
+          <div>
+            <h2 className="text-2xl font-bold text-gray-900">Clients</h2>
+            <p className="text-sm text-gray-500 mt-1">
+              Manage API clients for LLM and MCP access
+            </p>
+          </div>
+          <Button onClick={() => setShowCreateModal(true)}>
+            Create Client
+          </Button>
         </div>
-        <Button onClick={() => setShowCreateModal(true)}>
-          Create Client
-        </Button>
-      </div>
 
-      {loading ? (
-        <div className="flex items-center justify-center h-64">
-          <div className="text-gray-400">Loading...</div>
-        </div>
-      ) : clients.length === 0 ? (
-        <Card>
-          <div className="p-12 text-center">
+        {loading ? (
+          <div className="text-center py-12 text-gray-500">Loading clients...</div>
+        ) : clients.length === 0 ? (
+          <div className="text-center py-12">
             <p className="text-gray-400 mb-4">No clients yet</p>
             <Button onClick={() => setShowCreateModal(true)}>
               Create Your First Client
             </Button>
           </div>
-        </Card>
-      ) : (
-        <div className="grid gap-4">
-          {clients.map((client) => (
-            <Card key={client.id} className="hover:border-blue-500 transition-colors">
-              <div className="p-6">
-                <div className="flex justify-between items-start">
-                  <div className="flex-1">
-                    <div className="flex items-center gap-3 mb-2">
-                      <h3
-                        className="text-lg font-semibold cursor-pointer hover:text-blue-400"
-                        onClick={() => onTabChange?.('clients', client.client_id)}
-                      >
-                        {client.name}
-                      </h3>
-                      {getAuthMethodBadge()}
+        ) : (
+          <>
+            <div className="space-y-2">
+              {clients.map((client) => (
+                <div
+                  key={client.id}
+                  onClick={() => onTabChange?.('clients', client.client_id)}
+                  className="bg-gray-50 border border-gray-200 rounded-lg p-4 hover:bg-gray-100 transition-colors cursor-pointer"
+                >
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h3 className="text-base font-semibold text-gray-900">{client.name}</h3>
+                      <p className="text-sm text-gray-500 font-mono mt-0.5">{maskSecret(client.client_id)}</p>
+                    </div>
+                    <div className="flex items-center gap-2">
                       <Badge variant={client.enabled ? 'success' : 'error'}>
                         {client.enabled ? 'Enabled' : 'Disabled'}
                       </Badge>
                     </div>
-
-                    <div className="grid grid-cols-2 gap-4 mt-4">
-                      <div>
-                        <p className="text-sm text-gray-400">Client ID</p>
-                        <p className="font-mono text-sm">{maskSecret(client.client_id)}</p>
-                      </div>
-                      <div>
-                        <p className="text-sm text-gray-400">Created</p>
-                        <p className="font-medium">{formatDate(client.created_at)}</p>
-                      </div>
-                      <div>
-                        <p className="text-sm text-gray-400">LLM Providers</p>
-                        <p className="font-medium">
-                          {client.allowed_llm_providers.length === 0
-                            ? 'No access'
-                            : `${client.allowed_llm_providers.length} provider${client.allowed_llm_providers.length !== 1 ? 's' : ''}`}
-                        </p>
-                      </div>
-                      <div>
-                        <p className="text-sm text-gray-400">MCP Servers</p>
-                        <p className="font-medium">
-                          {client.allowed_mcp_servers.length === 0
-                            ? 'No access'
-                            : `${client.allowed_mcp_servers.length} server${client.allowed_mcp_servers.length !== 1 ? 's' : ''}`}
-                        </p>
-                      </div>
-                      <div>
-                        <p className="text-sm text-gray-400">Last Used</p>
-                        <p className="font-medium">{formatDate(client.last_used)}</p>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="flex gap-2">
-                    <Button
-                      variant="secondary"
-                      onClick={() => onTabChange?.('clients', client.client_id)}
-                    >
-                      View Details
-                    </Button>
-                    <Button
-                      variant="error"
-                      onClick={() => handleDeleteClient(client.client_id)}
-                    >
-                      Delete
-                    </Button>
                   </div>
                 </div>
-              </div>
-            </Card>
-          ))}
-        </div>
-      )}
+              ))}
+            </div>
+
+            <div className="mt-4 text-sm text-gray-500 text-center">
+              Showing {clients.length} client{clients.length !== 1 ? 's' : ''}
+            </div>
+          </>
+        )}
+      </Card>
 
       {/* Create Client Modal */}
       <Modal

@@ -2005,6 +2005,87 @@ pub async fn toggle_mcp_server_enabled(
     Ok(())
 }
 
+/// List available tools from an MCP server
+///
+/// # Arguments
+/// * `server_id` - The MCP server ID
+///
+/// # Returns
+/// * List of available tools with their schemas
+#[tauri::command]
+pub async fn list_mcp_tools(
+    server_id: String,
+    mcp_manager: State<'_, Arc<McpServerManager>>,
+) -> Result<serde_json::Value, String> {
+    use crate::mcp::protocol::JsonRpcRequest;
+
+    // Create a tools/list request
+    let request = JsonRpcRequest::with_id(
+        1,
+        "tools/list".to_string(),
+        None,
+    );
+
+    // Send request to MCP server
+    let response = mcp_manager
+        .send_request(&server_id, request)
+        .await
+        .map_err(|e| format!("Failed to list tools: {}", e))?;
+
+    // Check for error
+    if let Some(error) = response.error {
+        return Err(format!("MCP error: {} (code {})", error.message, error.code));
+    }
+
+    // Return the tools list
+    Ok(response.result.unwrap_or(serde_json::Value::Null))
+}
+
+/// Call an MCP tool
+///
+/// # Arguments
+/// * `server_id` - The MCP server ID
+/// * `tool_name` - The tool name to call
+/// * `arguments` - Tool arguments as JSON
+///
+/// # Returns
+/// * The tool execution result
+#[tauri::command]
+pub async fn call_mcp_tool(
+    server_id: String,
+    tool_name: String,
+    arguments: serde_json::Value,
+    mcp_manager: State<'_, Arc<McpServerManager>>,
+) -> Result<serde_json::Value, String> {
+    use crate::mcp::protocol::JsonRpcRequest;
+
+    // Create a tools/call request
+    let params = serde_json::json!({
+        "name": tool_name,
+        "arguments": arguments
+    });
+
+    let request = JsonRpcRequest::with_id(
+        1,
+        "tools/call".to_string(),
+        Some(params),
+    );
+
+    // Send request to MCP server
+    let response = mcp_manager
+        .send_request(&server_id, request)
+        .await
+        .map_err(|e| format!("Failed to call tool: {}", e))?;
+
+    // Check for error
+    if let Some(error) = response.error {
+        return Err(format!("MCP error: {} (code {})", error.message, error.code));
+    }
+
+    // Return the result
+    Ok(response.result.unwrap_or(serde_json::Value::Null))
+}
+
 // ============================================================================
 // Unified Client Management Commands
 // ============================================================================

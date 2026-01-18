@@ -256,7 +256,8 @@ mod tests {
             "different-client".to_string(), // Mismatch!
             "server-1".to_string(),
             state_with_oauth,
-            oauth_context.0,
+            None, // No ClientAuthContext
+            Some(oauth_context.0), // OAuth context
             request,
         )
         .await;
@@ -306,7 +307,8 @@ mod tests {
             "client-123".to_string(),
             "server-2".to_string(), // Not in linked_server_ids!
             state_with_oauth,
-            oauth_context.0,
+            None, // No ClientAuthContext
+            Some(oauth_context.0), // OAuth context
             request,
         )
         .await;

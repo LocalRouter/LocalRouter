@@ -1,35 +1,14 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import Button from '../ui/Button'
 import Select from '../ui/Select'
 import Input from '../ui/Input'
-import Modal from '../ui/Modal'
-import OpenAI from 'openai'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
 
 interface ServerConfig {
   host: string
   port: number
   actual_port?: number
   enable_cors: boolean
-}
-
-interface ApiKey {
-  id: string
-  name: string
-  enabled: boolean
-}
-
-interface Model {
-  id: string
-  name: string
-  provider: string
-}
-
-interface ChatMessage {
-  role: 'user' | 'assistant'
-  content: string
 }
 
 interface NetworkInterface {
@@ -44,24 +23,12 @@ export default function ServerTab() {
     port: 3625,
     enable_cors: true,
   })
-  const [isEditModalOpen, setIsEditModalOpen] = useState(false)
   const [editConfig, setEditConfig] = useState<ServerConfig>(config)
   const [isUpdating, setIsUpdating] = useState(false)
-  const [apiKeys, setApiKeys] = useState<ApiKey[]>([])
-  const [models, setModels] = useState<Model[]>([])
-  const [selectedKeyId, setSelectedKeyId] = useState('')
-  const [selectedModel, setSelectedModel] = useState('')
-  const [apiKey, setApiKey] = useState('')
-  const [isLoadingModels, setIsLoadingModels] = useState(false)
-  const [messages, setMessages] = useState<ChatMessage[]>([])
-  const [input, setInput] = useState('')
-  const [isLoading, setIsLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [isRestarting, setIsRestarting] = useState(false)
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
   const [networkInterfaces, setNetworkInterfaces] = useState<NetworkInterface[]>([])
-  const messagesEndRef = useRef<HTMLDivElement>(null)
-  const [client, setClient] = useState<OpenAI | null>(null)
-  const streamingContentRef = useRef<string>('')
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false)
 
   // Auto-dismiss feedback after 5 seconds
   useEffect(() => {

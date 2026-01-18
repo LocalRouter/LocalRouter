@@ -5,7 +5,7 @@
 use crate::api_keys::keychain_trait::KeychainStorage;
 use crate::config::{McpServerConfig, McpTransportConfig, McpTransportType};
 use crate::mcp::oauth::McpOAuthManager;
-use crate::mcp::transport::{SseTransport, StdioTransport, Transport, WebSocketTransport};
+use crate::mcp::transport::{SseTransport, StdioTransport, Transport};
 use crate::mcp::protocol::{JsonRpcRequest, JsonRpcResponse};
 use crate::utils::errors::{AppError, AppResult};
 use dashmap::DashMap;
@@ -15,7 +15,7 @@ use std::sync::Arc;
 /// MCP server manager
 ///
 /// Manages the lifecycle of MCP server instances.
-/// Supports STDIO, SSE, and WebSocket transports.
+/// Supports STDIO and HTTP-SSE transports.
 /// Handles OAuth authentication for servers that require it.
 #[derive(Clone)]
 pub struct McpServerManager {
@@ -24,9 +24,6 @@ pub struct McpServerManager {
 
     /// Active SSE transports (server_id -> transport)
     sse_transports: Arc<DashMap<String, Arc<SseTransport>>>,
-
-    /// Active WebSocket transports (server_id -> transport)
-    websocket_transports: Arc<DashMap<String, Arc<WebSocketTransport>>>,
 
     /// Server configurations (server_id -> config)
     configs: Arc<DashMap<String, McpServerConfig>>,
@@ -70,7 +67,6 @@ impl McpServerManager {
         Self {
             stdio_transports: Arc::new(DashMap::new()),
             sse_transports: Arc::new(DashMap::new()),
-            websocket_transports: Arc::new(DashMap::new()),
             configs: Arc::new(DashMap::new()),
             oauth_manager: Arc::new(McpOAuthManager::new()),
         }
@@ -137,9 +133,6 @@ impl McpServerManager {
             }
             McpTransportType::Sse | McpTransportType::HttpSse => {
                 self.start_sse_server(server_id, &config).await?;
-            }
-            McpTransportType::WebSocket => {
-                self.start_websocket_server(server_id, &config).await?;
             }
         }
 
@@ -244,64 +237,6 @@ impl McpServerManager {
 
         // Store the transport
         self.sse_transports
-            .insert(server_id.to_string(), Arc::new(transport));
-
-        Ok(())
-    }
-
-    /// Start a WebSocket MCP server
-    #[allow(deprecated)]
-    async fn start_websocket_server(
-        &self,
-        server_id: &str,
-        config: &McpServerConfig,
-    ) -> AppResult<()> {
-        // Extract WebSocket config
-        let (url, mut headers) = match &config.transport_config {
-            McpTransportConfig::WebSocket { url, headers } => {
-                (url.clone(), headers.clone())
-            }
-            _ => {
-                return Err(AppError::Mcp(
-                    "Invalid transport config for WebSocket".to_string(),
-                ))
-            }
-        };
-
-        tracing::warn!("WebSocket transport is deprecated and will be removed in a future version. Please use HttpSse or Stdio instead.");
-
-        // Apply auth config (if specified)
-        if let Some(auth_config) = &config.auth_config {
-            match auth_config {
-                crate::config::McpAuthConfig::BearerToken { token_ref } => {
-                    // Retrieve token from keychain
-                    let keychain = crate::api_keys::CachedKeychain::auto()
-                        .unwrap_or_else(|_| crate::api_keys::CachedKeychain::system());
-                    if let Ok(Some(token)) = keychain.get("LocalRouter-McpServers", &config.id) {
-                        headers.insert("Authorization".to_string(), format!("Bearer {}", token));
-                        tracing::debug!("Applied bearer token auth for WebSocket server: {}", server_id);
-                    } else {
-                        tracing::warn!("Bearer token not found in keychain for server: {}", server_id);
-                    }
-                }
-                crate::config::McpAuthConfig::CustomHeaders { headers: auth_headers } => {
-                    // Merge custom auth headers with base headers
-                    for (key, value) in auth_headers {
-                        headers.insert(key.clone(), value.clone());
-                    }
-                    tracing::debug!("Applied custom headers auth for WebSocket server: {}", server_id);
-                }
-                _ => {
-                    tracing::debug!("No applicable auth config for WebSocket server: {}", server_id);
-                }
-            }
-        }
-
-        // Connect to the WebSocket server
-        let transport = WebSocketTransport::connect(url, headers).await?;
-
-        // Store the transport
-        self.websocket_transports
             .insert(server_id.to_string(), Arc::new(transport));
 
         Ok(())
