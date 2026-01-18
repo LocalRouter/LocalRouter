@@ -7,8 +7,12 @@ import Input from '../ui/Input'
 import Select from '../ui/Select'
 import DetailPageLayout from '../layouts/DetailPageLayout'
 import { MetricsChart } from '../charts/MetricsChart'
+import { McpMetricsChart } from '../charts/McpMetricsChart'
+import { McpMethodBreakdown } from '../charts/McpMethodBreakdown'
 import { useMetricsSubscription } from '../../hooks/useMetricsSubscription'
 import ModelSelectionTable, { Model, ModelSelectionValue } from '../ModelSelectionTable'
+import PrioritizedModelList from '../PrioritizedModelList'
+import ForcedModelSelector from '../ForcedModelSelector'
 
 // Simple icon components
 const EyeIcon = () => (
@@ -38,6 +42,8 @@ const CheckIcon = () => (
 
 interface ClientDetailPageProps {
   clientId: string
+  initialTab?: string
+  initialRoutingMode?: 'forced' | 'multi' | 'prioritized'
   onBack: () => void
 }
 
@@ -59,13 +65,13 @@ interface McpServer {
   url?: string
 }
 
-export default function ClientDetailPage({ clientId, onBack }: ClientDetailPageProps) {
+export default function ClientDetailPage({ clientId, initialTab, initialRoutingMode, onBack }: ClientDetailPageProps) {
   const refreshKey = useMetricsSubscription()
   const [client, setClient] = useState<Client | null>(null)
   const [mcpServers, setMcpServers] = useState<McpServer[]>([])
   const [models, setModels] = useState<Model[]>([])
   const [loading, setLoading] = useState(true)
-  const [activeTab, setActiveTab] = useState<string>('metrics')
+  const [activeTab, setActiveTab] = useState<string>(initialTab || 'metrics')
   const [isSaving, setIsSaving] = useState(false)
 
   // Configuration state
@@ -73,9 +79,10 @@ export default function ClientDetailPage({ clientId, onBack }: ClientDetailPageP
   const [enabled, setEnabled] = useState(true)
 
   // Models tab state
-  const [routingMode, setRoutingMode] = useState<'forced' | 'multi' | 'prioritized'>('multi')
-  const [forcedModel, setForcedModel] = useState<string>('')
+  const [routingMode, setRoutingMode] = useState<'forced' | 'multi' | 'prioritized'>(initialRoutingMode || 'multi')
+  const [forcedModel, setForcedModel] = useState<[string, string] | null>(null)
   const [modelSelection, setModelSelection] = useState<ModelSelectionValue | null>(null)
+  const [prioritizedModels, setPrioritizedModels] = useState<[string, string][]>([])
 
   // Secret visibility state
   const [showClientSecret, setShowClientSecret] = useState(false)
@@ -185,6 +192,51 @@ export default function ClientDetailPage({ clientId, onBack }: ClientDetailPageP
     }
   }
 
+  // Auto-save handlers for model routing
+  const handleRoutingModeChange = async (mode: 'forced' | 'multi' | 'prioritized') => {
+    setRoutingMode(mode)
+    // TODO: Save routing mode to backend
+    try {
+      // await invoke('update_client_routing_mode', { clientId: client?.client_id, mode })
+      console.log('Routing mode changed to:', mode)
+    } catch (error) {
+      console.error('Failed to save routing mode:', error)
+    }
+  }
+
+  const handleForcedModelChange = async (model: [string, string] | null) => {
+    setForcedModel(model)
+    // TODO: Save forced model to backend
+    try {
+      // await invoke('update_client_forced_model', { clientId: client?.client_id, model })
+      console.log('Forced model changed:', model)
+    } catch (error) {
+      console.error('Failed to save forced model:', error)
+    }
+  }
+
+  const handleMultiModelChange = async (selection: ModelSelectionValue) => {
+    setModelSelection(selection)
+    // TODO: Save multi-model selection to backend
+    try {
+      // await invoke('update_client_model_selection', { clientId: client?.client_id, selection })
+      console.log('Model selection changed:', selection)
+    } catch (error) {
+      console.error('Failed to save model selection:', error)
+    }
+  }
+
+  const handlePrioritizedModelsChange = async (models: [string, string][]) => {
+    setPrioritizedModels(models)
+    // TODO: Save prioritized models to backend
+    try {
+      // await invoke('update_client_prioritized_models', { clientId: client?.client_id, models })
+      console.log('Prioritized models changed:', models)
+    } catch (error) {
+      console.error('Failed to save prioritized models:', error)
+    }
+  }
+
   const formatDate = (dateStr: string | null) => {
     if (!dateStr) return 'Never'
     return new Date(dateStr).toLocaleString()
@@ -198,14 +250,6 @@ export default function ClientDetailPage({ clientId, onBack }: ClientDetailPageP
   const getApiUrl = () => {
     return 'http://localhost:3625'
   }
-
-  const tabs = [
-    { id: 'metrics', label: 'Metrics' },
-    { id: 'configuration', label: 'Configuration' },
-    { id: 'models', label: 'Models' },
-    { id: 'mcp', label: 'MCP' },
-    { id: 'auth', label: 'Auth' },
-  ]
 
   if (loading) {
     return (
@@ -224,23 +268,12 @@ export default function ClientDetailPage({ clientId, onBack }: ClientDetailPageP
     )
   }
 
-  return (
-    <DetailPageLayout
-      title={client.name}
-      onBack={onBack}
-      tabs={tabs}
-      activeTab={activeTab}
-      onTabChange={setActiveTab}
-      headerActions={
-        <div className="flex items-center gap-2">
-          <Badge variant={client.enabled ? 'success' : 'error'}>
-            {client.enabled ? 'Enabled' : 'Disabled'}
-          </Badge>
-        </div>
-      }
-    >
-      {/* Metrics Tab */}
-      {activeTab === 'metrics' && (
+  // Define tab content
+  const tabs = [
+    {
+      id: 'metrics',
+      label: 'Metrics',
+      content: (
         <div className="space-y-6">
           <Card>
             <h3 className="text-lg font-semibold mb-4">Request Metrics</h3>
@@ -298,10 +331,63 @@ export default function ClientDetailPage({ clientId, onBack }: ClientDetailPageP
             />
           </Card>
         </div>
-      )}
+      ),
+    },
+    {
+      id: 'mcp-metrics',
+      label: 'MCP Metrics',
+      content: (
+        <div className="space-y-6">
+          <Card>
+            <h3 className="text-lg font-semibold mb-4">MCP Method Breakdown</h3>
+            <McpMethodBreakdown
+              scope={`client:${client.client_id}`}
+              timeRange="day"
+              title="MCP Methods Used (Last 24h)"
+              refreshTrigger={refreshKey}
+            />
+          </Card>
 
-      {/* Configuration Tab */}
-      {activeTab === 'configuration' && (
+          <Card>
+            <h3 className="text-lg font-semibold mb-4">MCP Request Metrics</h3>
+            <div className="grid grid-cols-2 gap-4">
+              <McpMetricsChart
+                scope="client"
+                scopeId={client.client_id}
+                timeRange="day"
+                metricType="requests"
+                title="MCP Requests (Last 24h)"
+                refreshTrigger={refreshKey}
+              />
+              <McpMetricsChart
+                scope="client"
+                scopeId={client.client_id}
+                timeRange="day"
+                metricType="latency"
+                title="MCP Latency (Last 24h)"
+                refreshTrigger={refreshKey}
+              />
+            </div>
+          </Card>
+
+          <Card>
+            <h3 className="text-lg font-semibold mb-4">MCP Success Rate</h3>
+            <McpMetricsChart
+              scope="client"
+              scopeId={client.client_id}
+              timeRange="day"
+              metricType="successrate"
+              title="MCP Success Rate (Last 24h)"
+              refreshTrigger={refreshKey}
+            />
+          </Card>
+        </div>
+      ),
+    },
+    {
+      id: 'configuration',
+      label: 'Configuration',
+      content: (
         <div className="space-y-6">
           <Card>
             <div className="p-6 space-y-4">
@@ -365,10 +451,12 @@ export default function ClientDetailPage({ clientId, onBack }: ClientDetailPageP
             </div>
           </Card>
         </div>
-      )}
-
-      {/* Models Tab */}
-      {activeTab === 'models' && (
+      ),
+    },
+    {
+      id: 'models',
+      label: 'Models',
+      content: (
         <div className="space-y-6">
           {/* Authentication Section - Show First */}
           <Card>
@@ -432,7 +520,7 @@ export default function ClientDetailPage({ clientId, onBack }: ClientDetailPageP
                 <label className="block text-sm font-medium mb-2">Routing Mode</label>
                 <Select
                   value={routingMode}
-                  onChange={(e) => setRoutingMode(e.target.value as 'forced' | 'multi' | 'prioritized')}
+                  onChange={(e) => handleRoutingModeChange(e.target.value as 'forced' | 'multi' | 'prioritized')}
                 >
                   <option value="forced">Forced Model - Always use a specific model</option>
                   <option value="multi">Multi-Model - Select from available models</option>
@@ -442,54 +530,51 @@ export default function ClientDetailPage({ clientId, onBack }: ClientDetailPageP
 
               {routingMode === 'forced' && (
                 <div>
-                  <label className="block text-sm font-medium mb-2">Forced Model</label>
-                  <Select
-                    value={forcedModel}
-                    onChange={(e) => setForcedModel(e.target.value)}
-                  >
-                    <option value="">Select a model...</option>
-                    {models.map((model) => (
-                      <option key={`${model.provider}/${model.id}`} value={`${model.provider}/${model.id}`}>
-                        {model.provider} / {model.id}
-                      </option>
-                    ))}
-                  </Select>
+                  <label className="block text-sm font-medium mb-2">Select Forced Model</label>
+                  <ForcedModelSelector
+                    models={models}
+                    selectedModel={forcedModel}
+                    onChange={handleForcedModelChange}
+                  />
                   <p className="text-sm text-gray-400 mt-1">
-                    All requests will be routed to this specific model regardless of the requested model
+                    All requests will be routed to the selected model regardless of the requested model. Select only one model.
                   </p>
                 </div>
               )}
 
-              {(routingMode === 'multi' || routingMode === 'prioritized') && (
+              {routingMode === 'multi' && (
                 <div>
-                  <label className="block text-sm font-medium mb-2">
-                    {routingMode === 'multi' ? 'Available Models' : 'Model Priority Order'}
-                  </label>
+                  <label className="block text-sm font-medium mb-2">Available Models</label>
                   <ModelSelectionTable
                     models={models}
                     value={modelSelection}
-                    onChange={setModelSelection}
+                    onChange={handleMultiModelChange}
                   />
                   <p className="text-sm text-gray-400 mt-1">
-                    {routingMode === 'multi'
-                      ? 'Select which models are available to this client'
-                      : 'Models will be tried in order from top to bottom'}
+                    Select which models are available to this client
                   </p>
                 </div>
               )}
 
-              <div className="flex justify-end">
-                <Button onClick={() => alert('Model routing saved!')} disabled={isSaving}>
-                  Save Model Routing
-                </Button>
-              </div>
+              {routingMode === 'prioritized' && (
+                <div>
+                  <label className="block text-sm font-medium mb-2">Model Priority Order</label>
+                  <PrioritizedModelList
+                    models={models}
+                    prioritizedModels={prioritizedModels}
+                    onChange={handlePrioritizedModelsChange}
+                  />
+                </div>
+              )}
             </div>
           </Card>
         </div>
-      )}
-
-      {/* MCP Tab */}
-      {activeTab === 'mcp' && (
+      ),
+    },
+    {
+      id: 'mcp',
+      label: 'MCP',
+      content: (
         <div className="space-y-6">
           {/* Authentication Instructions - Show First */}
           <Card>
@@ -511,23 +596,6 @@ export default function ClientDetailPage({ clientId, onBack }: ClientDetailPageP
               {/* Bearer Key Auth */}
               {selectedMcpAuthType === 'bearer' && (
                 <div className="space-y-4">
-                  <div>
-                    <label className="block text-sm font-medium mb-2">MCP Server URL</label>
-                    <div className="flex gap-2">
-                      <Input
-                        value={getApiUrl() + '/mcp'}
-                        readOnly
-                        className="flex-1 font-mono"
-                      />
-                      <Button
-                        variant="secondary"
-                        onClick={() => copyToClipboard(getApiUrl() + '/mcp', 'mcp_url')}
-                      >
-                        {copiedField === 'mcp_url' ? <CheckIcon /> : <CopyIcon />}
-                      </Button>
-                    </div>
-                  </div>
-
                   <div>
                     <label className="block text-sm font-medium mb-2">Bearer Token</label>
                     <div className="flex gap-2">
@@ -553,21 +621,53 @@ export default function ClientDetailPage({ clientId, onBack }: ClientDetailPageP
                       </Button>
                     </div>
                   </div>
+
+                  <div>
+                    <label className="block text-sm font-medium mb-2">Accessible MCP Server URLs</label>
+                    {client.allowed_mcp_servers.length === 0 ? (
+                      <p className="text-sm text-gray-400">No MCP servers granted access yet. Add servers below.</p>
+                    ) : (
+                      <div className="space-y-2">
+                        {mcpServers
+                          .filter(server => client.allowed_mcp_servers.includes(server.id))
+                          .map(server => (
+                            <div key={server.id} className="bg-gray-800 rounded p-3">
+                              <div className="flex items-center justify-between mb-1">
+                                <span className="font-medium text-sm">{server.name}</span>
+                                {server.url && (
+                                  <Button
+                                    variant="secondary"
+                                    onClick={() => copyToClipboard(server.url!, `mcp_url_${server.id}`)}
+                                  >
+                                    {copiedField === `mcp_url_${server.id}` ? <CheckIcon /> : <CopyIcon />}
+                                  </Button>
+                                )}
+                              </div>
+                              {server.url ? (
+                                <code className="text-xs text-gray-300 font-mono">{server.url}</code>
+                              ) : (
+                                <span className="text-xs text-gray-500">No URL configured</span>
+                              )}
+                            </div>
+                          ))}
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
 
               {/* STDIO Auth (Supergateway) */}
               {selectedMcpAuthType === 'stdio' && (
                 <div className="space-y-4">
-                  <div className="bg-blue-900/20 border border-blue-700 rounded p-4">
-                    <h4 className="font-medium text-blue-200 mb-2">Supergateway Configuration</h4>
+                  <div className="bg-gray-800 border border-gray-600 rounded p-4">
+                    <h4 className="font-medium text-gray-100 mb-2">Supergateway Configuration</h4>
                     <p className="text-sm text-gray-300 mb-3">
                       Use the Anthropic Supergateway to connect MCP servers via STDIO transport.
                       Set the bearer token as an environment variable:
                     </p>
-                    <div className="bg-gray-800 rounded p-3 font-mono text-sm">
+                    <div className="bg-gray-900 rounded p-3 font-mono text-sm">
                       <div className="flex gap-2 items-center">
-                        <code className="flex-1">
+                        <code className="flex-1 text-gray-100">
                           LOCALROUTER_BEARER_TOKEN={showClientSecret ? client.client_id : maskSecret(client.client_id)}
                         </code>
                         <Button
@@ -672,20 +772,35 @@ export default function ClientDetailPage({ clientId, onBack }: ClientDetailPageP
                   </div>
 
                   <div>
-                    <label className="block text-sm font-medium mb-2">MCP Server URL</label>
-                    <div className="flex gap-2">
-                      <Input
-                        value={getApiUrl() + '/mcp'}
-                        readOnly
-                        className="flex-1 font-mono"
-                      />
-                      <Button
-                        variant="secondary"
-                        onClick={() => copyToClipboard(getApiUrl() + '/mcp', 'oauth_mcp_url')}
-                      >
-                        {copiedField === 'oauth_mcp_url' ? <CheckIcon /> : <CopyIcon />}
-                      </Button>
-                    </div>
+                    <label className="block text-sm font-medium mb-2">Accessible MCP Server URLs</label>
+                    {client.allowed_mcp_servers.length === 0 ? (
+                      <p className="text-sm text-gray-400">No MCP servers granted access yet. Add servers below.</p>
+                    ) : (
+                      <div className="space-y-2">
+                        {mcpServers
+                          .filter(server => client.allowed_mcp_servers.includes(server.id))
+                          .map(server => (
+                            <div key={server.id} className="bg-gray-800 rounded p-3">
+                              <div className="flex items-center justify-between mb-1">
+                                <span className="font-medium text-sm">{server.name}</span>
+                                {server.url && (
+                                  <Button
+                                    variant="secondary"
+                                    onClick={() => copyToClipboard(server.url!, `oauth_mcp_url_${server.id}`)}
+                                  >
+                                    {copiedField === `oauth_mcp_url_${server.id}` ? <CheckIcon /> : <CopyIcon />}
+                                  </Button>
+                                )}
+                              </div>
+                              {server.url ? (
+                                <code className="text-xs text-gray-300 font-mono">{server.url}</code>
+                              ) : (
+                                <span className="text-xs text-gray-500">No URL configured</span>
+                              )}
+                            </div>
+                          ))}
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
@@ -734,83 +849,28 @@ export default function ClientDetailPage({ clientId, onBack }: ClientDetailPageP
             </div>
           </Card>
         </div>
-      )}
+      ),
+    },
+  ]
 
-      {/* Auth Tab */}
-      {activeTab === 'auth' && (
-        <div className="space-y-6">
-          <Card>
-            <div className="p-6">
-              <h3 className="text-lg font-semibold mb-4">Authentication Overview</h3>
-              <p className="text-gray-400 mb-4">
-                This client uses a single bearer token for all authentication. The same token is used for:
-              </p>
-              <ul className="list-disc list-inside space-y-2 text-gray-300">
-                <li>LLM API access (Authorization: Bearer header)</li>
-                <li>Direct MCP server access (Authorization: Bearer header)</li>
-                <li>OAuth client credentials flow (client_secret parameter)</li>
-              </ul>
-            </div>
-          </Card>
-
-          <Card>
-            <div className="p-6 space-y-4">
-              <h3 className="text-lg font-semibold">Credentials</h3>
-
-              <div>
-                <label className="block text-sm font-medium mb-2">Client ID</label>
-                <div className="flex gap-2">
-                  <Input
-                    value={client.client_id}
-                    readOnly
-                    className="flex-1 font-mono"
-                  />
-                  <Button
-                    variant="secondary"
-                    onClick={() => copyToClipboard(client.client_id, 'auth_client_id')}
-                  >
-                    {copiedField === 'auth_client_id' ? <CheckIcon /> : <CopyIcon />}
-                  </Button>
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium mb-2">Client Secret (Bearer Token)</label>
-                <div className="flex gap-2">
-                  <div className="relative flex-1">
-                    <Input
-                      type={showClientSecret ? 'text' : 'password'}
-                      value={showClientSecret ? client.client_id : maskSecret(client.client_id)}
-                      readOnly
-                      className="font-mono pr-10"
-                    />
-                    <button
-                      onClick={() => setShowClientSecret(!showClientSecret)}
-                      className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600"
-                    >
-                      {showClientSecret ? <EyeOffIcon /> : <EyeIcon />}
-                    </button>
-                  </div>
-                  <Button
-                    variant="secondary"
-                    onClick={() => copyToClipboard(client.client_id, 'auth_secret')}
-                  >
-                    {copiedField === 'auth_secret' ? <CheckIcon /> : <CopyIcon />}
-                  </Button>
-                </div>
-              </div>
-
-              <div className="bg-red-900/20 border border-red-700 rounded p-4">
-                <h4 className="font-medium text-red-200 mb-2">Security Warning</h4>
-                <p className="text-red-200 text-sm">
-                  Keep your client secret secure. Anyone with access to this secret can make API requests on behalf of this client.
-                  The secret cannot be regenerated - if compromised, you must delete this client and create a new one.
-                </p>
-              </div>
-            </div>
-          </Card>
-        </div>
-      )}
-    </DetailPageLayout>
+  return (
+    <DetailPageLayout
+      title={client.name}
+      badges={[
+        {
+          label: client.enabled ? 'Enabled' : 'Disabled',
+          variant: client.enabled ? 'success' : 'error',
+        },
+      ]}
+      actions={
+        <Button variant="secondary" onClick={onBack}>
+          Back
+        </Button>
+      }
+      tabs={tabs}
+      activeTab={activeTab}
+      onTabChange={setActiveTab}
+      loading={loading}
+    />
   )
 }

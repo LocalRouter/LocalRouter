@@ -3,6 +3,8 @@ import { invoke } from '@tauri-apps/api/core'
 import Card from '../ui/StatCard'
 import { MetricsChart } from '../charts/MetricsChart'
 import { StackedAreaChart } from '../charts/StackedAreaChart'
+import { McpMetricsChart } from '../charts/McpMetricsChart'
+import { McpMethodBreakdown } from '../charts/McpMethodBreakdown'
 import { useMetricsSubscription } from '../../hooks/useMetricsSubscription'
 
 interface AggregateStats {
@@ -169,6 +171,49 @@ export default function HomeTab() {
         title="Total Cost Over Time"
         refreshTrigger={refreshKey}
       />
+
+      {/* MCP Metrics Section */}
+      <div className="mt-12">
+        <h2 className="text-xl font-semibold mb-6">MCP (Model Context Protocol) Usage</h2>
+
+        {/* Method Breakdown */}
+        <McpMethodBreakdown
+          scope="global"
+          timeRange={timeRange}
+          title="MCP Methods Over Time"
+          refreshTrigger={refreshKey}
+        />
+
+        {/* MCP Request Volume & Latency */}
+        <div className="grid grid-cols-2 gap-6 mt-6">
+          <McpMetricsChart
+            scope="global"
+            timeRange={timeRange}
+            metricType="requests"
+            title="MCP Request Volume"
+            refreshTrigger={refreshKey}
+          />
+
+          <McpMetricsChart
+            scope="global"
+            timeRange={timeRange}
+            metricType="latency"
+            title="MCP Average Latency"
+            refreshTrigger={refreshKey}
+          />
+        </div>
+
+        {/* MCP Success Rate */}
+        <div className="mt-6">
+          <McpMetricsChart
+            scope="global"
+            timeRange={timeRange}
+            metricType="successrate"
+            title="MCP Success Rate"
+            refreshTrigger={refreshKey}
+          />
+        </div>
+      </div>
 
       {/* Info Note */}
       <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
