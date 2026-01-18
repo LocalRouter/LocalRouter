@@ -289,6 +289,53 @@ impl AccessLogger {
     pub fn log_dir(&self) -> &PathBuf {
         &self.log_dir
     }
+
+    /// Log a successful request
+    #[allow(clippy::too_many_arguments)]
+    pub fn log_success(
+        &self,
+        api_key_name: &str,
+        provider: &str,
+        model: &str,
+        input_tokens: u64,
+        output_tokens: u64,
+        cost_usd: f64,
+        latency_ms: u64,
+        request_id: &str,
+    ) -> AppResult<()> {
+        let entry = AccessLogEntry::success(
+            api_key_name,
+            provider,
+            model,
+            input_tokens,
+            output_tokens,
+            cost_usd,
+            latency_ms,
+            request_id,
+        );
+        self.log(&entry)
+    }
+
+    /// Log a failed request
+    pub fn log_failure(
+        &self,
+        api_key_name: &str,
+        provider: &str,
+        model: &str,
+        latency_ms: u64,
+        request_id: &str,
+        status_code: u16,
+    ) -> AppResult<()> {
+        let entry = AccessLogEntry::error(
+            api_key_name,
+            provider,
+            model,
+            status_code,
+            latency_ms,
+            request_id,
+        );
+        self.log(&entry)
+    }
 }
 
 impl Drop for AccessLogger {

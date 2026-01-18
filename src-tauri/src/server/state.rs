@@ -10,10 +10,13 @@ use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use crate::api_keys::ApiKeyManager;
 use crate::clients::{ClientManager, TokenStore};
 use crate::mcp::McpServerManager;
+use crate::monitoring::logger::AccessLogger;
+use crate::monitoring::mcp_logger::McpAccessLogger;
 use crate::monitoring::metrics::MetricsCollector;
 use crate::oauth_clients::OAuthClientManager;
 use crate::providers::registry::ProviderRegistry;
@@ -54,8 +57,18 @@ pub struct AppState {
     /// Metrics collector for tracking usage
     pub metrics_collector: Arc<MetricsCollector>,
 
+    /// Access logger for persistent request logging
+    pub access_logger: Arc<AccessLogger>,
+
+    /// MCP access logger for persistent MCP request logging
+    pub mcp_access_logger: Arc<McpAccessLogger>,
+
     /// Tauri app handle for emitting events (set after initialization)
     pub app_handle: Arc<RwLock<Option<tauri::AppHandle>>>,
+
+    /// Transient secret for internal UI testing (never persisted, regenerated on startup)
+    /// Used to allow the Tauri frontend to bypass API key restrictions when testing models
+    pub internal_test_secret: Arc<String>,
 }
 
 impl AppState {
@@ -67,6 +80,26 @@ impl AppState {
         client_manager: Arc<ClientManager>,
         token_store: Arc<TokenStore>,
     ) -> Self {
+        // Generate a random bearer token for internal UI testing
+        // Format: lr-internal-<uuid> to match standard API key format
+        // This is regenerated on every app start and never persisted
+        let internal_test_secret = format!("lr-internal-{}", Uuid::new_v4().simple());
+        tracing::info!("Generated transient internal test bearer token for UI model testing");
+
+        // Initialize access logger with 30-day retention
+        let access_logger = AccessLogger::new(30)
+            .unwrap_or_else(|e| {
+                tracing::error!("Failed to initialize access logger: {}", e);
+                panic!("Access logger initialization failed");
+            });
+
+        // Initialize MCP access logger with 30-day retention
+        let mcp_access_logger = McpAccessLogger::new(30)
+            .unwrap_or_else(|e| {
+                tracing::error!("Failed to initialize MCP access logger: {}", e);
+                panic!("MCP access logger initialization failed");
+            });
+
         Self {
             router,
             api_key_manager: Arc::new(RwLock::new(api_key_manager)),
@@ -78,7 +111,10 @@ impl AppState {
             provider_registry,
             generation_tracker: Arc::new(GenerationTracker::new()),
             metrics_collector: Arc::new(MetricsCollector::with_default_retention()),
+            access_logger: Arc::new(access_logger),
+            mcp_access_logger: Arc::new(mcp_access_logger),
             app_handle: Arc::new(RwLock::new(None)),
+            internal_test_secret: Arc::new(internal_test_secret),
         }
     }
 
@@ -93,6 +129,12 @@ impl AppState {
             mcp_server_manager,
             ..self
         }
+    }
+
+    /// Get the internal test secret for UI testing
+    /// Only accessible via Tauri IPC, not exposed over HTTP
+    pub fn get_internal_test_secret(&self) -> String {
+        (*self.internal_test_secret).clone()
     }
 
     /// Set the Tauri app handle (called after Tauri initialization)

@@ -394,6 +394,18 @@ async fn handle_non_streaming(
                 latency,
             );
 
+            // Log to access log (persistent storage)
+            if let Err(log_err) = state.access_logger.log_failure(
+                &auth.api_key_id,
+                "unknown",
+                "unknown",
+                latency,
+                &generation_id,
+                502, // Bad Gateway
+            ) {
+                tracing::warn!("Failed to write access log: {}", log_err);
+            }
+
             return Err(ApiErrorResponse::bad_gateway(format!("Provider error: {}", e)));
         }
     };
@@ -423,6 +435,20 @@ async fn handle_non_streaming(
         cost_usd: cost,
         latency_ms,
     });
+
+    // Log to access log (persistent storage)
+    if let Err(e) = state.access_logger.log_success(
+        &auth.api_key_id,
+        &response.provider,
+        &response.model,
+        response.usage.prompt_tokens as u64,
+        response.usage.completion_tokens as u64,
+        cost,
+        latency_ms,
+        &generation_id,
+    ) {
+        tracing::warn!("Failed to write access log: {}", e);
+    }
 
     // Emit event for real-time UI updates
     state.emit_event("metrics-updated", &serde_json::json!({
@@ -519,6 +545,18 @@ async fn handle_streaming(
                 &model,
                 latency,
             );
+
+            // Log to access log (persistent storage)
+            if let Err(log_err) = state.access_logger.log_failure(
+                &auth.api_key_id,
+                "unknown",
+                &model,
+                latency,
+                &generation_id,
+                502, // Bad Gateway
+            ) {
+                tracing::warn!("Failed to write access log: {}", log_err);
+            }
 
             return Err(ApiErrorResponse::bad_gateway(format!("Provider error: {}", e)));
         }
@@ -636,6 +674,20 @@ async fn handle_streaming(
             cost_usd: cost,
             latency_ms,
         });
+
+        // Log to access log (persistent storage)
+        if let Err(e) = state_clone.access_logger.log_success(
+            &auth_clone.api_key_id,
+            &provider,
+            &model_clone,
+            prompt_tokens as u64,
+            completion_tokens as u64,
+            cost,
+            latency_ms,
+            &gen_id_clone,
+        ) {
+            tracing::warn!("Failed to write access log: {}", e);
+        }
 
         // Emit event for real-time UI updates
         state_clone.emit_event("metrics-updated", &serde_json::json!({

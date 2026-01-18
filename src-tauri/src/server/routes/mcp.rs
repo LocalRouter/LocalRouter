@@ -10,6 +10,7 @@ use axum::{
     Json,
 };
 use std::time::Instant;
+use uuid::Uuid;
 
 use crate::mcp::protocol::{JsonRpcRequest, JsonRpcResponse};
 use crate::monitoring::mcp_metrics::McpRequestMetrics;
@@ -143,6 +144,37 @@ async fn handle_request(
         success: response.error.is_none(),
         error_code: response.error.as_ref().map(|e| e.code),
     });
+
+    // Determine transport type
+    let transport = "unknown"; // TODO: Add transport detection to MCP manager
+
+    // Log to MCP access log (persistent storage)
+    let request_id = format!("mcp_{}", uuid::Uuid::new_v4());
+    if response.error.is_none() {
+        if let Err(e) = state.mcp_access_logger.log_success(
+            &client_id_param,
+            &server_id,
+            &method,
+            latency_ms,
+            transport,
+            &request_id,
+        ) {
+            tracing::warn!("Failed to write MCP access log: {}", e);
+        }
+    } else {
+        if let Err(e) = state.mcp_access_logger.log_failure(
+            &client_id_param,
+            &server_id,
+            &method,
+            500, // Internal Server Error
+            response.error.as_ref().map(|e| e.code),
+            latency_ms,
+            transport,
+            &request_id,
+        ) {
+            tracing::warn!("Failed to write MCP access log: {}", e);
+        }
+    }
 
     Ok(response)
 }
