@@ -17,6 +17,7 @@ interface McpServer {
   name: string
   transport: 'Stdio' | 'Sse' | 'WebSocket'
   transport_config: TransportConfig
+  auth_config: AuthConfig | null
   oauth_config: OAuthConfig | null
   enabled: boolean
   created_at: string
@@ -26,6 +27,13 @@ type TransportConfig =
   | { Stdio: { command: string; args: string[]; env: Record<string, string> } }
   | { Sse: { url: string; headers: Record<string, string> } }
   | { WebSocket: { url: string; headers: Record<string, string> } }
+
+type AuthConfig =
+  | { None: {} }
+  | { BearerToken: { token_ref: string } }
+  | { CustomHeaders: { headers: Record<string, string> } }
+  | { OAuth: { client_id: string; client_secret_ref: string; auth_url: string; token_url: string; scopes: string[] } }
+  | { EnvVars: { env: Record<string, string> } }
 
 interface OAuthConfig {
   auth_url: string
@@ -50,6 +58,8 @@ export default function McpServerDetailPage({ serverId, onBack }: McpServerDetai
   const [isSaving, setIsSaving] = useState(false)
   const [isStarting, setIsStarting] = useState(false)
   const [isStopping, setIsStopping] = useState(false)
+  const [isTesting, setIsTesting] = useState(false)
+  const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null)
 
   // Form state
   const [name, setName] = useState('')
@@ -239,6 +249,46 @@ export default function McpServerDetailPage({ serverId, onBack }: McpServerDetai
     }
   }
 
+  const handleTestConnection = async () => {
+    setIsTesting(true)
+    setTestResult(null)
+
+    try {
+      // Start the server if it's not already running
+      await invoke('start_mcp_server', { serverId })
+
+      // Wait a moment for the server to initialize
+      await new Promise(resolve => setTimeout(resolve, 2000))
+
+      // Check health
+      const healthList = await invoke<McpServerHealth[]>('get_all_mcp_server_health')
+      const serverHealth = healthList.find((h) => h.server_id === serverId)
+
+      if (serverHealth && serverHealth.status === 'healthy') {
+        setTestResult({
+          success: true,
+          message: 'Successfully connected to MCP server with authentication'
+        })
+      } else {
+        setTestResult({
+          success: false,
+          message: serverHealth?.error || 'Connection failed - server is unhealthy'
+        })
+      }
+
+      // Refresh health display
+      await loadHealth()
+    } catch (error) {
+      console.error('Test connection failed:', error)
+      setTestResult({
+        success: false,
+        message: `Connection test failed: ${error}`
+      })
+    } finally {
+      setIsTesting(false)
+    }
+  }
+
   const formatDate = (dateStr: string) => {
     return new Date(dateStr).toLocaleString()
   }
@@ -268,8 +318,30 @@ export default function McpServerDetailPage({ serverId, onBack }: McpServerDetai
     return <Badge variant={colors[transport as keyof typeof colors] || 'secondary'}>{transport}</Badge>
   }
 
+  const maskSecret = (secret: string) => {
+    if (secret.length <= 8) return '***'
+    return `${secret.slice(0, 4)}...${secret.slice(-4)}`
+  }
+
+  const getAuthMethodName = (authConfig: AuthConfig | null): string => {
+    if (!authConfig) return 'None'
+    if ('None' in authConfig) return 'None'
+    if ('BearerToken' in authConfig) return 'Bearer Token'
+    if ('CustomHeaders' in authConfig) return 'Custom Headers'
+    if ('OAuth' in authConfig) return 'OAuth'
+    if ('EnvVars' in authConfig) return 'Environment Variables'
+    return 'Unknown'
+  }
+
+  const getAuthMethodBadge = (authConfig: AuthConfig | null) => {
+    const name = getAuthMethodName(authConfig)
+    const variant = name === 'None' ? 'secondary' : 'info'
+    return <Badge variant={variant}>{name}</Badge>
+  }
+
   const tabs = [
     { id: 'configuration', label: 'Configuration' },
+    { id: 'authentication', label: 'Authentication' },
     { id: 'health', label: 'Health' },
     { id: 'oauth', label: 'OAuth' },
     { id: 'examples', label: 'Connection Examples' },
@@ -419,6 +491,228 @@ export default function McpServerDetailPage({ serverId, onBack }: McpServerDetai
                   <p className="font-medium">{formatDate(server.created_at)}</p>
                 </div>
               </div>
+            </div>
+          </Card>
+        </div>
+      )}
+
+      {/* Authentication Tab */}
+      {activeTab === 'authentication' && (
+        <div className="space-y-6">
+          <Card>
+            <div className="p-6">
+              <h3 className="text-lg font-semibold mb-4">Authentication Configuration</h3>
+
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-gray-400">Authentication Method</span>
+                  {getAuthMethodBadge(server.auth_config)}
+                </div>
+
+                {server.auth_config && 'BearerToken' in server.auth_config && (
+                  <>
+                    <div className="border-t border-gray-700 pt-4">
+                      <div className="bg-blue-900/20 border border-blue-700 rounded p-4 mb-4">
+                        <p className="text-blue-200 text-sm">
+                          <strong>Bearer Token Authentication:</strong> The token is securely stored in the system keychain and automatically included in requests.
+                        </p>
+                      </div>
+
+                      <div>
+                        <label className="block text-sm font-medium mb-2">Token Reference</label>
+                        <Input
+                          value={maskSecret(server.auth_config.BearerToken.token_ref)}
+                          readOnly
+                          className="bg-gray-800 font-mono"
+                        />
+                        <p className="text-sm text-gray-400 mt-1">
+                          Stored in system keychain as: <code className="bg-gray-800 px-1">LocalRouter-McpServers/{server.id}</code>
+                        </p>
+                      </div>
+                    </div>
+                  </>
+                )}
+
+                {server.auth_config && 'CustomHeaders' in server.auth_config && (
+                  <>
+                    <div className="border-t border-gray-700 pt-4">
+                      <div className="bg-blue-900/20 border border-blue-700 rounded p-4 mb-4">
+                        <p className="text-blue-200 text-sm">
+                          <strong>Custom Headers:</strong> Additional HTTP headers are automatically included in all requests to this MCP server.
+                        </p>
+                      </div>
+
+                      <div>
+                        <label className="block text-sm font-medium mb-2">Headers</label>
+                        <div className="bg-gray-800 rounded-md p-4 space-y-2">
+                          {Object.entries(server.auth_config.CustomHeaders.headers).map(([key, value]) => (
+                            <div key={key} className="flex justify-between items-center">
+                              <span className="font-mono text-sm text-gray-300">{key}:</span>
+                              <span className="font-mono text-sm text-gray-400">{maskSecret(value)}</span>
+                            </div>
+                          ))}
+                          {Object.keys(server.auth_config.CustomHeaders.headers).length === 0 && (
+                            <p className="text-sm text-gray-400">No custom headers configured</p>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </>
+                )}
+
+                {server.auth_config && 'OAuth' in server.auth_config && (
+                  <>
+                    <div className="border-t border-gray-700 pt-4">
+                      <div className="bg-blue-900/20 border border-blue-700 rounded p-4 mb-4">
+                        <p className="text-blue-200 text-sm">
+                          <strong>OAuth Authentication:</strong> OAuth tokens are automatically managed and refreshed. The client secret is securely stored in the system keychain.
+                        </p>
+                      </div>
+
+                      <div className="space-y-3">
+                        <div>
+                          <label className="block text-sm font-medium mb-2">Client ID</label>
+                          <Input
+                            value={server.auth_config.OAuth.client_id}
+                            readOnly
+                            className="bg-gray-800 font-mono"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block text-sm font-medium mb-2">Client Secret Reference</label>
+                          <Input
+                            value={maskSecret(server.auth_config.OAuth.client_secret_ref)}
+                            readOnly
+                            className="bg-gray-800 font-mono"
+                          />
+                          <p className="text-sm text-gray-400 mt-1">
+                            Stored in system keychain
+                          </p>
+                        </div>
+
+                        <div>
+                          <label className="block text-sm font-medium mb-2">Authorization URL</label>
+                          <Input
+                            value={server.auth_config.OAuth.auth_url}
+                            readOnly
+                            className="bg-gray-800"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block text-sm font-medium mb-2">Token URL</label>
+                          <Input
+                            value={server.auth_config.OAuth.token_url}
+                            readOnly
+                            className="bg-gray-800"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block text-sm font-medium mb-2">Scopes</label>
+                          <div className="flex flex-wrap gap-2">
+                            {server.auth_config.OAuth.scopes.map((scope) => (
+                              <Badge key={scope} variant="info">{scope}</Badge>
+                            ))}
+                            {server.auth_config.OAuth.scopes.length === 0 && (
+                              <span className="text-sm text-gray-400">No scopes configured</span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </>
+                )}
+
+                {server.auth_config && 'EnvVars' in server.auth_config && (
+                  <>
+                    <div className="border-t border-gray-700 pt-4">
+                      <div className="bg-blue-900/20 border border-blue-700 rounded p-4 mb-4">
+                        <p className="text-blue-200 text-sm">
+                          <strong>Environment Variables:</strong> These environment variables are passed to the STDIO subprocess when starting the MCP server.
+                        </p>
+                      </div>
+
+                      <div>
+                        <label className="block text-sm font-medium mb-2">Environment Variables</label>
+                        <div className="bg-gray-800 rounded-md p-4 space-y-2">
+                          {Object.entries(server.auth_config.EnvVars.env).map(([key, value]) => (
+                            <div key={key} className="flex justify-between items-center">
+                              <span className="font-mono text-sm text-gray-300">{key}=</span>
+                              <span className="font-mono text-sm text-gray-400">{maskSecret(value)}</span>
+                            </div>
+                          ))}
+                          {Object.keys(server.auth_config.EnvVars.env).length === 0 && (
+                            <p className="text-sm text-gray-400">No environment variables configured</p>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </>
+                )}
+
+                {(!server.auth_config || 'None' in server.auth_config) && (
+                  <div className="text-center py-8">
+                    <p className="text-gray-400 mb-4">
+                      No authentication configured. This MCP server will be accessed without authentication.
+                    </p>
+                    <p className="text-sm text-gray-500">
+                      Authentication can be configured when creating a new MCP server or by editing the configuration.
+                    </p>
+                  </div>
+                )}
+
+                {/* Test Connection Button */}
+                <div className="border-t border-gray-700 pt-4">
+                  <div className="flex items-center gap-3">
+                    <Button
+                      onClick={handleTestConnection}
+                      disabled={isTesting || !server.enabled}
+                      variant="secondary"
+                    >
+                      {isTesting ? 'Testing Connection...' : 'Test Connection'}
+                    </Button>
+                    {!server.enabled && (
+                      <span className="text-sm text-gray-400">
+                        Server must be enabled to test
+                      </span>
+                    )}
+                  </div>
+
+                  {testResult && (
+                    <div className={`mt-3 p-4 rounded border ${
+                      testResult.success
+                        ? 'bg-green-900/20 border-green-700'
+                        : 'bg-red-900/20 border-red-700'
+                    }`}>
+                      <p className={`text-sm ${
+                        testResult.success ? 'text-green-200' : 'text-red-200'
+                      }`}>
+                        <strong>{testResult.success ? 'Success:' : 'Error:'}</strong> {testResult.message}
+                      </p>
+                    </div>
+                  )}
+
+                  <p className="text-sm text-gray-500 mt-2">
+                    This will start the MCP server (if not running) and verify that the connection and authentication are working correctly.
+                  </p>
+                </div>
+              </div>
+            </div>
+          </Card>
+
+          <Card>
+            <div className="p-6">
+              <h3 className="text-lg font-semibold mb-4">Security Notes</h3>
+              <ul className="list-disc list-inside space-y-2 text-sm text-gray-400">
+                <li>Secrets (tokens, API keys, client secrets) are stored securely in the system keychain</li>
+                <li>Credentials are never logged or displayed in full</li>
+                <li>Authentication is applied automatically when connecting to the MCP server</li>
+                <li>For STDIO transports, environment variables are passed to the subprocess</li>
+                <li>For HTTP-based transports (SSE), credentials are included in HTTP headers</li>
+                <li>OAuth tokens are automatically refreshed when they expire</li>
+              </ul>
             </div>
           </Card>
         </div>

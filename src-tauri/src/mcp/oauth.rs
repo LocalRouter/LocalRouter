@@ -9,9 +9,19 @@ use crate::utils::errors::{AppError, AppResult};
 use chrono::{DateTime, Duration, Utc};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use sha2::{Sha256, Digest};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use rand::{thread_rng, Rng};
 use std::collections::HashMap;
 use std::sync::Arc;
-use parking_lot::RwLock;
+use parking_lot::{RwLock, Mutex};
+use axum::{
+    Router,
+    extract::Query,
+    response::{Html, IntoResponse},
+    http::StatusCode,
+};
+use tokio::sync::oneshot;
 
 /// Keychain service name for MCP server OAuth tokens
 const MCP_OAUTH_SERVICE: &str = "LocalRouter-McpServerTokens";
@@ -83,6 +93,245 @@ struct TokenResponse {
     /// Scope
     #[serde(default)]
     scope: Option<String>,
+}
+
+/// PKCE (Proof Key for Code Exchange) data
+#[derive(Debug, Clone)]
+pub struct PkceChallenge {
+    /// Code verifier (random string, 43-128 characters)
+    pub code_verifier: String,
+
+    /// Code challenge (BASE64URL(SHA256(code_verifier)))
+    pub code_challenge: String,
+
+    /// Challenge method (always "S256" for SHA-256)
+    pub code_challenge_method: String,
+}
+
+/// OAuth callback query parameters
+#[derive(Debug, Deserialize)]
+struct OAuthCallbackQuery {
+    /// Authorization code
+    code: Option<String>,
+
+    /// State parameter (for CSRF protection)
+    state: Option<String>,
+
+    /// Error code (if authorization failed)
+    error: Option<String>,
+
+    /// Error description
+    error_description: Option<String>,
+}
+
+/// OAuth callback result
+#[derive(Debug, Clone)]
+pub struct OAuthCallbackResult {
+    /// Authorization code
+    pub code: String,
+
+    /// State parameter
+    pub state: String,
+}
+
+/// Generate PKCE challenge for OAuth authorization code flow
+///
+/// Creates a cryptographically secure code verifier and derives the code challenge
+/// using SHA-256 hashing.
+///
+/// # Returns
+/// * PKCE challenge containing verifier and challenge
+pub fn generate_pkce_challenge() -> PkceChallenge {
+    // Generate random code_verifier (43-128 characters, URL-safe)
+    let mut rng = thread_rng();
+    let code_verifier: String = (0..64)
+        .map(|_| {
+            let idx = rng.gen_range(0..62);
+            match idx {
+                0..=25 => (b'A' + idx) as char,
+                26..=51 => (b'a' + (idx - 26)) as char,
+                _ => (b'0' + (idx - 52)) as char,
+            }
+        })
+        .collect();
+
+    // Generate code_challenge = BASE64URL(SHA256(code_verifier))
+    let mut hasher = Sha256::new();
+    hasher.update(code_verifier.as_bytes());
+    let hash = hasher.finalize();
+    let code_challenge = URL_SAFE_NO_PAD.encode(hash);
+
+    PkceChallenge {
+        code_verifier,
+        code_challenge,
+        code_challenge_method: "S256".to_string(),
+    }
+}
+
+/// Generate a random state string for CSRF protection
+pub fn generate_state() -> String {
+    let mut rng = thread_rng();
+    (0..32)
+        .map(|_| {
+            let idx = rng.gen_range(0..62);
+            match idx {
+                0..=25 => (b'A' + idx) as char,
+                26..=51 => (b'a' + (idx - 26)) as char,
+                _ => (b'0' + (idx - 52)) as char,
+            }
+        })
+        .collect()
+}
+
+/// Start a temporary HTTP server to receive OAuth callback
+///
+/// This server listens on http://localhost:{port}/callback and waits for the OAuth
+/// provider to redirect the user back with an authorization code.
+///
+/// # Arguments
+/// * `port` - Port to listen on (e.g., 8080)
+/// * `expected_state` - Expected state parameter for CSRF protection
+///
+/// # Returns
+/// * OAuth callback result containing the authorization code
+pub async fn start_callback_server(
+    port: u16,
+    expected_state: String,
+) -> AppResult<OAuthCallbackResult> {
+    let (tx, rx) = oneshot::channel();
+    let tx = Arc::new(Mutex::new(Some(tx)));
+    let expected_state = Arc::new(expected_state);
+
+    // Create callback handler
+    let callback_handler = {
+        let tx = Arc::clone(&tx);
+        let expected_state = Arc::clone(&expected_state);
+
+        move |Query(params): Query<OAuthCallbackQuery>| {
+            let tx = Arc::clone(&tx);
+            let expected_state = Arc::clone(&expected_state);
+
+            async move {
+                // Check for errors
+                if let Some(error) = params.error {
+                    let description = params.error_description.unwrap_or_else(|| "Unknown error".to_string());
+                    tracing::error!("OAuth authorization failed: {} - {}", error, description);
+
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Html(format!(
+                            r#"
+                            <html>
+                                <head><title>Authorization Failed</title></head>
+                                <body>
+                                    <h1>Authorization Failed</h1>
+                                    <p>Error: {}</p>
+                                    <p>Description: {}</p>
+                                    <p>You can close this window.</p>
+                                </body>
+                            </html>
+                            "#,
+                            error, description
+                        )),
+                    ).into_response();
+                }
+
+                // Extract authorization code
+                let code = match params.code {
+                    Some(c) => c,
+                    None => {
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            Html("<html><body><h1>Error: No authorization code received</h1></body></html>"),
+                        ).into_response();
+                    }
+                };
+
+                // Validate state
+                let state = match params.state {
+                    Some(s) => s,
+                    None => {
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            Html("<html><body><h1>Error: No state parameter received</h1></body></html>"),
+                        ).into_response();
+                    }
+                };
+
+                if state != *expected_state {
+                    tracing::error!("State mismatch: expected {}, got {}", *expected_state, state);
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Html("<html><body><h1>Error: Invalid state parameter (CSRF protection)</h1></body></html>"),
+                    ).into_response();
+                }
+
+                // Send result through channel
+                if let Some(sender) = tx.lock().take() {
+                    let result = OAuthCallbackResult {
+                        code: code.clone(),
+                        state: state.clone(),
+                    };
+
+                    if sender.send(result).is_err() {
+                        tracing::error!("Failed to send OAuth callback result");
+                    }
+                }
+
+                // Return success page
+                (
+                    StatusCode::OK,
+                    Html(
+                        r#"
+                        <html>
+                            <head><title>Authorization Successful</title></head>
+                            <body>
+                                <h1>Authorization Successful!</h1>
+                                <p>You have successfully authorized the application.</p>
+                                <p>You can close this window and return to LocalRouter AI.</p>
+                                <script>
+                                    setTimeout(function() { window.close(); }, 3000);
+                                </script>
+                            </body>
+                        </html>
+                        "#
+                    ),
+                ).into_response()
+            }
+        }
+    };
+
+    // Build router
+    let app = Router::new()
+        .route("/callback", axum::routing::get(callback_handler));
+
+    // Start server
+    let addr = format!("127.0.0.1:{}", port);
+    tracing::info!("Starting OAuth callback server on http://{}/callback", addr);
+
+    let listener = tokio::net::TcpListener::bind(&addr)
+        .await
+        .map_err(|e| AppError::Mcp(format!("Failed to bind callback server: {}", e)))?;
+
+    // Spawn server in background
+    tokio::spawn(async move {
+        if let Err(e) = axum::serve(listener, app).await {
+            tracing::error!("OAuth callback server error: {}", e);
+        }
+    });
+
+    // Wait for callback with timeout
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(300), // 5 minute timeout
+        rx
+    )
+    .await
+    .map_err(|_| AppError::Mcp("OAuth authorization timeout (5 minutes)".to_string()))?
+    .map_err(|_| AppError::Mcp("OAuth callback channel closed unexpectedly".to_string()))?;
+
+    tracing::info!("OAuth callback received successfully");
+
+    Ok(result)
 }
 
 impl McpOAuthManager {
@@ -383,6 +632,135 @@ impl McpOAuthManager {
         self.keychain.delete(MCP_OAUTH_SERVICE, &format!("{}_access_token", server_id)).ok();
         self.keychain.delete(MCP_OAUTH_SERVICE, &format!("{}_refresh_token", server_id)).ok();
     }
+
+    /// Build authorization URL for OAuth authorization code flow with PKCE
+    ///
+    /// # Arguments
+    /// * `auth_url` - Authorization endpoint URL
+    /// * `client_id` - OAuth client ID
+    /// * `redirect_uri` - Redirect URI for callback
+    /// * `scopes` - Requested scopes
+    /// * `pkce` - PKCE challenge
+    /// * `state` - Random state parameter for CSRF protection
+    ///
+    /// # Returns
+    /// * Authorization URL
+    pub fn build_authorization_url(
+        auth_url: &str,
+        client_id: &str,
+        redirect_uri: &str,
+        scopes: &[String],
+        pkce: &PkceChallenge,
+        state: &str,
+    ) -> String {
+        let scope_str = scopes.join(" ");
+
+        format!(
+            "{}?response_type=code&client_id={}&redirect_uri={}&scope={}&code_challenge={}&code_challenge_method={}&state={}",
+            auth_url,
+            urlencoding::encode(client_id),
+            urlencoding::encode(redirect_uri),
+            urlencoding::encode(&scope_str),
+            urlencoding::encode(&pkce.code_challenge),
+            urlencoding::encode(&pkce.code_challenge_method),
+            urlencoding::encode(state),
+        )
+    }
+
+    /// Exchange authorization code for access token (with PKCE)
+    ///
+    /// # Arguments
+    /// * `server_id` - MCP server ID
+    /// * `oauth_config` - OAuth configuration
+    /// * `authorization_code` - Authorization code from callback
+    /// * `redirect_uri` - Redirect URI used in authorization request
+    /// * `code_verifier` - PKCE code verifier
+    ///
+    /// # Returns
+    /// * Access token
+    pub async fn exchange_code_for_token(
+        &self,
+        server_id: &str,
+        oauth_config: &McpOAuthConfig,
+        authorization_code: &str,
+        redirect_uri: &str,
+        code_verifier: &str,
+    ) -> AppResult<String> {
+        tracing::info!("Exchanging authorization code for token: {}", server_id);
+
+        // Retrieve client_secret from keychain
+        let client_secret = self
+            .keychain
+            .get(MCP_OAUTH_SERVICE, &format!("{}_client_secret", server_id))
+            .map_err(|e| AppError::Mcp(format!("Failed to retrieve client secret: {}", e)))?
+            .ok_or_else(|| AppError::Mcp("Client secret not found in keychain".to_string()))?;
+
+        // Prepare token exchange request
+        let mut params = HashMap::new();
+        params.insert("grant_type", "authorization_code");
+        params.insert("code", authorization_code);
+        params.insert("redirect_uri", redirect_uri);
+        params.insert("client_id", &oauth_config.client_id);
+        params.insert("client_secret", &client_secret);
+        params.insert("code_verifier", code_verifier);
+
+        // Send token request
+        let response = self
+            .client
+            .post(&oauth_config.token_url)
+            .form(&params)
+            .send()
+            .await
+            .map_err(|e| AppError::Mcp(format!("Failed to exchange code for token: {}", e)))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(AppError::Mcp(format!(
+                "Token exchange failed with status {}: {}",
+                status, body
+            )));
+        }
+
+        // Parse token response
+        let token_response: TokenResponse = response
+            .json()
+            .await
+            .map_err(|e| AppError::Mcp(format!("Failed to parse token response: {}", e)))?;
+
+        // Calculate expiration time
+        let expires_at = if let Some(expires_in) = token_response.expires_in {
+            Utc::now() + Duration::seconds(expires_in)
+        } else {
+            Utc::now() + Duration::hours(1)
+        };
+
+        // Cache token
+        let token_info = CachedTokenInfo {
+            access_token: token_response.access_token.clone(),
+            expires_at,
+            refresh_token: token_response.refresh_token.clone(),
+        };
+
+        self.token_cache
+            .write()
+            .insert(server_id.to_string(), token_info.clone());
+
+        // Store in keyring
+        self.keychain
+            .store(MCP_OAUTH_SERVICE, &format!("{}_access_token", server_id), &token_info.access_token)
+            .map_err(|e| AppError::Mcp(format!("Failed to store token in keychain: {}", e)))?;
+
+        if let Some(ref refresh_token) = token_info.refresh_token {
+            self.keychain
+                .store(MCP_OAUTH_SERVICE, &format!("{}_refresh_token", server_id), refresh_token)
+                .ok();
+        }
+
+        tracing::info!("Token exchange successful for: {}", server_id);
+
+        Ok(token_response.access_token)
+    }
 }
 
 impl Default for McpOAuthManager {
@@ -434,5 +812,74 @@ mod tests {
         if let Some(info) = cache_guard.get("test_server") {
             assert!(info.expires_at < Utc::now());
         }
+    }
+
+    #[test]
+    fn test_pkce_generation() {
+        let pkce = generate_pkce_challenge();
+
+        // Verify code_verifier length (should be 64 characters)
+        assert_eq!(pkce.code_verifier.len(), 64);
+
+        // Verify code_verifier contains only valid characters
+        assert!(pkce.code_verifier.chars().all(|c| c.is_ascii_alphanumeric()));
+
+        // Verify code_challenge is base64url encoded
+        assert!(!pkce.code_challenge.is_empty());
+
+        // Verify challenge method
+        assert_eq!(pkce.code_challenge_method, "S256");
+
+        // Verify challenge is deterministic for same verifier
+        let mut hasher = Sha256::new();
+        hasher.update(pkce.code_verifier.as_bytes());
+        let hash = hasher.finalize();
+        let expected_challenge = URL_SAFE_NO_PAD.encode(hash);
+        assert_eq!(pkce.code_challenge, expected_challenge);
+    }
+
+    #[test]
+    fn test_pkce_uniqueness() {
+        // Generate multiple PKCE challenges and verify they're all unique
+        let pkce1 = generate_pkce_challenge();
+        let pkce2 = generate_pkce_challenge();
+        let pkce3 = generate_pkce_challenge();
+
+        assert_ne!(pkce1.code_verifier, pkce2.code_verifier);
+        assert_ne!(pkce1.code_verifier, pkce3.code_verifier);
+        assert_ne!(pkce2.code_verifier, pkce3.code_verifier);
+
+        assert_ne!(pkce1.code_challenge, pkce2.code_challenge);
+        assert_ne!(pkce1.code_challenge, pkce3.code_challenge);
+        assert_ne!(pkce2.code_challenge, pkce3.code_challenge);
+    }
+
+    #[test]
+    fn test_build_authorization_url() {
+        let pkce = generate_pkce_challenge();
+        let auth_url = "https://auth.example.com/authorize";
+        let client_id = "test_client_id";
+        let redirect_uri = "http://localhost:8080/callback";
+        let scopes = vec!["read".to_string(), "write".to_string()];
+        let state = "random_state_string";
+
+        let url = McpOAuthManager::build_authorization_url(
+            auth_url,
+            client_id,
+            redirect_uri,
+            &scopes,
+            &pkce,
+            state,
+        );
+
+        // Verify URL contains all required parameters
+        assert!(url.contains("response_type=code"));
+        assert!(url.contains(&format!("client_id={}", urlencoding::encode(client_id))));
+        assert!(url.contains(&format!("redirect_uri={}", urlencoding::encode(redirect_uri))));
+        assert!(url.contains("scope=read%20write"));
+        assert!(url.contains(&format!("code_challenge={}", urlencoding::encode(&pkce.code_challenge))));
+        assert!(url.contains("code_challenge_method=S256"));
+        assert!(url.contains(&format!("state={}", state)));
+        assert!(url.starts_with(auth_url));
     }
 }

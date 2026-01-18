@@ -1,9 +1,17 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { invoke } from '@tauri-apps/api/core'
-import { ApiReferenceReact } from '@scalar/api-reference-react'
-import '@scalar/api-reference-react/style.css'
+import 'rapidoc'
 import Button from '../ui/Button'
 import Select from '../ui/Select'
+
+// Declare RapiDoc web component for TypeScript
+declare global {
+  namespace JSX {
+    interface IntrinsicElements {
+      'rapi-doc': any
+    }
+  }
+}
 
 interface ServerConfig {
   host: string
@@ -28,6 +36,7 @@ export default function DocumentationTab() {
   const [selectedKeyId, setSelectedKeyId] = useState<string>('')
   const [selectedKey, setSelectedKey] = useState<string>('')
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
+  const rapiDocRef = useRef<any>(null)
 
   // Auto-dismiss feedback after 5 seconds
   useEffect(() => {
@@ -51,6 +60,13 @@ export default function DocumentationTab() {
       setSelectedKey(firstKey.key)
     }
   }, [apiKeys, selectedKeyId])
+
+  // Update RapiDoc spec when it changes
+  useEffect(() => {
+    if (rapiDocRef.current && spec) {
+      rapiDocRef.current.loadSpec(JSON.parse(spec))
+    }
+  }, [spec])
 
   const loadServerConfig = async () => {
     try {
@@ -124,6 +140,8 @@ export default function DocumentationTab() {
   const exportPostman = () => {
     try {
       const specObj = JSON.parse(spec)
+      const port = config?.actual_port ?? config?.port ?? 3625
+      const baseUrl = `http://${config?.host ?? '127.0.0.1'}:${port}`
 
       // Create basic Postman collection from OpenAPI spec
       const postmanCollection = {
@@ -200,6 +218,8 @@ export default function DocumentationTab() {
   }
 
   const copyCurlExample = () => {
+    const port = config?.actual_port ?? config?.port ?? 3625
+    const baseUrl = `http://${config?.host ?? '127.0.0.1'}:${port}`
     const curlCommand = `curl -X POST ${baseUrl}/v1/chat/completions \\
   -H "Authorization: Bearer ${selectedKey || 'YOUR_API_KEY'}" \\
   -H "Content-Type: application/json" \\
@@ -337,26 +357,26 @@ export default function DocumentationTab() {
         )}
       </div>
 
-      {/* Scalar API Reference */}
+      {/* RapiDoc API Reference */}
       <div className="flex-1 overflow-auto">
-        <ApiReferenceReact
-          configuration={{
-            spec: { content: spec },
-            servers: [{ url: baseUrl, description: 'LocalRouter AI Server' }],
-            authentication: {
-              preferredSecurityScheme: 'bearer_auth',
-              apiKey: {
-                token: selectedKey, // Pre-fills Authorization header
-              },
-            },
-            darkMode: false,
-            layout: 'modern',
-            showSidebar: true,
-            hideDarkModeToggle: false,
-            hideModels: false,
-            hideDownloadButton: false,
-            hideTestRequestSnippets: false,
-          }}
+        <rapi-doc
+          ref={rapiDocRef}
+          theme="light"
+          bg-color="#ffffff"
+          text-color="#1f2937"
+          primary-color="#3b82f6"
+          render-style="view"
+          layout="row"
+          show-header="false"
+          show-info="true"
+          allow-authentication="true"
+          allow-server-selection="false"
+          allow-api-list-style-selection="false"
+          api-key-name="Authorization"
+          api-key-value={selectedKey ? `Bearer ${selectedKey}` : ''}
+          api-key-location="header"
+          server-url={baseUrl}
+          style={{ width: '100%', height: '100%' }}
         />
       </div>
     </div>

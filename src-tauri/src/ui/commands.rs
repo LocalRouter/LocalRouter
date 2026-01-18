@@ -1719,6 +1719,7 @@ pub async fn create_mcp_server(
     name: String,
     transport: String,
     transport_config: serde_json::Value,
+    auth_config: Option<serde_json::Value>,
     mcp_manager: State<'_, Arc<McpServerManager>>,
     config_manager: State<'_, ConfigManager>,
     app: tauri::AppHandle,
@@ -1738,8 +1739,19 @@ pub async fn create_mcp_server(
     let parsed_config: McpTransportConfig = serde_json::from_value(transport_config)
         .map_err(|e| format!("Invalid transport config: {}", e))?;
 
+    // Parse auth config (if provided)
+    let parsed_auth_config = if let Some(auth_cfg) = auth_config {
+        Some(
+            serde_json::from_value(auth_cfg)
+                .map_err(|e| format!("Invalid auth config: {}", e))?,
+        )
+    } else {
+        None
+    };
+
     // Create server config
-    let config = McpServerConfig::new(name, transport_type, parsed_config);
+    let mut config = McpServerConfig::new(name, transport_type, parsed_config);
+    config.auth_config = parsed_auth_config;
 
     let server_info = McpServerInfo {
         id: config.id.clone(),

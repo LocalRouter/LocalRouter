@@ -45,79 +45,66 @@ fn extract_bearer_token(auth_header: &str) -> Option<String> {
 ///
 /// On success, attaches ClientAuthContext to request extensions.
 pub async fn client_auth_middleware(
-    req: Request,
+    mut req: Request,
     next: Next,
 ) -> Response {
-    // Helper function to handle errors and convert to responses
-    async fn handle_request(
-        req: Request,
-        _next: Next,
-    ) -> Result<Response, ApiErrorResponse> {
-        // Extract Authorization header
-        let auth_header = req
-            .headers()
-            .get("Authorization")
-            .and_then(|h| h.to_str().ok())
-            .ok_or_else(|| ApiErrorResponse::unauthorized("Missing Authorization header"))?;
+    // Extract Authorization header
+    let auth_header = match req.headers().get("Authorization").and_then(|h| h.to_str().ok()) {
+        Some(h) => h,
+        None => {
+            return ApiErrorResponse::unauthorized("Missing Authorization header").into_response();
+        }
+    };
 
-        // Extract bearer token
-        let _token = extract_bearer_token(auth_header)
-            .ok_or_else(|| ApiErrorResponse::unauthorized("Invalid Authorization header format. Expected: Bearer <token>"))?;
+    // Extract bearer token
+    let token = match extract_bearer_token(auth_header) {
+        Some(t) => t,
+        None => {
+            return ApiErrorResponse::unauthorized(
+                "Invalid Authorization header format. Expected: Bearer <token>"
+            ).into_response();
+        }
+    };
 
-        // TODO: Get ClientManager and TokenStore from AppState
-        // For now, we'll use the old OAuth approach until we wire up the new system
+    // Extract state from request extensions
+    let state = match req.extensions().get::<crate::server::state::AppState>() {
+        Some(s) => s.clone(),
+        None => {
+            return ApiErrorResponse::internal_error("Missing application state").into_response();
+        }
+    };
 
-        // Try to verify as OAuth access token first (short-lived)
-        // If that fails, try to verify as direct client secret (long-lived)
-
-        // TEMPORARY: Use old OAuth system
-        // This will be replaced once we wire up ClientManager and TokenStore in AppState
-        Err(ApiErrorResponse::internal_error(
-            "Client authentication not yet wired up - in progress"
-        ))
-
-        // TODO: Replace with this once wired up:
-        /*
-        // Extract state from request extensions
-        let state = req
-            .extensions()
-            .get::<AppState>()
-            .ok_or_else(|| ApiErrorResponse::internal_error("Missing application state"))?
-            .clone();
-
-        // Try OAuth access token first
-        let client_id = if let Some(id) = state.token_store.verify_token(&token) {
-            // Token is a valid OAuth access token
-            id
-        } else {
-            // Try direct client secret
-            match state.client_manager.verify_secret(&token) {
-                Ok(Some(client)) => client.client_id,
-                Ok(None) => {
-                    return Err(ApiErrorResponse::unauthorized("Invalid bearer token"));
-                }
-                Err(e) => {
-                    tracing::error!("Error verifying client secret: {}", e);
-                    return Err(ApiErrorResponse::internal_error("Authentication error"));
-                }
+    // Try OAuth access token first (short-lived tokens from /oauth/token)
+    let client_id = if let Some(id) = state.token_store.verify_token(&token) {
+        // Token is a valid OAuth access token
+        tracing::debug!("Client authenticated via OAuth access token: {}", id);
+        id
+    } else {
+        // Try direct client secret (long-lived credentials)
+        match state.client_manager.verify_secret(&token) {
+            Ok(Some(client)) => {
+                tracing::debug!("Client authenticated via client secret: {}", client.client_id);
+                client.client_id
             }
-        };
+            Ok(None) => {
+                tracing::warn!("Invalid bearer token provided");
+                return ApiErrorResponse::unauthorized("Invalid bearer token").into_response();
+            }
+            Err(e) => {
+                tracing::error!("Error verifying client secret: {}", e);
+                return ApiErrorResponse::internal_error("Authentication error").into_response();
+            }
+        }
+    };
 
-        // Create auth context
-        let auth_context = ClientAuthContext { client_id };
+    // Create auth context
+    let auth_context = ClientAuthContext { client_id };
 
-        // Insert auth context into request extensions
-        req.extensions_mut().insert(auth_context);
+    // Insert auth context into request extensions
+    req.extensions_mut().insert(auth_context);
 
-        Ok(next.run(req).await)
-        */
-    }
-
-    // Call the helper and convert errors to responses
-    match handle_request(req, next).await {
-        Ok(response) => response,
-        Err(err) => err.into_response(),
-    }
+    // Continue to next middleware/handler
+    next.run(req).await
 }
 
 #[cfg(test)]

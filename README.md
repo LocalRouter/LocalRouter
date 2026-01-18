@@ -83,8 +83,8 @@ LocalRouter AI is a **cross-platform desktop application** that acts as an intel
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/localrouterai.git
-cd localrouterai
+git clone https://github.com/LocalRouter/LocalRouter.git
+cd LocalRouter
 
 # Run in development mode
 cargo tauri dev
@@ -437,8 +437,8 @@ LocalRouter AI is built with incredible open source technologies:
 
 ## 📞 Support
 
-- **Issues**: Report bugs or request features on [GitHub Issues](https://github.com/yourusername/localrouterai/issues)
-- **Discussions**: Ask questions in [GitHub Discussions](https://github.com/yourusername/localrouterai/discussions)
+- **Issues**: Report bugs or request features on [GitHub Issues](https://github.com/LocalRouter/LocalRouter/issues)
+- **Discussions**: Ask questions in [GitHub Discussions](https://github.com/LocalRouter/LocalRouter/discussions)
 - **Documentation**: See the [plan/](plan/) directory for comprehensive docs
 
 ## 🌟 Star History
@@ -451,6 +451,6 @@ If you find LocalRouter AI useful, please consider giving it a star! ⭐
 
 **Made with ❤️ by the LocalRouter AI community**
 
-[Website](https://github.com/yourusername/localrouterai) • [Documentation](CLAUDE.md) • [Issues](https://github.com/yourusername/localrouterai/issues)
+[GitHub](https://github.com/LocalRouter/LocalRouter) • [Documentation](CLAUDE.md) • [Issues](https://github.com/LocalRouter/LocalRouter/issues)
 
 </div>
