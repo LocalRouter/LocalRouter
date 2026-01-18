@@ -2,6 +2,7 @@
 //!
 //! Manages MCP server instances, their lifecycle, and health checks.
 
+use crate::api_keys::keychain_trait::KeychainStorage;
 use crate::config::{McpServerConfig, McpTransportConfig, McpTransportType};
 use crate::mcp::oauth::McpOAuthManager;
 use crate::mcp::transport::{SseTransport, StdioTransport, Transport, WebSocketTransport};
@@ -129,11 +130,12 @@ impl McpServerManager {
 
         tracing::info!("Starting MCP server: {} ({})", config.name, server_id);
 
+        #[allow(deprecated)]
         match config.transport {
             McpTransportType::Stdio => {
                 self.start_stdio_server(server_id, &config).await?;
             }
-            McpTransportType::Sse => {
+            McpTransportType::Sse | McpTransportType::HttpSse => {
                 self.start_sse_server(server_id, &config).await?;
             }
             McpTransportType::WebSocket => {
@@ -152,7 +154,7 @@ impl McpServerManager {
         config: &McpServerConfig,
     ) -> AppResult<()> {
         // Extract STDIO config
-        let (command, args, env) = match &config.transport_config {
+        let (command, args, mut env) = match &config.transport_config {
             McpTransportConfig::Stdio { command, args, env } => {
                 (command.clone(), args.clone(), env.clone())
             }
@@ -162,6 +164,18 @@ impl McpServerManager {
                 ))
             }
         };
+
+        // Merge auth config environment variables (if specified)
+        if let Some(auth_config) = &config.auth_config {
+            if let crate::config::McpAuthConfig::EnvVars { env: auth_env } = auth_config {
+                // Merge auth env vars with base env vars
+                // Auth env vars override base env vars
+                for (key, value) in auth_env {
+                    env.insert(key.clone(), value.clone());
+                }
+                tracing::debug!("Applied auth env vars for STDIO server: {}", server_id);
+            }
+        }
 
         // Spawn the STDIO transport
         let transport = StdioTransport::spawn(command, args, env).await?;
@@ -180,16 +194,50 @@ impl McpServerManager {
         config: &McpServerConfig,
     ) -> AppResult<()> {
         // Extract SSE config
-        let (url, headers) = match &config.transport_config {
-            McpTransportConfig::Sse { url, headers } => {
+        let (url, mut headers) = match &config.transport_config {
+            McpTransportConfig::Sse { url, headers } |
+            McpTransportConfig::HttpSse { url, headers } => {
                 (url.clone(), headers.clone())
             }
             _ => {
                 return Err(AppError::Mcp(
-                    "Invalid transport config for SSE".to_string(),
+                    "Invalid transport config for SSE/HttpSse".to_string(),
                 ))
             }
         };
+
+        // Apply auth config (if specified)
+        if let Some(auth_config) = &config.auth_config {
+            match auth_config {
+                crate::config::McpAuthConfig::BearerToken { token_ref } => {
+                    // Retrieve token from keychain
+                    let keychain = crate::api_keys::CachedKeychain::auto()
+                        .unwrap_or_else(|_| crate::api_keys::CachedKeychain::system());
+                    if let Ok(Some(token)) = keychain.get("LocalRouter-McpServers", &config.id) {
+                        headers.insert("Authorization".to_string(), format!("Bearer {}", token));
+                        tracing::debug!("Applied bearer token auth for SSE server: {}", server_id);
+                    } else {
+                        tracing::warn!("Bearer token not found in keychain for server: {}", server_id);
+                    }
+                }
+                crate::config::McpAuthConfig::CustomHeaders { headers: auth_headers } => {
+                    // Merge custom auth headers with base headers
+                    // Auth headers override base headers
+                    for (key, value) in auth_headers {
+                        headers.insert(key.clone(), value.clone());
+                    }
+                    tracing::debug!("Applied custom headers auth for SSE server: {}", server_id);
+                }
+                crate::config::McpAuthConfig::OAuth { .. } => {
+                    // TODO: Implement OAuth token acquisition and refresh
+                    tracing::warn!("OAuth auth not yet implemented for SSE server: {}", server_id);
+                }
+                _ => {
+                    // None or EnvVars (not applicable for SSE)
+                    tracing::debug!("No applicable auth config for SSE server: {}", server_id);
+                }
+            }
+        }
 
         // Connect to the SSE server
         let transport = SseTransport::connect(url, headers).await?;
@@ -202,13 +250,14 @@ impl McpServerManager {
     }
 
     /// Start a WebSocket MCP server
+    #[allow(deprecated)]
     async fn start_websocket_server(
         &self,
         server_id: &str,
         config: &McpServerConfig,
     ) -> AppResult<()> {
         // Extract WebSocket config
-        let (url, headers) = match &config.transport_config {
+        let (url, mut headers) = match &config.transport_config {
             McpTransportConfig::WebSocket { url, headers } => {
                 (url.clone(), headers.clone())
             }
@@ -218,6 +267,35 @@ impl McpServerManager {
                 ))
             }
         };
+
+        tracing::warn!("WebSocket transport is deprecated and will be removed in a future version. Please use HttpSse or Stdio instead.");
+
+        // Apply auth config (if specified)
+        if let Some(auth_config) = &config.auth_config {
+            match auth_config {
+                crate::config::McpAuthConfig::BearerToken { token_ref } => {
+                    // Retrieve token from keychain
+                    let keychain = crate::api_keys::CachedKeychain::auto()
+                        .unwrap_or_else(|_| crate::api_keys::CachedKeychain::system());
+                    if let Ok(Some(token)) = keychain.get("LocalRouter-McpServers", &config.id) {
+                        headers.insert("Authorization".to_string(), format!("Bearer {}", token));
+                        tracing::debug!("Applied bearer token auth for WebSocket server: {}", server_id);
+                    } else {
+                        tracing::warn!("Bearer token not found in keychain for server: {}", server_id);
+                    }
+                }
+                crate::config::McpAuthConfig::CustomHeaders { headers: auth_headers } => {
+                    // Merge custom auth headers with base headers
+                    for (key, value) in auth_headers {
+                        headers.insert(key.clone(), value.clone());
+                    }
+                    tracing::debug!("Applied custom headers auth for WebSocket server: {}", server_id);
+                }
+                _ => {
+                    tracing::debug!("No applicable auth config for WebSocket server: {}", server_id);
+                }
+            }
+        }
 
         // Connect to the WebSocket server
         let transport = WebSocketTransport::connect(url, headers).await?;

@@ -10,6 +10,19 @@ use crate::server::types::{ModelData, ModelPricing, ModelsResponse};
 
 /// GET /v1/models
 /// List available models filtered by the authenticated API key's model selection
+#[utoipa::path(
+    get,
+    path = "/v1/models",
+    tag = "models",
+    responses(
+        (status = 200, description = "List of available models", body = ModelsResponse),
+        (status = 401, description = "Unauthorized", body = crate::server::types::ErrorResponse),
+        (status = 500, description = "Internal server error", body = crate::server::types::ErrorResponse)
+    ),
+    security(
+        ("bearer_auth" = [])
+    )
+)]
 pub async fn list_models<B>(
     State(state): State<AppState>,
     req: Request<B>,
@@ -114,6 +127,24 @@ pub async fn list_models<B>(
 
 /// GET /v1/models/{id}
 /// Get detailed information about a specific model
+#[utoipa::path(
+    get,
+    path = "/v1/models/{id}",
+    tag = "models",
+    params(
+        ("id" = String, Path, description = "Model identifier")
+    ),
+    responses(
+        (status = 200, description = "Model details", body = ModelData),
+        (status = 401, description = "Unauthorized", body = crate::server::types::ErrorResponse),
+        (status = 403, description = "Forbidden - no access to this model", body = crate::server::types::ErrorResponse),
+        (status = 404, description = "Model not found", body = crate::server::types::ErrorResponse),
+        (status = 500, description = "Internal server error", body = crate::server::types::ErrorResponse)
+    ),
+    security(
+        ("bearer_auth" = [])
+    )
+)]
 pub async fn get_model<B>(
     State(state): State<AppState>,
     Path(model_id): Path<String>,
@@ -174,6 +205,25 @@ pub async fn get_model<B>(
 
 /// GET /v1/models/{provider}/{model}/pricing
 /// Get pricing information for a specific model from a provider
+#[utoipa::path(
+    get,
+    path = "/v1/models/{provider}/{model}/pricing",
+    tag = "models",
+    params(
+        ("provider" = String, Path, description = "Provider name"),
+        ("model" = String, Path, description = "Model name")
+    ),
+    responses(
+        (status = 200, description = "Model pricing information", body = ModelPricing),
+        (status = 401, description = "Unauthorized", body = crate::server::types::ErrorResponse),
+        (status = 403, description = "Forbidden - no access to this model", body = crate::server::types::ErrorResponse),
+        (status = 404, description = "Model or pricing not found", body = crate::server::types::ErrorResponse),
+        (status = 500, description = "Internal server error", body = crate::server::types::ErrorResponse)
+    ),
+    security(
+        ("bearer_auth" = [])
+    )
+)]
 pub async fn get_model_pricing<B>(
     State(state): State<AppState>,
     Path((provider, model)): Path<(String, String)>,

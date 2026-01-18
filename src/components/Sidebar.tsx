@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import ProviderIcon from './ProviderIcon'
 
-type MainTab = 'home' | 'server' | 'api-keys' | 'providers' | 'models'
+type MainTab = 'home' | 'server' | 'api-keys' | 'providers' | 'models' | 'oauth-clients' | 'mcp-servers' | 'documentation'
 
 interface SidebarProps {
   activeTab: MainTab
@@ -28,10 +28,24 @@ interface Model {
   provider: string
 }
 
+interface OAuthClient {
+  id: string
+  name: string
+  enabled: boolean
+}
+
+interface McpServer {
+  id: string
+  name: string
+  enabled: boolean
+}
+
 export default function Sidebar({ activeTab, activeSubTab, onTabChange }: SidebarProps) {
   const [providers, setProviders] = useState<ProviderInstance[]>([])
   const [apiKeys, setApiKeys] = useState<ApiKey[]>([])
   const [models, setModels] = useState<Model[]>([])
+  const [oauthClients, setOauthClients] = useState<OAuthClient[]>([])
+  const [mcpServers, setMcpServers] = useState<McpServer[]>([])
   const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set())
 
   useEffect(() => {
@@ -39,6 +53,8 @@ export default function Sidebar({ activeTab, activeSubTab, onTabChange }: Sideba
     loadProviders()
     loadApiKeys()
     loadModels()
+    loadOAuthClients()
+    loadMcpServers()
 
     // Subscribe to data change events (no polling needed)
     const unsubscribeProviders = listen('providers-changed', () => {
@@ -53,10 +69,20 @@ export default function Sidebar({ activeTab, activeSubTab, onTabChange }: Sideba
       loadModels()
     })
 
+    const unsubscribeOAuthClients = listen('oauth-clients-changed', () => {
+      loadOAuthClients()
+    })
+
+    const unsubscribeMcpServers = listen('mcp-servers-changed', () => {
+      loadMcpServers()
+    })
+
     return () => {
       unsubscribeProviders.then((fn: any) => fn())
       unsubscribeApiKeys.then((fn: any) => fn())
       unsubscribeModels.then((fn: any) => fn())
+      unsubscribeOAuthClients.then((fn: any) => fn())
+      unsubscribeMcpServers.then((fn: any) => fn())
     }
   }, [])
 
@@ -87,6 +113,24 @@ export default function Sidebar({ activeTab, activeSubTab, onTabChange }: Sideba
     }
   }
 
+  const loadOAuthClients = async () => {
+    try {
+      const clients = await invoke<OAuthClient[]>('list_oauth_clients')
+      setOauthClients(clients)
+    } catch (err) {
+      console.error('Failed to load OAuth clients:', err)
+    }
+  }
+
+  const loadMcpServers = async () => {
+    try {
+      const servers = await invoke<McpServer[]>('list_mcp_servers')
+      setMcpServers(servers)
+    } catch (err) {
+      console.error('Failed to load MCP servers:', err)
+    }
+  }
+
   const toggleSection = (section: string) => {
     const newExpanded = new Set(expandedSections)
     if (newExpanded.has(section)) {
@@ -103,6 +147,9 @@ export default function Sidebar({ activeTab, activeSubTab, onTabChange }: Sideba
     { id: 'api-keys' as MainTab, label: 'API Keys', hasSubTabs: true },
     { id: 'providers' as MainTab, label: 'Providers', hasSubTabs: true },
     { id: 'models' as MainTab, label: 'Models', hasSubTabs: true },
+    { id: 'oauth-clients' as MainTab, label: 'OAuth Clients', hasSubTabs: true },
+    { id: 'mcp-servers' as MainTab, label: 'MCP Servers', hasSubTabs: true },
+    { id: 'documentation' as MainTab, label: 'Documentation' },
   ]
 
   return (
@@ -202,6 +249,56 @@ export default function Sidebar({ activeTab, activeSubTab, onTabChange }: Sideba
                   `}
                 >
                   <span className="truncate flex-1 text-xs">{model.provider}/{model.id}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Sub Tabs for OAuth Clients */}
+          {tab.id === 'oauth-clients' && expandedSections.has('oauth-clients') && (
+            <div className="bg-gray-50">
+              {oauthClients.map((client) => (
+                <div
+                  key={client.id}
+                  onClick={() => onTabChange('oauth-clients', client.id)}
+                  className={`
+                    px-4 py-2 cursor-pointer transition-all text-sm border-l-4 flex items-center gap-2
+                    ${
+                      activeTab === 'oauth-clients' && activeSubTab === client.id
+                        ? 'bg-blue-50 text-blue-600 border-blue-600'
+                        : 'text-gray-600 border-transparent hover:bg-gray-100'
+                    }
+                  `}
+                >
+                  <span className="truncate flex-1">{client.name}</span>
+                  {!client.enabled && (
+                    <span className="w-2 h-2 bg-red-500 rounded-full" title="Disabled" />
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Sub Tabs for MCP Servers */}
+          {tab.id === 'mcp-servers' && expandedSections.has('mcp-servers') && (
+            <div className="bg-gray-50">
+              {mcpServers.map((server) => (
+                <div
+                  key={server.id}
+                  onClick={() => onTabChange('mcp-servers', server.id)}
+                  className={`
+                    px-4 py-2 cursor-pointer transition-all text-sm border-l-4 flex items-center gap-2
+                    ${
+                      activeTab === 'mcp-servers' && activeSubTab === server.id
+                        ? 'bg-blue-50 text-blue-600 border-blue-600'
+                        : 'text-gray-600 border-transparent hover:bg-gray-100'
+                    }
+                  `}
+                >
+                  <span className="truncate flex-1">{server.name}</span>
+                  {!server.enabled && (
+                    <span className="w-2 h-2 bg-red-500 rounded-full" title="Disabled" />
+                  )}
                 </div>
               ))}
             </div>

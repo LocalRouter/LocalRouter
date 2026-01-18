@@ -8,7 +8,6 @@ use std::sync::Arc;
 use crate::api_keys::ApiKeyManager;
 use crate::config::{ActiveRoutingStrategy, ConfigManager, McpServerConfig, McpTransportConfig, McpTransportType, ModelSelection, ModelRoutingConfig, RouterConfig};
 use crate::mcp::McpServerManager;
-use crate::monitoring::graphs::{GraphData, GraphGenerator, MetricType, TimeRange};
 use crate::oauth_clients::OAuthClientManager;
 use crate::providers::registry::ProviderRegistry;
 use crate::server::ServerManager;
@@ -973,6 +972,8 @@ pub async fn start_server(
     let mcp_server_manager = app.state::<Arc<crate::mcp::McpServerManager>>();
     let rate_limiter = app.state::<Arc<crate::router::RateLimiterManager>>();
     let provider_registry = app.state::<Arc<ProviderRegistry>>();
+    let client_manager = app.state::<Arc<crate::clients::ClientManager>>();
+    let token_store = app.state::<Arc<crate::clients::TokenStore>>();
 
     // Get server config from configuration
     let server_config = {
@@ -988,12 +989,16 @@ pub async fn start_server(
     server_manager
         .start(
             server_config,
-            router.inner().clone(),
-            (*api_key_manager.inner()).clone(),
-            (*oauth_client_manager.inner()).clone(),
-            mcp_server_manager.inner().clone(),
-            rate_limiter.inner().clone(),
-            provider_registry.inner().clone(),
+            crate::server::manager::ServerDependencies {
+                router: router.inner().clone(),
+                api_key_manager: (*api_key_manager.inner()).clone(),
+                oauth_client_manager: (*oauth_client_manager.inner()).clone(),
+                mcp_server_manager: mcp_server_manager.inner().clone(),
+                rate_limiter: rate_limiter.inner().clone(),
+                provider_registry: provider_registry.inner().clone(),
+                client_manager: client_manager.inner().clone(),
+                token_store: token_store.inner().clone(),
+            },
         )
         .await
         .map_err(|e| format!("Failed to start server: {}", e))?;
@@ -1720,10 +1725,11 @@ pub async fn create_mcp_server(
 ) -> Result<McpServerInfo, String> {
     tracing::info!("Creating new MCP server: {} ({})", name, transport);
 
-    // Parse transport type
-    let transport_type = match transport.as_str() {
+    // Parse transport type (case-insensitive)
+    #[allow(deprecated)]
+    let transport_type = match transport.to_lowercase().as_str() {
         "stdio" => McpTransportType::Stdio,
-        "sse" => McpTransportType::Sse,
+        "sse" | "httpsse" | "http_sse" => McpTransportType::HttpSse,
         "websocket" => McpTransportType::WebSocket,
         _ => return Err(format!("Invalid transport type: {}", transport)),
     };
@@ -1985,4 +1991,393 @@ pub async fn toggle_mcp_server_enabled(
     let _ = app.emit("mcp-servers-changed", ());
 
     Ok(())
+}
+
+// ============================================================================
+// Unified Client Management Commands
+// ============================================================================
+
+/// Client information for display
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClientInfo {
+    pub id: String,
+    pub name: String,
+    pub client_id: String,
+    pub enabled: bool,
+    pub allowed_llm_providers: Vec<String>,
+    pub allowed_mcp_servers: Vec<String>,
+    pub created_at: String,
+    pub last_used: Option<String>,
+}
+
+/// List all clients
+#[tauri::command]
+pub async fn list_clients(
+    client_manager: State<'_, Arc<crate::clients::ClientManager>>,
+) -> Result<Vec<ClientInfo>, String> {
+    let clients = client_manager.list_clients();
+    Ok(clients
+        .into_iter()
+        .map(|c| ClientInfo {
+            id: c.id.clone(),
+            name: c.name.clone(),
+            client_id: c.client_id.clone(),
+            enabled: c.enabled,
+            allowed_llm_providers: c.allowed_llm_providers.clone(),
+            allowed_mcp_servers: c.allowed_mcp_servers.clone(),
+            created_at: c.created_at.to_rfc3339(),
+            last_used: c.last_used.map(|t| t.to_rfc3339()),
+        })
+        .collect())
+}
+
+/// Create a new client
+#[tauri::command]
+pub async fn create_client(
+    name: String,
+    client_manager: State<'_, Arc<crate::clients::ClientManager>>,
+    config_manager: State<'_, ConfigManager>,
+    app: tauri::AppHandle,
+) -> Result<(String, ClientInfo), String> {
+    tracing::info!("Creating new client with name: {}", name);
+
+    let (client_id, secret, client) = client_manager
+        .create_client(name)
+        .map_err(|e| e.to_string())?;
+
+    tracing::info!("Client created: {} ({})", client.name, client.client_id);
+
+    // Save to config file
+    config_manager
+        .update(|cfg| {
+            cfg.clients.push(client.clone());
+        })
+        .map_err(|e| e.to_string())?;
+
+    // Persist to disk
+    config_manager
+        .save()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Rebuild tray menu
+    if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
+        tracing::error!("Failed to rebuild tray menu: {}", e);
+    }
+
+    let client_info = ClientInfo {
+        id: client.id.clone(),
+        name: client.name.clone(),
+        client_id: client_id.clone(),
+        enabled: client.enabled,
+        allowed_llm_providers: client.allowed_llm_providers.clone(),
+        allowed_mcp_servers: client.allowed_mcp_servers.clone(),
+        created_at: client.created_at.to_rfc3339(),
+        last_used: client.last_used.map(|t| t.to_rfc3339()),
+    };
+
+    Ok((secret, client_info))
+}
+
+/// Delete a client
+#[tauri::command]
+pub async fn delete_client(
+    client_id: String,
+    client_manager: State<'_, Arc<crate::clients::ClientManager>>,
+    config_manager: State<'_, ConfigManager>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    tracing::info!("Deleting client: {}", client_id);
+
+    // Delete from client manager (removes from keychain)
+    client_manager
+        .delete_client(&client_id)
+        .map_err(|e| e.to_string())?;
+
+    // Remove from config
+    config_manager
+        .update(|cfg| {
+            cfg.clients.retain(|c| c.client_id != client_id);
+        })
+        .map_err(|e| e.to_string())?;
+
+    // Persist to disk
+    config_manager
+        .save()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Rebuild tray menu
+    if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
+        tracing::error!("Failed to rebuild tray menu: {}", e);
+    }
+
+    Ok(())
+}
+
+/// Update client name
+#[tauri::command]
+pub async fn update_client_name(
+    client_id: String,
+    name: String,
+    config_manager: State<'_, ConfigManager>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    tracing::info!("Updating client {} name to: {}", client_id, name);
+
+    // Update in config
+    let mut found = false;
+    config_manager
+        .update(|cfg| {
+            if let Some(client) = cfg.clients.iter_mut().find(|c| c.client_id == client_id) {
+                client.name = name.clone();
+                found = true;
+            }
+        })
+        .map_err(|e| e.to_string())?;
+
+    if !found {
+        return Err(format!("Client not found: {}", client_id));
+    }
+
+    // Persist to disk
+    config_manager
+        .save()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Rebuild tray menu
+    if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
+        tracing::error!("Failed to rebuild tray menu: {}", e);
+    }
+
+    Ok(())
+}
+
+/// Enable or disable a client
+#[tauri::command]
+pub async fn toggle_client_enabled(
+    client_id: String,
+    enabled: bool,
+    client_manager: State<'_, Arc<crate::clients::ClientManager>>,
+    config_manager: State<'_, ConfigManager>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    tracing::info!("Setting client {} enabled: {}", client_id, enabled);
+
+    // Update in client manager
+    if enabled {
+        client_manager
+            .enable_client(&client_id)
+            .map_err(|e| e.to_string())?;
+    } else {
+        client_manager
+            .disable_client(&client_id)
+            .map_err(|e| e.to_string())?;
+    }
+
+    // Update in config
+    let mut found = false;
+    config_manager
+        .update(|cfg| {
+            if let Some(client) = cfg.clients.iter_mut().find(|c| c.client_id == client_id) {
+                client.enabled = enabled;
+                found = true;
+            }
+        })
+        .map_err(|e| e.to_string())?;
+
+    if !found {
+        return Err(format!("Client not found: {}", client_id));
+    }
+
+    // Persist to disk
+    config_manager
+        .save()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Rebuild tray menu
+    if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
+        tracing::error!("Failed to rebuild tray menu: {}", e);
+    }
+
+    Ok(())
+}
+
+/// Add an LLM provider to a client's allowed list
+#[tauri::command]
+pub async fn add_client_llm_provider(
+    client_id: String,
+    provider: String,
+    client_manager: State<'_, Arc<crate::clients::ClientManager>>,
+    config_manager: State<'_, ConfigManager>,
+) -> Result<(), String> {
+    tracing::info!("Adding LLM provider {} to client {}", provider, client_id);
+
+    // Update in client manager
+    client_manager
+        .add_llm_provider(&client_id, &provider)
+        .map_err(|e| e.to_string())?;
+
+    // Update in config
+    let mut found = false;
+    config_manager
+        .update(|cfg| {
+            if let Some(client) = cfg.clients.iter_mut().find(|c| c.client_id == client_id) {
+                if !client.allowed_llm_providers.contains(&provider) {
+                    client.allowed_llm_providers.push(provider.clone());
+                }
+                found = true;
+            }
+        })
+        .map_err(|e| e.to_string())?;
+
+    if !found {
+        return Err(format!("Client not found: {}", client_id));
+    }
+
+    // Persist to disk
+    config_manager
+        .save()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+/// Remove an LLM provider from a client's allowed list
+#[tauri::command]
+pub async fn remove_client_llm_provider(
+    client_id: String,
+    provider: String,
+    client_manager: State<'_, Arc<crate::clients::ClientManager>>,
+    config_manager: State<'_, ConfigManager>,
+) -> Result<(), String> {
+    tracing::info!("Removing LLM provider {} from client {}", provider, client_id);
+
+    // Update in client manager
+    client_manager
+        .remove_llm_provider(&client_id, &provider)
+        .map_err(|e| e.to_string())?;
+
+    // Update in config
+    let mut found = false;
+    config_manager
+        .update(|cfg| {
+            if let Some(client) = cfg.clients.iter_mut().find(|c| c.client_id == client_id) {
+                client.allowed_llm_providers.retain(|p| p != &provider);
+                found = true;
+            }
+        })
+        .map_err(|e| e.to_string())?;
+
+    if !found {
+        return Err(format!("Client not found: {}", client_id));
+    }
+
+    // Persist to disk
+    config_manager
+        .save()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+/// Add an MCP server to a client's allowed list
+#[tauri::command]
+pub async fn add_client_mcp_server(
+    client_id: String,
+    server_id: String,
+    client_manager: State<'_, Arc<crate::clients::ClientManager>>,
+    config_manager: State<'_, ConfigManager>,
+) -> Result<(), String> {
+    tracing::info!("Adding MCP server {} to client {}", server_id, client_id);
+
+    // Update in client manager
+    client_manager
+        .add_mcp_server(&client_id, &server_id)
+        .map_err(|e| e.to_string())?;
+
+    // Update in config
+    let mut found = false;
+    config_manager
+        .update(|cfg| {
+            if let Some(client) = cfg.clients.iter_mut().find(|c| c.client_id == client_id) {
+                if !client.allowed_mcp_servers.contains(&server_id) {
+                    client.allowed_mcp_servers.push(server_id.clone());
+                }
+                found = true;
+            }
+        })
+        .map_err(|e| e.to_string())?;
+
+    if !found {
+        return Err(format!("Client not found: {}", client_id));
+    }
+
+    // Persist to disk
+    config_manager
+        .save()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+/// Remove an MCP server from a client's allowed list
+#[tauri::command]
+pub async fn remove_client_mcp_server(
+    client_id: String,
+    server_id: String,
+    client_manager: State<'_, Arc<crate::clients::ClientManager>>,
+    config_manager: State<'_, ConfigManager>,
+) -> Result<(), String> {
+    tracing::info!("Removing MCP server {} from client {}", server_id, client_id);
+
+    // Update in client manager
+    client_manager
+        .remove_mcp_server(&client_id, &server_id)
+        .map_err(|e| e.to_string())?;
+
+    // Update in config
+    let mut found = false;
+    config_manager
+        .update(|cfg| {
+            if let Some(client) = cfg.clients.iter_mut().find(|c| c.client_id == client_id) {
+                client.allowed_mcp_servers.retain(|s| s != &server_id);
+                found = true;
+            }
+        })
+        .map_err(|e| e.to_string())?;
+
+    if !found {
+        return Err(format!("Client not found: {}", client_id));
+    }
+
+    // Persist to disk
+    config_manager
+        .save()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+// ============================================================================
+// OpenAPI Documentation
+// ============================================================================
+
+/// Get the OpenAPI specification
+///
+/// Returns the complete OpenAPI 3.1 specification in JSON format.
+/// This can be used to display API documentation in the UI.
+///
+/// # Returns
+/// * Ok(String) - The OpenAPI spec as JSON
+/// * Err(String) - Error message if generation fails
+#[tauri::command]
+pub async fn get_openapi_spec() -> Result<String, String> {
+    crate::server::openapi::get_openapi_json().map_err(|e| e.to_string())
 }

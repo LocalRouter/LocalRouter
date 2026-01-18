@@ -33,6 +33,10 @@ pub fn standard_completion_request() -> CompletionRequest {
         frequency_penalty: None,
         presence_penalty: None,
         stop: None,
+        top_k: None,
+        seed: None,
+        repetition_penalty: None,
+        extensions: None,
     }
 }
 
@@ -51,6 +55,10 @@ pub fn standard_streaming_request() -> CompletionRequest {
         frequency_penalty: None,
         presence_penalty: None,
         stop: None,
+        top_k: None,
+        seed: None,
+        repetition_penalty: None,
+        extensions: None,
     }
 }
 

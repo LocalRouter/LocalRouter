@@ -13,10 +13,10 @@ use localrouter_ai::providers::{
     TokenUsage, PromptTokensDetails,
     features::{
         FeatureAdapter,
-        StructuredOutputsAdapter,
-        PromptCachingAdapter,
-        LogprobsAdapter,
-        JsonModeAdapter,
+        structured_outputs::StructuredOutputsAdapter,
+        prompt_caching::PromptCachingAdapter,
+        logprobs::LogprobsAdapter,
+        json_mode::JsonModeAdapter,
     },
 };
 use serde_json::json;

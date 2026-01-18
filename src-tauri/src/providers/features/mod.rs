@@ -19,13 +19,6 @@ use crate::utils::errors::AppResult;
 use super::{CompletionRequest, CompletionResponse};
 
 // Re-export feature adapters
-pub use anthropic_thinking::AnthropicThinkingAdapter;
-pub use openai_reasoning::OpenAIReasoningAdapter;
-pub use gemini_thinking::GeminiThinkingAdapter;
-pub use structured_outputs::StructuredOutputsAdapter;
-pub use prompt_caching::PromptCachingAdapter;
-pub use logprobs::LogprobsAdapter;
-pub use json_mode::JsonModeAdapter;
 
 /// Feature parameters passed from the API request
 pub type FeatureParams = HashMap<String, Value>;
@@ -119,6 +112,7 @@ pub trait FeatureAdapter: Send + Sync {
     }
 
     /// Get help text for this feature
+    #[allow(dead_code)]
     fn help_text(&self) -> &str {
         "No documentation available"
     }

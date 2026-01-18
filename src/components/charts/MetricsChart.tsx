@@ -39,7 +39,7 @@ export function MetricsChart({
       setError(null)
 
       let command = ''
-      const args: any = { time_range: timeRange, metric_type: metricType }
+      const args: any = { timeRange, metricType }
 
       switch (scope) {
         case 'global':

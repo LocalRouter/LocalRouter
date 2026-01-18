@@ -7,6 +7,7 @@ use chrono::{DateTime, Utc};
 use futures::Stream;
 use serde::{Deserialize, Serialize};
 use std::pin::Pin;
+use utoipa::ToSchema;
 
 use crate::utils::errors::{AppError, AppResult};
 
@@ -94,7 +95,7 @@ pub trait ModelProvider: Send + Sync {
 }
 
 /// Information about a model
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ModelInfo {
     /// Model ID (e.g., "llama3.3", "gpt-4")
     pub id: String,
@@ -116,7 +117,7 @@ pub struct ModelInfo {
 }
 
 /// Model capabilities (basic categorization)
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 pub enum Capability {
     Chat,
     Completion,
@@ -129,7 +130,7 @@ pub enum Capability {
 pub type CoreCapability = Capability;
 
 /// Advanced feature capability with metadata
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct FeatureCapability {
     /// Feature name (e.g., "structured_outputs", "thinking", "caching")
     pub name: String,
@@ -165,7 +166,7 @@ impl FeatureCapability {
 }
 
 /// Sampling parameter support information
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SamplingParameter {
     Temperature { min: f32, max: f32, default: f32 },
@@ -178,7 +179,7 @@ pub enum SamplingParameter {
 }
 
 /// Parameter support information
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, ToSchema)]
 pub struct ParameterSupport {
     /// Sampling parameters supported
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
@@ -186,7 +187,7 @@ pub struct ParameterSupport {
 }
 
 /// Performance metrics for a model
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct PerformanceMetrics {
     /// Average latency in milliseconds
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -200,7 +201,7 @@ pub struct PerformanceMetrics {
 }
 
 /// Enhanced model capabilities with detailed feature tracking
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, ToSchema)]
 pub struct ModelCapabilities {
     /// Core capabilities (for backward compatibility)
     pub core: Vec<CoreCapability>,
@@ -249,7 +250,7 @@ impl ModelCapabilities {
 }
 
 /// Pricing information for a model
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct PricingInfo {
     /// Cost per 1K input tokens
     pub input_cost_per_1k: f64,
@@ -271,7 +272,7 @@ impl PricingInfo {
 }
 
 /// Provider health status
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ProviderHealth {
     /// Current health status
     pub status: HealthStatus,
@@ -284,7 +285,7 @@ pub struct ProviderHealth {
 }
 
 /// Health status enum
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 pub enum HealthStatus {
     Healthy,
     Degraded,
@@ -292,7 +293,7 @@ pub enum HealthStatus {
 }
 
 /// Chat completion request (OpenAI-compatible format)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct CompletionRequest {
     /// Model to use
     pub model: String,
@@ -336,7 +337,7 @@ pub struct CompletionRequest {
 }
 
 /// Chat message
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ChatMessage {
     /// Role (system, user, assistant)
     pub role: String,
@@ -345,7 +346,7 @@ pub struct ChatMessage {
 }
 
 /// Chat completion response
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct CompletionResponse {
     /// Response ID
     pub id: String,
@@ -367,7 +368,7 @@ pub struct CompletionResponse {
 }
 
 /// Completion choice
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct CompletionChoice {
     /// Choice index
     pub index: u32,
@@ -378,7 +379,7 @@ pub struct CompletionChoice {
 }
 
 /// Token usage information
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct TokenUsage {
     /// Number of prompt tokens
     pub prompt_tokens: u32,
@@ -398,7 +399,7 @@ pub struct TokenUsage {
 ///
 /// Used to track advanced token metrics like prompt caching.
 /// All fields are optional to maintain compatibility across providers.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct PromptTokensDetails {
     /// Number of cached tokens (tokens already in cache)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -415,7 +416,7 @@ pub struct PromptTokensDetails {
 ///
 /// Used to track special token types like reasoning tokens, thinking tokens, and audio tokens.
 /// All fields are optional to maintain compatibility across providers.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct CompletionTokensDetails {
     /// Number of reasoning tokens (e.g., OpenAI o1 series)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -429,7 +430,7 @@ pub struct CompletionTokensDetails {
 }
 
 /// Streaming completion chunk
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct CompletionChunk {
     /// Chunk ID
     pub id: String,
@@ -447,7 +448,7 @@ pub struct CompletionChunk {
 }
 
 /// Streaming chunk choice
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ChunkChoice {
     /// Choice index
     pub index: u32,
@@ -458,7 +459,7 @@ pub struct ChunkChoice {
 }
 
 /// Delta content in streaming chunk
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ChunkDelta {
     /// Role (only in first chunk)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -472,7 +473,7 @@ pub struct ChunkDelta {
 
 /// Embedding request
 #[allow(dead_code)]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct EmbeddingRequest {
     /// Model to use for embeddings
     pub model: String,
@@ -491,7 +492,7 @@ pub struct EmbeddingRequest {
 
 /// Input for embedding request (can be single string, array of strings, or token arrays)
 #[allow(dead_code)]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(untagged)]
 pub enum EmbeddingInput {
     /// Single text string
@@ -504,7 +505,7 @@ pub enum EmbeddingInput {
 
 /// Encoding format for embeddings
 #[allow(dead_code)]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum EncodingFormat {
     /// Floating point array
@@ -515,7 +516,7 @@ pub enum EncodingFormat {
 
 /// Embedding response
 #[allow(dead_code)]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct EmbeddingResponse {
     /// Object type ("list")
     pub object: String,
@@ -529,7 +530,7 @@ pub struct EmbeddingResponse {
 
 /// Single embedding
 #[allow(dead_code)]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Embedding {
     /// Object type ("embedding")
     pub object: String,
@@ -542,7 +543,7 @@ pub struct Embedding {
 
 /// Token usage for embeddings
 #[allow(dead_code)]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct EmbeddingUsage {
     /// Number of prompt tokens
     pub prompt_tokens: u32,
@@ -553,7 +554,7 @@ pub struct EmbeddingUsage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json;
+    
 
     #[test]
     fn test_token_usage_basic_serialization() {

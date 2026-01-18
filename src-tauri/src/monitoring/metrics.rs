@@ -9,6 +9,18 @@ use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+/// Request metrics for recording
+#[derive(Debug, Clone)]
+pub struct RequestMetrics<'a> {
+    pub api_key_name: &'a str,
+    pub provider: &'a str,
+    pub model: &'a str,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cost_usd: f64,
+    pub latency_ms: u64,
+}
+
 /// Time-series data point for metrics
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MetricDataPoint {
@@ -265,44 +277,42 @@ impl MetricsCollector {
     }
 
     /// Record a successful request
-    pub fn record_success(
-        &self,
-        api_key_name: &str,
-        provider: &str,
-        model: &str,
-        input_tokens: u64,
-        output_tokens: u64,
-        cost_usd: f64,
-        latency_ms: u64,
-    ) {
-        let timestamp = Utc::now();
+    pub fn record_success(&self, metrics: &RequestMetrics) {
+        self.record_success_at(metrics, Utc::now());
+    }
 
+    /// Record a successful request at a specific timestamp (for testing)
+    pub fn record_success_at(&self, metrics: &RequestMetrics, timestamp: DateTime<Utc>) {
         // Record in global metrics
         self.global
-            .record_success(timestamp, input_tokens, output_tokens, cost_usd, latency_ms);
+            .record_success(timestamp, metrics.input_tokens, metrics.output_tokens, metrics.cost_usd, metrics.latency_ms);
 
         // Record in per-key metrics
         self.per_key
-            .entry(api_key_name.to_string())
+            .entry(metrics.api_key_name.to_string())
             .or_insert_with(TimeSeries::new)
-            .record_success(timestamp, input_tokens, output_tokens, cost_usd, latency_ms);
+            .record_success(timestamp, metrics.input_tokens, metrics.output_tokens, metrics.cost_usd, metrics.latency_ms);
 
         // Record in per-provider metrics
         self.per_provider
-            .entry(provider.to_string())
+            .entry(metrics.provider.to_string())
             .or_insert_with(TimeSeries::new)
-            .record_success(timestamp, input_tokens, output_tokens, cost_usd, latency_ms);
+            .record_success(timestamp, metrics.input_tokens, metrics.output_tokens, metrics.cost_usd, metrics.latency_ms);
 
         // Record in per-model metrics
         self.per_model
-            .entry(model.to_string())
+            .entry(metrics.model.to_string())
             .or_insert_with(TimeSeries::new)
-            .record_success(timestamp, input_tokens, output_tokens, cost_usd, latency_ms);
+            .record_success(timestamp, metrics.input_tokens, metrics.output_tokens, metrics.cost_usd, metrics.latency_ms);
     }
 
     /// Record a failed request
     pub fn record_failure(&self, api_key_name: &str, provider: &str, model: &str, latency_ms: u64) {
-        let timestamp = Utc::now();
+        self.record_failure_at(api_key_name, provider, model, latency_ms, Utc::now());
+    }
+
+    /// Record a failed request at a specific timestamp (for testing)
+    pub fn record_failure_at(&self, api_key_name: &str, provider: &str, model: &str, latency_ms: u64, timestamp: DateTime<Utc>) {
 
         // Record in global metrics
         self.global.record_failure(timestamp, latency_ms);
@@ -550,7 +560,15 @@ mod tests {
     fn test_metrics_collector_record_success() {
         let collector = MetricsCollector::with_default_retention();
 
-        collector.record_success("key1", "openai", "gpt-4", 100, 200, 0.05, 1000);
+        collector.record_success(&RequestMetrics {
+            api_key_name: "key1",
+            provider: "openai",
+            model: "gpt-4",
+            input_tokens: 100,
+            output_tokens: 200,
+            cost_usd: 0.05,
+            latency_ms: 1000,
+        });
 
         let now = Utc::now();
         let start = now - Duration::hours(1);
@@ -592,8 +610,24 @@ mod tests {
     fn test_metrics_collector_get_names() {
         let collector = MetricsCollector::with_default_retention();
 
-        collector.record_success("key1", "openai", "gpt-4", 100, 200, 0.05, 1000);
-        collector.record_success("key2", "ollama", "llama3.3", 100, 200, 0.0, 1000);
+        collector.record_success(&RequestMetrics {
+            api_key_name: "key1",
+            provider: "openai",
+            model: "gpt-4",
+            input_tokens: 100,
+            output_tokens: 200,
+            cost_usd: 0.05,
+            latency_ms: 1000,
+        });
+        collector.record_success(&RequestMetrics {
+            api_key_name: "key2",
+            provider: "ollama",
+            model: "llama3.3",
+            input_tokens: 100,
+            output_tokens: 200,
+            cost_usd: 0.0,
+            latency_ms: 1000,
+        });
 
         let key_names = collector.get_api_key_names();
         assert_eq!(key_names.len(), 2);
@@ -609,5 +643,243 @@ mod tests {
         assert_eq!(model_names.len(), 2);
         assert!(model_names.contains(&"gpt-4".to_string()));
         assert!(model_names.contains(&"llama3.3".to_string()));
+    }
+
+    #[test]
+    fn test_metrics_collector_per_model_tracking() {
+        let collector = MetricsCollector::with_default_retention();
+        let now = Utc::now();
+
+        // Record to different models
+        collector.record_success(&RequestMetrics {
+            api_key_name: "key1",
+            provider: "openai",
+            model: "gpt-4",
+            input_tokens: 1000,
+            output_tokens: 500,
+            cost_usd: 0.05,
+            latency_ms: 100,
+        });
+
+        collector.record_success(&RequestMetrics {
+            api_key_name: "key1",
+            provider: "anthropic",
+            model: "claude-3.5-sonnet",
+            input_tokens: 800,
+            output_tokens: 400,
+            cost_usd: 0.03,
+            latency_ms: 80,
+        });
+
+        // Verify global aggregates
+        let global = collector.get_global_range(
+            now - Duration::minutes(5),
+            now + Duration::minutes(5),
+        );
+        assert_eq!(global.len(), 1);
+        assert_eq!(global[0].requests, 2);
+        assert_eq!(global[0].input_tokens, 1800);
+        assert_eq!(global[0].output_tokens, 900);
+
+        // Verify per-model isolation
+        let gpt4_metrics = collector.get_model_range(
+            "gpt-4",
+            now - Duration::minutes(5),
+            now + Duration::minutes(5),
+        );
+        assert_eq!(gpt4_metrics.len(), 1);
+        assert_eq!(gpt4_metrics[0].requests, 1);
+        assert_eq!(gpt4_metrics[0].input_tokens, 1000);
+
+        let claude_metrics = collector.get_model_range(
+            "claude-3.5-sonnet",
+            now - Duration::minutes(5),
+            now + Duration::minutes(5),
+        );
+        assert_eq!(claude_metrics.len(), 1);
+        assert_eq!(claude_metrics[0].requests, 1);
+        assert_eq!(claude_metrics[0].input_tokens, 800);
+    }
+
+    #[test]
+    fn test_metrics_collector_get_model_names() {
+        let collector = MetricsCollector::with_default_retention();
+
+        collector.record_success(&RequestMetrics {
+            api_key_name: "key1",
+            provider: "openai",
+            model: "gpt-4",
+            input_tokens: 100,
+            output_tokens: 50,
+            cost_usd: 0.01,
+            latency_ms: 100,
+        });
+        collector.record_success(&RequestMetrics {
+            api_key_name: "key1",
+            provider: "openai",
+            model: "gpt-3.5-turbo",
+            input_tokens: 100,
+            output_tokens: 50,
+            cost_usd: 0.001,
+            latency_ms: 80,
+        });
+        collector.record_success(&RequestMetrics {
+            api_key_name: "key1",
+            provider: "anthropic",
+            model: "claude-3.5-sonnet",
+            input_tokens: 100,
+            output_tokens: 50,
+            cost_usd: 0.01,
+            latency_ms: 90,
+        });
+
+        let mut models = collector.get_model_names();
+        models.sort();
+
+        assert_eq!(models.len(), 3);
+        assert_eq!(models, vec!["claude-3.5-sonnet", "gpt-3.5-turbo", "gpt-4"]);
+    }
+
+    #[test]
+    fn test_four_tier_isolation() {
+        let collector = MetricsCollector::with_default_retention();
+        let now = Utc::now();
+
+        // Record metrics for different combinations
+        collector.record_success(&RequestMetrics {
+            api_key_name: "key1",
+            provider: "openai",
+            model: "gpt-4",
+            input_tokens: 1000,
+            output_tokens: 500,
+            cost_usd: 0.05,
+            latency_ms: 100,
+        });
+        collector.record_success(&RequestMetrics {
+            api_key_name: "key1",
+            provider: "anthropic",
+            model: "claude-3.5-sonnet",
+            input_tokens: 800,
+            output_tokens: 400,
+            cost_usd: 0.03,
+            latency_ms: 80,
+        });
+        collector.record_success(&RequestMetrics {
+            api_key_name: "key2",
+            provider: "openai",
+            model: "gpt-4",
+            input_tokens: 500,
+            output_tokens: 250,
+            cost_usd: 0.025,
+            latency_ms: 90,
+        });
+
+        // Verify global (all requests)
+        let global = collector.get_global_range(
+            now - Duration::minutes(5),
+            now + Duration::minutes(5),
+        );
+        assert_eq!(global[0].requests, 3);
+
+        // Verify per-key isolation
+        let key1 = collector.get_key_range(
+            "key1",
+            now - Duration::minutes(5),
+            now + Duration::minutes(5),
+        );
+        assert_eq!(key1[0].requests, 2);
+
+        let key2 = collector.get_key_range(
+            "key2",
+            now - Duration::minutes(5),
+            now + Duration::minutes(5),
+        );
+        assert_eq!(key2[0].requests, 1);
+
+        // Verify per-provider isolation
+        let openai = collector.get_provider_range(
+            "openai",
+            now - Duration::minutes(5),
+            now + Duration::minutes(5),
+        );
+        assert_eq!(openai[0].requests, 2);
+
+        let anthropic = collector.get_provider_range(
+            "anthropic",
+            now - Duration::minutes(5),
+            now + Duration::minutes(5),
+        );
+        assert_eq!(anthropic[0].requests, 1);
+
+        // Verify per-model isolation
+        let gpt4 = collector.get_model_range(
+            "gpt-4",
+            now - Duration::minutes(5),
+            now + Duration::minutes(5),
+        );
+        assert_eq!(gpt4[0].requests, 2); // Both key1 and key2 used gpt-4
+    }
+
+    #[test]
+    fn test_cleanup_all_tiers() {
+        let collector = MetricsCollector::new(1); // 1 hour retention
+        let now = Utc::now();
+
+        // Record some recent metrics
+        collector.record_success(&RequestMetrics {
+            api_key_name: "key1",
+            provider: "openai",
+            model: "gpt-4",
+            input_tokens: 1000,
+            output_tokens: 500,
+            cost_usd: 0.05,
+            latency_ms: 100,
+        });
+
+        // Verify data exists before cleanup
+        assert_eq!(collector.global_data_point_count(), 1);
+        assert_eq!(collector.get_api_key_names().len(), 1);
+        assert_eq!(collector.get_provider_names().len(), 1);
+        assert_eq!(collector.get_model_names().len(), 1);
+
+        // Run cleanup (should not remove recent data)
+        collector.cleanup();
+
+        // Verify data still exists (within retention period)
+        let global = collector.get_global_range(
+            now - Duration::minutes(5),
+            now + Duration::minutes(5),
+        );
+        assert_eq!(global.len(), 1);
+        assert_eq!(collector.global_data_point_count(), 1);
+    }
+
+    #[test]
+    fn test_per_model_failure_tracking() {
+        let collector = MetricsCollector::with_default_retention();
+        let now = Utc::now();
+
+        // Record success and failure for same model
+        collector.record_success(&RequestMetrics {
+            api_key_name: "key1",
+            provider: "openai",
+            model: "gpt-4",
+            input_tokens: 1000,
+            output_tokens: 500,
+            cost_usd: 0.05,
+            latency_ms: 100,
+        });
+        collector.record_failure("key1", "openai", "gpt-4", 1000);
+
+        // Verify model metrics include both
+        let gpt4_metrics = collector.get_model_range(
+            "gpt-4",
+            now - Duration::minutes(5),
+            now + Duration::minutes(5),
+        );
+        assert_eq!(gpt4_metrics.len(), 1);
+        assert_eq!(gpt4_metrics[0].requests, 2);
+        assert_eq!(gpt4_metrics[0].successful_requests, 1);
+        assert_eq!(gpt4_metrics[0].failed_requests, 1);
     }
 }

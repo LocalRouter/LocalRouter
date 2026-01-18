@@ -75,6 +75,7 @@ impl OAuthClientManager {
     ///
     /// Note: This just wraps the constructor. The actual metadata should be
     /// loaded from the config file by ConfigManager.
+    #[allow(dead_code)]
     pub async fn load() -> AppResult<Self> {
         // For now, return empty manager
         // In practice, the main.rs will load from config and pass to new()
@@ -151,6 +152,7 @@ impl OAuthClientManager {
     }
 
     /// Get a specific OAuth client metadata by client_id
+    #[allow(dead_code)]
     pub fn get_client_by_client_id(&self, client_id: &str) -> Option<OAuthClientConfig> {
         self.clients
             .read()
@@ -244,6 +246,7 @@ impl OAuthClientManager {
     ///
     /// # Returns
     /// The new client_secret string (lr-...)
+    #[allow(dead_code)]
     pub async fn rotate_secret(&self, id: &str) -> AppResult<String> {
         // Verify the client exists
         {
@@ -288,15 +291,11 @@ impl OAuthClientManager {
             let encoded = credentials.strip_prefix("Basic ")?;
             let decoded = STANDARD.decode(encoded).ok()?;
             let decoded_str = String::from_utf8(decoded).ok()?;
-            let mut parts = decoded_str.splitn(2, ':');
-            let id = parts.next()?;
-            let secret = parts.next()?;
+            let (id, secret) = decoded_str.split_once(':')?;
             (id.to_string(), secret.to_string())
         } else {
             // Parse raw "client_id:client_secret"
-            let mut parts = credentials.splitn(2, ':');
-            let id = parts.next()?;
-            let secret = parts.next()?;
+            let (id, secret) = credentials.split_once(':')?;
             (id.to_string(), secret.to_string())
         };
 
@@ -378,6 +377,7 @@ impl OAuthClientManager {
     /// Reload OAuth clients metadata from config
     ///
     /// Used when config is externally modified.
+    #[allow(dead_code)]
     pub fn reload(&self, clients: Vec<OAuthClientConfig>) {
         *self.clients.write() = clients;
     }

@@ -31,6 +31,7 @@ pub struct SseTransport {
 
     /// Pending requests waiting for responses
     /// Maps request ID to response sender
+    #[allow(dead_code)]
     pending: Arc<RwLock<HashMap<String, oneshot::Sender<JsonRpcResponse>>>>,
 
     /// Next request ID
@@ -49,6 +50,10 @@ impl SseTransport {
     ///
     /// # Returns
     /// * The transport instance
+    ///
+    /// # Errors
+    /// * Returns an error if the HTTP client cannot be created
+    /// * Returns an error if the server is not reachable or returns an error status
     pub async fn connect(url: String, headers: HashMap<String, String>) -> AppResult<Self> {
         tracing::info!("Connecting to MCP SSE server: {}", url);
 
@@ -57,6 +62,23 @@ impl SseTransport {
             .timeout(Duration::from_secs(30))
             .build()
             .map_err(|e| AppError::Mcp(format!("Failed to create HTTP client: {}", e)))?;
+
+        // Validate connection with a test request
+        // Use HEAD request for minimal overhead
+        let mut validation_req = client.head(&url);
+        for (key, value) in &headers {
+            validation_req = validation_req.header(key, value);
+        }
+
+        let validation_response = validation_req.send().await
+            .map_err(|e| AppError::Mcp(format!("Failed to connect to SSE server: {}", e)))?;
+
+        if !validation_response.status().is_success() {
+            return Err(AppError::Mcp(format!(
+                "Server returned error status on connect: {}",
+                validation_response.status()
+            )));
+        }
 
         let transport = Self {
             url,
@@ -100,13 +122,12 @@ impl Transport for SseTransport {
             return Err(AppError::Mcp("Transport is closed".to_string()));
         }
 
-        // Generate request ID if not present
-        let _request_id = if request.id.is_none() {
+        // Always generate a unique request ID to avoid collisions
+        // This prevents race conditions when concurrent requests might have the same ID
+        let _request_id = {
             let id = self.next_request_id();
             request.id = Some(Value::Number(id.into()));
             id.to_string()
-        } else {
-            request.id.as_ref().unwrap().to_string()
         };
 
         // Build request with custom headers

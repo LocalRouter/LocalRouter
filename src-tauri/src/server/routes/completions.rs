@@ -20,6 +20,22 @@ use crate::server::types::{
 
 /// POST /v1/completions
 /// Legacy completion endpoint - converts prompt to chat format
+#[utoipa::path(
+    post,
+    path = "/v1/completions",
+    tag = "completions",
+    request_body = CompletionRequest,
+    responses(
+        (status = 200, description = "Successful response", body = CompletionResponse),
+        (status = 400, description = "Bad request", body = crate::server::types::ErrorResponse),
+        (status = 401, description = "Unauthorized", body = crate::server::types::ErrorResponse),
+        (status = 429, description = "Rate limit exceeded", body = crate::server::types::ErrorResponse),
+        (status = 500, description = "Internal server error", body = crate::server::types::ErrorResponse)
+    ),
+    security(
+        ("bearer_auth" = [])
+    )
+)]
 pub async fn completions(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,

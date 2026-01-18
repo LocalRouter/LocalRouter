@@ -4,6 +4,8 @@
 
 use crate::api_keys::ApiKeyManager;
 use crate::config::{ActiveRoutingStrategy, ConfigManager, ModelSelection};
+use crate::mcp::manager::McpServerManager;
+use crate::oauth_clients::OAuthClientManager;
 use crate::providers::registry::ProviderRegistry;
 use tauri::{
     menu::{MenuBuilder, MenuItem, SubmenuBuilder},
@@ -69,6 +71,22 @@ pub fn setup_tray<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
                             error!("Failed to generate key from tray: {}", e);
                         }
                     });
+                }
+                "create_oauth_client" => {
+                    info!("Create OAuth client requested from tray");
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                        let _ = window.emit("navigate-to-tab", "oauth-clients");
+                    }
+                }
+                "create_mcp_server" => {
+                    info!("Create MCP server requested from tray");
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                        let _ = window.emit("navigate-to-tab", "mcp-servers");
+                    }
                 }
                 "quit" => {
                     info!("Quit requested from tray");
@@ -173,6 +191,33 @@ pub fn setup_tray<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
                                 }
                             });
                         }
+                    } else if let Some(client_id) = id.strip_prefix("copy_oauth_client_") {
+                        info!("Copy OAuth client ID requested: {}", client_id);
+                        let app_clone = app.clone();
+                        let client_id = client_id.to_string();
+                        tauri::async_runtime::spawn(async move {
+                            if let Err(e) = handle_copy_oauth_client(&app_clone, &client_id).await {
+                                error!("Failed to copy OAuth client ID: {}", e);
+                            }
+                        });
+                    } else if let Some(server_id) = id.strip_prefix("start_mcp_server_") {
+                        info!("Start MCP server requested: {}", server_id);
+                        let app_clone = app.clone();
+                        let server_id = server_id.to_string();
+                        tauri::async_runtime::spawn(async move {
+                            if let Err(e) = handle_start_mcp_server(&app_clone, &server_id).await {
+                                error!("Failed to start MCP server: {}", e);
+                            }
+                        });
+                    } else if let Some(server_id) = id.strip_prefix("stop_mcp_server_") {
+                        info!("Stop MCP server requested: {}", server_id);
+                        let app_clone = app.clone();
+                        let server_id = server_id.to_string();
+                        tauri::async_runtime::spawn(async move {
+                            if let Err(e) = handle_stop_mcp_server(&app_clone, &server_id).await {
+                                error!("Failed to stop MCP server: {}", e);
+                            }
+                        });
                     }
                 }
             }
@@ -374,6 +419,93 @@ fn build_tray_menu<R: Runtime>(app: &App<R>) -> tauri::Result<tauri::menu::Menu<
 
     // Add "Generate API Key" without separator before it
     menu_builder = menu_builder.text("generate_key", "➕ Generate API Key");
+
+    // Add separator before OAuth/MCP section
+    menu_builder = menu_builder.separator();
+
+    // Add OAuth Clients section header
+    let oauth_clients_header = MenuItem::with_id(app, "oauth_clients_header", "OAuth Clients", false, None::<&str>)?;
+    menu_builder = menu_builder.item(&oauth_clients_header);
+
+    // Get OAuth clients from manager
+    if let Some(oauth_client_manager) = app.try_state::<OAuthClientManager>() {
+        let clients = oauth_client_manager.list_clients();
+
+        if !clients.is_empty() {
+            for client in clients.iter() {
+                let client_name = if client.name.is_empty() {
+                    format!("Client {}", &client.id[..8])
+                } else {
+                    client.name.clone()
+                };
+
+                let mut submenu_builder = SubmenuBuilder::new(app, &client_name);
+
+                // Add "Copy Client ID" option
+                submenu_builder = submenu_builder
+                    .text(format!("copy_oauth_client_{}", client.id), "📋 Copy Client ID");
+
+                // Add linked servers count (read-only)
+                let linked_count = client.linked_server_ids.len();
+                submenu_builder = submenu_builder
+                    .text(format!("oauth_linked_{}", client.id), format!("🔗 {} linked server(s)", linked_count))
+                    .enabled(false);
+
+                let submenu = submenu_builder.build()?;
+                menu_builder = menu_builder.item(&submenu);
+            }
+        }
+    }
+
+    // Add "Create OAuth Client" button
+    menu_builder = menu_builder.text("create_oauth_client", "➕ Create OAuth Client");
+
+    // Add separator before MCP Servers section
+    menu_builder = menu_builder.separator();
+
+    // Add MCP Servers section header
+    let mcp_servers_header = MenuItem::with_id(app, "mcp_servers_header", "MCP Servers", false, None::<&str>)?;
+    menu_builder = menu_builder.item(&mcp_servers_header);
+
+    // Get MCP servers from manager
+    if let Some(mcp_server_manager) = app.try_state::<Arc<McpServerManager>>() {
+        let configs = mcp_server_manager.list_configs();
+
+        if !configs.is_empty() {
+            for server in configs.iter() {
+                let server_name = if server.name.is_empty() {
+                    format!("Server {}", &server.id[..8])
+                } else {
+                    server.name.clone()
+                };
+
+                let mut submenu_builder = SubmenuBuilder::new(app, &server_name);
+
+                // Check if server is running
+                let is_running = mcp_server_manager.is_running(&server.id);
+
+                if is_running {
+                    submenu_builder = submenu_builder
+                        .text(format!("stop_mcp_server_{}", server.id), "⏹️ Stop Server");
+                } else {
+                    submenu_builder = submenu_builder
+                        .text(format!("start_mcp_server_{}", server.id), "▶️ Start Server");
+                }
+
+                // Add status indicator (read-only)
+                let status_text = if is_running { "✓ Running" } else { "✗ Stopped" };
+                submenu_builder = submenu_builder
+                    .text(format!("mcp_status_{}", server.id), status_text)
+                    .enabled(false);
+
+                let submenu = submenu_builder.build()?;
+                menu_builder = menu_builder.item(&submenu);
+            }
+        }
+    }
+
+    // Add "Create MCP Server" button
+    menu_builder = menu_builder.text("create_mcp_server", "➕ Create MCP Server");
 
     // Add separator before Server section
     menu_builder = menu_builder.separator();
@@ -621,6 +753,93 @@ fn build_tray_menu_from_handle<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<
     // Add "Generate API Key" without separator before it
     menu_builder = menu_builder.text("generate_key", "➕ Generate API Key");
 
+    // Add separator before OAuth/MCP section
+    menu_builder = menu_builder.separator();
+
+    // Add OAuth Clients section header
+    let oauth_clients_header = MenuItem::with_id(app, "oauth_clients_header", "OAuth Clients", false, None::<&str>)?;
+    menu_builder = menu_builder.item(&oauth_clients_header);
+
+    // Get OAuth clients from manager
+    if let Some(oauth_client_manager) = app.try_state::<OAuthClientManager>() {
+        let clients = oauth_client_manager.list_clients();
+
+        if !clients.is_empty() {
+            for client in clients.iter() {
+                let client_name = if client.name.is_empty() {
+                    format!("Client {}", &client.id[..8])
+                } else {
+                    client.name.clone()
+                };
+
+                let mut submenu_builder = SubmenuBuilder::new(app, &client_name);
+
+                // Add "Copy Client ID" option
+                submenu_builder = submenu_builder
+                    .text(format!("copy_oauth_client_{}", client.id), "📋 Copy Client ID");
+
+                // Add linked servers count (read-only)
+                let linked_count = client.linked_server_ids.len();
+                submenu_builder = submenu_builder
+                    .text(format!("oauth_linked_{}", client.id), format!("🔗 {} linked server(s)", linked_count))
+                    .enabled(false);
+
+                let submenu = submenu_builder.build()?;
+                menu_builder = menu_builder.item(&submenu);
+            }
+        }
+    }
+
+    // Add "Create OAuth Client" button
+    menu_builder = menu_builder.text("create_oauth_client", "➕ Create OAuth Client");
+
+    // Add separator before MCP Servers section
+    menu_builder = menu_builder.separator();
+
+    // Add MCP Servers section header
+    let mcp_servers_header = MenuItem::with_id(app, "mcp_servers_header", "MCP Servers", false, None::<&str>)?;
+    menu_builder = menu_builder.item(&mcp_servers_header);
+
+    // Get MCP servers from manager
+    if let Some(mcp_server_manager) = app.try_state::<Arc<McpServerManager>>() {
+        let configs = mcp_server_manager.list_configs();
+
+        if !configs.is_empty() {
+            for server in configs.iter() {
+                let server_name = if server.name.is_empty() {
+                    format!("Server {}", &server.id[..8])
+                } else {
+                    server.name.clone()
+                };
+
+                let mut submenu_builder = SubmenuBuilder::new(app, &server_name);
+
+                // Check if server is running
+                let is_running = mcp_server_manager.is_running(&server.id);
+
+                if is_running {
+                    submenu_builder = submenu_builder
+                        .text(format!("stop_mcp_server_{}", server.id), "⏹️ Stop Server");
+                } else {
+                    submenu_builder = submenu_builder
+                        .text(format!("start_mcp_server_{}", server.id), "▶️ Start Server");
+                }
+
+                // Add status indicator (read-only)
+                let status_text = if is_running { "✓ Running" } else { "✗ Stopped" };
+                submenu_builder = submenu_builder
+                    .text(format!("mcp_status_{}", server.id), status_text)
+                    .enabled(false);
+
+                let submenu = submenu_builder.build()?;
+                menu_builder = menu_builder.item(&submenu);
+            }
+        }
+    }
+
+    // Add "Create MCP Server" button
+    menu_builder = menu_builder.text("create_mcp_server", "➕ Create MCP Server");
+
     // Add separator before Server section
     menu_builder = menu_builder.separator();
 
@@ -701,6 +920,8 @@ async fn handle_toggle_server<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<(
             let mcp_server_manager = app.state::<Arc<crate::mcp::McpServerManager>>();
             let rate_limiter = app.state::<Arc<crate::router::RateLimiterManager>>();
             let provider_registry = app.state::<Arc<ProviderRegistry>>();
+            let client_manager = app.state::<Arc<crate::clients::ClientManager>>();
+            let token_store = app.state::<Arc<crate::clients::TokenStore>>();
 
             // Get server config
             let server_config = {
@@ -716,12 +937,16 @@ async fn handle_toggle_server<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<(
             server_manager
                 .start(
                     server_config,
-                    router.inner().clone(),
-                    (*api_key_manager.inner()).clone(),
-                    (*oauth_client_manager.inner()).clone(),
-                    mcp_server_manager.inner().clone(),
-                    rate_limiter.inner().clone(),
-                    provider_registry.inner().clone(),
+                    crate::server::manager::ServerDependencies {
+                        router: router.inner().clone(),
+                        api_key_manager: (*api_key_manager.inner()).clone(),
+                        oauth_client_manager: (*oauth_client_manager.inner()).clone(),
+                        mcp_server_manager: mcp_server_manager.inner().clone(),
+                        rate_limiter: rate_limiter.inner().clone(),
+                        provider_registry: provider_registry.inner().clone(),
+                        client_manager: client_manager.inner().clone(),
+                        token_store: token_store.inner().clone(),
+                    },
                 )
                 .await
                 .map_err(tauri::Error::Anyhow)?;
@@ -1291,5 +1516,62 @@ fn copy_to_clipboard(text: &str) -> Result<(), anyhow::Error> {
         .set_text(text)
         .map_err(|e| anyhow::anyhow!("Failed to set clipboard text: {}", e))?;
 
+    Ok(())
+}
+
+/// Handle copying OAuth client ID from the system tray
+async fn handle_copy_oauth_client<R: Runtime>(app: &AppHandle<R>, client_id: &str) -> tauri::Result<()> {
+    info!("Copying OAuth client ID: {}", client_id);
+
+    // Get OAuth client manager from state
+    let oauth_client_manager = app.try_state::<OAuthClientManager>()
+        .ok_or_else(|| anyhow::anyhow!("OAuth client manager not found"))?;
+
+    // Get the client
+    let client = oauth_client_manager.get_client(client_id)
+        .ok_or_else(|| anyhow::anyhow!("OAuth client not found"))?;
+
+    // Copy client_id to clipboard
+    copy_to_clipboard(&client.client_id)?;
+
+    info!("OAuth client ID copied to clipboard");
+    Ok(())
+}
+
+/// Handle starting an MCP server from the system tray
+async fn handle_start_mcp_server<R: Runtime>(app: &AppHandle<R>, server_id: &str) -> tauri::Result<()> {
+    info!("Starting MCP server: {}", server_id);
+
+    // Get MCP server manager from state
+    let mcp_server_manager = app.try_state::<Arc<McpServerManager>>()
+        .ok_or_else(|| anyhow::anyhow!("MCP server manager not found"))?;
+
+    // Start the server
+    mcp_server_manager.start_server(server_id).await
+        .map_err(|e| anyhow::anyhow!("Failed to start MCP server: {}", e))?;
+
+    // Rebuild tray menu to update status
+    rebuild_tray_menu(app)?;
+
+    info!("MCP server started successfully");
+    Ok(())
+}
+
+/// Handle stopping an MCP server from the system tray
+async fn handle_stop_mcp_server<R: Runtime>(app: &AppHandle<R>, server_id: &str) -> tauri::Result<()> {
+    info!("Stopping MCP server: {}", server_id);
+
+    // Get MCP server manager from state
+    let mcp_server_manager = app.try_state::<Arc<McpServerManager>>()
+        .ok_or_else(|| anyhow::anyhow!("MCP server manager not found"))?;
+
+    // Stop the server
+    mcp_server_manager.stop_server(server_id).await
+        .map_err(|e| anyhow::anyhow!("Failed to stop MCP server: {}", e))?;
+
+    // Rebuild tray menu to update status
+    rebuild_tray_menu(app)?;
+
+    info!("MCP server stopped successfully");
     Ok(())
 }

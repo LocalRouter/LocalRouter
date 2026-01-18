@@ -50,7 +50,7 @@ export default function ProviderDetailPage({
   const [enabled, setEnabled] = useState(true)
   const [loading, setLoading] = useState(true)
   const [isSaving, setIsSaving] = useState(false)
-  const [activeTab, setActiveTab] = useState<string>('configuration')
+  const [activeTab, setActiveTab] = useState<string>('metrics')
 
   useEffect(() => {
     loadProviderData()
@@ -172,6 +172,51 @@ export default function ProviderDetailPage({
 
   const tabs = [
     {
+      id: 'metrics',
+      label: 'Metrics',
+      content: (
+        <div className="space-y-6">
+          <div className="grid grid-cols-2 gap-6">
+            <MetricsChart
+              scope="provider"
+              scopeId={instanceName}
+              timeRange="day"
+              metricType="requests"
+              title="Requests"
+              refreshTrigger={refreshKey}
+            />
+
+            <MetricsChart
+              scope="provider"
+              scopeId={instanceName}
+              timeRange="day"
+              metricType="tokens"
+              title="Tokens"
+              refreshTrigger={refreshKey}
+            />
+
+            <MetricsChart
+              scope="provider"
+              scopeId={instanceName}
+              timeRange="day"
+              metricType="cost"
+              title="Cost"
+              refreshTrigger={refreshKey}
+            />
+
+            <MetricsChart
+              scope="provider"
+              scopeId={instanceName}
+              timeRange="day"
+              metricType="latency"
+              title="Latency"
+              refreshTrigger={refreshKey}
+            />
+          </div>
+        </div>
+      ),
+    },
+    {
       id: 'configuration',
       label: 'Configuration',
       content: (
@@ -288,51 +333,6 @@ export default function ProviderDetailPage({
             </div>
           )}
         </Card>
-      ),
-    },
-    {
-      id: 'metrics',
-      label: 'Metrics',
-      content: (
-        <div className="space-y-6">
-          <div className="grid grid-cols-2 gap-6">
-            <MetricsChart
-              scope="provider"
-              scopeId={instanceName}
-              timeRange="day"
-              metricType="requests"
-              title="Requests"
-              refreshTrigger={refreshKey}
-            />
-
-            <MetricsChart
-              scope="provider"
-              scopeId={instanceName}
-              timeRange="day"
-              metricType="tokens"
-              title="Tokens"
-              refreshTrigger={refreshKey}
-            />
-
-            <MetricsChart
-              scope="provider"
-              scopeId={instanceName}
-              timeRange="day"
-              metricType="cost"
-              title="Cost"
-              refreshTrigger={refreshKey}
-            />
-
-            <MetricsChart
-              scope="provider"
-              scopeId={instanceName}
-              timeRange="day"
-              metricType="latency"
-              title="Latency"
-              refreshTrigger={refreshKey}
-            />
-          </div>
-        </div>
       ),
     },
     {

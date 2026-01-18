@@ -21,7 +21,7 @@ mod validation;
 
 pub use storage::{load_config, save_config};
 
-const CONFIG_VERSION: u32 = 1;
+const CONFIG_VERSION: u32 = 2;
 
 /// Main application configuration structure
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -34,7 +34,7 @@ pub struct AppConfig {
     #[serde(default)]
     pub server: ServerConfig,
 
-    /// API keys configuration
+    /// API keys configuration (deprecated, use clients instead)
     #[serde(default)]
     pub api_keys: Vec<ApiKeyConfig>,
 
@@ -50,13 +50,17 @@ pub struct AppConfig {
     #[serde(default)]
     pub logging: LoggingConfig,
 
-    /// OAuth clients for MCP
+    /// OAuth clients for MCP (deprecated, use clients instead)
     #[serde(default)]
     pub oauth_clients: Vec<OAuthClientConfig>,
 
     /// MCP server configurations
     #[serde(default)]
     pub mcp_servers: Vec<McpServerConfig>,
+
+    /// Unified clients (replaces api_keys and oauth_clients)
+    #[serde(default)]
+    pub clients: Vec<Client>,
 }
 
 /// Server configuration
@@ -235,6 +239,55 @@ pub struct OAuthClientConfig {
     pub last_used: Option<DateTime<Utc>>,
 }
 
+/// Unified client configuration (replaces ApiKeyConfig and OAuthClientConfig)
+///
+/// A client can access both LLM routing and MCP servers using a single secret.
+/// Supports two authentication methods:
+/// 1. Direct Bearer Token: Authorization: Bearer {client_secret}
+/// 2. OAuth Client Credentials: Get temporary token via POST /oauth/token
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Client {
+    /// Unique identifier (internal, UUID)
+    pub id: String,
+
+    /// Human-readable name
+    pub name: String,
+
+    /// OAuth Client ID (public identifier, stored in config)
+    /// Format: "lr-..." (32 chars)
+    /// Used for OAuth client credentials flow
+    pub client_id: String,
+
+    /// Reference to client secret in keychain
+    /// Actual secret stored in keyring: service="LocalRouter-Clients", account=client.id
+    /// This ONE secret is used for:
+    /// - LLM access: Authorization: Bearer {secret}
+    /// - MCP access (direct): Authorization: Bearer {secret}
+    /// - MCP access (OAuth): client_secret={secret} in /oauth/token
+    pub secret_ref: String,
+
+    /// Whether this client is enabled
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    /// LLM providers this client can access
+    /// Empty = no LLM access
+    #[serde(default)]
+    pub allowed_llm_providers: Vec<String>,
+
+    /// MCP servers this client can access (by server ID)
+    /// Empty = no MCP access
+    #[serde(default)]
+    pub allowed_mcp_servers: Vec<String>,
+
+    /// When this client was created
+    pub created_at: DateTime<Utc>,
+
+    /// Last time this client was used
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_used: Option<DateTime<Utc>>,
+}
+
 /// MCP server configuration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct McpServerConfig {
@@ -244,14 +297,26 @@ pub struct McpServerConfig {
     /// Human-readable name
     pub name: String,
 
-    /// Transport type (STDIO, SSE, WebSocket)
+    /// Transport type (STDIO or HTTP/SSE only)
     pub transport: McpTransportType,
 
     /// Transport-specific configuration
     pub transport_config: McpTransportConfig,
 
-    /// OAuth configuration for MCP server (auto-discovered)
+    /// Manual authentication configuration
+    /// How LocalRouter authenticates TO this MCP server (outbound)
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth_config: Option<McpAuthConfig>,
+
+    /// Auto-discovered OAuth configuration (legacy, for auto-detection)
+    /// Populated automatically if server has .well-known/oauth-protected-resource
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub discovered_oauth: Option<McpOAuthDiscovery>,
+
+    /// Legacy OAuth configuration (deprecated, use discovered_oauth)
+    /// This field is kept for backward compatibility during migration
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub oauth_config: Option<McpOAuthConfig>,
 
     /// Whether the server is enabled
@@ -268,9 +333,19 @@ pub struct McpServerConfig {
 pub enum McpTransportType {
     /// STDIO transport (spawn subprocess with piped stdin/stdout)
     Stdio,
-    /// Server-Sent Events (HTTP + SSE)
+
+    /// HTTP with Server-Sent Events (new naming convention)
+    #[serde(alias = "sse")]
+    HttpSse,
+
+    /// Server-Sent Events (HTTP + SSE) - DEPRECATED, use HttpSse
+    #[deprecated(note = "Use HttpSse instead")]
+    #[serde(skip_deserializing)]
     Sse,
-    /// WebSocket transport
+
+    /// WebSocket transport - DEPRECATED
+    /// Will be removed in a future version
+    #[deprecated(note = "WebSocket transport is deprecated, use HttpSse or Stdio")]
     WebSocket,
 }
 
@@ -285,11 +360,23 @@ pub enum McpTransportConfig {
         /// Command arguments
         #[serde(default)]
         args: Vec<String>,
-        /// Environment variables
+        /// Base environment variables (auth env vars go in McpAuthConfig::EnvVars)
         #[serde(default)]
         env: std::collections::HashMap<String, String>,
     },
-    /// SSE configuration
+
+    /// HTTP with Server-Sent Events configuration (new naming)
+    #[serde(alias = "sse")]
+    HttpSse {
+        /// Server URL
+        url: String,
+        /// Base headers (auth headers go in McpAuthConfig::CustomHeaders or BearerToken)
+        #[serde(default)]
+        headers: std::collections::HashMap<String, String>,
+    },
+
+    /// SSE configuration - DEPRECATED, use HttpSse
+    #[serde(skip_deserializing)]
     Sse {
         /// Server URL
         url: String,
@@ -297,7 +384,9 @@ pub enum McpTransportConfig {
         #[serde(default)]
         headers: std::collections::HashMap<String, String>,
     },
-    /// WebSocket configuration
+
+    /// WebSocket configuration - DEPRECATED
+    #[serde(skip_deserializing)]
     WebSocket {
         /// WebSocket URL
         url: String,
@@ -307,9 +396,10 @@ pub enum McpTransportConfig {
     },
 }
 
-/// OAuth configuration for MCP server
+/// OAuth configuration for MCP server (auto-discovered)
 ///
 /// Discovered via /.well-known/oauth-protected-resource endpoint
+/// This is the legacy auto-discovery format, kept for compatibility
 /// Client credentials stored in keychain service "LocalRouter-McpServerTokens"
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct McpOAuthConfig {
@@ -330,6 +420,75 @@ pub struct McpOAuthConfig {
     /// Actual secret stored in keychain, not here
     #[serde(skip)]
     pub client_secret_ref: String,
+}
+
+/// Authentication configuration for MCP servers (outbound authentication)
+///
+/// Configures how LocalRouter authenticates TO external MCP servers.
+/// This is separate from how clients authenticate TO LocalRouter (see Client struct).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum McpAuthConfig {
+    /// No authentication required
+    None,
+
+    /// Bearer token authentication (Authorization: Bearer {token})
+    BearerToken {
+        /// Reference to token in keychain
+        /// Stored in keyring: service="LocalRouter-McpServers", account=server.id
+        token_ref: String,
+    },
+
+    /// Custom headers (can include auth headers)
+    CustomHeaders {
+        /// Headers to send with every request
+        /// Can include: Authorization, X-API-Key, etc.
+        /// Sensitive values should be stored in keychain and referenced here
+        headers: std::collections::HashMap<String, String>,
+    },
+
+    /// Pre-registered OAuth credentials
+    OAuth {
+        /// OAuth client ID
+        client_id: String,
+
+        /// Reference to client secret in keychain
+        client_secret_ref: String,
+
+        /// Authorization endpoint URL
+        auth_url: String,
+
+        /// Token endpoint URL
+        token_url: String,
+
+        /// OAuth scopes to request
+        scopes: Vec<String>,
+    },
+
+    /// Environment variables (for STDIO only)
+    /// Can include API keys, tokens, etc.
+    EnvVars {
+        /// Environment variables to pass to subprocess
+        /// Merged with transport_config.env at runtime
+        /// Sensitive values should be stored in keychain and referenced here
+        env: std::collections::HashMap<String, String>,
+    },
+}
+
+/// Auto-discovered OAuth information (from .well-known endpoint)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct McpOAuthDiscovery {
+    /// Authorization endpoint URL
+    pub auth_url: String,
+
+    /// Token endpoint URL
+    pub token_url: String,
+
+    /// Supported OAuth scopes
+    pub scopes_supported: Vec<String>,
+
+    /// When this was discovered
+    pub discovered_at: DateTime<Utc>,
 }
 
 /// Router configuration
@@ -793,6 +952,7 @@ impl Default for AppConfig {
             logging: LoggingConfig::default(),
             oauth_clients: Vec::new(),
             mcp_servers: Vec::new(),
+            clients: Vec::new(),
         }
     }
 }
@@ -1086,6 +1246,74 @@ impl OAuthClientConfig {
     }
 }
 
+impl Client {
+    /// Create a new client with auto-generated client_id
+    /// The secret must be stored separately in the keychain
+    pub fn new(name: String, client_id: String) -> Self {
+        let id = Uuid::new_v4().to_string();
+        Self {
+            id: id.clone(),
+            name,
+            client_id,
+            secret_ref: id.clone(), // Use ID as keychain reference
+            enabled: true,
+            allowed_llm_providers: Vec::new(),
+            allowed_mcp_servers: Vec::new(),
+            created_at: Utc::now(),
+            last_used: None,
+        }
+    }
+
+    /// Update last used timestamp
+    pub fn mark_used(&mut self) {
+        self.last_used = Some(Utc::now());
+    }
+
+    /// Check if this client can access a specific LLM provider
+    pub fn can_access_llm_provider(&self, provider_name: &str) -> bool {
+        self.enabled && self.allowed_llm_providers.contains(&provider_name.to_string())
+    }
+
+    /// Check if this client can access a specific MCP server
+    pub fn can_access_mcp_server(&self, server_id: &str) -> bool {
+        self.enabled && self.allowed_mcp_servers.contains(&server_id.to_string())
+    }
+
+    /// Add LLM provider access
+    pub fn add_llm_provider(&mut self, provider_name: String) {
+        if !self.allowed_llm_providers.contains(&provider_name) {
+            self.allowed_llm_providers.push(provider_name);
+        }
+    }
+
+    /// Remove LLM provider access
+    pub fn remove_llm_provider(&mut self, provider_name: &str) -> bool {
+        if let Some(pos) = self.allowed_llm_providers.iter().position(|p| p == provider_name) {
+            self.allowed_llm_providers.remove(pos);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Add MCP server access
+    pub fn add_mcp_server(&mut self, server_id: String) {
+        if !self.allowed_mcp_servers.contains(&server_id) {
+            self.allowed_mcp_servers.push(server_id);
+        }
+    }
+
+    /// Remove MCP server access
+    pub fn remove_mcp_server(&mut self, server_id: &str) -> bool {
+        if let Some(pos) = self.allowed_mcp_servers.iter().position(|s| s == server_id) {
+            self.allowed_mcp_servers.remove(pos);
+            true
+        } else {
+            false
+        }
+    }
+}
+
 impl McpServerConfig {
     /// Create a new MCP server configuration
     pub fn new(name: String, transport: McpTransportType, transport_config: McpTransportConfig) -> Self {
@@ -1094,6 +1322,8 @@ impl McpServerConfig {
             name,
             transport,
             transport_config,
+            auth_config: None,
+            discovered_oauth: None,
             oauth_config: None,
             enabled: true,
             created_at: Utc::now(),
@@ -1213,16 +1443,23 @@ mod tests {
     }
 
     #[test]
-    fn test_api_key_config_with_model() {
-        let key = ApiKeyConfig::with_model(
-            "test-key".to_string(),
-            ModelSelection::Router {
-                router_name: "Minimum Cost".to_string(),
+    fn test_api_key_config_with_routing_config() {
+        let routing_config = ModelRoutingConfig {
+            active_strategy: ActiveRoutingStrategy::AvailableModels,
+            available_models: AvailableModelsSelection {
+                all_provider_models: vec![],
+                individual_models: vec![],
             },
+            forced_model: None,
+            prioritized_models: vec![],
+        };
+        let key = ApiKeyConfig::with_routing_config(
+            "test-key".to_string(),
+            routing_config,
         );
         assert_eq!(key.name, "test-key");
         assert!(key.enabled);
-        assert!(key.model_selection.is_some());
+        assert!(key.routing_config.is_some());
         assert!(Uuid::parse_str(&key.id).is_ok());
     }
 

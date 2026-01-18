@@ -11,7 +11,7 @@
 //!
 //! This adapter validates and applies the thinking_level parameter to Gemini requests.
 
-use serde_json::{json, Value};
+use serde_json::json;
 
 use crate::utils::errors::{AppError, AppResult};
 use super::{FeatureAdapter, FeatureData, FeatureParams};

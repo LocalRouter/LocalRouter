@@ -28,6 +28,23 @@ use crate::server::types::{
 
 /// POST /v1/chat/completions
 /// Send a chat completion request
+#[utoipa::path(
+    post,
+    path = "/v1/chat/completions",
+    tag = "chat",
+    request_body = ChatCompletionRequest,
+    responses(
+        (status = 200, description = "Successful response (non-streaming)", body = ChatCompletionResponse),
+        (status = 200, description = "Successful response (streaming)", content_type = "text/event-stream"),
+        (status = 400, description = "Bad request", body = crate::server::types::ErrorResponse),
+        (status = 401, description = "Unauthorized", body = crate::server::types::ErrorResponse),
+        (status = 429, description = "Rate limit exceeded", body = crate::server::types::ErrorResponse),
+        (status = 500, description = "Internal server error", body = crate::server::types::ErrorResponse)
+    ),
+    security(
+        ("bearer_auth" = [])
+    )
+)]
 pub async fn chat_completions(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
@@ -310,7 +327,7 @@ async fn handle_non_streaming(
     let pricing = match state.provider_registry.get_provider(&response.provider) {
         Some(p) => p.get_pricing(&response.model).await.ok(),
         None => None,
-    }.unwrap_or_else(|| crate::providers::PricingInfo::free());
+    }.unwrap_or_else(crate::providers::PricingInfo::free);
 
     let cost = {
         let input_cost = (response.usage.prompt_tokens as f64 / 1000.0) * pricing.input_cost_per_1k;
@@ -320,15 +337,15 @@ async fn handle_non_streaming(
 
     // Record success metrics for all four tiers
     let latency_ms = completed_at.duration_since(started_at).as_millis() as u64;
-    state.metrics_collector.record_success(
-        &auth.api_key_id,
-        &response.provider,
-        &response.model,
-        response.usage.prompt_tokens as u64,
-        response.usage.completion_tokens as u64,
-        cost,
+    state.metrics_collector.record_success(&crate::monitoring::metrics::RequestMetrics {
+        api_key_name: &auth.api_key_id,
+        provider: &response.provider,
+        model: &response.model,
+        input_tokens: response.usage.prompt_tokens as u64,
+        output_tokens: response.usage.completion_tokens as u64,
+        cost_usd: cost,
         latency_ms,
-    );
+    });
 
     // Emit event for real-time UI updates
     state.emit_event("metrics-updated", &serde_json::json!({
@@ -523,7 +540,7 @@ async fn handle_streaming(
         let pricing = match state_clone.provider_registry.get_provider(&provider) {
             Some(p) => p.get_pricing(&model_clone).await.ok(),
             None => None,
-        }.unwrap_or_else(|| crate::providers::PricingInfo::free());
+        }.unwrap_or_else(crate::providers::PricingInfo::free);
 
         let cost = {
             let input_cost = (prompt_tokens as f64 / 1000.0) * pricing.input_cost_per_1k;
@@ -533,15 +550,15 @@ async fn handle_streaming(
 
         // Record success metrics for streaming (with estimated tokens)
         let latency_ms = completed_at.duration_since(started_at).as_millis() as u64;
-        state_clone.metrics_collector.record_success(
-            &auth_clone.api_key_id,
-            &provider,
-            &model_clone,
-            prompt_tokens as u64,
-            completion_tokens as u64,
-            cost,
+        state_clone.metrics_collector.record_success(&crate::monitoring::metrics::RequestMetrics {
+            api_key_name: &auth_clone.api_key_id,
+            provider: &provider,
+            model: &model_clone,
+            input_tokens: prompt_tokens as u64,
+            output_tokens: completion_tokens as u64,
+            cost_usd: cost,
             latency_ms,
-        );
+        });
 
         // Emit event for real-time UI updates
         state_clone.emit_event("metrics-updated", &serde_json::json!({

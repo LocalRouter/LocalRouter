@@ -12,6 +12,18 @@ use crate::providers::registry::ProviderRegistry;
 use crate::router::{RateLimiterManager, Router};
 use super::{ServerConfig, start_server, state::AppState};
 
+/// Dependencies needed to start the server
+pub struct ServerDependencies {
+    pub router: Arc<Router>,
+    pub api_key_manager: ApiKeyManager,
+    pub oauth_client_manager: OAuthClientManager,
+    pub mcp_server_manager: Arc<McpServerManager>,
+    pub rate_limiter: Arc<RateLimiterManager>,
+    pub provider_registry: Arc<ProviderRegistry>,
+    pub client_manager: Arc<crate::clients::ClientManager>,
+    pub token_store: Arc<crate::clients::TokenStore>,
+}
+
 /// Server status
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServerStatus {
@@ -46,12 +58,7 @@ impl ServerManager {
     pub async fn start(
         &self,
         config: ServerConfig,
-        router: Arc<Router>,
-        api_key_manager: ApiKeyManager,
-        oauth_client_manager: OAuthClientManager,
-        mcp_server_manager: Arc<McpServerManager>,
-        rate_limiter: Arc<RateLimiterManager>,
-        provider_registry: Arc<ProviderRegistry>,
+        deps: ServerDependencies,
     ) -> anyhow::Result<()> {
         // Check if already running
         if *self.status.read() == ServerStatus::Running {
@@ -64,12 +71,14 @@ impl ServerManager {
 
         let (state, handle, actual_port) = start_server(
             config,
-            router,
-            api_key_manager,
-            oauth_client_manager,
-            mcp_server_manager,
-            rate_limiter,
-            provider_registry,
+            deps.router,
+            deps.api_key_manager,
+            deps.oauth_client_manager,
+            deps.mcp_server_manager,
+            deps.rate_limiter,
+            deps.provider_registry,
+            deps.client_manager,
+            deps.token_store,
         )
         .await?;
 

@@ -3,7 +3,6 @@
 //! Cohere uses a custom API v2 format
 
 use super::common::*;
-use futures::StreamExt;
 use localrouter_ai::providers::{cohere::CohereProvider, ModelProvider};
 
 #[tokio::test]

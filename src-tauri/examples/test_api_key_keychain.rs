@@ -1,7 +1,8 @@
 //! Test API key creation with keychain
 //! Run with: cargo run --example test_api_key_keychain
 
-use localrouter_ai::api_keys::{ApiKeyManager, KeychainStorage, SystemKeychain};
+use localrouter_ai::api_keys::keychain_trait::{KeychainStorage, SystemKeychain};
+use localrouter_ai::api_keys::ApiKeyManager;
 use std::sync::Arc;
 
 #[tokio::main]

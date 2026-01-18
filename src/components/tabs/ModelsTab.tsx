@@ -5,6 +5,8 @@ import Badge from '../ui/Badge'
 import Button from '../ui/Button'
 import ProviderIcon from '../ProviderIcon'
 import ModelDetailPage from '../models/ModelDetailPage'
+import { MetricsChart } from '../charts/MetricsChart'
+import { useMetricsSubscription } from '../../hooks/useMetricsSubscription'
 
 interface Model {
   model_id: string
@@ -27,6 +29,7 @@ interface ModelsTabProps {
 }
 
 export default function ModelsTab({ activeSubTab, onTabChange }: ModelsTabProps) {
+  const refreshKey = useMetricsSubscription()
   const [models, setModels] = useState<Model[]>([])
   const [loading, setLoading] = useState(true)
   const [searchTerm, setSearchTerm] = useState('')
@@ -169,7 +172,30 @@ export default function ModelsTab({ activeSubTab, onTabChange }: ModelsTabProps)
   }
 
   return (
-    <div>
+    <div className="space-y-6">
+      {/* Metrics Overview */}
+      {!loading && models.length > 0 && (
+        <Card>
+          <h3 className="text-lg font-semibold text-gray-900 mb-4">Model Usage Overview</h3>
+          <div className="grid grid-cols-2 gap-4">
+            <MetricsChart
+              scope="global"
+              timeRange="day"
+              metricType="requests"
+              title="Total Requests by Model"
+              refreshTrigger={refreshKey}
+            />
+            <MetricsChart
+              scope="global"
+              timeRange="day"
+              metricType="cost"
+              title="Total Cost by Model"
+              refreshTrigger={refreshKey}
+            />
+          </div>
+        </Card>
+      )}
+
       <Card>
         <div className="mb-6">
           <h2 className="text-2xl font-bold text-gray-900 mb-2">Models</h2>

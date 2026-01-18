@@ -4,6 +4,7 @@
 
 pub mod manager;
 pub mod middleware;
+pub mod openapi;
 pub mod routes;
 pub mod state;
 pub mod types;
@@ -16,9 +17,9 @@ use std::sync::Arc;
 
 use axum::{
     extract::Request,
-    http::{Method, StatusCode},
+    http::{header, Method, StatusCode},
     middleware::Next,
-    response::Response,
+    response::{IntoResponse, Response},
     routing::{get, post},
     Router,
 };
@@ -64,6 +65,7 @@ impl Default for ServerConfig {
 /// - POST /mcp/{client_id}/{server_id} (MCP proxy)
 ///
 /// Returns the AppState, JoinHandle, and the actual port used
+#[allow(clippy::too_many_arguments)]
 pub async fn start_server(
     config: ServerConfig,
     router: Arc<AppRouter>,
@@ -72,11 +74,13 @@ pub async fn start_server(
     mcp_server_manager: Arc<McpServerManager>,
     rate_limiter: Arc<RateLimiterManager>,
     provider_registry: Arc<ProviderRegistry>,
+    client_manager: Arc<crate::clients::ClientManager>,
+    token_store: Arc<crate::clients::TokenStore>,
 ) -> anyhow::Result<(AppState, tokio::task::JoinHandle<()>, u16)> {
     info!("Starting web server on {}:{}", config.host, config.port);
 
     // Create shared state
-    let state = AppState::new(router, api_key_manager, rate_limiter, provider_registry)
+    let state = AppState::new(router, api_key_manager, rate_limiter, provider_registry, client_manager, token_store)
         .with_oauth_and_mcp(oauth_client_manager, mcp_server_manager);
 
     // Build the router with auth layer applied
@@ -138,11 +142,24 @@ fn build_app(state: AppState, enable_cors: bool) -> Router {
         .layer(axum::Extension(state.clone()))
         .with_state(state.clone());
 
+    // Build OAuth routes (no auth required - these ARE the auth endpoints)
+    let oauth_state = routes::oauth::OAuthState {
+        client_manager: state.client_manager.clone(),
+        token_store: state.token_store.clone(),
+    };
+
+    let oauth_routes = Router::new()
+        .route("/oauth/token", post(routes::token_endpoint))
+        .with_state(oauth_state);
+
     // Build the Axum router with all routes
     // Support both /v1 prefix and without for OpenAI compatibility
     let mut router = Router::new()
         .route("/health", get(health_check))
         .route("/", get(root_handler))
+        // OpenAPI specification endpoints
+        .route("/openapi.json", get(serve_openapi_json))
+        .route("/openapi.yaml", get(serve_openapi_yaml))
         // Routes with /v1 prefix
         .route("/v1/chat/completions", post(routes::chat_completions))
         .route("/v1/completions", post(routes::completions))
@@ -163,6 +180,9 @@ fn build_app(state: AppState, enable_cors: bool) -> Router {
 
     // Apply auth layer (checks all API routes with or without /v1 prefix)
     router = router.layer(AuthLayer::new(state.clone()));
+
+    // Merge OAuth routes (no auth required - these ARE the auth endpoints)
+    router = router.merge(oauth_routes);
 
     // Merge MCP routes (these use OAuth auth, not API key auth)
     router = router.merge(mcp_routes);
@@ -185,11 +205,27 @@ fn build_app(state: AppState, enable_cors: bool) -> Router {
 }
 
 /// Health check endpoint
+#[utoipa::path(
+    get,
+    path = "/health",
+    tag = "system",
+    responses(
+        (status = 200, description = "Server is healthy")
+    )
+)]
 async fn health_check() -> StatusCode {
     StatusCode::OK
 }
 
 /// Root handler
+#[utoipa::path(
+    get,
+    path = "/",
+    tag = "system",
+    responses(
+        (status = 200, description = "API information", content_type = "text/plain")
+    )
+)]
 async fn root_handler() -> &'static str {
     "LocalRouter AI - OpenAI-compatible API Gateway\n\
      \n\
@@ -202,7 +238,69 @@ async fn root_handler() -> &'static str {
        GET  /v1/models/{provider}/{model}/pricing or /models/{provider}/{model}/pricing\n\
        GET  /v1/generation?id={id} or /generation?id={id}\n\
      \n\
+     Documentation:\n\
+       GET  /openapi.json - OpenAPI specification (JSON)\n\
+       GET  /openapi.yaml - OpenAPI specification (YAML)\n\
+     \n\
      Authentication: Include 'Authorization: Bearer <your-api-key>' header\n"
+}
+
+/// Serve OpenAPI specification as JSON
+///
+/// Returns the complete OpenAPI 3.1 specification in JSON format.
+/// This can be used with tools like Swagger UI, Postman, or code generators.
+#[utoipa::path(
+    get,
+    path = "/openapi.json",
+    tag = "system",
+    responses(
+        (status = 200, description = "OpenAPI specification in JSON format", content_type = "application/json"),
+        (status = 500, description = "Failed to generate specification")
+    )
+)]
+async fn serve_openapi_json() -> impl IntoResponse {
+    match openapi::get_openapi_json() {
+        Ok(json) => (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "application/json")],
+            json,
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to generate OpenAPI spec: {}", e),
+        )
+            .into_response(),
+    }
+}
+
+/// Serve OpenAPI specification as YAML
+///
+/// Returns the complete OpenAPI 3.1 specification in YAML format.
+/// This can be used with tools like Swagger UI, Redoc, or for documentation.
+#[utoipa::path(
+    get,
+    path = "/openapi.yaml",
+    tag = "system",
+    responses(
+        (status = 200, description = "OpenAPI specification in YAML format", content_type = "application/yaml"),
+        (status = 500, description = "Failed to generate specification")
+    )
+)]
+async fn serve_openapi_yaml() -> impl IntoResponse {
+    match openapi::get_openapi_yaml() {
+        Ok(yaml) => (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "application/yaml")],
+            yaml,
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to generate OpenAPI spec: {}", e),
+        )
+            .into_response(),
+    }
 }
 
 /// Logging middleware to log all requests

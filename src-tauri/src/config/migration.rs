@@ -25,10 +25,18 @@ pub fn migrate_config(mut config: AppConfig) -> AppResult<AppConfig> {
         config = migrate_to_v1(config)?;
     }
 
-    // Future migrations will go here
-    // if config.version < 2 {
-    //     config = migrate_to_v2(config)?;
-    // }
+    // Migrate to v2: Unified client system
+    if config.version < 2 {
+        config = migrate_to_v2(config)?;
+    }
+
+    // Note: v2 also includes MCP server config updates (auth_config, discovered_oauth, HttpSse)
+    // These are handled automatically via serde aliases and backward compatibility fields
+    // No explicit migration needed since:
+    // - HttpSse accepts "sse" via #[serde(alias = "sse")]
+    // - oauth_config is kept for backward compatibility
+    // - auth_config defaults to None
+    // - discovered_oauth defaults to None
 
     // Update version to current
     config.version = CONFIG_VERSION;
@@ -49,6 +57,201 @@ fn migrate_to_v1(config: AppConfig) -> AppResult<AppConfig> {
     // Version 1 is the initial version, so no actual migration is needed
     // This function exists as a template for future migrations
     Ok(config)
+}
+
+/// Migrate to version 2: Unified client system
+///
+/// Migrates from separate ApiKeyConfig and OAuthClientConfig to unified Client struct.
+/// - ApiKeyConfig → Client (with LLM access, no MCP access)
+/// - OAuthClientConfig → Client (with MCP access, no LLM access)
+/// - Handles keychain migration automatically
+fn migrate_to_v2(mut config: AppConfig) -> AppResult<AppConfig> {
+    use crate::api_keys::CachedKeychain;
+
+    info!("Migrating to version 2: Unified client system");
+
+    // Only migrate if we have old-style configs
+    if config.api_keys.is_empty() && config.oauth_clients.is_empty() {
+        info!("No API keys or OAuth clients to migrate");
+        config.version = 2;
+        return Ok(config);
+    }
+
+    // Get keychain for migration
+    let keychain = CachedKeychain::auto().unwrap_or_else(|e| {
+        tracing::warn!("Failed to create auto keychain: {}, using system", e);
+        CachedKeychain::system()
+    });
+
+    let mut migrated_clients = Vec::new();
+
+    // Migrate API keys
+    info!("Migrating {} API keys", config.api_keys.len());
+    for api_key in &config.api_keys {
+        match migrate_api_key_to_client(api_key, &keychain) {
+            Ok((client, _secret)) => {
+                migrated_clients.push(client);
+            }
+            Err(e) => {
+                tracing::warn!("Failed to migrate API key '{}': {}", api_key.name, e);
+                // Continue with other migrations
+            }
+        }
+    }
+
+    // Migrate OAuth clients
+    info!("Migrating {} OAuth clients", config.oauth_clients.len());
+    for oauth_client in &config.oauth_clients {
+        match migrate_oauth_client_to_client(oauth_client, &keychain) {
+            Ok((client, _secret)) => {
+                migrated_clients.push(client);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to migrate OAuth client '{}': {}",
+                    oauth_client.name,
+                    e
+                );
+                // Continue with other migrations
+            }
+        }
+    }
+
+    info!(
+        "Successfully migrated {} clients from {} API keys and {} OAuth clients",
+        migrated_clients.len(),
+        config.api_keys.len(),
+        config.oauth_clients.len()
+    );
+
+    // Replace old configs with new unified clients
+    config.clients = migrated_clients;
+    config.api_keys = vec![];
+    config.oauth_clients = vec![];
+
+    config.version = 2;
+    Ok(config)
+}
+
+/// Migrate ApiKeyConfig to unified Client
+fn migrate_api_key_to_client(
+    api_key: &super::ApiKeyConfig,
+    keychain: &dyn crate::api_keys::keychain_trait::KeychainStorage,
+) -> AppResult<(super::Client, String)> {
+    use crate::config::Client;
+
+    // Retrieve the old API key secret from keychain
+    let old_service = "LocalRouter-APIKeys";
+    let secret = keychain
+        .get(old_service, &api_key.id)?
+        .ok_or_else(|| {
+            crate::utils::errors::AppError::Config(format!(
+                "API key secret not found in keychain: {}",
+                api_key.id
+            ))
+        })?;
+
+    // Create new client
+    let client = Client::new(api_key.name.clone(), format!("lr-{}", uuid::Uuid::new_v4()));
+
+    // Store secret in new keychain location
+    let new_service = "LocalRouter-Clients";
+    keychain.store(new_service, &client.id, &secret)?;
+
+    // Delete old keychain entry
+    if let Err(e) = keychain.delete(old_service, &api_key.id) {
+        tracing::warn!(
+            "Failed to delete old API key from keychain ({}): {}",
+            api_key.id, e
+        );
+    }
+
+    // Copy allowed LLM providers from model selection config
+    let mut migrated_client = client.clone();
+    migrated_client.allowed_llm_providers = if let Some(routing_config) = &api_key.routing_config {
+        // Use new routing_config if present
+        routing_config.available_models.all_provider_models.clone()
+    } else if let Some(model_selection) = &api_key.model_selection {
+        // Fall back to deprecated model_selection
+        match model_selection {
+            super::ModelSelection::All => vec![], // Empty means all providers allowed
+            super::ModelSelection::Custom { all_provider_models, .. } => all_provider_models.clone(),
+            _ => vec![], // For DirectModel and Router, allow all providers
+        }
+    } else {
+        vec![] // No selection means all providers allowed
+    };
+
+    // Preserve enabled status
+    migrated_client.enabled = api_key.enabled;
+
+    // Preserve timestamps
+    if let Some(last_used) = api_key.last_used {
+        migrated_client.last_used = Some(last_used);
+    }
+
+    info!(
+        "Migrated API key '{}' to client '{}'",
+        api_key.name, migrated_client.client_id
+    );
+
+    Ok((migrated_client, secret))
+}
+
+/// Migrate OAuthClientConfig to unified Client
+fn migrate_oauth_client_to_client(
+    oauth_client: &super::OAuthClientConfig,
+    keychain: &dyn crate::api_keys::keychain_trait::KeychainStorage,
+) -> AppResult<(super::Client, String)> {
+    use crate::config::Client;
+
+    // Retrieve the old OAuth client secret from keychain
+    let old_service = "LocalRouter-OAuthClients";
+    let secret = keychain
+        .get(old_service, &oauth_client.id)?
+        .ok_or_else(|| {
+            crate::utils::errors::AppError::Config(format!(
+                "OAuth client secret not found in keychain: {}",
+                oauth_client.id
+            ))
+        })?;
+
+    // Create new client with preserved client_id
+    let mut client = Client::new(oauth_client.name.clone(), oauth_client.client_id.clone());
+
+    // Store secret in new keychain location
+    let new_service = "LocalRouter-Clients";
+    keychain.store(new_service, &client.id, &secret)?;
+
+    // Delete old keychain entry
+    if let Err(e) = keychain.delete(old_service, &oauth_client.id) {
+        tracing::warn!(
+            "Failed to delete old OAuth client from keychain ({}): {}",
+            oauth_client.id, e
+        );
+    }
+
+    // Copy linked server IDs to allowed_mcp_servers
+    client.allowed_mcp_servers = oauth_client.linked_server_ids.clone();
+
+    // OAuth clients don't have LLM provider access by default
+    client.allowed_llm_providers = vec![];
+
+    // Preserve enabled status
+    client.enabled = oauth_client.enabled;
+
+    // Preserve timestamps
+    client.created_at = oauth_client.created_at;
+    if let Some(last_used) = oauth_client.last_used {
+        client.last_used = Some(last_used);
+    }
+
+    info!(
+        "Migrated OAuth client '{}' ({}) to unified client",
+        oauth_client.name, oauth_client.client_id
+    );
+
+    Ok((client, secret))
 }
 
 // Future migration functions will follow this pattern:

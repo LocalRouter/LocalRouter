@@ -14,6 +14,70 @@ use crate::mcp::protocol::{JsonRpcRequest, JsonRpcResponse};
 use crate::server::middleware::error::ApiErrorResponse;
 use crate::server::state::{AppState, OAuthContext};
 
+/// Handle MCP request with validation
+///
+/// Validates OAuth context and forwards request to MCP server.
+/// This is extracted for testing purposes.
+async fn handle_request(
+    client_id_param: String,
+    server_id: String,
+    state: AppState,
+    oauth_context: OAuthContext,
+    request: JsonRpcRequest,
+) -> Result<JsonRpcResponse, ApiErrorResponse> {
+    // Verify client_id matches OAuth context (URL param should match authenticated client)
+    if client_id_param != oauth_context.client_id {
+        tracing::warn!(
+            "Client ID mismatch: URL={}, Auth={}",
+            client_id_param,
+            oauth_context.client_id
+        );
+        return Err(ApiErrorResponse::forbidden(
+            "Client ID does not match authenticated client",
+        ));
+    }
+
+    // Check if client has access to this server
+    if !oauth_context.linked_server_ids.contains(&server_id) {
+        tracing::warn!(
+            "Client {} attempted to access unauthorized server {}",
+            oauth_context.client_id,
+            server_id
+        );
+        return Err(ApiErrorResponse::forbidden(
+            "Client does not have access to this MCP server",
+        ));
+    }
+
+    // Start server if not running
+    let mcp_manager = &state.mcp_server_manager;
+    if !mcp_manager.is_running(&server_id) {
+        tracing::info!("Starting MCP server {} for proxy request", server_id);
+        mcp_manager
+            .start_server(&server_id)
+            .await
+            .map_err(|e| {
+                ApiErrorResponse::bad_gateway(format!("Failed to start MCP server: {}", e))
+            })?;
+    }
+
+    // Forward request to MCP server
+    tracing::debug!(
+        "Proxying JSON-RPC request to server {}: method={}",
+        server_id,
+        request.method
+    );
+
+    let response = mcp_manager
+        .send_request(&server_id, request)
+        .await
+        .map_err(|e| {
+            ApiErrorResponse::bad_gateway(format!("MCP server error: {}", e))
+        })?;
+
+    Ok(response)
+}
+
 /// MCP proxy handler
 ///
 /// Routes JSON-RPC requests to the appropriate MCP server.
@@ -28,72 +92,32 @@ use crate::server::state::{AppState, OAuthContext};
 ///
 /// # Response
 /// JSON-RPC 2.0 response
+#[utoipa::path(
+    post,
+    path = "/mcp/{client_id}/{server_id}",
+    tag = "mcp",
+    params(
+        ("client_id" = String, Path, description = "OAuth client ID"),
+        ("server_id" = String, Path, description = "MCP server ID")
+    ),
+    request_body = crate::mcp::protocol::JsonRpcRequest,
+    responses(
+        (status = 200, description = "JSON-RPC response", body = crate::mcp::protocol::JsonRpcResponse),
+        (status = 401, description = "Unauthorized", body = crate::server::types::ErrorResponse),
+        (status = 403, description = "Forbidden - no access to server", body = crate::server::types::ErrorResponse),
+        (status = 502, description = "Bad gateway - MCP server error", body = crate::server::types::ErrorResponse),
+        (status = 500, description = "Internal server error", body = crate::server::types::ErrorResponse)
+    ),
+    security(
+        ("oauth2" = [])
+    )
+)]
 pub async fn mcp_proxy_handler(
     Path((client_id_param, server_id)): Path<(String, String)>,
     State(state): State<AppState>,
     oauth_context: axum::Extension<OAuthContext>,
     Json(request): Json<JsonRpcRequest>,
 ) -> Response {
-    // Helper function to handle errors
-    async fn handle_request(
-        client_id_param: String,
-        server_id: String,
-        state: AppState,
-        oauth_context: OAuthContext,
-        request: JsonRpcRequest,
-    ) -> Result<JsonRpcResponse, ApiErrorResponse> {
-        // Verify client_id matches OAuth context (URL param should match authenticated client)
-        if client_id_param != oauth_context.client_id {
-            tracing::warn!(
-                "Client ID mismatch: URL={}, Auth={}",
-                client_id_param,
-                oauth_context.client_id
-            );
-            return Err(ApiErrorResponse::forbidden(
-                "Client ID does not match authenticated client",
-            ));
-        }
-
-        // Check if client has access to this server
-        if !oauth_context.linked_server_ids.contains(&server_id) {
-            tracing::warn!(
-                "Client {} attempted to access unauthorized server {}",
-                oauth_context.client_id,
-                server_id
-            );
-            return Err(ApiErrorResponse::forbidden(
-                "Client does not have access to this MCP server",
-            ));
-        }
-
-        // Start server if not running
-        let mcp_manager = &state.mcp_server_manager;
-        if !mcp_manager.is_running(&server_id) {
-            tracing::info!("Starting MCP server {} for proxy request", server_id);
-            mcp_manager
-                .start_server(&server_id)
-                .await
-                .map_err(|e| {
-                    ApiErrorResponse::bad_gateway(format!("Failed to start MCP server: {}", e))
-                })?;
-        }
-
-        // Forward request to MCP server
-        tracing::debug!(
-            "Proxying JSON-RPC request to server {}: method={}",
-            server_id,
-            request.method
-        );
-
-        let response = mcp_manager
-            .send_request(&server_id, request)
-            .await
-            .map_err(|e| {
-                ApiErrorResponse::bad_gateway(format!("MCP server error: {}", e))
-            })?;
-
-        Ok(response)
-    }
 
     // Call the helper and convert result to response
     match handle_request(
@@ -113,6 +137,14 @@ pub async fn mcp_proxy_handler(
 /// Health check endpoint for MCP proxy
 ///
 /// Returns 200 OK if the service is running.
+#[utoipa::path(
+    get,
+    path = "/mcp/health",
+    tag = "mcp",
+    responses(
+        (status = 200, description = "MCP proxy is healthy", content_type = "text/plain")
+    )
+)]
 pub async fn mcp_health_handler() -> impl IntoResponse {
     (StatusCode::OK, "MCP proxy healthy")
 }
@@ -121,12 +153,12 @@ pub async fn mcp_health_handler() -> impl IntoResponse {
 mod tests {
     use super::*;
     use crate::api_keys::ApiKeyManager;
+    use crate::clients::{ClientManager, TokenStore};
     use crate::mcp::McpServerManager;
     use crate::oauth_clients::OAuthClientManager;
     use crate::providers::health::HealthCheckManager;
     use crate::providers::registry::ProviderRegistry;
     use crate::router::{RateLimiterManager, Router};
-    use serde_json::json;
     use std::sync::Arc;
 
     #[tokio::test]
@@ -148,6 +180,8 @@ mod tests {
             ApiKeyManager::new(vec![]),
             Arc::new(RateLimiterManager::new(None)),
             provider_registry,
+            Arc::new(ClientManager::new(vec![])),
+            Arc::new(TokenStore::new()),
         );
         let state_with_oauth = state.with_oauth_and_mcp(
             OAuthClientManager::new(vec![]),
@@ -196,6 +230,8 @@ mod tests {
             ApiKeyManager::new(vec![]),
             Arc::new(RateLimiterManager::new(None)),
             provider_registry,
+            Arc::new(ClientManager::new(vec![])),
+            Arc::new(TokenStore::new()),
         );
         let state_with_oauth = state.with_oauth_and_mcp(
             OAuthClientManager::new(vec![]),

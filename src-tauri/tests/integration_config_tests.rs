@@ -11,7 +11,8 @@
 
 #![allow(deprecated)]
 
-use localrouter_ai::api_keys::{ApiKeyManager, KeychainStorage, MockKeychain, SystemKeychain};
+use localrouter_ai::api_keys::keychain_trait::{KeychainStorage, MockKeychain, SystemKeychain};
+use localrouter_ai::api_keys::ApiKeyManager;
 use localrouter_ai::config::{AppConfig, ConfigManager, LogLevel, ModelSelection};
 use serial_test::serial;
 use std::path::PathBuf;

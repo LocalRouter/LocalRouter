@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod api_keys;
+mod clients;
 mod config;
 mod mcp;
 mod monitoring;
@@ -69,6 +70,18 @@ async fn main() -> anyhow::Result<()> {
         let config = config_manager.get();
         oauth_clients::OAuthClientManager::new(config.oauth_clients.clone())
     };
+
+    // Initialize unified client manager
+    // Replaces both API key manager and OAuth client manager
+    // Client secrets are stored in OS keychain, only metadata in config
+    let client_manager = {
+        let config = config_manager.get();
+        Arc::new(clients::ClientManager::new(config.clients.clone()))
+    };
+
+    // Initialize OAuth token store for short-lived access tokens
+    // Tokens are stored in-memory only (1 hour expiry)
+    let token_store = Arc::new(clients::TokenStore::new());
 
     // Initialize MCP server manager
     let mcp_server_manager = {
@@ -222,12 +235,16 @@ async fn main() -> anyhow::Result<()> {
     server_manager
         .start(
             server_config,
-            app_router.clone(),
-            api_key_manager.clone(),
-            oauth_client_manager.clone(),
-            mcp_server_manager.clone(),
-            rate_limiter.clone(),
-            provider_registry.clone(),
+            crate::server::manager::ServerDependencies {
+                router: app_router.clone(),
+                api_key_manager: api_key_manager.clone(),
+                oauth_client_manager: oauth_client_manager.clone(),
+                mcp_server_manager: mcp_server_manager.clone(),
+                rate_limiter: rate_limiter.clone(),
+                provider_registry: provider_registry.clone(),
+                client_manager: client_manager.clone(),
+                token_store: token_store.clone(),
+            },
         )
         .await?;
 
@@ -252,6 +269,8 @@ async fn main() -> anyhow::Result<()> {
             app.manage(config_manager.clone());
             app.manage(api_key_manager.clone());
             app.manage(oauth_client_manager.clone());
+            app.manage(client_manager.clone());
+            app.manage(token_store.clone());
             app.manage(mcp_server_manager.clone());
             app.manage(provider_registry.clone());
             app.manage(health_manager.clone());
@@ -268,6 +287,8 @@ async fn main() -> anyhow::Result<()> {
             let mcp_server_manager_clone = mcp_server_manager.clone();
             let rate_limiter_clone = rate_limiter.clone();
             let provider_registry_clone = provider_registry.clone();
+            let client_manager_clone = client_manager.clone();
+            let token_store_clone = token_store.clone();
             let config_manager_clone = config_manager.clone();
 
             app.listen("server-restart-requested", move |_event| {
@@ -291,17 +312,23 @@ async fn main() -> anyhow::Result<()> {
                 let mcp_server_manager_clone2 = mcp_server_manager_clone.clone();
                 let rate_limiter_clone2 = rate_limiter_clone.clone();
                 let provider_registry_clone2 = provider_registry_clone.clone();
+                let client_manager_clone2 = client_manager_clone.clone();
+                let token_store_clone2 = token_store_clone.clone();
 
                 tokio::spawn(async move {
                     match server_manager_clone2
                         .start(
                             server_config,
-                            app_router_clone2,
-                            api_key_manager_clone2,
-                            oauth_client_manager_clone2,
-                            mcp_server_manager_clone2,
-                            rate_limiter_clone2,
-                            provider_registry_clone2,
+                            crate::server::manager::ServerDependencies {
+                                router: app_router_clone2,
+                                api_key_manager: api_key_manager_clone2,
+                                oauth_client_manager: oauth_client_manager_clone2,
+                                mcp_server_manager: mcp_server_manager_clone2,
+                                rate_limiter: rate_limiter_clone2,
+                                provider_registry: provider_registry_clone2,
+                                client_manager: client_manager_clone2,
+                                token_store: token_store_clone2,
+                            },
                         )
                         .await
                     {
@@ -434,6 +461,18 @@ async fn main() -> anyhow::Result<()> {
             ui::commands::get_all_mcp_server_health,
             ui::commands::update_mcp_server_name,
             ui::commands::toggle_mcp_server_enabled,
+            // Unified client management commands
+            ui::commands::list_clients,
+            ui::commands::create_client,
+            ui::commands::delete_client,
+            ui::commands::update_client_name,
+            ui::commands::toggle_client_enabled,
+            ui::commands::add_client_llm_provider,
+            ui::commands::remove_client_llm_provider,
+            ui::commands::add_client_mcp_server,
+            ui::commands::remove_client_mcp_server,
+            // OpenAPI documentation commands
+            ui::commands::get_openapi_spec,
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {

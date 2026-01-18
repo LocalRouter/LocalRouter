@@ -14,7 +14,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, Mutex};
 
 /// STDIO transport implementation
 ///
@@ -25,7 +25,8 @@ pub struct StdioTransport {
     child: Arc<RwLock<Option<Child>>>,
 
     /// Stdin handle for sending requests
-    stdin: Arc<RwLock<Option<ChildStdin>>>,
+    /// Uses Mutex instead of RwLock to support concurrent writes safely
+    stdin: Arc<Mutex<Option<ChildStdin>>>,
 
     /// Pending requests waiting for responses
     /// Maps request ID to response sender
@@ -80,7 +81,7 @@ impl StdioTransport {
         // Create transport instance
         let transport = Self {
             child: Arc::new(RwLock::new(Some(child))),
-            stdin: Arc::new(RwLock::new(Some(stdin))),
+            stdin: Arc::new(Mutex::new(Some(stdin))),
             pending: Arc::new(RwLock::new(HashMap::new())),
             next_id: Arc::new(RwLock::new(1)),
             closed: Arc::new(RwLock::new(false)),
@@ -226,13 +227,12 @@ impl Transport for StdioTransport {
             return Err(AppError::Mcp("Transport is closed".to_string()));
         }
 
-        // Generate request ID if not present
-        let request_id = if request.id.is_none() {
+        // Always generate a unique request ID to avoid collisions
+        // This prevents race conditions when concurrent requests might have the same ID
+        let request_id = {
             let id = self.next_request_id();
             request.id = Some(Value::Number(id.into()));
             id.to_string()
-        } else {
-            request.id.as_ref().unwrap().to_string()
         };
 
         // Create channel for response
@@ -249,17 +249,16 @@ impl Transport for StdioTransport {
         json.push('\n');
 
         // Write to stdin
+        // Use Mutex to safely handle concurrent writes
         {
-            // Take stdin out of the lock temporarily
-            let mut stdin = {
-                let mut stdin_guard = self.stdin.write();
-                stdin_guard.take().ok_or_else(|| {
-                    self.pending.write().remove(&request_id);
-                    AppError::Mcp("Stdin not available".to_string())
-                })?
-            }; // Lock is dropped here
+            let mut stdin_guard = self.stdin.lock().await;
+            let stdin = stdin_guard.as_mut().ok_or_else(|| {
+                self.pending.write().remove(&request_id);
+                AppError::Mcp("Stdin not available".to_string())
+            })?;
 
-            // Perform async operations without holding the lock
+            // Write and flush while holding the lock
+            // This is safe because Mutex allows holding across await points
             stdin.write_all(json.as_bytes()).await.map_err(|e| {
                 self.pending.write().remove(&request_id);
                 AppError::Mcp(format!("Failed to write to stdin: {}", e))
@@ -269,9 +268,6 @@ impl Transport for StdioTransport {
                 self.pending.write().remove(&request_id);
                 AppError::Mcp(format!("Failed to flush stdin: {}", e))
             })?;
-
-            // Put stdin back
-            *self.stdin.write() = Some(stdin);
         }
 
         // Wait for response (with timeout)
@@ -314,8 +310,7 @@ mod tests {
         )
         .await;
 
-        if result.is_ok() {
-            let transport = result.unwrap();
+        if let Ok(transport) = result {
             assert!(transport.is_alive());
             transport.kill().await.unwrap();
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -327,7 +322,7 @@ mod tests {
     async fn test_request_id_generation() {
         let transport = StdioTransport {
             child: Arc::new(RwLock::new(None)),
-            stdin: Arc::new(RwLock::new(None)),
+            stdin: Arc::new(Mutex::new(None)),
             pending: Arc::new(RwLock::new(HashMap::new())),
             next_id: Arc::new(RwLock::new(1)),
             closed: Arc::new(RwLock::new(false)),

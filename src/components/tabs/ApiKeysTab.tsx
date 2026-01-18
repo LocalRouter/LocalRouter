@@ -7,6 +7,8 @@ import Modal from '../ui/Modal'
 import Input from '../ui/Input'
 import ModelSelectionTable, { ModelSelectionValue } from '../ModelSelectionTable'
 import ApiKeyDetailPage from '../apikeys/ApiKeyDetailPage'
+import { MetricsChart } from '../charts/MetricsChart'
+import { useMetricsSubscription } from '../../hooks/useMetricsSubscription'
 
 interface ApiKey {
   id: string
@@ -27,6 +29,7 @@ interface ApiKeysTabProps {
 }
 
 export default function ApiKeysTab({ activeSubTab, onTabChange }: ApiKeysTabProps) {
+  const refreshKey = useMetricsSubscription()
   const [apiKeys, setApiKeys] = useState<ApiKey[]>([])
   const [loading, setLoading] = useState(true)
   const [showCreateModal, setShowCreateModal] = useState(false)
@@ -132,7 +135,30 @@ export default function ApiKeysTab({ activeSubTab, onTabChange }: ApiKeysTabProp
   }
 
   return (
-    <div>
+    <div className="space-y-6">
+      {/* Metrics Overview */}
+      {!loading && apiKeys.length > 0 && (
+        <Card>
+          <h3 className="text-lg font-semibold text-gray-900 mb-4">API Key Usage Overview</h3>
+          <div className="grid grid-cols-2 gap-4">
+            <MetricsChart
+              scope="global"
+              timeRange="day"
+              metricType="requests"
+              title="Total Requests by API Key"
+              refreshTrigger={refreshKey}
+            />
+            <MetricsChart
+              scope="global"
+              timeRange="day"
+              metricType="cost"
+              title="Total Cost by API Key"
+              refreshTrigger={refreshKey}
+            />
+          </div>
+        </Card>
+      )}
+
       <Card>
         <div className="flex justify-between items-center mb-6">
           <h2 className="text-xl font-bold text-gray-900">API Keys</h2>

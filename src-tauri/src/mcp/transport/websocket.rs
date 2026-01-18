@@ -17,27 +17,32 @@ use tokio_tungstenite::{
     connect_async, tungstenite::protocol::Message, MaybeTlsStream, WebSocketStream,
 };
 
+/// Type alias for the WebSocket write handle
+type WsSink = Arc<
+    RwLock<
+        Option<
+            futures_util::stream::SplitSink<
+                WebSocketStream<MaybeTlsStream<TcpStream>>,
+                Message,
+            >,
+        >,
+    >,
+>;
+
 /// WebSocket transport implementation
 ///
 /// Maintains a persistent WebSocket connection for bidirectional JSON-RPC communication.
 /// Supports concurrent requests with request/response correlation.
 pub struct WebSocketTransport {
     /// WebSocket URL
+    #[allow(dead_code)]
     url: String,
 
     /// WebSocket write handle
-    write: Arc<
-        RwLock<
-            Option<
-                futures_util::stream::SplitSink<
-                    WebSocketStream<MaybeTlsStream<TcpStream>>,
-                    Message,
-                >,
-            >,
-        >,
-    >,
+    write: WsSink,
 
     /// Custom headers (stored for reconnection)
+    #[allow(dead_code)]
     headers: HashMap<String, String>,
 
     /// Pending requests waiting for responses
@@ -195,13 +200,12 @@ impl Transport for WebSocketTransport {
             return Err(AppError::Mcp("Transport is closed".to_string()));
         }
 
-        // Generate request ID if not present
-        let request_id = if request.id.is_none() {
+        // Always generate a unique request ID to avoid collisions
+        // This prevents race conditions when concurrent requests might have the same ID
+        let request_id = {
             let id = self.next_request_id();
             request.id = Some(Value::Number(id.into()));
             id.to_string()
-        } else {
-            request.id.as_ref().unwrap().to_string()
         };
 
         // Create channel for response

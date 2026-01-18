@@ -8,6 +8,8 @@ import { OAuthModal } from '../OAuthModal'
 import ProviderForm, { ProviderType as ProviderTypeInfo } from '../ProviderForm'
 import ProviderIcon from '../ProviderIcon'
 import ProviderDetailPage from '../providers/ProviderDetailPage'
+import { MetricsChart } from '../charts/MetricsChart'
+import { useMetricsSubscription } from '../../hooks/useMetricsSubscription'
 
 interface ProviderInstance {
   instance_name: string
@@ -68,6 +70,7 @@ interface ProvidersTabProps {
 }
 
 export default function ProvidersTab({ activeSubTab, onTabChange }: ProvidersTabProps) {
+  const refreshKey = useMetricsSubscription()
   const [providerInstances, setProviderInstances] = useState<ProviderInstance[]>([])
   const [providerTypes, setProviderTypes] = useState<ProviderTypeInfo[]>([])
   const [providersHealth, setProvidersHealth] = useState<Record<string, ProviderHealth>>({})
@@ -301,6 +304,29 @@ export default function ProvidersTab({ activeSubTab, onTabChange }: ProvidersTab
 
   return (
     <div className="space-y-6">
+      {/* Metrics Overview */}
+      {!loading && providerInstances.length > 0 && (
+        <Card>
+          <h3 className="text-lg font-semibold text-gray-900 mb-4">Provider Usage Overview</h3>
+          <div className="grid grid-cols-2 gap-4">
+            <MetricsChart
+              scope="global"
+              timeRange="day"
+              metricType="requests"
+              title="Total Requests by Provider"
+              refreshTrigger={refreshKey}
+            />
+            <MetricsChart
+              scope="global"
+              timeRange="day"
+              metricType="cost"
+              title="Total Cost by Provider"
+              refreshTrigger={refreshKey}
+            />
+          </div>
+        </Card>
+      )}
+
       <Card>
         <div className="mb-4">
           <h2 className="text-2xl font-bold text-gray-900">LLM Providers</h2>

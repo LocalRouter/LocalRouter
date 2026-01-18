@@ -112,7 +112,7 @@ async fn test_gemini_provider_name() {
 #[tokio::test]
 async fn test_gemini_handles_system_messages() {
     // Test that Gemini correctly converts system messages (prepends to first user message)
-    let provider = GeminiProvider::new("test-key".to_string());
+    let _provider = GeminiProvider::new("test-key".to_string());
 
     // System messages should be prepended to first user message
     // This is tested in the unit tests within gemini.rs

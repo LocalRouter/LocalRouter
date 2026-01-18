@@ -12,6 +12,7 @@ use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 
 use crate::api_keys::ApiKeyManager;
+use crate::clients::{ClientManager, TokenStore};
 use crate::mcp::McpServerManager;
 use crate::monitoring::metrics::MetricsCollector;
 use crate::oauth_clients::OAuthClientManager;
@@ -26,11 +27,17 @@ pub struct AppState {
     /// Router for intelligent model selection and routing
     pub router: Arc<Router>,
 
-    /// API key manager for authentication
+    /// API key manager for authentication (deprecated, use client_manager)
     pub api_key_manager: Arc<RwLock<ApiKeyManager>>,
 
-    /// OAuth client manager for MCP authentication
+    /// OAuth client manager for MCP authentication (deprecated, use client_manager + token_store)
     pub oauth_client_manager: Arc<RwLock<OAuthClientManager>>,
+
+    /// Unified client manager for authentication (replaces api_key_manager and oauth_client_manager)
+    pub client_manager: Arc<ClientManager>,
+
+    /// OAuth token store for short-lived access tokens
+    pub token_store: Arc<TokenStore>,
 
     /// MCP server manager
     pub mcp_server_manager: Arc<McpServerManager>,
@@ -57,11 +64,15 @@ impl AppState {
         api_key_manager: ApiKeyManager,
         rate_limiter: Arc<RateLimiterManager>,
         provider_registry: Arc<ProviderRegistry>,
+        client_manager: Arc<ClientManager>,
+        token_store: Arc<TokenStore>,
     ) -> Self {
         Self {
             router,
             api_key_manager: Arc::new(RwLock::new(api_key_manager)),
             oauth_client_manager: Arc::new(RwLock::new(OAuthClientManager::new(vec![]))),
+            client_manager,
+            token_store,
             mcp_server_manager: Arc::new(McpServerManager::new()),
             rate_limiter,
             provider_registry,

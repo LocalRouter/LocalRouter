@@ -3,7 +3,7 @@
 //! Handles OAuth discovery, token acquisition, and token management for MCP servers
 //! that require OAuth authentication.
 
-use crate::api_keys::CachedKeychain;
+use crate::api_keys::{CachedKeychain, KeychainStorage};
 use crate::config::McpOAuthConfig;
 use crate::utils::errors::{AppError, AppResult};
 use chrono::{DateTime, Duration, Utc};
@@ -12,6 +12,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use parking_lot::RwLock;
+
+/// Keychain service name for MCP server OAuth tokens
+const MCP_OAUTH_SERVICE: &str = "LocalRouter-McpServerTokens";
 
 /// OAuth token manager for MCP servers
 ///
@@ -22,7 +25,7 @@ pub struct McpOAuthManager {
     client: Client,
 
     /// Keychain for storing tokens
-    keychain: Arc<CachedKeychain>,
+    keychain: CachedKeychain,
 
     /// Cached tokens (server_id -> token info)
     token_cache: Arc<RwLock<HashMap<String, CachedTokenInfo>>>,
@@ -85,10 +88,8 @@ struct TokenResponse {
 impl McpOAuthManager {
     /// Create a new OAuth manager
     pub fn new() -> Self {
-        let keychain = Arc::new(
-            CachedKeychain::new("LocalRouter-McpServerTokens".to_string())
-                .expect("Failed to initialize MCP OAuth keychain"),
-        );
+        let keychain = CachedKeychain::auto()
+            .expect("Failed to initialize MCP OAuth keychain");
 
         Self {
             client: Client::new(),
@@ -168,17 +169,18 @@ impl McpOAuthManager {
         // Retrieve client_secret from keychain
         let client_secret = self
             .keychain
-            .get(&format!("{}_client_secret", server_id))
-            .map_err(|e| AppError::Mcp(format!("Failed to retrieve client secret: {}", e)))?;
+            .get(MCP_OAUTH_SERVICE, &format!("{}_client_secret", server_id))
+            .map_err(|e| AppError::Mcp(format!("Failed to retrieve client secret: {}", e)))?
+            .ok_or_else(|| AppError::Mcp("Client secret not found in keychain".to_string()))?;
 
         // Prepare token request (OAuth 2.0 Client Credentials flow)
+        let scopes = oauth_config.scopes.join(" ");
         let mut params = HashMap::new();
         params.insert("grant_type", "client_credentials");
         params.insert("client_id", &oauth_config.client_id);
         params.insert("client_secret", &client_secret);
 
-        if !oauth_config.scopes.is_empty() {
-            let scopes = oauth_config.scopes.join(" ");
+        if !scopes.is_empty() {
             params.insert("scope", &scopes);
         }
 
@@ -227,12 +229,12 @@ impl McpOAuthManager {
 
         // Store in keyring
         self.keychain
-            .set(&format!("{}_access_token", server_id), &token_info.access_token)
+            .store(MCP_OAUTH_SERVICE, &format!("{}_access_token", server_id), &token_info.access_token)
             .map_err(|e| AppError::Mcp(format!("Failed to store token in keychain: {}", e)))?;
 
         if let Some(ref refresh_token) = token_info.refresh_token {
             self.keychain
-                .set(&format!("{}_refresh_token", server_id), refresh_token)
+                .store(MCP_OAUTH_SERVICE, &format!("{}_refresh_token", server_id), refresh_token)
                 .ok(); // Ignore errors for refresh token
         }
 
@@ -260,7 +262,7 @@ impl McpOAuthManager {
         }
 
         // Try to load from keychain
-        if let Ok(token) = self.keychain.get(&format!("{}_access_token", server_id)) {
+        if let Ok(Some(token)) = self.keychain.get(MCP_OAUTH_SERVICE, &format!("{}_access_token", server_id)) {
             tracing::debug!("Loaded OAuth token from keychain for: {}", server_id);
             // Note: We don't have expiration info from keychain, so we'll try to use it
             // and let the server reject it if expired
@@ -290,8 +292,9 @@ impl McpOAuthManager {
             token_info.refresh_token.clone()
         } else {
             self.keychain
-                .get(&format!("{}_refresh_token", server_id))
+                .get(MCP_OAUTH_SERVICE, &format!("{}_refresh_token", server_id))
                 .ok()
+                .flatten()
         };
 
         let refresh_token = refresh_token.ok_or_else(|| {
@@ -301,8 +304,9 @@ impl McpOAuthManager {
         // Retrieve client_secret from keychain
         let client_secret = self
             .keychain
-            .get(&format!("{}_client_secret", server_id))
-            .map_err(|e| AppError::Mcp(format!("Failed to retrieve client secret: {}", e)))?;
+            .get(MCP_OAUTH_SERVICE, &format!("{}_client_secret", server_id))
+            .map_err(|e| AppError::Mcp(format!("Failed to retrieve client secret: {}", e)))?
+            .ok_or_else(|| AppError::Mcp("Client secret not found in keychain".to_string()))?;
 
         // Prepare refresh request
         let mut params = HashMap::new();
@@ -323,8 +327,8 @@ impl McpOAuthManager {
         if !response.status().is_success() {
             // Clear cached token and force re-authentication
             self.token_cache.write().remove(server_id);
-            self.keychain.delete(&format!("{}_access_token", server_id)).ok();
-            self.keychain.delete(&format!("{}_refresh_token", server_id)).ok();
+            self.keychain.delete(MCP_OAUTH_SERVICE, &format!("{}_access_token", server_id)).ok();
+            self.keychain.delete(MCP_OAUTH_SERVICE, &format!("{}_refresh_token", server_id)).ok();
 
             return Err(AppError::Mcp(
                 "Token refresh failed, re-authentication required".to_string(),
@@ -356,12 +360,12 @@ impl McpOAuthManager {
 
         // Update keychain
         self.keychain
-            .set(&format!("{}_access_token", server_id), &token_info.access_token)
+            .store(MCP_OAUTH_SERVICE, &format!("{}_access_token", server_id), &token_info.access_token)
             .map_err(|e| AppError::Mcp(format!("Failed to update token in keychain: {}", e)))?;
 
         if let Some(ref refresh_token) = token_info.refresh_token {
             self.keychain
-                .set(&format!("{}_refresh_token", server_id), refresh_token)
+                .store(MCP_OAUTH_SERVICE, &format!("{}_refresh_token", server_id), refresh_token)
                 .ok();
         }
 
@@ -376,8 +380,8 @@ impl McpOAuthManager {
     /// * `server_id` - MCP server ID
     pub fn clear_token(&self, server_id: &str) {
         self.token_cache.write().remove(server_id);
-        self.keychain.delete(&format!("{}_access_token", server_id)).ok();
-        self.keychain.delete(&format!("{}_refresh_token", server_id)).ok();
+        self.keychain.delete(MCP_OAUTH_SERVICE, &format!("{}_access_token", server_id)).ok();
+        self.keychain.delete(MCP_OAUTH_SERVICE, &format!("{}_refresh_token", server_id)).ok();
     }
 }
 
@@ -426,7 +430,8 @@ mod tests {
             .insert("test_server".to_string(), token_info);
 
         // Manually check expiration logic
-        if let Some(info) = manager.token_cache.read().get("test_server") {
+        let cache_guard = manager.token_cache.read();
+        if let Some(info) = cache_guard.get("test_server") {
             assert!(info.expires_at < Utc::now());
         }
     }

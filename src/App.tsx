@@ -7,10 +7,13 @@ import ApiKeysTab from './components/tabs/ApiKeysTab'
 import ProvidersTab from './components/tabs/ProvidersTab'
 import ServerTab from './components/tabs/ServerTab'
 import ModelsTab from './components/tabs/ModelsTab'
+import OAuthClientsTab from './components/tabs/OAuthClientsTab'
+import McpServersTab from './components/tabs/McpServersTab'
+import DocumentationTab from './components/tabs/DocumentationTab'
 import { PrioritizedListModal } from './components/PrioritizedListModal'
 import { invoke } from '@tauri-apps/api/core'
 
-type Tab = 'home' | 'server' | 'api-keys' | 'providers' | 'models'
+type Tab = 'home' | 'server' | 'api-keys' | 'providers' | 'models' | 'oauth-clients' | 'mcp-servers' | 'documentation'
 
 interface ApiKeyInfo {
   id: string
@@ -98,6 +101,13 @@ function App() {
           {activeTab === 'models' && (
             <ModelsTab activeSubTab={activeSubTab} onTabChange={handleTabChange} />
           )}
+          {activeTab === 'oauth-clients' && (
+            <OAuthClientsTab activeSubTab={activeSubTab} onTabChange={handleTabChange} />
+          )}
+          {activeTab === 'mcp-servers' && (
+            <McpServersTab activeSubTab={activeSubTab} onTabChange={handleTabChange} />
+          )}
+          {activeTab === 'documentation' && <DocumentationTab />}
         </main>
       </div>
 

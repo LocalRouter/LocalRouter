@@ -83,7 +83,7 @@ async fn test_anthropic_provider_name() {
 #[tokio::test]
 async fn test_anthropic_handles_system_messages() {
     // Test that Anthropic correctly converts system messages
-    let provider = AnthropicProvider::new("test-key".to_string()).unwrap();
+    let _provider = AnthropicProvider::new("test-key".to_string()).unwrap();
 
     // This tests the internal message conversion logic
     // The actual API call would need a mock server with custom base URL

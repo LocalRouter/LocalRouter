@@ -125,7 +125,7 @@ impl PromptCachingAdapter {
             + (regular_input_tokens as f64);
 
         let savings = (full_cost - cached_cost) / full_cost * 100.0;
-        savings.max(0.0).min(100.0)
+        savings.clamp(0.0, 100.0)
     }
 
     /// Extract cache metrics from response extensions

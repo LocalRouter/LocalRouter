@@ -38,7 +38,7 @@ export default function ModelDetailPage({ modelKey, onTabChange }: ModelDetailPa
   const [model, setModel] = useState<Model | null>(null)
   const [apiKeys, setApiKeys] = useState<ApiKey[]>([])
   const [loading, setLoading] = useState(true)
-  const [activeTab, setActiveTab] = useState<string>('details')
+  const [activeTab, setActiveTab] = useState<string>('metrics')
 
   useEffect(() => {
     loadModelData()
@@ -120,6 +120,51 @@ export default function ModelDetailPage({ modelKey, onTabChange }: ModelDetailPa
   }
 
   const tabs = [
+    {
+      id: 'metrics',
+      label: 'Metrics',
+      content: (
+        <div className="space-y-6">
+          <div className="grid grid-cols-2 gap-6">
+            <MetricsChart
+              scope="model"
+              scopeId={modelKey}
+              timeRange="day"
+              metricType="requests"
+              title="Requests"
+              refreshTrigger={refreshKey}
+            />
+
+            <MetricsChart
+              scope="model"
+              scopeId={modelKey}
+              timeRange="day"
+              metricType="tokens"
+              title="Tokens"
+              refreshTrigger={refreshKey}
+            />
+
+            <MetricsChart
+              scope="model"
+              scopeId={modelKey}
+              timeRange="day"
+              metricType="cost"
+              title="Cost"
+              refreshTrigger={refreshKey}
+            />
+
+            <MetricsChart
+              scope="model"
+              scopeId={modelKey}
+              timeRange="day"
+              metricType="latency"
+              title="Latency"
+              refreshTrigger={refreshKey}
+            />
+          </div>
+        </div>
+      ),
+    },
     {
       id: 'details',
       label: 'Details',
@@ -217,51 +262,6 @@ export default function ModelDetailPage({ modelKey, onTabChange }: ModelDetailPa
               </div>
             </Card>
           )}
-        </div>
-      ),
-    },
-    {
-      id: 'metrics',
-      label: 'Metrics',
-      content: (
-        <div className="space-y-6">
-          <div className="grid grid-cols-2 gap-6">
-            <MetricsChart
-              scope="model"
-              scopeId={modelKey}
-              timeRange="day"
-              metricType="requests"
-              title="Requests"
-              refreshTrigger={refreshKey}
-            />
-
-            <MetricsChart
-              scope="model"
-              scopeId={modelKey}
-              timeRange="day"
-              metricType="tokens"
-              title="Tokens"
-              refreshTrigger={refreshKey}
-            />
-
-            <MetricsChart
-              scope="model"
-              scopeId={modelKey}
-              timeRange="day"
-              metricType="cost"
-              title="Cost"
-              refreshTrigger={refreshKey}
-            />
-
-            <MetricsChart
-              scope="model"
-              scopeId={modelKey}
-              timeRange="day"
-              metricType="latency"
-              title="Latency"
-              refreshTrigger={refreshKey}
-            />
-          </div>
         </div>
       ),
     },

@@ -30,7 +30,6 @@
 
 use jsonschema::{Draft, JSONSchema};
 use serde_json::{json, Value};
-use std::collections::HashMap;
 
 use crate::utils::errors::{AppError, AppResult};
 use super::{FeatureAdapter, FeatureData, FeatureParams};
@@ -240,6 +239,7 @@ impl FeatureAdapter for StructuredOutputsAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     #[test]
     fn test_feature_name() {

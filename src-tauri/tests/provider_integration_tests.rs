@@ -5,6 +5,3 @@
 #![allow(dead_code)]
 
 mod provider_tests;
-
-// Re-export tests to run them
-use provider_tests::*;

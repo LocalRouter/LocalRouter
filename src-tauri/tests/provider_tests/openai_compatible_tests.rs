@@ -15,8 +15,8 @@
 use super::common::*;
 use futures::StreamExt;
 use localrouter_ai::providers::{
-    groq::GroqProvider, lmstudio::LMStudioProvider, openai::OpenAIProvider,
-    openai_compatible::OpenAICompatibleProvider, openrouter::OpenRouterProvider, ModelProvider,
+    groq::GroqProvider, openai_compatible::OpenAICompatibleProvider,
+    openrouter::OpenRouterProvider, ModelProvider,
 };
 
 // ==================== OPENAI TESTS ====================
@@ -262,7 +262,7 @@ async fn test_lmstudio_streaming() {
 
     let mut chunk_count = 0;
     while let Some(result) = stream.next().await {
-        result.unwrap();
+        let _chunk = result.unwrap();
         chunk_count += 1;
     }
 

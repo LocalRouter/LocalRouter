@@ -3,14 +3,27 @@
 //! Implements the JSON-RPC 2.0 specification for Model Context Protocol communication.
 //! Reference: https://www.jsonrpc.org/specification
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
+
+/// Custom deserializer for the result field that preserves null distinction
+///
+/// JSON-RPC 2.0 allows null as a valid result value. This deserializer ensures
+/// that `"result": null` is deserialized as `Some(Value::Null)` rather than `None`,
+/// allowing us to distinguish between a missing result field and an explicit null result.
+fn deserialize_result<'de, D>(deserializer: D) -> Result<Option<Value>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    // Deserialize the value directly - this captures null as Value::Null
+    Ok(Some(Value::deserialize(deserializer)?))
+}
 
 /// JSON-RPC 2.0 request
 ///
 /// Represents a request sent to an MCP server.
 /// The method and params determine what action the server should take.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct JsonRpcRequest {
     /// JSON-RPC version (always "2.0")
     pub jsonrpc: String,
@@ -31,7 +44,7 @@ pub struct JsonRpcRequest {
 /// JSON-RPC 2.0 response
 ///
 /// Represents a successful response from an MCP server.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct JsonRpcResponse {
     /// JSON-RPC version (always "2.0")
     pub jsonrpc: String,
@@ -40,6 +53,9 @@ pub struct JsonRpcResponse {
     pub id: Value,
 
     /// Result data (present on success)
+    /// Note: JSON-RPC 2.0 allows null as a valid result value.
+    /// When deserializing, `"result": null` becomes `Some(Value::Null)`, not `None`.
+    #[serde(default, deserialize_with = "deserialize_result")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<Value>,
 
@@ -51,7 +67,7 @@ pub struct JsonRpcResponse {
 /// JSON-RPC 2.0 error object
 ///
 /// Represents an error that occurred during request processing.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct JsonRpcError {
     /// Error code (integer)
     pub code: i32,
@@ -68,7 +84,7 @@ pub struct JsonRpcError {
 ///
 /// A notification is a request without an id.
 /// The server will not send a response to a notification.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct JsonRpcNotification {
     /// JSON-RPC version (always "2.0")
     pub jsonrpc: String,
@@ -85,7 +101,7 @@ pub struct JsonRpcNotification {
 ///
 /// Can be either a request, response, or notification.
 /// Used for parsing incoming messages.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(untagged)]
 pub enum JsonRpcMessage {
     Request(JsonRpcRequest),
@@ -117,6 +133,7 @@ impl JsonRpcRequest {
     }
 
     /// Create a request with a string ID
+    #[allow(dead_code)]
     pub fn with_string_id(id: String, method: String, params: Option<Value>) -> Self {
         Self::new(Some(Value::String(id)), method, params)
     }
@@ -199,6 +216,7 @@ impl JsonRpcError {
     }
 
     /// Create a custom error with application-specific code
+    #[allow(dead_code)]
     pub fn custom(code: i32, message: impl Into<String>, data: Option<Value>) -> Self {
         Self::new(code, message.into(), data)
     }

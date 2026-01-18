@@ -490,7 +490,7 @@ mod tests {
         params.insert("top_logprobs".to_string(), json!(10));
 
         let config = LogprobsAdapter::get_logprobs_config(&params).unwrap();
-        assert_eq!(config.enabled, true);
+        assert!(config.enabled);
         assert_eq!(config.top_logprobs, 10);
     }
 
@@ -498,7 +498,7 @@ mod tests {
     fn test_get_logprobs_config_defaults() {
         let params = HashMap::new();
         let config = LogprobsAdapter::get_logprobs_config(&params).unwrap();
-        assert_eq!(config.enabled, true);
+        assert!(config.enabled);
         assert_eq!(config.top_logprobs, 0);
     }
 }

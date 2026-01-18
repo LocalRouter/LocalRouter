@@ -10,9 +10,8 @@
 //! and exposes it in the extensions field.
 
 use serde_json::{json, Value};
-use std::collections::HashMap;
 
-use crate::utils::errors::{AppError, AppResult};
+use crate::utils::errors::AppResult;
 use super::{FeatureAdapter, FeatureData, FeatureParams};
 use crate::providers::{CompletionRequest, CompletionResponse};
 
@@ -33,6 +32,7 @@ impl OpenAIReasoningAdapter {
     }
 
     /// Extract reasoning tokens from usage metadata
+    #[allow(dead_code)]
     fn extract_reasoning_tokens(usage_metadata: &Value) -> Option<u64> {
         usage_metadata
             .get("reasoning_tokens")
@@ -85,6 +85,7 @@ impl FeatureAdapter for OpenAIReasoningAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     #[test]
     fn test_feature_name() {

@@ -335,6 +335,11 @@ impl GraphGenerator {
         end: DateTime<Utc>,
         interval_minutes: i64,
     ) -> Vec<MetricDataPoint> {
+        // Validate interval to prevent infinite loops
+        if interval_minutes <= 0 {
+            panic!("interval_minutes must be positive, got: {}", interval_minutes);
+        }
+
         if data_points.is_empty() {
             return Vec::new();
         }

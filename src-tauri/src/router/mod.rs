@@ -182,7 +182,7 @@ impl Router {
 
                     // Calculate cost and record usage for rate limiting
                     let pricing = provider_instance
-                        .get_pricing(&model_name)
+                        .get_pricing(model_name)
                         .await
                         .unwrap_or_else(|_| crate::providers::PricingInfo::free());
 
@@ -615,7 +615,7 @@ impl Router {
 
         // Apply feature adapters to response if extensions were present
         if let Some(ref extensions) = request.extensions {
-            for (feature_name, _) in extensions {
+            for feature_name in extensions.keys() {
                 if provider_instance.supports_feature(feature_name) {
                     if let Some(adapter) = provider_instance.get_feature_adapter(feature_name) {
                         // Adapt the response
@@ -1003,9 +1003,9 @@ mod tests {
         config.api_keys.push(ApiKeyConfig {
             id: "test-key".to_string(),
             name: "Test Key".to_string(),
-            model_selection: Some(ModelSelection::DirectModel {
-                provider: "test-provider".to_string(),
-                model: "test-model".to_string(),
+            model_selection: Some(ModelSelection::Custom {
+                all_provider_models: vec![],
+                individual_models: vec![("test-provider".to_string(), "test-model".to_string())],
             }),
             routing_config: None,
             enabled: false, // Disabled

@@ -100,7 +100,7 @@ mod tests {
         use crate::providers::registry::ProviderRegistry;
         use crate::providers::health::HealthCheckManager;
         use crate::router::{Router, RateLimiterManager};
-        use parking_lot::RwLock;
+        use crate::clients::{ClientManager, TokenStore};
 
         // Create test state
         let health_manager = Arc::new(HealthCheckManager::default());
@@ -119,6 +119,8 @@ mod tests {
             ApiKeyManager::new(vec![]),
             Arc::new(RateLimiterManager::new(None)),
             provider_registry,
+            Arc::new(ClientManager::new(vec![])),
+            Arc::new(TokenStore::new()),
         );
         let state_with_oauth = state.with_oauth_and_mcp(
             OAuthClientManager::new(vec![]),
@@ -151,7 +153,7 @@ mod tests {
         use crate::providers::registry::ProviderRegistry;
         use crate::providers::health::HealthCheckManager;
         use crate::router::{Router, RateLimiterManager};
-        use parking_lot::RwLock;
+        use crate::clients::{ClientManager, TokenStore};
 
         // Create test state with OAuth manager
         let health_manager = Arc::new(HealthCheckManager::default());
@@ -170,6 +172,8 @@ mod tests {
             ApiKeyManager::new(vec![]),
             Arc::new(RateLimiterManager::new(None)),
             provider_registry,
+            Arc::new(ClientManager::new(vec![])),
+            Arc::new(TokenStore::new()),
         );
         let state_with_oauth = state.with_oauth_and_mcp(
             OAuthClientManager::new(vec![]),
