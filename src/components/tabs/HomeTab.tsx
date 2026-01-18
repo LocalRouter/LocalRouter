@@ -11,6 +11,7 @@ interface AggregateStats {
   total_requests: number
   total_tokens: number
   total_cost: number
+  successful_requests: number
 }
 
 export default function HomeTab() {
@@ -32,7 +33,7 @@ export default function HomeTab() {
         setStats(aggregateStats)
       } catch (error) {
         console.error('Failed to load aggregate stats:', error)
-        setStats({ total_requests: 0, total_tokens: 0, total_cost: 0 })
+        setStats({ total_requests: 0, total_tokens: 0, total_cost: 0, successful_requests: 0 })
       }
 
       // Load tracked providers for comparison charts
@@ -52,25 +53,25 @@ export default function HomeTab() {
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
-        <div className="text-gray-500">Loading dashboard...</div>
+        <div className="text-gray-500 dark:text-gray-400">Loading dashboard...</div>
       </div>
     )
   }
 
   const successRate = stats && stats.total_requests > 0
-    ? ((stats.total_requests / stats.total_requests) * 100).toFixed(1)
+    ? ((stats.successful_requests / stats.total_requests) * 100).toFixed(1)
     : '0.0'
 
   return (
     <div className="p-6 space-y-6">
       {/* Header with time range selector */}
       <div className="flex justify-between items-center">
-        <h1 className="text-2xl font-bold">Dashboard</h1>
+        <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Dashboard</h1>
 
         <select
           value={timeRange}
           onChange={(e) => setTimeRange(e.target.value as any)}
-          className="px-4 py-2 border border-gray-300 rounded-lg bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500"
+          className="px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 hover:bg-gray-50 dark:hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
         >
           <option value="hour">Last Hour</option>
           <option value="day">Last 24 Hours</option>
@@ -174,7 +175,7 @@ export default function HomeTab() {
 
       {/* MCP Metrics Section */}
       <div className="mt-12">
-        <h2 className="text-xl font-semibold mb-6">MCP (Model Context Protocol) Usage</h2>
+        <h2 className="text-xl font-semibold text-gray-900 dark:text-gray-100 mb-6">MCP (Model Context Protocol) Usage</h2>
 
         {/* Method Breakdown */}
         <McpMethodBreakdown
@@ -216,8 +217,8 @@ export default function HomeTab() {
       </div>
 
       {/* Info Note */}
-      <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-        <p className="text-sm text-blue-900">
+      <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-700 rounded-lg p-4">
+        <p className="text-sm text-blue-900 dark:text-blue-200">
           <strong>Note:</strong> Metrics are tracked in-memory for the last 24 hours with 1-minute granularity.
           Historical data beyond 24 hours is available from access logs.
         </p>

@@ -55,6 +55,12 @@ body {
   font-size: 0.875em;
 }
 
+@media (prefers-color-scheme: dark) {
+  .prose code {
+    background-color: rgba(255, 255, 255, 0.1);
+  }
+}
+
 .prose pre {
   background-color: rgba(0, 0, 0, 0.1);
   padding: 0.75rem;
@@ -62,6 +68,12 @@ body {
   overflow-x: auto;
   margin-top: 0.5em;
   margin-bottom: 0.5em;
+}
+
+@media (prefers-color-scheme: dark) {
+  .prose pre {
+    background-color: rgba(255, 255, 255, 0.1);
+  }
 }
 
 .prose pre code {
@@ -129,15 +141,34 @@ body {
   padding: 0.375rem 0.5rem;
 }
 
+@media (prefers-color-scheme: dark) {
+  .prose th,
+  .prose td {
+    border-color: rgba(255, 255, 255, 0.2);
+  }
+}
+
 .prose th {
   background-color: rgba(0, 0, 0, 0.1);
   font-weight: 600;
+}
+
+@media (prefers-color-scheme: dark) {
+  .prose th {
+    background-color: rgba(255, 255, 255, 0.1);
+  }
 }
 
 .prose hr {
   margin-top: 0.75em;
   margin-bottom: 0.75em;
   border-color: rgba(0, 0, 0, 0.2);
+}
+
+@media (prefers-color-scheme: dark) {
+  .prose hr {
+    border-color: rgba(255, 255, 255, 0.2);
+  }
 }
 
 /* User message specific styles (blue background) */

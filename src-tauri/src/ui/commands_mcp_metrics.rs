@@ -41,7 +41,13 @@ pub async fn get_client_mcp_metrics(
     let (start, end) = time_range.get_range();
     let data_points = app_state.metrics_collector.mcp().get_client_range(&client_id, start, end);
 
-    Ok(McpGraphGenerator::generate(&data_points, metric_type, Some(&client_id)))
+    // Get client name from client manager (if available) instead of using client_id
+    let label = app_state.client_manager
+        .get_client(&client_id)
+        .map(|c| c.name)
+        .unwrap_or_else(|| "Client".to_string());
+
+    Ok(McpGraphGenerator::generate(&data_points, metric_type, Some(&label)))
 }
 
 /// Get MCP server-specific metrics
@@ -59,7 +65,13 @@ pub async fn get_mcp_server_metrics(
     let (start, end) = time_range.get_range();
     let data_points = app_state.metrics_collector.mcp().get_server_range(&server_id, start, end);
 
-    Ok(McpGraphGenerator::generate(&data_points, metric_type, Some(&server_id)))
+    // Get server name from mcp_server_manager (if available) instead of using server_id
+    let label = app_state.mcp_server_manager
+        .get_config(&server_id)
+        .map(|s| s.name)
+        .unwrap_or_else(|| "MCP Server".to_string());
+
+    Ok(McpGraphGenerator::generate(&data_points, metric_type, Some(&label)))
 }
 
 /// Get MCP method breakdown for a scope (global, client, or server)
@@ -130,13 +142,17 @@ pub async fn compare_mcp_clients(
         .iter()
         .map(|id| {
             let points = app_state.metrics_collector.mcp().get_client_range(id, start, end);
-            (id.clone(), points)
+            let label = app_state.client_manager
+                .get_client(id)
+                .map(|c| c.name)
+                .unwrap_or_else(|| id.clone());
+            (label, points)
         })
         .collect();
 
     let data_sets_refs: Vec<(&str, &[_])> = data_sets
         .iter()
-        .map(|(id, points)| (id.as_str(), points.as_slice()))
+        .map(|(label, points)| (label.as_str(), points.as_slice()))
         .collect();
 
     Ok(McpGraphGenerator::generate_multi(data_sets_refs, metric_type))
@@ -160,13 +176,17 @@ pub async fn compare_mcp_servers(
         .iter()
         .map(|id| {
             let points = app_state.metrics_collector.mcp().get_server_range(id, start, end);
-            (id.clone(), points)
+            let label = app_state.mcp_server_manager
+                .get_config(id)
+                .map(|s| s.name)
+                .unwrap_or_else(|| id.clone());
+            (label, points)
         })
         .collect();
 
     let data_sets_refs: Vec<(&str, &[_])> = data_sets
         .iter()
-        .map(|(id, points)| (id.as_str(), points.as_slice()))
+        .map(|(label, points)| (label.as_str(), points.as_slice()))
         .collect();
 
     Ok(McpGraphGenerator::generate_multi(data_sets_refs, metric_type))

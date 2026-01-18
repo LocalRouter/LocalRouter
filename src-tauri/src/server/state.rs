@@ -12,13 +12,13 @@ use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::api_keys::ApiKeyManager;
 use crate::clients::{ClientManager, TokenStore};
+use crate::config::{self, ConfigManager};
 use crate::mcp::McpServerManager;
 use crate::monitoring::logger::AccessLogger;
 use crate::monitoring::mcp_logger::McpAccessLogger;
 use crate::monitoring::metrics::MetricsCollector;
-use crate::oauth_clients::OAuthClientManager;
+use crate::monitoring::storage::MetricsDatabase;
 use crate::providers::registry::ProviderRegistry;
 use crate::router::{RateLimiterManager, Router};
 
@@ -30,11 +30,7 @@ pub struct AppState {
     /// Router for intelligent model selection and routing
     pub router: Arc<Router>,
 
-    /// API key manager for authentication (deprecated, use client_manager)
-    pub api_key_manager: Arc<RwLock<ApiKeyManager>>,
 
-    /// OAuth client manager for MCP authentication (deprecated, use client_manager + token_store)
-    pub oauth_client_manager: Arc<RwLock<OAuthClientManager>>,
 
     /// Unified client manager for authentication (replaces api_key_manager and oauth_client_manager)
     pub client_manager: Arc<ClientManager>,
@@ -50,6 +46,9 @@ pub struct AppState {
 
     /// Provider registry for listing models
     pub provider_registry: Arc<ProviderRegistry>,
+
+    /// Configuration manager for accessing client routing configs
+    pub config_manager: Arc<ConfigManager>,
 
     /// Generation tracking for /v1/generation endpoint
     pub generation_tracker: Arc<GenerationTracker>,
@@ -74,9 +73,9 @@ pub struct AppState {
 impl AppState {
     pub fn new(
         router: Arc<Router>,
-        api_key_manager: ApiKeyManager,
         rate_limiter: Arc<RateLimiterManager>,
         provider_registry: Arc<ProviderRegistry>,
+        config_manager: Arc<ConfigManager>,
         client_manager: Arc<ClientManager>,
         token_store: Arc<TokenStore>,
     ) -> Self {
@@ -100,17 +99,31 @@ impl AppState {
                 panic!("MCP access logger initialization failed");
             });
 
+        // Initialize metrics database with 90-day retention
+        let metrics_db_path = config::paths::config_dir()
+            .unwrap_or_else(|_| std::path::PathBuf::from("."))
+            .join("metrics.db");
+
+        let metrics_db = Arc::new(
+            MetricsDatabase::new(metrics_db_path)
+                .unwrap_or_else(|e| {
+                    tracing::error!("Failed to initialize metrics database: {}", e);
+                    panic!("Metrics database initialization failed");
+                })
+        );
+
+        let metrics_collector = MetricsCollector::new(metrics_db);
+
         Self {
             router,
-            api_key_manager: Arc::new(RwLock::new(api_key_manager)),
-            oauth_client_manager: Arc::new(RwLock::new(OAuthClientManager::new(vec![]))),
             client_manager,
             token_store,
             mcp_server_manager: Arc::new(McpServerManager::new()),
             rate_limiter,
             provider_registry,
+            config_manager,
             generation_tracker: Arc::new(GenerationTracker::new()),
-            metrics_collector: Arc::new(MetricsCollector::with_default_retention()),
+            metrics_collector: Arc::new(metrics_collector),
             access_logger: Arc::new(access_logger),
             mcp_access_logger: Arc::new(mcp_access_logger),
             app_handle: Arc::new(RwLock::new(None)),
@@ -118,14 +131,12 @@ impl AppState {
         }
     }
 
-    /// Add OAuth and MCP managers to the state
-    pub fn with_oauth_and_mcp(
+    /// Add MCP manager to the state
+    pub fn with_mcp(
         self,
-        oauth_client_manager: OAuthClientManager,
         mcp_server_manager: Arc<McpServerManager>,
     ) -> Self {
         Self {
-            oauth_client_manager: Arc::new(RwLock::new(oauth_client_manager)),
             mcp_server_manager,
             ..self
         }
@@ -166,6 +177,7 @@ pub struct AggregateStats {
     pub total_requests: u64,
     pub total_tokens: u64,
     pub total_cost: f64,
+    pub successful_requests: u64,
 }
 
 impl GenerationTracker {
@@ -206,6 +218,7 @@ impl GenerationTracker {
 
         AggregateStats {
             total_requests,
+            successful_requests: total_requests, // GenerationTracker only tracks successful requests
             total_tokens,
             total_cost,
         }
@@ -297,7 +310,7 @@ pub struct OAuthContext {
 }
 
 /// Model selection mode for an API key
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum ModelSelection {
     /// All models from all providers (including future models)
     All,

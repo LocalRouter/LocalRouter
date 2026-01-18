@@ -10,7 +10,6 @@ use axum::{
     Json,
 };
 use std::time::Instant;
-use uuid::Uuid;
 
 use crate::mcp::protocol::{JsonRpcRequest, JsonRpcResponse};
 use crate::monitoring::mcp_metrics::McpRequestMetrics;
@@ -255,10 +254,8 @@ pub async fn mcp_health_handler() -> impl IntoResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api_keys::ApiKeyManager;
     use crate::clients::{ClientManager, TokenStore};
     use crate::mcp::McpServerManager;
-    use crate::oauth_clients::OAuthClientManager;
     use crate::providers::health::HealthCheckManager;
     use crate::providers::registry::ProviderRegistry;
     use crate::router::{RateLimiterManager, Router};
@@ -278,18 +275,20 @@ mod tests {
             provider_registry.clone(),
             Arc::new(RateLimiterManager::new(None)),
         ));
+        let rate_limiter = Arc::new(RateLimiterManager::new(None));
+        let client_manager = Arc::new(ClientManager::new(vec![]));
+        let token_store = Arc::new(TokenStore::new());
+
         let state = AppState::new(
             router,
-            ApiKeyManager::new(vec![]),
-            Arc::new(RateLimiterManager::new(None)),
+            rate_limiter,
             provider_registry,
-            Arc::new(ClientManager::new(vec![])),
-            Arc::new(TokenStore::new()),
-        );
-        let state_with_oauth = state.with_oauth_and_mcp(
-            OAuthClientManager::new(vec![]),
-            Arc::new(McpServerManager::new()),
-        );
+            config_manager.clone(),
+            client_manager,
+            token_store,
+        ).with_mcp(Arc::new(McpServerManager::new()));
+
+        let state_with_oauth = state;
 
         // Create OAuth context
         let oauth_context = axum::Extension(OAuthContext {
@@ -329,18 +328,20 @@ mod tests {
             provider_registry.clone(),
             Arc::new(RateLimiterManager::new(None)),
         ));
+        let rate_limiter = Arc::new(RateLimiterManager::new(None));
+        let client_manager = Arc::new(ClientManager::new(vec![]));
+        let token_store = Arc::new(TokenStore::new());
+
         let state = AppState::new(
             router,
-            ApiKeyManager::new(vec![]),
-            Arc::new(RateLimiterManager::new(None)),
+            rate_limiter,
             provider_registry,
-            Arc::new(ClientManager::new(vec![])),
-            Arc::new(TokenStore::new()),
-        );
-        let state_with_oauth = state.with_oauth_and_mcp(
-            OAuthClientManager::new(vec![]),
-            Arc::new(McpServerManager::new()),
-        );
+            config_manager.clone(),
+            client_manager,
+            token_store,
+        ).with_mcp(Arc::new(McpServerManager::new()));
+
+        let state_with_oauth = state;
 
         // Create OAuth context with access to server-1 only
         let oauth_context = axum::Extension(OAuthContext {

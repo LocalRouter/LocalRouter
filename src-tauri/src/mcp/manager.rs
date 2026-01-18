@@ -206,11 +206,13 @@ impl McpServerManager {
                     // Retrieve token from keychain
                     let keychain = crate::api_keys::CachedKeychain::auto()
                         .unwrap_or_else(|_| crate::api_keys::CachedKeychain::system());
-                    if let Ok(Some(token)) = keychain.get("LocalRouter-McpServers", &config.id) {
+                    // Token is stored with account name: {server_id}_bearer_token
+                    let account_name = format!("{}_bearer_token", config.id);
+                    if let Ok(Some(token)) = keychain.get("LocalRouter-McpServers", &account_name) {
                         headers.insert("Authorization".to_string(), format!("Bearer {}", token));
                         tracing::debug!("Applied bearer token auth for SSE server: {}", server_id);
                     } else {
-                        tracing::warn!("Bearer token not found in keychain for server: {}", server_id);
+                        tracing::warn!("Bearer token not found in keychain for server: {} (tried account: {})", server_id, account_name);
                     }
                 }
                 crate::config::McpAuthConfig::CustomHeaders { headers: auth_headers } => {
@@ -267,13 +269,6 @@ impl McpServerManager {
             return Ok(());
         }
 
-        // Try to stop WebSocket transport
-        if let Some((_, transport)) = self.websocket_transports.remove(server_id) {
-            transport.close().await?;
-            tracing::info!("MCP WebSocket server stopped: {}", server_id);
-            return Ok(());
-        }
-
         // Server not running
         Err(AppError::Mcp(format!("Server not running: {}", server_id)))
     }
@@ -298,11 +293,6 @@ impl McpServerManager {
 
         // Check SSE transport
         if let Some(transport) = self.sse_transports.get(server_id) {
-            return transport.send_request(request).await;
-        }
-
-        // Check WebSocket transport
-        if let Some(transport) = self.websocket_transports.get(server_id) {
             return transport.send_request(request).await;
         }
 
@@ -337,15 +327,6 @@ impl McpServerManager {
                     Some("SSE connection lost".to_string()),
                 )
             }
-        } else if let Some(transport) = self.websocket_transports.get(server_id) {
-            if transport.is_healthy() {
-                (HealthStatus::Healthy, None)
-            } else {
-                (
-                    HealthStatus::Unhealthy,
-                    Some("WebSocket connection lost".to_string()),
-                )
-            }
         } else {
             (HealthStatus::Unhealthy, Some("Not started".to_string()))
         };
@@ -376,7 +357,6 @@ impl McpServerManager {
     pub fn is_running(&self, server_id: &str) -> bool {
         self.stdio_transports.contains_key(server_id)
             || self.sse_transports.contains_key(server_id)
-            || self.websocket_transports.contains_key(server_id)
     }
 
     /// Shutdown all servers

@@ -103,6 +103,18 @@ pub async fn list_tracked_providers(
     Ok(app_state.metrics_collector.get_provider_names())
 }
 
+/// List all tracked API keys (clients)
+#[tauri::command]
+pub async fn list_tracked_api_keys(
+    server_manager: State<'_, Arc<ServerManager>>,
+) -> Result<Vec<String>, String> {
+    let app_state = server_manager
+        .get_state()
+        .ok_or_else(|| "Server is not running".to_string())?;
+
+    Ok(app_state.metrics_collector.get_api_key_names())
+}
+
 /// Compare multiple API keys (stacked/multi-line chart)
 #[tauri::command]
 pub async fn compare_api_keys(
@@ -158,6 +170,36 @@ pub async fn compare_providers(
     let data_sets_refs: Vec<(&str, &[_])> = data_sets
         .iter()
         .map(|(provider, points)| (provider.as_str(), points.as_slice()))
+        .collect();
+
+    Ok(GraphGenerator::generate_multi(data_sets_refs, metric_type))
+}
+
+/// Compare multiple models (stacked chart for model usage breakdown)
+#[tauri::command]
+pub async fn compare_models(
+    models: Vec<String>,
+    time_range: TimeRange,
+    metric_type: MetricType,
+    server_manager: State<'_, Arc<ServerManager>>,
+) -> Result<GraphData, String> {
+    let app_state = server_manager
+        .get_state()
+        .ok_or_else(|| "Server is not running".to_string())?;
+
+    let (start, end) = time_range.get_range();
+
+    let data_sets: Vec<(String, Vec<_>)> = models
+        .iter()
+        .map(|model| {
+            let points = app_state.metrics_collector.get_model_range(model, start, end);
+            (model.clone(), points)
+        })
+        .collect();
+
+    let data_sets_refs: Vec<(&str, &[_])> = data_sets
+        .iter()
+        .map(|(model, points)| (model.as_str(), points.as_slice()))
         .collect();
 
     Ok(GraphGenerator::generate_multi(data_sets_refs, metric_type))

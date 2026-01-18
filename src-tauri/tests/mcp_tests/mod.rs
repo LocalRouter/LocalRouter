@@ -9,7 +9,6 @@
 //! - `request_validation` - JSON-RPC assertion helpers
 //! - `stdio_transport_tests` - STDIO process management tests
 //! - `sse_transport_tests` - SSE transport tests
-//! - `websocket_transport_tests` - WebSocket transport tests
 //! - `oauth_client_tests` - OAuth client authentication tests
 //! - `oauth_server_tests` - MCP server OAuth discovery/tokens tests
 //! - `proxy_integration_tests` - End-to-end proxy flow tests
@@ -41,7 +40,6 @@ pub mod request_validation;
 // Transport tests
 pub mod stdio_transport_tests;
 pub mod sse_transport_tests;
-pub mod websocket_transport_tests;
 
 // OAuth tests
 pub mod oauth_client_tests;

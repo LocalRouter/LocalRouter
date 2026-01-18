@@ -12,6 +12,46 @@ export const ContextualChat: React.FC<ContextualChatProps> = ({ context, disable
   const [chatClient, setChatClient] = useState<OpenAI | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [retryCount, setRetryCount] = useState(0);
+  const [availableModels, setAvailableModels] = useState<Array<{ model_id: string; provider_instance: string }>>([]);
+  const [loadingModels, setLoadingModels] = useState(false);
+
+  // Fetch available models for API key context by calling the web server
+  const fetchModels = async () => {
+    if (context.type !== 'api_key') return;
+    if (!chatClient) {
+      console.log('fetchModels: chatClient not ready yet');
+      return;
+    }
+
+    console.log('fetchModels: Calling /v1/models endpoint');
+    setLoadingModels(true);
+    try {
+      // Call the /v1/models endpoint using the OpenAI client
+      const response = await chatClient.models.list();
+      console.log('fetchModels: Success, received models:', response.data.length);
+      const formattedModels = response.data.map(m => ({
+        model_id: m.id,
+        provider_instance: m.id.split('/')[0] || 'unknown'
+      }));
+      setAvailableModels(formattedModels);
+
+      // Set first model as default if none selected
+      if (!selectedModel && formattedModels.length > 0) {
+        setSelectedModel(formattedModels[0].model_id);
+      }
+    } catch (err: any) {
+      console.error('fetchModels: Failed with error:', err);
+      console.error('fetchModels: Error details:', {
+        message: err.message,
+        status: err.status,
+        response: err.response
+      });
+      setError(`Failed to fetch models: ${err.message || err}`);
+    } finally {
+      setLoadingModels(false);
+    }
+  };
 
   // Initialize model selection based on context
   useEffect(() => {
@@ -19,11 +59,13 @@ export const ContextualChat: React.FC<ContextualChatProps> = ({ context, disable
       setSelectedModel(context.models[0]?.model_id || null);
     } else if (context.type === 'model') {
       setSelectedModel(context.modelId);
-    } else {
-      // API key context uses generic 'gpt-4'
-      setSelectedModel('gpt-4');
+    } else if (context.type === 'api_key') {
+      // Fetch available models for API key context when chat client is ready
+      if (chatClient) {
+        fetchModels();
+      }
     }
-  }, [context]);
+  }, [context, chatClient]);
 
   // Load server config and create OpenAI client
   useEffect(() => {
@@ -37,43 +79,64 @@ export const ContextualChat: React.FC<ContextualChatProps> = ({ context, disable
           'get_server_config'
         );
 
-        let apiKeyValue: string;
+        let apiKeyValue: string | undefined;
 
         if (context.type === 'api_key') {
-          // For API key context, use the provided key
-          try {
-            apiKeyValue = await invoke<string>('get_api_key_value', { id: context.apiKeyId });
-          } catch (keyErr: any) {
-            const errorMsg = keyErr?.toString() || 'Unknown error';
-            if (errorMsg.includes('passphrase') || errorMsg.includes('keychain')) {
-              throw new Error('Keychain access required to use chat. Please approve keychain access.');
+          // If bearer token is provided directly, use it (for unified clients)
+          if (context.bearerToken) {
+            console.log('Using provided bearer token');
+            apiKeyValue = context.bearerToken;
+          } else {
+            console.log('Fetching bearer token for client:', context.apiKeyId);
+            // Use unified client manager to get the client secret
+            try {
+              console.log('Calling get_client_value...');
+              apiKeyValue = await invoke<string>('get_client_value', { id: context.apiKeyId });
+              console.log('get_client_value succeeded, secret length:', apiKeyValue?.length);
+            } catch (err: any) {
+              const errorMsg = err?.toString() || '';
+              console.error('Failed to load client secret:', errorMsg);
+
+              // Check if it's a missing secret issue
+              if (errorMsg.includes('not found in keychain')) {
+                throw new Error(
+                  'Client secret not found. This client may have been created before secret storage was implemented. ' +
+                  'Please create a new client or contact support to regenerate the secret.'
+                );
+              }
+
+              // Show the error
+              throw new Error(`Failed to load client token: ${errorMsg}`);
             }
-            throw new Error(`Failed to load API key: ${errorMsg}`);
           }
         } else {
-          // For provider/model context, get first enabled API key
-          const allKeys = await invoke<Array<{ id: string; enabled: boolean }>>('list_api_keys');
-          const enabledKey = allKeys.find((k) => k.enabled);
-
-          if (!enabledKey) {
-            throw new Error('No enabled API key available. Create and enable an API key first.');
-          }
-
+          // For provider/model context, use internal testing mode (bypasses API key restrictions)
+          // Fetch the transient internal test bearer token (only accessible via Tauri IPC)
           try {
-            apiKeyValue = await invoke<string>('get_api_key_value', { id: enabledKey.id });
-          } catch (keyErr: any) {
-            const errorMsg = keyErr?.toString() || 'Unknown error';
-            if (errorMsg.includes('passphrase') || errorMsg.includes('keychain')) {
-              throw new Error('Keychain access required to use chat. Please approve keychain access.');
-            }
-            throw new Error(`Failed to load API key: ${errorMsg}`);
+            apiKeyValue = await invoke<string>('get_internal_test_token');
+          } catch (tokenErr: any) {
+            throw new Error(`Failed to get internal test token: ${tokenErr}`);
           }
         }
 
+        // Ensure apiKeyValue is set
+        if (!apiKeyValue) {
+          throw new Error('Failed to obtain API key value');
+        }
+
         const port = serverConfig.actual_port ?? serverConfig.port;
+        const baseURL = `http://${serverConfig.host}:${port}/v1`;
+
+        console.log('Initializing OpenAI client:', {
+          baseURL,
+          apiKeyLength: apiKeyValue.length,
+          apiKeyPrefix: apiKeyValue.substring(0, 10) + '...',
+          contextType: context.type
+        });
+
         const client = new OpenAI({
           apiKey: apiKeyValue,
-          baseURL: `http://${serverConfig.host}:${port}/v1`,
+          baseURL,
           dangerouslyAllowBrowser: true,
         });
 
@@ -87,13 +150,14 @@ export const ContextualChat: React.FC<ContextualChatProps> = ({ context, disable
     };
 
     initializeClient();
-  }, [context]);
+  }, [context, retryCount]);
 
   // Get model string based on context
   const getModelString = (): string => {
     switch (context.type) {
       case 'api_key':
-        return 'gpt-4'; // Generic, routing decides
+        // Use selected model if available, otherwise fallback to 'gpt-4'
+        return selectedModel || 'gpt-4';
       case 'provider':
         return selectedModel ? `${context.instanceName}/${selectedModel}` : '';
       case 'model':
@@ -159,6 +223,15 @@ export const ContextualChat: React.FC<ContextualChatProps> = ({ context, disable
     );
   }
 
+  // Function to retry initialization
+  const retryInitialization = () => {
+    setError(null);
+    setLoading(true);
+    setChatClient(null);
+    // Increment retry count to trigger useEffect
+    setRetryCount(prev => prev + 1);
+  };
+
   // Render error state
   if (error) {
     return (
@@ -183,7 +256,7 @@ export const ContextualChat: React.FC<ContextualChatProps> = ({ context, disable
           </div>
         </div>
         <button
-          onClick={() => window.location.reload()}
+          onClick={retryInitialization}
           className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
         >
           Retry
@@ -262,6 +335,37 @@ export const ContextualChat: React.FC<ContextualChatProps> = ({ context, disable
   return (
     <div className="space-y-4">
       {renderContextInfo()}
+
+      {/* Model Selector for API Key Context */}
+      {context.type === 'api_key' && (
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <label className="block text-sm font-medium">Select Model</label>
+            <button
+              onClick={fetchModels}
+              disabled={loadingModels || disabled}
+              className="px-3 py-1 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              {loadingModels ? 'Refreshing...' : 'Refresh Models'}
+            </button>
+          </div>
+          {availableModels.length > 0 ? (
+            <ModelSelector
+              models={availableModels}
+              selectedModel={selectedModel}
+              onModelChange={setSelectedModel}
+              disabled={disabled}
+              label=""
+            />
+          ) : (
+            <div className="p-3 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg">
+              <p className="text-sm text-yellow-700 dark:text-yellow-400">
+                Loading models...
+              </p>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Model Selector for Provider Context */}
       {context.type === 'provider' && (

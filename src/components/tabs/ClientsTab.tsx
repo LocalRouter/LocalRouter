@@ -6,6 +6,8 @@ import Badge from '../ui/Badge'
 import Modal from '../ui/Modal'
 import Input from '../ui/Input'
 import ClientDetailPage from '../clients/ClientDetailPage'
+import { StackedAreaChart } from '../charts/StackedAreaChart'
+import { useMetricsSubscription } from '../../hooks/useMetricsSubscription'
 
 interface Client {
   id: string
@@ -24,12 +26,15 @@ interface ClientsTabProps {
 }
 
 export default function ClientsTab({ activeSubTab, onTabChange }: ClientsTabProps) {
+  const refreshKey = useMetricsSubscription()
   const [clients, setClients] = useState<Client[]>([])
+  const [trackedApiKeys, setTrackedApiKeys] = useState<string[]>([])
   const [loading, setLoading] = useState(true)
   const [showCreateModal, setShowCreateModal] = useState(false)
   const [showCredentialsModal, setShowCredentialsModal] = useState(false)
   const [newClientSecret, setNewClientSecret] = useState('')
   const [newClientInfo, setNewClientInfo] = useState<Client | null>(null)
+  const [timeRange, setTimeRange] = useState<'hour' | 'day' | 'week' | 'month'>('day')
 
   // Form state
   const [clientName, setClientName] = useState('')
@@ -37,7 +42,8 @@ export default function ClientsTab({ activeSubTab, onTabChange }: ClientsTabProp
 
   useEffect(() => {
     loadClients()
-  }, [])
+    loadTrackedApiKeys()
+  }, [refreshKey])
 
   const loadClients = async () => {
     setLoading(true)
@@ -49,6 +55,15 @@ export default function ClientsTab({ activeSubTab, onTabChange }: ClientsTabProp
       alert(`Error loading clients: ${error}`)
     } finally {
       setLoading(false)
+    }
+  }
+
+  const loadTrackedApiKeys = async () => {
+    try {
+      const apiKeys = await invoke<string[]>('list_tracked_api_keys')
+      setTrackedApiKeys(apiKeys)
+    } catch (error) {
+      console.error('Failed to load tracked API keys:', error)
     }
   }
 
@@ -119,9 +134,17 @@ export default function ClientsTab({ activeSubTab, onTabChange }: ClientsTabProp
 
   // If viewing a detail page
   if (activeSubTab && activeSubTab !== 'list') {
+    // Parse activeSubTab for format: "clientId|tab|routingMode"
+    const parts = activeSubTab.split('|')
+    const clientId = parts[0]
+    const initialTab = parts[1] || undefined
+    const initialRoutingMode = parts[2] as 'forced' | 'multi' | 'prioritized' | undefined
+
     return (
       <ClientDetailPage
-        clientId={activeSubTab}
+        clientId={clientId}
+        initialTab={initialTab}
+        initialRoutingMode={initialRoutingMode}
         onBack={() => onTabChange?.('clients', 'list')}
       />
     )
@@ -129,11 +152,59 @@ export default function ClientsTab({ activeSubTab, onTabChange }: ClientsTabProp
 
   return (
     <div className="space-y-6">
+      {/* Metrics Overview */}
+      {!loading && trackedApiKeys.length > 0 && (
+        <Card>
+          <div className="flex justify-between items-center mb-4">
+            <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Client Usage Overview</h3>
+            <select
+              value={timeRange}
+              onChange={(e) => setTimeRange(e.target.value as any)}
+              className="px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 hover:bg-gray-50 dark:hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              <option value="hour">Last Hour</option>
+              <option value="day">Last 24 Hours</option>
+              <option value="week">Last 7 Days</option>
+              <option value="month">Last 30 Days</option>
+            </select>
+          </div>
+
+          <div className="space-y-6">
+            <StackedAreaChart
+              compareType="api_keys"
+              ids={trackedApiKeys}
+              timeRange={timeRange}
+              metricType="requests"
+              title="Request Volume by Client"
+              refreshTrigger={refreshKey}
+            />
+
+            <StackedAreaChart
+              compareType="api_keys"
+              ids={trackedApiKeys}
+              timeRange={timeRange}
+              metricType="cost"
+              title="Cost by Client"
+              refreshTrigger={refreshKey}
+            />
+
+            <StackedAreaChart
+              compareType="api_keys"
+              ids={trackedApiKeys}
+              timeRange={timeRange}
+              metricType="tokens"
+              title="Token Usage by Client"
+              refreshTrigger={refreshKey}
+            />
+          </div>
+        </Card>
+      )}
+
       <Card>
         <div className="mb-6 flex justify-between items-start">
           <div>
-            <h2 className="text-2xl font-bold text-gray-900">Clients</h2>
-            <p className="text-sm text-gray-500 mt-1">
+            <h2 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Clients</h2>
+            <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
               Manage API clients for LLM and MCP access
             </p>
           </div>
@@ -143,10 +214,10 @@ export default function ClientsTab({ activeSubTab, onTabChange }: ClientsTabProp
         </div>
 
         {loading ? (
-          <div className="text-center py-12 text-gray-500">Loading clients...</div>
+          <div className="text-center py-12 text-gray-500 dark:text-gray-400">Loading clients...</div>
         ) : clients.length === 0 ? (
           <div className="text-center py-12">
-            <p className="text-gray-400 mb-4">No clients yet</p>
+            <p className="text-gray-400 dark:text-gray-500 mb-4">No clients yet</p>
             <Button onClick={() => setShowCreateModal(true)}>
               Create Your First Client
             </Button>
@@ -158,12 +229,12 @@ export default function ClientsTab({ activeSubTab, onTabChange }: ClientsTabProp
                 <div
                   key={client.id}
                   onClick={() => onTabChange?.('clients', client.client_id)}
-                  className="bg-gray-50 border border-gray-200 rounded-lg p-4 hover:bg-gray-100 transition-colors cursor-pointer"
+                  className="bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-4 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors cursor-pointer"
                 >
                   <div className="flex items-center justify-between">
                     <div>
-                      <h3 className="text-base font-semibold text-gray-900">{client.name}</h3>
-                      <p className="text-sm text-gray-500 font-mono mt-0.5">{maskSecret(client.client_id)}</p>
+                      <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">{client.name}</h3>
+                      <p className="text-sm text-gray-500 dark:text-gray-400 font-mono mt-0.5">{maskSecret(client.client_id)}</p>
                     </div>
                     <div className="flex items-center gap-2">
                       <Badge variant={client.enabled ? 'success' : 'error'}>
@@ -173,10 +244,6 @@ export default function ClientsTab({ activeSubTab, onTabChange }: ClientsTabProp
                   </div>
                 </div>
               ))}
-            </div>
-
-            <div className="mt-4 text-sm text-gray-500 text-center">
-              Showing {clients.length} client{clients.length !== 1 ? 's' : ''}
             </div>
           </>
         )}
@@ -199,19 +266,6 @@ export default function ClientsTab({ activeSubTab, onTabChange }: ClientsTabProp
               placeholder="My Application"
               required
             />
-            <p className="text-sm text-gray-400 mt-1">
-              A descriptive name for this client
-            </p>
-          </div>
-
-          <div className="bg-blue-900/20 border border-blue-700 rounded p-4">
-            <h4 className="font-medium text-blue-200 mb-2">Authentication Method</h4>
-            <p className="text-sm text-gray-300">
-              All clients use <strong>Bearer Token</strong> authentication.
-              You'll receive a secret key that must be included in the
-              <code className="bg-gray-800 px-1 mx-1">Authorization: Bearer</code>
-              header.
-            </p>
           </div>
 
           <div className="flex justify-end gap-2">
@@ -236,8 +290,8 @@ export default function ClientsTab({ activeSubTab, onTabChange }: ClientsTabProp
         title="Client Created Successfully"
       >
         <div className="space-y-4">
-          <div className="bg-yellow-900/20 border border-yellow-700 rounded p-4">
-            <p className="text-yellow-200 text-sm">
+          <div className="bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-700 rounded p-4">
+            <p className="text-yellow-800 dark:text-yellow-200 text-sm">
               <strong>Important:</strong> Save these credentials now. The secret will not be shown again.
             </p>
           </div>
@@ -276,16 +330,16 @@ export default function ClientsTab({ activeSubTab, onTabChange }: ClientsTabProp
                     Copy
                   </Button>
                 </div>
-                <p className="text-sm text-gray-400 mt-1">
-                  Use this as: <code className="bg-gray-800 px-1">Authorization: Bearer {maskSecret(newClientSecret)}</code>
+                <p className="text-sm text-gray-400 dark:text-gray-500 mt-1">
+                  Use this as: <code className="bg-gray-100 dark:bg-gray-800 px-1 text-gray-900 dark:text-gray-100">Authorization: Bearer {maskSecret(newClientSecret)}</code>
                 </p>
               </div>
             </>
           )}
 
-          <div className="bg-gray-800 rounded p-4">
-            <h4 className="font-medium mb-2">Next Steps:</h4>
-            <ol className="list-decimal list-inside space-y-1 text-sm text-gray-300">
+          <div className="bg-gray-100 dark:bg-gray-800 rounded p-4">
+            <h4 className="font-medium text-gray-900 dark:text-gray-100 mb-2">Next Steps:</h4>
+            <ol className="list-decimal list-inside space-y-1 text-sm text-gray-600 dark:text-gray-300">
               <li>Save the credentials in a secure location</li>
               <li>Configure LLM provider access in the client details</li>
               <li>Optionally configure MCP server access</li>

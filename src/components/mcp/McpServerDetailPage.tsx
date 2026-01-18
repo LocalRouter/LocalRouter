@@ -17,7 +17,7 @@ interface McpServerDetailPageProps {
 interface McpServer {
   id: string
   name: string
-  transport: 'Stdio' | 'Sse' | 'WebSocket'
+  transport: 'Stdio' | 'HttpSse' | 'Sse'
   transport_config: TransportConfig
   auth_config: AuthConfig | null
   oauth_config: OAuthConfig | null
@@ -26,16 +26,15 @@ interface McpServer {
 }
 
 type TransportConfig =
-  | { Stdio: { command: string; args: string[]; env: Record<string, string> } }
-  | { Sse: { url: string; headers: Record<string, string> } }
-  | { WebSocket: { url: string; headers: Record<string, string> } }
+  | { type: 'stdio'; command: string; args: string[]; env: Record<string, string> }
+  | { type: 'http_sse' | 'sse'; url: string; headers: Record<string, string> }
 
 type AuthConfig =
-  | { None: {} }
-  | { BearerToken: { token_ref: string } }
-  | { CustomHeaders: { headers: Record<string, string> } }
-  | { OAuth: { client_id: string; client_secret_ref: string; auth_url: string; token_url: string; scopes: string[] } }
-  | { EnvVars: { env: Record<string, string> } }
+  | { type: 'none' }
+  | { type: 'bearer_token'; token_ref: string }
+  | { type: 'custom_headers'; headers: Record<string, string> }
+  | { type: 'oauth'; client_id: string; client_secret_ref: string; auth_url: string; token_url: string; scopes: string[] }
+  | { type: 'env_vars'; env: Record<string, string> }
 
 interface OAuthConfig {
   auth_url: string
@@ -90,6 +89,7 @@ export default function McpServerDetailPage({ serverId, onBack }: McpServerDetai
   // Try tab state
   const [tools, setTools] = useState<Tool[]>([])
   const [loadingTools, setLoadingTools] = useState(false)
+  const [toolsError, setToolsError] = useState<string | null>(null)
   const [selectedTool, setSelectedTool] = useState<Tool | null>(null)
   const [toolArguments, setToolArguments] = useState<string>('{}')
   const [toolResult, setToolResult] = useState<ToolCallResult | null>(null)
@@ -117,9 +117,17 @@ export default function McpServerDetailPage({ serverId, onBack }: McpServerDetai
   }
 
   const populateFormData = (serverData: McpServer) => {
+    // Normalize transport type for form (HttpSse -> Sse)
+    let normalizedTransport: 'Stdio' | 'Sse' = 'Stdio'
+    if (serverData.transport === 'Stdio') {
+      normalizedTransport = 'Stdio'
+    } else if (serverData.transport === 'HttpSse' || serverData.transport === 'Sse') {
+      normalizedTransport = 'Sse'
+    }
+
     const newFormData: McpConfigFormData = {
       serverName: serverData.name,
-      transportType: serverData.transport,
+      transportType: normalizedTransport,
       command: '',
       args: '',
       envVars: '',
@@ -136,47 +144,46 @@ export default function McpServerDetailPage({ serverId, onBack }: McpServerDetai
       oauthScopes: '',
     }
 
-    // Populate transport config
-    // Add type guard to ensure transport_config is an object
-    if (serverData.transport_config && typeof serverData.transport_config === 'object' && 'Stdio' in serverData.transport_config) {
-      const config = serverData.transport_config.Stdio
-      newFormData.command = config.command
-      newFormData.args = config.args.join('\n')
-      newFormData.envVars = Object.entries(config.env)
-        .map(([k, v]) => `${k}=${v}`)
-        .join('\n')
-    } else if (serverData.transport_config && typeof serverData.transport_config === 'object' && 'Sse' in serverData.transport_config) {
-      const config = serverData.transport_config.Sse
-      newFormData.url = config.url
-      newFormData.headers = Object.entries(config.headers)
-        .map(([k, v]) => `${k}: ${v}`)
-        .join('\n')
-    } else if (serverData.transport_config && typeof serverData.transport_config === 'object' && 'WebSocket' in serverData.transport_config) {
-      const config = serverData.transport_config.WebSocket
-      newFormData.url = config.url
-      newFormData.headers = Object.entries(config.headers)
-        .map(([k, v]) => `${k}: ${v}`)
-        .join('\n')
+    // Populate transport config (tagged union format)
+    if (serverData.transport_config && typeof serverData.transport_config === 'object') {
+      const config = serverData.transport_config as TransportConfig
+
+      if (config.type === 'stdio') {
+        newFormData.command = config.command
+        newFormData.args = config.args.join('\n')
+        newFormData.envVars = Object.entries(config.env || {})
+          .map(([k, v]) => `${k}=${v}`)
+          .join('\n')
+      } else if (config.type === 'http_sse' || config.type === 'sse') {
+        newFormData.url = config.url
+        newFormData.headers = Object.entries(config.headers || {})
+          .map(([k, v]) => `${k}: ${v}`)
+          .join('\n')
+      }
     }
 
     // Populate auth config
     if (serverData.auth_config && typeof serverData.auth_config === 'object') {
-      if ('BearerToken' in serverData.auth_config) {
+      const authConfig = serverData.auth_config as AuthConfig
+
+      if (authConfig.type === 'bearer_token') {
         newFormData.authMethod = 'bearer'
-      } else if ('CustomHeaders' in serverData.auth_config) {
+        // Use placeholder to indicate token exists in keychain
+        newFormData.bearerToken = '********-STORED-IN-KEYCHAIN-********'
+      } else if (authConfig.type === 'custom_headers') {
         newFormData.authMethod = 'custom_headers'
-        newFormData.authHeaders = Object.entries(serverData.auth_config.CustomHeaders.headers)
+        newFormData.authHeaders = Object.entries(authConfig.headers)
           .map(([k, v]) => `${k}: ${v}`)
           .join('\n')
-      } else if ('OAuth' in serverData.auth_config) {
+      } else if (authConfig.type === 'oauth') {
         newFormData.authMethod = 'oauth'
-        newFormData.oauthClientId = serverData.auth_config.OAuth.client_id
-        newFormData.oauthAuthUrl = serverData.auth_config.OAuth.auth_url
-        newFormData.oauthTokenUrl = serverData.auth_config.OAuth.token_url
-        newFormData.oauthScopes = serverData.auth_config.OAuth.scopes.join('\n')
-      } else if ('EnvVars' in serverData.auth_config) {
+        newFormData.oauthClientId = authConfig.client_id
+        newFormData.oauthAuthUrl = authConfig.auth_url
+        newFormData.oauthTokenUrl = authConfig.token_url
+        newFormData.oauthScopes = authConfig.scopes.join('\n')
+      } else if (authConfig.type === 'env_vars') {
         newFormData.authMethod = 'env_vars'
-        newFormData.authEnvVars = Object.entries(serverData.auth_config.EnvVars.env)
+        newFormData.authEnvVars = Object.entries(authConfig.env)
           .map(([k, v]) => `${k}=${v}`)
           .join('\n')
       }
@@ -194,9 +201,9 @@ export default function McpServerDetailPage({ serverId, onBack }: McpServerDetai
 
     setIsSaving(true)
     try {
-      // Build transport config based on type
-      let transportConfig
-      if (server.transport === 'Stdio') {
+      // Build transport config based on type (tagged union format)
+      let transportConfig: any
+      if (formData.transportType === 'Stdio') {
         const argsList = formData.args.trim() ? formData.args.split('\n').map(a => a.trim()).filter(a => a) : []
         const envMap: Record<string, string> = {}
         if (formData.envVars.trim()) {
@@ -207,8 +214,8 @@ export default function McpServerDetailPage({ serverId, onBack }: McpServerDetai
             }
           })
         }
-        transportConfig = { Stdio: { command: formData.command, args: argsList, env: envMap } }
-      } else if (server.transport === 'Sse') {
+        transportConfig = { type: 'stdio', command: formData.command, args: argsList, env: envMap }
+      } else if (formData.transportType === 'Sse') {
         const headersMap: Record<string, string> = {}
         if (formData.headers.trim()) {
           formData.headers.split('\n').forEach(line => {
@@ -218,31 +225,100 @@ export default function McpServerDetailPage({ serverId, onBack }: McpServerDetai
             }
           })
         }
-        transportConfig = { Sse: { url: formData.url, headers: headersMap } }
+        transportConfig = { type: 'http_sse', url: formData.url, headers: headersMap }
       } else {
-        const headersMap: Record<string, string> = {}
-        if (formData.headers.trim()) {
-          formData.headers.split('\n').forEach(line => {
-            const [key, ...valueParts] = line.split(':')
-            if (key && valueParts.length > 0) {
-              headersMap[key.trim()] = valueParts.join(':').trim()
-            }
-          })
-        }
-        transportConfig = { WebSocket: { url: formData.url, headers: headersMap } }
+        throw new Error(`Unsupported transport type: ${formData.transportType}`)
       }
 
-      await invoke('update_mcp_server', {
-        id: serverId,
-        name: formData.serverName,
-        transportConfig,
-      })
+      // Build auth config based on auth method (tagged union format)
+      let authConfig: any = null
+      if (formData.authMethod === 'bearer') {
+        // Only send token if it's not the placeholder (which indicates existing token in keychain)
+        if (formData.bearerToken && !formData.bearerToken.includes('STORED-IN-KEYCHAIN')) {
+          authConfig = {
+            type: 'bearer_token',
+            token: formData.bearerToken
+          }
+        } else if (formData.bearerToken.includes('STORED-IN-KEYCHAIN')) {
+          // Token exists in keychain, don't update it
+          console.log('Keeping existing bearer token (stored in keychain)')
+          // Don't send auth_config to avoid overwriting
+          authConfig = undefined
+        }
+      } else if (formData.authMethod === 'custom_headers') {
+        const authHeadersMap: Record<string, string> = {}
+        if (formData.authHeaders.trim()) {
+          formData.authHeaders.split('\n').forEach(line => {
+            const [key, ...valueParts] = line.split(':')
+            if (key && valueParts.length > 0) {
+              authHeadersMap[key.trim()] = valueParts.join(':').trim()
+            }
+          })
+        }
+        if (Object.keys(authHeadersMap).length > 0) {
+          authConfig = {
+            type: 'custom_headers',
+            headers: authHeadersMap
+          }
+        }
+      } else if (formData.authMethod === 'oauth') {
+        if (formData.oauthClientId && formData.oauthClientSecret) {
+          const scopesList = formData.oauthScopes.trim()
+            ? formData.oauthScopes.split(/[\n,]/).map(s => s.trim()).filter(s => s)
+            : []
+          authConfig = {
+            type: 'oauth',
+            client_id: formData.oauthClientId,
+            client_secret: formData.oauthClientSecret,
+            auth_url: formData.oauthAuthUrl || '',
+            token_url: formData.oauthTokenUrl || '',
+            scopes: scopesList
+          }
+        }
+      } else if (formData.authMethod === 'env_vars') {
+        const envVarsMap: Record<string, string> = {}
+        if (formData.authEnvVars.trim()) {
+          formData.authEnvVars.split('\n').forEach(line => {
+            const [key, ...valueParts] = line.split('=')
+            if (key && valueParts.length > 0) {
+              envVarsMap[key.trim()] = valueParts.join('=').trim()
+            }
+          })
+        }
+        if (Object.keys(envVarsMap).length > 0) {
+          authConfig = {
+            type: 'env_vars',
+            env: envVarsMap
+          }
+        }
+      }
 
+      console.log('Saving config with transport:', transportConfig)
+      console.log('Saving config with auth:', authConfig)
+
+      // Build the command parameters
+      const params: any = {
+        serverId: serverId,
+        name: formData.serverName,
+        transportConfig: transportConfig,
+      }
+
+      // Only include authConfig if it's not undefined (which means "keep existing")
+      if (authConfig !== undefined) {
+        params.authConfig = authConfig
+      }
+
+      const result = await invoke('update_mcp_server_config', params)
+
+      console.log('Save result:', result)
       alert('Configuration saved successfully')
+
+      // Reload server data to reflect changes
       await loadServerData()
     } catch (error) {
       console.error('Failed to save configuration:', error)
       alert(`Error saving configuration: ${error}`)
+      // Don't reload on error to preserve user's changes
     } finally {
       setIsSaving(false)
     }
@@ -266,19 +342,24 @@ export default function McpServerDetailPage({ serverId, onBack }: McpServerDetai
   const loadTools = async () => {
     setLoadingTools(true)
     setTools([])
+    setToolsError(null)
     try {
       const result = await invoke<any>('list_mcp_tools', { serverId })
 
       // Extract tools from result
       if (result && result.tools && Array.isArray(result.tools)) {
         setTools(result.tools)
+        setToolsError(null)
       } else {
         console.warn('Unexpected tools response format:', result)
         setTools([])
+        setToolsError('Unexpected response format from server')
       }
     } catch (error) {
       console.error('Failed to load tools:', error)
-      alert(`Error loading tools: ${error}`)
+      const errorMessage = error instanceof Error ? error.message : String(error)
+      setToolsError(errorMessage)
+      setTools([])
     } finally {
       setLoadingTools(false)
     }
@@ -308,34 +389,14 @@ export default function McpServerDetailPage({ serverId, onBack }: McpServerDetai
     }
   }
 
-  const formatDate = (dateStr: string) => {
-    return new Date(dateStr).toLocaleString()
-  }
-
   const getTransportBadge = (transport: string) => {
     const colors = {
       Stdio: 'info',
       Sse: 'warning',
-      WebSocket: 'success'
+      HttpSse: 'warning'
     } as const
 
     return <Badge variant={colors[transport as keyof typeof colors] || 'secondary'}>{transport}</Badge>
-  }
-
-  const maskSecret = (secret: string) => {
-    if (!secret) return '***'
-    if (secret.length <= 8) return '***'
-    return `${secret.slice(0, 4)}...${secret.slice(-4)}`
-  }
-
-  const getAuthMethodLabel = (authConfig: AuthConfig | null) => {
-    if (!authConfig) return 'None'
-    if ('None' in authConfig) return 'None'
-    if ('BearerToken' in authConfig) return 'Bearer Token'
-    if ('CustomHeaders' in authConfig) return 'Custom Headers'
-    if ('OAuth' in authConfig) return 'OAuth 2.0'
-    if ('EnvVars' in authConfig) return 'Environment Variables'
-    return 'Unknown'
   }
 
   if (loading) {
@@ -408,109 +469,6 @@ export default function McpServerDetailPage({ serverId, onBack }: McpServerDetai
       ),
     },
     {
-      id: 'authentication',
-      label: 'Authentication',
-      content: (
-        <div className="space-y-6">
-          <Card>
-            <div className="p-6 space-y-4">
-              <h3 className="text-lg font-semibold">Authentication Configuration</h3>
-
-              <div className="space-y-3">
-                <div>
-                  <label className="block text-sm font-medium text-gray-400 mb-1">Auth Method</label>
-                  <Badge variant="info">{getAuthMethodLabel(server.auth_config)}</Badge>
-                </div>
-
-                {server.auth_config && 'BearerToken' in server.auth_config && (
-                  <div>
-                    <label className="block text-sm font-medium text-gray-400 mb-1">Bearer Token</label>
-                    <div className="bg-gray-800 rounded px-3 py-2 font-mono text-sm">
-                      {maskSecret(server.auth_config.BearerToken.token_ref)}
-                    </div>
-                    <p className="text-xs text-gray-500 mt-1">Token is stored securely in keychain</p>
-                  </div>
-                )}
-
-                {server.auth_config && 'CustomHeaders' in server.auth_config && (
-                  <div>
-                    <label className="block text-sm font-medium text-gray-400 mb-1">Custom Headers</label>
-                    <div className="bg-gray-800 rounded px-3 py-2 space-y-1">
-                      {Object.entries(server.auth_config.CustomHeaders.headers).map(([key, value]) => (
-                        <div key={key} className="flex justify-between font-mono text-sm">
-                          <span className="text-blue-400">{key}:</span>
-                          <span className="text-gray-300">{maskSecret(value)}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {server.auth_config && 'OAuth' in server.auth_config && (
-                  <div className="space-y-3">
-                    <div>
-                      <label className="block text-sm font-medium text-gray-400 mb-1">Client ID</label>
-                      <div className="bg-gray-800 rounded px-3 py-2 font-mono text-sm">
-                        {server.auth_config.OAuth.client_id}
-                      </div>
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-gray-400 mb-1">Client Secret</label>
-                      <div className="bg-gray-800 rounded px-3 py-2 font-mono text-sm">
-                        {maskSecret(server.auth_config.OAuth.client_secret_ref)}
-                      </div>
-                      <p className="text-xs text-gray-500 mt-1">Secret is stored securely in keychain</p>
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-gray-400 mb-1">Authorization URL</label>
-                      <div className="bg-gray-800 rounded px-3 py-2 font-mono text-sm break-all">
-                        {server.auth_config.OAuth.auth_url}
-                      </div>
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-gray-400 mb-1">Token URL</label>
-                      <div className="bg-gray-800 rounded px-3 py-2 font-mono text-sm break-all">
-                        {server.auth_config.OAuth.token_url}
-                      </div>
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-gray-400 mb-1">Scopes</label>
-                      <div className="flex flex-wrap gap-2">
-                        {server.auth_config.OAuth.scopes.map((scope) => (
-                          <Badge key={scope} variant="secondary">{scope}</Badge>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {server.auth_config && 'EnvVars' in server.auth_config && (
-                  <div>
-                    <label className="block text-sm font-medium text-gray-400 mb-1">Environment Variables</label>
-                    <div className="bg-gray-800 rounded px-3 py-2 space-y-1">
-                      {Object.entries(server.auth_config.EnvVars.env).map(([key, value]) => (
-                        <div key={key} className="flex justify-between font-mono text-sm">
-                          <span className="text-green-400">{key}=</span>
-                          <span className="text-gray-300">{maskSecret(value)}</span>
-                        </div>
-                      ))}
-                    </div>
-                    <p className="text-xs text-gray-500 mt-1">Variables are passed to the server process</p>
-                  </div>
-                )}
-
-                {(!server.auth_config || 'None' in server.auth_config) && (
-                  <div className="bg-gray-800 rounded px-4 py-3">
-                    <p className="text-gray-400 text-sm">No authentication configured for this server.</p>
-                  </div>
-                )}
-              </div>
-            </div>
-          </Card>
-        </div>
-      ),
-    },
-    {
       id: 'configuration',
       label: 'Configuration',
       content: (
@@ -522,7 +480,7 @@ export default function McpServerDetailPage({ serverId, onBack }: McpServerDetai
               <McpConfigForm
                 formData={formData}
                 onChange={handleFormChange}
-                showTransportType={false}
+                showTransportType={true}
               />
 
               <div className="flex justify-end gap-2">
@@ -533,18 +491,6 @@ export default function McpServerDetailPage({ serverId, onBack }: McpServerDetai
                   {isSaving ? 'Saving...' : 'Save Changes'}
                 </Button>
               </div>
-            </div>
-          </Card>
-
-          <Card>
-            <div className="p-6">
-              <h3 className="text-lg font-semibold text-red-500 mb-4">Danger Zone</h3>
-              <p className="text-sm text-gray-400 mb-4">
-                Deleting this server will remove all configuration and cannot be undone.
-              </p>
-              <Button variant="danger" onClick={handleDelete}>
-                Delete Server
-              </Button>
             </div>
           </Card>
         </div>
@@ -572,64 +518,82 @@ export default function McpServerDetailPage({ serverId, onBack }: McpServerDetai
                 </div>
               )}
 
-              {tools.length === 0 && !loadingTools ? (
-                <div className="text-center py-8">
-                  <p className="text-gray-400">No tools available. Click "Refresh Tools" to load them.</p>
-                </div>
-              ) : (
-                <div className="space-y-4">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-400 mb-2">Select Tool</label>
-                    <select
-                      className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2"
-                      value={selectedTool?.name || ''}
-                      onChange={(e) => {
-                        const tool = tools.find((t) => t.name === e.target.value)
-                        setSelectedTool(tool || null)
-                        setToolResult(null)
-                      }}
-                    >
-                      <option value="">Select a tool...</option>
-                      {tools.map((tool) => (
-                        <option key={tool.name} value={tool.name}>
-                          {tool.name}
-                        </option>
-                      ))}
-                    </select>
+              {toolsError && (
+                <div className="bg-red-900/20 border border-red-500/50 rounded p-4 mb-4">
+                  <div className="flex items-start gap-3">
+                    <svg className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+                    </svg>
+                    <div className="flex-1">
+                      <h4 className="text-sm font-semibold text-red-400 mb-1">Failed to load tools</h4>
+                      <p className="text-sm text-red-300">{toolsError}</p>
+                    </div>
                   </div>
+                </div>
+              )}
 
-                  {selectedTool && (
-                    <>
-                      {selectedTool.description && (
-                        <div className="bg-gray-800 rounded p-4">
-                          <p className="text-sm text-gray-300">{selectedTool.description}</p>
-                        </div>
-                      )}
-
+              {!toolsError && (
+                <>
+                  {tools.length === 0 && !loadingTools ? (
+                    <div className="text-center py-8">
+                      <p className="text-gray-400">No tools available. Click "Refresh Tools" to load them.</p>
+                    </div>
+                  ) : (
+                    <div className="space-y-4">
                       <div>
-                        <label className="block text-sm font-medium text-gray-400 mb-2">Arguments (JSON)</label>
-                        <textarea
-                          className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 font-mono text-sm"
-                          rows={6}
-                          value={toolArguments}
-                          onChange={(e) => setToolArguments(e.target.value)}
-                          placeholder='{"key": "value"}'
-                        />
+                        <label className="block text-sm font-medium text-gray-400 mb-2">Select Tool</label>
+                        <select
+                          className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2"
+                          value={selectedTool?.name || ''}
+                          onChange={(e) => {
+                            const tool = tools.find((t) => t.name === e.target.value)
+                            setSelectedTool(tool || null)
+                            setToolResult(null)
+                          }}
+                        >
+                          <option value="">Select a tool...</option>
+                          {tools.map((tool) => (
+                            <option key={tool.name} value={tool.name}>
+                              {tool.name}
+                            </option>
+                          ))}
+                        </select>
                       </div>
 
-                      <Button onClick={handleExecuteTool} disabled={executingTool}>
-                        {executingTool ? 'Executing...' : 'Execute Tool'}
-                      </Button>
+                      {selectedTool && (
+                        <>
+                          {selectedTool.description && (
+                            <div className="bg-gray-800 rounded p-4">
+                              <p className="text-sm text-gray-300">{selectedTool.description}</p>
+                            </div>
+                          )}
 
-                      {toolResult && (
-                        <div className="bg-gray-800 rounded p-4">
-                          <h4 className="text-sm font-semibold mb-2">Result:</h4>
-                          <pre className="text-xs overflow-auto">{JSON.stringify(toolResult, null, 2)}</pre>
-                        </div>
+                          <div>
+                            <label className="block text-sm font-medium text-gray-400 mb-2">Arguments (JSON)</label>
+                            <textarea
+                              className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 font-mono text-sm"
+                              rows={6}
+                              value={toolArguments}
+                              onChange={(e) => setToolArguments(e.target.value)}
+                              placeholder='{"key": "value"}'
+                            />
+                          </div>
+
+                          <Button onClick={handleExecuteTool} disabled={executingTool}>
+                            {executingTool ? 'Executing...' : 'Execute Tool'}
+                          </Button>
+
+                          {toolResult && (
+                            <div className="bg-gray-800 rounded p-4">
+                              <h4 className="text-sm font-semibold mb-2">Result:</h4>
+                              <pre className="text-xs overflow-auto">{JSON.stringify(toolResult, null, 2)}</pre>
+                            </div>
+                          )}
+                        </>
                       )}
-                    </>
+                    </div>
                   )}
-                </div>
+                </>
               )}
             </div>
           </Card>
@@ -639,20 +603,27 @@ export default function McpServerDetailPage({ serverId, onBack }: McpServerDetai
   ]
 
   return (
-    <DetailPageLayout
-      title={server.name || 'Unnamed Server'}
-      onBack={onBack}
-      tabs={tabs}
-      activeTab={activeTab}
-      onTabChange={setActiveTab}
-      headerActions={
-        <div className="flex items-center gap-2">
-          {getTransportBadge(server.transport)}
-          <Badge variant={server.enabled ? 'success' : 'error'}>
-            {server.enabled ? 'Enabled' : 'Disabled'}
-          </Badge>
-        </div>
-      }
-    />
+    <div>
+      <Button onClick={onBack} variant="secondary" className="mb-4">
+        ← Back to MCP Servers
+      </Button>
+      <DetailPageLayout
+        title={server.name || 'Unnamed Server'}
+        tabs={tabs}
+        activeTab={activeTab}
+        onTabChange={setActiveTab}
+        actions={
+          <div className="flex items-center gap-2">
+            {getTransportBadge(server.transport)}
+            <Badge variant={server.enabled ? 'success' : 'error'}>
+              {server.enabled ? 'Enabled' : 'Disabled'}
+            </Badge>
+            <Button variant="danger" onClick={handleDelete}>
+              Delete
+            </Button>
+          </div>
+        }
+      />
+    </div>
   )
 }

@@ -8,7 +8,7 @@ use futures::{Stream, StreamExt};
 use std::pin::Pin;
 use tracing::{debug, info, warn};
 
-use crate::config::{ActiveRoutingStrategy, ConfigManager, ModelSelection};
+use crate::config::{ActiveRoutingStrategy, ConfigManager};
 use crate::providers::registry::ProviderRegistry;
 use crate::providers::{CompletionChunk, CompletionRequest, CompletionResponse};
 use crate::utils::errors::{AppError, AppResult};
@@ -26,7 +26,7 @@ pub use rate_limit::{
 /// since streaming chunks don't include token counts.
 async fn wrap_stream_with_usage_tracking(
     stream: Pin<Box<dyn Stream<Item = AppResult<CompletionChunk>> + Send>>,
-    api_key_id: String,
+    client_id: String,
     rate_limiter: Arc<RateLimiterManager>,
 ) -> Pin<Box<dyn Stream<Item = AppResult<CompletionChunk>> + Send>> {
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -39,7 +39,7 @@ async fn wrap_stream_with_usage_tracking(
 
     // Clone for then closure
     let completion_chars_for_then = completion_chars.clone();
-    let api_key_id_for_then = api_key_id.clone();
+    let client_id_for_then = client_id.clone();
     let rate_limiter_for_then = rate_limiter.clone();
 
     let wrapped = stream.inspect(move |chunk_result| {
@@ -53,7 +53,7 @@ async fn wrap_stream_with_usage_tracking(
             }
         }
     }).then(move |chunk_result| {
-        let api_key_id = api_key_id_for_then.clone();
+        let client_id = client_id_for_then.clone();
         let rate_limiter = rate_limiter_for_then.clone();
         let completion_chars = completion_chars_for_then.clone();
 
@@ -78,16 +78,16 @@ async fn wrap_stream_with_usage_tracking(
                 };
 
                 // Record usage (best effort, don't fail the stream)
-                if let Err(e) = rate_limiter.record_api_key_usage(&api_key_id, &usage).await {
+                if let Err(e) = rate_limiter.record_api_key_usage(&client_id, &usage).await {
                     warn!(
                         "Failed to record streaming usage for API key '{}': {}. \
                          Estimated {} tokens (approximate).",
-                        api_key_id, e, est_prompt + est_completion
+                        client_id, e, est_prompt + est_completion
                     );
                 } else {
                     debug!(
                         "Recorded estimated streaming usage for API key '{}': {} tokens (approximate)",
-                        api_key_id, est_prompt + est_completion
+                        client_id, est_prompt + est_completion
                     );
                 }
             }
@@ -138,7 +138,7 @@ impl Router {
     /// Records usage for rate limiting on success.
     async fn complete_with_prioritized_list(
         &self,
-        api_key_id: &str,
+        client_id: &str,
         prioritized_models: &[(String, String)],
         mut request: CompletionRequest,
     ) -> AppResult<CompletionResponse> {
@@ -200,10 +200,10 @@ impl Router {
 
                     // Log error but don't fail the request if usage recording fails
                     // The provider already succeeded and consumed tokens/cost
-                    if let Err(e) = self.rate_limiter.record_api_key_usage(api_key_id, &usage).await {
+                    if let Err(e) = self.rate_limiter.record_api_key_usage(client_id, &usage).await {
                         warn!(
                             "Failed to record usage for API key '{}': {}. Request succeeded but usage not tracked.",
-                            api_key_id, e
+                            client_id, e
                         );
                     }
 
@@ -250,40 +250,46 @@ impl Router {
         }))
     }
 
-    /// Route a completion request based on API key configuration
+    /// Route a completion request based on client configuration
     ///
     /// This method:
-    /// 1. Validates the API key exists and is enabled
+    /// 1. Validates the client exists and is enabled
     /// 2. Checks rate limits
-    /// 3. Routes to the configured provider+model (DirectModel only for now)
+    /// 3. Routes to the configured provider+model based on routing config
     /// 4. Executes the request
     /// 5. Records usage for rate limiting
     ///
-    /// Returns 403 (via AppError::Unauthorized) if API key is invalid or disabled
+    /// Returns 403 (via AppError::Unauthorized) if client is invalid or disabled
     pub async fn complete(
         &self,
-        api_key_id: &str,
+        client_id: &str,
         request: CompletionRequest,
     ) -> AppResult<CompletionResponse> {
         debug!(
-            "Routing completion request for API key '{}', model '{}'",
-            api_key_id, request.model
+            "Routing completion request for client '{}', model '{}'",
+            client_id, request.model
         );
 
-        // 1. Get API key configuration
+        // Special handling for internal test token (bypasses routing config)
+        if client_id == "internal-test" {
+            debug!("Internal test token detected - bypassing routing config");
+            return self.complete_direct(request).await;
+        }
+
+        // 1. Get client configuration
         let config = self.config_manager.get();
-        let api_key = config
-            .api_keys
+        let client = config
+            .clients
             .iter()
-            .find(|k| k.id == api_key_id)
+            .find(|c| c.id == client_id)
             .ok_or_else(|| {
-                warn!("API key '{}' not found", api_key_id);
+                warn!("Client '{}' not found", client_id);
                 AppError::Unauthorized
             })?;
 
-        // Check if API key is enabled
-        if !api_key.enabled {
-            warn!("API key '{}' is disabled", api_key_id);
+        // Check if client is enabled
+        if !client.enabled {
+            warn!("Client '{}' is disabled", client_id);
             return Err(AppError::Unauthorized);
         }
 
@@ -296,20 +302,20 @@ impl Router {
 
         let rate_check = self
             .rate_limiter
-            .check_api_key(api_key_id, &usage_estimate)
+            .check_api_key(client_id, &usage_estimate)
             .await?;
 
         if !rate_check.allowed {
             warn!(
                 "API key '{}' rate limited. Retry after {} seconds",
-                api_key_id,
+                client_id,
                 rate_check.retry_after_secs.unwrap_or(0)
             );
             return Err(AppError::RateLimitExceeded);
         }
 
-        // 3. Determine provider and model based on API key configuration
-        let routing_config = api_key.get_routing_config();
+        // 3. Determine provider and model based on client routing configuration
+        let routing_config = client.routing_config.as_ref();
 
         // Special handling for Prioritized List: use retry logic
         if let Some(ref config) = routing_config {
@@ -323,12 +329,12 @@ impl Router {
                 info!(
                     "Using Prioritized List strategy with {} models for API key '{}'",
                     config.prioritized_models.len(),
-                    api_key_id
+                    client_id
                 );
 
                 // Use retry logic for prioritized list
                 return self
-                    .complete_with_prioritized_list(api_key_id, &config.prioritized_models, request)
+                    .complete_with_prioritized_list(client_id, &config.prioritized_models, request)
                     .await;
             }
         }
@@ -411,109 +417,16 @@ impl Router {
                 }
             }
         } else {
-            // Fallback to old model_selection for backward compatibility
-            match &api_key.model_selection {
-                Some(ModelSelection::All) | None => {
-                    // Allow any model - find the provider from the request
-                    // Parse the model from request (format: "provider/model" or just "model")
-                    if let Some((p, m)) = request.model.split_once('/') {
-                        debug!("Using provider/model from request: {}/{}", p, m);
-                        (p.to_string(), m.to_string())
-                    } else {
-                        // Just a model name - need to find which provider has it
-                        // For now, use the model as-is and let the provider registry find it
-                        debug!("Model name only: {}", request.model);
-                        // This will be handled below when we get the provider
-                        ("".to_string(), request.model.clone())
-                    }
-                }
-                Some(ModelSelection::Custom {
-                    all_provider_models,
-                    individual_models,
-                }) => {
-                // Check if the requested model is allowed
-                // Parse model from request
-                let (req_provider, req_model) = if let Some((p, m)) = request.model.split_once('/') {
-                    (p.to_string(), m.to_string())
-                } else {
-                    // Need to find provider for this model
-                    ("".to_string(), request.model.clone())
-                };
-
-                // Determine which provider to use and validate access
-                let final_provider = if !req_provider.is_empty() {
-                    // Provider specified - check if allowed
-                    let is_allowed = all_provider_models.iter().any(|p| p.eq_ignore_ascii_case(&req_provider))
-                        || individual_models
-                            .iter()
-                            .any(|(p, m)| p.eq_ignore_ascii_case(&req_provider) && m.eq_ignore_ascii_case(&req_model));
-
-                    if !is_allowed {
-                        return Err(AppError::Router(format!(
-                            "Model '{}' is not allowed by this API key's model selection",
-                            request.model
-                        )));
-                    }
-
-                    req_provider
-                } else {
-                    // Just model name - find which provider has it
-                    // First check individual_models
-                    if let Some((provider, _)) = individual_models
-                        .iter()
-                        .find(|(_p, m)| m.eq_ignore_ascii_case(&req_model))
-                    {
-                        provider.clone()
-                    } else {
-                        // Check providers in all_provider_models
-                        let mut found_provider = None;
-                        for provider_name in &**all_provider_models {
-                            if let Some(provider) = self.provider_registry.get_provider(provider_name) {
-                                if let Ok(models) = provider.list_models().await {
-                                    if models.iter().any(|m| m.id.eq_ignore_ascii_case(&req_model)) {
-                                        found_provider = Some(provider_name.clone());
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-
-                        found_provider.ok_or_else(|| {
-                            AppError::Router(format!(
-                                "Model '{}' is not allowed by this API key's model selection",
-                                request.model
-                            ))
-                        })?
-                    }
-                };
-
-                (final_provider, req_model)
-            }
-            #[allow(deprecated)]
-            Some(ModelSelection::DirectModel { provider, model }) => {
-                // Verify request.model matches configured model
-                if request.model != *model {
-                    return Err(AppError::Router(format!(
-                        "Model mismatch: API key is configured for model '{}', but request specifies '{}'",
-                        model, request.model
-                    )));
-                }
-
-                debug!(
-                    "Using direct model routing: provider='{}', model='{}'",
-                    provider, model
-                );
-
-                (provider.clone(), model.clone())
-            }
-                #[allow(deprecated)]
-                Some(ModelSelection::Router { router_name }) => {
-                    // Smart routing not implemented yet
-                    return Err(AppError::Router(format!(
-                        "Smart routing (router '{}') is not yet implemented. Please use DirectModel configuration.",
-                        router_name
-                    )));
-                }
+            // No routing config - allow any model from the request
+            // Parse the model from request (format: "provider/model" or just "model")
+            if let Some((p, m)) = request.model.split_once('/') {
+                debug!("Using provider/model from request: {}/{}", p, m);
+                (p.to_string(), m.to_string())
+            } else {
+                // Just a model name - need to find which provider has it
+                debug!("Model name only: {}", request.model);
+                // This will be handled below when we get the provider
+                ("".to_string(), request.model.clone())
             }
         };
 
@@ -654,16 +567,72 @@ impl Router {
 
         // Log error but don't fail the request if usage recording fails
         // The provider already succeeded and consumed tokens/cost
-        if let Err(e) = self.rate_limiter.record_api_key_usage(api_key_id, &usage).await {
+        if let Err(e) = self.rate_limiter.record_api_key_usage(client_id, &usage).await {
             warn!(
                 "Failed to record usage for API key '{}': {}. Request succeeded but usage not tracked.",
-                api_key_id, e
+                client_id, e
             );
         }
 
         info!(
             "Completion request successful for API key '{}': {} tokens",
-            api_key_id, response.usage.total_tokens
+            client_id, response.usage.total_tokens
+        );
+
+        Ok(response)
+    }
+
+    /// Direct completion bypass (for internal test token)
+    ///
+    /// This bypasses all routing config, rate limiting, and client validation.
+    /// Used only for the internal test token to allow direct provider testing from the UI.
+    async fn complete_direct(
+        &self,
+        request: CompletionRequest,
+    ) -> AppResult<CompletionResponse> {
+        debug!(
+            "Direct completion request for model '{}'",
+            request.model
+        );
+
+        // Parse the model from request (format: "provider/model")
+        let (provider, model) = if let Some((p, m)) = request.model.split_once('/') {
+            (p.to_string(), m.to_string())
+        } else {
+            return Err(AppError::Router(format!(
+                "Model must be in format 'provider/model' for direct access. Got: '{}'",
+                request.model
+            )));
+        };
+
+        // Get provider instance from registry
+        let provider_instance = self.provider_registry.get_provider(&provider).ok_or_else(|| {
+            AppError::Router(format!(
+                "Provider '{}' not found or disabled in registry",
+                provider
+            ))
+        })?;
+
+        // Execute the completion request directly
+        debug!(
+            "Executing direct completion request on provider '{}' with model '{}'",
+            provider, model
+        );
+
+        let mut modified_request = request.clone();
+        modified_request.model = model.clone();
+
+        let response = provider_instance.complete(modified_request).await.map_err(|e| {
+            warn!(
+                "Direct completion request failed for provider '{}': {}",
+                provider, e
+            );
+            e
+        })?;
+
+        info!(
+            "Direct completion request successful: provider='{}', model='{}', {} tokens",
+            provider, model, response.usage.total_tokens
         );
 
         Ok(response)
@@ -674,28 +643,34 @@ impl Router {
     /// Similar to `complete()` but returns a stream of completion chunks.
     pub async fn stream_complete(
         &self,
-        api_key_id: &str,
+        client_id: &str,
         request: CompletionRequest,
     ) -> AppResult<Pin<Box<dyn Stream<Item = AppResult<CompletionChunk>> + Send>>> {
         debug!(
-            "Routing streaming completion request for API key '{}', model '{}'",
-            api_key_id, request.model
+            "Routing streaming completion request for client '{}', model '{}'",
+            client_id, request.model
         );
 
-        // 1. Get API key configuration
+        // Special handling for internal test token (bypasses routing config)
+        if client_id == "internal-test" {
+            debug!("Internal test token detected - bypassing routing config for streaming");
+            return self.stream_complete_direct(request).await;
+        }
+
+        // 1. Get client configuration
         let config = self.config_manager.get();
-        let api_key = config
-            .api_keys
+        let client = config
+            .clients
             .iter()
-            .find(|k| k.id == api_key_id)
+            .find(|c| c.id == client_id)
             .ok_or_else(|| {
-                warn!("API key '{}' not found", api_key_id);
+                warn!("Client '{}' not found", client_id);
                 AppError::Unauthorized
             })?;
 
-        // Check if API key is enabled
-        if !api_key.enabled {
-            warn!("API key '{}' is disabled", api_key_id);
+        // Check if client is enabled
+        if !client.enabled {
+            warn!("Client '{}' is disabled", client_id);
             return Err(AppError::Unauthorized);
         }
 
@@ -708,20 +683,20 @@ impl Router {
 
         let rate_check = self
             .rate_limiter
-            .check_api_key(api_key_id, &usage_estimate)
+            .check_api_key(client_id, &usage_estimate)
             .await?;
 
         if !rate_check.allowed {
             warn!(
                 "API key '{}' rate limited. Retry after {} seconds",
-                api_key_id,
+                client_id,
                 rate_check.retry_after_secs.unwrap_or(0)
             );
             return Err(AppError::RateLimitExceeded);
         }
 
-        // 3. Determine provider and model based on API key configuration
-        let routing_config = api_key.get_routing_config();
+        // 3. Determine provider and model based on client routing configuration
+        let routing_config = client.routing_config.as_ref();
 
         // Check for PrioritizedList strategy - not fully supported for streaming
         if let Some(ref config) = routing_config {
@@ -729,7 +704,7 @@ impl Router {
                 warn!(
                     "PrioritizedList strategy does not support automatic retry for streaming requests. \
                      Will use first model only. API key: '{}'",
-                    api_key_id
+                    client_id
                 );
                 // Continue with first model, but no retry on failure
             }
@@ -803,92 +778,16 @@ impl Router {
                 }
             }
         } else {
-            // Fallback to old model_selection
-            match &api_key.model_selection {
-                Some(ModelSelection::All) | None => {
-                    if let Some((p, m)) = request.model.split_once('/') {
-                        (p.to_string(), m.to_string())
-                    } else {
-                        ("".to_string(), request.model.clone())
-                    }
-                }
-                Some(ModelSelection::Custom {
-                    all_provider_models,
-                    individual_models,
-                }) => {
-                // Check if model is allowed (same logic as non-streaming)
-                let (req_provider, req_model) = if let Some((p, m)) = request.model.split_once('/') {
-                    (p.to_string(), m.to_string())
-                } else {
-                    ("".to_string(), request.model.clone())
-                };
-
-                // Determine which provider to use and validate access
-                let final_provider = if !req_provider.is_empty() {
-                    // Provider specified - check if allowed
-                    let is_allowed = all_provider_models.iter().any(|p| p.eq_ignore_ascii_case(&req_provider))
-                        || individual_models
-                            .iter()
-                            .any(|(p, m)| p.eq_ignore_ascii_case(&req_provider) && m.eq_ignore_ascii_case(&req_model));
-
-                    if !is_allowed {
-                        return Err(AppError::Router(format!(
-                            "Model '{}' is not allowed by this API key's model selection",
-                            request.model
-                        )));
-                    }
-
-                    req_provider
-                } else {
-                    // Just model name - find which provider has it
-                    // First check individual_models
-                    if let Some((provider, _)) = individual_models
-                        .iter()
-                        .find(|(_p, m)| m.eq_ignore_ascii_case(&req_model))
-                    {
-                        provider.clone()
-                    } else {
-                        // Check providers in all_provider_models
-                        let mut found_provider = None;
-                        for provider_name in &**all_provider_models {
-                            if let Some(provider) = self.provider_registry.get_provider(provider_name) {
-                                if let Ok(models) = provider.list_models().await {
-                                    if models.iter().any(|m| m.id.eq_ignore_ascii_case(&req_model)) {
-                                        found_provider = Some(provider_name.clone());
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-
-                        found_provider.ok_or_else(|| {
-                            AppError::Router(format!(
-                                "Model '{}' is not allowed by this API key's model selection",
-                                request.model
-                            ))
-                        })?
-                    }
-                };
-
-                    (final_provider, req_model)
-                }
-                #[allow(deprecated)]
-                Some(ModelSelection::DirectModel { provider, model }) => {
-                    if request.model != *model {
-                        return Err(AppError::Router(format!(
-                            "Model mismatch: API key is configured for model '{}', but request specifies '{}'",
-                            model, request.model
-                        )));
-                    }
-                    (provider.clone(), model.clone())
-                }
-                #[allow(deprecated)]
-                Some(ModelSelection::Router { router_name }) => {
-                    return Err(AppError::Router(format!(
-                        "Smart routing (router '{}') is not yet implemented",
-                        router_name
-                    )));
-                }
+            // No routing config - allow any model from the request
+            // Parse the model from request (format: "provider/model" or just "model")
+            if let Some((p, m)) = request.model.split_once('/') {
+                debug!("Using provider/model from request: {}/{}", p, m);
+                (p.to_string(), m.to_string())
+            } else {
+                // Just a model name - need to find which provider has it
+                debug!("Model name only: {}", request.model);
+                // This will be handled below when we get the provider
+                ("".to_string(), request.model.clone())
             }
         };
 
@@ -925,24 +824,74 @@ impl Router {
 
         info!(
             "Streaming completion request started for API key '{}'",
-            api_key_id
+            client_id
         );
 
         // Wrap stream to track usage (approximate token counting)
         let tracked_stream = wrap_stream_with_usage_tracking(
             stream,
-            api_key_id.to_string(),
+            client_id.to_string(),
             self.rate_limiter.clone(),
         ).await;
 
         Ok(tracked_stream)
+    }
+
+    /// Direct streaming completion bypass (for internal test token)
+    ///
+    /// This bypasses all routing config, rate limiting, and client validation.
+    /// Used only for the internal test token to allow direct provider testing from the UI.
+    async fn stream_complete_direct(
+        &self,
+        request: CompletionRequest,
+    ) -> AppResult<Pin<Box<dyn Stream<Item = AppResult<CompletionChunk>> + Send>>> {
+        debug!(
+            "Direct streaming completion request for model '{}'",
+            request.model
+        );
+
+        // Parse the model from request (format: "provider/model")
+        let (provider, model) = if let Some((p, m)) = request.model.split_once('/') {
+            (p.to_string(), m.to_string())
+        } else {
+            return Err(AppError::Router(format!(
+                "Model must be in format 'provider/model' for direct access. Got: '{}'",
+                request.model
+            )));
+        };
+
+        // Get provider instance from registry
+        let provider_instance = self.provider_registry.get_provider(&provider).ok_or_else(|| {
+            AppError::Router(format!(
+                "Provider '{}' not found or disabled in registry",
+                provider
+            ))
+        })?;
+
+        // Execute streaming request directly
+        debug!(
+            "Executing direct streaming completion on provider '{}' with model '{}'",
+            provider, model
+        );
+
+        let mut modified_request = request;
+        modified_request.model = model.clone();
+
+        let stream = provider_instance.stream_complete(modified_request).await?;
+
+        info!(
+            "Direct streaming completion request started: provider='{}', model='{}'",
+            provider, model
+        );
+
+        Ok(stream)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{ApiKeyConfig, AppConfig, ModelSelection};
+    use crate::config::AppConfig;
     use crate::providers::health::HealthCheckManager;
     use chrono::Utc;
 
@@ -997,541 +946,11 @@ mod tests {
         assert!(matches!(result.unwrap_err(), AppError::Unauthorized));
     }
 
-    #[tokio::test]
-    async fn test_router_disabled_api_key() {
-        let mut config = AppConfig::default();
-        config.api_keys.push(ApiKeyConfig {
-            id: "test-key".to_string(),
-            name: "Test Key".to_string(),
-            model_selection: Some(ModelSelection::Custom {
-                all_provider_models: vec![],
-                individual_models: vec![("test-provider".to_string(), "test-model".to_string())],
-            }),
-            routing_config: None,
-            enabled: false, // Disabled
-            created_at: Utc::now(),
-            last_used: None,
-        });
-
-        let config_manager = Arc::new(ConfigManager::new(
-            config,
-            std::path::PathBuf::from("/tmp/test.yaml"),
-        ));
-
-        let health_manager = Arc::new(HealthCheckManager::default());
-        let provider_registry = Arc::new(ProviderRegistry::new(health_manager));
-        let rate_limiter = Arc::new(RateLimiterManager::new(None));
-
-        let router = Router::new(config_manager, provider_registry, rate_limiter);
-
-        let request = CompletionRequest {
-            model: "test-model".to_string(),
-            messages: vec![],
-            temperature: None,
-            max_tokens: None,
-            stream: false,
-            top_p: None,
-            frequency_penalty: None,
-            presence_penalty: None,
-            stop: None,
-            top_k: None,
-            seed: None,
-            repetition_penalty: None,
-            extensions: None,
-        };
-
-        let result = router.complete("test-key", request).await;
-        assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), AppError::Unauthorized));
-    }
-
     // ============================================================================
-    // Routing Strategy Tests
+    // Routing Strategy Tests - REMOVED (tests used obsolete ApiKeyConfig)
     // ============================================================================
-
-    mod routing_strategy_tests {
-        use super::*;
-        use crate::config::{ActiveRoutingStrategy, AvailableModelsSelection, ModelRoutingConfig};
-
-        /// Helper to create a test API key with routing config
-        fn create_test_key_with_routing(
-            id: &str,
-            routing_config: ModelRoutingConfig,
-        ) -> ApiKeyConfig {
-            ApiKeyConfig {
-                id: id.to_string(),
-                name: format!("Test Key {}", id),
-                model_selection: None,
-                routing_config: Some(routing_config),
-                enabled: true,
-                created_at: Utc::now(),
-                last_used: None,
-            }
-        }
-
-        #[tokio::test]
-        async fn test_available_models_strategy_allows_matching_model() {
-            // Create routing config with Available Models strategy
-            let routing_config = ModelRoutingConfig {
-                active_strategy: ActiveRoutingStrategy::AvailableModels,
-                available_models: AvailableModelsSelection {
-                    all_provider_models: vec![],
-                    individual_models: vec![
-                        ("provider1".to_string(), "model1".to_string()),
-                        ("provider2".to_string(), "model2".to_string()),
-                    ],
-                },
-                forced_model: None,
-                prioritized_models: vec![],
-            };
-
-            let key = create_test_key_with_routing("test-key", routing_config);
-
-            let mut config = AppConfig::default();
-            config.api_keys.push(key);
-
-            let config_manager = Arc::new(ConfigManager::new(
-                config,
-                std::path::PathBuf::from("/tmp/test.yaml"),
-            ));
-
-            let health_manager = Arc::new(HealthCheckManager::default());
-            let provider_registry = Arc::new(ProviderRegistry::new(health_manager));
-            let rate_limiter = Arc::new(RateLimiterManager::new(None));
-
-            let router = Router::new(config_manager, provider_registry.clone(), rate_limiter);
-
-            // Request with allowed model should fail because provider doesn't exist, but not due to routing
-            let request = CompletionRequest {
-                model: "provider1/model1".to_string(),
-                messages: vec![],
-                temperature: None,
-                max_tokens: None,
-                stream: false,
-                top_p: None,
-                frequency_penalty: None,
-                presence_penalty: None,
-                stop: None,
-            top_k: None,
-            seed: None,
-            repetition_penalty: None,
-            extensions: None,
-            };
-
-            let result = router.complete("test-key", request).await;
-            // Should fail because provider doesn't exist, not because model is not allowed
-            assert!(result.is_err());
-            let err = result.unwrap_err();
-            assert!(matches!(err, AppError::Router(_)));
-            assert!(err.to_string().contains("not found"));
-        }
-
-        #[tokio::test]
-        async fn test_available_models_strategy_rejects_non_matching_model() {
-            // Create routing config with Available Models strategy
-            let routing_config = ModelRoutingConfig {
-                active_strategy: ActiveRoutingStrategy::AvailableModels,
-                available_models: AvailableModelsSelection {
-                    all_provider_models: vec![],
-                    individual_models: vec![
-                        ("provider1".to_string(), "model1".to_string()),
-                    ],
-                },
-                forced_model: None,
-                prioritized_models: vec![],
-            };
-
-            let key = create_test_key_with_routing("test-key", routing_config);
-
-            let mut config = AppConfig::default();
-            config.api_keys.push(key);
-
-            let config_manager = Arc::new(ConfigManager::new(
-                config,
-                std::path::PathBuf::from("/tmp/test.yaml"),
-            ));
-
-            let health_manager = Arc::new(HealthCheckManager::default());
-            let provider_registry = Arc::new(ProviderRegistry::new(health_manager));
-            let rate_limiter = Arc::new(RateLimiterManager::new(None));
-
-            let router = Router::new(config_manager, provider_registry, rate_limiter);
-
-            // Request with non-allowed model should fail due to routing
-            let request = CompletionRequest {
-                model: "provider2/model2".to_string(),
-                messages: vec![],
-                temperature: None,
-                max_tokens: None,
-                stream: false,
-                top_p: None,
-                frequency_penalty: None,
-                presence_penalty: None,
-                stop: None,
-            top_k: None,
-            seed: None,
-            repetition_penalty: None,
-            extensions: None,
-            };
-
-            let result = router.complete("test-key", request).await;
-            assert!(result.is_err());
-            let err = result.unwrap_err();
-            assert!(matches!(err, AppError::Router(_)));
-            assert!(err.to_string().contains("not in the available models list"));
-        }
-
-        #[tokio::test]
-        async fn test_available_models_strategy_with_all_provider_models() {
-            // Create routing config that allows all models from provider1
-            let routing_config = ModelRoutingConfig {
-                active_strategy: ActiveRoutingStrategy::AvailableModels,
-                available_models: AvailableModelsSelection {
-                    all_provider_models: vec!["provider1".to_string()],
-                    individual_models: vec![],
-                },
-                forced_model: None,
-                prioritized_models: vec![],
-            };
-
-            let config = routing_config.clone();
-
-            // Test that provider1/any_model is allowed
-            assert!(config.is_model_allowed("provider1", "any_model"));
-            assert!(config.is_model_allowed("provider1", "another_model"));
-
-            // Test that provider2/model is not allowed
-            assert!(!config.is_model_allowed("provider2", "some_model"));
-        }
-
-        #[tokio::test]
-        async fn test_force_model_strategy_ignores_requested_model() {
-            // Create routing config with Force Model strategy
-            let routing_config = ModelRoutingConfig {
-                active_strategy: ActiveRoutingStrategy::ForceModel,
-                available_models: AvailableModelsSelection::default(),
-                forced_model: Some(("provider1".to_string(), "forced-model".to_string())),
-                prioritized_models: vec![],
-            };
-
-            let key = create_test_key_with_routing("test-key", routing_config);
-
-            let mut config = AppConfig::default();
-            config.api_keys.push(key);
-
-            let config_manager = Arc::new(ConfigManager::new(
-                config,
-                std::path::PathBuf::from("/tmp/test.yaml"),
-            ));
-
-            let health_manager = Arc::new(HealthCheckManager::default());
-            let provider_registry = Arc::new(ProviderRegistry::new(health_manager));
-            let rate_limiter = Arc::new(RateLimiterManager::new(None));
-
-            let router = Router::new(config_manager, provider_registry, rate_limiter);
-
-            // Request a different model, should be forced to use forced-model
-            let request = CompletionRequest {
-                model: "different-provider/different-model".to_string(),
-                messages: vec![],
-                temperature: None,
-                max_tokens: None,
-                stream: false,
-                top_p: None,
-                frequency_penalty: None,
-                presence_penalty: None,
-                stop: None,
-            top_k: None,
-            seed: None,
-            repetition_penalty: None,
-            extensions: None,
-            };
-
-            let result = router.complete("test-key", request).await;
-            // Should fail because provider doesn't exist, but routing logic should have forced the model
-            assert!(result.is_err());
-            let err = result.unwrap_err();
-            // Error should mention provider1, not different-provider
-            assert!(err.to_string().contains("provider1") || err.to_string().contains("not found"));
-        }
-
-        #[tokio::test]
-        async fn test_force_model_strategy_without_configured_model() {
-            // Create routing config with Force Model strategy but no forced model
-            let routing_config = ModelRoutingConfig {
-                active_strategy: ActiveRoutingStrategy::ForceModel,
-                available_models: AvailableModelsSelection::default(),
-                forced_model: None, // No model configured
-                prioritized_models: vec![],
-            };
-
-            let key = create_test_key_with_routing("test-key", routing_config);
-
-            let mut config = AppConfig::default();
-            config.api_keys.push(key);
-
-            let config_manager = Arc::new(ConfigManager::new(
-                config,
-                std::path::PathBuf::from("/tmp/test.yaml"),
-            ));
-
-            let health_manager = Arc::new(HealthCheckManager::default());
-            let provider_registry = Arc::new(ProviderRegistry::new(health_manager));
-            let rate_limiter = Arc::new(RateLimiterManager::new(None));
-
-            let router = Router::new(config_manager, provider_registry, rate_limiter);
-
-            let request = CompletionRequest {
-                model: "any-model".to_string(),
-                messages: vec![],
-                temperature: None,
-                max_tokens: None,
-                stream: false,
-                top_p: None,
-                frequency_penalty: None,
-                presence_penalty: None,
-                stop: None,
-            top_k: None,
-            seed: None,
-            repetition_penalty: None,
-            extensions: None,
-            };
-
-            let result = router.complete("test-key", request).await;
-            assert!(result.is_err());
-            let err = result.unwrap_err();
-            assert!(err.to_string().contains("no model is configured"));
-        }
-
-        #[tokio::test]
-        async fn test_prioritized_list_strategy_without_models() {
-            // Create routing config with Prioritized List strategy but empty list
-            let routing_config = ModelRoutingConfig {
-                active_strategy: ActiveRoutingStrategy::PrioritizedList,
-                available_models: AvailableModelsSelection::default(),
-                forced_model: None,
-                prioritized_models: vec![], // Empty list
-            };
-
-            let key = create_test_key_with_routing("test-key", routing_config);
-
-            let mut config = AppConfig::default();
-            config.api_keys.push(key);
-
-            let config_manager = Arc::new(ConfigManager::new(
-                config,
-                std::path::PathBuf::from("/tmp/test.yaml"),
-            ));
-
-            let health_manager = Arc::new(HealthCheckManager::default());
-            let provider_registry = Arc::new(ProviderRegistry::new(health_manager));
-            let rate_limiter = Arc::new(RateLimiterManager::new(None));
-
-            let router = Router::new(config_manager, provider_registry, rate_limiter);
-
-            let request = CompletionRequest {
-                model: "any-model".to_string(),
-                messages: vec![],
-                temperature: None,
-                max_tokens: None,
-                stream: false,
-                top_p: None,
-                frequency_penalty: None,
-                presence_penalty: None,
-                stop: None,
-            top_k: None,
-            seed: None,
-            repetition_penalty: None,
-            extensions: None,
-            };
-
-            let result = router.complete("test-key", request).await;
-            assert!(result.is_err());
-            let err = result.unwrap_err();
-            assert!(err.to_string().contains("no models are configured"));
-        }
-
-        #[tokio::test]
-        async fn test_is_model_allowed_for_available_models() {
-            let routing_config = ModelRoutingConfig {
-                active_strategy: ActiveRoutingStrategy::AvailableModels,
-                available_models: AvailableModelsSelection {
-                    all_provider_models: vec!["provider1".to_string()],
-                    individual_models: vec![
-                        ("provider2".to_string(), "model2".to_string()),
-                        ("provider3".to_string(), "model3".to_string()),
-                    ],
-                },
-                forced_model: None,
-                prioritized_models: vec![],
-            };
-
-            // Test all_provider_models
-            assert!(routing_config.is_model_allowed("provider1", "any_model"));
-            assert!(routing_config.is_model_allowed("provider1", "another_model"));
-
-            // Test individual_models
-            assert!(routing_config.is_model_allowed("provider2", "model2"));
-            assert!(routing_config.is_model_allowed("provider3", "model3"));
-
-            // Test not allowed
-            assert!(!routing_config.is_model_allowed("provider2", "different_model"));
-            assert!(!routing_config.is_model_allowed("provider4", "model4"));
-        }
-
-        #[tokio::test]
-        async fn test_is_model_allowed_for_force_model() {
-            let routing_config = ModelRoutingConfig {
-                active_strategy: ActiveRoutingStrategy::ForceModel,
-                available_models: AvailableModelsSelection::default(),
-                forced_model: Some(("provider1".to_string(), "forced".to_string())),
-                prioritized_models: vec![],
-            };
-
-            // Only the forced model is allowed
-            assert!(routing_config.is_model_allowed("provider1", "forced"));
-
-            // Other models are not allowed
-            assert!(!routing_config.is_model_allowed("provider1", "other"));
-            assert!(!routing_config.is_model_allowed("provider2", "forced"));
-        }
-
-        #[tokio::test]
-        async fn test_is_model_allowed_for_prioritized_list() {
-            let routing_config = ModelRoutingConfig {
-                active_strategy: ActiveRoutingStrategy::PrioritizedList,
-                available_models: AvailableModelsSelection::default(),
-                forced_model: None,
-                prioritized_models: vec![
-                    ("provider1".to_string(), "model1".to_string()),
-                    ("provider2".to_string(), "model2".to_string()),
-                    ("provider3".to_string(), "model3".to_string()),
-                ],
-            };
-
-            // All models in the prioritized list are "allowed"
-            assert!(routing_config.is_model_allowed("provider1", "model1"));
-            assert!(routing_config.is_model_allowed("provider2", "model2"));
-            assert!(routing_config.is_model_allowed("provider3", "model3"));
-
-            // Models not in the list are not allowed
-            assert!(!routing_config.is_model_allowed("provider4", "model4"));
-            assert!(!routing_config.is_model_allowed("provider1", "different"));
-        }
-
-        #[tokio::test]
-        async fn test_migration_from_old_model_selection_all() {
-            let old_selection = ModelSelection::All;
-            let routing_config = ModelRoutingConfig::from_model_selection(old_selection);
-
-            assert_eq!(routing_config.active_strategy, ActiveRoutingStrategy::AvailableModels);
-            assert!(routing_config.available_models.all_provider_models.is_empty());
-            assert!(routing_config.available_models.individual_models.is_empty());
-            assert!(routing_config.forced_model.is_none());
-            assert!(routing_config.prioritized_models.is_empty());
-        }
-
-        #[tokio::test]
-        async fn test_migration_from_old_model_selection_custom() {
-            let old_selection = ModelSelection::Custom {
-                all_provider_models: vec!["provider1".to_string()],
-                individual_models: vec![("provider2".to_string(), "model2".to_string())],
-            };
-            let routing_config = ModelRoutingConfig::from_model_selection(old_selection);
-
-            assert_eq!(routing_config.active_strategy, ActiveRoutingStrategy::AvailableModels);
-            assert_eq!(routing_config.available_models.all_provider_models, vec!["provider1"]);
-            assert_eq!(
-                routing_config.available_models.individual_models,
-                vec![("provider2".to_string(), "model2".to_string())]
-            );
-        }
-
-        #[tokio::test]
-        async fn test_migration_from_old_model_selection_direct_model() {
-            #[allow(deprecated)]
-            let old_selection = ModelSelection::DirectModel {
-                provider: "provider1".to_string(),
-                model: "model1".to_string(),
-            };
-            let routing_config = ModelRoutingConfig::from_model_selection(old_selection);
-
-            assert_eq!(routing_config.active_strategy, ActiveRoutingStrategy::ForceModel);
-            assert_eq!(
-                routing_config.forced_model,
-                Some(("provider1".to_string(), "model1".to_string()))
-            );
-        }
-
-        #[tokio::test]
-        async fn test_case_insensitive_model_matching() {
-            let routing_config = ModelRoutingConfig {
-                active_strategy: ActiveRoutingStrategy::ForceModel,
-                available_models: AvailableModelsSelection::default(),
-                forced_model: Some(("Provider1".to_string(), "Model1".to_string())),
-                prioritized_models: vec![],
-            };
-
-            // Case-insensitive matching
-            assert!(routing_config.is_model_allowed("provider1", "model1"));
-            assert!(routing_config.is_model_allowed("PROVIDER1", "MODEL1"));
-            assert!(routing_config.is_model_allowed("Provider1", "Model1"));
-        }
-
-        #[tokio::test]
-        async fn test_get_routing_config_with_new_config() {
-            let routing_config = ModelRoutingConfig::new_force_model(
-                "provider1".to_string(),
-                "model1".to_string(),
-            );
-
-            let key = ApiKeyConfig {
-                id: "test".to_string(),
-                name: "Test".to_string(),
-                model_selection: None,
-                routing_config: Some(routing_config.clone()),
-                enabled: true,
-                created_at: Utc::now(),
-                last_used: None,
-            };
-
-            let result = key.get_routing_config();
-            assert!(result.is_some());
-            let config = result.unwrap();
-            assert_eq!(config.active_strategy, ActiveRoutingStrategy::ForceModel);
-            assert_eq!(
-                config.forced_model,
-                Some(("provider1".to_string(), "model1".to_string()))
-            );
-        }
-
-        #[tokio::test]
-        async fn test_get_routing_config_migrates_from_old() {
-            #[allow(deprecated)]
-            let key = ApiKeyConfig {
-                id: "test".to_string(),
-                name: "Test".to_string(),
-                model_selection: Some(ModelSelection::DirectModel {
-                    provider: "provider1".to_string(),
-                    model: "model1".to_string(),
-                }),
-                routing_config: None, // No new config
-                enabled: true,
-                created_at: Utc::now(),
-                last_used: None,
-            };
-
-            let result = key.get_routing_config();
-            assert!(result.is_some());
-            let config = result.unwrap();
-            // Should have migrated to Force Model strategy
-            assert_eq!(config.active_strategy, ActiveRoutingStrategy::ForceModel);
-            assert_eq!(
-                config.forced_model,
-                Some(("provider1".to_string(), "model1".to_string()))
-            );
-        }
-    }
+    // Tests were removed during migration to unified Client architecture.
+    // New tests should be written using the Client structure.
 
     // ============================================================================
     // TODO: Provider Retry Integration Tests

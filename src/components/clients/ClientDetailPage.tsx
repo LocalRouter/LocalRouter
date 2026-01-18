@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import Card from '../ui/Card'
 import Button from '../ui/Button'
@@ -13,6 +13,7 @@ import { useMetricsSubscription } from '../../hooks/useMetricsSubscription'
 import ModelSelectionTable, { Model, ModelSelectionValue } from '../ModelSelectionTable'
 import PrioritizedModelList from '../PrioritizedModelList'
 import ForcedModelSelector from '../ForcedModelSelector'
+import { ContextualChat } from '../chat/ContextualChat'
 
 // Simple icon components
 const EyeIcon = () => (
@@ -96,6 +97,20 @@ export default function ClientDetailPage({ clientId, initialTab, initialRoutingM
     loadMcpServers()
     loadModels()
   }, [clientId])
+
+  // Update active tab when prop changes (e.g., from system tray)
+  useEffect(() => {
+    if (initialTab && initialTab !== activeTab) {
+      setActiveTab(initialTab)
+    }
+  }, [initialTab])
+
+  // Update routing mode when prop changes (e.g., from system tray)
+  useEffect(() => {
+    if (initialRoutingMode && initialRoutingMode !== routingMode) {
+      setRoutingMode(initialRoutingMode)
+    }
+  }, [initialRoutingMode])
 
   const loadClientData = async () => {
     setLoading(true)
@@ -195,45 +210,56 @@ export default function ClientDetailPage({ clientId, initialTab, initialRoutingM
   // Auto-save handlers for model routing
   const handleRoutingModeChange = async (mode: 'forced' | 'multi' | 'prioritized') => {
     setRoutingMode(mode)
-    // TODO: Save routing mode to backend
     try {
-      // await invoke('update_client_routing_mode', { clientId: client?.client_id, mode })
+      await invoke('set_client_routing_strategy', { clientId: client?.client_id, strategy: mode })
       console.log('Routing mode changed to:', mode)
     } catch (error) {
       console.error('Failed to save routing mode:', error)
+      alert(`Error saving routing mode: ${error}`)
     }
   }
 
   const handleForcedModelChange = async (model: [string, string] | null) => {
     setForcedModel(model)
-    // TODO: Save forced model to backend
     try {
-      // await invoke('update_client_forced_model', { clientId: client?.client_id, model })
+      await invoke('set_client_forced_model', {
+        clientId: client?.client_id,
+        provider: model ? model[0] : null,
+        model: model ? model[1] : null,
+      })
       console.log('Forced model changed:', model)
     } catch (error) {
       console.error('Failed to save forced model:', error)
+      alert(`Error saving forced model: ${error}`)
     }
   }
 
   const handleMultiModelChange = async (selection: ModelSelectionValue) => {
     setModelSelection(selection)
-    // TODO: Save multi-model selection to backend
     try {
-      // await invoke('update_client_model_selection', { clientId: client?.client_id, selection })
+      await invoke('update_client_available_models', {
+        clientId: client?.client_id,
+        allProviderModels: selection?.allProviders || [],
+        individualModels: selection?.individualModels || [],
+      })
       console.log('Model selection changed:', selection)
     } catch (error) {
       console.error('Failed to save model selection:', error)
+      alert(`Error saving model selection: ${error}`)
     }
   }
 
   const handlePrioritizedModelsChange = async (models: [string, string][]) => {
     setPrioritizedModels(models)
-    // TODO: Save prioritized models to backend
     try {
-      // await invoke('update_client_prioritized_models', { clientId: client?.client_id, models })
+      await invoke('update_client_prioritized_models', {
+        clientId: client?.client_id,
+        prioritizedModels: models,
+      })
       console.log('Prioritized models changed:', models)
     } catch (error) {
       console.error('Failed to save prioritized models:', error)
+      alert(`Error saving prioritized models: ${error}`)
     }
   }
 
@@ -268,6 +294,14 @@ export default function ClientDetailPage({ clientId, initialTab, initialRoutingM
     )
   }
 
+  // Memoize context object to prevent re-renders
+  const chatContext = useMemo(() => ({
+    type: 'api_key' as const,
+    apiKeyId: client?.client_id || '',
+    apiKeyName: client?.name || '',
+    modelSelection: null,
+  }), [client?.client_id, client?.name]);
+
   // Define tab content
   const tabs = [
     {
@@ -276,7 +310,7 @@ export default function ClientDetailPage({ clientId, initialTab, initialRoutingM
       content: (
         <div className="space-y-6">
           <Card>
-            <h3 className="text-lg font-semibold mb-4">Request Metrics</h3>
+            <h3 className="text-lg font-semibold mb-4">LLM Request Metrics</h3>
             <div className="grid grid-cols-2 gap-4">
               <MetricsChart
                 scope="api_key"
@@ -298,7 +332,7 @@ export default function ClientDetailPage({ clientId, initialTab, initialRoutingM
           </Card>
 
           <Card>
-            <h3 className="text-lg font-semibold mb-4">Cost & Performance</h3>
+            <h3 className="text-lg font-semibold mb-4">LLM Cost & Performance</h3>
             <div className="grid grid-cols-2 gap-4">
               <MetricsChart
                 scope="api_key"
@@ -320,7 +354,7 @@ export default function ClientDetailPage({ clientId, initialTab, initialRoutingM
           </Card>
 
           <Card>
-            <h3 className="text-lg font-semibold mb-4">Success Rate</h3>
+            <h3 className="text-lg font-semibold mb-4">LLM Success Rate</h3>
             <MetricsChart
               scope="api_key"
               scopeId={client.client_id}
@@ -330,14 +364,7 @@ export default function ClientDetailPage({ clientId, initialTab, initialRoutingM
               refreshTrigger={refreshKey}
             />
           </Card>
-        </div>
-      ),
-    },
-    {
-      id: 'mcp-metrics',
-      label: 'MCP Metrics',
-      content: (
-        <div className="space-y-6">
+
           <Card>
             <h3 className="text-lg font-semibold mb-4">MCP Method Breakdown</h3>
             <McpMethodBreakdown
@@ -849,6 +876,21 @@ export default function ClientDetailPage({ clientId, initialTab, initialRoutingM
             </div>
           </Card>
         </div>
+      ),
+    },
+    {
+      id: 'chat',
+      label: 'Chat',
+      content: (
+        <Card>
+          <div className="p-6">
+            <h3 className="text-lg font-semibold mb-4">Chat</h3>
+            <ContextualChat
+              context={chatContext}
+              disabled={!client.enabled}
+            />
+          </div>
+        </Card>
       ),
     },
   ]

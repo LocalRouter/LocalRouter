@@ -234,9 +234,9 @@ pub async fn token_endpoint(
     };
 
     // Generate access token
-    match state.token_store.generate_token(client.client_id.clone()) {
+    match state.token_store.generate_token(client.id.clone()) {
         Ok((access_token, expires_in)) => {
-            tracing::info!("Generated OAuth token for client: {}", client.client_id);
+            tracing::info!("Generated OAuth token for client: {}", client.id);
 
             (
                 StatusCode::OK,

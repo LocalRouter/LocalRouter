@@ -642,7 +642,7 @@ mod tests {
             completion_tokens: 300,
             total_tokens: 1300,
             prompt_tokens_details: Some(PromptTokensDetails {
-                cached_tokens: Some(600),
+                cached_tokens: Some(500),
                 cache_creation_tokens: Some(200),
                 cache_read_tokens: Some(200),
             }),

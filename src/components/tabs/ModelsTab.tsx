@@ -5,7 +5,7 @@ import Badge from '../ui/Badge'
 import Button from '../ui/Button'
 import ProviderIcon from '../ProviderIcon'
 import ModelDetailPage from '../models/ModelDetailPage'
-import { MetricsChart } from '../charts/MetricsChart'
+import { StackedAreaChart } from '../charts/StackedAreaChart'
 import { useMetricsSubscription } from '../../hooks/useMetricsSubscription'
 
 interface Model {
@@ -31,15 +31,18 @@ interface ModelsTabProps {
 export default function ModelsTab({ activeSubTab, onTabChange }: ModelsTabProps) {
   const refreshKey = useMetricsSubscription()
   const [models, setModels] = useState<Model[]>([])
+  const [trackedModels, setTrackedModels] = useState<string[]>([])
   const [loading, setLoading] = useState(true)
   const [searchTerm, setSearchTerm] = useState('')
   const [sortField, setSortField] = useState<SortField>('name')
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc')
   const [filterCapability, setFilterCapability] = useState<string>('all')
+  const [timeRange, setTimeRange] = useState<'hour' | 'day' | 'week' | 'month'>('day')
 
   useEffect(() => {
     loadModels()
-  }, [])
+    loadTrackedModels()
+  }, [refreshKey])
 
   const loadModels = async () => {
     setLoading(true)
@@ -65,6 +68,15 @@ export default function ModelsTab({ activeSubTab, onTabChange }: ModelsTabProps)
       }
     } finally {
       setLoading(false)
+    }
+  }
+
+  const loadTrackedModels = async () => {
+    try {
+      const models = await invoke<string[]>('list_tracked_models')
+      setTrackedModels(models)
+    } catch (error) {
+      console.error('Failed to load tracked models:', error)
     }
   }
 
@@ -174,22 +186,47 @@ export default function ModelsTab({ activeSubTab, onTabChange }: ModelsTabProps)
   return (
     <div className="space-y-6">
       {/* Metrics Overview */}
-      {!loading && models.length > 0 && (
+      {!loading && trackedModels.length > 0 && (
         <Card>
-          <h3 className="text-lg font-semibold text-gray-900 mb-4">Model Usage Overview</h3>
-          <div className="grid grid-cols-2 gap-4">
-            <MetricsChart
-              scope="global"
-              timeRange="day"
+          <div className="flex justify-between items-center mb-4">
+            <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Model Usage Overview</h3>
+            <select
+              value={timeRange}
+              onChange={(e) => setTimeRange(e.target.value as any)}
+              className="px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 hover:bg-gray-50 dark:hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              <option value="hour">Last Hour</option>
+              <option value="day">Last 24 Hours</option>
+              <option value="week">Last 7 Days</option>
+              <option value="month">Last 30 Days</option>
+            </select>
+          </div>
+
+          <div className="space-y-6">
+            <StackedAreaChart
+              compareType="models"
+              ids={trackedModels}
+              timeRange={timeRange}
               metricType="requests"
-              title="Total Requests by Model"
+              title="Request Volume by Model"
               refreshTrigger={refreshKey}
             />
-            <MetricsChart
-              scope="global"
-              timeRange="day"
+
+            <StackedAreaChart
+              compareType="models"
+              ids={trackedModels}
+              timeRange={timeRange}
               metricType="cost"
-              title="Total Cost by Model"
+              title="Cost by Model"
+              refreshTrigger={refreshKey}
+            />
+
+            <StackedAreaChart
+              compareType="models"
+              ids={trackedModels}
+              timeRange={timeRange}
+              metricType="tokens"
+              title="Token Usage by Model"
               refreshTrigger={refreshKey}
             />
           </div>

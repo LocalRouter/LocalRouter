@@ -5,9 +5,7 @@ use parking_lot::RwLock;
 use tokio::task::JoinHandle;
 use tracing::info;
 
-use crate::api_keys::ApiKeyManager;
 use crate::mcp::McpServerManager;
-use crate::oauth_clients::OAuthClientManager;
 use crate::providers::registry::ProviderRegistry;
 use crate::router::{RateLimiterManager, Router};
 use super::{ServerConfig, start_server, state::AppState};
@@ -15,11 +13,10 @@ use super::{ServerConfig, start_server, state::AppState};
 /// Dependencies needed to start the server
 pub struct ServerDependencies {
     pub router: Arc<Router>,
-    pub api_key_manager: ApiKeyManager,
-    pub oauth_client_manager: OAuthClientManager,
     pub mcp_server_manager: Arc<McpServerManager>,
     pub rate_limiter: Arc<RateLimiterManager>,
     pub provider_registry: Arc<ProviderRegistry>,
+    pub config_manager: Arc<crate::config::ConfigManager>,
     pub client_manager: Arc<crate::clients::ClientManager>,
     pub token_store: Arc<crate::clients::TokenStore>,
 }
@@ -60,28 +57,29 @@ impl ServerManager {
         config: ServerConfig,
         deps: ServerDependencies,
     ) -> anyhow::Result<()> {
-        // Check if already running
+        // Stop any existing server first
         if *self.status.read() == ServerStatus::Running {
-            info!("Server is already running");
-            return Ok(());
+            info!("Stopping existing server before restart");
+            self.stop().await;
+
+            // Give the OS time to release the port
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
         }
 
-        // Stop any existing server first
-        self.stop().await;
-
+        // Start the new server
         let (state, handle, actual_port) = start_server(
             config,
             deps.router,
-            deps.api_key_manager,
-            deps.oauth_client_manager,
             deps.mcp_server_manager,
             deps.rate_limiter,
             deps.provider_registry,
+            deps.config_manager,
             deps.client_manager,
             deps.token_store,
         )
         .await?;
 
+        // Update to the new server
         *self.app_state.write() = Some(state);
         *self.server_handle.write() = Some(handle);
         *self.actual_port.write() = Some(actual_port);

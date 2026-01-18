@@ -182,7 +182,7 @@ export default function OAuthClientDetailPage({ clientId, onBack }: OAuthClientD
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
-        <div className="text-gray-400">Loading...</div>
+        <div className="text-gray-400 dark:text-gray-500">Loading...</div>
       </div>
     )
   }
@@ -190,7 +190,7 @@ export default function OAuthClientDetailPage({ clientId, onBack }: OAuthClientD
   if (!client) {
     return (
       <div className="flex flex-col items-center justify-center h-64">
-        <div className="text-gray-400 mb-4">OAuth client not found</div>
+        <div className="text-gray-400 dark:text-gray-500 mb-4">OAuth client not found</div>
         <Button onClick={onBack}>Go Back</Button>
       </div>
     )
@@ -199,11 +199,10 @@ export default function OAuthClientDetailPage({ clientId, onBack }: OAuthClientD
   return (
     <DetailPageLayout
       title={client.name || 'Unnamed Client'}
-      onBack={onBack}
       tabs={tabs}
       activeTab={activeTab}
       onTabChange={setActiveTab}
-      headerActions={
+      actions={
         <Badge variant={client.enabled ? 'success' : 'error'}>
           {client.enabled ? 'Enabled' : 'Disabled'}
         </Badge>
@@ -214,15 +213,15 @@ export default function OAuthClientDetailPage({ clientId, onBack }: OAuthClientD
         <div className="space-y-6">
           <Card>
             <div className="p-6 space-y-4">
-              <h3 className="text-lg font-semibold">OAuth Credentials</h3>
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">OAuth Credentials</h3>
 
               <div>
-                <label className="block text-sm font-medium mb-2">Client ID</label>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Client ID</label>
                 <div className="flex gap-2">
                   <Input
                     value={client.client_id}
                     readOnly
-                    className="flex-1 font-mono text-sm bg-gray-800"
+                    className="flex-1 font-mono text-sm bg-gray-100 dark:bg-gray-800"
                   />
                   <Button
                     variant="secondary"
@@ -234,13 +233,13 @@ export default function OAuthClientDetailPage({ clientId, onBack }: OAuthClientD
               </div>
 
               <div>
-                <label className="block text-sm font-medium mb-2">Client Secret</label>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Client Secret</label>
                 <div className="flex gap-2">
                   <Input
                     type={showSecret ? 'text' : 'password'}
                     value={showSecret ? clientSecret : '••••••••••••••••'}
                     readOnly
-                    className="flex-1 font-mono text-sm bg-gray-800"
+                    className="flex-1 font-mono text-sm bg-gray-100 dark:bg-gray-800"
                   />
                   <Button
                     variant="secondary"
@@ -258,14 +257,14 @@ export default function OAuthClientDetailPage({ clientId, onBack }: OAuthClientD
                   )}
                 </div>
                 {secretLoadError && (
-                  <p className="text-red-400 text-sm mt-2">{secretLoadError}</p>
+                  <p className="text-red-400 dark:text-red-500 text-sm mt-2">{secretLoadError}</p>
                 )}
               </div>
 
-              <div className="bg-blue-900/20 border border-blue-700 rounded p-4">
-                <p className="text-blue-200 text-sm">
+              <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-700 rounded p-4">
+                <p className="text-blue-900 dark:text-blue-200 text-sm">
                   <strong>Authentication:</strong> Use these credentials with OAuth 2.0 Client Credentials flow.
-                  Include them as <code className="bg-gray-800 px-1">Authorization: Basic base64(client_id:client_secret)</code>
+                  Include them as <code className="bg-blue-100 dark:bg-gray-800 px-1 rounded">Authorization: Basic base64(client_id:client_secret)</code>
                 </p>
               </div>
             </div>
@@ -273,25 +272,25 @@ export default function OAuthClientDetailPage({ clientId, onBack }: OAuthClientD
 
           <Card>
             <div className="p-6">
-              <h3 className="text-lg font-semibold mb-4">Client Information</h3>
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-4">Client Information</h3>
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <p className="text-sm text-gray-400">Name</p>
-                  <p className="font-medium">{client.name}</p>
+                  <p className="text-sm text-gray-500 dark:text-gray-400">Name</p>
+                  <p className="font-medium text-gray-900 dark:text-gray-100">{client.name}</p>
                 </div>
                 <div>
-                  <p className="text-sm text-gray-400">Status</p>
+                  <p className="text-sm text-gray-500 dark:text-gray-400">Status</p>
                   <Badge variant={client.enabled ? 'success' : 'error'}>
                     {client.enabled ? 'Enabled' : 'Disabled'}
                   </Badge>
                 </div>
                 <div>
-                  <p className="text-sm text-gray-400">Created</p>
-                  <p className="font-medium">{formatDate(client.created_at)}</p>
+                  <p className="text-sm text-gray-500 dark:text-gray-400">Created</p>
+                  <p className="font-medium text-gray-900 dark:text-gray-100">{formatDate(client.created_at)}</p>
                 </div>
                 <div>
-                  <p className="text-sm text-gray-400">Last Used</p>
-                  <p className="font-medium">{formatDate(client.last_used)}</p>
+                  <p className="text-sm text-gray-500 dark:text-gray-400">Last Used</p>
+                  <p className="font-medium text-gray-900 dark:text-gray-100">{formatDate(client.last_used)}</p>
                 </div>
               </div>
             </div>
@@ -304,13 +303,13 @@ export default function OAuthClientDetailPage({ clientId, onBack }: OAuthClientD
         <div className="space-y-6">
           <Card>
             <div className="p-6">
-              <h3 className="text-lg font-semibold mb-4">Link MCP Servers</h3>
-              <p className="text-gray-400 text-sm mb-4">
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-4">Link MCP Servers</h3>
+              <p className="text-gray-600 dark:text-gray-400 text-sm mb-4">
                 Select which MCP servers this OAuth client can access. Only linked servers will be available to this client.
               </p>
 
               {mcpServers.length === 0 ? (
-                <div className="text-center py-8 text-gray-400">
+                <div className="text-center py-8 text-gray-500 dark:text-gray-400">
                   No MCP servers configured yet. Create an MCP server first.
                 </div>
               ) : (
@@ -318,7 +317,7 @@ export default function OAuthClientDetailPage({ clientId, onBack }: OAuthClientD
                   {mcpServers.map((server) => (
                     <label
                       key={server.id}
-                      className="flex items-center gap-3 p-3 rounded border border-gray-700 hover:bg-gray-800/50 cursor-pointer"
+                      className="flex items-center gap-3 p-3 rounded border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800/50 cursor-pointer"
                     >
                       <input
                         type="checkbox"
@@ -333,8 +332,8 @@ export default function OAuthClientDetailPage({ clientId, onBack }: OAuthClientD
                         className="w-4 h-4"
                       />
                       <div className="flex-1">
-                        <div className="font-medium">{server.name}</div>
-                        <div className="text-sm text-gray-400">ID: {server.id}</div>
+                        <div className="font-medium text-gray-900 dark:text-gray-100">{server.name}</div>
+                        <div className="text-sm text-gray-500 dark:text-gray-400">ID: {server.id}</div>
                       </div>
                       <Badge variant={server.enabled ? 'success' : 'error'}>
                         {server.enabled ? 'Enabled' : 'Disabled'}
@@ -359,10 +358,10 @@ export default function OAuthClientDetailPage({ clientId, onBack }: OAuthClientD
         <div className="space-y-6">
           <Card>
             <div className="p-6 space-y-4">
-              <h3 className="text-lg font-semibold">Client Settings</h3>
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Client Settings</h3>
 
               <div>
-                <label className="block text-sm font-medium mb-2">Client Name</label>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Client Name</label>
                 <Input
                   value={name}
                   onChange={(e) => setName(e.target.value)}
@@ -378,9 +377,9 @@ export default function OAuthClientDetailPage({ clientId, onBack }: OAuthClientD
                     onChange={(e) => setEnabled(e.target.checked)}
                     className="w-4 h-4"
                   />
-                  <span className="font-medium">Enabled</span>
+                  <span className="font-medium text-gray-900 dark:text-gray-100">Enabled</span>
                 </label>
-                <p className="text-sm text-gray-400 mt-1">
+                <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
                   Disabled clients cannot authenticate
                 </p>
               </div>
@@ -395,11 +394,11 @@ export default function OAuthClientDetailPage({ clientId, onBack }: OAuthClientD
 
           <Card>
             <div className="p-6">
-              <h3 className="text-lg font-semibold text-red-400 mb-2">Danger Zone</h3>
-              <p className="text-gray-400 text-sm mb-4">
+              <h3 className="text-lg font-semibold text-red-600 dark:text-red-400 mb-2">Danger Zone</h3>
+              <p className="text-gray-600 dark:text-gray-400 text-sm mb-4">
                 Deleting this OAuth client will revoke access for all applications using these credentials.
               </p>
-              <Button variant="error" onClick={handleDelete}>
+              <Button variant="danger" onClick={handleDelete}>
                 Delete OAuth Client
               </Button>
             </div>

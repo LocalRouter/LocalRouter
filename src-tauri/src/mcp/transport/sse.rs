@@ -42,6 +42,27 @@ pub struct SseTransport {
 }
 
 impl SseTransport {
+    /// Parse SSE response and extract JSON data
+    ///
+    /// SSE responses have the format:
+    /// ```
+    /// event: message
+    /// data: {"jsonrpc":"2.0",...}
+    /// ```
+    fn parse_sse_response(sse_text: &str) -> AppResult<String> {
+        for line in sse_text.lines() {
+            let line = line.trim();
+            if line.starts_with("data:") {
+                // Extract JSON after "data: "
+                let json_str = line.strip_prefix("data:").unwrap_or("").trim();
+                if !json_str.is_empty() {
+                    return Ok(json_str.to_string());
+                }
+            }
+        }
+        Err(AppError::Mcp("No data field found in SSE response".to_string()))
+    }
+
     /// Create a new SSE transport
     ///
     /// # Arguments
@@ -63,20 +84,58 @@ impl SseTransport {
             .build()
             .map_err(|e| AppError::Mcp(format!("Failed to create HTTP client: {}", e)))?;
 
-        // Validate connection with a test request
-        // Use HEAD request for minimal overhead
-        let mut validation_req = client.head(&url);
+        // Validate connection with an MCP initialize request
+        let init_request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(Value::Number(1.into())),
+            method: "initialize".to_string(),
+            params: Some(serde_json::json!({
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {
+                    "name": "localrouter",
+                    "version": "1.0.0"
+                }
+            })),
+        };
+
+        let mut validation_req = client.post(&url).json(&init_request);
+
+        // Add custom headers
         for (key, value) in &headers {
             validation_req = validation_req.header(key, value);
         }
+
+        // Add required SSE headers
+        validation_req = validation_req.header("Accept", "application/json, text/event-stream");
 
         let validation_response = validation_req.send().await
             .map_err(|e| AppError::Mcp(format!("Failed to connect to SSE server: {}", e)))?;
 
         if !validation_response.status().is_success() {
+            let status = validation_response.status();
+            let body = validation_response.text().await.unwrap_or_default();
             return Err(AppError::Mcp(format!(
-                "Server returned error status on connect: {}",
-                validation_response.status()
+                "Server returned error status on connect: {} - {}",
+                status, body
+            )));
+        }
+
+        // Read the SSE response as text
+        let sse_text = validation_response.text().await
+            .map_err(|e| AppError::Mcp(format!("Failed to read initialize response: {}", e)))?;
+
+        // Parse SSE format to extract JSON
+        let json_str = Self::parse_sse_response(&sse_text)?;
+
+        // Parse the JSON-RPC response
+        let init_response: JsonRpcResponse = serde_json::from_str(&json_str)
+            .map_err(|e| AppError::Mcp(format!("Failed to parse initialize response JSON: {}", e)))?;
+
+        if let Some(error) = init_response.error {
+            return Err(AppError::Mcp(format!(
+                "MCP server returned error on initialize: {} (code {})",
+                error.message, error.code
             )));
         }
 
@@ -85,7 +144,7 @@ impl SseTransport {
             client,
             headers,
             pending: Arc::new(RwLock::new(HashMap::new())),
-            next_id: Arc::new(RwLock::new(1)),
+            next_id: Arc::new(RwLock::new(2)), // Start at 2 since we used 1 for initialization
             closed: Arc::new(RwLock::new(false)),
         };
 
@@ -133,6 +192,9 @@ impl Transport for SseTransport {
         // Build request with custom headers
         let mut req_builder = self.client.post(&self.url).json(&request);
 
+        // Add required SSE headers
+        req_builder = req_builder.header("Accept", "application/json, text/event-stream");
+
         for (key, value) in &self.headers {
             req_builder = req_builder.header(key, value);
         }
@@ -150,9 +212,17 @@ impl Transport for SseTransport {
             )));
         }
 
-        // Parse JSON-RPC response from body
-        let json_response: JsonRpcResponse = response.json().await.map_err(|e| {
-            AppError::Mcp(format!("Failed to parse response: {}", e))
+        // Read the SSE response as text
+        let sse_text = response.text().await.map_err(|e| {
+            AppError::Mcp(format!("Failed to read response: {}", e))
+        })?;
+
+        // Parse SSE format to extract JSON
+        let json_str = Self::parse_sse_response(&sse_text)?;
+
+        // Parse the JSON-RPC response
+        let json_response: JsonRpcResponse = serde_json::from_str(&json_str).map_err(|e| {
+            AppError::Mcp(format!("Failed to parse response JSON: {}", e))
         })?;
 
         Ok(json_response)

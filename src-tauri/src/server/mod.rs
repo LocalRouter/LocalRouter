@@ -27,9 +27,7 @@ use tokio::net::TcpListener;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::{error, info};
 
-use crate::api_keys::ApiKeyManager;
 use crate::mcp::McpServerManager;
-use crate::oauth_clients::OAuthClientManager;
 use crate::providers::registry::ProviderRegistry;
 use crate::router::{RateLimiterManager, Router as AppRouter};
 
@@ -65,23 +63,21 @@ impl Default for ServerConfig {
 /// - POST /mcp/{client_id}/{server_id} (MCP proxy)
 ///
 /// Returns the AppState, JoinHandle, and the actual port used
-#[allow(clippy::too_many_arguments)]
 pub async fn start_server(
     config: ServerConfig,
     router: Arc<AppRouter>,
-    api_key_manager: ApiKeyManager,
-    oauth_client_manager: OAuthClientManager,
     mcp_server_manager: Arc<McpServerManager>,
     rate_limiter: Arc<RateLimiterManager>,
     provider_registry: Arc<ProviderRegistry>,
+    config_manager: Arc<crate::config::ConfigManager>,
     client_manager: Arc<crate::clients::ClientManager>,
     token_store: Arc<crate::clients::TokenStore>,
 ) -> anyhow::Result<(AppState, tokio::task::JoinHandle<()>, u16)> {
     info!("Starting web server on {}:{}", config.host, config.port);
 
     // Create shared state
-    let state = AppState::new(router, api_key_manager, rate_limiter, provider_registry, client_manager, token_store)
-        .with_oauth_and_mcp(oauth_client_manager, mcp_server_manager);
+    let state = AppState::new(router, rate_limiter, provider_registry, config_manager, client_manager, token_store)
+        .with_mcp(mcp_server_manager);
 
     // Build the router with auth layer applied
     let app = build_app(state.clone(), config.enable_cors);
@@ -134,11 +130,11 @@ pub async fn start_server(
 
 /// Build the Axum app with all routes and middleware
 fn build_app(state: AppState, enable_cors: bool) -> Router {
-    // Build MCP routes with OAuth auth middleware
+    // Build MCP routes with client auth middleware
     let mcp_routes = Router::new()
         .route("/mcp/health", get(routes::mcp_health_handler))
         .route("/mcp/:client_id/:server_id", post(routes::mcp_proxy_handler))
-        .layer(axum::middleware::from_fn(middleware::oauth_auth::oauth_auth_middleware))
+        .layer(axum::middleware::from_fn(middleware::client_auth::client_auth_middleware))
         .layer(axum::Extension(state.clone()))
         .with_state(state.clone());
 
@@ -194,8 +190,17 @@ fn build_app(state: AppState, enable_cors: bool) -> Router {
     if enable_cors {
         let cors = CorsLayer::new()
             .allow_origin(Any)
-            .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+            .allow_methods([
+                Method::GET,
+                Method::POST,
+                Method::PUT,
+                Method::DELETE,
+                Method::PATCH,
+                Method::OPTIONS,
+                Method::HEAD,
+            ])
             .allow_headers(Any) // Allow all headers for OpenAI SDK compatibility
+            .expose_headers(Any) // Expose all headers in responses
             .allow_credentials(false);
 
         router = router.layer(cors);

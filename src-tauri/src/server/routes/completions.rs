@@ -261,7 +261,7 @@ async fn validate_client_provider_access(
     if !client.allowed_llm_providers.contains(&provider) {
         tracing::warn!(
             "Client {} attempted to access unauthorized LLM provider: {}",
-            client.client_id,
+            client.id,
             provider
         );
 
@@ -274,7 +274,7 @@ async fn validate_client_provider_access(
 
     tracing::debug!(
         "Client {} authorized for LLM provider: {}",
-        client.client_id,
+        client.id,
         provider
     );
 

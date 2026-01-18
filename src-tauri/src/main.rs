@@ -57,20 +57,6 @@ async fn main() -> anyhow::Result<()> {
         config::ConfigManager::new(config::AppConfig::default(), config::paths::config_file().unwrap())
     });
 
-    // Initialize API key manager with keys from config
-    // Actual API keys are stored in OS keychain, only metadata in config
-    let api_key_manager = {
-        let config = config_manager.get();
-        api_keys::ApiKeyManager::new(config.api_keys.clone())
-    };
-
-    // Initialize OAuth client manager for MCP
-    // Actual client secrets are stored in OS keychain, only metadata in config
-    let oauth_client_manager = {
-        let config = config_manager.get();
-        oauth_clients::OAuthClientManager::new(config.oauth_clients.clone())
-    };
-
     // Initialize unified client manager
     // Replaces both API key manager and OAuth client manager
     // Client secrets are stored in OS keychain, only metadata in config
@@ -82,6 +68,12 @@ async fn main() -> anyhow::Result<()> {
     // Initialize OAuth token store for short-lived access tokens
     // Tokens are stored in-memory only (1 hour expiry)
     let token_store = Arc::new(clients::TokenStore::new());
+
+    // Initialize OAuth client manager for MCP server authentication
+    let oauth_client_manager = {
+        let config = config_manager.get();
+        Arc::new(oauth_clients::OAuthClientManager::new(config.oauth_clients.clone()))
+    };
 
     // Initialize MCP server manager
     let mcp_server_manager = {
@@ -237,11 +229,10 @@ async fn main() -> anyhow::Result<()> {
             server_config,
             crate::server::manager::ServerDependencies {
                 router: app_router.clone(),
-                api_key_manager: api_key_manager.clone(),
-                oauth_client_manager: oauth_client_manager.clone(),
                 mcp_server_manager: mcp_server_manager.clone(),
                 rate_limiter: rate_limiter.clone(),
                 provider_registry: provider_registry.clone(),
+                config_manager: config_manager_arc.clone(),
                 client_manager: client_manager.clone(),
                 token_store: token_store.clone(),
             },
@@ -267,10 +258,9 @@ async fn main() -> anyhow::Result<()> {
 
             // Store managers
             app.manage(config_manager.clone());
-            app.manage(api_key_manager.clone());
-            app.manage(oauth_client_manager.clone());
             app.manage(client_manager.clone());
             app.manage(token_store.clone());
+            app.manage(oauth_client_manager.clone());
             app.manage(mcp_server_manager.clone());
             app.manage(provider_registry.clone());
             app.manage(health_manager.clone());
@@ -282,14 +272,13 @@ async fn main() -> anyhow::Result<()> {
             // Set up server restart event listener
             let server_manager_clone = server_manager.clone();
             let app_router_clone = app_router.clone();
-            let api_key_manager_clone = api_key_manager.clone();
-            let oauth_client_manager_clone = oauth_client_manager.clone();
             let mcp_server_manager_clone = mcp_server_manager.clone();
             let rate_limiter_clone = rate_limiter.clone();
             let provider_registry_clone = provider_registry.clone();
             let client_manager_clone = client_manager.clone();
             let token_store_clone = token_store.clone();
             let config_manager_clone = config_manager.clone();
+            let app_handle_for_restart = app.handle().clone();
 
             app.listen("server-restart-requested", move |_event| {
                 info!("Server restart requested");
@@ -307,33 +296,40 @@ async fn main() -> anyhow::Result<()> {
                 // Restart the server (spawn async task)
                 let server_manager_clone2 = server_manager_clone.clone();
                 let app_router_clone2 = app_router_clone.clone();
-                let api_key_manager_clone2 = api_key_manager_clone.clone();
-                let oauth_client_manager_clone2 = oauth_client_manager_clone.clone();
                 let mcp_server_manager_clone2 = mcp_server_manager_clone.clone();
                 let rate_limiter_clone2 = rate_limiter_clone.clone();
                 let provider_registry_clone2 = provider_registry_clone.clone();
+                let config_manager_clone2 = Arc::new(config_manager_clone.clone());
                 let client_manager_clone2 = client_manager_clone.clone();
                 let token_store_clone2 = token_store_clone.clone();
+                let app_handle = app_handle_for_restart.clone();
 
                 tokio::spawn(async move {
+                    use tauri::Emitter;
+
                     match server_manager_clone2
                         .start(
                             server_config,
                             crate::server::manager::ServerDependencies {
                                 router: app_router_clone2,
-                                api_key_manager: api_key_manager_clone2,
-                                oauth_client_manager: oauth_client_manager_clone2,
                                 mcp_server_manager: mcp_server_manager_clone2,
                                 rate_limiter: rate_limiter_clone2,
                                 provider_registry: provider_registry_clone2,
+                                config_manager: config_manager_clone2,
                                 client_manager: client_manager_clone2,
                                 token_store: token_store_clone2,
                             },
                         )
                         .await
                     {
-                        Ok(_) => info!("Server restarted successfully"),
-                        Err(e) => error!("Failed to restart server: {}", e),
+                        Ok(_) => {
+                            info!("Server restarted successfully");
+                            let _ = app_handle.emit("server-restart-completed", ());
+                        }
+                        Err(e) => {
+                            error!("Failed to restart server: {}", e);
+                            let _ = app_handle.emit("server-restart-failed", e.to_string());
+                        }
                     }
                 });
             });
@@ -341,6 +337,13 @@ async fn main() -> anyhow::Result<()> {
             // Set app handle on server state for event emission
             if let Some(state) = server_manager.get_state() {
                 state.set_app_handle(app.handle().clone());
+
+                // Spawn background aggregation task for metrics
+                let metrics_db = state.metrics_collector.db();
+                tokio::spawn(async move {
+                    monitoring::aggregation_task::spawn_aggregation_task(metrics_db).await;
+                });
+                info!("Spawned metrics aggregation task");
             }
 
             // Refresh model cache for tray menu
@@ -383,14 +386,6 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            ui::commands::list_api_keys,
-            ui::commands::create_api_key,
-            ui::commands::get_api_key_value,
-            ui::commands::delete_api_key,
-            ui::commands::update_api_key_model,
-            ui::commands::update_api_key_name,
-            ui::commands::toggle_api_key_enabled,
-            ui::commands::rotate_api_key,
             ui::commands::list_routers,
             ui::commands::get_config,
             ui::commands::reload_config,
@@ -409,6 +404,7 @@ async fn main() -> anyhow::Result<()> {
             ui::commands::get_providers_health,
             ui::commands::list_provider_models,
             ui::commands::list_all_models,
+            ui::commands::list_all_models_detailed,
             // Server configuration commands
             ui::commands::get_server_config,
             ui::commands::update_server_config,
@@ -422,8 +418,10 @@ async fn main() -> anyhow::Result<()> {
             ui::commands_metrics::get_model_metrics,
             ui::commands_metrics::list_tracked_models,
             ui::commands_metrics::list_tracked_providers,
+            ui::commands_metrics::list_tracked_api_keys,
             ui::commands_metrics::compare_api_keys,
             ui::commands_metrics::compare_providers,
+            ui::commands_metrics::compare_models,
             // MCP metrics commands
             ui::commands_mcp_metrics::get_global_mcp_metrics,
             ui::commands_mcp_metrics::get_client_mcp_metrics,
@@ -438,7 +436,6 @@ async fn main() -> anyhow::Result<()> {
             ui::commands::get_network_interfaces,
             // Server control commands
             ui::commands::get_server_status,
-            ui::commands::start_server,
             ui::commands::stop_server,
             // OAuth commands
             ui::commands::list_oauth_providers,
@@ -447,10 +444,6 @@ async fn main() -> anyhow::Result<()> {
             ui::commands::cancel_oauth_flow,
             ui::commands::list_oauth_credentials,
             ui::commands::delete_oauth_credentials,
-            // Routing strategy commands
-            ui::commands::get_routing_config,
-            ui::commands::update_prioritized_list,
-            ui::commands::set_routing_strategy,
             // OAuth client commands (for MCP)
             ui::commands::list_oauth_clients,
             ui::commands::create_oauth_client,
@@ -470,6 +463,7 @@ async fn main() -> anyhow::Result<()> {
             ui::commands::get_mcp_server_health,
             ui::commands::get_all_mcp_server_health,
             ui::commands::update_mcp_server_name,
+            ui::commands::update_mcp_server_config,
             ui::commands::toggle_mcp_server_enabled,
             ui::commands::list_mcp_tools,
             ui::commands::call_mcp_tool,
@@ -483,10 +477,19 @@ async fn main() -> anyhow::Result<()> {
             ui::commands::remove_client_llm_provider,
             ui::commands::add_client_mcp_server,
             ui::commands::remove_client_mcp_server,
+            // Client routing configuration commands
+            ui::commands::set_client_routing_strategy,
+            ui::commands::set_client_forced_model,
+            ui::commands::update_client_available_models,
+            ui::commands::update_client_prioritized_models,
+            ui::commands::get_client_value,
             // OpenAPI documentation commands
             ui::commands::get_openapi_spec,
             // Internal testing commands
-            ui::commands::get_internal_test_secret,
+            ui::commands::get_internal_test_token,
+            // Access logs commands
+            ui::commands::get_llm_logs,
+            ui::commands::get_mcp_logs,
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {

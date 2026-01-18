@@ -11,10 +11,10 @@ import ModelsTab from './components/tabs/ModelsTab'
 import OAuthClientsTab from './components/tabs/OAuthClientsTab'
 import McpServersTab from './components/tabs/McpServersTab'
 import DocumentationTab from './components/tabs/DocumentationTab'
-import { PrioritizedListModal } from './components/PrioritizedListModal'
+import LogsTab from './components/tabs/LogsTab'
 import { invoke } from '@tauri-apps/api/core'
 
-type Tab = 'home' | 'server' | 'clients' | 'api-keys' | 'providers' | 'models' | 'oauth-clients' | 'mcp-servers' | 'documentation'
+type Tab = 'home' | 'server' | 'clients' | 'api-keys' | 'providers' | 'models' | 'oauth-clients' | 'mcp-servers' | 'logs' | 'documentation'
 
 interface ApiKeyInfo {
   id: string
@@ -23,18 +23,20 @@ interface ApiKeyInfo {
   created_at: string
 }
 
+interface Client {
+  id: string
+  name: string
+  client_id: string
+  enabled: boolean
+  allowed_llm_providers: string[]
+  allowed_mcp_servers: string[]
+  created_at: string
+  last_used: string | null
+}
+
 function App() {
   const [activeTab, setActiveTab] = useState<Tab>('home')
   const [activeSubTab, setActiveSubTab] = useState<string | null>(null)
-  const [prioritizedListModal, setPrioritizedListModal] = useState<{
-    isOpen: boolean
-    apiKeyId: string
-    apiKeyName: string
-  }>({
-    isOpen: false,
-    apiKeyId: '',
-    apiKeyName: '',
-  })
 
   const handleTabChange = (tab: Tab, subTab?: string) => {
     setActiveTab(tab)
@@ -53,23 +55,28 @@ function App() {
       console.log('Opening prioritized list for API key:', apiKeyId)
 
       try {
-        // Get API key info to show the name
+        // Try to find the client by ID (new unified client system)
+        const clients = await invoke<Client[]>('list_clients')
+        const client = clients.find((c) => c.id === apiKeyId || c.client_id === apiKeyId)
+
+        if (client) {
+          // Navigate to clients tab with this client ID, and append tab info
+          setActiveTab('clients')
+          setActiveSubTab(`${client.client_id}|models|prioritized`)
+          return
+        }
+
+        // Fallback: try API keys (legacy system)
         const keys = await invoke<ApiKeyInfo[]>('list_api_keys')
         const key = keys.find((k) => k.id === apiKeyId)
 
         if (key) {
-          // Switch to API keys tab
+          // Navigate to API keys tab with this key ID
           setActiveTab('api-keys')
-
-          // Open modal
-          setPrioritizedListModal({
-            isOpen: true,
-            apiKeyId: key.id,
-            apiKeyName: key.name,
-          })
+          setActiveSubTab(key.id)
         }
       } catch (err) {
-        console.error('Failed to load API key:', err)
+        console.error('Failed to load client/API key:', err)
       }
     })
 
@@ -80,7 +87,7 @@ function App() {
   }, [])
 
   return (
-    <div className="flex flex-col h-screen bg-gray-50">
+    <div className="flex flex-col h-screen bg-gray-50 dark:bg-gray-900">
       <Header />
 
       <div className="flex flex-1 overflow-hidden">
@@ -111,23 +118,10 @@ function App() {
           {activeTab === 'mcp-servers' && (
             <McpServersTab activeSubTab={activeSubTab} onTabChange={handleTabChange} />
           )}
+          {activeTab === 'logs' && <LogsTab />}
           {activeTab === 'documentation' && <DocumentationTab />}
         </main>
       </div>
-
-      {/* Prioritized List Modal */}
-      <PrioritizedListModal
-        isOpen={prioritizedListModal.isOpen}
-        onClose={() =>
-          setPrioritizedListModal({ isOpen: false, apiKeyId: '', apiKeyName: '' })
-        }
-        apiKeyId={prioritizedListModal.apiKeyId}
-        apiKeyName={prioritizedListModal.apiKeyName}
-        onSuccess={() => {
-          console.log('Prioritized list saved successfully')
-          // The modal will close itself and tray menu will rebuild
-        }}
-      />
     </div>
   )
 }

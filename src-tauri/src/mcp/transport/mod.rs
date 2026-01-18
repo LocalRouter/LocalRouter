@@ -1,17 +1,17 @@
 //! MCP transport layer implementations
 //!
-//! Supports three transport types:
+//! Supports two transport types:
 //! - STDIO: Subprocess with piped stdin/stdout
-//! - SSE: Server-Sent Events over HTTP
-//! - WebSocket: Bidirectional WebSocket connection
+//! - HTTP-SSE: Server-Sent Events over HTTP
 
 pub mod sse;
 pub mod stdio;
-pub mod websocket;
+// WebSocket transport has been removed - use HTTP-SSE or STDIO instead
+// pub mod websocket;
 
 pub use sse::SseTransport;
 pub use stdio::StdioTransport;
-pub use websocket::WebSocketTransport;
+// pub use websocket::WebSocketTransport;
 
 use crate::mcp::protocol::{JsonRpcRequest, JsonRpcResponse};
 use crate::utils::errors::AppResult;

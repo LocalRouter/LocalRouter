@@ -26,9 +26,6 @@ export default function OAuthClientsTab({ activeSubTab, onTabChange }: OAuthClie
   const [clients, setClients] = useState<OAuthClient[]>([])
   const [loading, setLoading] = useState(true)
   const [showCreateModal, setShowCreateModal] = useState(false)
-  const [showCredentialsModal, setShowCredentialsModal] = useState(false)
-  const [newClientId, setNewClientId] = useState('')
-  const [newClientSecret, setNewClientSecret] = useState('')
 
   // Form state
   const [clientName, setClientName] = useState('')
@@ -61,30 +58,25 @@ export default function OAuthClientsTab({ activeSubTab, onTabChange }: OAuthClie
         name: clientName || null,
       })
 
-      const [clientId, clientSecret, _clientInfo] = result
-      setNewClientId(clientId)
-      setNewClientSecret(clientSecret)
+      const [_clientId, _clientSecret, clientInfo] = result
 
-      // Show credentials modal
+      // Close modal
       setShowCreateModal(false)
-      setShowCredentialsModal(true)
 
       // Reload clients
       await loadClients()
 
       // Reset form
       setClientName('')
+
+      // Navigate to the newly created client's detail page
+      onTabChange?.('oauth-clients', clientInfo.id)
     } catch (error) {
       console.error('Failed to create OAuth client:', error)
       alert(`Error creating OAuth client: ${error}`)
     } finally {
       setIsCreating(false)
     }
-  }
-
-  const copyToClipboard = (text: string, label: string) => {
-    navigator.clipboard.writeText(text)
-    alert(`${label} copied to clipboard!`)
   }
 
   const formatDate = (dateStr: string | null) => {
@@ -112,8 +104,8 @@ export default function OAuthClientsTab({ activeSubTab, onTabChange }: OAuthClie
       {/* Header */}
       <div className="flex justify-between items-center">
         <div>
-          <h1 className="text-3xl font-bold">OAuth Clients</h1>
-          <p className="text-gray-400 mt-1">
+          <h1 className="text-3xl font-bold text-gray-900 dark:text-gray-100">OAuth Clients</h1>
+          <p className="text-gray-600 dark:text-gray-400 mt-1">
             Manage OAuth clients for MCP (Model Context Protocol) authentication
           </p>
         </div>
@@ -125,13 +117,13 @@ export default function OAuthClientsTab({ activeSubTab, onTabChange }: OAuthClie
       {/* Clients List */}
       <Card>
         <div className="p-6">
-          <h2 className="text-xl font-semibold mb-4">OAuth Clients</h2>
+          <h2 className="text-xl font-semibold text-gray-900 dark:text-gray-100 mb-4">OAuth Clients</h2>
 
           {loading ? (
-            <div className="text-center py-8 text-gray-400">Loading...</div>
+            <div className="text-center py-8 text-gray-500 dark:text-gray-400">Loading...</div>
           ) : clients.length === 0 ? (
             <div className="text-center py-8">
-              <p className="text-gray-400 mb-4">No OAuth clients yet</p>
+              <p className="text-gray-500 dark:text-gray-400 mb-4">No OAuth clients yet</p>
               <Button onClick={() => setShowCreateModal(true)}>
                 Create Your First Client
               </Button>
@@ -140,25 +132,25 @@ export default function OAuthClientsTab({ activeSubTab, onTabChange }: OAuthClie
             <div className="overflow-x-auto">
               <table className="w-full">
                 <thead>
-                  <tr className="border-b border-gray-700">
-                    <th className="text-left p-3 font-medium text-gray-400">Name</th>
-                    <th className="text-left p-3 font-medium text-gray-400">Client ID</th>
-                    <th className="text-left p-3 font-medium text-gray-400">Status</th>
-                    <th className="text-left p-3 font-medium text-gray-400">Linked Servers</th>
-                    <th className="text-left p-3 font-medium text-gray-400">Created</th>
-                    <th className="text-left p-3 font-medium text-gray-400">Last Used</th>
-                    <th className="text-left p-3 font-medium text-gray-400">Actions</th>
+                  <tr className="border-b border-gray-200 dark:border-gray-700">
+                    <th className="text-left p-3 font-medium text-gray-600 dark:text-gray-400">Name</th>
+                    <th className="text-left p-3 font-medium text-gray-600 dark:text-gray-400">Client ID</th>
+                    <th className="text-left p-3 font-medium text-gray-600 dark:text-gray-400">Status</th>
+                    <th className="text-left p-3 font-medium text-gray-600 dark:text-gray-400">Linked Servers</th>
+                    <th className="text-left p-3 font-medium text-gray-600 dark:text-gray-400">Created</th>
+                    <th className="text-left p-3 font-medium text-gray-600 dark:text-gray-400">Last Used</th>
+                    <th className="text-left p-3 font-medium text-gray-600 dark:text-gray-400">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
                   {clients.map((client) => (
                     <tr
                       key={client.id}
-                      className="border-b border-gray-800 hover:bg-gray-800/50 cursor-pointer"
+                      className="border-b border-gray-200 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/50 cursor-pointer"
                       onClick={() => onTabChange?.('oauth-clients', client.id)}
                     >
-                      <td className="p-3">{client.name}</td>
-                      <td className="p-3 font-mono text-sm text-gray-400">
+                      <td className="p-3 text-gray-900 dark:text-gray-100">{client.name}</td>
+                      <td className="p-3 font-mono text-sm text-gray-600 dark:text-gray-400">
                         {maskClientId(client.client_id)}
                       </td>
                       <td className="p-3">
@@ -171,10 +163,10 @@ export default function OAuthClientsTab({ activeSubTab, onTabChange }: OAuthClie
                           {client.linked_server_ids.length} servers
                         </Badge>
                       </td>
-                      <td className="p-3 text-sm text-gray-400">
+                      <td className="p-3 text-sm text-gray-600 dark:text-gray-400">
                         {formatDate(client.created_at)}
                       </td>
-                      <td className="p-3 text-sm text-gray-400">
+                      <td className="p-3 text-sm text-gray-600 dark:text-gray-400">
                         {formatDate(client.last_used)}
                       </td>
                       <td className="p-3">
@@ -206,7 +198,7 @@ export default function OAuthClientsTab({ activeSubTab, onTabChange }: OAuthClie
       >
         <form onSubmit={handleCreateClient} className="space-y-4">
           <div>
-            <label className="block text-sm font-medium mb-2">
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
               Client Name (Optional)
             </label>
             <Input
@@ -214,7 +206,7 @@ export default function OAuthClientsTab({ activeSubTab, onTabChange }: OAuthClie
               onChange={(e) => setClientName(e.target.value)}
               placeholder="My MCP Client"
             />
-            <p className="text-sm text-gray-400 mt-1">
+            <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
               A friendly name to identify this client
             </p>
           </div>
@@ -233,61 +225,6 @@ export default function OAuthClientsTab({ activeSubTab, onTabChange }: OAuthClie
             </Button>
           </div>
         </form>
-      </Modal>
-
-      {/* Credentials Display Modal */}
-      <Modal
-        isOpen={showCredentialsModal}
-        onClose={() => setShowCredentialsModal(false)}
-        title="OAuth Client Created"
-      >
-        <div className="space-y-4">
-          <div className="bg-yellow-900/20 border border-yellow-700 rounded p-4">
-            <p className="text-yellow-200 text-sm">
-              <strong>Important:</strong> Save these credentials now. The client secret will not be shown again.
-            </p>
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium mb-2">Client ID</label>
-            <div className="flex gap-2">
-              <Input
-                value={newClientId}
-                readOnly
-                className="flex-1 font-mono text-sm"
-              />
-              <Button
-                variant="secondary"
-                onClick={() => copyToClipboard(newClientId, 'Client ID')}
-              >
-                Copy
-              </Button>
-            </div>
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium mb-2">Client Secret</label>
-            <div className="flex gap-2">
-              <Input
-                value={newClientSecret}
-                readOnly
-                className="flex-1 font-mono text-sm"
-              />
-              <Button
-                variant="secondary"
-                onClick={() => copyToClipboard(newClientSecret, 'Client Secret')}
-              >
-                Copy
-              </Button>
-            </div>
-          </div>
-
-          <div className="flex justify-end">
-            <Button onClick={() => setShowCredentialsModal(false)}>
-              Done
-            </Button>
-          </div>
-        </div>
       </Modal>
     </div>
   )

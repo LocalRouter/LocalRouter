@@ -58,6 +58,7 @@ hex = { workspace = true }
 machine-uid = { workspace = true }
 ollama-rs = { workspace = true }
 jsonschema = "0.18"  # JSON Schema validation for structured outputs
+rusqlite = { version = "0.32", features = ["bundled"] }  # SQLite for metrics storage
 
 # OpenAPI documentation
 utoipa = { version = "5", features = ["axum_extras", "chrono", "uuid"] }

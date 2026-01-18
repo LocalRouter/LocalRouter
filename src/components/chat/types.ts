@@ -7,6 +7,7 @@ export interface ApiKeyContext {
   apiKeyId: string;
   apiKeyName: string;
   modelSelection: any; // API key's model selection config
+  bearerToken?: string; // Optional: directly provide the bearer token instead of fetching from keychain
 }
 
 export interface ProviderContext {

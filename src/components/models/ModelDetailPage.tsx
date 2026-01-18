@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import Card from '../ui/Card'
 import Badge from '../ui/Badge'
@@ -118,6 +118,13 @@ export default function ModelDetailPage({ modelKey, onTabChange }: ModelDetailPa
       </div>
     )
   }
+
+  // Memoize context object to prevent re-renders
+  const chatContext = useMemo(() => ({
+    type: 'model' as const,
+    providerInstance: model.provider_instance,
+    modelId: model.model_id,
+  }), [model.provider_instance, model.model_id]);
 
   const tabs = [
     {
@@ -271,13 +278,7 @@ export default function ModelDetailPage({ modelKey, onTabChange }: ModelDetailPa
       content: (
         <Card>
           <h3 className="text-lg font-semibold text-gray-900 mb-4">Chat with Model</h3>
-          <ContextualChat
-            context={{
-              type: 'model',
-              providerInstance: model.provider_instance,
-              modelId: model.model_id,
-            }}
-          />
+          <ContextualChat context={chatContext} />
         </Card>
       ),
     },

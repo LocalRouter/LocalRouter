@@ -1,14 +1,58 @@
 import Input from '../ui/Input'
 import Select from '../ui/Select'
+import KeyValueInput from '../ui/KeyValueInput'
+
+// Helper functions to convert between string format and Record<string, string>
+function parseEnvVars(envVarsStr: string): Record<string, string> {
+  const result: Record<string, string> = {}
+  if (!envVarsStr.trim()) return result
+
+  envVarsStr.split('\n').forEach(line => {
+    const trimmed = line.trim()
+    if (!trimmed) return
+    const [key, ...valueParts] = trimmed.split('=')
+    if (key && valueParts.length > 0) {
+      result[key.trim()] = valueParts.join('=').trim()
+    }
+  })
+  return result
+}
+
+function stringifyEnvVars(envVars: Record<string, string>): string {
+  return Object.entries(envVars)
+    .map(([k, v]) => `${k}=${v}`)
+    .join('\n')
+}
+
+function parseHeaders(headersStr: string): Record<string, string> {
+  const result: Record<string, string> = {}
+  if (!headersStr.trim()) return result
+
+  headersStr.split('\n').forEach(line => {
+    const trimmed = line.trim()
+    if (!trimmed) return
+    const [key, ...valueParts] = trimmed.split(':')
+    if (key && valueParts.length > 0) {
+      result[key.trim()] = valueParts.join(':').trim()
+    }
+  })
+  return result
+}
+
+function stringifyHeaders(headers: Record<string, string>): string {
+  return Object.entries(headers)
+    .map(([k, v]) => `${k}: ${v}`)
+    .join('\n')
+}
 
 export interface McpConfigFormData {
   serverName: string
-  transportType: 'Stdio' | 'Sse' | 'WebSocket'
+  transportType: 'Stdio' | 'Sse'
   // STDIO config
   command: string
   args: string
   envVars: string
-  // SSE/WebSocket config
+  // SSE config
   url: string
   headers: string
   // Auth config
@@ -28,9 +72,10 @@ interface McpConfigFormProps {
   onChange: (field: keyof McpConfigFormData, value: string) => void
   disabled?: boolean
   showTransportType?: boolean
+  disableTransportTypeChange?: boolean
 }
 
-export default function McpConfigForm({ formData, onChange, disabled = false, showTransportType = true }: McpConfigFormProps) {
+export default function McpConfigForm({ formData, onChange, disabled = false, showTransportType = true, disableTransportTypeChange = false }: McpConfigFormProps) {
   return (
     <div className="space-y-4">
       <div>
@@ -54,12 +99,16 @@ export default function McpConfigForm({ formData, onChange, disabled = false, sh
           <Select
             value={formData.transportType}
             onChange={(e) => onChange('transportType', e.target.value)}
-            disabled={disabled}
+            disabled={disabled || disableTransportTypeChange}
           >
             <option value="Stdio">STDIO (Subprocess)</option>
             <option value="Sse">SSE (Server-Sent Events)</option>
-            <option value="WebSocket">WebSocket</option>
           </Select>
+          {disableTransportTypeChange && !disabled && (
+            <p className="text-xs text-gray-500 mt-1">
+              Changing transport type will require restarting the server
+            </p>
+          )}
         </div>
       )}
 
@@ -95,22 +144,20 @@ export default function McpConfigForm({ formData, onChange, disabled = false, sh
 
           <div>
             <label className="block text-sm font-medium mb-2">
-              Environment Variables (KEY=VALUE, one per line)
+              Environment Variables
             </label>
-            <textarea
-              value={formData.envVars}
-              onChange={(e) => onChange('envVars', e.target.value)}
-              placeholder="API_KEY=your_key&#10;DEBUG=true"
-              className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-md"
-              rows={3}
-              disabled={disabled}
+            <KeyValueInput
+              value={parseEnvVars(formData.envVars)}
+              onChange={(envVars) => onChange('envVars', stringifyEnvVars(envVars))}
+              keyPlaceholder="KEY"
+              valuePlaceholder="VALUE"
             />
           </div>
         </>
       )}
 
-      {/* SSE/WebSocket Config */}
-      {(formData.transportType === 'Sse' || formData.transportType === 'WebSocket') && (
+      {/* SSE Config */}
+      {formData.transportType === 'Sse' && (
         <>
           <div>
             <label className="block text-sm font-medium mb-2">
@@ -119,7 +166,7 @@ export default function McpConfigForm({ formData, onChange, disabled = false, sh
             <Input
               value={formData.url}
               onChange={(e) => onChange('url', e.target.value)}
-              placeholder={formData.transportType === 'WebSocket' ? 'ws://localhost:3000' : 'http://localhost:3000'}
+              placeholder="http://localhost:3000"
               disabled={disabled}
               required
             />
@@ -127,15 +174,13 @@ export default function McpConfigForm({ formData, onChange, disabled = false, sh
 
           <div>
             <label className="block text-sm font-medium mb-2">
-              Headers (KEY: VALUE, one per line)
+              Headers
             </label>
-            <textarea
-              value={formData.headers}
-              onChange={(e) => onChange('headers', e.target.value)}
-              placeholder="Authorization: Bearer token&#10;X-Custom-Header: value"
-              className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-md"
-              rows={3}
-              disabled={disabled}
+            <KeyValueInput
+              value={parseHeaders(formData.headers)}
+              onChange={(headers) => onChange('headers', stringifyHeaders(headers))}
+              keyPlaceholder="Header Name"
+              valuePlaceholder="Header Value"
             />
           </div>
         </>
@@ -157,7 +202,7 @@ export default function McpConfigForm({ formData, onChange, disabled = false, sh
             onChange={(e) => onChange('authMethod', e.target.value)}
             disabled={disabled}
           >
-            <option value="none">None (No Authentication)</option>
+            <option value="none">None / Via headers</option>
             {formData.transportType !== 'Stdio' && <option value="bearer">Bearer Token</option>}
             {formData.transportType !== 'Stdio' && <option value="custom_headers">Custom Headers</option>}
             {formData.transportType !== 'Stdio' && <option value="oauth">OAuth (Pre-registered)</option>}
@@ -189,16 +234,13 @@ export default function McpConfigForm({ formData, onChange, disabled = false, sh
         {formData.authMethod === 'custom_headers' && (
           <div className="mt-3">
             <label className="block text-sm font-medium mb-2">
-              Auth Headers (KEY: VALUE, one per line)
+              Auth Headers
             </label>
-            <textarea
-              value={formData.authHeaders}
-              onChange={(e) => onChange('authHeaders', e.target.value)}
-              placeholder="Authorization: Bearer token&#10;X-API-Key: your-key"
-              className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-md"
-              rows={3}
-              disabled={disabled}
-              required
+            <KeyValueInput
+              value={parseHeaders(formData.authHeaders)}
+              onChange={(headers) => onChange('authHeaders', stringifyHeaders(headers))}
+              keyPlaceholder="Header Name"
+              valuePlaceholder="Header Value"
             />
             <p className="text-xs text-gray-500 mt-1">
               These headers will be sent with every request
@@ -241,32 +283,6 @@ export default function McpConfigForm({ formData, onChange, disabled = false, sh
 
             <div>
               <label className="block text-sm font-medium mb-2">
-                Authorization URL
-              </label>
-              <Input
-                value={formData.oauthAuthUrl}
-                onChange={(e) => onChange('oauthAuthUrl', e.target.value)}
-                placeholder="https://auth.example.com/authorize"
-                disabled={disabled}
-                required
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium mb-2">
-                Token URL
-              </label>
-              <Input
-                value={formData.oauthTokenUrl}
-                onChange={(e) => onChange('oauthTokenUrl', e.target.value)}
-                placeholder="https://auth.example.com/token"
-                disabled={disabled}
-                required
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium mb-2">
                 Scopes (comma or newline separated)
               </label>
               <textarea
@@ -281,8 +297,7 @@ export default function McpConfigForm({ formData, onChange, disabled = false, sh
 
             <div className="bg-yellow-900/20 border border-yellow-700 rounded p-3">
               <p className="text-yellow-200 text-sm">
-                <strong>Note:</strong> This is for pre-registered OAuth credentials.
-                OAuth flow authentication is not yet fully implemented.
+                <strong>Note:</strong> OAuth URLs are auto-discovered from the MCP server.
               </p>
             </div>
           </div>
@@ -292,16 +307,13 @@ export default function McpConfigForm({ formData, onChange, disabled = false, sh
         {formData.authMethod === 'env_vars' && (
           <div className="mt-3">
             <label className="block text-sm font-medium mb-2">
-              Auth Environment Variables (KEY=VALUE, one per line)
+              Auth Environment Variables
             </label>
-            <textarea
-              value={formData.authEnvVars}
-              onChange={(e) => onChange('authEnvVars', e.target.value)}
-              placeholder="API_KEY=your-api-key&#10;AUTH_TOKEN=your-token"
-              className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-md"
-              rows={3}
-              disabled={disabled}
-              required
+            <KeyValueInput
+              value={parseEnvVars(formData.authEnvVars)}
+              onChange={(envVars) => onChange('authEnvVars', stringifyEnvVars(envVars))}
+              keyPlaceholder="KEY"
+              valuePlaceholder="VALUE"
             />
             <p className="text-xs text-gray-500 mt-1">
               These will be merged with base environment variables

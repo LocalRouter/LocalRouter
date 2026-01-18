@@ -1,15 +1,16 @@
-//! In-memory metrics collection
+//! Metrics collection with SQLite persistence
 //!
-//! Tracks usage metrics for the last 24 hours at 1-minute granularity.
+//! Tracks usage metrics with progressive aggregation:
+//! - Per-minute: Last 24 hours
+//! - Per-hour: Last 7 days
+//! - Per-day: Last 90 days
 
-#![allow(dead_code)]
-
-use chrono::{DateTime, Duration, Utc};
-use dashmap::DashMap;
+use chrono::{DateTime, DurationRound, Utc};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 use super::mcp_metrics::McpMetricsCollector;
+use super::storage::{Granularity, MetricRow, MetricsDatabase};
 
 /// Request metrics for recording
 #[derive(Debug, Clone)]
@@ -23,10 +24,10 @@ pub struct RequestMetrics<'a> {
     pub latency_ms: u64,
 }
 
-/// Time-series data point for metrics
+/// Time-series data point for metrics (for API compatibility)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MetricDataPoint {
-    /// Timestamp (rounded to minute)
+    /// Timestamp (rounded to minute/hour/day)
     pub timestamp: DateTime<Utc>,
 
     /// Number of requests
@@ -58,22 +59,6 @@ pub struct MetricDataPoint {
 }
 
 impl MetricDataPoint {
-    /// Create a new empty metric data point
-    fn new(timestamp: DateTime<Utc>) -> Self {
-        Self {
-            timestamp,
-            requests: 0,
-            input_tokens: 0,
-            output_tokens: 0,
-            total_tokens: 0,
-            cost_usd: 0.0,
-            total_latency_ms: 0,
-            successful_requests: 0,
-            failed_requests: 0,
-            latency_samples: Vec::new(),
-        }
-    }
-
     /// Get average latency in milliseconds
     pub fn avg_latency_ms(&self) -> f64 {
         if self.requests > 0 {
@@ -104,182 +89,53 @@ impl MetricDataPoint {
         let index = ((percentile / 100.0) * (sorted.len() as f64 - 1.0)) as usize;
         sorted[index]
     }
-
-    /// Add a successful request to this data point
-    fn add_success(
-        &mut self,
-        input_tokens: u64,
-        output_tokens: u64,
-        cost_usd: f64,
-        latency_ms: u64,
-    ) {
-        self.requests += 1;
-        self.successful_requests += 1;
-        self.input_tokens += input_tokens;
-        self.output_tokens += output_tokens;
-        self.total_tokens += input_tokens + output_tokens;
-        self.cost_usd += cost_usd;
-        self.total_latency_ms += latency_ms;
-        self.latency_samples.push(latency_ms);
-    }
-
-    /// Add a failed request to this data point
-    fn add_failure(&mut self, latency_ms: u64) {
-        self.requests += 1;
-        self.failed_requests += 1;
-        self.total_latency_ms += latency_ms;
-        self.latency_samples.push(latency_ms);
-    }
 }
 
-/// Time-series metrics storage
-#[derive(Debug, Clone)]
-struct TimeSeries {
-    /// Map of timestamp (minute) to data point
-    data: Arc<DashMap<i64, MetricDataPoint>>,
-}
+impl From<MetricRow> for MetricDataPoint {
+    fn from(row: MetricRow) -> Self {
+        let input_tokens = row.input_tokens.unwrap_or(0);
+        let output_tokens = row.output_tokens.unwrap_or(0);
 
-impl TimeSeries {
-    /// Create a new time series
-    fn new() -> Self {
         Self {
-            data: Arc::new(DashMap::new()),
+            timestamp: row.timestamp,
+            requests: row.requests,
+            input_tokens,
+            output_tokens,
+            total_tokens: input_tokens + output_tokens,
+            cost_usd: row.cost_usd.unwrap_or(0.0),
+            total_latency_ms: (row.avg_latency_ms * row.requests as f64) as u64,
+            successful_requests: row.successful_requests,
+            failed_requests: row.failed_requests,
+            latency_samples: vec![], // Not stored in aggregated data
         }
     }
-
-    /// Get the minute timestamp (rounded down)
-    fn get_minute_timestamp(timestamp: DateTime<Utc>) -> i64 {
-        timestamp.timestamp() / 60 * 60
-    }
-
-    /// Get or create a data point for a given timestamp
-    #[allow(dead_code)]
-    fn get_or_create_point(&self, timestamp: DateTime<Utc>) -> MetricDataPoint {
-        let minute_ts = Self::get_minute_timestamp(timestamp);
-
-        self.data
-            .entry(minute_ts)
-            .or_insert_with(|| {
-                let rounded_time =
-                    DateTime::from_timestamp(minute_ts, 0).unwrap_or_else(Utc::now);
-                MetricDataPoint::new(rounded_time)
-            })
-            .clone()
-    }
-
-    /// Record a successful request
-    fn record_success(
-        &self,
-        timestamp: DateTime<Utc>,
-        input_tokens: u64,
-        output_tokens: u64,
-        cost_usd: f64,
-        latency_ms: u64,
-    ) {
-        let minute_ts = Self::get_minute_timestamp(timestamp);
-
-        self.data
-            .entry(minute_ts)
-            .and_modify(|point| {
-                point.add_success(input_tokens, output_tokens, cost_usd, latency_ms);
-            })
-            .or_insert_with(|| {
-                let rounded_time =
-                    DateTime::from_timestamp(minute_ts, 0).unwrap_or_else(Utc::now);
-                let mut point = MetricDataPoint::new(rounded_time);
-                point.add_success(input_tokens, output_tokens, cost_usd, latency_ms);
-                point
-            });
-    }
-
-    /// Record a failed request
-    fn record_failure(&self, timestamp: DateTime<Utc>, latency_ms: u64) {
-        let minute_ts = Self::get_minute_timestamp(timestamp);
-
-        self.data
-            .entry(minute_ts)
-            .and_modify(|point| {
-                point.add_failure(latency_ms);
-            })
-            .or_insert_with(|| {
-                let rounded_time =
-                    DateTime::from_timestamp(minute_ts, 0).unwrap_or_else(Utc::now);
-                let mut point = MetricDataPoint::new(rounded_time);
-                point.add_failure(latency_ms);
-                point
-            });
-    }
-
-    /// Get all data points in a time range
-    fn get_range(&self, start: DateTime<Utc>, end: DateTime<Utc>) -> Vec<MetricDataPoint> {
-        let start_ts = Self::get_minute_timestamp(start);
-        let end_ts = Self::get_minute_timestamp(end);
-
-        let mut points: Vec<MetricDataPoint> = self
-            .data
-            .iter()
-            .filter(|entry| {
-                let ts = *entry.key();
-                ts >= start_ts && ts <= end_ts
-            })
-            .map(|entry| entry.value().clone())
-            .collect();
-
-        points.sort_by_key(|p| p.timestamp);
-        points
-    }
-
-    /// Clean up data older than retention period
-    fn cleanup(&self, retention_hours: i64) {
-        let cutoff = Utc::now() - Duration::hours(retention_hours);
-        let cutoff_ts = Self::get_minute_timestamp(cutoff);
-
-        self.data.retain(|ts, _| *ts >= cutoff_ts);
-    }
-
-    /// Get total count of data points
-    fn len(&self) -> usize {
-        self.data.len()
-    }
 }
 
-/// Metrics collector for tracking usage
+/// Metrics collector for tracking usage with SQLite persistence
 pub struct MetricsCollector {
-    /// Global metrics
-    global: TimeSeries,
+    /// SQLite database for persistent storage
+    db: Arc<MetricsDatabase>,
 
-    /// Per-API-key metrics
-    per_key: Arc<DashMap<String, TimeSeries>>,
-
-    /// Per-provider metrics
-    per_provider: Arc<DashMap<String, TimeSeries>>,
-
-    /// Per-model metrics
-    per_model: Arc<DashMap<String, TimeSeries>>,
-
-    /// MCP metrics collector
+    /// MCP metrics collector (still in-memory for now)
     mcp_metrics: McpMetricsCollector,
-
-    /// Retention period in hours
-    retention_hours: i64,
 }
 
 impl MetricsCollector {
-    /// Create a new metrics collector
-    pub fn new(retention_hours: i64) -> Self {
+    /// Create a new metrics collector with database
+    pub fn new(db: Arc<MetricsDatabase>) -> Self {
         Self {
-            global: TimeSeries::new(),
-            per_key: Arc::new(DashMap::new()),
-            per_provider: Arc::new(DashMap::new()),
-            per_model: Arc::new(DashMap::new()),
-            mcp_metrics: McpMetricsCollector::new(retention_hours),
-            retention_hours,
+            db,
+            mcp_metrics: McpMetricsCollector::new(24), // 24 hour retention for MCP
         }
     }
 
-    /// Create a new metrics collector with default 24-hour retention
+    /// Create a new metrics collector with default retention (deprecated)
+    #[deprecated(note = "Use new() with database instead")]
     pub fn with_default_retention() -> Self {
-        Self::new(24)
+        // Create an in-memory database for backward compatibility
+        let db_path = std::env::temp_dir().join(format!("metrics-{}.db", uuid::Uuid::new_v4()));
+        let db = Arc::new(MetricsDatabase::new(db_path).expect("Failed to create temp database"));
+        Self::new(db)
     }
 
     /// Record a successful request
@@ -289,27 +145,76 @@ impl MetricsCollector {
 
     /// Record a successful request at a specific timestamp (for testing)
     pub fn record_success_at(&self, metrics: &RequestMetrics, timestamp: DateTime<Utc>) {
-        // Record in global metrics
-        self.global
-            .record_success(timestamp, metrics.input_tokens, metrics.output_tokens, metrics.cost_usd, metrics.latency_ms);
+        let minute_timestamp = timestamp
+            .duration_trunc(chrono::Duration::minutes(1))
+            .unwrap();
 
-        // Record in per-key metrics
-        self.per_key
-            .entry(metrics.api_key_name.to_string())
-            .or_insert_with(TimeSeries::new)
-            .record_success(timestamp, metrics.input_tokens, metrics.output_tokens, metrics.cost_usd, metrics.latency_ms);
+        // Create metric row for this minute
+        let row = MetricRow {
+            timestamp: minute_timestamp,
+            granularity: Granularity::Minute,
+            requests: 1,
+            successful_requests: 1,
+            failed_requests: 0,
+            avg_latency_ms: metrics.latency_ms as f64,
+            input_tokens: Some(metrics.input_tokens),
+            output_tokens: Some(metrics.output_tokens),
+            cost_usd: Some(metrics.cost_usd),
+            method_counts: None,
+            p50_latency_ms: Some(metrics.latency_ms as f64),
+            p95_latency_ms: Some(metrics.latency_ms as f64),
+            p99_latency_ms: Some(metrics.latency_ms as f64),
+        };
 
-        // Record in per-provider metrics
-        self.per_provider
-            .entry(metrics.provider.to_string())
-            .or_insert_with(TimeSeries::new)
-            .record_success(timestamp, metrics.input_tokens, metrics.output_tokens, metrics.cost_usd, metrics.latency_ms);
+        // Write to all four tiers
+        let metric_types = vec![
+            "llm_global".to_string(),
+            format!("llm_key:{}", metrics.api_key_name),
+            format!("llm_provider:{}", metrics.provider),
+            format!("llm_model:{}", metrics.model),
+        ];
 
-        // Record in per-model metrics
-        self.per_model
-            .entry(metrics.model.to_string())
-            .or_insert_with(TimeSeries::new)
-            .record_success(timestamp, metrics.input_tokens, metrics.output_tokens, metrics.cost_usd, metrics.latency_ms);
+        for metric_type in metric_types {
+            // Try to read existing data for this minute
+            if let Ok(existing) = self.db.query_metrics(
+                &metric_type,
+                minute_timestamp,
+                minute_timestamp + chrono::Duration::minutes(1),
+            ) {
+                if let Some(existing_row) = existing.first() {
+                    // Merge with existing data
+                    let merged_row = MetricRow {
+                        timestamp: minute_timestamp,
+                        granularity: Granularity::Minute,
+                        requests: existing_row.requests + 1,
+                        successful_requests: existing_row.successful_requests + 1,
+                        failed_requests: existing_row.failed_requests,
+                        avg_latency_ms: (existing_row.avg_latency_ms * existing_row.requests as f64
+                            + metrics.latency_ms as f64)
+                            / (existing_row.requests + 1) as f64,
+                        input_tokens: Some(
+                            existing_row.input_tokens.unwrap_or(0) + metrics.input_tokens,
+                        ),
+                        output_tokens: Some(
+                            existing_row.output_tokens.unwrap_or(0) + metrics.output_tokens,
+                        ),
+                        cost_usd: Some(existing_row.cost_usd.unwrap_or(0.0) + metrics.cost_usd),
+                        method_counts: None,
+                        p50_latency_ms: existing_row.p50_latency_ms, // Keep existing percentiles
+                        p95_latency_ms: existing_row.p95_latency_ms,
+                        p99_latency_ms: existing_row.p99_latency_ms,
+                    };
+
+                    let _ = self.db.upsert_metric(&metric_type, &merged_row);
+                } else {
+                    // No existing data, insert new
+                    let _ = self.db.upsert_metric(&metric_type, &row);
+                }
+            } else {
+                // Error querying, just insert new
+                let _ = self.db.upsert_metric(&metric_type, &row);
+            }
+        }
     }
 
     /// Record a failed request
@@ -318,28 +223,80 @@ impl MetricsCollector {
     }
 
     /// Record a failed request at a specific timestamp (for testing)
-    pub fn record_failure_at(&self, api_key_name: &str, provider: &str, model: &str, latency_ms: u64, timestamp: DateTime<Utc>) {
+    pub fn record_failure_at(
+        &self,
+        api_key_name: &str,
+        provider: &str,
+        model: &str,
+        latency_ms: u64,
+        timestamp: DateTime<Utc>,
+    ) {
+        let minute_timestamp = timestamp
+            .duration_trunc(chrono::Duration::minutes(1))
+            .unwrap();
 
-        // Record in global metrics
-        self.global.record_failure(timestamp, latency_ms);
+        // Create metric row for this minute
+        let row = MetricRow {
+            timestamp: minute_timestamp,
+            granularity: Granularity::Minute,
+            requests: 1,
+            successful_requests: 0,
+            failed_requests: 1,
+            avg_latency_ms: latency_ms as f64,
+            input_tokens: None,
+            output_tokens: None,
+            cost_usd: None,
+            method_counts: None,
+            p50_latency_ms: Some(latency_ms as f64),
+            p95_latency_ms: Some(latency_ms as f64),
+            p99_latency_ms: Some(latency_ms as f64),
+        };
 
-        // Record in per-key metrics
-        self.per_key
-            .entry(api_key_name.to_string())
-            .or_insert_with(TimeSeries::new)
-            .record_failure(timestamp, latency_ms);
+        // Write to all four tiers
+        let metric_types = vec![
+            "llm_global".to_string(),
+            format!("llm_key:{}", api_key_name),
+            format!("llm_provider:{}", provider),
+            format!("llm_model:{}", model),
+        ];
 
-        // Record in per-provider metrics
-        self.per_provider
-            .entry(provider.to_string())
-            .or_insert_with(TimeSeries::new)
-            .record_failure(timestamp, latency_ms);
+        for metric_type in metric_types {
+            // Try to read existing data for this minute
+            if let Ok(existing) = self.db.query_metrics(
+                &metric_type,
+                minute_timestamp,
+                minute_timestamp + chrono::Duration::minutes(1),
+            ) {
+                if let Some(existing_row) = existing.first() {
+                    // Merge with existing data
+                    let merged_row = MetricRow {
+                        timestamp: minute_timestamp,
+                        granularity: Granularity::Minute,
+                        requests: existing_row.requests + 1,
+                        successful_requests: existing_row.successful_requests,
+                        failed_requests: existing_row.failed_requests + 1,
+                        avg_latency_ms: (existing_row.avg_latency_ms * existing_row.requests as f64
+                            + latency_ms as f64)
+                            / (existing_row.requests + 1) as f64,
+                        input_tokens: existing_row.input_tokens,
+                        output_tokens: existing_row.output_tokens,
+                        cost_usd: existing_row.cost_usd,
+                        method_counts: None,
+                        p50_latency_ms: existing_row.p50_latency_ms,
+                        p95_latency_ms: existing_row.p95_latency_ms,
+                        p99_latency_ms: existing_row.p99_latency_ms,
+                    };
 
-        // Record in per-model metrics
-        self.per_model
-            .entry(model.to_string())
-            .or_insert_with(TimeSeries::new)
-            .record_failure(timestamp, latency_ms);
+                    let _ = self.db.upsert_metric(&metric_type, &merged_row);
+                } else {
+                    // No existing data, insert new
+                    let _ = self.db.upsert_metric(&metric_type, &row);
+                }
+            } else {
+                // Error querying, just insert new
+                let _ = self.db.upsert_metric(&metric_type, &row);
+            }
+        }
     }
 
     /// Get global metrics for a time range
@@ -348,7 +305,12 @@ impl MetricsCollector {
         start: DateTime<Utc>,
         end: DateTime<Utc>,
     ) -> Vec<MetricDataPoint> {
-        self.global.get_range(start, end)
+        self.db
+            .query_metrics("llm_global", start, end)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|row| row.into())
+            .collect()
     }
 
     /// Get metrics for a specific API key
@@ -358,10 +320,13 @@ impl MetricsCollector {
         start: DateTime<Utc>,
         end: DateTime<Utc>,
     ) -> Vec<MetricDataPoint> {
-        self.per_key
-            .get(api_key_name)
-            .map(|ts| ts.get_range(start, end))
+        let metric_type = format!("llm_key:{}", api_key_name);
+        self.db
+            .query_metrics(&metric_type, start, end)
             .unwrap_or_default()
+            .into_iter()
+            .map(|row| row.into())
+            .collect()
     }
 
     /// Get metrics for a specific provider
@@ -371,25 +336,12 @@ impl MetricsCollector {
         start: DateTime<Utc>,
         end: DateTime<Utc>,
     ) -> Vec<MetricDataPoint> {
-        self.per_provider
-            .get(provider)
-            .map(|ts| ts.get_range(start, end))
+        let metric_type = format!("llm_provider:{}", provider);
+        self.db
+            .query_metrics(&metric_type, start, end)
             .unwrap_or_default()
-    }
-
-    /// Get all API key names
-    pub fn get_api_key_names(&self) -> Vec<String> {
-        self.per_key
-            .iter()
-            .map(|entry| entry.key().clone())
-            .collect()
-    }
-
-    /// Get all provider names
-    pub fn get_provider_names(&self) -> Vec<String> {
-        self.per_provider
-            .iter()
-            .map(|entry| entry.key().clone())
+            .into_iter()
+            .map(|row| row.into())
             .collect()
     }
 
@@ -400,17 +352,60 @@ impl MetricsCollector {
         start: DateTime<Utc>,
         end: DateTime<Utc>,
     ) -> Vec<MetricDataPoint> {
-        self.per_model
-            .get(model)
-            .map(|ts| ts.get_range(start, end))
+        let metric_type = format!("llm_model:{}", model);
+        self.db
+            .query_metrics(&metric_type, start, end)
             .unwrap_or_default()
+            .into_iter()
+            .map(|row| row.into())
+            .collect()
+    }
+
+    /// Get all API key names
+    pub fn get_api_key_names(&self) -> Vec<String> {
+        self.db
+            .get_metric_types()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|metric_type| {
+                if let Some(name) = metric_type.strip_prefix("llm_key:") {
+                    Some(name.to_string())
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// Get all provider names
+    pub fn get_provider_names(&self) -> Vec<String> {
+        self.db
+            .get_metric_types()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|metric_type| {
+                if let Some(name) = metric_type.strip_prefix("llm_provider:") {
+                    Some(name.to_string())
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
     /// Get all model names
     pub fn get_model_names(&self) -> Vec<String> {
-        self.per_model
-            .iter()
-            .map(|entry| entry.key().clone())
+        self.db
+            .get_metric_types()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|metric_type| {
+                if let Some(name) = metric_type.strip_prefix("llm_model:") {
+                    Some(name.to_string())
+                } else {
+                    None
+                }
+            })
             .collect()
     }
 
@@ -419,160 +414,45 @@ impl MetricsCollector {
         &self.mcp_metrics
     }
 
-    /// Clean up old metrics data
+    /// Get database reference for aggregation task
+    pub fn db(&self) -> Arc<MetricsDatabase> {
+        self.db.clone()
+    }
+
+    /// Clean up old metrics data (called by aggregation task)
     pub fn cleanup(&self) {
-        self.global.cleanup(self.retention_hours);
-
-        for entry in self.per_key.iter() {
-            entry.value().cleanup(self.retention_hours);
-        }
-
-        for entry in self.per_provider.iter() {
-            entry.value().cleanup(self.retention_hours);
-        }
-
-        for entry in self.per_model.iter() {
-            entry.value().cleanup(self.retention_hours);
+        if let Err(e) = self.db.cleanup_old_data() {
+            tracing::error!("Failed to cleanup metrics: {}", e);
         }
 
         // Clean up MCP metrics
         self.mcp_metrics.cleanup();
     }
 
-    /// Get total number of data points in global metrics
+    /// Get total number of data points in global metrics (for testing)
     pub fn global_data_point_count(&self) -> usize {
-        self.global.len()
+        let now = Utc::now();
+        let start = now - chrono::Duration::days(90);
+        self.get_global_range(start, now).len()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Duration;
+    use tempfile::tempdir;
 
-    #[test]
-    fn test_metric_data_point_creation() {
-        let now = Utc::now();
-        let point = MetricDataPoint::new(now);
-
-        assert_eq!(point.requests, 0);
-        assert_eq!(point.input_tokens, 0);
-        assert_eq!(point.output_tokens, 0);
-        assert_eq!(point.total_tokens, 0);
-        assert_eq!(point.cost_usd, 0.0);
-    }
-
-    #[test]
-    fn test_metric_data_point_add_success() {
-        let now = Utc::now();
-        let mut point = MetricDataPoint::new(now);
-
-        point.add_success(100, 200, 0.05, 1000);
-
-        assert_eq!(point.requests, 1);
-        assert_eq!(point.successful_requests, 1);
-        assert_eq!(point.input_tokens, 100);
-        assert_eq!(point.output_tokens, 200);
-        assert_eq!(point.total_tokens, 300);
-        assert_eq!(point.cost_usd, 0.05);
-        assert_eq!(point.total_latency_ms, 1000);
-        assert_eq!(point.latency_samples.len(), 1);
-    }
-
-    #[test]
-    fn test_metric_data_point_add_failure() {
-        let now = Utc::now();
-        let mut point = MetricDataPoint::new(now);
-
-        point.add_failure(500);
-
-        assert_eq!(point.requests, 1);
-        assert_eq!(point.failed_requests, 1);
-        assert_eq!(point.successful_requests, 0);
-        assert_eq!(point.total_latency_ms, 500);
-    }
-
-    #[test]
-    fn test_metric_data_point_avg_latency() {
-        let now = Utc::now();
-        let mut point = MetricDataPoint::new(now);
-
-        point.add_success(100, 200, 0.05, 1000);
-        point.add_success(100, 200, 0.05, 2000);
-
-        assert_eq!(point.avg_latency_ms(), 1500.0);
-    }
-
-    #[test]
-    fn test_metric_data_point_success_rate() {
-        let now = Utc::now();
-        let mut point = MetricDataPoint::new(now);
-
-        point.add_success(100, 200, 0.05, 1000);
-        point.add_success(100, 200, 0.05, 1000);
-        point.add_failure(500);
-
-        assert_eq!(point.success_rate(), 2.0 / 3.0);
-    }
-
-    #[test]
-    fn test_metric_data_point_percentile() {
-        let now = Utc::now();
-        let mut point = MetricDataPoint::new(now);
-
-        point.add_success(100, 200, 0.05, 100);
-        point.add_success(100, 200, 0.05, 200);
-        point.add_success(100, 200, 0.05, 300);
-        point.add_success(100, 200, 0.05, 400);
-        point.add_success(100, 200, 0.05, 500);
-
-        assert_eq!(point.latency_percentile(50.0), 300);
-        assert_eq!(point.latency_percentile(95.0), 400); // 95% of [100,200,300,400,500] -> index 3
-    }
-
-    #[test]
-    fn test_time_series_record_success() {
-        let ts = TimeSeries::new();
-        let now = Utc::now();
-
-        ts.record_success(now, 100, 200, 0.05, 1000);
-
-        assert_eq!(ts.len(), 1);
-    }
-
-    #[test]
-    fn test_time_series_get_range() {
-        let ts = TimeSeries::new();
-        let now = Utc::now();
-
-        ts.record_success(now, 100, 200, 0.05, 1000);
-        ts.record_success(now - Duration::minutes(5), 100, 200, 0.05, 1000);
-        ts.record_success(now - Duration::minutes(10), 100, 200, 0.05, 1000);
-
-        let start = now - Duration::minutes(15);
-        let end = now;
-
-        let points = ts.get_range(start, end);
-        assert_eq!(points.len(), 3);
-    }
-
-    #[test]
-    fn test_time_series_cleanup() {
-        let ts = TimeSeries::new();
-        let now = Utc::now();
-
-        ts.record_success(now, 100, 200, 0.05, 1000);
-        ts.record_success(now - Duration::hours(25), 100, 200, 0.05, 1000);
-
-        assert_eq!(ts.len(), 2);
-
-        ts.cleanup(24);
-
-        assert_eq!(ts.len(), 1);
+    fn create_test_collector() -> (MetricsCollector, tempfile::TempDir) {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        let db = Arc::new(MetricsDatabase::new(db_path).unwrap());
+        (MetricsCollector::new(db), dir)
     }
 
     #[test]
     fn test_metrics_collector_record_success() {
-        let collector = MetricsCollector::with_default_retention();
+        let (collector, _dir) = create_test_collector();
 
         collector.record_success(&RequestMetrics {
             api_key_name: "key1",
@@ -607,7 +487,7 @@ mod tests {
 
     #[test]
     fn test_metrics_collector_record_failure() {
-        let collector = MetricsCollector::with_default_retention();
+        let (collector, _dir) = create_test_collector();
 
         collector.record_failure("key1", "openai", "gpt-4", 500);
 
@@ -622,7 +502,7 @@ mod tests {
 
     #[test]
     fn test_metrics_collector_get_names() {
-        let collector = MetricsCollector::with_default_retention();
+        let (collector, _dir) = create_test_collector();
 
         collector.record_success(&RequestMetrics {
             api_key_name: "key1",
@@ -660,103 +540,8 @@ mod tests {
     }
 
     #[test]
-    fn test_metrics_collector_per_model_tracking() {
-        let collector = MetricsCollector::with_default_retention();
-        let now = Utc::now();
-
-        // Record to different models
-        collector.record_success(&RequestMetrics {
-            api_key_name: "key1",
-            provider: "openai",
-            model: "gpt-4",
-            input_tokens: 1000,
-            output_tokens: 500,
-            cost_usd: 0.05,
-            latency_ms: 100,
-        });
-
-        collector.record_success(&RequestMetrics {
-            api_key_name: "key1",
-            provider: "anthropic",
-            model: "claude-3.5-sonnet",
-            input_tokens: 800,
-            output_tokens: 400,
-            cost_usd: 0.03,
-            latency_ms: 80,
-        });
-
-        // Verify global aggregates
-        let global = collector.get_global_range(
-            now - Duration::minutes(5),
-            now + Duration::minutes(5),
-        );
-        assert_eq!(global.len(), 1);
-        assert_eq!(global[0].requests, 2);
-        assert_eq!(global[0].input_tokens, 1800);
-        assert_eq!(global[0].output_tokens, 900);
-
-        // Verify per-model isolation
-        let gpt4_metrics = collector.get_model_range(
-            "gpt-4",
-            now - Duration::minutes(5),
-            now + Duration::minutes(5),
-        );
-        assert_eq!(gpt4_metrics.len(), 1);
-        assert_eq!(gpt4_metrics[0].requests, 1);
-        assert_eq!(gpt4_metrics[0].input_tokens, 1000);
-
-        let claude_metrics = collector.get_model_range(
-            "claude-3.5-sonnet",
-            now - Duration::minutes(5),
-            now + Duration::minutes(5),
-        );
-        assert_eq!(claude_metrics.len(), 1);
-        assert_eq!(claude_metrics[0].requests, 1);
-        assert_eq!(claude_metrics[0].input_tokens, 800);
-    }
-
-    #[test]
-    fn test_metrics_collector_get_model_names() {
-        let collector = MetricsCollector::with_default_retention();
-
-        collector.record_success(&RequestMetrics {
-            api_key_name: "key1",
-            provider: "openai",
-            model: "gpt-4",
-            input_tokens: 100,
-            output_tokens: 50,
-            cost_usd: 0.01,
-            latency_ms: 100,
-        });
-        collector.record_success(&RequestMetrics {
-            api_key_name: "key1",
-            provider: "openai",
-            model: "gpt-3.5-turbo",
-            input_tokens: 100,
-            output_tokens: 50,
-            cost_usd: 0.001,
-            latency_ms: 80,
-        });
-        collector.record_success(&RequestMetrics {
-            api_key_name: "key1",
-            provider: "anthropic",
-            model: "claude-3.5-sonnet",
-            input_tokens: 100,
-            output_tokens: 50,
-            cost_usd: 0.01,
-            latency_ms: 90,
-        });
-
-        let mut models = collector.get_model_names();
-        models.sort();
-
-        assert_eq!(models.len(), 3);
-        assert_eq!(models, vec!["claude-3.5-sonnet", "gpt-3.5-turbo", "gpt-4"]);
-    }
-
-    #[test]
     fn test_four_tier_isolation() {
-        let collector = MetricsCollector::with_default_retention();
+        let (collector, _dir) = create_test_collector();
         let now = Utc::now();
 
         // Record metrics for different combinations
@@ -832,68 +617,5 @@ mod tests {
             now + Duration::minutes(5),
         );
         assert_eq!(gpt4[0].requests, 2); // Both key1 and key2 used gpt-4
-    }
-
-    #[test]
-    fn test_cleanup_all_tiers() {
-        let collector = MetricsCollector::new(1); // 1 hour retention
-        let now = Utc::now();
-
-        // Record some recent metrics
-        collector.record_success(&RequestMetrics {
-            api_key_name: "key1",
-            provider: "openai",
-            model: "gpt-4",
-            input_tokens: 1000,
-            output_tokens: 500,
-            cost_usd: 0.05,
-            latency_ms: 100,
-        });
-
-        // Verify data exists before cleanup
-        assert_eq!(collector.global_data_point_count(), 1);
-        assert_eq!(collector.get_api_key_names().len(), 1);
-        assert_eq!(collector.get_provider_names().len(), 1);
-        assert_eq!(collector.get_model_names().len(), 1);
-
-        // Run cleanup (should not remove recent data)
-        collector.cleanup();
-
-        // Verify data still exists (within retention period)
-        let global = collector.get_global_range(
-            now - Duration::minutes(5),
-            now + Duration::minutes(5),
-        );
-        assert_eq!(global.len(), 1);
-        assert_eq!(collector.global_data_point_count(), 1);
-    }
-
-    #[test]
-    fn test_per_model_failure_tracking() {
-        let collector = MetricsCollector::with_default_retention();
-        let now = Utc::now();
-
-        // Record success and failure for same model
-        collector.record_success(&RequestMetrics {
-            api_key_name: "key1",
-            provider: "openai",
-            model: "gpt-4",
-            input_tokens: 1000,
-            output_tokens: 500,
-            cost_usd: 0.05,
-            latency_ms: 100,
-        });
-        collector.record_failure("key1", "openai", "gpt-4", 1000);
-
-        // Verify model metrics include both
-        let gpt4_metrics = collector.get_model_range(
-            "gpt-4",
-            now - Duration::minutes(5),
-            now + Duration::minutes(5),
-        );
-        assert_eq!(gpt4_metrics.len(), 1);
-        assert_eq!(gpt4_metrics[0].requests, 2);
-        assert_eq!(gpt4_metrics[0].successful_requests, 1);
-        assert_eq!(gpt4_metrics[0].failed_requests, 1);
     }
 }

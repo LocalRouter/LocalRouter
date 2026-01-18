@@ -7,7 +7,7 @@
 //! 4. Can be serialized to both JSON and YAML
 //! 5. Includes all necessary components
 
-use localrouterai::server::openapi;
+use localrouter_ai::server::openapi;
 use serde_json::Value;
 
 #[test]

@@ -116,17 +116,17 @@ export default function ApiKeysTab({ activeSubTab, onTabChange }: ApiKeysTabProp
 
     if (!key && !loading) {
       return (
-        <div className="bg-white rounded-lg shadow-sm p-6">
-          <h2 className="text-2xl font-bold text-gray-800 mb-4">API Key Not Found</h2>
-          <p className="text-gray-600">The requested API key could not be found.</p>
+        <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm p-6">
+          <h2 className="text-2xl font-bold text-gray-800 dark:text-gray-100 mb-4">API Key Not Found</h2>
+          <p className="text-gray-600 dark:text-gray-400">The requested API key could not be found.</p>
         </div>
       )
     }
 
     if (loading || !key) {
       return (
-        <div className="bg-white rounded-lg shadow-sm p-6">
-          <div className="text-center py-8 text-gray-500">Loading API key details...</div>
+        <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm p-6">
+          <div className="text-center py-8 text-gray-500 dark:text-gray-400">Loading API key details...</div>
         </div>
       )
     }
@@ -139,7 +139,7 @@ export default function ApiKeysTab({ activeSubTab, onTabChange }: ApiKeysTabProp
       {/* Metrics Overview */}
       {!loading && apiKeys.length > 0 && (
         <Card>
-          <h3 className="text-lg font-semibold text-gray-900 mb-4">API Key Usage Overview</h3>
+          <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-4">API Key Usage Overview</h3>
           <div className="grid grid-cols-2 gap-4">
             <MetricsChart
               scope="global"
@@ -161,14 +161,14 @@ export default function ApiKeysTab({ activeSubTab, onTabChange }: ApiKeysTabProp
 
       <Card>
         <div className="flex justify-between items-center mb-6">
-          <h2 className="text-xl font-bold text-gray-900">API Keys</h2>
+          <h2 className="text-xl font-bold text-gray-900 dark:text-gray-100">API Keys</h2>
           <Button onClick={handleOpenCreateModal}>+ Create New Key</Button>
         </div>
 
         {loading ? (
-          <div className="text-center py-8 text-gray-500">Loading API keys...</div>
+          <div className="text-center py-8 text-gray-500 dark:text-gray-400">Loading API keys...</div>
         ) : apiKeys.length === 0 ? (
-          <div className="text-center py-12 text-gray-500">
+          <div className="text-center py-12 text-gray-500 dark:text-gray-400">
             <p>No API keys found. Create your first key to get started.</p>
           </div>
         ) : (
@@ -177,12 +177,12 @@ export default function ApiKeysTab({ activeSubTab, onTabChange }: ApiKeysTabProp
               <div
                 key={key.id}
                 onClick={() => onTabChange?.('api-keys', key.id)}
-                className="bg-gray-50 border border-gray-200 rounded-lg p-4 hover:bg-gray-100 transition-colors cursor-pointer"
+                className="bg-gray-50 dark:bg-gray-900/50 border border-gray-200 dark:border-gray-700 rounded-lg p-4 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors cursor-pointer"
               >
                 <div className="flex justify-between items-start">
                   <div>
-                    <h3 className="text-base font-semibold text-gray-900">{key.name}</h3>
-                    <p className="text-sm text-gray-500 mt-1">
+                    <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">{key.name}</h3>
+                    <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
                       Created: {new Date(key.created_at).toLocaleDateString()}
                     </p>
                   </div>
@@ -211,10 +211,10 @@ export default function ApiKeysTab({ activeSubTab, onTabChange }: ApiKeysTabProp
           />
 
           <div className="mt-4">
-            <label className="block text-sm font-medium text-gray-700 mb-2">
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
               Model Selection
             </label>
-            <p className="text-sm text-gray-500 mb-3">
+            <p className="text-sm text-gray-500 dark:text-gray-400 mb-3">
               Select which models this API key can access. Check "All" to allow all providers and models (including future ones),
               check individual providers to allow all their models, or check specific models for fine-grained control.
             </p>
@@ -246,10 +246,10 @@ export default function ApiKeysTab({ activeSubTab, onTabChange }: ApiKeysTabProp
         onClose={() => setShowKeyModal(false)}
         title="API Key Created"
       >
-        <p className="text-gray-600 mb-4">
+        <p className="text-gray-600 dark:text-gray-400 mb-4">
           Save this key securely. You won't be able to see it again.
         </p>
-        <div className="bg-gray-900 text-gray-200 p-4 rounded-md font-mono text-sm break-all mb-6">
+        <div className="bg-gray-900 dark:bg-gray-950 text-gray-200 dark:text-gray-300 p-4 rounded-md font-mono text-sm break-all mb-6">
           {newKeyValue}
         </div>
         <div className="flex gap-2">

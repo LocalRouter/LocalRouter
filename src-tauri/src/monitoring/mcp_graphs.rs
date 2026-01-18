@@ -465,7 +465,9 @@ mod tests {
             method_counts: HashMap::new(),
         };
 
-        let data_sets = vec![("Client 1", vec![point1].as_slice()), ("Client 2", vec![point2].as_slice())];
+        let client1_data = vec![point1];
+        let client2_data = vec![point2];
+        let data_sets = vec![("Client 1", client1_data.as_slice()), ("Client 2", client2_data.as_slice())];
         let graph = McpGraphGenerator::generate_multi(data_sets, McpMetricType::Requests);
 
         assert_eq!(graph.datasets.len(), 2);

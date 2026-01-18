@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import Card from '../ui/Card'
 import Button from '../ui/Button'
@@ -157,6 +157,14 @@ export default function ApiKeyDetailPage({ keyId }: ApiKeyDetailPageProps) {
       </div>
     )
   }
+
+  // Memoize context object to prevent re-renders
+  const chatContext = useMemo(() => ({
+    type: 'api_key' as const,
+    apiKeyId: keyId,
+    apiKeyName: apiKey.name,
+    modelSelection: apiKey.model_selection,
+  }), [keyId, apiKey.name, apiKey.model_selection]);
 
   const tabs = [
     {
@@ -328,12 +336,7 @@ export default function ApiKeyDetailPage({ keyId }: ApiKeyDetailPageProps) {
         <Card>
           <h3 className="text-lg font-semibold text-gray-900 mb-4">Chat</h3>
           <ContextualChat
-            context={{
-              type: 'api_key',
-              apiKeyId: keyId,
-              apiKeyName: apiKey.name,
-              modelSelection: apiKey.model_selection,
-            }}
+            context={chatContext}
             disabled={!apiKey.enabled}
           />
         </Card>

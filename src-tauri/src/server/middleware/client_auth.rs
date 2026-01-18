@@ -83,8 +83,8 @@ pub async fn client_auth_middleware(
         // Try direct client secret (long-lived credentials)
         match state.client_manager.verify_secret(&token) {
             Ok(Some(client)) => {
-                tracing::debug!("Client authenticated via client secret: {}", client.client_id);
-                client.client_id
+                tracing::debug!("Client authenticated via client secret: {}", client.id);
+                client.id
             }
             Ok(None) => {
                 tracing::warn!("Invalid bearer token provided");

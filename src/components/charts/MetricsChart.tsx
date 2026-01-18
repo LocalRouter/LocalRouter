@@ -47,7 +47,7 @@ export function MetricsChart({
           break
         case 'api_key':
           command = 'get_api_key_metrics'
-          args.api_key_id = scopeId
+          args.apiKeyId = scopeId
           break
         case 'provider':
           command = 'get_provider_metrics'

@@ -146,6 +146,9 @@ mod tests {
 
         // Verify it's the default
         assert_eq!(config.server.host, "127.0.0.1");
+        #[cfg(debug_assertions)]
+        assert_eq!(config.server.port, 33625);
+        #[cfg(not(debug_assertions))]
         assert_eq!(config.server.port, 3625);
 
         // Verify file was created
@@ -173,6 +176,9 @@ mod tests {
         // Verify backup contains original config
         let backup_contents = fs::read_to_string(&backup_path).await.unwrap();
         let backup_config: AppConfig = serde_yaml::from_str(&backup_contents).unwrap();
+        #[cfg(debug_assertions)]
+        assert_eq!(backup_config.server.port, 33625);
+        #[cfg(not(debug_assertions))]
         assert_eq!(backup_config.server.port, 3625);
     }
 

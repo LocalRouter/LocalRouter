@@ -101,12 +101,46 @@ pub struct JsonRpcNotification {
 ///
 /// Can be either a request, response, or notification.
 /// Used for parsing incoming messages.
-#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 #[serde(untagged)]
 pub enum JsonRpcMessage {
     Request(JsonRpcRequest),
     Response(JsonRpcResponse),
     Notification(JsonRpcNotification),
+}
+
+impl<'de> Deserialize<'de> for JsonRpcMessage {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = Value::deserialize(deserializer)?;
+
+        // Response: has "result" or "error" field (and must have "id")
+        if value.get("result").is_some() || value.get("error").is_some() {
+            return serde_json::from_value(value)
+                .map(JsonRpcMessage::Response)
+                .map_err(serde::de::Error::custom);
+        }
+
+        // Request: has "id" field (including null)
+        if value.get("id").is_some() {
+            return serde_json::from_value(value)
+                .map(JsonRpcMessage::Request)
+                .map_err(serde::de::Error::custom);
+        }
+
+        // Notification: has "method" but no "id"
+        if value.get("method").is_some() {
+            return serde_json::from_value(value)
+                .map(JsonRpcMessage::Notification)
+                .map_err(serde::de::Error::custom);
+        }
+
+        Err(serde::de::Error::custom(
+            "Invalid JSON-RPC message: must have either 'id' or 'method' field",
+        ))
+    }
 }
 
 // Standard JSON-RPC 2.0 error codes

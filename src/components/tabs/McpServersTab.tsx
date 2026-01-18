@@ -411,10 +411,30 @@ export default function McpServersTab({ activeSubTab, onTabChange }: McpServersT
                   onChange={(e) => setAuthMethod(e.target.value as any)}
                 >
                   <option value="none">None / Via headers</option>
+                  <option value="bearer">Bearer Token</option>
                   <option value="oauth_preregistered">OAuth Pre-registered</option>
                   <option value="oauth_browser">OAuth</option>
                 </Select>
               </div>
+
+              {/* Bearer Token Auth */}
+              {authMethod === 'bearer' && (
+                <div className="mt-3">
+                  <label className="block text-sm font-medium mb-2">
+                    Bearer Token
+                  </label>
+                  <Input
+                    type="password"
+                    value={bearerToken}
+                    onChange={(e) => setBearerToken(e.target.value)}
+                    placeholder="your-bearer-token"
+                    required
+                  />
+                  <p className="text-xs text-gray-500 mt-1">
+                    Token will be stored securely in system keychain
+                  </p>
+                </div>
+              )}
 
               {/* OAuth Pre-registered */}
               {authMethod === 'oauth_preregistered' && (

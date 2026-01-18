@@ -14,11 +14,11 @@ fn test_client_creation() -> AppResult<()> {
 
     // Verify client was created
     assert_eq!(client.name, "Test Client");
-    assert_eq!(client.client_id, client_id);
+    assert_eq!(client.id, client_id);
     assert!(client.enabled);
     assert!(client.allowed_llm_providers.is_empty());
     assert!(client.allowed_mcp_servers.is_empty());
-    assert!(!client.client_id.is_empty());
+    assert!(!client.id.is_empty());
     assert!(!secret.is_empty());
 
     // Verify secret format (should be lr-... format)
@@ -38,7 +38,7 @@ fn test_client_authentication_with_secret() -> AppResult<()> {
     let verified = manager.verify_secret(&secret)?;
     assert!(verified.is_some());
     let verified_client = verified.unwrap();
-    assert_eq!(verified_client.client_id, client.client_id);
+    assert_eq!(verified_client.id, client.id);
 
     // Verify authentication fails with wrong secret
     let wrong_secret = "lr-wrongsecret123456789012345678901234567890";
@@ -83,13 +83,11 @@ fn test_client_disabled_authentication() -> AppResult<()> {
     assert!(verified.is_some());
 
     // Disable the client
-    manager.update_client(&client.client_id, None, Some(false))?;
+    manager.update_client(&client.id, None, Some(false))?;
 
-    // Verify authentication still returns the client (middleware will check enabled status)
+    // Verify authentication fails for disabled clients (filtered at verify_secret level)
     let verified_after_disable = manager.verify_secret(&secret)?;
-    assert!(verified_after_disable.is_some());
-    let verified_client = verified_after_disable.unwrap();
-    assert!(!verified_client.enabled);
+    assert!(verified_after_disable.is_none());
 
     Ok(())
 }
@@ -104,7 +102,7 @@ fn test_token_store_generation() -> AppResult<()> {
     // Verify token format
     assert!(token.starts_with("lr-"));
     assert!(expires_in > 0);
-    assert_eq!(expires_in, 3600); // Default 1 hour
+    assert!(expires_in >= 3599 && expires_in <= 3600); // Default 1 hour (allow 1 sec tolerance)
 
     // Verify token can be verified
     let client_id = token_store.verify_token(&token);
@@ -178,27 +176,27 @@ fn test_client_llm_provider_access() -> AppResult<()> {
     assert!(client.allowed_llm_providers.is_empty());
 
     // Add a provider
-    manager.add_llm_provider(&client.client_id, "openai")?;
+    manager.add_llm_provider(&client.id, "openai")?;
 
     // Verify provider was added
-    let updated_client = manager.get_client(&client.client_id).unwrap();
+    let updated_client = manager.get_client(&client.id).unwrap();
     assert_eq!(updated_client.allowed_llm_providers.len(), 1);
     assert!(updated_client.allowed_llm_providers.contains(&"openai".to_string()));
 
     // Add another provider
-    manager.add_llm_provider(&client.client_id, "anthropic")?;
+    manager.add_llm_provider(&client.id, "anthropic")?;
 
     // Verify both providers
-    let updated_client = manager.get_client(&client.client_id).unwrap();
+    let updated_client = manager.get_client(&client.id).unwrap();
     assert_eq!(updated_client.allowed_llm_providers.len(), 2);
     assert!(updated_client.allowed_llm_providers.contains(&"openai".to_string()));
     assert!(updated_client.allowed_llm_providers.contains(&"anthropic".to_string()));
 
     // Remove a provider
-    manager.remove_llm_provider(&client.client_id, "openai")?;
+    manager.remove_llm_provider(&client.id, "openai")?;
 
     // Verify only anthropic remains
-    let updated_client = manager.get_client(&client.client_id).unwrap();
+    let updated_client = manager.get_client(&client.id).unwrap();
     assert_eq!(updated_client.allowed_llm_providers.len(), 1);
     assert!(updated_client.allowed_llm_providers.contains(&"anthropic".to_string()));
     assert!(!updated_client.allowed_llm_providers.contains(&"openai".to_string()));
@@ -217,27 +215,27 @@ fn test_client_mcp_server_access() -> AppResult<()> {
     assert!(client.allowed_mcp_servers.is_empty());
 
     // Add a server
-    manager.add_mcp_server(&client.client_id, "server-1")?;
+    manager.add_mcp_server(&client.id, "server-1")?;
 
     // Verify server was added
-    let updated_client = manager.get_client(&client.client_id).unwrap();
+    let updated_client = manager.get_client(&client.id).unwrap();
     assert_eq!(updated_client.allowed_mcp_servers.len(), 1);
     assert!(updated_client.allowed_mcp_servers.contains(&"server-1".to_string()));
 
     // Add another server
-    manager.add_mcp_server(&client.client_id, "server-2")?;
+    manager.add_mcp_server(&client.id, "server-2")?;
 
     // Verify both servers
-    let updated_client = manager.get_client(&client.client_id).unwrap();
+    let updated_client = manager.get_client(&client.id).unwrap();
     assert_eq!(updated_client.allowed_mcp_servers.len(), 2);
     assert!(updated_client.allowed_mcp_servers.contains(&"server-1".to_string()));
     assert!(updated_client.allowed_mcp_servers.contains(&"server-2".to_string()));
 
     // Remove a server
-    manager.remove_mcp_server(&client.client_id, "server-1")?;
+    manager.remove_mcp_server(&client.id, "server-1")?;
 
     // Verify only server-2 remains
-    let updated_client = manager.get_client(&client.client_id).unwrap();
+    let updated_client = manager.get_client(&client.id).unwrap();
     assert_eq!(updated_client.allowed_mcp_servers.len(), 1);
     assert!(updated_client.allowed_mcp_servers.contains(&"server-2".to_string()));
     assert!(!updated_client.allowed_mcp_servers.contains(&"server-1".to_string()));
@@ -253,14 +251,14 @@ fn test_client_deletion() -> AppResult<()> {
     let (_client_id, secret, client) = manager.create_client("Delete Test".to_string())?;
 
     // Verify client exists
-    assert!(manager.get_client(&client.client_id).is_some());
+    assert!(manager.get_client(&client.id).is_some());
     assert!(manager.verify_secret(&secret)?.is_some());
 
     // Delete the client
-    manager.delete_client(&client.client_id)?;
+    manager.delete_client(&client.id)?;
 
     // Verify client no longer exists
-    assert!(manager.get_client(&client.client_id).is_none());
+    assert!(manager.get_client(&client.id).is_none());
     assert!(manager.verify_secret(&secret)?.is_none());
 
     Ok(())
@@ -274,20 +272,20 @@ fn test_client_update() -> AppResult<()> {
     let (_client_id, _secret, client) = manager.create_client("Update Test".to_string())?;
 
     // Update name
-    manager.update_client(&client.client_id, Some("New Name".to_string()), None)?;
-    let updated = manager.get_client(&client.client_id).unwrap();
+    manager.update_client(&client.id, Some("New Name".to_string()), None)?;
+    let updated = manager.get_client(&client.id).unwrap();
     assert_eq!(updated.name, "New Name");
     assert!(updated.enabled);
 
     // Update enabled status
-    manager.update_client(&client.client_id, None, Some(false))?;
-    let updated = manager.get_client(&client.client_id).unwrap();
+    manager.update_client(&client.id, None, Some(false))?;
+    let updated = manager.get_client(&client.id).unwrap();
     assert_eq!(updated.name, "New Name");
     assert!(!updated.enabled);
 
     // Update both
-    manager.update_client(&client.client_id, Some("Final Name".to_string()), Some(true))?;
-    let updated = manager.get_client(&client.client_id).unwrap();
+    manager.update_client(&client.id, Some("Final Name".to_string()), Some(true))?;
+    let updated = manager.get_client(&client.id).unwrap();
     assert_eq!(updated.name, "Final Name");
     assert!(updated.enabled);
 
@@ -309,13 +307,13 @@ fn test_multiple_clients() -> AppResult<()> {
 
     // Verify each secret authenticates to correct client
     let verified1 = manager.verify_secret(&secret1)?.unwrap();
-    assert_eq!(verified1.client_id, client1.client_id);
+    assert_eq!(verified1.id, client1.id);
 
     let verified2 = manager.verify_secret(&secret2)?.unwrap();
-    assert_eq!(verified2.client_id, client2.client_id);
+    assert_eq!(verified2.id, client2.id);
 
     let verified3 = manager.verify_secret(&secret3)?.unwrap();
-    assert_eq!(verified3.client_id, client3.client_id);
+    assert_eq!(verified3.id, client3.id);
 
     // Verify cross-authentication fails
     let wrong = manager.verify_credentials(&client_id1, &secret2)?;

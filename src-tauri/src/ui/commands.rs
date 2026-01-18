@@ -6,7 +6,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::config::{ActiveRoutingStrategy, ConfigManager, McpServerConfig, McpTransportConfig, McpTransportType, ModelRoutingConfig, RouterConfig};
+use crate::api_keys::keychain_trait::KeychainStorage;
+use crate::config::{ActiveRoutingStrategy, ConfigManager, McpAuthConfig, McpServerConfig, McpTransportConfig, McpTransportType, ModelRoutingConfig, RouterConfig};
 use crate::mcp::McpServerManager;
 use crate::oauth_clients::OAuthClientManager;
 use crate::providers::registry::ProviderRegistry;
@@ -956,7 +957,7 @@ pub struct ServerConfigInfo {
 
 /// Get aggregate statistics (requests, tokens, cost)
 ///
-/// Returns statistics computed from all tracked generations in the retention period.
+/// Returns statistics computed from persistent metrics database (last 90 days).
 #[tauri::command]
 pub async fn get_aggregate_stats(
     server_manager: State<'_, Arc<crate::server::ServerManager>>,
@@ -966,7 +967,30 @@ pub async fn get_aggregate_stats(
         .get_state()
         .ok_or_else(|| "Server is not running".to_string())?;
 
-    Ok(app_state.generation_tracker.get_stats())
+    // Get persistent metrics from the last 90 days (all stored data)
+    let now = chrono::Utc::now();
+    let start = now - chrono::Duration::days(90);
+    let data_points = app_state.metrics_collector.get_global_range(start, now);
+
+    // Aggregate the metrics
+    let mut total_requests = 0u64;
+    let mut successful_requests = 0u64;
+    let mut total_tokens = 0u64;
+    let mut total_cost = 0.0f64;
+
+    for point in data_points {
+        total_requests += point.requests;
+        successful_requests += point.successful_requests;
+        total_tokens += point.total_tokens;
+        total_cost += point.cost_usd;
+    }
+
+    Ok(crate::server::state::AggregateStats {
+        total_requests,
+        successful_requests,
+        total_tokens,
+        total_cost,
+    })
 }
 
 // ============================================================================
@@ -1755,6 +1779,98 @@ pub async fn get_oauth_client_linked_servers(
 // MCP Server Commands
 // ============================================================================
 
+/// Frontend auth config format (with raw secrets)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum FrontendAuthConfig {
+    None,
+    BearerToken { token: String },
+    CustomHeaders { headers: std::collections::HashMap<String, String> },
+    OAuth {
+        client_id: String,
+        client_secret: String,
+        auth_url: String,
+        token_url: String,
+        scopes: Vec<String>,
+    },
+    EnvVars { env: std::collections::HashMap<String, String> },
+}
+
+/// Process frontend auth config and store secrets in keychain
+/// Returns the backend McpAuthConfig with keychain references
+fn process_auth_config(
+    server_id: &str,
+    auth_cfg: Option<serde_json::Value>,
+) -> Result<Option<McpAuthConfig>, String> {
+    let Some(auth_value) = auth_cfg else {
+        tracing::debug!("No auth config provided to process_auth_config");
+        return Ok(None);
+    };
+
+    tracing::debug!("Processing auth config: {}", auth_value);
+
+    // Parse frontend format
+    let frontend_auth: FrontendAuthConfig = serde_json::from_value(auth_value.clone())
+        .map_err(|e| {
+            tracing::error!("Failed to deserialize frontend auth config: {}", e);
+            tracing::error!("Auth value was: {}", auth_value);
+            format!("Invalid auth config format: {}", e)
+        })?;
+
+    tracing::debug!("Parsed frontend auth: {:?}", frontend_auth);
+
+    // Convert to backend format, storing secrets in keychain
+    let backend_auth = match frontend_auth {
+        FrontendAuthConfig::None => return Ok(None),
+        FrontendAuthConfig::BearerToken { token } => {
+            // Store token in keychain
+            let keychain = crate::api_keys::CachedKeychain::auto()
+                .map_err(|e| format!("Failed to access keychain: {}", e))?;
+
+            let key = format!("{}_bearer_token", server_id);
+            keychain
+                .store("LocalRouter-McpServers", &key, &token)
+                .map_err(|e| format!("Failed to store token in keychain: {}", e))?;
+
+            tracing::debug!("Stored bearer token in keychain with key: {}", key);
+
+            McpAuthConfig::BearerToken { token_ref: key }
+        }
+        FrontendAuthConfig::CustomHeaders { headers } => McpAuthConfig::CustomHeaders { headers },
+        FrontendAuthConfig::OAuth {
+            client_id,
+            client_secret,
+            auth_url,
+            token_url,
+            scopes,
+        } => {
+            // Store client secret in keychain
+            let keychain = crate::api_keys::CachedKeychain::auto()
+                .map_err(|e| format!("Failed to access keychain: {}", e))?;
+
+            let key = format!("{}_oauth_secret", server_id);
+            keychain
+                .store("LocalRouter-McpServers", &key, &client_secret)
+                .map_err(|e| format!("Failed to store OAuth secret in keychain: {}", e))?;
+
+            tracing::debug!("Stored OAuth secret in keychain with key: {}", key);
+
+            McpAuthConfig::OAuth {
+                client_id,
+                client_secret_ref: key,
+                auth_url,
+                token_url,
+                scopes,
+            }
+        }
+        FrontendAuthConfig::EnvVars { env } => McpAuthConfig::EnvVars { env },
+    };
+
+    tracing::info!("✅ Successfully processed auth config for server {}: {:?}", server_id, backend_auth);
+
+    Ok(Some(backend_auth))
+}
+
 /// MCP server information for display
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpServerInfo {
@@ -1825,19 +1941,11 @@ pub async fn create_mcp_server(
     let parsed_config: McpTransportConfig = serde_json::from_value(transport_config)
         .map_err(|e| format!("Invalid transport config: {}", e))?;
 
-    // Parse auth config (if provided)
-    let parsed_auth_config = if let Some(auth_cfg) = auth_config {
-        Some(
-            serde_json::from_value(auth_cfg)
-                .map_err(|e| format!("Invalid auth config: {}", e))?,
-        )
-    } else {
-        None
-    };
-
-    // Create server config
+    // Create server config (need ID for auth processing)
     let mut config = McpServerConfig::new(name, transport_type, parsed_config);
-    config.auth_config = parsed_auth_config;
+
+    // Parse auth config (if provided) and store secrets in keychain
+    config.auth_config = process_auth_config(&config.id, auth_config)?;
 
     let server_info = McpServerInfo {
         id: config.id.clone(),
@@ -2073,25 +2181,42 @@ pub async fn update_mcp_server_config(
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     tracing::info!("Updating MCP server config: {}", server_id);
+    tracing::debug!("Transport config JSON: {}", transport_config);
+    tracing::debug!("Auth config JSON: {:?}", auth_config);
 
     // Validate name is not empty
     if name.trim().is_empty() {
+        tracing::warn!("Attempted to update MCP server with empty name");
         return Err("MCP server name cannot be empty".to_string());
     }
 
     // Parse transport config
-    let parsed_config: McpTransportConfig = serde_json::from_value(transport_config)
-        .map_err(|e| format!("Invalid transport config: {}", e))?;
+    let parsed_config: McpTransportConfig = serde_json::from_value(transport_config.clone())
+        .map_err(|e| {
+            tracing::error!("Failed to parse transport config: {}", e);
+            format!("Invalid transport config: {}", e)
+        })?;
 
-    // Parse auth config (if provided)
-    let parsed_auth_config = if let Some(auth_cfg) = auth_config {
-        Some(
-            serde_json::from_value(auth_cfg)
-                .map_err(|e| format!("Invalid auth config: {}", e))?,
-        )
+    tracing::info!("Parsed transport config: {:?}", parsed_config);
+
+    // Parse auth config (if provided) and store secrets in keychain
+    // If auth_config is None, we preserve the existing auth config
+    let should_update_auth = auth_config.is_some();
+    let parsed_auth_config = if should_update_auth {
+        process_auth_config(&server_id, auth_config)?
     } else {
         None
     };
+
+    if should_update_auth {
+        if let Some(ref auth) = parsed_auth_config {
+            tracing::info!("Updating auth config: {:?}", auth);
+        } else {
+            tracing::info!("Clearing auth config (none provided)");
+        }
+    } else {
+        tracing::info!("Preserving existing auth config (not provided in update)");
+    }
 
     // Update in config file
     config_manager
@@ -2099,7 +2224,11 @@ pub async fn update_mcp_server_config(
             if let Some(server) = cfg.mcp_servers.iter_mut().find(|s| s.id == server_id) {
                 server.name = name.clone();
                 server.transport_config = parsed_config.clone();
-                server.auth_config = parsed_auth_config.clone();
+                // Only update auth if it was provided in the request
+                if should_update_auth {
+                    server.auth_config = parsed_auth_config.clone();
+                }
+                // Otherwise keep existing auth_config
             }
         })
         .map_err(|e| e.to_string())?;
@@ -2178,29 +2307,154 @@ pub async fn toggle_mcp_server_enabled(
 pub async fn list_mcp_tools(
     server_id: String,
     mcp_manager: State<'_, Arc<McpServerManager>>,
+    server_manager: State<'_, Arc<crate::server::manager::ServerManager>>,
 ) -> Result<serde_json::Value, String> {
     use crate::mcp::protocol::JsonRpcRequest;
+    use std::time::Instant;
+
+    tracing::info!("📋 Listing tools for MCP server: {}", server_id);
+    let start_time = Instant::now();
+    let method = "tools/list";
+    let client_id = "ui"; // UI requests use a special client_id
+
+    // Get app state for logging (if server is running)
+    let app_state = server_manager.get_state();
+
+    // Start server if not running (auto-start on demand)
+    if !mcp_manager.is_running(&server_id) {
+        tracing::info!("MCP server {} not running, starting it now...", server_id);
+        mcp_manager
+            .start_server(&server_id)
+            .await
+            .map_err(|e| format!("Failed to start MCP server: {}", e))?;
+        tracing::info!("✅ MCP server {} started successfully", server_id);
+    }
 
     // Create a tools/list request
     let request = JsonRpcRequest::with_id(
         1,
-        "tools/list".to_string(),
+        method.to_string(),
         None,
     );
+
+    tracing::debug!("🔄 Sending tools/list request to server {}", server_id);
 
     // Send request to MCP server
     let response = mcp_manager
         .send_request(&server_id, request)
         .await
-        .map_err(|e| format!("Failed to list tools: {}", e))?;
+        .map_err(|e| {
+            let latency_ms = start_time.elapsed().as_millis() as u64;
+            tracing::error!("❌ Failed to send tools/list request to server {}: {}", server_id, e);
+
+            // Log failure (if server is running)
+            if let Some(ref state) = app_state {
+                let request_id = format!("mcp_ui_{}", uuid::Uuid::new_v4());
+                let _ = state.mcp_access_logger.log_failure(
+                    client_id,
+                    &server_id,
+                    method,
+                    500,
+                    None,
+                    latency_ms,
+                    "unknown",
+                    &request_id,
+                );
+
+                // Record metrics
+                state.metrics_collector.mcp().record(&crate::monitoring::mcp_metrics::McpRequestMetrics {
+                    client_id,
+                    server_id: &server_id,
+                    method,
+                    latency_ms,
+                    success: false,
+                    error_code: None,
+                });
+            }
+
+            format!("Failed to list tools: {}", e)
+        })?;
+
+    let latency_ms = start_time.elapsed().as_millis() as u64;
 
     // Check for error
     if let Some(error) = response.error {
+        tracing::error!(
+            "❌ MCP server {} returned error for tools/list: {} (code {})",
+            server_id, error.message, error.code
+        );
+
+        // Log failure (if server is running)
+        if let Some(ref state) = app_state {
+            let request_id = format!("mcp_ui_{}", uuid::Uuid::new_v4());
+            let _ = state.mcp_access_logger.log_failure(
+                client_id,
+                &server_id,
+                method,
+                500,
+                Some(error.code),
+                latency_ms,
+                "unknown",
+                &request_id,
+            );
+
+            // Record metrics
+            state.metrics_collector.mcp().record(&crate::monitoring::mcp_metrics::McpRequestMetrics {
+                client_id,
+                server_id: &server_id,
+                method,
+                latency_ms,
+                success: false,
+                error_code: Some(error.code),
+            });
+        }
+
         return Err(format!("MCP error: {} (code {})", error.message, error.code));
     }
 
+    // Log success (if server is running)
+    if let Some(ref state) = app_state {
+        let request_id = format!("mcp_ui_{}", uuid::Uuid::new_v4());
+        let _ = state.mcp_access_logger.log_success(
+            client_id,
+            &server_id,
+            method,
+            latency_ms,
+            "unknown",
+            &request_id,
+        );
+
+        // Record metrics
+        state.metrics_collector.mcp().record(&crate::monitoring::mcp_metrics::McpRequestMetrics {
+            client_id,
+            server_id: &server_id,
+            method,
+            latency_ms,
+            success: true,
+            error_code: None,
+        });
+    }
+
     // Return the tools list
-    Ok(response.result.unwrap_or(serde_json::Value::Null))
+    let result = response.result.unwrap_or(serde_json::Value::Null);
+
+    // Log the number of tools if result is an object with "tools" array
+    if let Some(obj) = result.as_object() {
+        if let Some(tools) = obj.get("tools").and_then(|t| t.as_array()) {
+            tracing::info!("✅ Successfully listed {} tools from MCP server {}", tools.len(), server_id);
+            for tool in tools {
+                if let Some(tool_obj) = tool.as_object() {
+                    if let Some(name) = tool_obj.get("name").and_then(|n| n.as_str()) {
+                        tracing::debug!("  - Tool: {}", name);
+                    }
+                }
+            }
+        }
+    }
+
+    tracing::debug!("Tools list response: {}", result);
+
+    Ok(result)
 }
 
 /// Call an MCP tool
@@ -2218,8 +2472,30 @@ pub async fn call_mcp_tool(
     tool_name: String,
     arguments: serde_json::Value,
     mcp_manager: State<'_, Arc<McpServerManager>>,
+    server_manager: State<'_, Arc<crate::server::manager::ServerManager>>,
 ) -> Result<serde_json::Value, String> {
     use crate::mcp::protocol::JsonRpcRequest;
+    use std::time::Instant;
+
+    tracing::info!("🔧 Calling MCP tool '{}' on server: {}", tool_name, server_id);
+    tracing::debug!("Tool arguments: {}", arguments);
+
+    let start_time = Instant::now();
+    let method = format!("tools/call:{}", tool_name);
+    let client_id = "ui"; // UI requests use a special client_id
+
+    // Get app state for logging (if server is running)
+    let app_state = server_manager.get_state();
+
+    // Start server if not running (auto-start on demand)
+    if !mcp_manager.is_running(&server_id) {
+        tracing::info!("MCP server {} not running, starting it now...", server_id);
+        mcp_manager
+            .start_server(&server_id)
+            .await
+            .map_err(|e| format!("Failed to start MCP server: {}", e))?;
+        tracing::info!("✅ MCP server {} started successfully", server_id);
+    }
 
     // Create a tools/call request
     let params = serde_json::json!({
@@ -2233,19 +2509,111 @@ pub async fn call_mcp_tool(
         Some(params),
     );
 
+    tracing::debug!("🔄 Sending tools/call request for '{}' to server {}", tool_name, server_id);
+
     // Send request to MCP server
     let response = mcp_manager
         .send_request(&server_id, request)
         .await
-        .map_err(|e| format!("Failed to call tool: {}", e))?;
+        .map_err(|e| {
+            let latency_ms = start_time.elapsed().as_millis() as u64;
+            tracing::error!("❌ Failed to call tool '{}' on server {}: {}", tool_name, server_id, e);
+
+            // Log failure (if server is running)
+            if let Some(ref state) = app_state {
+                let request_id = format!("mcp_ui_{}", uuid::Uuid::new_v4());
+                let _ = state.mcp_access_logger.log_failure(
+                    client_id,
+                    &server_id,
+                    &method,
+                    500,
+                    None,
+                    latency_ms,
+                    "unknown",
+                    &request_id,
+                );
+
+                // Record metrics
+                state.metrics_collector.mcp().record(&crate::monitoring::mcp_metrics::McpRequestMetrics {
+                    client_id,
+                    server_id: &server_id,
+                    method: &method,
+                    latency_ms,
+                    success: false,
+                    error_code: None,
+                });
+            }
+
+            format!("Failed to call tool: {}", e)
+        })?;
+
+    let latency_ms = start_time.elapsed().as_millis() as u64;
 
     // Check for error
     if let Some(error) = response.error {
+        tracing::error!(
+            "❌ MCP server {} returned error for tool '{}': {} (code {})",
+            server_id, tool_name, error.message, error.code
+        );
+
+        // Log failure (if server is running)
+        if let Some(ref state) = app_state {
+            let request_id = format!("mcp_ui_{}", uuid::Uuid::new_v4());
+            let _ = state.mcp_access_logger.log_failure(
+                client_id,
+                &server_id,
+                &method,
+                500,
+                Some(error.code),
+                latency_ms,
+                "unknown",
+                &request_id,
+            );
+
+            // Record metrics
+            state.metrics_collector.mcp().record(&crate::monitoring::mcp_metrics::McpRequestMetrics {
+                client_id,
+                server_id: &server_id,
+                method: &method,
+                latency_ms,
+                success: false,
+                error_code: Some(error.code),
+            });
+        }
+
         return Err(format!("MCP error: {} (code {})", error.message, error.code));
     }
 
+    // Log success (if server is running)
+    if let Some(ref state) = app_state {
+        let request_id = format!("mcp_ui_{}", uuid::Uuid::new_v4());
+        let _ = state.mcp_access_logger.log_success(
+            client_id,
+            &server_id,
+            &method,
+            latency_ms,
+            "unknown",
+            &request_id,
+        );
+
+        // Record metrics
+        state.metrics_collector.mcp().record(&crate::monitoring::mcp_metrics::McpRequestMetrics {
+            client_id,
+            server_id: &server_id,
+            method: &method,
+            latency_ms,
+            success: true,
+            error_code: None,
+        });
+    }
+
     // Return the result
-    Ok(response.result.unwrap_or(serde_json::Value::Null))
+    let result = response.result.unwrap_or(serde_json::Value::Null);
+
+    tracing::info!("✅ Successfully executed tool '{}' on server {} in {}ms", tool_name, server_id, latency_ms);
+    tracing::debug!("Tool result: {}", result);
+
+    Ok(result)
 }
 
 // ============================================================================

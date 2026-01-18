@@ -21,7 +21,6 @@ use crate::utils::crypto;
 use crate::utils::errors::{AppError, AppResult};
 use parking_lot::RwLock;
 use std::sync::Arc;
-use uuid::Uuid;
 
 const CLIENT_SERVICE: &str = "LocalRouter-Clients";
 
@@ -68,15 +67,12 @@ impl ClientManager {
     /// Returns (client_id, secret, client_config) tuple
     /// The secret is also stored in the keychain automatically
     pub fn create_client(&self, name: String) -> AppResult<(String, String, Client)> {
-        // Generate client_id (lr-<uuid>)
-        let client_id = format!("lr-{}", Uuid::new_v4());
-
         // Generate secret (same format as API keys)
         let secret = crypto::generate_api_key()
             .map_err(|e| AppError::Config(format!("Failed to generate client secret: {}", e)))?;
 
         // Create client config
-        let client = Client::new(name, client_id.clone());
+        let client = Client::new(name);
 
         // Store secret in keychain
         self.keychain
@@ -88,7 +84,7 @@ impl ClientManager {
         // Add to in-memory storage
         self.clients.write().push(client.clone());
 
-        Ok((client_id, secret, client))
+        Ok((client.id.clone(), secret, client))
     }
 
     /// Delete a client and remove its secret from keychain
@@ -98,13 +94,13 @@ impl ClientManager {
         // Find the client
         let client = clients
             .iter()
-            .find(|c| c.client_id == client_id)
+            .find(|c| c.id == client_id)
             .ok_or_else(|| AppError::Config(format!("Client not found: {}", client_id)))?;
 
         let id = client.id.clone();
 
         // Remove from in-memory storage
-        clients.retain(|c| c.client_id != client_id);
+        clients.retain(|c| c.id != client_id);
 
         // Delete from keychain
         self.keychain
@@ -130,7 +126,7 @@ impl ClientManager {
         let clients = self.clients.read();
 
         // Find client by client_id
-        let client = match clients.iter().find(|c| c.client_id == client_id) {
+        let client = match clients.iter().find(|c| c.id == client_id) {
             Some(c) => c,
             None => return Ok(None),
         };
@@ -153,7 +149,7 @@ impl ClientManager {
                 // Mark client as used
                 drop(clients);
                 let mut clients = self.clients.write();
-                if let Some(client) = clients.iter_mut().find(|c| c.client_id == client_id) {
+                if let Some(client) = clients.iter_mut().find(|c| c.id == client_id) {
                     client.mark_used();
                     Ok(Some(client.clone()))
                 } else {
@@ -162,6 +158,26 @@ impl ClientManager {
             }
             _ => Ok(None),
         }
+    }
+
+    /// Get the secret for a client by internal ID
+    ///
+    /// # Arguments
+    /// * `id` - The internal client ID (not client_id)
+    ///
+    /// # Returns
+    /// * `Ok(Some(secret))` if secret exists
+    /// * `Ok(None)` if secret doesn't exist
+    /// * `Err` on keychain access error
+    pub fn get_secret(&self, id: &str) -> AppResult<Option<String>> {
+        tracing::debug!("Retrieving client secret: service={}, account={}", CLIENT_SERVICE, id);
+        let result = self.keychain.get(CLIENT_SERVICE, id)?;
+
+        if result.is_none() {
+            tracing::warn!("Client secret not found in keychain: {}", id);
+        }
+
+        Ok(result)
     }
 
     /// Verify client secret for direct bearer token authentication
@@ -219,7 +235,7 @@ impl ClientManager {
 
         clients
             .iter()
-            .find(|c| c.client_id == client_id && c.enabled)
+            .find(|c| c.id == client_id && c.enabled)
             .map(|c| {
                 c.allowed_llm_providers.is_empty()
                     || c.allowed_llm_providers.contains(&provider_name.to_string())
@@ -233,7 +249,7 @@ impl ClientManager {
 
         clients
             .iter()
-            .find(|c| c.client_id == client_id && c.enabled)
+            .find(|c| c.id == client_id && c.enabled)
             .map(|c| {
                 c.allowed_mcp_servers.is_empty()
                     || c.allowed_mcp_servers.contains(&server_id.to_string())
@@ -247,7 +263,7 @@ impl ClientManager {
 
         let client = clients
             .iter_mut()
-            .find(|c| c.client_id == client_id)
+            .find(|c| c.id == client_id)
             .ok_or_else(|| AppError::Config(format!("Client not found: {}", client_id)))?;
 
         if !client.allowed_llm_providers.contains(&provider_name.to_string()) {
@@ -263,7 +279,7 @@ impl ClientManager {
 
         let client = clients
             .iter_mut()
-            .find(|c| c.client_id == client_id)
+            .find(|c| c.id == client_id)
             .ok_or_else(|| AppError::Config(format!("Client not found: {}", client_id)))?;
 
         client.allowed_llm_providers.retain(|p| p != provider_name);
@@ -277,7 +293,7 @@ impl ClientManager {
 
         let client = clients
             .iter_mut()
-            .find(|c| c.client_id == client_id)
+            .find(|c| c.id == client_id)
             .ok_or_else(|| AppError::Config(format!("Client not found: {}", client_id)))?;
 
         if !client.allowed_mcp_servers.contains(&server_id.to_string()) {
@@ -293,7 +309,7 @@ impl ClientManager {
 
         let client = clients
             .iter_mut()
-            .find(|c| c.client_id == client_id)
+            .find(|c| c.id == client_id)
             .ok_or_else(|| AppError::Config(format!("Client not found: {}", client_id)))?;
 
         client.allowed_mcp_servers.retain(|s| s != server_id);
@@ -307,7 +323,7 @@ impl ClientManager {
 
         let client = clients
             .iter_mut()
-            .find(|c| c.client_id == client_id)
+            .find(|c| c.id == client_id)
             .ok_or_else(|| AppError::Config(format!("Client not found: {}", client_id)))?;
 
         client.enabled = true;
@@ -321,7 +337,7 @@ impl ClientManager {
 
         let client = clients
             .iter_mut()
-            .find(|c| c.client_id == client_id)
+            .find(|c| c.id == client_id)
             .ok_or_else(|| AppError::Config(format!("Client not found: {}", client_id)))?;
 
         client.enabled = false;
@@ -332,7 +348,7 @@ impl ClientManager {
     /// Get a client by client_id
     pub fn get_client(&self, client_id: &str) -> Option<Client> {
         let clients = self.clients.read();
-        clients.iter().find(|c| c.client_id == client_id).cloned()
+        clients.iter().find(|c| c.id == client_id).cloned()
     }
 
     /// Get a client by internal id
@@ -353,7 +369,7 @@ impl ClientManager {
 
         let client = clients
             .iter_mut()
-            .find(|c| c.client_id == client_id)
+            .find(|c| c.id == client_id)
             .ok_or_else(|| AppError::Config(format!("Client not found: {}", client_id)))?;
 
         if let Some(new_name) = name {
@@ -434,10 +450,13 @@ mod tests {
             .create_client("Test Client".to_string())
             .expect("Failed to create client");
 
-        // Verify client_id format
-        assert!(client_id.starts_with("lr-"));
-        assert_eq!(config.client_id, client_id);
+        // Verify client_id is a valid UUID
+        assert!(uuid::Uuid::parse_str(&client_id).is_ok());
+        assert_eq!(config.id, client_id);
         assert_eq!(config.name, "Test Client");
+
+        // Verify secret format (API key format)
+        assert!(secret.starts_with("lr-"));
 
         // Verify secret is stored in keychain
         let stored_secret = mock_keychain
@@ -464,7 +483,7 @@ mod tests {
             .expect("Failed to verify");
         assert!(result.is_some());
         let client = result.unwrap();
-        assert_eq!(client.client_id, client_id);
+        assert_eq!(client.id, client_id);
     }
 
     #[test]

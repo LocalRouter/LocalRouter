@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import Card from '../ui/Card'
 import Badge from '../ui/Badge'
@@ -169,6 +169,14 @@ export default function ProviderDetailPage({
   const healthVariant =
     health?.status === 'Healthy' ? 'success' :
     health?.status === 'Degraded' ? 'warning' : 'error'
+
+  // Memoize context object to prevent re-renders
+  const chatContext = useMemo(() => ({
+    type: 'provider' as const,
+    instanceName,
+    providerType,
+    models,
+  }), [instanceName, providerType, models]);
 
   const tabs = [
     {
@@ -342,12 +350,7 @@ export default function ProviderDetailPage({
         <Card>
           <h3 className="text-lg font-semibold text-gray-900 mb-4">Chat with Provider</h3>
           <ContextualChat
-            context={{
-              type: 'provider',
-              instanceName,
-              providerType,
-              models,
-            }}
+            context={chatContext}
             disabled={!enabled}
           />
         </Card>

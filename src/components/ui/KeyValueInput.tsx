@@ -79,10 +79,9 @@ export default function KeyValueInput({
           </div>
           <Button
             type="button"
-            size="sm"
             variant="secondary"
             onClick={() => removePair(index)}
-            className="flex-shrink-0"
+            className="flex-shrink-0 px-3 py-1.5 text-xs"
           >
             Remove
           </Button>
@@ -90,9 +89,9 @@ export default function KeyValueInput({
       ))}
       <Button
         type="button"
-        size="sm"
         variant="secondary"
         onClick={addPair}
+        className="px-3 py-1.5 text-xs"
       >
         Add {keyPlaceholder}
       </Button>

@@ -8,7 +8,7 @@ import { OAuthModal } from '../OAuthModal'
 import ProviderForm, { ProviderType as ProviderTypeInfo } from '../ProviderForm'
 import ProviderIcon from '../ProviderIcon'
 import ProviderDetailPage from '../providers/ProviderDetailPage'
-import { MetricsChart } from '../charts/MetricsChart'
+import { StackedAreaChart } from '../charts/StackedAreaChart'
 import { useMetricsSubscription } from '../../hooks/useMetricsSubscription'
 
 interface ProviderInstance {
@@ -74,8 +74,10 @@ export default function ProvidersTab({ activeSubTab, onTabChange }: ProvidersTab
   const [providerInstances, setProviderInstances] = useState<ProviderInstance[]>([])
   const [providerTypes, setProviderTypes] = useState<ProviderTypeInfo[]>([])
   const [providersHealth, setProvidersHealth] = useState<Record<string, ProviderHealth>>({})
+  const [trackedProviders, setTrackedProviders] = useState<string[]>([])
   const [loading, setLoading] = useState(true)
   const [activeTab, setActiveTab] = useState<'add' | 'instances'>('instances')
+  const [timeRange, setTimeRange] = useState<'hour' | 'day' | 'week' | 'month'>('day')
 
   const [showProviderModal, setShowProviderModal] = useState(false)
   const [modalMode, setModalMode] = useState<'create' | 'edit'>('create')
@@ -92,7 +94,8 @@ export default function ProvidersTab({ activeSubTab, onTabChange }: ProvidersTab
 
   useEffect(() => {
     loadProviders()
-  }, [])
+    loadTrackedProviders()
+  }, [refreshKey])
 
   const loadProviders = async () => {
     setLoading(true)
@@ -115,6 +118,15 @@ export default function ProvidersTab({ activeSubTab, onTabChange }: ProvidersTab
       alert(`Error loading providers: ${error}`)
     } finally {
       setLoading(false)
+    }
+  }
+
+  const loadTrackedProviders = async () => {
+    try {
+      const providers = await invoke<string[]>('list_tracked_providers')
+      setTrackedProviders(providers)
+    } catch (error) {
+      console.error('Failed to load tracked providers:', error)
     }
   }
 
@@ -305,22 +317,47 @@ export default function ProvidersTab({ activeSubTab, onTabChange }: ProvidersTab
   return (
     <div className="space-y-6">
       {/* Metrics Overview */}
-      {!loading && providerInstances.length > 0 && (
+      {!loading && trackedProviders.length > 0 && (
         <Card>
-          <h3 className="text-lg font-semibold text-gray-900 mb-4">Provider Usage Overview</h3>
-          <div className="grid grid-cols-2 gap-4">
-            <MetricsChart
-              scope="global"
-              timeRange="day"
+          <div className="flex justify-between items-center mb-4">
+            <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Provider Usage Overview</h3>
+            <select
+              value={timeRange}
+              onChange={(e) => setTimeRange(e.target.value as any)}
+              className="px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 hover:bg-gray-50 dark:hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              <option value="hour">Last Hour</option>
+              <option value="day">Last 24 Hours</option>
+              <option value="week">Last 7 Days</option>
+              <option value="month">Last 30 Days</option>
+            </select>
+          </div>
+
+          <div className="space-y-6">
+            <StackedAreaChart
+              compareType="providers"
+              ids={trackedProviders}
+              timeRange={timeRange}
               metricType="requests"
-              title="Total Requests by Provider"
+              title="Request Volume by Provider"
               refreshTrigger={refreshKey}
             />
-            <MetricsChart
-              scope="global"
-              timeRange="day"
+
+            <StackedAreaChart
+              compareType="providers"
+              ids={trackedProviders}
+              timeRange={timeRange}
               metricType="cost"
-              title="Total Cost by Provider"
+              title="Cost by Provider"
+              refreshTrigger={refreshKey}
+            />
+
+            <StackedAreaChart
+              compareType="providers"
+              ids={trackedProviders}
+              timeRange={timeRange}
+              metricType="tokens"
+              title="Token Usage by Provider"
               refreshTrigger={refreshKey}
             />
           </div>

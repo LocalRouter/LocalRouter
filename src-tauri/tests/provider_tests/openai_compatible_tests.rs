@@ -15,8 +15,8 @@
 use super::common::*;
 use futures::StreamExt;
 use localrouter_ai::providers::{
-    groq::GroqProvider, openai_compatible::OpenAICompatibleProvider,
-    openrouter::OpenRouterProvider, ModelProvider,
+    groq::GroqProvider, lmstudio::LMStudioProvider,
+    openai_compatible::OpenAICompatibleProvider, openrouter::OpenRouterProvider, ModelProvider,
 };
 
 // ==================== OPENAI TESTS ====================

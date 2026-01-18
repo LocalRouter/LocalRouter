@@ -15,15 +15,7 @@ use utoipa::OpenApi;
     info(
         title = "LocalRouter AI API",
         version = "0.1.0",
-        description = "OpenAI-compatible API gateway with intelligent routing, multi-provider support, and advanced features",
-        contact(
-            name = "LocalRouter AI",
-            url = "https://github.com/smol-ai/localrouter"
-        ),
-        license(
-            name = "MIT",
-            url = "https://opensource.org/licenses/MIT"
-        )
+        description = "OpenAI-compatible API gateway with intelligent routing, multi-provider support, and advanced features"
     ),
     servers(
         (url = "http://localhost:3625", description = "Local development server"),
