@@ -7,7 +7,6 @@ use tower::{Layer, Service};
 use tauri::http::{Request, Response, StatusCode};
 use axum::body::Body;
 
-use crate::config::ModelSelection;
 use crate::server::state::{AppState, AuthContext};
 use crate::server::types::{ApiError, ErrorResponse};
 
@@ -60,6 +59,11 @@ where
         let mut inner = self.inner.clone();
 
         Box::pin(async move {
+            // Skip authentication for OPTIONS requests (CORS preflight)
+            if req.method() == tauri::http::Method::OPTIONS {
+                return inner.call(req).await;
+            }
+
             // Check if this is a protected route
             let path = req.uri().path();
 
@@ -106,58 +110,68 @@ where
                 ));
             }
 
-            // Extract the API key
-            let api_key = &auth_header[7..]; // Skip "Bearer "
+            // Extract the bearer token (API key or client secret)
+            let bearer_token = &auth_header[7..]; // Skip "Bearer "
 
-            // Validate the API key and extract needed data
+            // Check if this is the internal test token
+            if bearer_token == state.internal_test_secret.as_str() {
+                tracing::debug!("Internal test token detected - bypassing API key restrictions for UI testing");
+                let auth_context = AuthContext {
+                    api_key_id: "internal-test".to_string(),
+                    model_selection: None,
+                    routing_config: None,
+                };
+                req.extensions_mut().insert(auth_context);
+                return inner.call(req).await;
+            }
+
+            // Validate bearer token using client manager
             let auth_context = {
-                let api_key_manager = state.api_key_manager.read();
-                let api_key_info = match api_key_manager.verify_key(api_key) {
-                    Some(info) => info,
-                    None => {
+                tracing::debug!("Authenticating bearer token with client manager");
+                match state.client_manager.verify_secret(bearer_token) {
+                    Ok(Some(client)) => {
+                        tracing::debug!("Authenticated as client: {}", client.id);
+
+                        // Load routing config from config manager
+                        let routing_config = {
+                            let config = state.config_manager.get();
+                            config.clients
+                                .iter()
+                                .find(|c| c.id == client.id)
+                                .and_then(|c| c.routing_config.clone())
+                        };
+
+                        tracing::debug!(
+                            "Client {} routing config: {:?}",
+                            client.id,
+                            routing_config.as_ref().map(|c| &c.active_strategy)
+                        );
+
+                        // Use the client's ID for routing with routing config
+                        AuthContext {
+                            api_key_id: client.id.clone(),
+                            model_selection: None,
+                            routing_config,
+                        }
+                    }
+                    Ok(None) => {
+                        tracing::warn!("Invalid bearer token - client not found");
                         return Ok(create_error_response(
                             StatusCode::UNAUTHORIZED,
                             "authentication_error",
                             "Invalid API key",
                         ));
                     }
-                };
-
-                // Parse model selection and clone data before lock is released
-                let model_selection = api_key_info.model_selection.as_ref().map(|sel| match sel {
-                    ModelSelection::All => crate::server::state::ModelSelection::All,
-                    ModelSelection::Custom {
-                        all_provider_models,
-                        individual_models,
-                    } => crate::server::state::ModelSelection::Custom {
-                        all_provider_models: all_provider_models.clone(),
-                        individual_models: individual_models.clone(),
-                    },
-                    #[allow(deprecated)]
-                    ModelSelection::DirectModel { provider, model } => {
-                        crate::server::state::ModelSelection::DirectModel {
-                            provider: provider.clone(),
-                            model: model.clone(),
-                        }
+                    Err(e) => {
+                        tracing::error!("Error verifying client secret: {}", e);
+                        return Ok(create_error_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "internal_error",
+                            "Authentication error",
+                        ));
                     }
-                    #[allow(deprecated)]
-                    ModelSelection::Router { router_name } => {
-                        crate::server::state::ModelSelection::Router {
-                            router_name: router_name.clone(),
-                        }
-                    }
-                });
-
-                // Get routing config
-                let routing_config = api_key_info.get_routing_config();
-
-                // Create auth context with cloned data
-                AuthContext {
-                    api_key_id: api_key_info.id.clone(),
-                    model_selection,
-                    routing_config,
                 }
-            }; // Lock is automatically dropped here
+            };
 
             // Insert auth context into request extensions
             req.extensions_mut().insert(auth_context);
