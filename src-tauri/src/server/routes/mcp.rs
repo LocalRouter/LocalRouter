@@ -12,41 +12,93 @@ use axum::{
 
 use crate::mcp::protocol::{JsonRpcRequest, JsonRpcResponse};
 use crate::server::middleware::error::ApiErrorResponse;
+use crate::server::middleware::client_auth::ClientAuthContext;
 use crate::server::state::{AppState, OAuthContext};
 
 /// Handle MCP request with validation
 ///
-/// Validates OAuth context and forwards request to MCP server.
-/// This is extracted for testing purposes.
+/// Validates client/OAuth context and forwards request to MCP server.
+/// Supports both new ClientAuthContext and legacy OAuthContext.
 async fn handle_request(
     client_id_param: String,
     server_id: String,
     state: AppState,
-    oauth_context: OAuthContext,
+    client_context: Option<ClientAuthContext>,
+    oauth_context: Option<OAuthContext>,
     request: JsonRpcRequest,
 ) -> Result<JsonRpcResponse, ApiErrorResponse> {
-    // Verify client_id matches OAuth context (URL param should match authenticated client)
-    if client_id_param != oauth_context.client_id {
-        tracing::warn!(
-            "Client ID mismatch: URL={}, Auth={}",
-            client_id_param,
-            oauth_context.client_id
-        );
-        return Err(ApiErrorResponse::forbidden(
-            "Client ID does not match authenticated client",
-        ));
-    }
+    // Determine which authentication method is being used and validate access
+    if let Some(client_ctx) = client_context {
+        // New unified client authentication
+        // Verify client_id matches (URL param should match authenticated client)
+        if client_id_param != client_ctx.client_id {
+            tracing::warn!(
+                "Client ID mismatch: URL={}, Auth={}",
+                client_id_param,
+                client_ctx.client_id
+            );
+            return Err(ApiErrorResponse::forbidden(
+                "Client ID does not match authenticated client",
+            ));
+        }
 
-    // Check if client has access to this server
-    if !oauth_context.linked_server_ids.contains(&server_id) {
-        tracing::warn!(
-            "Client {} attempted to access unauthorized server {}",
-            oauth_context.client_id,
+        // Get client to check allowed MCP servers
+        let client = state
+            .client_manager
+            .get_client(&client_ctx.client_id)
+            .ok_or_else(|| ApiErrorResponse::unauthorized("Client not found"))?;
+
+        // Check if client is enabled
+        if !client.enabled {
+            return Err(ApiErrorResponse::forbidden("Client is disabled"));
+        }
+
+        // Check if client has access to this MCP server
+        if !client.allowed_mcp_servers.contains(&server_id) {
+            tracing::warn!(
+                "Client {} attempted to access unauthorized MCP server {}",
+                client_ctx.client_id,
+                server_id
+            );
+            return Err(ApiErrorResponse::forbidden(format!(
+                "Access denied: Client is not authorized to access MCP server '{}'. Contact administrator to grant access.",
+                server_id
+            )));
+        }
+
+        tracing::debug!(
+            "Client {} authorized for MCP server: {}",
+            client_ctx.client_id,
             server_id
         );
-        return Err(ApiErrorResponse::forbidden(
-            "Client does not have access to this MCP server",
-        ));
+    } else if let Some(oauth_ctx) = oauth_context {
+        // Legacy OAuth authentication
+        // Verify client_id matches OAuth context (URL param should match authenticated client)
+        if client_id_param != oauth_ctx.client_id {
+            tracing::warn!(
+                "Client ID mismatch: URL={}, Auth={}",
+                client_id_param,
+                oauth_ctx.client_id
+            );
+            return Err(ApiErrorResponse::forbidden(
+                "Client ID does not match authenticated client",
+            ));
+        }
+
+        // Check if client has access to this server (legacy linked_server_ids)
+        if !oauth_ctx.linked_server_ids.contains(&server_id) {
+            tracing::warn!(
+                "Client {} attempted to access unauthorized server {}",
+                oauth_ctx.client_id,
+                server_id
+            );
+            return Err(ApiErrorResponse::forbidden(
+                "Client does not have access to this MCP server",
+            ));
+        }
+    } else {
+        // No authentication context provided
+        return Err(ApiErrorResponse::unauthorized("Missing authentication context"));
     }
 
     // Start server if not running
@@ -115,7 +167,8 @@ async fn handle_request(
 pub async fn mcp_proxy_handler(
     Path((client_id_param, server_id)): Path<(String, String)>,
     State(state): State<AppState>,
-    oauth_context: axum::Extension<OAuthContext>,
+    client_auth: Option<axum::Extension<ClientAuthContext>>,
+    oauth_context: Option<axum::Extension<OAuthContext>>,
     Json(request): Json<JsonRpcRequest>,
 ) -> Response {
 
@@ -124,7 +177,8 @@ pub async fn mcp_proxy_handler(
         client_id_param,
         server_id,
         state,
-        oauth_context.0,
+        client_auth.map(|e| e.0),
+        oauth_context.map(|e| e.0),
         request,
     )
     .await
