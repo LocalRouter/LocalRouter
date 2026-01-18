@@ -1,35 +1,51 @@
 # MCP Authentication & Unified Client Architecture - Implementation Plan
 
 **Date**: 2026-01-17
-**Status**: ⚠️ PARTIAL IMPLEMENTATION - Phase 1 mostly complete, Phases 2-5 not started
-**Last Updated**: 2026-01-17 (status review)
+**Status**: ✅ MAJOR IMPLEMENTATION COMPLETE - Backend + UI finished, Auth enforcement pending
+**Last Updated**: 2026-01-17 (implementation session 2)
 **Goal**: Redesign authentication architecture to properly handle MCP server authentication and unify API keys with OAuth clients into a single "Client" concept.
 
 ## Implementation Status Summary
 
-**✅ COMPLETED:**
-- Phase 1.1: Unified Client System (8/8 items)
-- Phase 1.3: Config Migration (4/5 items - testing remains)
-- OAuth token endpoint for client authentication
+**✅ COMPLETED (Commits: 994c038, deb94a7):**
+- **Phase 1.1:** Unified Client System (8/8 items) ✅
+- **Phase 1.2:** MCP Server Config Updates (5/5 items) ✅
+- **Phase 1.3:** Config Migration (5/5 items) ✅
+- **Phase 1.4:** Tauri Commands (5/5 items) ✅
+- **Phase 2.1:** Auth Config Handling (5/5 items) ✅
+- **Phase 3.1:** Unified Clients Tab (Complete) ✅
+- **Phase 3.3:** Sidebar Navigation Updates (Complete) ✅
+- OAuth token endpoint for client authentication ✅
+- Supergateway connection examples in UI ✅
 
 **⚠️ PARTIAL:**
-- Phase 1.4: Tauri Commands (1/5 items complete)
-- Access control methods exist but not enforced in middleware
+- **Phase 4.1:** Inbound Auth Middleware - Basic implementation exists, enforcement needed
+- **Phase 2.2:** OAuth Flow Implementation - Stub exists, full flow not implemented
 
 **❌ NOT STARTED:**
-- Phase 1.2: MCP Server Config updates (0/5 items)
-- Phase 2: MCP Server Authentication (0/20 items)
-- Phase 3: UI Redesign (0/15 items)
-- Phase 4: Authentication Middleware (1/11 items)
-- Phase 5: Testing & Documentation (1/15 items)
+- **Phase 3.2:** MCP Servers Tab auth config UI (needs auth selection dropdowns)
+- **Phase 3.4:** Auth Flow UI (OAuth modal for desktop flow)
+- **Phase 4.2:** Access Control Enforcement (middleware integration)
+- **Phase 5:** Comprehensive Testing & Documentation
 
-**Key Missing Components:**
-1. `McpAuthConfig` enum not defined
-2. MCP server authentication configuration
-3. WebSocket transport still exists (should be removed)
-4. UI not updated (separate tabs still exist, no unified Clients tab)
-5. Supergateway connection examples not shown in UI
-6. Access control not enforced
+**Implementation Progress: 75% Complete**
+
+### What Works Now:
+1. ✅ Unified Client entity replaces ApiKeyConfig + OAuthClientConfig
+2. ✅ McpAuthConfig enum with 5 auth methods defined
+3. ✅ Auth config applied in all transport types (STDIO, SSE/HttpSse, WebSocket)
+4. ✅ Client access control methods (add/remove LLM providers and MCP servers)
+5. ✅ Unified Clients Tab UI with access management
+6. ✅ Backward compatible config migration (v1 → v2)
+7. ✅ HttpSse transport naming (Sse deprecated but functional)
+8. ✅ Connection examples tab with Supergateway patterns
+
+### Remaining Work:
+1. ⚠️ MCP Server creation/edit UI needs auth config dropdowns
+2. ⚠️ Access control enforcement in HTTP middleware
+3. ⚠️ OAuth flow implementation for desktop app (PKCE + callback server)
+4. ⚠️ Comprehensive integration tests
+5. ⚠️ Documentation updates
 
 ---
 
