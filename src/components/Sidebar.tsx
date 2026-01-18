@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import ProviderIcon from './ProviderIcon'
 
-type MainTab = 'home' | 'server' | 'api-keys' | 'providers' | 'models' | 'oauth-clients' | 'mcp-servers' | 'documentation'
+type MainTab = 'home' | 'server' | 'clients' | 'api-keys' | 'providers' | 'models' | 'oauth-clients' | 'mcp-servers' | 'documentation'
 
 interface SidebarProps {
   activeTab: MainTab
@@ -15,6 +15,15 @@ interface ProviderInstance {
   instance_name: string
   provider_type: string
   enabled: boolean
+}
+
+interface Client {
+  id: string
+  name: string
+  client_id: string
+  enabled: boolean
+  allowed_llm_providers: string[]
+  allowed_mcp_servers: string[]
 }
 
 interface ApiKey {
@@ -42,6 +51,7 @@ interface McpServer {
 
 export default function Sidebar({ activeTab, activeSubTab, onTabChange }: SidebarProps) {
   const [providers, setProviders] = useState<ProviderInstance[]>([])
+  const [clients, setClients] = useState<Client[]>([])
   const [apiKeys, setApiKeys] = useState<ApiKey[]>([])
   const [models, setModels] = useState<Model[]>([])
   const [oauthClients, setOauthClients] = useState<OAuthClient[]>([])
@@ -51,6 +61,7 @@ export default function Sidebar({ activeTab, activeSubTab, onTabChange }: Sideba
   useEffect(() => {
     // Initial load
     loadProviders()
+    loadClients()
     loadApiKeys()
     loadModels()
     loadOAuthClients()
@@ -59,6 +70,10 @@ export default function Sidebar({ activeTab, activeSubTab, onTabChange }: Sideba
     // Subscribe to data change events (no polling needed)
     const unsubscribeProviders = listen('providers-changed', () => {
       loadProviders()
+    })
+
+    const unsubscribeClients = listen('clients-changed', () => {
+      loadClients()
     })
 
     const unsubscribeApiKeys = listen('api-keys-changed', () => {
@@ -79,6 +94,7 @@ export default function Sidebar({ activeTab, activeSubTab, onTabChange }: Sideba
 
     return () => {
       unsubscribeProviders.then((fn: any) => fn())
+      unsubscribeClients.then((fn: any) => fn())
       unsubscribeApiKeys.then((fn: any) => fn())
       unsubscribeModels.then((fn: any) => fn())
       unsubscribeOAuthClients.then((fn: any) => fn())
@@ -92,6 +108,15 @@ export default function Sidebar({ activeTab, activeSubTab, onTabChange }: Sideba
       setProviders(instances)
     } catch (err) {
       console.error('Failed to load providers:', err)
+    }
+  }
+
+  const loadClients = async () => {
+    try {
+      const clientList = await invoke<Client[]>('list_clients')
+      setClients(clientList)
+    } catch (err) {
+      console.error('Failed to load clients:', err)
     }
   }
 
@@ -144,10 +169,9 @@ export default function Sidebar({ activeTab, activeSubTab, onTabChange }: Sideba
   const mainTabs = [
     { id: 'home' as MainTab, label: 'Home' },
     { id: 'server' as MainTab, label: 'Preferences' },
-    { id: 'api-keys' as MainTab, label: 'API Keys', hasSubTabs: true },
+    { id: 'clients' as MainTab, label: 'Clients', hasSubTabs: true },
     { id: 'providers' as MainTab, label: 'Providers', hasSubTabs: true },
     { id: 'models' as MainTab, label: 'Models', hasSubTabs: true },
-    { id: 'oauth-clients' as MainTab, label: 'OAuth Clients', hasSubTabs: true },
     { id: 'mcp-servers' as MainTab, label: 'MCP Servers', hasSubTabs: true },
     { id: 'documentation' as MainTab, label: 'Documentation' },
   ]
@@ -207,7 +231,32 @@ export default function Sidebar({ activeTab, activeSubTab, onTabChange }: Sideba
             </div>
           )}
 
-          {/* Sub Tabs for API Keys */}
+          {/* Sub Tabs for Clients */}
+          {tab.id === 'clients' && expandedSections.has('clients') && (
+            <div className="bg-gray-50">
+              {clients.map((client) => (
+                <div
+                  key={client.id}
+                  onClick={() => onTabChange('clients', client.client_id)}
+                  className={`
+                    px-4 py-2 cursor-pointer transition-all text-sm border-l-4 flex items-center gap-2
+                    ${
+                      activeTab === 'clients' && activeSubTab === client.client_id
+                        ? 'bg-blue-50 text-blue-600 border-blue-600'
+                        : 'text-gray-600 border-transparent hover:bg-gray-100'
+                    }
+                  `}
+                >
+                  <span className="truncate flex-1">{client.name}</span>
+                  {!client.enabled && (
+                    <span className="w-2 h-2 bg-red-500 rounded-full" title="Disabled" />
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Sub Tabs for API Keys (Legacy - Hidden by default) */}
           {tab.id === 'api-keys' && expandedSections.has('api-keys') && (
             <div className="bg-gray-50">
               {apiKeys.map((key) => (

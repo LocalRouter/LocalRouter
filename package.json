@@ -11,7 +11,7 @@
   },
   "dependencies": {
     "@heroicons/react": "^2.2.0",
-    "@scalar/api-reference-react": "^1.25.64",
+    "@scalar/api-reference-react": "^0.8.27",
     "@tauri-apps/api": "^2.9.1",
     "@types/dagre": "^0.7.53",
     "ai": "^6.0.35",

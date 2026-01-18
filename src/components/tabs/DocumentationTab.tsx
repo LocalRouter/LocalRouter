@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { ApiReferenceReact } from '@scalar/api-reference-react'
+import '@scalar/api-reference-react/style.css'
 import Button from '../ui/Button'
 import Select from '../ui/Select'
 
@@ -120,6 +121,98 @@ export default function DocumentationTab() {
     setFeedback({ type: 'success', message: `${label} copied to clipboard!` })
   }
 
+  const exportPostman = () => {
+    try {
+      const specObj = JSON.parse(spec)
+
+      // Create basic Postman collection from OpenAPI spec
+      const postmanCollection = {
+        info: {
+          name: specObj.info.title || 'LocalRouter AI API',
+          description: specObj.info.description || '',
+          schema: 'https://schema.getpostman.com/json/collection/v2.1.0/collection.json',
+        },
+        auth: {
+          type: 'bearer',
+          bearer: [
+            {
+              key: 'token',
+              value: selectedKey || '{{api_key}}',
+              type: 'string',
+            },
+          ],
+        },
+        item: Object.entries(specObj.paths || {}).flatMap(([path, methods]: [string, any]) => {
+          return Object.entries(methods)
+            .filter(([method]) => ['get', 'post', 'put', 'delete', 'patch'].includes(method))
+            .map(([method, operation]: [string, any]) => ({
+              name: operation.summary || `${method.toUpperCase()} ${path}`,
+              request: {
+                method: method.toUpperCase(),
+                header: [
+                  {
+                    key: 'Content-Type',
+                    value: 'application/json',
+                  },
+                ],
+                url: {
+                  raw: `${baseUrl}${path}`,
+                  host: [config?.host || '127.0.0.1'],
+                  port: `${port}`,
+                  path: path.split('/').filter(Boolean),
+                },
+                description: operation.description || '',
+                body: method !== 'get' && operation.requestBody ? {
+                  mode: 'raw',
+                  raw: JSON.stringify(
+                    operation.requestBody.content?.['application/json']?.schema?.example || {},
+                    null,
+                    2
+                  ),
+                } : undefined,
+              },
+            }))
+        }),
+      }
+
+      const blob = new Blob([JSON.stringify(postmanCollection, null, 2)], {
+        type: 'application/json',
+      })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = 'localrouter-postman-collection.json'
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+      setFeedback({
+        type: 'success',
+        message: 'Postman collection exported successfully!',
+      })
+    } catch (err: any) {
+      console.error('Failed to export Postman collection:', err)
+      setFeedback({
+        type: 'error',
+        message: `Failed to export: ${err.message || err}`,
+      })
+    }
+  }
+
+  const copyCurlExample = () => {
+    const curlCommand = `curl -X POST ${baseUrl}/v1/chat/completions \\
+  -H "Authorization: Bearer ${selectedKey || 'YOUR_API_KEY'}" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model": "gpt-4",
+    "messages": [
+      {"role": "user", "content": "Hello!"}
+    ]
+  }'`
+
+    copyToClipboard(curlCommand, 'cURL example')
+  }
+
   if (isLoading) {
     return (
       <div className="flex items-center justify-center h-full">
@@ -220,6 +313,12 @@ export default function DocumentationTab() {
             </Button>
             <Button variant="secondary" onClick={() => downloadSpec('yaml')} title="Download OpenAPI spec as YAML">
               YAML ⬇
+            </Button>
+            <Button variant="secondary" onClick={exportPostman} title="Export as Postman collection">
+              Postman ⬇
+            </Button>
+            <Button variant="secondary" onClick={copyCurlExample} title="Copy example cURL command">
+              cURL ⎘
             </Button>
             <Button variant="secondary" onClick={loadOpenAPISpec} title="Refresh specification">
               ↻

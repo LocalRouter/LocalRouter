@@ -3,6 +3,7 @@ import { listen } from '@tauri-apps/api/event'
 import Header from './components/Header'
 import Sidebar from './components/Sidebar'
 import HomeTab from './components/tabs/HomeTab'
+import ClientsTab from './components/tabs/ClientsTab'
 import ApiKeysTab from './components/tabs/ApiKeysTab'
 import ProvidersTab from './components/tabs/ProvidersTab'
 import ServerTab from './components/tabs/ServerTab'
@@ -13,7 +14,7 @@ import DocumentationTab from './components/tabs/DocumentationTab'
 import { PrioritizedListModal } from './components/PrioritizedListModal'
 import { invoke } from '@tauri-apps/api/core'
 
-type Tab = 'home' | 'server' | 'api-keys' | 'providers' | 'models' | 'oauth-clients' | 'mcp-servers' | 'documentation'
+type Tab = 'home' | 'server' | 'clients' | 'api-keys' | 'providers' | 'models' | 'oauth-clients' | 'mcp-servers' | 'documentation'
 
 interface ApiKeyInfo {
   id: string
@@ -92,6 +93,9 @@ function App() {
         <main className="flex-1 p-8 overflow-y-auto">
           {activeTab === 'home' && <HomeTab />}
           {activeTab === 'server' && <ServerTab />}
+          {activeTab === 'clients' && (
+            <ClientsTab activeSubTab={activeSubTab} onTabChange={handleTabChange} />
+          )}
           {activeTab === 'api-keys' && (
             <ApiKeysTab activeSubTab={activeSubTab} onTabChange={handleTabChange} />
           )}
