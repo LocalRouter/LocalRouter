@@ -160,19 +160,17 @@ async fn handle_request(
         ) {
             tracing::warn!("Failed to write MCP access log: {}", e);
         }
-    } else {
-        if let Err(e) = state.mcp_access_logger.log_failure(
-            &client_id_param,
-            &server_id,
-            &method,
-            500, // Internal Server Error
-            response.error.as_ref().map(|e| e.code),
-            latency_ms,
-            transport,
-            &request_id,
-        ) {
-            tracing::warn!("Failed to write MCP access log: {}", e);
-        }
+    } else if let Err(e) = state.mcp_access_logger.log_failure(
+        &client_id_param,
+        &server_id,
+        &method,
+        500, // Internal Server Error
+        response.error.as_ref().map(|e| e.code),
+        latency_ms,
+        transport,
+        &request_id,
+    ) {
+        tracing::warn!("Failed to write MCP access log: {}", e);
     }
 
     Ok(response)

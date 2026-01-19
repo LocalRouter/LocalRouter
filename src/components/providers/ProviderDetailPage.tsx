@@ -171,12 +171,14 @@ export default function ProviderDetailPage({
     health?.status === 'Degraded' ? 'warning' : 'error'
 
   // Memoize context object to prevent re-renders
+  // Only recreate when model IDs actually change, not on every render
+  const modelIds = useMemo(() => models.map(m => m.model_id).join(','), [models]);
   const chatContext = useMemo(() => ({
     type: 'provider' as const,
     instanceName,
     providerType,
     models,
-  }), [instanceName, providerType, models]);
+  }), [instanceName, providerType, modelIds]);
 
   const tabs = [
     {

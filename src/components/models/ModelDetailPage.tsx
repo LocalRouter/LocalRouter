@@ -40,6 +40,14 @@ export default function ModelDetailPage({ modelKey, onTabChange }: ModelDetailPa
   const [loading, setLoading] = useState(true)
   const [activeTab, setActiveTab] = useState<string>('metrics')
 
+  // Memoize context object to prevent re-renders
+  // MUST be before any conditional returns (Rules of Hooks)
+  const chatContext = useMemo(() => ({
+    type: 'model' as const,
+    providerInstance: model?.provider_instance || providerInstance,
+    modelId: model?.model_id || modelId,
+  }), [model?.provider_instance, model?.model_id, providerInstance, modelId]);
+
   useEffect(() => {
     loadModelData()
   }, [modelKey])
@@ -118,13 +126,6 @@ export default function ModelDetailPage({ modelKey, onTabChange }: ModelDetailPa
       </div>
     )
   }
-
-  // Memoize context object to prevent re-renders
-  const chatContext = useMemo(() => ({
-    type: 'model' as const,
-    providerInstance: model.provider_instance,
-    modelId: model.model_id,
-  }), [model.provider_instance, model.model_id]);
 
   const tabs = [
     {

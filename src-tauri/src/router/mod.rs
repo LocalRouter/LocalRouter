@@ -318,7 +318,7 @@ impl Router {
         let routing_config = client.routing_config.as_ref();
 
         // Special handling for Prioritized List: use retry logic
-        if let Some(ref config) = routing_config {
+        if let Some(config) = routing_config {
             if config.active_strategy == ActiveRoutingStrategy::PrioritizedList {
                 if config.prioritized_models.is_empty() {
                     return Err(AppError::Router(
@@ -339,7 +339,7 @@ impl Router {
             }
         }
 
-        let (provider, expected_model) = if let Some(ref config) = routing_config {
+        let (provider, expected_model) = if let Some(config) = routing_config {
             // New routing config system
             match config.active_strategy {
                 ActiveRoutingStrategy::AvailableModels => {
@@ -699,7 +699,7 @@ impl Router {
         let routing_config = client.routing_config.as_ref();
 
         // Check for PrioritizedList strategy - not fully supported for streaming
-        if let Some(ref config) = routing_config {
+        if let Some(config) = routing_config {
             if config.active_strategy == ActiveRoutingStrategy::PrioritizedList {
                 warn!(
                     "PrioritizedList strategy does not support automatic retry for streaming requests. \
@@ -710,7 +710,7 @@ impl Router {
             }
         }
 
-        let (provider, expected_model) = if let Some(ref config) = routing_config {
+        let (provider, expected_model) = if let Some(config) = routing_config {
             // New routing config system (same logic as complete())
             match config.active_strategy {
                 ActiveRoutingStrategy::AvailableModels => {
@@ -893,7 +893,6 @@ mod tests {
     use super::*;
     use crate::config::AppConfig;
     use crate::providers::health::HealthCheckManager;
-    use chrono::Utc;
 
     #[tokio::test]
     async fn test_router_creation() {

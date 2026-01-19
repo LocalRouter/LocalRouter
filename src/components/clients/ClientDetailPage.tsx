@@ -112,6 +112,15 @@ export default function ClientDetailPage({ clientId, initialTab, initialRoutingM
     }
   }, [initialRoutingMode])
 
+  // Memoize context object to prevent re-renders
+  // IMPORTANT: This must be before any early returns to comply with Rules of Hooks
+  const chatContext = useMemo(() => ({
+    type: 'api_key' as const,
+    apiKeyId: client?.client_id || '',
+    apiKeyName: client?.name || '',
+    modelSelection: null,
+  }), [client?.client_id, client?.name]);
+
   const loadClientData = async () => {
     setLoading(true)
     try {
@@ -293,14 +302,6 @@ export default function ClientDetailPage({ clientId, initialTab, initialRoutingM
       </div>
     )
   }
-
-  // Memoize context object to prevent re-renders
-  const chatContext = useMemo(() => ({
-    type: 'api_key' as const,
-    apiKeyId: client?.client_id || '',
-    apiKeyName: client?.name || '',
-    modelSelection: null,
-  }), [client?.client_id, client?.name]);
 
   // Define tab content
   const tabs = [

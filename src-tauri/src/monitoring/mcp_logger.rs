@@ -5,12 +5,13 @@
 #![allow(dead_code)]
 
 use chrono::{DateTime, Utc};
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
+use tauri::Emitter;
 use tracing::{info, warn};
 
 use crate::utils::errors::{AppError, AppResult};
@@ -75,6 +76,7 @@ impl McpAccessLogEntry {
     }
 
     /// Create a new MCP access log entry for a failed request
+    #[allow(clippy::too_many_arguments)]
     pub fn error(
         client_id: impl Into<String>,
         server_id: impl Into<String>,
@@ -113,6 +115,9 @@ pub struct McpAccessLogger {
 
     /// Maximum number of days to keep logs
     retention_days: u32,
+
+    /// Optional Tauri app handle for emitting events
+    app_handle: Arc<RwLock<Option<tauri::AppHandle>>>,
 }
 
 impl McpAccessLogger {
@@ -131,7 +136,13 @@ impl McpAccessLogger {
             writer: Arc::new(Mutex::new(None)),
             current_date: Arc::new(Mutex::new(String::new())),
             retention_days,
+            app_handle: Arc::new(RwLock::new(None)),
         })
+    }
+
+    /// Set the Tauri app handle for event emission
+    pub fn set_app_handle(&self, handle: tauri::AppHandle) {
+        *self.app_handle.write() = Some(handle);
     }
 
     /// Get the OS-specific log directory (shared with LLM logs)
@@ -227,6 +238,13 @@ impl McpAccessLogger {
                 .map_err(|e| AppError::Internal(format!("Failed to flush MCP log: {}", e)))?;
         }
 
+        // Emit Tauri event if app handle is available
+        if let Some(handle) = self.app_handle.read().as_ref() {
+            if let Err(e) = handle.emit("mcp-log-entry", entry) {
+                warn!("Failed to emit MCP log event: {}", e);
+            }
+        }
+
         Ok(())
     }
 
@@ -302,6 +320,7 @@ impl McpAccessLogger {
     }
 
     /// Log a failed MCP request
+    #[allow(clippy::too_many_arguments)]
     pub fn log_failure(
         &self,
         client_id: &str,

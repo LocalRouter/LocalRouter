@@ -6,7 +6,8 @@
 //! - Per-day: Last 90 days (90 points)
 
 use anyhow::Result;
-use chrono::{DateTime, Utc};
+#[allow(unused_imports)]
+use chrono::{DateTime, DurationRound, Utc};
 use parking_lot::Mutex;
 use rusqlite::{params, Connection};
 use std::path::PathBuf;

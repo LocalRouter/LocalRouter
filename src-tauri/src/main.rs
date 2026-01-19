@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod api_keys;
+mod catalog;
 mod clients;
 mod config;
 mod mcp;

@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { invoke } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
 import Card from '../ui/Card'
 import Button from '../ui/Button'
 import Badge from '../ui/Badge'
@@ -37,22 +38,48 @@ export default function LogsTab() {
   const [mcpLogs, setMcpLogs] = useState<MCPLogEntry[]>([])
   const [activeTab, setActiveTab] = useState<'llm' | 'mcp'>('llm')
   const [loading, setLoading] = useState(true)
-  const [autoRefresh, setAutoRefresh] = useState(false)
+  const [liveUpdates, setLiveUpdates] = useState(true)
   const [limit, setLimit] = useState(100)
 
   useEffect(() => {
     loadLogs()
   }, [limit])
 
+  // Subscribe to real-time log events
   useEffect(() => {
-    if (autoRefresh) {
-      const interval = setInterval(() => {
-        loadLogs()
-      }, 5000) // Refresh every 5 seconds
+    if (!liveUpdates) return
 
-      return () => clearInterval(interval)
+    let llmUnlisten: (() => void) | undefined
+    let mcpUnlisten: (() => void) | undefined
+
+    // Subscribe to LLM log events
+    listen<LLMLogEntry>('llm-log-entry', (event) => {
+      setLlmLogs((prev) => {
+        // Add new entry at the beginning (newest first) and respect limit
+        const newLogs = [event.payload, ...prev].slice(0, limit)
+        return newLogs
+      })
+    }).then((unlisten) => {
+      llmUnlisten = unlisten
+    })
+
+    // Subscribe to MCP log events
+    listen<MCPLogEntry>('mcp-log-entry', (event) => {
+      setMcpLogs((prev) => {
+        // Add new entry at the beginning (newest first) and respect limit
+        const newLogs = [event.payload, ...prev].slice(0, limit)
+        return newLogs
+      })
+    }).then((unlisten) => {
+      mcpUnlisten = unlisten
+    })
+
+    // Cleanup subscriptions on unmount or when liveUpdates changes
+    return () => {
+      if (llmUnlisten) llmUnlisten()
+      if (mcpUnlisten) mcpUnlisten()
     }
-  }, [autoRefresh, limit])
+  }, [liveUpdates, limit])
 
   const loadLogs = async () => {
     setLoading(true)
@@ -98,11 +125,11 @@ export default function LogsTab() {
           <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
             <input
               type="checkbox"
-              checked={autoRefresh}
-              onChange={(e) => setAutoRefresh(e.target.checked)}
+              checked={liveUpdates}
+              onChange={(e) => setLiveUpdates(e.target.checked)}
               className="rounded border-gray-300 dark:border-gray-600"
             />
-            Auto-refresh
+            Live updates
           </label>
           <select
             value={limit}

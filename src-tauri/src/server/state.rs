@@ -150,7 +150,11 @@ impl AppState {
 
     /// Set the Tauri app handle (called after Tauri initialization)
     pub fn set_app_handle(&self, handle: tauri::AppHandle) {
-        *self.app_handle.write() = Some(handle);
+        *self.app_handle.write() = Some(handle.clone());
+
+        // Also set app handle on loggers for event emission
+        self.access_logger.set_app_handle(handle.clone());
+        self.mcp_access_logger.set_app_handle(handle);
     }
 
     /// Emit an event if the app handle is available

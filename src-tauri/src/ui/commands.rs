@@ -13,356 +13,7 @@ use crate::oauth_clients::OAuthClientManager;
 use crate::providers::registry::ProviderRegistry;
 use crate::server::ServerManager;
 use serde::{Deserialize, Serialize};
-use tauri::{Emitter, Manager, State};
-
-// DEPRECATED: API key system has been replaced with unified Client system
-// /// API key information for display
-// #[derive(Debug, Clone, Serialize, Deserialize)]
-// pub struct ApiKeyInfo {
-//     pub id: String,
-//     pub name: String,
-//     #[serde(skip_serializing_if = "Option::is_none")]
-//     pub key: Option<String>,
-//     #[serde(skip_serializing_if = "Option::is_none")]
-//     pub model_selection: Option<ModelSelection>,
-//     pub enabled: bool,
-//     pub created_at: String,
-// }
-//
-// /// List all API keys
-// #[tauri::command]
-// pub async fn list_api_keys(key_manager: State<'_, ApiKeyManager>) -> Result<Vec<ApiKeyInfo>, String> {
-//     let keys = key_manager.list_keys();
-//     Ok(keys
-//         .into_iter()
-//         .map(|k| ApiKeyInfo {
-//             id: k.id.clone(),
-//             name: k.name.clone(),
-//             key: None, // Key is not accessible after creation for security
-//             model_selection: k.model_selection.clone(),
-//             enabled: k.enabled,
-//             created_at: k.created_at.to_rfc3339(),
-//         })
-//         .collect())
-// }
-
-/// Create a new API key with optional model selection
-// #[tauri::command]
-// pub async fn create_api_key(
-//     name: Option<String>,
-//     model_selection: Option<ModelSelection>,
-//     key_manager: State<'_, ApiKeyManager>,
-//     config_manager: State<'_, ConfigManager>,
-//     app: tauri::AppHandle,
-// ) -> Result<(String, ApiKeyInfo), String> {
-//     tracing::info!("Creating new API key with name: {:?}, model_selection: {:?}", name, model_selection.is_some());
-
-//     let (key, mut config) = key_manager
-//         .create_key(name)
-//         .await
-//         .map_err(|e| e.to_string())?;
-
-//     tracing::info!("API key created: {} ({})", config.name, config.id);
-
-    // Set model selection if provided
-//     if model_selection.is_some() {
-//         config.model_selection = model_selection.clone();
-        // Update in-memory key manager
-//         key_manager
-//             .update_key(&config.id, |cfg| {
-//                 cfg.model_selection = model_selection.clone();
-//             })
-//             .map_err(|e| e.to_string())?;
-//     }
-
-    // Save to config file
-//     tracing::warn!("📝 BEFORE UPDATE: about to add key to config");
-//     config_manager
-//         .update(|cfg| {
-//             cfg.api_keys.push(config.clone());
-//         })
-//         .map_err(|e| {
-//             tracing::error!("UPDATE FAILED: {}", e);
-//             e.to_string()
-//         })?;
-//     tracing::warn!("📝 AFTER UPDATE: key added to config in memory");
-
-    // Persist to disk
-//     tracing::warn!("📝 BEFORE SAVE: about to save config to disk");
-//     config_manager
-//         .save()
-//         .await
-//         .map_err(|e| {
-//             tracing::error!("SAVE FAILED: {}", e);
-//             e.to_string()
-//         })?;
-//     tracing::warn!("📝 AFTER SAVE: config saved to disk");
-
-    // Rebuild tray menu with new API key
-//     if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
-//         tracing::error!("Failed to rebuild tray menu: {}", e);
-//     }
-
-    // Notify frontend that API keys changed
-//     let _ = app.emit("api-keys-changed", ());
-
-//     Ok((
-//         key.clone(),
-//         ApiKeyInfo {
-//             id: config.id,
-//             name: config.name,
-//             key: Some(key),
-//             model_selection: config.model_selection,
-//             enabled: config.enabled,
-//             created_at: config.created_at.to_rfc3339(),
-//         },
-//     ))
-// }
-
-/// Get the actual API key value from keychain
-///
-/// # Arguments
-/// * `id` - The API key ID
-///
-/// # Returns
-/// * The actual API key string if it exists
-/// * Error if key doesn't exist or keychain access fails
-// #[tauri::command]
-// pub async fn get_api_key_value(
-//     id: String,
-//     key_manager: State<'_, ApiKeyManager>,
-// ) -> Result<String, String> {
-//     key_manager
-//         .get_key_value(&id)
-//         .map_err(|e| e.to_string())?
-//         .ok_or_else(|| format!("API key not found in keychain: {}", id))
-// }
-
-/// Delete an API key
-///
-/// # Arguments
-/// * `id` - The API key ID to delete
-///
-/// # Returns
-/// * Ok(()) if the key was deleted successfully
-/// * Error if the key doesn't exist or deletion fails
-// #[tauri::command]
-// pub async fn delete_api_key(
-//     id: String,
-//     key_manager: State<'_, ApiKeyManager>,
-//     config_manager: State<'_, ConfigManager>,
-//     app: tauri::AppHandle,
-// ) -> Result<(), String> {
-    // Delete from keychain
-//     key_manager
-//         .delete_key(&id)
-//         .map_err(|e| e.to_string())?;
-
-    // Remove from config file
-//     config_manager
-//         .update(|cfg| {
-//             cfg.api_keys.retain(|k| k.id != id);
-//         })
-//         .map_err(|e| e.to_string())?;
-
-    // Persist to disk
-//     config_manager
-//         .save()
-//         .await
-//         .map_err(|e| e.to_string())?;
-
-    // Rebuild tray menu
-//     if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
-//         tracing::error!("Failed to rebuild tray menu: {}", e);
-//     }
-
-    // Notify frontend that API keys changed
-//     let _ = app.emit("api-keys-changed", ());
-
-//     Ok(())
-// }
-
-/// Update an API key's model selection
-///
-/// # Arguments
-/// * `id` - The API key ID to update
-/// * `model_selection` - The new model selection (or None to clear it)
-///
-/// # Returns
-/// * The updated API key info if successful
-/// * Error if the key doesn't exist or update fails
-// #[tauri::command]
-// pub async fn update_api_key_model(
-//     id: String,
-//     model_selection: Option<ModelSelection>,
-//     key_manager: State<'_, ApiKeyManager>,
-//     config_manager: State<'_, ConfigManager>,
-//     app: tauri::AppHandle,
-// ) -> Result<ApiKeyInfo, String> {
-    // Update in memory
-//     let updated_config = key_manager
-//         .update_key(&id, |cfg| {
-//             cfg.model_selection = model_selection.clone();
-//         })
-//         .map_err(|e| e.to_string())?;
-
-    // Update in config file
-//     config_manager
-//         .update(|cfg| {
-//             if let Some(key) = cfg.api_keys.iter_mut().find(|k| k.id == id) {
-//                 key.model_selection = model_selection.clone();
-//             }
-//         })
-//         .map_err(|e| e.to_string())?;
-
-    // Persist to disk
-//     config_manager
-//         .save()
-//         .await
-//         .map_err(|e| e.to_string())?;
-
-    // Notify frontend that API keys changed
-//     let _ = app.emit("api-keys-changed", ());
-
-//     Ok(ApiKeyInfo {
-//         id: updated_config.id,
-//         name: updated_config.name,
-//         key: None, // Key is not accessible after creation for security
-//         model_selection: updated_config.model_selection,
-//         enabled: updated_config.enabled,
-//         created_at: updated_config.created_at.to_rfc3339(),
-//     })
-// }
-
-/// Update an API key's name
-///
-/// # Arguments
-/// * `id` - The API key ID to update
-/// * `name` - The new name for the API key
-///
-/// # Returns
-/// * Ok(()) if the update succeeded
-/// * Error if the key doesn't exist or update fails
-// #[tauri::command]
-// pub async fn update_api_key_name(
-//     id: String,
-//     name: String,
-//     key_manager: State<'_, ApiKeyManager>,
-//     config_manager: State<'_, ConfigManager>,
-//     app: tauri::AppHandle,
-// ) -> Result<(), String> {
-    // Validate name is not empty
-//     if name.trim().is_empty() {
-//         return Err("API key name cannot be empty".to_string());
-//     }
-
-    // Update in memory
-//     key_manager
-//         .update_key(&id, |cfg| {
-//             cfg.name = name.clone();
-//         })
-//         .map_err(|e| e.to_string())?;
-
-    // Update in config file
-//     config_manager
-//         .update(|cfg| {
-//             if let Some(key) = cfg.api_keys.iter_mut().find(|k| k.id == id) {
-//                 key.name = name.clone();
-//             }
-//         })
-//         .map_err(|e| e.to_string())?;
-
-    // Persist to disk
-//     config_manager
-//         .save()
-//         .await
-//         .map_err(|e| e.to_string())?;
-
-    // Rebuild tray menu to show updated name
-//     if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
-//         tracing::error!("Failed to rebuild tray menu: {}", e);
-//     }
-
-//     Ok(())
-// }
-
-/// Toggle an API key's enabled state
-///
-/// # Arguments
-/// * `id` - The API key ID to toggle
-/// * `enabled` - Whether to enable (true) or disable (false) the key
-///
-/// # Returns
-/// * Ok(()) if the toggle succeeded
-/// * Error if the key doesn't exist or toggle fails
-// #[tauri::command]
-// pub async fn toggle_api_key_enabled(
-//     id: String,
-//     enabled: bool,
-//     key_manager: State<'_, ApiKeyManager>,
-//     config_manager: State<'_, ConfigManager>,
-//     app: tauri::AppHandle,
-// ) -> Result<(), String> {
-    // Update in memory
-//     key_manager
-//         .update_key(&id, |cfg| {
-//             cfg.enabled = enabled;
-//         })
-//         .map_err(|e| e.to_string())?;
-
-    // Update in config file
-//     config_manager
-//         .update(|cfg| {
-//             if let Some(key) = cfg.api_keys.iter_mut().find(|k| k.id == id) {
-//                 key.enabled = enabled;
-//             }
-//         })
-//         .map_err(|e| e.to_string())?;
-
-    // Persist to disk
-//     config_manager
-//         .save()
-//         .await
-//         .map_err(|e| e.to_string())?;
-
-    // Rebuild tray menu to show updated enabled/disabled state
-//     if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
-//         tracing::error!("Failed to rebuild tray menu: {}", e);
-//     }
-
-    // Notify frontend that API keys changed
-//     let _ = app.emit("api-keys-changed", ());
-
-//     Ok(())
-// }
-
-/// Rotate an API key
-///
-/// Generates a new API key value while keeping the same ID, name, and settings.
-/// The old key is immediately invalidated.
-///
-/// # Arguments
-/// * `id` - The API key ID to rotate
-///
-/// # Returns
-/// * The new API key string if rotation succeeded
-/// * Error if the key doesn't exist or rotation fails
-// #[tauri::command]
-// pub async fn rotate_api_key(
-//     id: String,
-//     key_manager: State<'_, ApiKeyManager>,
-//     app: tauri::AppHandle,
-// ) -> Result<String, String> {
-//     let result = key_manager
-//         .rotate_key(&id)
-//         .await
-//         .map_err(|e| e.to_string())?;
-
-    // Notify frontend that API keys changed
-//     let _ = app.emit("api-keys-changed", ());
-
-//     Ok(result)
-// }
+use tauri::{Emitter, State};
 
 /// List all routers
 #[tauri::command]
@@ -1063,59 +714,6 @@ pub async fn get_server_status(
     })
 }
 
-/// Start the web server
-// #[tauri::command]
-// pub async fn start_server(
-//     server_manager: State<'_, Arc<crate::server::ServerManager>>,
-//     config_manager: State<'_, ConfigManager>,
-//     app: tauri::AppHandle,
-// ) -> Result<(), String> {
-//     tracing::info!("Start server command received");
-
-    // Get dependencies from app state
-//     let router = app.state::<Arc<crate::router::Router>>();
-//     let api_key_manager = app.state::<ApiKeyManager>();
-//     let oauth_client_manager = app.state::<crate::oauth_clients::OAuthClientManager>();
-//     let mcp_server_manager = app.state::<Arc<crate::mcp::McpServerManager>>();
-//     let rate_limiter = app.state::<Arc<crate::router::RateLimiterManager>>();
-//     let provider_registry = app.state::<Arc<ProviderRegistry>>();
-//     let client_manager = app.state::<Arc<crate::clients::ClientManager>>();
-//     let token_store = app.state::<Arc<crate::clients::TokenStore>>();
-
-    // Get server config from configuration
-//     let server_config = {
-//         let config = config_manager.get();
-//         crate::server::ServerConfig {
-//             host: config.server.host.clone(),
-//             port: config.server.port,
-//             enable_cors: config.server.enable_cors,
-//         }
-//     };
-
-    // Start the server
-//     server_manager
-//         .start(
-//             server_config,
-//             crate::server::manager::ServerDependencies {
-//                 router: router.inner().clone(),
-//                 api_key_manager: (*api_key_manager.inner()).clone(),
-//                 oauth_client_manager: (*oauth_client_manager.inner()).clone(),
-//                 mcp_server_manager: mcp_server_manager.inner().clone(),
-//                 rate_limiter: rate_limiter.inner().clone(),
-//                 provider_registry: provider_registry.inner().clone(),
-//                 client_manager: client_manager.inner().clone(),
-//                 token_store: token_store.inner().clone(),
-//             },
-//         )
-//         .await
-//         .map_err(|e| format!("Failed to start server: {}", e))?;
-
-    // Emit event to update tray icon
-//     let _ = app.emit("server-status-changed", "running");
-
-//     Ok(())
-// }
-
 /// Stop the web server
 #[tauri::command]
 pub async fn stop_server(
@@ -1242,175 +840,10 @@ pub async fn delete_oauth_credentials(
 }
 
 // ============================================================================
-// Routing Strategy Commands
-// ============================================================================
-
-/// Get the routing configuration for an API key
-///
-/// # Arguments
-/// * `id` - The API key ID
-///
-/// # Returns
-/// * The routing configuration if it exists, or None
-// #[tauri::command]
-// pub async fn get_routing_config(
-//     id: String,
-//     key_manager: State<'_, ApiKeyManager>,
-// ) -> Result<Option<ModelRoutingConfig>, String> {
-//     let key = key_manager
-//         .get_key(&id)
-//         .ok_or_else(|| format!("API key not found: {}", id))?;
-
-//     Ok(key.get_routing_config())
-// }
-
-/// Update the prioritized models list for an API key
-///
-/// # Arguments
-/// * `id` - The API key ID
-/// * `prioritized_models` - The new prioritized models list as (provider, model) pairs
-///
-/// # Returns
-/// * Ok(()) if successful
-// #[tauri::command]
-// pub async fn update_prioritized_list(
-//     id: String,
-//     prioritized_models: Vec<(String, String)>,
-//     key_manager: State<'_, ApiKeyManager>,
-//     config_manager: State<'_, ConfigManager>,
-//     app: tauri::AppHandle,
-// ) -> Result<(), String> {
-//     tracing::info!(
-//         "Updating prioritized list for key {}: {} models",
-//         id,
-//         prioritized_models.len()
-//     );
-
-    // Get or create routing config
-//     let current_key = key_manager
-//         .get_key(&id)
-//         .ok_or_else(|| format!("API key not found: {}", id))?;
-
-//     let mut routing_config = current_key
-//         .get_routing_config()
-//         .unwrap_or_else(|| ModelRoutingConfig::new_prioritized_list(prioritized_models.clone()));
-
-    // Update prioritized models
-//     routing_config.prioritized_models = prioritized_models;
-
-    // Update in memory
-//     key_manager
-//         .update_key(&id, |cfg| {
-//             cfg.routing_config = Some(routing_config.clone());
-//         })
-//         .map_err(|e| e.to_string())?;
-
-    // Update in config file
-//     config_manager
-//         .update(|cfg| {
-//             if let Some(key) = cfg.api_keys.iter_mut().find(|k| k.id == id) {
-//                 key.routing_config = Some(routing_config);
-//             }
-//         })
-//         .map_err(|e| e.to_string())?;
-
-    // Persist to disk
-//     config_manager
-//         .save()
-//         .await
-//         .map_err(|e| e.to_string())?;
-
-    // Rebuild tray menu
-//     if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
-//         tracing::error!("Failed to rebuild tray menu: {}", e);
-//     }
-
-    // Notify frontend that API keys changed
-//     let _ = app.emit("api-keys-changed", ());
-
-//     tracing::info!("Prioritized list updated for key {}", id);
-
-//     Ok(())
-// }
-
-/// Set the active routing strategy for an API key
-///
-/// # Arguments
-/// * `id` - The API key ID
-/// * `strategy` - The routing strategy to activate ("available_models", "force_model", "prioritized_list")
-///
-/// # Returns
-/// * Ok(()) if successful
-// #[tauri::command]
-// pub async fn set_routing_strategy(
-//     id: String,
-//     strategy: String,
-//     key_manager: State<'_, ApiKeyManager>,
-//     config_manager: State<'_, ConfigManager>,
-//     app: tauri::AppHandle,
-// ) -> Result<(), String> {
-//     tracing::info!("Setting routing strategy for key {}: {}", id, strategy);
-
-    // Parse strategy
-//     let active_strategy = match strategy.as_str() {
-//         "available_models" => ActiveRoutingStrategy::AvailableModels,
-//         "force_model" => ActiveRoutingStrategy::ForceModel,
-//         "prioritized_list" => ActiveRoutingStrategy::PrioritizedList,
-//         _ => return Err(format!("Invalid routing strategy: {}", strategy)),
-//     };
-
-    // Get or create routing config
-//     let current_key = key_manager
-//         .get_key(&id)
-//         .ok_or_else(|| format!("API key not found: {}", id))?;
-
-//     let mut routing_config = current_key
-//         .get_routing_config()
-//         .unwrap_or_else(ModelRoutingConfig::new_available_models);
-
-    // Update strategy
-//     routing_config.active_strategy = active_strategy;
-
-    // Update in memory
-//     key_manager
-//         .update_key(&id, |cfg| {
-//             cfg.routing_config = Some(routing_config.clone());
-//         })
-//         .map_err(|e| e.to_string())?;
-
-    // Update in config file
-//     config_manager
-//         .update(|cfg| {
-//             if let Some(key) = cfg.api_keys.iter_mut().find(|k| k.id == id) {
-//                 key.routing_config = Some(routing_config);
-//             }
-//         })
-//         .map_err(|e| e.to_string())?;
-
-    // Persist to disk
-//     config_manager
-//         .save()
-//         .await
-//         .map_err(|e| e.to_string())?;
-
-    // Rebuild tray menu
-//     if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
-//         tracing::error!("Failed to rebuild tray menu: {}", e);
-//     }
-
-    // Notify frontend that API keys changed
-//     let _ = app.emit("api-keys-changed", ());
-
-//     tracing::info!("Routing strategy set for key {}: {:?}", id, active_strategy);
-
-//     Ok(())
-// }
-
-// ============================================================================
 // OAuth Client Commands (for MCP)
 // ============================================================================
-
-/// OAuth client information for display
+///
+///   OAuth client information for display
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OAuthClientInfo {
     pub id: String,
@@ -1424,7 +857,7 @@ pub struct OAuthClientInfo {
 /// List all OAuth clients
 #[tauri::command]
 pub async fn list_oauth_clients(
-    oauth_client_manager: State<'_, OAuthClientManager>,
+    oauth_client_manager: State<'_, Arc<OAuthClientManager>>,
 ) -> Result<Vec<OAuthClientInfo>, String> {
     let clients = oauth_client_manager.list_clients();
     Ok(clients
@@ -1451,7 +884,7 @@ pub async fn list_oauth_clients(
 #[tauri::command]
 pub async fn create_oauth_client(
     name: Option<String>,
-    oauth_client_manager: State<'_, OAuthClientManager>,
+    oauth_client_manager: State<'_, Arc<OAuthClientManager>>,
     config_manager: State<'_, ConfigManager>,
     app: tauri::AppHandle,
 ) -> Result<(String, String, OAuthClientInfo), String> {
@@ -1510,7 +943,7 @@ pub async fn create_oauth_client(
 #[tauri::command]
 pub async fn get_oauth_client_secret(
     id: String,
-    oauth_client_manager: State<'_, OAuthClientManager>,
+    oauth_client_manager: State<'_, Arc<OAuthClientManager>>,
 ) -> Result<String, String> {
     oauth_client_manager
         .get_client_secret(&id)
@@ -1529,7 +962,7 @@ pub async fn get_oauth_client_secret(
 #[tauri::command]
 pub async fn delete_oauth_client(
     id: String,
-    oauth_client_manager: State<'_, OAuthClientManager>,
+    oauth_client_manager: State<'_, Arc<OAuthClientManager>>,
     config_manager: State<'_, ConfigManager>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
@@ -1575,7 +1008,7 @@ pub async fn delete_oauth_client(
 pub async fn update_oauth_client_name(
     id: String,
     name: String,
-    oauth_client_manager: State<'_, OAuthClientManager>,
+    oauth_client_manager: State<'_, Arc<OAuthClientManager>>,
     config_manager: State<'_, ConfigManager>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
@@ -1630,7 +1063,7 @@ pub async fn update_oauth_client_name(
 pub async fn toggle_oauth_client_enabled(
     id: String,
     enabled: bool,
-    oauth_client_manager: State<'_, OAuthClientManager>,
+    oauth_client_manager: State<'_, Arc<OAuthClientManager>>,
     config_manager: State<'_, ConfigManager>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
@@ -1680,7 +1113,7 @@ pub async fn toggle_oauth_client_enabled(
 pub async fn link_mcp_server(
     client_id: String,
     server_id: String,
-    oauth_client_manager: State<'_, OAuthClientManager>,
+    oauth_client_manager: State<'_, Arc<OAuthClientManager>>,
     config_manager: State<'_, ConfigManager>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
@@ -1725,7 +1158,7 @@ pub async fn link_mcp_server(
 pub async fn unlink_mcp_server(
     client_id: String,
     server_id: String,
-    oauth_client_manager: State<'_, OAuthClientManager>,
+    oauth_client_manager: State<'_, Arc<OAuthClientManager>>,
     config_manager: State<'_, ConfigManager>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
@@ -1766,7 +1199,7 @@ pub async fn unlink_mcp_server(
 #[tauri::command]
 pub async fn get_oauth_client_linked_servers(
     client_id: String,
-    oauth_client_manager: State<'_, OAuthClientManager>,
+    oauth_client_manager: State<'_, Arc<OAuthClientManager>>,
 ) -> Result<Vec<String>, String> {
     if let Some(client) = oauth_client_manager.get_client(&client_id) {
         Ok(client.linked_server_ids)
@@ -3045,7 +2478,7 @@ pub async fn set_client_routing_strategy(
                 let mut routing_config = client
                     .routing_config
                     .take()
-                    .unwrap_or_else(|| ModelRoutingConfig::new_available_models());
+                    .unwrap_or_else(ModelRoutingConfig::new_available_models);
 
                 // Update strategy
                 routing_config.active_strategy = active_strategy;
@@ -3101,7 +2534,7 @@ pub async fn set_client_forced_model(
                 let mut routing_config = client
                     .routing_config
                     .take()
-                    .unwrap_or_else(|| ModelRoutingConfig::new_available_models());
+                    .unwrap_or_else(ModelRoutingConfig::new_available_models);
 
                 // Update forced model
                 routing_config.forced_model = match (provider, model) {
@@ -3160,7 +2593,7 @@ pub async fn update_client_available_models(
                 let mut routing_config = client
                     .routing_config
                     .take()
-                    .unwrap_or_else(|| ModelRoutingConfig::new_available_models());
+                    .unwrap_or_else(ModelRoutingConfig::new_available_models);
 
                 // Update available models
                 routing_config.available_models.all_provider_models = all_provider_models;
@@ -3215,7 +2648,7 @@ pub async fn update_client_prioritized_models(
                 let mut routing_config = client
                     .routing_config
                     .take()
-                    .unwrap_or_else(|| ModelRoutingConfig::new_available_models());
+                    .unwrap_or_else(ModelRoutingConfig::new_available_models);
 
                 // Update prioritized models
                 routing_config.prioritized_models = prioritized_models;
@@ -3346,7 +2779,7 @@ pub async fn get_llm_logs(
     for log_file in log_files {
         if let Ok(file) = fs::File::open(&log_file) {
             let reader = BufReader::new(file);
-            for line in reader.lines().flatten() {
+            for line in reader.lines().map_while(Result::ok) {
                 if let Ok(entry) = serde_json::from_str::<crate::monitoring::logger::AccessLogEntry>(&line) {
                     entries.push(entry);
                 }
@@ -3410,7 +2843,7 @@ pub async fn get_mcp_logs(
     for log_file in log_files {
         if let Ok(file) = fs::File::open(&log_file) {
             let reader = BufReader::new(file);
-            for line in reader.lines().flatten() {
+            for line in reader.lines().map_while(Result::ok) {
                 if let Ok(entry) = serde_json::from_str::<crate::monitoring::mcp_logger::McpAccessLogEntry>(&line) {
                     entries.push(entry);
                 }

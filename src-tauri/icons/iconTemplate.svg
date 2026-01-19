@@ -1,28 +1,12 @@
 <svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
-  <!-- Simplified monochrome template icon for macOS system tray -->
-  <!-- Must be black (#000000) on transparent background -->
-  <!-- Designed to be clear at 32x32 pixels -->
+  <!-- macOS template icon - must be black on transparent -->
+  <!-- Simple design that's clear at 16x16 to 32x32 pixels -->
 
-  <!-- Outer ring (thicker for visibility) -->
-  <circle cx="256" cy="256" r="180" fill="none" stroke="#000000" stroke-width="60"/>
+  <!-- Single circle (router base) -->
+  <circle cx="256" cy="256" r="160" fill="none" stroke="#000000" stroke-width="90"/>
 
-  <!-- Center dot (larger) -->
-  <circle cx="256" cy="256" r="60" fill="#000000"/>
-
-  <!-- Three routing arrows (simplified and bolder) -->
-
-  <!-- Arrow 1: Right (0°) - Simple triangle -->
-  <g transform="translate(256, 256)">
-    <polygon points="100,0 200,-40 200,40" fill="#000000"/>
-  </g>
-
-  <!-- Arrow 2: Lower-left (120°) -->
-  <g transform="translate(256, 256) rotate(120)">
-    <polygon points="100,0 200,-40 200,40" fill="#000000"/>
-  </g>
-
-  <!-- Arrow 3: Upper-left (240°) -->
-  <g transform="translate(256, 256) rotate(240)">
-    <polygon points="100,0 200,-40 200,40" fill="#000000"/>
-  </g>
+  <!-- Three small routing nodes evenly spaced -->
+  <circle cx="256" cy="120" r="45" fill="#000000"/>
+  <circle cx="170" cy="330" r="45" fill="#000000"/>
+  <circle cx="342" cy="330" r="45" fill="#000000"/>
 </svg>

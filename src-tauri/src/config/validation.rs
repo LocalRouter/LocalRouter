@@ -138,7 +138,7 @@ fn validate_providers(providers: &[ProviderConfig]) -> AppResult<()> {
 /// Validate API keys
 fn validate_cross_references(config: &AppConfig) -> AppResult<()> {
     // Build set of router names
-    let router_names: HashSet<&str> = config.routers.iter().map(|r| r.name.as_str()).collect();
+    let _router_names: HashSet<&str> = config.routers.iter().map(|r| r.name.as_str()).collect();
 
     // Build set of provider names
     let provider_names: HashSet<&str> = config.providers.iter().map(|p| p.name.as_str()).collect();

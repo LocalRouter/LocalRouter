@@ -388,9 +388,9 @@ impl ModelProvider for OllamaProvider {
         let model = request.model.clone();
         let stream = response.bytes_stream();
 
-        // Track previous content to compute deltas (Ollama sends cumulative content)
+        // Track if this is the first chunk (for role field)
         use std::sync::{Arc, Mutex};
-        let previous_content = Arc::new(Mutex::new(String::new()));
+        let is_first_chunk = Arc::new(Mutex::new(true));
 
         // Buffer for incomplete lines across byte chunks
         let line_buffer = Arc::new(Mutex::new(String::new()));
@@ -398,7 +398,7 @@ impl ModelProvider for OllamaProvider {
         let converted_stream = stream
             .flat_map(move |result| {
                 let model = model.clone();
-                let previous_content = previous_content.clone();
+                let is_first_chunk = is_first_chunk.clone();
                 let line_buffer = line_buffer.clone();
 
                 let chunks: Vec<AppResult<CompletionChunk>> = match result {
@@ -422,27 +422,14 @@ impl ModelProvider for OllamaProvider {
 
                             match serde_json::from_str::<OllamaStreamResponse>(&line) {
                                 Ok(ollama_chunk) => {
-                                    // Ollama sends cumulative content, so we need to compute the delta
-                                    let current_content = ollama_chunk.message.content;
-                                    let mut prev = previous_content.lock().unwrap();
+                                    // Ollama sends incremental/delta content directly, not cumulative
+                                    let delta_content = ollama_chunk.message.content;
+                                    let mut first = is_first_chunk.lock().unwrap();
+                                    let is_first = *first;
 
-                                    let is_first_chunk = prev.is_empty();
-
-                                    let delta_content = if current_content.starts_with(&*prev) {
-                                        // Extract only the new part
-                                        current_content[prev.len()..].to_string()
-                                    } else {
-                                        // If content doesn't start with previous (shouldn't happen), send full content
-                                        error!(
-                                            "Ollama content mismatch! Previous: {:?}, Current: {:?}",
-                                            prev.as_str(),
-                                            current_content.as_str()
-                                        );
-                                        current_content.clone()
-                                    };
-
-                                    // Update previous content
-                                    *prev = current_content;
+                                    if !delta_content.is_empty() {
+                                        *first = false;
+                                    }
 
                                     let chunk = CompletionChunk {
                                         id: format!("chatcmpl-{}", uuid::Uuid::new_v4()),
@@ -452,7 +439,7 @@ impl ModelProvider for OllamaProvider {
                                         choices: vec![ChunkChoice {
                                             index: 0,
                                             delta: ChunkDelta {
-                                                role: if is_first_chunk && !delta_content.is_empty() {
+                                                role: if is_first && !delta_content.is_empty() {
                                                     Some("assistant".to_string())
                                                 } else {
                                                     None

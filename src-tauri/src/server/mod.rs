@@ -63,6 +63,7 @@ impl Default for ServerConfig {
 /// - POST /mcp/{client_id}/{server_id} (MCP proxy)
 ///
 /// Returns the AppState, JoinHandle, and the actual port used
+#[allow(clippy::too_many_arguments)]
 pub async fn start_server(
     config: ServerConfig,
     router: Arc<AppRouter>,

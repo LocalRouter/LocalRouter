@@ -116,6 +116,57 @@ pub struct ModelInfo {
     pub detailed_capabilities: Option<ModelCapabilities>,
 }
 
+impl ModelInfo {
+    /// Enrich this model with catalog metadata (pricing, capabilities, etc.)
+    ///
+    /// This is an optional enrichment step that uses the build-time embedded
+    /// OpenRouter catalog to enhance model information with accurate pricing
+    /// and capability data.
+    ///
+    /// # Arguments
+    /// * `provider_type` - Provider identifier for matching (e.g., "openai", "anthropic")
+    ///
+    /// # Returns
+    /// Self with potentially updated context_window and capabilities
+    pub fn enrich_with_catalog(mut self, provider_type: &str) -> Self {
+        use crate::catalog;
+
+        if let Some(catalog_model) = catalog::find_model(provider_type, &self.id) {
+            tracing::debug!(
+                "Enriching model '{}' from catalog (provider: {})",
+                self.id,
+                provider_type
+            );
+
+            // Update context window if catalog has better info
+            if catalog_model.context_length > self.context_window {
+                tracing::debug!(
+                    "Updating context window for '{}': {} -> {}",
+                    self.id,
+                    self.context_window,
+                    catalog_model.context_length
+                );
+                self.context_window = catalog_model.context_length;
+            }
+
+            // Add vision capability if multimodal
+            if catalog_model.modality == catalog::Modality::Multimodal
+                && !self.capabilities.contains(&Capability::Vision)
+            {
+                self.capabilities.push(Capability::Vision);
+            }
+        } else {
+            tracing::debug!(
+                "Model '{}' not found in catalog (provider: {})",
+                self.id,
+                provider_type
+            );
+        }
+
+        self
+    }
+}
+
 /// Model capabilities (basic categorization)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 pub enum Capability {

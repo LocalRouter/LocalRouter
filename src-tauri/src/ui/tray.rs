@@ -2,9 +2,9 @@
 //!
 //! Handles system tray icon and menu.
 
+use crate::clients::ClientManager;
 use crate::config::ConfigManager;
 use crate::mcp::manager::McpServerManager;
-use crate::oauth_clients::OAuthClientManager;
 use crate::providers::registry::ProviderRegistry;
 use tauri::{
     menu::{MenuBuilder, MenuItem, SubmenuBuilder},
@@ -68,55 +68,75 @@ pub fn setup_tray<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
                         let _ = window.set_focus();
                     }
                 }
-                "create_oauth_client" => {
-                    info!("Create OAuth client requested from tray");
-                    if let Some(window) = app.get_webview_window("main") {
-                        let _ = window.show();
-                        let _ = window.set_focus();
-                        let _ = window.emit("navigate-to-tab", "oauth-clients");
-                    }
-                }
-                "create_mcp_server" => {
-                    info!("Create MCP server requested from tray");
-                    if let Some(window) = app.get_webview_window("main") {
-                        let _ = window.show();
-                        let _ = window.set_focus();
-                        let _ = window.emit("navigate-to-tab", "mcp-servers");
-                    }
+                "create_and_copy_api_key" => {
+                    info!("Create and copy API key requested from tray");
+                    let app_clone = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        if let Err(e) = handle_create_and_copy_api_key(&app_clone).await {
+                            error!("Failed to create and copy API key: {}", e);
+                        }
+                    });
                 }
                 "quit" => {
                     info!("Quit requested from tray");
                     app.exit(0);
                 }
                 _ => {
-                    if let Some(client_id) = id.strip_prefix("copy_oauth_client_") {
-                        info!("Copy OAuth client ID requested: {}", client_id);
+                    // Handle copy MCP URL: copy_mcp_url_<client_id>_<server_id>
+                    if let Some(rest) = id.strip_prefix("copy_mcp_url_") {
+                        if let Some((client_id, server_id)) = rest.split_once('_') {
+                            info!("Copy MCP URL requested: client={}, server={}", client_id, server_id);
+                            let app_clone = app.clone();
+                            let client_id = client_id.to_string();
+                            let server_id = server_id.to_string();
+                            tauri::async_runtime::spawn(async move {
+                                if let Err(e) = handle_copy_mcp_url(&app_clone, &client_id, &server_id).await {
+                                    error!("Failed to copy MCP URL: {}", e);
+                                }
+                            });
+                        }
+                    }
+                    // Handle copy MCP bearer token: copy_mcp_bearer_<client_id>_<server_id>
+                    else if let Some(rest) = id.strip_prefix("copy_mcp_bearer_") {
+                        if let Some((client_id, server_id)) = rest.split_once('_') {
+                            info!("Copy MCP bearer token requested: client={}, server={}", client_id, server_id);
+                            let app_clone = app.clone();
+                            let client_id = client_id.to_string();
+                            tauri::async_runtime::spawn(async move {
+                                if let Err(e) = handle_copy_mcp_bearer(&app_clone, &client_id).await {
+                                    error!("Failed to copy MCP bearer token: {}", e);
+                                }
+                            });
+                        }
+                    }
+                    // Handle add MCP: add_mcp_<client_id>_<server_id>
+                    else if let Some(rest) = id.strip_prefix("add_mcp_") {
+                        if let Some((client_id, server_id)) = rest.split_once('_') {
+                            info!("Add MCP requested: client={}, server={}", client_id, server_id);
+                            let app_clone = app.clone();
+                            let client_id = client_id.to_string();
+                            let server_id = server_id.to_string();
+                            tauri::async_runtime::spawn(async move {
+                                if let Err(e) = handle_add_mcp_to_client(&app_clone, &client_id, &server_id).await {
+                                    error!("Failed to add MCP to client: {}", e);
+                                }
+                            });
+                        }
+                    }
+                    // Handle prioritized list: prioritized_list_<client_id>
+                    else if let Some(client_id) = id.strip_prefix("prioritized_list_") {
+                        info!("Prioritized list requested for client: {}", client_id);
                         let app_clone = app.clone();
                         let client_id = client_id.to_string();
                         tauri::async_runtime::spawn(async move {
-                            if let Err(e) = handle_copy_oauth_client(&app_clone, &client_id).await {
-                                error!("Failed to copy OAuth client ID: {}", e);
-                            }
-                        });
-                    } else if let Some(server_id) = id.strip_prefix("start_mcp_server_") {
-                        info!("Start MCP server requested: {}", server_id);
-                        let app_clone = app.clone();
-                        let server_id = server_id.to_string();
-                        tauri::async_runtime::spawn(async move {
-                            if let Err(e) = handle_start_mcp_server(&app_clone, &server_id).await {
-                                error!("Failed to start MCP server: {}", e);
-                            }
-                        });
-                    } else if let Some(server_id) = id.strip_prefix("stop_mcp_server_") {
-                        info!("Stop MCP server requested: {}", server_id);
-                        let app_clone = app.clone();
-                        let server_id = server_id.to_string();
-                        tauri::async_runtime::spawn(async move {
-                            if let Err(e) = handle_stop_mcp_server(&app_clone, &server_id).await {
-                                error!("Failed to stop MCP server: {}", e);
+                            if let Err(e) = handle_prioritized_list(&app_clone, &client_id).await {
+                                error!("Failed to open prioritized list: {}", e);
                             }
                         });
                     }
+                    // Other events are for model routing configuration
+                    // (force_model_*, toggle_provider_*, toggle_model_*, etc.)
+                    // These will be handled by future implementation
                 }
             }
         })
@@ -130,204 +150,21 @@ pub fn setup_tray<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
 fn build_tray_menu<R: Runtime>(app: &App<R>) -> tauri::Result<tauri::menu::Menu<R>> {
     let mut menu_builder = MenuBuilder::new(app);
 
-    // Add API Keys section header (disabled/non-clickable)
-    let api_keys_header = MenuItem::with_id(app, "api_keys_header", "API Keys", false, None::<&str>)?;
-    menu_builder = menu_builder.item(&api_keys_header);
+    // 1. Open Dashboard at the top
+    menu_builder = menu_builder.text("open_dashboard", "📊 Open Dashboard");
 
-    // Get API keys from manager and provider registry
-//         if let Some(key_manager) = app.try_state::<ApiKeyManager>() {
-//             let keys = key_manager.list_keys();
-//     
-//             if !keys.is_empty() {
-            // Get provider registry to fetch models
-//                 let provider_registry = app.try_state::<Arc<ProviderRegistry>>();
-//     
-            // Build a submenu for each API key
-//                 for key in keys.iter() {
-//                     let key_name = if key.name.is_empty() {
-//                         format!("Key {}", &key.id[..8])
-//                     } else {
-//                         key.name.clone()
-//                     };
-//     
-                // Build submenu for this API key
-//                     let mut submenu_builder = SubmenuBuilder::new(app, &key_name);
-//     
-                // Add "Copy API Key" option
-//                     submenu_builder = submenu_builder
-//                         .text(format!("copy_key_{}", key.id), "📋 Copy API Key");
-//     
-                // Add "Enable/Disable" option
-//                     let toggle_text = if key.enabled {
-//                         "🚫 Disable"
-//                     } else {
-//                         "✅ Enable"
-//                     };
-//                     submenu_builder = submenu_builder
-//                         .text(format!("toggle_key_{}", key.id), toggle_text);
-//     
-                // Add separator before routing strategy section
-//                     submenu_builder = submenu_builder.separator();
-//     
-                // Get routing config for this key
-//                     let routing_config = key.get_routing_config();
-//                     let active_strategy = routing_config.as_ref().map(|c| c.active_strategy);
-//     
-                // Get cached models from registry
-//                     let models = if let Some(ref registry) = provider_registry {
-//                         registry.get_cached_models()
-//                     } else {
-//                         vec![]
-//                     };
-//     
-//                     if !models.is_empty() {
-                    // 1. "Forced model" submenu
-//                         let force_model_text = if matches!(active_strategy, Some(ActiveRoutingStrategy::ForceModel)) {
-//                             "✓ Forced model"
-//                         } else {
-//                             "Forced model"
-//                         };
-//                         let mut force_model_submenu_builder = SubmenuBuilder::new(app, force_model_text);
-//     
-                    // Get the currently forced model (if any)
-//                         let forced_model = routing_config.as_ref().and_then(|c| c.forced_model.as_ref());
-//     
-//                         for model in models.iter() {
-//                             let model_display = format!("{} ({})", model.id, model.provider);
-//                             let is_forced = if let Some((provider, model_name)) = forced_model {
-//                                 provider == &model.provider && model_name == &model.id
-//                             } else {
-//                                 false
-//                             };
-//                             let display_text = if is_forced {
-//                                 format!("✓ {}", model_display)
-//                             } else {
-//                                 model_display
-//                             };
-//     
-//                             force_model_submenu_builder = force_model_submenu_builder.text(
-//                                 format!("force_model_{}_{}_{}", key.id, model.provider, model.id),
-//                                 display_text
-//                             );
-//                         }
-//     
-//                         let force_model_submenu = force_model_submenu_builder.build()?;
-//                         submenu_builder = submenu_builder.item(&force_model_submenu);
-//     
-                    // 2. "Multi model" submenu
-//                         let available_models_text = if matches!(active_strategy, Some(ActiveRoutingStrategy::AvailableModels)) {
-//                             "✓ Multi model"
-//                         } else {
-//                             "Multi model"
-//                         };
-//                         let mut available_models_submenu_builder = SubmenuBuilder::new(app, available_models_text);
-//     
-                    // Add strategy toggle at the top
-//                         let (toggle_text, toggle_id) = if matches!(active_strategy, Some(ActiveRoutingStrategy::AvailableModels)) {
-//                             ("✓ Client can choose any model", format!("disabled_strategy_{}", key.id))
-//                         } else {
-//                             ("Enable to use any selected model", format!("enable_available_models_{}", key.id))
-//                         };
-//                         available_models_submenu_builder = available_models_submenu_builder.text(
-//                             toggle_id,
-//                             toggle_text
-//                         );
-//     
-//                         available_models_submenu_builder = available_models_submenu_builder.separator();
-//     
-                    // Get available models selection
-//                         let available_models = routing_config.as_ref().map(|c| &c.available_models);
-//     
-                    // Collect unique providers
-//                         let mut providers: Vec<String> = models.iter()
-//                             .map(|m| m.provider.clone())
-//                             .collect::<std::collections::HashSet<_>>()
-//                             .into_iter()
-//                             .collect();
-//                         providers.sort();
-//     
-                    // Add provider options (all models from each provider)
-//                         if !providers.is_empty() {
-//                             for provider in providers.iter() {
-//                                 let is_provider_selected = if let Some(avail) = available_models {
-//                                     avail.all_provider_models.contains(provider)
-//                                 } else {
-//                                     false
-//                                 };
-//                                 let provider_text = if is_provider_selected {
-//                                     format!("✓ All {} Models", provider)
-//                                 } else {
-//                                     format!("All {} Models", provider)
-//                                 };
-//                                 available_models_submenu_builder = available_models_submenu_builder.text(
-//                                     format!("toggle_provider_{}_{}",key.id, provider),
-//                                     provider_text
-//                                 );
-//                             }
-//     
-//                             available_models_submenu_builder = available_models_submenu_builder.separator();
-//                         }
-//     
-                    // Add individual models
-//                         for model in models.iter() {
-//                             let model_display = format!("{} ({})", model.id, model.provider);
-//                             let is_selected = if let Some(avail) = available_models {
-//                                 avail.individual_models.iter().any(|(p, m)| p == &model.provider && m == &model.id)
-//                             } else {
-//                                 false
-//                             };
-//                             let display_text = if is_selected {
-//                                 format!("✓ {}", model_display)
-//                             } else {
-//                                 model_display
-//                             };
-//     
-//                             available_models_submenu_builder = available_models_submenu_builder.text(
-//                                 format!("toggle_model_{}_{}_{}", key.id, model.provider, model.id),
-//                                 display_text
-//                             );
-//                         }
-//     
-//                         let available_models_submenu = available_models_submenu_builder.build()?;
-//                         submenu_builder = submenu_builder.item(&available_models_submenu);
-//     
-                    // 3. "Priority-based..." menu item
-//                         let prioritized_list_text = if matches!(active_strategy, Some(ActiveRoutingStrategy::PrioritizedList)) {
-//                             "✓ Priority-based..."
-//                         } else {
-//                             "Priority-based..."
-//                         };
-//                         submenu_builder = submenu_builder.text(
-//                             format!("prioritized_list_{}", key.id),
-//                             prioritized_list_text
-//                         );
-//                     } else {
-                    // No models available yet
-//                         submenu_builder = submenu_builder.text(
-//                             format!("no_models_{}", key.id),
-//                             "No models available"
-//                         );
-//                     }
-//     
-//                     let submenu = submenu_builder.build()?;
-//                     menu_builder = menu_builder.item(&submenu);
-//                 }
-//             }
-//         }
-
-    // Add "Generate API Key" without separator before it
-    menu_builder = menu_builder.text("generate_key", "➕ Generate API Key");
-
-    // Add separator before OAuth/MCP section
+    // Add separator
     menu_builder = menu_builder.separator();
 
-    // Add OAuth Clients section header
-    let oauth_clients_header = MenuItem::with_id(app, "oauth_clients_header", "OAuth Clients", false, None::<&str>)?;
-    menu_builder = menu_builder.item(&oauth_clients_header);
+    // 2. Clients section
+    let clients_header = MenuItem::with_id(app, "clients_header", "Clients", false, None::<&str>)?;
+    menu_builder = menu_builder.item(&clients_header);
 
-    // Get OAuth clients from manager
-    if let Some(oauth_client_manager) = app.try_state::<OAuthClientManager>() {
-        let clients = oauth_client_manager.list_clients();
+    // Get client manager and build client list
+    if let Some(client_manager) = app.try_state::<Arc<ClientManager>>() {
+        let clients = client_manager.list_clients();
+        let provider_registry = app.try_state::<Arc<ProviderRegistry>>();
+        let mcp_server_manager = app.try_state::<Arc<McpServerManager>>();
 
         if !clients.is_empty() {
             for client in clients.iter() {
@@ -337,111 +174,260 @@ fn build_tray_menu<R: Runtime>(app: &App<R>) -> tauri::Result<tauri::menu::Menu<
                     client.name.clone()
                 };
 
-                let mut submenu_builder = SubmenuBuilder::new(app, &client_name);
+                let mut client_submenu = SubmenuBuilder::new(app, &client_name);
 
-                // Add "Copy Client ID" option
-                submenu_builder = submenu_builder
-                    .text(format!("copy_oauth_client_{}", client.id), "📋 Copy Client ID");
+                // LLM Models section header
+                let llm_header = MenuItem::with_id(app, &format!("llm_header_{}", client.id), "LLM Models", false, None::<&str>)?;
+                client_submenu = client_submenu.item(&llm_header);
 
-                // Add linked servers count (read-only)
-                let linked_count = client.linked_server_ids.len();
-                submenu_builder = submenu_builder
-                    .text(format!("oauth_linked_{}", client.id), format!("🔗 {} linked server(s)", linked_count))
-                    .enabled(false);
-
-                let submenu = submenu_builder.build()?;
-                menu_builder = menu_builder.item(&submenu);
-            }
-        }
-    }
-
-    // Add "Create OAuth Client" button
-    menu_builder = menu_builder.text("create_oauth_client", "➕ Create OAuth Client");
-
-    // Add separator before MCP Servers section
-    menu_builder = menu_builder.separator();
-
-    // Add MCP Servers section header
-    let mcp_servers_header = MenuItem::with_id(app, "mcp_servers_header", "MCP Servers", false, None::<&str>)?;
-    menu_builder = menu_builder.item(&mcp_servers_header);
-
-    // Get MCP servers from manager
-    if let Some(mcp_server_manager) = app.try_state::<Arc<McpServerManager>>() {
-        let configs = mcp_server_manager.list_configs();
-
-        if !configs.is_empty() {
-            for server in configs.iter() {
-                let server_name = if server.name.is_empty() {
-                    format!("Server {}", &server.id[..8])
+                // Get routing config and models
+                let routing_config = &client.routing_config;
+                let active_strategy = routing_config.as_ref().map(|c| c.active_strategy);
+                let models = if let Some(ref registry) = provider_registry {
+                    registry.get_cached_models()
                 } else {
-                    server.name.clone()
+                    vec![]
                 };
 
-                let mut submenu_builder = SubmenuBuilder::new(app, &server_name);
+                if !models.is_empty() {
+                    // 1. Force Model submenu
+                    let force_model_text = if matches!(active_strategy, Some(crate::config::ActiveRoutingStrategy::ForceModel)) {
+                        "✓ Force model"
+                    } else {
+                        "Force model"
+                    };
+                    let mut force_model_submenu = SubmenuBuilder::new(app, force_model_text);
+                    let forced_model = routing_config.as_ref().and_then(|c| c.forced_model.as_ref());
 
-                // Check if server is running
-                let is_running = mcp_server_manager.is_running(&server.id);
+                    for model in models.iter() {
+                        let model_display = format!("{} ({})", model.id, model.provider);
+                        let is_forced = if let Some((provider, model_name)) = forced_model {
+                            provider == &model.provider && model_name == &model.id
+                        } else {
+                            false
+                        };
+                        let display_text = if is_forced {
+                            format!("✓ {}", model_display)
+                        } else {
+                            model_display
+                        };
 
-                if is_running {
-                    submenu_builder = submenu_builder
-                        .text(format!("stop_mcp_server_{}", server.id), "⏹️ Stop Server");
+                        force_model_submenu = force_model_submenu.text(
+                            format!("force_model_{}_{}_{}", client.id, model.provider, model.id),
+                            display_text
+                        );
+                    }
+
+                    let force_model_menu = force_model_submenu.build()?;
+                    client_submenu = client_submenu.item(&force_model_menu);
+
+                    // 2. Multi Model submenu
+                    let multi_model_text = if matches!(active_strategy, Some(crate::config::ActiveRoutingStrategy::AvailableModels)) {
+                        "✓ Multi model"
+                    } else {
+                        "Multi model"
+                    };
+                    let mut multi_model_submenu = SubmenuBuilder::new(app, multi_model_text);
+
+                    // Add strategy toggle
+                    let (toggle_text, toggle_id) = if matches!(active_strategy, Some(crate::config::ActiveRoutingStrategy::AvailableModels)) {
+                        ("✓ Client can choose any model", format!("disabled_strategy_{}", client.id))
+                    } else {
+                        ("Enable to use any selected model", format!("enable_available_models_{}", client.id))
+                    };
+                    multi_model_submenu = multi_model_submenu.text(toggle_id, toggle_text);
+                    multi_model_submenu = multi_model_submenu.separator();
+
+                    // Get available models selection
+                    let available_models = routing_config.as_ref().map(|c| &c.available_models);
+
+                    // Collect unique providers
+                    let mut providers: Vec<String> = models.iter()
+                        .map(|m| m.provider.clone())
+                        .collect::<std::collections::HashSet<_>>()
+                        .into_iter()
+                        .collect();
+                    providers.sort();
+
+                    // Add provider options
+                    if !providers.is_empty() {
+                        for provider in providers.iter() {
+                            let is_provider_selected = if let Some(avail) = available_models {
+                                avail.all_provider_models.contains(provider)
+                            } else {
+                                false
+                            };
+                            let provider_text = if is_provider_selected {
+                                format!("✓ All {} Models", provider)
+                            } else {
+                                format!("All {} Models", provider)
+                            };
+                            multi_model_submenu = multi_model_submenu.text(
+                                format!("toggle_provider_{}_{}",client.id, provider),
+                                provider_text
+                            );
+                        }
+                        multi_model_submenu = multi_model_submenu.separator();
+                    }
+
+                    // Add individual models
+                    for model in models.iter() {
+                        let model_display = format!("{} ({})", model.id, model.provider);
+                        let is_selected = if let Some(avail) = available_models {
+                            avail.individual_models.iter().any(|(p, m)| p == &model.provider && m == &model.id)
+                        } else {
+                            false
+                        };
+                        let display_text = if is_selected {
+                            format!("✓ {}", model_display)
+                        } else {
+                            model_display
+                        };
+
+                        multi_model_submenu = multi_model_submenu.text(
+                            format!("toggle_model_{}_{}_{}", client.id, model.provider, model.id),
+                            display_text
+                        );
+                    }
+
+                    let multi_model_menu = multi_model_submenu.build()?;
+                    client_submenu = client_submenu.item(&multi_model_menu);
+
+                    // 3. Prioritized list
+                    let prioritized_list_text = if matches!(active_strategy, Some(crate::config::ActiveRoutingStrategy::PrioritizedList)) {
+                        "✓ Prioritized list..."
+                    } else {
+                        "Prioritized list..."
+                    };
+                    client_submenu = client_submenu.text(
+                        format!("prioritized_list_{}", client.id),
+                        prioritized_list_text
+                    );
                 } else {
-                    submenu_builder = submenu_builder
-                        .text(format!("start_mcp_server_{}", server.id), "▶️ Start Server");
+                    client_submenu = client_submenu.text(
+                        format!("no_models_{}", client.id),
+                        "No models available"
+                    );
                 }
 
-                // Add status indicator (read-only)
-                let status_text = if is_running { "✓ Running" } else { "✗ Stopped" };
-                submenu_builder = submenu_builder
-                    .text(format!("mcp_status_{}", server.id), status_text)
-                    .enabled(false);
+                // Add separator before Allowed MCPs
+                client_submenu = client_submenu.separator();
 
-                let submenu = submenu_builder.build()?;
-                menu_builder = menu_builder.item(&submenu);
+                // Allowed MCPs section header
+                let mcp_header = MenuItem::with_id(app, &format!("mcp_header_{}", client.id), "Allowed MCPs", false, None::<&str>)?;
+                client_submenu = client_submenu.item(&mcp_header);
+
+                // Get MCP servers this client can access
+                if let Some(ref mcp_manager) = mcp_server_manager {
+                    let all_mcp_servers = mcp_manager.list_configs();
+
+                    // Show allowed MCP servers
+                    for server_id in client.allowed_mcp_servers.iter() {
+                        if let Some(server) = all_mcp_servers.iter().find(|s| &s.id == server_id) {
+                            let server_name = if server.name.is_empty() {
+                                format!("MCP {}", &server.id[..8])
+                            } else {
+                                server.name.clone()
+                            };
+
+                            let mut mcp_submenu = SubmenuBuilder::new(app, &server_name);
+
+                            mcp_submenu = mcp_submenu
+                                .text(format!("copy_mcp_url_{}_{}", client.id, server.id), "📋 Copy URL");
+
+                            mcp_submenu = mcp_submenu
+                                .text(format!("copy_mcp_bearer_{}_{}", client.id, server.id), "📋 Copy Bearer token");
+
+                            let mcp_menu = mcp_submenu.build()?;
+                            client_submenu = client_submenu.item(&mcp_menu);
+                        }
+                    }
+                }
+
+                // Add "+ Add MCP" submenu with available MCP servers
+                if let Some(ref mcp_manager) = mcp_server_manager {
+                    let all_mcp_servers = mcp_manager.list_configs();
+
+                    // Find MCP servers not yet added to this client
+                    let available_servers: Vec<_> = all_mcp_servers
+                        .iter()
+                        .filter(|s| !client.allowed_mcp_servers.contains(&s.id))
+                        .collect();
+
+                    if !available_servers.is_empty() {
+                        let mut add_mcp_submenu = SubmenuBuilder::new(app, "➕ Add MCP");
+
+                        for server in available_servers {
+                            let server_name = if server.name.is_empty() {
+                                format!("MCP {}", &server.id[..8])
+                            } else {
+                                server.name.clone()
+                            };
+
+                            add_mcp_submenu = add_mcp_submenu.text(
+                                format!("add_mcp_{}_{}", client.id, server.id),
+                                server_name
+                            );
+                        }
+
+                        let add_mcp_menu = add_mcp_submenu.build()?;
+                        client_submenu = client_submenu.item(&add_mcp_menu);
+                    } else {
+                        // No available servers to add
+                        client_submenu = client_submenu
+                            .text(format!("no_mcp_to_add_{}", client.id), "No MCPs available")
+                            .enabled(false);
+                    }
+                }
+
+                let client_menu = client_submenu.build()?;
+                menu_builder = menu_builder.item(&client_menu);
             }
         }
     }
 
-    // Add "Create MCP Server" button
-    menu_builder = menu_builder.text("create_mcp_server", "➕ Create MCP Server");
+    // Add "+ Create & copy API Key" button
+    menu_builder = menu_builder.text("create_and_copy_api_key", "➕ Create & copy API Key");
 
     // Add separator before Server section
     menu_builder = menu_builder.separator();
 
-    // Get server status for section header and button text
-    let (server_status_icon, server_text) = if let Some(server_manager) = app.try_state::<Arc<crate::server::ServerManager>>() {
-        match server_manager.get_status() {
-            crate::server::ServerStatus::Running => ("✓", "⏹️ Stop Server"),
-            crate::server::ServerStatus::Stopped => ("✗", "▶️ Start Server"),
-        }
-    } else {
-        ("✗", "▶️ Start Server")
-    };
-
-    // Add Server section header with status indicator (disabled/non-clickable)
-    let server_header = MenuItem::with_id(app, "server_header", format!("Server {}", server_status_icon), false, None::<&str>)?;
-    menu_builder = menu_builder.item(&server_header);
-
-    // Get port for URL display
-    let port = if let Some(config_manager) = app.try_state::<ConfigManager>() {
+    // Get port and server status
+    let (host, port, server_text) = if let Some(config_manager) = app.try_state::<ConfigManager>() {
         let config = config_manager.get();
-        config.server.port
+        let status = if let Some(server_manager) = app.try_state::<Arc<crate::server::ServerManager>>() {
+            match server_manager.get_status() {
+                crate::server::ServerStatus::Running => "⏹️ Stop Server",
+                crate::server::ServerStatus::Stopped => "▶️ Start Server",
+            }
+        } else {
+            "▶️ Start Server"
+        };
+        (config.server.host.clone(), config.server.port, status)
     } else {
-        3000 // default
+        ("127.0.0.1".to_string(), 3625, "▶️ Start Server")
     };
+
+    // Add Server section header with IP:Port
+    let server_header = MenuItem::with_id(
+        app,
+        "server_header",
+        format!("Listening on {}:{}", host, port),
+        false,
+        None::<&str>
+    )?;
+    menu_builder = menu_builder.item(&server_header);
 
     // Add server-related items
     menu_builder = menu_builder
-        .text("copy_url", format!("📋 Copy URL :{}", port))
+        .text("copy_url", "📋 Copy URL")
         .text("toggle_server", server_text);
 
-    // Add separator before bottom items
+    // Add separator before quit
     menu_builder = menu_builder.separator();
 
-    // Add bottom menu items
-    menu_builder = menu_builder
-        .text("open_dashboard", "📊 Open Dashboard")
-        .text("quit", "❌ Quit");
+    // Add quit option
+    menu_builder = menu_builder.text("quit", "❌ Shut down");
 
     menu_builder.build()
 }
@@ -464,203 +450,21 @@ pub fn rebuild_tray_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
 fn build_tray_menu_from_handle<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu::Menu<R>> {
     let mut menu_builder = MenuBuilder::new(app);
 
-    // Add API Keys section header (disabled/non-clickable)
-    let api_keys_header = MenuItem::with_id(app, "api_keys_header", "API Keys", false, None::<&str>)?;
-    menu_builder = menu_builder.item(&api_keys_header);
+    // 1. Open Dashboard at the top
+    menu_builder = menu_builder.text("open_dashboard", "📊 Open Dashboard");
 
-    // Get API keys from manager
-//         if let Some(key_manager) = app.try_state::<ApiKeyManager>() {
-//             let keys = key_manager.list_keys();
-//     
-//             if !keys.is_empty() {
-            // Get provider registry to fetch models
-//                 let provider_registry = app.try_state::<Arc<ProviderRegistry>>();
-//     
-//                 for key in keys.iter() {
-//                     let key_name = if key.name.is_empty() {
-//                         format!("Key {}", &key.id[..8])
-//                     } else {
-//                         key.name.clone()
-//                     };
-//     
-                // Build submenu for this API key
-//                     let mut submenu_builder = SubmenuBuilder::new(app, &key_name);
-//     
-                // Add "Copy API Key" option
-//                     submenu_builder = submenu_builder
-//                         .text(format!("copy_key_{}", key.id), "📋 Copy API Key");
-//     
-                // Add "Enable/Disable" option
-//                     let toggle_text = if key.enabled {
-//                         "🚫 Disable"
-//                     } else {
-//                         "✅ Enable"
-//                     };
-//                     submenu_builder = submenu_builder
-//                         .text(format!("toggle_key_{}", key.id), toggle_text);
-//     
-                // Add separator before routing strategy section
-//                     submenu_builder = submenu_builder.separator();
-//     
-                // Get routing config for this key
-//                     let routing_config = key.get_routing_config();
-//                     let active_strategy = routing_config.as_ref().map(|c| c.active_strategy);
-//     
-                // Get cached models from registry
-//                     let models = if let Some(ref registry) = provider_registry {
-//                         registry.get_cached_models()
-//                     } else {
-//                         vec![]
-//                     };
-//     
-//                     if !models.is_empty() {
-                    // 1. "Forced model" submenu
-//                         let force_model_text = if matches!(active_strategy, Some(ActiveRoutingStrategy::ForceModel)) {
-//                             "✓ Forced model"
-//                         } else {
-//                             "Forced model"
-//                         };
-//                         let mut force_model_submenu_builder = SubmenuBuilder::new(app, force_model_text);
-//     
-                    // Get the currently forced model (if any)
-//                         let forced_model = routing_config.as_ref().and_then(|c| c.forced_model.as_ref());
-//     
-//                         for model in models.iter() {
-//                             let model_display = format!("{} ({})", model.id, model.provider);
-//                             let is_forced = if let Some((provider, model_name)) = forced_model {
-//                                 provider == &model.provider && model_name == &model.id
-//                             } else {
-//                                 false
-//                             };
-//                             let display_text = if is_forced {
-//                                 format!("✓ {}", model_display)
-//                             } else {
-//                                 model_display
-//                             };
-//     
-//                             force_model_submenu_builder = force_model_submenu_builder.text(
-//                                 format!("force_model_{}_{}_{}", key.id, model.provider, model.id),
-//                                 display_text
-//                             );
-//                         }
-//     
-//                         let force_model_submenu = force_model_submenu_builder.build()?;
-//                         submenu_builder = submenu_builder.item(&force_model_submenu);
-//     
-                    // 2. "Multi model" submenu
-//                         let available_models_text = if matches!(active_strategy, Some(ActiveRoutingStrategy::AvailableModels)) {
-//                             "✓ Multi model"
-//                         } else {
-//                             "Multi model"
-//                         };
-//                         let mut available_models_submenu_builder = SubmenuBuilder::new(app, available_models_text);
-//     
-                    // Add strategy toggle at the top
-//                         let (toggle_text, toggle_id) = if matches!(active_strategy, Some(ActiveRoutingStrategy::AvailableModels)) {
-//                             ("✓ Client can choose any model", format!("disabled_strategy_{}", key.id))
-//                         } else {
-//                             ("Enable to use any selected model", format!("enable_available_models_{}", key.id))
-//                         };
-//                         available_models_submenu_builder = available_models_submenu_builder.text(
-//                             toggle_id,
-//                             toggle_text
-//                         );
-//     
-//                         available_models_submenu_builder = available_models_submenu_builder.separator();
-//     
-                    // Get available models selection
-//                         let available_models = routing_config.as_ref().map(|c| &c.available_models);
-//     
-                    // Collect unique providers
-//                         let mut providers: Vec<String> = models.iter()
-//                             .map(|m| m.provider.clone())
-//                             .collect::<std::collections::HashSet<_>>()
-//                             .into_iter()
-//                             .collect();
-//                         providers.sort();
-//     
-                    // Add provider options (all models from each provider)
-//                         if !providers.is_empty() {
-//                             for provider in providers.iter() {
-//                                 let is_provider_selected = if let Some(avail) = available_models {
-//                                     avail.all_provider_models.contains(provider)
-//                                 } else {
-//                                     false
-//                                 };
-//                                 let provider_text = if is_provider_selected {
-//                                     format!("✓ All {} Models", provider)
-//                                 } else {
-//                                     format!("All {} Models", provider)
-//                                 };
-//                                 available_models_submenu_builder = available_models_submenu_builder.text(
-//                                     format!("toggle_provider_{}_{}",key.id, provider),
-//                                     provider_text
-//                                 );
-//                             }
-//     
-//                             available_models_submenu_builder = available_models_submenu_builder.separator();
-//                         }
-//     
-                    // Add individual models
-//                         for model in models.iter() {
-//                             let model_display = format!("{} ({})", model.id, model.provider);
-//                             let is_selected = if let Some(avail) = available_models {
-//                                 avail.individual_models.iter().any(|(p, m)| p == &model.provider && m == &model.id)
-//                             } else {
-//                                 false
-//                             };
-//                             let display_text = if is_selected {
-//                                 format!("✓ {}", model_display)
-//                             } else {
-//                                 model_display
-//                             };
-//     
-//                             available_models_submenu_builder = available_models_submenu_builder.text(
-//                                 format!("toggle_model_{}_{}_{}", key.id, model.provider, model.id),
-//                                 display_text
-//                             );
-//                         }
-//     
-//                         let available_models_submenu = available_models_submenu_builder.build()?;
-//                         submenu_builder = submenu_builder.item(&available_models_submenu);
-//     
-                    // 3. "Priority-based..." menu item
-//                         let prioritized_list_text = if matches!(active_strategy, Some(ActiveRoutingStrategy::PrioritizedList)) {
-//                             "✓ Priority-based..."
-//                         } else {
-//                             "Priority-based..."
-//                         };
-//                         submenu_builder = submenu_builder.text(
-//                             format!("prioritized_list_{}", key.id),
-//                             prioritized_list_text
-//                         );
-//                     } else {
-                    // No models available yet
-//                         submenu_builder = submenu_builder.text(
-//                             format!("no_models_{}", key.id),
-//                             "No models available"
-//                         );
-//                     }
-//     
-//                     let submenu = submenu_builder.build()?;
-//                     menu_builder = menu_builder.item(&submenu);
-//                 }
-//             }
-//         }
-
-    // Add "Generate API Key" without separator before it
-    menu_builder = menu_builder.text("generate_key", "➕ Generate API Key");
-
-    // Add separator before OAuth/MCP section
+    // Add separator
     menu_builder = menu_builder.separator();
 
-    // Add OAuth Clients section header
-    let oauth_clients_header = MenuItem::with_id(app, "oauth_clients_header", "OAuth Clients", false, None::<&str>)?;
-    menu_builder = menu_builder.item(&oauth_clients_header);
+    // 2. Clients section
+    let clients_header = MenuItem::with_id(app, "clients_header", "Clients", false, None::<&str>)?;
+    menu_builder = menu_builder.item(&clients_header);
 
-    // Get OAuth clients from manager
-    if let Some(oauth_client_manager) = app.try_state::<OAuthClientManager>() {
-        let clients = oauth_client_manager.list_clients();
+    // Get client manager and build client list
+    if let Some(client_manager) = app.try_state::<Arc<ClientManager>>() {
+        let clients = client_manager.list_clients();
+        let provider_registry = app.try_state::<Arc<ProviderRegistry>>();
+        let mcp_server_manager = app.try_state::<Arc<McpServerManager>>();
 
         if !clients.is_empty() {
             for client in clients.iter() {
@@ -670,111 +474,260 @@ fn build_tray_menu_from_handle<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<
                     client.name.clone()
                 };
 
-                let mut submenu_builder = SubmenuBuilder::new(app, &client_name);
+                let mut client_submenu = SubmenuBuilder::new(app, &client_name);
 
-                // Add "Copy Client ID" option
-                submenu_builder = submenu_builder
-                    .text(format!("copy_oauth_client_{}", client.id), "📋 Copy Client ID");
+                // LLM Models section header
+                let llm_header = MenuItem::with_id(app, &format!("llm_header_{}", client.id), "LLM Models", false, None::<&str>)?;
+                client_submenu = client_submenu.item(&llm_header);
 
-                // Add linked servers count (read-only)
-                let linked_count = client.linked_server_ids.len();
-                submenu_builder = submenu_builder
-                    .text(format!("oauth_linked_{}", client.id), format!("🔗 {} linked server(s)", linked_count))
-                    .enabled(false);
-
-                let submenu = submenu_builder.build()?;
-                menu_builder = menu_builder.item(&submenu);
-            }
-        }
-    }
-
-    // Add "Create OAuth Client" button
-    menu_builder = menu_builder.text("create_oauth_client", "➕ Create OAuth Client");
-
-    // Add separator before MCP Servers section
-    menu_builder = menu_builder.separator();
-
-    // Add MCP Servers section header
-    let mcp_servers_header = MenuItem::with_id(app, "mcp_servers_header", "MCP Servers", false, None::<&str>)?;
-    menu_builder = menu_builder.item(&mcp_servers_header);
-
-    // Get MCP servers from manager
-    if let Some(mcp_server_manager) = app.try_state::<Arc<McpServerManager>>() {
-        let configs = mcp_server_manager.list_configs();
-
-        if !configs.is_empty() {
-            for server in configs.iter() {
-                let server_name = if server.name.is_empty() {
-                    format!("Server {}", &server.id[..8])
+                // Get routing config and models
+                let routing_config = &client.routing_config;
+                let active_strategy = routing_config.as_ref().map(|c| c.active_strategy);
+                let models = if let Some(ref registry) = provider_registry {
+                    registry.get_cached_models()
                 } else {
-                    server.name.clone()
+                    vec![]
                 };
 
-                let mut submenu_builder = SubmenuBuilder::new(app, &server_name);
+                if !models.is_empty() {
+                    // 1. Force Model submenu
+                    let force_model_text = if matches!(active_strategy, Some(crate::config::ActiveRoutingStrategy::ForceModel)) {
+                        "✓ Force model"
+                    } else {
+                        "Force model"
+                    };
+                    let mut force_model_submenu = SubmenuBuilder::new(app, force_model_text);
+                    let forced_model = routing_config.as_ref().and_then(|c| c.forced_model.as_ref());
 
-                // Check if server is running
-                let is_running = mcp_server_manager.is_running(&server.id);
+                    for model in models.iter() {
+                        let model_display = format!("{} ({})", model.id, model.provider);
+                        let is_forced = if let Some((provider, model_name)) = forced_model {
+                            provider == &model.provider && model_name == &model.id
+                        } else {
+                            false
+                        };
+                        let display_text = if is_forced {
+                            format!("✓ {}", model_display)
+                        } else {
+                            model_display
+                        };
 
-                if is_running {
-                    submenu_builder = submenu_builder
-                        .text(format!("stop_mcp_server_{}", server.id), "⏹️ Stop Server");
+                        force_model_submenu = force_model_submenu.text(
+                            format!("force_model_{}_{}_{}", client.id, model.provider, model.id),
+                            display_text
+                        );
+                    }
+
+                    let force_model_menu = force_model_submenu.build()?;
+                    client_submenu = client_submenu.item(&force_model_menu);
+
+                    // 2. Multi Model submenu
+                    let multi_model_text = if matches!(active_strategy, Some(crate::config::ActiveRoutingStrategy::AvailableModels)) {
+                        "✓ Multi model"
+                    } else {
+                        "Multi model"
+                    };
+                    let mut multi_model_submenu = SubmenuBuilder::new(app, multi_model_text);
+
+                    // Add strategy toggle
+                    let (toggle_text, toggle_id) = if matches!(active_strategy, Some(crate::config::ActiveRoutingStrategy::AvailableModels)) {
+                        ("✓ Client can choose any model", format!("disabled_strategy_{}", client.id))
+                    } else {
+                        ("Enable to use any selected model", format!("enable_available_models_{}", client.id))
+                    };
+                    multi_model_submenu = multi_model_submenu.text(toggle_id, toggle_text);
+                    multi_model_submenu = multi_model_submenu.separator();
+
+                    // Get available models selection
+                    let available_models = routing_config.as_ref().map(|c| &c.available_models);
+
+                    // Collect unique providers
+                    let mut providers: Vec<String> = models.iter()
+                        .map(|m| m.provider.clone())
+                        .collect::<std::collections::HashSet<_>>()
+                        .into_iter()
+                        .collect();
+                    providers.sort();
+
+                    // Add provider options
+                    if !providers.is_empty() {
+                        for provider in providers.iter() {
+                            let is_provider_selected = if let Some(avail) = available_models {
+                                avail.all_provider_models.contains(provider)
+                            } else {
+                                false
+                            };
+                            let provider_text = if is_provider_selected {
+                                format!("✓ All {} Models", provider)
+                            } else {
+                                format!("All {} Models", provider)
+                            };
+                            multi_model_submenu = multi_model_submenu.text(
+                                format!("toggle_provider_{}_{}",client.id, provider),
+                                provider_text
+                            );
+                        }
+                        multi_model_submenu = multi_model_submenu.separator();
+                    }
+
+                    // Add individual models
+                    for model in models.iter() {
+                        let model_display = format!("{} ({})", model.id, model.provider);
+                        let is_selected = if let Some(avail) = available_models {
+                            avail.individual_models.iter().any(|(p, m)| p == &model.provider && m == &model.id)
+                        } else {
+                            false
+                        };
+                        let display_text = if is_selected {
+                            format!("✓ {}", model_display)
+                        } else {
+                            model_display
+                        };
+
+                        multi_model_submenu = multi_model_submenu.text(
+                            format!("toggle_model_{}_{}_{}", client.id, model.provider, model.id),
+                            display_text
+                        );
+                    }
+
+                    let multi_model_menu = multi_model_submenu.build()?;
+                    client_submenu = client_submenu.item(&multi_model_menu);
+
+                    // 3. Prioritized list
+                    let prioritized_list_text = if matches!(active_strategy, Some(crate::config::ActiveRoutingStrategy::PrioritizedList)) {
+                        "✓ Prioritized list..."
+                    } else {
+                        "Prioritized list..."
+                    };
+                    client_submenu = client_submenu.text(
+                        format!("prioritized_list_{}", client.id),
+                        prioritized_list_text
+                    );
                 } else {
-                    submenu_builder = submenu_builder
-                        .text(format!("start_mcp_server_{}", server.id), "▶️ Start Server");
+                    client_submenu = client_submenu.text(
+                        format!("no_models_{}", client.id),
+                        "No models available"
+                    );
                 }
 
-                // Add status indicator (read-only)
-                let status_text = if is_running { "✓ Running" } else { "✗ Stopped" };
-                submenu_builder = submenu_builder
-                    .text(format!("mcp_status_{}", server.id), status_text)
-                    .enabled(false);
+                // Add separator before Allowed MCPs
+                client_submenu = client_submenu.separator();
 
-                let submenu = submenu_builder.build()?;
-                menu_builder = menu_builder.item(&submenu);
+                // Allowed MCPs section header
+                let mcp_header = MenuItem::with_id(app, &format!("mcp_header_{}", client.id), "Allowed MCPs", false, None::<&str>)?;
+                client_submenu = client_submenu.item(&mcp_header);
+
+                // Get MCP servers this client can access
+                if let Some(ref mcp_manager) = mcp_server_manager {
+                    let all_mcp_servers = mcp_manager.list_configs();
+
+                    // Show allowed MCP servers
+                    for server_id in client.allowed_mcp_servers.iter() {
+                        if let Some(server) = all_mcp_servers.iter().find(|s| &s.id == server_id) {
+                            let server_name = if server.name.is_empty() {
+                                format!("MCP {}", &server.id[..8])
+                            } else {
+                                server.name.clone()
+                            };
+
+                            let mut mcp_submenu = SubmenuBuilder::new(app, &server_name);
+
+                            mcp_submenu = mcp_submenu
+                                .text(format!("copy_mcp_url_{}_{}", client.id, server.id), "📋 Copy URL");
+
+                            mcp_submenu = mcp_submenu
+                                .text(format!("copy_mcp_bearer_{}_{}", client.id, server.id), "📋 Copy Bearer token");
+
+                            let mcp_menu = mcp_submenu.build()?;
+                            client_submenu = client_submenu.item(&mcp_menu);
+                        }
+                    }
+                }
+
+                // Add "+ Add MCP" submenu with available MCP servers
+                if let Some(ref mcp_manager) = mcp_server_manager {
+                    let all_mcp_servers = mcp_manager.list_configs();
+
+                    // Find MCP servers not yet added to this client
+                    let available_servers: Vec<_> = all_mcp_servers
+                        .iter()
+                        .filter(|s| !client.allowed_mcp_servers.contains(&s.id))
+                        .collect();
+
+                    if !available_servers.is_empty() {
+                        let mut add_mcp_submenu = SubmenuBuilder::new(app, "➕ Add MCP");
+
+                        for server in available_servers {
+                            let server_name = if server.name.is_empty() {
+                                format!("MCP {}", &server.id[..8])
+                            } else {
+                                server.name.clone()
+                            };
+
+                            add_mcp_submenu = add_mcp_submenu.text(
+                                format!("add_mcp_{}_{}", client.id, server.id),
+                                server_name
+                            );
+                        }
+
+                        let add_mcp_menu = add_mcp_submenu.build()?;
+                        client_submenu = client_submenu.item(&add_mcp_menu);
+                    } else {
+                        // No available servers to add
+                        client_submenu = client_submenu
+                            .text(format!("no_mcp_to_add_{}", client.id), "No MCPs available")
+                            .enabled(false);
+                    }
+                }
+
+                let client_menu = client_submenu.build()?;
+                menu_builder = menu_builder.item(&client_menu);
             }
         }
     }
 
-    // Add "Create MCP Server" button
-    menu_builder = menu_builder.text("create_mcp_server", "➕ Create MCP Server");
+    // Add "+ Create & copy API Key" button
+    menu_builder = menu_builder.text("create_and_copy_api_key", "➕ Create & copy API Key");
 
     // Add separator before Server section
     menu_builder = menu_builder.separator();
 
-    // Get server status for section header and button text
-    let (server_status_icon, server_text) = if let Some(server_manager) = app.try_state::<Arc<crate::server::ServerManager>>() {
-        match server_manager.get_status() {
-            crate::server::ServerStatus::Running => ("✓", "⏹️ Stop Server"),
-            crate::server::ServerStatus::Stopped => ("✗", "▶️ Start Server"),
-        }
-    } else {
-        ("✗", "▶️ Start Server")
-    };
-
-    // Add Server section header with status indicator (disabled/non-clickable)
-    let server_header = MenuItem::with_id(app, "server_header", format!("Server {}", server_status_icon), false, None::<&str>)?;
-    menu_builder = menu_builder.item(&server_header);
-
-    // Get port for URL display
-    let port = if let Some(config_manager) = app.try_state::<ConfigManager>() {
+    // Get port and server status
+    let (host, port, server_text) = if let Some(config_manager) = app.try_state::<ConfigManager>() {
         let config = config_manager.get();
-        config.server.port
+        let status = if let Some(server_manager) = app.try_state::<Arc<crate::server::ServerManager>>() {
+            match server_manager.get_status() {
+                crate::server::ServerStatus::Running => "⏹️ Stop Server",
+                crate::server::ServerStatus::Stopped => "▶️ Start Server",
+            }
+        } else {
+            "▶️ Start Server"
+        };
+        (config.server.host.clone(), config.server.port, status)
     } else {
-        3000 // default
+        ("127.0.0.1".to_string(), 3625, "▶️ Start Server")
     };
+
+    // Add Server section header with IP:Port
+    let server_header = MenuItem::with_id(
+        app,
+        "server_header",
+        format!("Listening on {}:{}", host, port),
+        false,
+        None::<&str>
+    )?;
+    menu_builder = menu_builder.item(&server_header);
 
     // Add server-related items
     menu_builder = menu_builder
-        .text("copy_url", format!("📋 Copy URL :{}", port))
+        .text("copy_url", "📋 Copy URL")
         .text("toggle_server", server_text);
 
-    // Add separator before bottom items
+    // Add separator before quit
     menu_builder = menu_builder.separator();
 
-    // Add bottom menu items
-    menu_builder = menu_builder
-        .text("open_dashboard", "📊 Open Dashboard")
-        .text("quit", "❌ Quit");
+    // Add quit option
+    menu_builder = menu_builder.text("quit", "❌ Shut down");
 
     menu_builder.build()
 }
@@ -855,8 +808,7 @@ async fn handle_toggle_server<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<(
 
     Ok(())
 }
-
-/// Handle generating a new API key from the system tray
+// /// Handle generating a new API key from the system tray
 // async fn handle_generate_key_from_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
 //     info!("Generating new API key from tray");
 // 
@@ -907,8 +859,7 @@ async fn handle_toggle_server<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<(
 // 
 //     Ok(())
 // }
-
-/// Handle copying an API key to clipboard
+// /// Handle copying an API key to clipboard
 // async fn handle_copy_key<R: Runtime>(app: &AppHandle<R>, key_id: &str) -> tauri::Result<()> {
 //         let key_manager = app.state::<ApiKeyManager>();
 // 
@@ -926,8 +877,7 @@ async fn handle_toggle_server<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<(
 // 
 //     Ok(())
 // }
-
-/// Handle toggling an API key's enabled state
+// /// Handle toggling an API key's enabled state
 // async fn handle_toggle_key<R: Runtime>(app: &AppHandle<R>, key_id: &str) -> tauri::Result<()> {
 //         let key_manager = app.state::<ApiKeyManager>();
 //     let config_manager = app.state::<ConfigManager>();
@@ -1081,7 +1031,7 @@ async fn handle_toggle_server<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<(
 // 
 //     Ok(())
 // }
-
+#[allow(dead_code)]
 async fn handle_prioritized_list<R: Runtime>(
     app: &AppHandle<R>,
     key_id: &str,
@@ -1096,6 +1046,134 @@ async fn handle_prioritized_list<R: Runtime>(
         // Emit event to open the prioritized list modal for this key
         let _ = app.emit("open-prioritized-list", key_id);
     }
+
+    Ok(())
+}
+
+/// Handle creating a new client and copying the API key to clipboard
+async fn handle_create_and_copy_api_key<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
+    info!("Creating new client and copying API key from tray");
+
+    // Get managers from state
+    let client_manager = app.state::<Arc<ClientManager>>();
+    let config_manager = app.state::<ConfigManager>();
+
+    // Create a new client with a default name
+    let (client_id, secret, _config) = client_manager
+        .create_client("Client from tray".to_string())
+        .map_err(|e| tauri::Error::Anyhow(e.into()))?;
+
+    // Save to config
+    config_manager
+        .update(|cfg| {
+            cfg.clients = client_manager.get_configs();
+        })
+        .map_err(|e| tauri::Error::Anyhow(e.into()))?;
+
+    config_manager
+        .save()
+        .await
+        .map_err(|e| tauri::Error::Anyhow(e.into()))?;
+
+    // Copy secret to clipboard
+    if let Err(e) = copy_to_clipboard(&secret) {
+        error!("Failed to copy API key to clipboard: {}", e);
+    }
+
+    // Rebuild tray menu
+    rebuild_tray_menu(app)?;
+
+    info!("API key created and copied to clipboard: {}", client_id);
+
+    Ok(())
+}
+
+/// Handle copying MCP URL to clipboard
+async fn handle_copy_mcp_url<R: Runtime>(
+    app: &AppHandle<R>,
+    _client_id: &str,
+    server_id: &str,
+) -> tauri::Result<()> {
+    info!("Copying MCP URL for server: {}", server_id);
+
+    // Get config manager for port
+    let config_manager = app.state::<ConfigManager>();
+    let config = config_manager.get();
+
+    // Build MCP proxy URL
+    let url = format!("http://{}:{}/mcp/{}", config.server.host, config.server.port, server_id);
+
+    // Copy to clipboard
+    if let Err(e) = copy_to_clipboard(&url) {
+        error!("Failed to copy MCP URL to clipboard: {}", e);
+        return Err(tauri::Error::Anyhow(e));
+    }
+
+    info!("MCP URL copied to clipboard: {}", url);
+
+    Ok(())
+}
+
+/// Handle copying MCP bearer token (client secret) to clipboard
+async fn handle_copy_mcp_bearer<R: Runtime>(
+    app: &AppHandle<R>,
+    client_id: &str,
+) -> tauri::Result<()> {
+    info!("Copying bearer token for client: {}", client_id);
+
+    // Get client manager
+    let client_manager = app.state::<Arc<ClientManager>>();
+
+    // Get client secret from keychain
+    let secret = client_manager
+        .get_secret(client_id)
+        .map_err(|e| tauri::Error::Anyhow(e.into()))?
+        .ok_or_else(|| tauri::Error::Anyhow(anyhow::anyhow!("Client secret not found")))?;
+
+    // Copy to clipboard
+    if let Err(e) = copy_to_clipboard(&secret) {
+        error!("Failed to copy bearer token to clipboard: {}", e);
+        return Err(tauri::Error::Anyhow(e));
+    }
+
+    info!("Bearer token copied to clipboard for client: {}", client_id);
+
+    Ok(())
+}
+
+/// Handle adding an MCP server to a client's allowed list
+async fn handle_add_mcp_to_client<R: Runtime>(
+    app: &AppHandle<R>,
+    client_id: &str,
+    server_id: &str,
+) -> tauri::Result<()> {
+    info!("Adding MCP server {} to client {}", server_id, client_id);
+
+    // Get managers from state
+    let client_manager = app.state::<Arc<ClientManager>>();
+    let config_manager = app.state::<ConfigManager>();
+
+    // Add MCP server to client's allowed list
+    client_manager
+        .add_mcp_server(client_id, server_id)
+        .map_err(|e| tauri::Error::Anyhow(e.into()))?;
+
+    // Save to config
+    config_manager
+        .update(|cfg| {
+            cfg.clients = client_manager.get_configs();
+        })
+        .map_err(|e| tauri::Error::Anyhow(e.into()))?;
+
+    config_manager
+        .save()
+        .await
+        .map_err(|e| tauri::Error::Anyhow(e.into()))?;
+
+    // Rebuild tray menu
+    rebuild_tray_menu(app)?;
+
+    info!("MCP server {} added to client {}", server_id, client_id);
 
     Ok(())
 }
@@ -1165,59 +1243,3 @@ fn copy_to_clipboard(text: &str) -> Result<(), anyhow::Error> {
     Ok(())
 }
 
-/// Handle copying OAuth client ID from the system tray
-async fn handle_copy_oauth_client<R: Runtime>(app: &AppHandle<R>, client_id: &str) -> tauri::Result<()> {
-    info!("Copying OAuth client ID: {}", client_id);
-
-    // Get OAuth client manager from state
-    let oauth_client_manager = app.try_state::<OAuthClientManager>()
-        .ok_or_else(|| anyhow::anyhow!("OAuth client manager not found"))?;
-
-    // Get the client
-    let client = oauth_client_manager.get_client(client_id)
-        .ok_or_else(|| anyhow::anyhow!("OAuth client not found"))?;
-
-    // Copy client_id to clipboard
-    copy_to_clipboard(&client.client_id)?;
-
-    info!("OAuth client ID copied to clipboard");
-    Ok(())
-}
-
-/// Handle starting an MCP server from the system tray
-async fn handle_start_mcp_server<R: Runtime>(app: &AppHandle<R>, server_id: &str) -> tauri::Result<()> {
-    info!("Starting MCP server: {}", server_id);
-
-    // Get MCP server manager from state
-    let mcp_server_manager = app.try_state::<Arc<McpServerManager>>()
-        .ok_or_else(|| anyhow::anyhow!("MCP server manager not found"))?;
-
-    // Start the server
-    mcp_server_manager.start_server(server_id).await
-        .map_err(|e| anyhow::anyhow!("Failed to start MCP server: {}", e))?;
-
-    // Rebuild tray menu to update status
-    rebuild_tray_menu(app)?;
-
-    info!("MCP server started successfully");
-    Ok(())
-}
-
-/// Handle stopping an MCP server from the system tray
-async fn handle_stop_mcp_server<R: Runtime>(app: &AppHandle<R>, server_id: &str) -> tauri::Result<()> {
-    info!("Stopping MCP server: {}", server_id);
-
-    // Get MCP server manager from state
-    let mcp_server_manager = app.try_state::<Arc<McpServerManager>>()
-        .ok_or_else(|| anyhow::anyhow!("MCP server manager not found"))?;
-
-    // Stop the server
-    mcp_server_manager.stop_server(server_id).await
-        .map_err(|e| anyhow::anyhow!("Failed to stop MCP server: {}", e))?;
-
-    // Rebuild tray menu to update status
-    rebuild_tray_menu(app)?;
-
-    info!("MCP server stopped successfully");
-    Ok(())
-}

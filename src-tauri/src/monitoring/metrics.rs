@@ -368,11 +368,7 @@ impl MetricsCollector {
             .unwrap_or_default()
             .into_iter()
             .filter_map(|metric_type| {
-                if let Some(name) = metric_type.strip_prefix("llm_key:") {
-                    Some(name.to_string())
-                } else {
-                    None
-                }
+                metric_type.strip_prefix("llm_key:").map(|name| name.to_string())
             })
             .collect()
     }
@@ -384,11 +380,7 @@ impl MetricsCollector {
             .unwrap_or_default()
             .into_iter()
             .filter_map(|metric_type| {
-                if let Some(name) = metric_type.strip_prefix("llm_provider:") {
-                    Some(name.to_string())
-                } else {
-                    None
-                }
+                metric_type.strip_prefix("llm_provider:").map(|name| name.to_string())
             })
             .collect()
     }
@@ -400,11 +392,7 @@ impl MetricsCollector {
             .unwrap_or_default()
             .into_iter()
             .filter_map(|metric_type| {
-                if let Some(name) = metric_type.strip_prefix("llm_model:") {
-                    Some(name.to_string())
-                } else {
-                    None
-                }
+                metric_type.strip_prefix("llm_model:").map(|name| name.to_string())
             })
             .collect()
     }

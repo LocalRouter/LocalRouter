@@ -5,12 +5,13 @@
 #![allow(dead_code)]
 
 use chrono::{DateTime, Utc};
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
+use tauri::Emitter;
 use tracing::{info, warn};
 
 use crate::utils::errors::{AppError, AppResult};
@@ -123,6 +124,9 @@ pub struct AccessLogger {
 
     /// Maximum number of days to keep logs
     retention_days: u32,
+
+    /// Optional Tauri app handle for emitting events
+    app_handle: Arc<RwLock<Option<tauri::AppHandle>>>,
 }
 
 impl AccessLogger {
@@ -141,7 +145,13 @@ impl AccessLogger {
             writer: Arc::new(Mutex::new(None)),
             current_date: Arc::new(Mutex::new(String::new())),
             retention_days,
+            app_handle: Arc::new(RwLock::new(None)),
         })
+    }
+
+    /// Set the Tauri app handle for event emission
+    pub fn set_app_handle(&self, handle: tauri::AppHandle) {
+        *self.app_handle.write() = Some(handle);
     }
 
     /// Get the OS-specific log directory
@@ -235,6 +245,13 @@ impl AccessLogger {
             writer
                 .flush()
                 .map_err(|e| AppError::Internal(format!("Failed to flush log: {}", e)))?;
+        }
+
+        // Emit Tauri event if app handle is available
+        if let Some(handle) = self.app_handle.read().as_ref() {
+            if let Err(e) = handle.emit("llm-log-entry", entry) {
+                warn!("Failed to emit LLM log event: {}", e);
+            }
         }
 
         Ok(())
@@ -360,6 +377,7 @@ mod tests {
             writer: Arc::new(Mutex::new(None)),
             current_date: Arc::new(Mutex::new(String::new())),
             retention_days: 30,
+            app_handle: Arc::new(RwLock::new(None)),
         };
         (logger, temp_dir)
     }

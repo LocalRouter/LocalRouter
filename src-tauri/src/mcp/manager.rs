@@ -159,15 +159,13 @@ impl McpServerManager {
         };
 
         // Merge auth config environment variables (if specified)
-        if let Some(auth_config) = &config.auth_config {
-            if let crate::config::McpAuthConfig::EnvVars { env: auth_env } = auth_config {
-                // Merge auth env vars with base env vars
-                // Auth env vars override base env vars
-                for (key, value) in auth_env {
-                    env.insert(key.clone(), value.clone());
-                }
-                tracing::debug!("Applied auth env vars for STDIO server: {}", server_id);
+        if let Some(crate::config::McpAuthConfig::EnvVars { env: auth_env }) = &config.auth_config {
+            // Merge auth env vars with base env vars
+            // Auth env vars override base env vars
+            for (key, value) in auth_env {
+                env.insert(key.clone(), value.clone());
             }
+            tracing::debug!("Applied auth env vars for STDIO server: {}", server_id);
         }
 
         // Spawn the STDIO transport
@@ -202,7 +200,7 @@ impl McpServerManager {
         // Apply auth config (if specified)
         if let Some(auth_config) = &config.auth_config {
             match auth_config {
-                crate::config::McpAuthConfig::BearerToken { token_ref } => {
+                crate::config::McpAuthConfig::BearerToken { token_ref: _ } => {
                     // Retrieve token from keychain
                     let keychain = crate::api_keys::CachedKeychain::auto()
                         .unwrap_or_else(|_| crate::api_keys::CachedKeychain::system());
