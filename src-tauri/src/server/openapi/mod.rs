@@ -67,6 +67,8 @@ use utoipa::OpenApi;
             crate::server::types::ModelsResponse,
             crate::server::types::ModelData,
             crate::server::types::ModelPricing,
+            crate::server::types::CatalogInfo,
+            crate::server::types::PricingSource,
             crate::server::types::GenerationDetailsResponse,
             crate::server::types::ErrorResponse,
             crate::server::types::ApiError,

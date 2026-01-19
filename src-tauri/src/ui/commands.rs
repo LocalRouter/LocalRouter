@@ -2897,3 +2897,73 @@ fn get_log_directory() -> Result<PathBuf, crate::utils::errors::AppError> {
         ))
     }
 }
+
+// ============================================================================
+// Model Catalog Commands
+// ============================================================================
+
+/// Catalog metadata for the frontend
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CatalogMetadata {
+    pub fetch_date: String,
+    pub api_version: String,
+    pub total_models: usize,
+}
+
+/// Catalog statistics for display
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CatalogStats {
+    pub total_models: usize,
+    pub fetch_date: String,
+    pub providers: HashMap<String, usize>,
+    pub modalities: HashMap<String, usize>,
+}
+
+/// Get catalog metadata
+#[tauri::command]
+pub fn get_catalog_metadata() -> CatalogMetadata {
+    use crate::catalog;
+
+    let meta = catalog::metadata();
+    CatalogMetadata {
+        fetch_date: meta.fetch_date().to_rfc3339(),
+        api_version: meta.api_version.to_string(),
+        total_models: meta.total_models,
+    }
+}
+
+/// Get catalog statistics
+#[tauri::command]
+pub fn get_catalog_stats() -> CatalogStats {
+    use crate::catalog;
+    use std::collections::HashMap;
+
+    let meta = catalog::metadata();
+    let models = catalog::models();
+
+    // Count providers
+    let mut providers: HashMap<String, usize> = HashMap::new();
+    for model in models {
+        if let Some((provider, _)) = model.id.split_once('/') {
+            *providers.entry(provider.to_string()).or_insert(0) += 1;
+        }
+    }
+
+    // Count modalities
+    let mut modalities: HashMap<String, usize> = HashMap::new();
+    for model in models {
+        let modality = match model.modality {
+            crate::catalog::Modality::Text => "text",
+            crate::catalog::Modality::Multimodal => "multimodal",
+            crate::catalog::Modality::Image => "image",
+        };
+        *modalities.entry(modality.to_string()).or_insert(0) += 1;
+    }
+
+    CatalogStats {
+        total_models: meta.total_models,
+        fetch_date: meta.fetch_date().to_rfc3339(),
+        providers,
+        modalities,
+    }
+}

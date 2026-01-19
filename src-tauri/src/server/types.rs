@@ -504,6 +504,10 @@ pub struct ModelData {
     /// Performance metrics for this model
     #[serde(skip_serializing_if = "Option::is_none")]
     pub performance: Option<crate::providers::PerformanceMetrics>,
+
+    /// Catalog information (Phase 4)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub catalog_info: Option<CatalogInfo>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -516,6 +520,33 @@ pub struct ModelPricing {
 
     #[schema(example = "USD")]
     pub currency: String,
+}
+
+/// Catalog information for model metadata
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct CatalogInfo {
+    /// Source of pricing information
+    pub pricing_source: PricingSource,
+
+    /// Date when catalog was last fetched (if from catalog)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub catalog_date: Option<String>,
+
+    /// How the model was matched in catalog
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub matched_via: Option<String>,
+}
+
+/// Source of pricing information
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum PricingSource {
+    /// Pricing from embedded catalog (OpenRouter)
+    Catalog,
+    /// Pricing from provider API
+    Provider,
+    /// Pricing from hardcoded fallback
+    Fallback,
 }
 
 // ==================== Generation Details ====================
@@ -662,6 +693,7 @@ impl From<&crate::providers::ModelInfo> for ModelData {
             features: None, // Will be filled by /v1/models endpoint
             supported_parameters: None, // Will be filled by /v1/models endpoint
             performance: None, // Will be filled by /v1/models endpoint
+            catalog_info: None, // TODO: Populate from catalog
         }
     }
 }
