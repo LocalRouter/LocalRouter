@@ -387,7 +387,7 @@ fn build_tray_menu<R: Runtime>(app: &App<R>) -> tauri::Result<tauri::menu::Menu<
     }
 
     // Add "+ Create & copy API Key" button
-    menu_builder = menu_builder.text("create_and_copy_api_key", "➕ Create & copy API Key");
+    menu_builder = menu_builder.text("create_and_copy_api_key", "➕ Create && copy API Key");
 
     // Add separator before Server section
     menu_builder = menu_builder.separator();
@@ -687,7 +687,7 @@ fn build_tray_menu_from_handle<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<
     }
 
     // Add "+ Create & copy API Key" button
-    menu_builder = menu_builder.text("create_and_copy_api_key", "➕ Create & copy API Key");
+    menu_builder = menu_builder.text("create_and_copy_api_key", "➕ Create && copy API Key");
 
     // Add separator before Server section
     menu_builder = menu_builder.separator();

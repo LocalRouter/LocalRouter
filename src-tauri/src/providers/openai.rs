@@ -335,12 +335,32 @@ impl ModelProvider for OpenAIProvider {
     }
 
     async fn get_pricing(&self, model: &str) -> AppResult<PricingInfo> {
-        Self::get_model_pricing(model).ok_or_else(|| {
-            AppError::Provider(format!(
-                "Pricing information not available for model: {}",
-                model
-            ))
-        })
+        // Try catalog first (embedded OpenRouter data)
+        if let Some(catalog_model) = crate::catalog::find_model("openai", model) {
+            tracing::debug!("Using catalog pricing for OpenAI model: {}", model);
+            return Ok(PricingInfo {
+                input_cost_per_1k: catalog_model.pricing.prompt_cost_per_1k(),
+                output_cost_per_1k: catalog_model.pricing.completion_cost_per_1k(),
+                currency: catalog_model.pricing.currency.to_string(),
+            });
+        }
+
+        // Fallback to hardcoded pricing (for models not in catalog)
+        if let Some(pricing) = Self::get_model_pricing(model) {
+            tracing::debug!("Using fallback pricing for OpenAI model: {}", model);
+            return Ok(pricing);
+        }
+
+        // Log unmapped models
+        tracing::warn!(
+            "Model '{}' not found in catalog or fallback pricing (provider: openai)",
+            model
+        );
+
+        Err(AppError::Provider(format!(
+            "Pricing information not available for model: {}",
+            model
+        )))
     }
 
     async fn complete(&self, request: CompletionRequest) -> AppResult<CompletionResponse> {

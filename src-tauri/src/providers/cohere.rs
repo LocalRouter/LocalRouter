@@ -224,6 +224,19 @@ impl ModelProvider for CohereProvider {
     }
 
     async fn get_pricing(&self, model: &str) -> AppResult<PricingInfo> {
+        // Try catalog first (embedded OpenRouter data)
+        if let Some(catalog_model) = crate::catalog::find_model("cohere", model) {
+            tracing::debug!("Using catalog pricing for Cohere model: {}", model);
+            return Ok(PricingInfo {
+                input_cost_per_1k: catalog_model.pricing.prompt_cost_per_1k(),
+                output_cost_per_1k: catalog_model.pricing.completion_cost_per_1k(),
+                currency: catalog_model.pricing.currency.to_string(),
+            });
+        }
+
+        // Fallback to hardcoded pricing
+        tracing::debug!("Using fallback pricing for Cohere model: {}", model);
+
         // Cohere pricing as of 2026-01
         let pricing = match model {
             "command-r-plus" => PricingInfo {

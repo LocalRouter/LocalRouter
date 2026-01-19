@@ -228,6 +228,21 @@ impl ModelProvider for GeminiProvider {
     }
 
     async fn get_pricing(&self, model: &str) -> AppResult<PricingInfo> {
+        // Try catalog first (embedded OpenRouter data)
+        // Normalize model name: "models/gemini-2.0-flash" -> "gemini-2.0-flash"
+        let model_id = model.strip_prefix("models/").unwrap_or(model);
+
+        if let Some(catalog_model) = crate::catalog::find_model("google", model_id) {
+            tracing::debug!("Using catalog pricing for Gemini model: {}", model);
+            return Ok(PricingInfo {
+                input_cost_per_1k: catalog_model.pricing.prompt_cost_per_1k(),
+                output_cost_per_1k: catalog_model.pricing.completion_cost_per_1k(),
+                currency: catalog_model.pricing.currency.to_string(),
+            });
+        }
+
+        // Fallback to hardcoded pricing
+        tracing::debug!("Using fallback pricing for Gemini model: {}", model);
         Ok(self.get_model_pricing(model))
     }
 
