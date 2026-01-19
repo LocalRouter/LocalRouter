@@ -7,6 +7,7 @@ import { ContextualChat } from '../chat/ContextualChat'
 import DetailPageLayout from '../layouts/DetailPageLayout'
 import { MetricsChart } from '../charts/MetricsChart'
 import { useMetricsSubscription } from '../../hooks/useMetricsSubscription'
+import { CatalogMetadata } from '../../lib/catalog-types'
 
 interface ModelDetailPageProps {
   modelKey: string // format: "provider/model_id"
@@ -36,6 +37,7 @@ export default function ModelDetailPage({ modelKey, onTabChange }: ModelDetailPa
   const refreshKey = useMetricsSubscription()
   const [providerInstance, modelId] = modelKey.split('/')
   const [model, setModel] = useState<Model | null>(null)
+  const [catalogMetadata, setCatalogMetadata] = useState<CatalogMetadata | null>(null)
   const [apiKeys, setApiKeys] = useState<ApiKey[]>([])
   const [loading, setLoading] = useState(true)
   const [activeTab, setActiveTab] = useState<string>('metrics')
@@ -50,7 +52,17 @@ export default function ModelDetailPage({ modelKey, onTabChange }: ModelDetailPa
 
   useEffect(() => {
     loadModelData()
+    loadCatalogMetadata()
   }, [modelKey])
+
+  const loadCatalogMetadata = async () => {
+    try {
+      const metadata = await invoke<CatalogMetadata>('get_catalog_metadata')
+      setCatalogMetadata(metadata)
+    } catch (error) {
+      console.error('Failed to load catalog metadata:', error)
+    }
+  }
 
   const loadModelData = async () => {
     setLoading(true)
@@ -231,6 +243,18 @@ export default function ModelDetailPage({ modelKey, onTabChange }: ModelDetailPa
                       {cap}
                     </Badge>
                   ))}
+                </div>
+              </div>
+            )}
+
+            {catalogMetadata && (
+              <div className="mt-4 pt-4 border-t border-gray-200">
+                <div className="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg p-3">
+                  <p className="text-xs text-green-900 dark:text-green-100">
+                    <strong>Pricing Source:</strong> OpenRouter model catalog embedded at build time •
+                    Last updated: {new Date(catalogMetadata.fetch_date).toLocaleDateString()} •
+                    Fully offline-capable
+                  </p>
                 </div>
               </div>
             )}
