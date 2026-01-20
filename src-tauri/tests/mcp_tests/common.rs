@@ -21,7 +21,7 @@ use tokio::sync::oneshot;
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 use wiremock::{
     matchers::{header, method as http_method, path, query_param},
-    Mock, MockServer, ResponseTemplate,
+    Match, Mock, MockServer, Request, ResponseTemplate,
 };
 
 // ==================== STDIO MOCK ====================
@@ -155,6 +155,30 @@ impl StdioMockBuilder {
 
 // ==================== SSE MOCK SERVER ====================
 
+/// Custom matcher for JSON-RPC method field
+struct JsonRpcMethodMatcher {
+    method: String,
+}
+
+impl Match for JsonRpcMethodMatcher {
+    fn matches(&self, request: &Request) -> bool {
+        if let Ok(body) = std::str::from_utf8(&request.body) {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(body) {
+                if let Some(method) = json.get("method").and_then(|m| m.as_str()) {
+                    return method == self.method;
+                }
+            }
+        }
+        false
+    }
+}
+
+fn json_rpc_method(method: &str) -> JsonRpcMethodMatcher {
+    JsonRpcMethodMatcher {
+        method: method.to_string(),
+    }
+}
+
 /// SSE mock server builder
 ///
 /// Creates a wiremock HTTP server that handles SSE-style MCP requests.
@@ -173,6 +197,31 @@ impl SseMockBuilder {
             .mount(&server)
             .await;
 
+        // Set up default initialize mock for connection
+        // SSE transport calls initialize during connect()
+        let init_response = JsonRpcResponse {
+            jsonrpc: "2.0".to_string(),
+            id: json!(1),
+            result: Some(json!({
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "serverInfo": {"name": "test", "version": "1.0"}
+            })),
+            error: None,
+        };
+
+        let sse_body = format!("data: {}\n\n", serde_json::to_string(&init_response).unwrap());
+
+        Mock::given(http_method("POST"))
+            .and(json_rpc_method("initialize"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(sse_body)
+                    .insert_header("content-type", "text/event-stream"),
+            )
+            .mount(&server)
+            .await;
+
         Self { server }
     }
 
@@ -181,7 +230,7 @@ impl SseMockBuilder {
     }
 
     /// Mock a successful method response
-    pub async fn mock_method(self, _method: &str, result: Value) -> Self {
+    pub async fn mock_method(self, method: &str, result: Value) -> Self {
         let response = JsonRpcResponse {
             jsonrpc: "2.0".to_string(),
             id: json!(1),
@@ -194,6 +243,7 @@ impl SseMockBuilder {
 
         Mock::given(http_method("POST"))
             .and(header("content-type", "application/json"))
+            .and(json_rpc_method(method))  // Match on JSON-RPC method
             .respond_with(
                 ResponseTemplate::new(200)
                     .set_body_string(sse_body)
@@ -230,7 +280,7 @@ impl SseMockBuilder {
     }
 
     /// Mock an error response
-    pub async fn mock_error(self, _method: &str, error_code: i32, message: &str) -> Self {
+    pub async fn mock_error(self, method: &str, error_code: i32, message: &str) -> Self {
         let response = JsonRpcResponse {
             jsonrpc: "2.0".to_string(),
             id: json!(1),
@@ -246,6 +296,7 @@ impl SseMockBuilder {
         let sse_body = format!("data: {}\n\n", serde_json::to_string(&response).unwrap());
 
         Mock::given(http_method("POST"))
+            .and(json_rpc_method(method))  // Match on JSON-RPC method
             .respond_with(
                 ResponseTemplate::new(200)
                     .set_body_string(sse_body)
