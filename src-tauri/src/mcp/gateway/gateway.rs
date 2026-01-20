@@ -341,6 +341,19 @@ impl McpGateway {
             })
             .collect();
 
+        // If all servers failed, return error
+        if init_results.is_empty() && !failures.is_empty() {
+            let error_summary = failures
+                .iter()
+                .map(|f| format!("{}: {}", f.server_id, f.error))
+                .collect::<Vec<_>>()
+                .join("; ");
+            return Err(AppError::Mcp(format!(
+                "All servers failed to initialize: {}",
+                error_summary
+            )));
+        }
+
         // Merge results
         let merged = merge_initialize_results(init_results, failures);
 
@@ -449,6 +462,19 @@ impl McpGateway {
 
         let (successes, failures) = separate_results(results);
 
+        // If all servers failed, return error
+        if successes.is_empty() && !failures.is_empty() {
+            let error_summary = failures
+                .iter()
+                .map(|f| format!("{}: {}", f.server_id, f.error))
+                .collect::<Vec<_>>()
+                .join("; ");
+            return Err(AppError::Mcp(format!(
+                "All servers failed to respond: {}",
+                error_summary
+            )));
+        }
+
         // Parse tools from results
         let server_tools: Vec<(String, Vec<McpTool>)> = successes
             .into_iter()
@@ -527,6 +553,19 @@ impl McpGateway {
 
         let (successes, failures) = separate_results(results);
 
+        // If all servers failed, return error
+        if successes.is_empty() && !failures.is_empty() {
+            let error_summary = failures
+                .iter()
+                .map(|f| format!("{}: {}", f.server_id, f.error))
+                .collect::<Vec<_>>()
+                .join("; ");
+            return Err(AppError::Mcp(format!(
+                "All servers failed to respond: {}",
+                error_summary
+            )));
+        }
+
         // Parse resources from results
         let server_resources: Vec<(String, Vec<McpResource>)> = successes
             .into_iter()
@@ -604,6 +643,19 @@ impl McpGateway {
         .await;
 
         let (successes, failures) = separate_results(results);
+
+        // If all servers failed, return error
+        if successes.is_empty() && !failures.is_empty() {
+            let error_summary = failures
+                .iter()
+                .map(|f| format!("{}: {}", f.server_id, f.error))
+                .collect::<Vec<_>>()
+                .join("; ");
+            return Err(AppError::Mcp(format!(
+                "All servers failed to respond: {}",
+                error_summary
+            )));
+        }
 
         // Parse prompts from results
         let server_prompts: Vec<(String, Vec<McpPrompt>)> = successes
