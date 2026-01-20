@@ -272,28 +272,11 @@ impl McpGateway {
             "resources/read" => self.handle_resources_read(session, request).await,
             "prompts/get" => self.handle_prompts_get(session, request).await,
             _ => {
-                // For unknown methods, send to first available server and return response
-                // This allows clients to use custom/future MCP methods
-                let session_read = session.read().await;
-                let allowed_servers = session_read.allowed_servers.clone();
-                drop(session_read);
-
-                if allowed_servers.is_empty() {
-                    return Err(AppError::Mcp(
-                        "No servers available to handle method".to_string(),
-                    ));
-                }
-
-                // Send to first server in the list
-                let server_id = &allowed_servers[0];
-
-                // Ensure server is started
-                if !self.server_manager.is_running(server_id) {
-                    self.server_manager.start_server(server_id).await?;
-                }
-
-                // Send request and return response (including errors)
-                self.server_manager.send_request(server_id, request).await
+                // Return 501 Not Implemented for unknown methods
+                Err(AppError::Mcp(format!(
+                    "Method not implemented: {}",
+                    request.method
+                )))
             }
         }
     }
