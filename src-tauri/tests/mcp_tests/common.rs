@@ -189,9 +189,16 @@ impl SseMockBuilder {
             error: None,
         };
 
+        // Format as SSE (Server-Sent Events): data: {...}\n\n
+        let sse_body = format!("data: {}\n\n", serde_json::to_string(&response).unwrap());
+
         Mock::given(http_method("POST"))
             .and(header("content-type", "application/json"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(response))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(sse_body)
+                    .insert_header("content-type", "text/event-stream"),
+            )
             .mount(&self.server)
             .await;
 
@@ -235,8 +242,15 @@ impl SseMockBuilder {
             }),
         };
 
+        // Format as SSE (Server-Sent Events): data: {...}\n\n
+        let sse_body = format!("data: {}\n\n", serde_json::to_string(&response).unwrap());
+
         Mock::given(http_method("POST"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(response))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(sse_body)
+                    .insert_header("content-type", "text/event-stream"),
+            )
             .mount(&self.server)
             .await;
 

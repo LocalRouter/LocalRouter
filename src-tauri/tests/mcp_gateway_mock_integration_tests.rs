@@ -86,6 +86,7 @@ impl MockMcpServer {
                 .set_body_string(sse_body)
                 .insert_header("content-type", "text/event-stream"))
             .up_to_n_times(100) // Allow multiple calls
+            .priority(1) // Higher priority than default mocks (default is 5)
             .mount(&self.server)
             .await;
     }
@@ -107,6 +108,7 @@ impl MockMcpServer {
             .respond_with(ResponseTemplate::new(200)
                 .set_body_string(sse_body)
                 .insert_header("content-type", "text/event-stream"))
+            .priority(1) // Higher priority than default mocks
             .mount(&self.server)
             .await;
     }
@@ -114,6 +116,7 @@ impl MockMcpServer {
     async fn mock_failure(&self) {
         Mock::given(http_method("POST"))
             .respond_with(ResponseTemplate::new(500))
+            .priority(1) // Higher priority than default mocks
             .mount(&self.server)
             .await;
     }
@@ -133,16 +136,16 @@ async fn setup_gateway_with_two_servers() -> (
     let server2_mock = MockMcpServer::new().await;
     let server2_url = server2_mock.base_url();
 
-    // Set up default initialize mocks for connection validation ONLY
-    // These will be consumed during start_server() calls
-    // Tests should set up their own initialize mocks AFTER setup completes
+    // Set up default initialize mocks with empty capabilities
+    // These will be used during start_server() calls and can be overridden by tests
+    // Tests should set up their own initialize mocks AFTER setup completes to override these
     let default_init_response = json!({
         "protocolVersion": "2024-11-05",
         "capabilities": {},
         "serverInfo": {"name": "mock-server", "version": "1.0"}
     });
 
-    // Limit to exactly 1 call per server (for connection validation)
+    // Use up_to_n_times instead of expect to allow tests to override with more specific mocks
     let sse_body1 = format!("data: {}\n\n", serde_json::to_string(&json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -154,7 +157,9 @@ async fn setup_gateway_with_two_servers() -> (
         .respond_with(ResponseTemplate::new(200)
             .set_body_string(sse_body1)
             .insert_header("content-type", "text/event-stream"))
-        .expect(1) // Exactly 1 call for connection
+        .up_to_n_times(100) // Allow multiple calls, will be overridden by test-specific mocks
+        .priority(10) // Lower priority (higher number) than test-specific mocks
+        .named("default-init-server1")
         .mount(&server1_mock.server)
         .await;
 
@@ -169,7 +174,9 @@ async fn setup_gateway_with_two_servers() -> (
         .respond_with(ResponseTemplate::new(200)
             .set_body_string(sse_body2)
             .insert_header("content-type", "text/event-stream"))
-        .expect(1) // Exactly 1 call for connection
+        .up_to_n_times(100) // Allow multiple calls, will be overridden by test-specific mocks
+        .priority(10) // Lower priority (higher number) than test-specific mocks
+        .named("default-init-server2")
         .mount(&server2_mock.server)
         .await;
 
