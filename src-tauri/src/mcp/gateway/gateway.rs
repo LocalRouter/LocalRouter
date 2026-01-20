@@ -271,10 +271,30 @@ impl McpGateway {
             "tools/call" => self.handle_tools_call(session, request).await,
             "resources/read" => self.handle_resources_read(session, request).await,
             "prompts/get" => self.handle_prompts_get(session, request).await,
-            _ => Err(AppError::Mcp(format!(
-                "Unknown direct method: {}",
-                request.method
-            ))),
+            _ => {
+                // For unknown methods, send to first available server and return response
+                // This allows clients to use custom/future MCP methods
+                let session_read = session.read().await;
+                let allowed_servers = session_read.allowed_servers.clone();
+                drop(session_read);
+
+                if allowed_servers.is_empty() {
+                    return Err(AppError::Mcp(
+                        "No servers available to handle method".to_string(),
+                    ));
+                }
+
+                // Send to first server in the list
+                let server_id = &allowed_servers[0];
+
+                // Ensure server is started
+                if !self.server_manager.is_running(server_id) {
+                    self.server_manager.start_server(server_id).await?;
+                }
+
+                // Send request and return response (including errors)
+                self.server_manager.send_request(server_id, request).await
+            }
         }
     }
 
@@ -657,20 +677,25 @@ impl McpGateway {
             .as_mut()
             .ok_or_else(|| AppError::Mcp("Deferred loading not enabled".to_string()))?;
 
-        // Extract query and parameters
+        // Extract arguments from params
+        // MCP tools/call format: params.arguments contains the tool arguments
         let params = request
             .params
             .as_ref()
             .ok_or_else(|| AppError::Mcp("Missing params".to_string()))?;
 
-        let query = params
+        let arguments = params
+            .get("arguments")
+            .ok_or_else(|| AppError::Mcp("Missing arguments in params".to_string()))?;
+
+        let query = arguments
             .get("query")
             .and_then(|q| q.as_str())
             .ok_or_else(|| AppError::Mcp("Missing query parameter".to_string()))?;
 
-        let search_type = params.get("type").and_then(|t| t.as_str()).unwrap_or("all");
+        let search_type = arguments.get("type").and_then(|t| t.as_str()).unwrap_or("all");
 
-        let limit = params.get("limit").and_then(|l| l.as_u64()).unwrap_or(10) as usize;
+        let limit = arguments.get("limit").and_then(|l| l.as_u64()).unwrap_or(10) as usize;
 
         // Search based on type
         let mut activated_names = Vec::new();
