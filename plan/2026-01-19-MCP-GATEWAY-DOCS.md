@@ -580,24 +580,140 @@ clients:
 - Gateway adds minimal overhead (~30ms)
 - Concurrent request limits enforced
 
+## Notification Callbacks
+
+**Status**: ✅ Implemented (2026-01-19)
+
+The gateway now supports full notification handling from backend MCP servers:
+
+### How It Works
+
+1. **Registration**: When a gateway session is created, notification handlers are registered for each allowed server
+2. **Transport Support**: Both STDIO and SSE transports support notification callbacks
+3. **Cache Invalidation**: Specific notifications trigger cache invalidation:
+   - `notifications/tools/list_changed` → Invalidates tools cache
+   - `notifications/resources/list_changed` → Invalidates resources cache
+   - `notifications/prompts/list_changed` → Invalidates prompts cache
+4. **Other Notifications**: Logged but not acted upon (can be extended)
+
+### Implementation Details
+
+**McpServerManager**:
+```rust
+pub type NotificationCallback = Arc<dyn Fn(String, JsonRpcNotification) + Send + Sync>;
+
+pub fn on_notification(&self, server_id: &str, callback: NotificationCallback);
+```
+
+**Gateway Registration**:
+```rust
+self.server_manager.on_notification(
+    server_id,
+    Arc::new(move |_, notification| {
+        match notification.method.as_str() {
+            "notifications/tools/list_changed" => {
+                session.cached_tools = None; // Invalidate cache
+            }
+            // ... other notifications
+        }
+    }),
+);
+```
+
+### Benefits
+
+- **Automatic Cache Invalidation**: Tools/resources/prompts caches are automatically invalidated when servers report changes
+- **No Polling Required**: Real-time notification handling
+- **Per-Session Isolation**: Each client session has independent notification handlers
+
+## API Endpoints
+
+LocalRouter now provides three ways to access MCP servers:
+
+### 1. Unified Gateway (Recommended)
+
+**Endpoint**: `POST /mcp`
+
+**Description**: Single endpoint aggregating all authorized MCP servers
+
+**Authentication**: Bearer token (client identified via auth)
+
+**Example**:
+```bash
+curl -X POST http://localhost:3625/mcp \
+  -H "Authorization: Bearer <client_token>" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
+```
+
+**Features**:
+- ✅ Namespace-based tool routing
+- ✅ Deferred loading support
+- ✅ Response caching
+- ✅ Notification handling
+- ✅ Partial failure handling
+
+### 2. Individual Server Access
+
+**Endpoint**: `POST /mcp/servers/{server_id}`
+
+**Description**: Direct access to a specific MCP server (auth-based routing)
+
+**Authentication**: Bearer token (client identified via auth)
+
+**Example**:
+```bash
+curl -X POST http://localhost:3625/mcp/servers/filesystem \
+  -H "Authorization: Bearer <client_token>" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
+```
+
+**Features**:
+- ✅ Direct server access
+- ✅ No namespace prefix in responses
+- ✅ Same auth and access control as unified gateway
+- ⚠️ No aggregation across servers
+
+**Use Cases**:
+- Testing individual servers
+- Debugging server-specific issues
+- Applications that manage server routing themselves
+
+### 3. Legacy Endpoint (Deprecated)
+
+**Endpoint**: `POST /mcp/{client_id}/{server_id}`
+
+**Description**: Original endpoint with client_id in URL
+
+**Status**: ⚠️ Deprecated - Use unified gateway or individual server access instead
+
+**Note**: Maintained for backward compatibility but will be removed in future versions.
+
+## Endpoint Comparison
+
+| Feature | Unified Gateway | Individual Server | Legacy |
+|---------|----------------|-------------------|--------|
+| Endpoint | `/mcp` | `/mcp/servers/{id}` | `/mcp/{client}/{id}` |
+| Client ID | From auth token | From auth token | In URL |
+| Multi-server | ✅ Yes | ❌ No | ❌ No |
+| Namespacing | ✅ Yes | ❌ No | ❌ No |
+| Deferred Loading | ✅ Yes | ❌ No | ❌ No |
+| Caching | ✅ Yes | ✅ Yes | ✅ Yes |
+| Notifications | ✅ Yes | ✅ Yes | ✅ Yes |
+| Recommended | ✅ Primary | ⚠️ Special cases | ❌ Migrate away |
+
 ## Future Enhancements
 
 ### Not in Current Release
 
 1. **Streaming Responses**: For large tool outputs
 2. **Advanced Search**: Semantic search using embeddings
-3. **WebSocket Support**: Bidirectional notifications
+3. **WebSocket Support**: Bidirectional real-time updates to clients
 4. **Cross-Server Resources**: Compose resources from multiple servers
 5. **Server Health Monitoring**: Track availability over time
 6. **Per-Server Rate Limits**: Independent limits per backend
-
-### Notification Callbacks (Planned)
-
-The gateway includes hooks for notification proxying but the backend MCP server manager doesn't yet expose notification callbacks. When implemented:
-
-- `notifications/tools/list_changed` → Invalidate tools cache
-- `notifications/resources/list_changed` → Invalidate resources cache
-- Forward other notifications to clients
+7. **Notification Forwarding**: Forward server notifications to connected clients
 
 ## Additional Resources
 
@@ -615,6 +731,17 @@ For issues, questions, or feature requests:
 ---
 
 **Version History**:
+- 1.1.0 (2026-01-19): Added notification callbacks and individual server endpoints
+  - ✅ Full notification callback support (STDIO + SSE transports)
+  - ✅ Automatic cache invalidation on server notifications
+  - ✅ New individual server endpoint: `POST /mcp/servers/{server_id}`
+  - ✅ Auth-based client identification (no client_id in URL)
+  - ⚠️ Deprecated legacy endpoint: `POST /mcp/{client_id}/{server_id}`
 - 1.0.0 (2026-01-19): Initial release with full feature set
+  - ✅ Unified gateway endpoint: `POST /mcp`
+  - ✅ Double underscore namespacing
+  - ✅ Deferred loading with 95%+ token savings
+  - ✅ Response caching and retry logic
+  - ✅ Comprehensive testing and documentation
 
 **License**: AGPL-3.0-or-later

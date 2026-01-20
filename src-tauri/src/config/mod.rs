@@ -20,7 +20,7 @@ mod storage;
 mod validation;
 
 pub use storage::{load_config, save_config};
-pub use crate::router::rate_limit::RateLimitType;
+// RateLimitType is now defined locally in this module (see line 610)
 
 const CONFIG_VERSION: u32 = 2;
 
@@ -955,6 +955,122 @@ impl ConfigManager {
     pub fn config_path(&self) -> &PathBuf {
         &self.config_path
     }
+
+    /// Ensure default strategy exists and assign clients without strategy
+    pub fn ensure_default_strategy(&self) -> AppResult<()> {
+        self.update(|cfg| {
+            // Ensure default strategy exists
+            if !cfg.strategies.iter().any(|s| s.id == "default") {
+                cfg.strategies.push(Strategy {
+                    id: "default".to_string(),
+                    name: "Default Strategy".to_string(),
+                    parent: None,
+                    allowed_models: AvailableModelsSelection::all(),
+                    auto_config: None,
+                    rate_limits: vec![],
+                });
+                info!("Created default strategy");
+            }
+
+            // Assign clients without strategy to default
+            for client in &mut cfg.clients {
+                if client.strategy_id.is_empty() {
+                    client.strategy_id = "default".to_string();
+                    info!("Assigned client '{}' to default strategy", client.name);
+                }
+            }
+        })
+    }
+
+    /// Create a client with an auto-created strategy
+    pub fn create_client_with_strategy(&self, name: String) -> AppResult<(Client, Strategy)> {
+        let client_id = Uuid::new_v4().to_string();
+        let strategy = Strategy::new_for_client(client_id.clone(), name.clone());
+
+        let client = Client {
+            id: client_id,
+            name,
+            enabled: true,
+            strategy_id: strategy.id.clone(),
+            allowed_llm_providers: Vec::new(),
+            allowed_mcp_servers: Vec::new(),
+            mcp_deferred_loading: false,
+            created_at: Utc::now(),
+            last_used: None,
+            #[allow(deprecated)]
+            routing_config: None,
+        };
+
+        self.update(|cfg| {
+            cfg.clients.push(client.clone());
+            cfg.strategies.push(strategy.clone());
+        })?;
+
+        Ok((client, strategy))
+    }
+
+    /// Delete a client and cascade delete its owned strategies
+    pub fn delete_client(&self, client_id: &str) -> AppResult<()> {
+        self.update(|cfg| {
+            // Remove client
+            cfg.clients.retain(|c| c.id != client_id);
+
+            // Cascade delete owned strategies
+            cfg.strategies.retain(|s| {
+                s.parent.as_ref() != Some(&client_id.to_string())
+            });
+        })?;
+
+        Ok(())
+    }
+
+    /// Assign a client to a different strategy (clears parent if selecting non-owned strategy)
+    pub fn assign_client_strategy(&self, client_id: &str, new_strategy_id: &str) -> AppResult<()> {
+        self.update(|cfg| {
+            let client = cfg.clients.iter_mut()
+                .find(|c| c.id == client_id)
+                .ok_or_else(|| AppError::Config("Client not found".into()))?;
+
+            let old_strategy_id = client.strategy_id.clone();
+
+            // If selecting a different strategy (not own), clear parent from that strategy
+            if old_strategy_id != new_strategy_id {
+                if let Some(new_strategy) = cfg.strategies.iter_mut()
+                    .find(|s| s.id == new_strategy_id) {
+                    // Clear parent if it's not the current client
+                    if new_strategy.parent.as_ref() != Some(&client_id.to_string()) {
+                        new_strategy.parent = None;
+                    }
+                }
+            }
+
+            client.strategy_id = new_strategy_id.to_string();
+            Ok(())
+        })
+    }
+
+    /// Rename a strategy (clears parent if changing from default name)
+    pub fn rename_strategy(&self, strategy_id: &str, new_name: &str) -> AppResult<()> {
+        self.update(|cfg| {
+            let strategy = cfg.strategies.iter_mut()
+                .find(|s| s.id == strategy_id)
+                .ok_or_else(|| AppError::Config("Strategy not found".into()))?;
+
+            // Check if renaming from default pattern
+            if let Some(parent_id) = &strategy.parent {
+                if let Some(client) = cfg.clients.iter().find(|c| c.id == *parent_id) {
+                    let default_name = format!("{}'s strategy", client.name);
+                    if strategy.name == default_name && new_name != default_name {
+                        // Clear parent when customizing name
+                        strategy.parent = None;
+                    }
+                }
+            }
+
+            strategy.name = new_name.to_string();
+            Ok(())
+        })
+    }
 }
 
 // Default value functions for serde
@@ -968,6 +1084,10 @@ fn default_true() -> bool {
 
 fn default_log_retention() -> u32 {
     30
+}
+
+fn default_strategy_id() -> String {
+    "default".to_string()
 }
 
 impl Default for AppConfig {
@@ -984,6 +1104,16 @@ impl Default for AppConfig {
             oauth_clients: Vec::new(),
             mcp_servers: Vec::new(),
             clients: Vec::new(),
+            strategies: vec![
+                Strategy {
+                    id: "default".to_string(),
+                    name: "Default Strategy".to_string(),
+                    parent: None,
+                    allowed_models: AvailableModelsSelection::all(),
+                    auto_config: None,
+                    rate_limits: vec![],
+                }
+            ],
             pricing_overrides: std::collections::HashMap::new(),
         }
     }
@@ -1213,6 +1343,8 @@ impl Client {
             mcp_deferred_loading: false,
             created_at: Utc::now(),
             last_used: None,
+            strategy_id: "default".to_string(),
+            #[allow(deprecated)]
             routing_config: None,
         }
     }

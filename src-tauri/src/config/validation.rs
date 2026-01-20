@@ -17,8 +17,14 @@ pub fn validate_config(config: &AppConfig) -> AppResult<()> {
     // Validate providers
     validate_providers(&config.providers)?;
 
+    // Validate strategies
+    validate_strategies(config)?;
+
     // Validate cross-references
     validate_cross_references(config)?;
+
+    // Validate client strategy references
+    validate_client_strategy_refs(config)?;
 
     Ok(())
 }
@@ -132,6 +138,90 @@ fn validate_providers(providers: &[ProviderConfig]) -> AppResult<()> {
         }
     }
 
+    Ok(())
+}
+
+/// Validate strategies
+fn validate_strategies(config: &AppConfig) -> AppResult<()> {
+    // Check for duplicate strategy IDs
+    let mut ids = HashSet::new();
+    for strategy in &config.strategies {
+        if !ids.insert(&strategy.id) {
+            return Err(AppError::Config(format!(
+                "Duplicate strategy ID: {}",
+                strategy.id
+            )));
+        }
+
+        // Validate ID is not empty
+        if strategy.id.is_empty() {
+            return Err(AppError::Config("Strategy ID cannot be empty".to_string()));
+        }
+
+        // Validate name is not empty
+        if strategy.name.is_empty() {
+            return Err(AppError::Config("Strategy name cannot be empty".to_string()));
+        }
+
+        // Check parent references point to existing clients
+        if let Some(parent_id) = &strategy.parent {
+            if !config.clients.iter().any(|c| c.id == *parent_id) {
+                // Auto-clear orphaned parent references instead of failing
+                // This is handled during load, but we log a warning
+                tracing::warn!(
+                    "Strategy '{}' references non-existent parent client '{}' - will be auto-cleared",
+                    strategy.name, parent_id
+                );
+            }
+        }
+
+        // Validate rate limits
+        for limit in &strategy.rate_limits {
+            if limit.value <= 0.0 {
+                return Err(AppError::Config(format!(
+                    "Strategy '{}' has invalid rate limit value: {}",
+                    strategy.name, limit.value
+                )));
+            }
+        }
+
+        // Validate auto config if present
+        if let Some(auto_config) = &strategy.auto_config {
+            // Allow empty prioritized_models - router will handle error at runtime
+
+            // Check no overlap between prioritized and available
+            for model in &auto_config.prioritized_models {
+                if auto_config.available_models.contains(model) {
+                    return Err(AppError::Config(format!(
+                        "Strategy '{}' has model {:?} in both prioritized and available lists",
+                        strategy.name, model
+                    )));
+                }
+            }
+        }
+    }
+
+    // Ensure "default" strategy exists
+    if !config.strategies.iter().any(|s| s.id == "default") {
+        return Err(AppError::Config(
+            "Default strategy must exist".to_string()
+        ));
+    }
+
+    Ok(())
+}
+
+/// Validate client strategy references
+fn validate_client_strategy_refs(config: &AppConfig) -> AppResult<()> {
+    // Check all client.strategy_id references exist
+    for client in &config.clients {
+        if !config.strategies.iter().any(|s| s.id == client.strategy_id) {
+            return Err(AppError::Config(format!(
+                "Client '{}' references non-existent strategy '{}'",
+                client.name, client.strategy_id
+            )));
+        }
+    }
     Ok(())
 }
 

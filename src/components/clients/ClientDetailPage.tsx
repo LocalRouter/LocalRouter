@@ -55,6 +55,7 @@ interface Client {
   enabled: boolean
   allowed_llm_providers: string[]
   allowed_mcp_servers: string[]
+  mcp_deferred_loading: boolean
   created_at: string
   last_used: string | null
 }
@@ -64,6 +65,22 @@ interface McpServer {
   name: string
   enabled: boolean
   url?: string
+}
+
+interface ServerTokenStats {
+  server_id: string
+  tool_count: number
+  resource_count: number
+  prompt_count: number
+  estimated_tokens: number
+}
+
+interface McpTokenStats {
+  server_stats: ServerTokenStats[]
+  total_tokens: number
+  deferred_tokens: number
+  savings_tokens: number
+  savings_percent: number
 }
 
 export default function ClientDetailPage({ clientId, initialTab, initialRoutingMode, onBack }: ClientDetailPageProps) {
@@ -91,12 +108,22 @@ export default function ClientDetailPage({ clientId, initialTab, initialRoutingM
 
   // MCP tab state
   const [selectedMcpAuthType, setSelectedMcpAuthType] = useState<'bearer' | 'stdio' | 'oauth'>('bearer')
+  const [tokenStats, setTokenStats] = useState<McpTokenStats | null>(null)
+  const [loadingTokenStats, setLoadingTokenStats] = useState(false)
+  const [deferredLoading, setDeferredLoading] = useState(false)
 
   useEffect(() => {
     loadClientData()
     loadMcpServers()
     loadModels()
   }, [clientId])
+
+  // Load token stats when MCP tab is active
+  useEffect(() => {
+    if (activeTab === 'mcp' && client && client.allowed_mcp_servers.length > 0) {
+      loadTokenStats()
+    }
+  }, [activeTab, client?.allowed_mcp_servers.length])
 
   // Update active tab when prop changes (e.g., from system tray)
   useEffect(() => {
@@ -131,6 +158,7 @@ export default function ClientDetailPage({ clientId, initialTab, initialRoutingM
         setClient(clientData)
         setName(clientData.name)
         setEnabled(clientData.enabled)
+        setDeferredLoading(clientData.mcp_deferred_loading || false)
       }
     } catch (error) {
       console.error('Failed to load client data:', error)
@@ -154,6 +182,42 @@ export default function ClientDetailPage({ clientId, initialTab, initialRoutingM
       setModels(modelList)
     } catch (error) {
       console.error('Failed to load models:', error)
+    }
+  }
+
+  const loadTokenStats = async () => {
+    if (!client) return
+
+    setLoadingTokenStats(true)
+    try {
+      const stats = await invoke<McpTokenStats>('get_mcp_token_stats', {
+        clientId: client.id
+      })
+      setTokenStats(stats)
+    } catch (error) {
+      console.error('Failed to load token stats:', error)
+    } finally {
+      setLoadingTokenStats(false)
+    }
+  }
+
+  const handleToggleDeferredLoading = async () => {
+    if (!client) return
+
+    const newValue = !deferredLoading
+    setDeferredLoading(newValue)
+
+    try {
+      await invoke('toggle_client_deferred_loading', {
+        clientId: client.id,
+        enabled: newValue
+      })
+      console.log('Deferred loading toggled:', newValue)
+    } catch (error) {
+      console.error('Failed to toggle deferred loading:', error)
+      alert(`Error toggling deferred loading: ${error}`)
+      // Revert on error
+      setDeferredLoading(!newValue)
     }
   }
 
@@ -604,6 +668,124 @@ export default function ClientDetailPage({ clientId, initialTab, initialRoutingM
       label: 'MCP',
       content: (
         <div className="space-y-6">
+          {/* Token Statistics - Show First */}
+          {client.allowed_mcp_servers.length > 0 && (
+            <Card>
+              <div className="p-6 space-y-4">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-lg font-semibold">Token Consumption Statistics</h3>
+                  <Button
+                    variant="secondary"
+                    onClick={loadTokenStats}
+                    disabled={loadingTokenStats}
+                  >
+                    {loadingTokenStats ? 'Loading...' : 'Refresh Stats'}
+                  </Button>
+                </div>
+
+                {loadingTokenStats && (
+                  <div className="text-center py-8 text-gray-400">
+                    Analyzing MCP servers...
+                  </div>
+                )}
+
+                {!loadingTokenStats && tokenStats && (
+                  <>
+                    <div className="bg-gray-800 rounded-lg overflow-hidden">
+                      <table className="w-full">
+                        <thead className="bg-gray-700">
+                          <tr>
+                            <th className="px-4 py-3 text-left text-sm font-medium">Server</th>
+                            <th className="px-4 py-3 text-right text-sm font-medium">Tools</th>
+                            <th className="px-4 py-3 text-right text-sm font-medium">Resources</th>
+                            <th className="px-4 py-3 text-right text-sm font-medium">Prompts</th>
+                            <th className="px-4 py-3 text-right text-sm font-medium">Est. Tokens</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-700">
+                          {tokenStats.server_stats.map((stat) => (
+                            <tr key={stat.server_id} className="hover:bg-gray-750">
+                              <td className="px-4 py-3 text-sm font-medium">{stat.server_id}</td>
+                              <td className="px-4 py-3 text-sm text-right text-gray-300">{stat.tool_count}</td>
+                              <td className="px-4 py-3 text-sm text-right text-gray-300">{stat.resource_count}</td>
+                              <td className="px-4 py-3 text-sm text-right text-gray-300">{stat.prompt_count}</td>
+                              <td className="px-4 py-3 text-sm text-right font-mono text-gray-300">
+                                {stat.estimated_tokens.toLocaleString()}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    <div className="bg-blue-900/20 border border-blue-700 rounded-lg p-4">
+                      <h4 className="font-medium text-blue-300 mb-3">Token Consumption Summary</h4>
+                      <div className="grid grid-cols-2 gap-4 text-sm">
+                        <div>
+                          <p className="text-gray-400">Without Deferred Loading</p>
+                          <p className="text-2xl font-mono font-bold text-gray-100">
+                            {tokenStats.total_tokens.toLocaleString()}
+                          </p>
+                          <p className="text-xs text-gray-500">tokens per request</p>
+                        </div>
+                        <div>
+                          <p className="text-gray-400">With Deferred Loading</p>
+                          <p className="text-2xl font-mono font-bold text-green-400">
+                            {tokenStats.deferred_tokens.toLocaleString()}
+                          </p>
+                          <p className="text-xs text-gray-500">tokens per request (search tool only)</p>
+                        </div>
+                        <div className="col-span-2">
+                          <p className="text-gray-400">Potential Savings</p>
+                          <p className="text-3xl font-mono font-bold text-green-400">
+                            {tokenStats.savings_tokens.toLocaleString()} tokens ({tokenStats.savings_percent.toFixed(1)}%)
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="bg-gray-800 rounded-lg p-4">
+                      <div className="flex items-start justify-between">
+                        <div className="flex-1">
+                          <label className="flex items-center gap-3 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={deferredLoading}
+                              onChange={handleToggleDeferredLoading}
+                              className="w-5 h-5"
+                            />
+                            <div>
+                              <span className="font-medium text-lg">Enable Deferred Loading</span>
+                              <p className="text-sm text-gray-400 mt-1">
+                                Only load tools on demand using a search interface. Reduces initial token consumption by {tokenStats.savings_percent.toFixed(0)}%,
+                                saving ~{tokenStats.savings_tokens.toLocaleString()} tokens per request.
+                              </p>
+                            </div>
+                          </label>
+                        </div>
+                      </div>
+
+                      {deferredLoading && (
+                        <div className="mt-3 p-3 bg-green-900/20 border border-green-700 rounded">
+                          <p className="text-sm text-green-300">
+                            ✓ Deferred loading is enabled. Tools will be loaded on demand via search.
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  </>
+                )}
+
+                {!loadingTokenStats && !tokenStats && (
+                  <div className="text-center py-8 text-gray-400">
+                    <p className="mb-2">No statistics available</p>
+                    <p className="text-sm">Click "Refresh Stats" to analyze your MCP servers</p>
+                  </div>
+                )}
+              </div>
+            </Card>
+          )}
+
           {/* Authentication Instructions - Show First */}
           <Card>
             <div className="p-6 space-y-4">

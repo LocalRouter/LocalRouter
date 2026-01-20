@@ -485,6 +485,7 @@ async fn main() -> anyhow::Result<()> {
             ui::commands::delete_client,
             ui::commands::update_client_name,
             ui::commands::toggle_client_enabled,
+            ui::commands::toggle_client_deferred_loading,
             ui::commands::add_client_llm_provider,
             ui::commands::remove_client_llm_provider,
             ui::commands::add_client_mcp_server,
@@ -495,6 +496,14 @@ async fn main() -> anyhow::Result<()> {
             ui::commands::update_client_available_models,
             ui::commands::update_client_prioritized_models,
             ui::commands::get_client_value,
+            // Strategy management commands
+            ui::commands::list_strategies,
+            ui::commands::get_strategy,
+            ui::commands::create_strategy,
+            ui::commands::update_strategy,
+            ui::commands::delete_strategy,
+            ui::commands::get_clients_using_strategy,
+            ui::commands::assign_client_strategy,
             // OpenAPI documentation commands
             ui::commands::get_openapi_spec,
             // Internal testing commands

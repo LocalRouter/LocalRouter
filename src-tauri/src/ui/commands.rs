@@ -2523,6 +2523,48 @@ pub async fn toggle_client_enabled(
     Ok(())
 }
 
+/// Toggle MCP deferred loading for a client
+///
+/// When enabled, only a search tool is initially visible in the MCP gateway.
+/// Tools are activated on-demand through search queries, dramatically reducing
+/// token consumption for large catalogs.
+///
+/// # Arguments
+/// * `client_id` - Client ID
+/// * `enabled` - Whether to enable deferred loading
+#[tauri::command]
+pub async fn toggle_client_deferred_loading(
+    client_id: String,
+    enabled: bool,
+    config_manager: State<'_, ConfigManager>,
+) -> Result<(), String> {
+    tracing::info!(
+        "Setting client {} MCP deferred loading: {}",
+        client_id,
+        enabled
+    );
+
+    // Update in config
+    let mut found = false;
+    config_manager
+        .update(|cfg| {
+            if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
+                client.mcp_deferred_loading = enabled;
+                found = true;
+            }
+        })
+        .map_err(|e| e.to_string())?;
+
+    if !found {
+        return Err(format!("Client not found: {}", client_id));
+    }
+
+    // Persist to disk
+    config_manager.save().await.map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
 /// Add an LLM provider to a client's allowed list
 #[tauri::command]
 pub async fn add_client_llm_provider(
@@ -2925,6 +2967,229 @@ pub async fn update_client_prioritized_models(
     }
 
     tracing::info!("Prioritized models updated for client {}", client_id);
+
+    Ok(())
+}
+
+// ============================================================================
+// Strategy Management Commands
+// ============================================================================
+
+/// List all routing strategies
+#[tauri::command]
+pub async fn list_strategies(
+    config_manager: State<'_, ConfigManager>,
+) -> Result<Vec<crate::config::Strategy>, String> {
+    let config = config_manager.get();
+    Ok(config.strategies)
+}
+
+/// Get a specific strategy by ID
+#[tauri::command]
+pub async fn get_strategy(
+    strategy_id: String,
+    config_manager: State<'_, ConfigManager>,
+) -> Result<crate::config::Strategy, String> {
+    let config = config_manager.get();
+    config
+        .strategies
+        .iter()
+        .find(|s| s.id == strategy_id)
+        .cloned()
+        .ok_or_else(|| format!("Strategy not found: {}", strategy_id))
+}
+
+/// Create a new routing strategy
+#[tauri::command]
+pub async fn create_strategy(
+    name: String,
+    parent: Option<String>,
+    config_manager: State<'_, ConfigManager>,
+    app: tauri::AppHandle,
+) -> Result<crate::config::Strategy, String> {
+    tracing::info!("Creating strategy: {}", name);
+
+    let strategy = if let Some(parent_id) = parent {
+        // Validate parent exists
+        let config = config_manager.get();
+        let client = config
+            .clients
+            .iter()
+            .find(|c| c.id == parent_id)
+            .ok_or_else(|| format!("Parent client not found: {}", parent_id))?;
+
+        crate::config::Strategy::new_for_client(parent_id, client.name.clone())
+    } else {
+        crate::config::Strategy::new(name)
+    };
+
+    let strategy_clone = strategy.clone();
+
+    config_manager
+        .update(|cfg| {
+            cfg.strategies.push(strategy);
+        })
+        .map_err(|e| e.to_string())?;
+
+    // Persist to disk
+    config_manager.save().await.map_err(|e| e.to_string())?;
+
+    // Rebuild tray menu
+    if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
+        tracing::error!("Failed to rebuild tray menu: {}", e);
+    }
+
+    tracing::info!("Strategy created: {}", strategy_clone.id);
+
+    Ok(strategy_clone)
+}
+
+/// Update a routing strategy
+#[tauri::command]
+pub async fn update_strategy(
+    strategy_id: String,
+    name: Option<String>,
+    allowed_models: Option<crate::config::AvailableModelsSelection>,
+    auto_config: Option<crate::config::AutoModelConfig>,
+    rate_limits: Option<Vec<crate::config::StrategyRateLimit>>,
+    config_manager: State<'_, ConfigManager>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    tracing::info!("Updating strategy: {}", strategy_id);
+
+    let mut found = false;
+    config_manager
+        .update(|cfg| {
+            if let Some(strategy) = cfg.strategies.iter_mut().find(|s| s.id == strategy_id) {
+                if let Some(new_name) = name {
+                    strategy.name = new_name;
+                }
+                if let Some(models) = allowed_models {
+                    strategy.allowed_models = models;
+                }
+                if let Some(config) = auto_config {
+                    strategy.auto_config = Some(config);
+                }
+                if let Some(limits) = rate_limits {
+                    strategy.rate_limits = limits;
+                }
+                found = true;
+            }
+        })
+        .map_err(|e| e.to_string())?;
+
+    if !found {
+        return Err(format!("Strategy not found: {}", strategy_id));
+    }
+
+    // Persist to disk
+    config_manager.save().await.map_err(|e| e.to_string())?;
+
+    // Rebuild tray menu
+    if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
+        tracing::error!("Failed to rebuild tray menu: {}", e);
+    }
+
+    tracing::info!("Strategy updated: {}", strategy_id);
+
+    Ok(())
+}
+
+/// Delete a routing strategy
+#[tauri::command]
+pub async fn delete_strategy(
+    strategy_id: String,
+    config_manager: State<'_, ConfigManager>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    tracing::info!("Deleting strategy: {}", strategy_id);
+
+    // Don't allow deleting the default strategy
+    if strategy_id == "default" {
+        return Err("Cannot delete the default strategy".to_string());
+    }
+
+    // Check if any clients are using this strategy
+    let config = config_manager.get();
+    let clients_using = config
+        .clients
+        .iter()
+        .filter(|c| c.strategy_id == strategy_id)
+        .count();
+
+    if clients_using > 0 {
+        return Err(format!(
+            "Cannot delete strategy: {} client(s) are using it",
+            clients_using
+        ));
+    }
+
+    // Delete the strategy
+    config_manager
+        .update(|cfg| {
+            cfg.strategies.retain(|s| s.id != strategy_id);
+        })
+        .map_err(|e| e.to_string())?;
+
+    // Persist to disk
+    config_manager.save().await.map_err(|e| e.to_string())?;
+
+    // Rebuild tray menu
+    if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
+        tracing::error!("Failed to rebuild tray menu: {}", e);
+    }
+
+    tracing::info!("Strategy deleted: {}", strategy_id);
+
+    Ok(())
+}
+
+/// Get all clients using a specific strategy
+#[tauri::command]
+pub async fn get_clients_using_strategy(
+    strategy_id: String,
+    config_manager: State<'_, ConfigManager>,
+) -> Result<Vec<crate::config::Client>, String> {
+    let config = config_manager.get();
+    Ok(config
+        .clients
+        .iter()
+        .filter(|c| c.strategy_id == strategy_id)
+        .cloned()
+        .collect())
+}
+
+/// Assign a client to a different strategy
+#[tauri::command]
+pub async fn assign_client_strategy(
+    client_id: String,
+    strategy_id: String,
+    config_manager: State<'_, ConfigManager>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    tracing::info!(
+        "Assigning client {} to strategy {}",
+        client_id,
+        strategy_id
+    );
+
+    config_manager
+        .assign_client_strategy(&client_id, &strategy_id)
+        .map_err(|e| e.to_string())?;
+
+    // Persist to disk
+    config_manager.save().await.map_err(|e| e.to_string())?;
+
+    // Rebuild tray menu
+    if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
+        tracing::error!("Failed to rebuild tray menu: {}", e);
+    }
+
+    tracing::info!(
+        "Client {} assigned to strategy {}",
+        client_id,
+        strategy_id
+    );
 
     Ok(())
 }
