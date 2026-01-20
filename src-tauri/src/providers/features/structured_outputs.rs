@@ -31,9 +31,9 @@
 use jsonschema::{Draft, JSONSchema};
 use serde_json::{json, Value};
 
-use crate::utils::errors::{AppError, AppResult};
 use super::{FeatureAdapter, FeatureData, FeatureParams};
 use crate::providers::{CompletionRequest, CompletionResponse};
+use crate::utils::errors::{AppError, AppResult};
 
 /// Maximum schema size in bytes (1MB)
 const MAX_SCHEMA_SIZE: usize = 1_048_576;
@@ -119,9 +119,7 @@ impl StructuredOutputsAdapter {
 
         // Validate response against schema
         if let Err(errors) = compiled_schema.validate(&response_json) {
-            let error_messages: Vec<String> = errors
-                .map(|e| format!("- {}", e))
-                .collect();
+            let error_messages: Vec<String> = errors.map(|e| format!("- {}", e)).collect();
 
             return Err(AppError::Provider(format!(
                 "Response does not match schema:\n{}",
@@ -155,7 +153,11 @@ impl FeatureAdapter for StructuredOutputsAdapter {
         Ok(())
     }
 
-    fn adapt_request(&self, request: &mut CompletionRequest, params: &FeatureParams) -> AppResult<()> {
+    fn adapt_request(
+        &self,
+        request: &mut CompletionRequest,
+        params: &FeatureParams,
+    ) -> AppResult<()> {
         let schema = Self::get_schema(params)?;
         let provider = Self::detect_provider(&request.model);
 
@@ -221,7 +223,7 @@ impl FeatureAdapter for StructuredOutputsAdapter {
                 "validated": true,
                 "schema_size": serde_json::to_string(schema).unwrap_or_default().len(),
                 "choices_validated": response.choices.len()
-            })
+            }),
         )))
     }
 
@@ -273,7 +275,10 @@ mod tests {
 
         let result = adapter.validate_params(&params);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("schema parameter is required"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("schema parameter is required"));
     }
 
     #[test]
@@ -290,7 +295,10 @@ mod tests {
 
         let result = adapter.validate_params(&params);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Invalid JSON schema"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Invalid JSON schema"));
     }
 
     #[test]
@@ -407,7 +415,10 @@ mod tests {
 
         let result = StructuredOutputsAdapter::validate_response(content, &schema);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("does not match schema"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("does not match schema"));
     }
 
     #[test]
@@ -424,7 +435,10 @@ mod tests {
 
         let result = StructuredOutputsAdapter::validate_response(content, &schema);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("does not match schema"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("does not match schema"));
     }
 
     #[test]
@@ -532,17 +546,35 @@ mod tests {
 
         let result = adapter.adapt_response(&mut response);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("does not match schema"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("does not match schema"));
     }
 
     #[test]
     fn test_detect_provider() {
         assert_eq!(StructuredOutputsAdapter::detect_provider("gpt-4"), "openai");
-        assert_eq!(StructuredOutputsAdapter::detect_provider("gpt-3.5-turbo"), "openai");
-        assert_eq!(StructuredOutputsAdapter::detect_provider("o1-preview"), "openai");
-        assert_eq!(StructuredOutputsAdapter::detect_provider("claude-3-5-sonnet-20241022"), "anthropic");
-        assert_eq!(StructuredOutputsAdapter::detect_provider("claude-opus-4-5"), "anthropic");
-        assert_eq!(StructuredOutputsAdapter::detect_provider("llama-3"), "unknown");
+        assert_eq!(
+            StructuredOutputsAdapter::detect_provider("gpt-3.5-turbo"),
+            "openai"
+        );
+        assert_eq!(
+            StructuredOutputsAdapter::detect_provider("o1-preview"),
+            "openai"
+        );
+        assert_eq!(
+            StructuredOutputsAdapter::detect_provider("claude-3-5-sonnet-20241022"),
+            "anthropic"
+        );
+        assert_eq!(
+            StructuredOutputsAdapter::detect_provider("claude-opus-4-5"),
+            "anthropic"
+        );
+        assert_eq!(
+            StructuredOutputsAdapter::detect_provider("llama-3"),
+            "unknown"
+        );
     }
 
     #[test]

@@ -8,11 +8,11 @@
 
 #![allow(dead_code)]
 
+use chrono::{DateTime, Utc};
+use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
-use chrono::{DateTime, Utc};
-use parking_lot::RwLock;
 
 use crate::utils::errors::{AppError, AppResult};
 

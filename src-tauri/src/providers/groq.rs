@@ -52,8 +52,9 @@ impl GroqProvider {
     /// Create a new Groq provider from stored API key
     pub fn from_stored_key(provider_name: Option<&str>) -> AppResult<Self> {
         let name = provider_name.unwrap_or("groq");
-        let api_key = super::key_storage::get_provider_key(name)?
-            .ok_or_else(|| AppError::Provider(format!("No API key found for provider '{}'", name)))?;
+        let api_key = super::key_storage::get_provider_key(name)?.ok_or_else(|| {
+            AppError::Provider(format!("No API key found for provider '{}'", name))
+        })?;
         Self::new(api_key)
     }
 
@@ -389,7 +390,10 @@ mod tests {
     #[tokio::test]
     async fn test_pricing() {
         let provider = GroqProvider::new("test_key".to_string()).unwrap();
-        let pricing = provider.get_pricing("llama-3.3-70b-versatile").await.unwrap();
+        let pricing = provider
+            .get_pricing("llama-3.3-70b-versatile")
+            .await
+            .unwrap();
         assert!(pricing.input_cost_per_1k > 0.0);
     }
 }

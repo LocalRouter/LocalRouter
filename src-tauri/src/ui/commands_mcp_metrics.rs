@@ -21,9 +21,16 @@ pub async fn get_global_mcp_metrics(
         .ok_or_else(|| "Server is not running".to_string())?;
 
     let (start, end) = time_range.get_range();
-    let data_points = app_state.metrics_collector.mcp().get_global_range(start, end);
+    let data_points = app_state
+        .metrics_collector
+        .mcp()
+        .get_global_range(start, end);
 
-    Ok(McpGraphGenerator::generate(&data_points, metric_type, Some("Global MCP")))
+    Ok(McpGraphGenerator::generate(
+        &data_points,
+        metric_type,
+        Some("Global MCP"),
+    ))
 }
 
 /// Get client-specific MCP metrics
@@ -39,15 +46,23 @@ pub async fn get_client_mcp_metrics(
         .ok_or_else(|| "Server is not running".to_string())?;
 
     let (start, end) = time_range.get_range();
-    let data_points = app_state.metrics_collector.mcp().get_client_range(&client_id, start, end);
+    let data_points = app_state
+        .metrics_collector
+        .mcp()
+        .get_client_range(&client_id, start, end);
 
     // Get client name from client manager (if available) instead of using client_id
-    let label = app_state.client_manager
+    let label = app_state
+        .client_manager
         .get_client(&client_id)
         .map(|c| c.name)
         .unwrap_or_else(|| "Client".to_string());
 
-    Ok(McpGraphGenerator::generate(&data_points, metric_type, Some(&label)))
+    Ok(McpGraphGenerator::generate(
+        &data_points,
+        metric_type,
+        Some(&label),
+    ))
 }
 
 /// Get MCP server-specific metrics
@@ -63,15 +78,23 @@ pub async fn get_mcp_server_metrics(
         .ok_or_else(|| "Server is not running".to_string())?;
 
     let (start, end) = time_range.get_range();
-    let data_points = app_state.metrics_collector.mcp().get_server_range(&server_id, start, end);
+    let data_points = app_state
+        .metrics_collector
+        .mcp()
+        .get_server_range(&server_id, start, end);
 
     // Get server name from mcp_server_manager (if available) instead of using server_id
-    let label = app_state.mcp_server_manager
+    let label = app_state
+        .mcp_server_manager
         .get_config(&server_id)
         .map(|s| s.name)
         .unwrap_or_else(|| "MCP Server".to_string());
 
-    Ok(McpGraphGenerator::generate(&data_points, metric_type, Some(&label)))
+    Ok(McpGraphGenerator::generate(
+        &data_points,
+        metric_type,
+        Some(&label),
+    ))
 }
 
 /// Get MCP method breakdown for a scope (global, client, or server)
@@ -88,13 +111,25 @@ pub async fn get_mcp_method_breakdown(
     let (start, end) = time_range.get_range();
 
     let data_points = if scope == "global" {
-        app_state.metrics_collector.mcp().get_global_range(start, end)
+        app_state
+            .metrics_collector
+            .mcp()
+            .get_global_range(start, end)
     } else if let Some(client_id) = scope.strip_prefix("client:") {
-        app_state.metrics_collector.mcp().get_client_range(client_id, start, end)
+        app_state
+            .metrics_collector
+            .mcp()
+            .get_client_range(client_id, start, end)
     } else if let Some(server_id) = scope.strip_prefix("server:") {
-        app_state.metrics_collector.mcp().get_server_range(server_id, start, end)
+        app_state
+            .metrics_collector
+            .mcp()
+            .get_server_range(server_id, start, end)
     } else {
-        return Err(format!("Invalid scope: {}. Expected 'global', 'client:<id>', or 'server:<id>'", scope));
+        return Err(format!(
+            "Invalid scope: {}. Expected 'global', 'client:<id>', or 'server:<id>'",
+            scope
+        ));
     };
 
     Ok(McpGraphGenerator::generate_method_breakdown(&data_points))
@@ -141,8 +176,12 @@ pub async fn compare_mcp_clients(
     let data_sets: Vec<(String, Vec<_>)> = client_ids
         .iter()
         .map(|id| {
-            let points = app_state.metrics_collector.mcp().get_client_range(id, start, end);
-            let label = app_state.client_manager
+            let points = app_state
+                .metrics_collector
+                .mcp()
+                .get_client_range(id, start, end);
+            let label = app_state
+                .client_manager
                 .get_client(id)
                 .map(|c| c.name)
                 .unwrap_or_else(|| id.clone());
@@ -155,7 +194,10 @@ pub async fn compare_mcp_clients(
         .map(|(label, points)| (label.as_str(), points.as_slice()))
         .collect();
 
-    Ok(McpGraphGenerator::generate_multi(data_sets_refs, metric_type))
+    Ok(McpGraphGenerator::generate_multi(
+        data_sets_refs,
+        metric_type,
+    ))
 }
 
 /// Compare multiple MCP servers (multi-line chart)
@@ -175,8 +217,12 @@ pub async fn compare_mcp_servers(
     let data_sets: Vec<(String, Vec<_>)> = server_ids
         .iter()
         .map(|id| {
-            let points = app_state.metrics_collector.mcp().get_server_range(id, start, end);
-            let label = app_state.mcp_server_manager
+            let points = app_state
+                .metrics_collector
+                .mcp()
+                .get_server_range(id, start, end);
+            let label = app_state
+                .mcp_server_manager
                 .get_config(id)
                 .map(|s| s.name)
                 .unwrap_or_else(|| id.clone());
@@ -189,7 +235,10 @@ pub async fn compare_mcp_servers(
         .map(|(label, points)| (label.as_str(), points.as_slice()))
         .collect();
 
-    Ok(McpGraphGenerator::generate_multi(data_sets_refs, metric_type))
+    Ok(McpGraphGenerator::generate_multi(
+        data_sets_refs,
+        metric_type,
+    ))
 }
 
 /// Get MCP latency percentiles for a scope
@@ -206,14 +255,28 @@ pub async fn get_mcp_latency_percentiles(
     let (start, end) = time_range.get_range();
 
     let data_points = if scope == "global" {
-        app_state.metrics_collector.mcp().get_global_range(start, end)
+        app_state
+            .metrics_collector
+            .mcp()
+            .get_global_range(start, end)
     } else if let Some(client_id) = scope.strip_prefix("client:") {
-        app_state.metrics_collector.mcp().get_client_range(client_id, start, end)
+        app_state
+            .metrics_collector
+            .mcp()
+            .get_client_range(client_id, start, end)
     } else if let Some(server_id) = scope.strip_prefix("server:") {
-        app_state.metrics_collector.mcp().get_server_range(server_id, start, end)
+        app_state
+            .metrics_collector
+            .mcp()
+            .get_server_range(server_id, start, end)
     } else {
-        return Err(format!("Invalid scope: {}. Expected 'global', 'client:<id>', or 'server:<id>'", scope));
+        return Err(format!(
+            "Invalid scope: {}. Expected 'global', 'client:<id>', or 'server:<id>'",
+            scope
+        ));
     };
 
-    Ok(McpGraphGenerator::generate_latency_percentiles(&data_points))
+    Ok(McpGraphGenerator::generate_latency_percentiles(
+        &data_points,
+    ))
 }

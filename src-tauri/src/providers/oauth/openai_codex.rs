@@ -16,7 +16,7 @@ use reqwest::Client;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
-use tokio::sync::{RwLock, oneshot};
+use tokio::sync::{oneshot, RwLock};
 use tracing::{debug, info};
 
 use super::{OAuthCredentials, OAuthFlowResult, OAuthProvider};
@@ -188,9 +188,9 @@ impl OAuthProvider for OpenAICodexOAuthProvider {
 
     async fn poll_oauth_status(&self) -> AppResult<OAuthFlowResult> {
         let flow = self.current_flow.read().await;
-        let _flow_state = flow.as_ref().ok_or_else(|| {
-            AppError::Provider("No OAuth flow in progress".to_string())
-        })?;
+        let _flow_state = flow
+            .as_ref()
+            .ok_or_else(|| AppError::Provider("No OAuth flow in progress".to_string()))?;
 
         // Check if we have received the authorization code
         // (This would be set by an external callback handler)
@@ -221,9 +221,7 @@ impl OAuthProvider for OpenAICodexOAuthProvider {
             }))
             .send()
             .await
-            .map_err(|e| {
-                AppError::Provider(format!("Failed to refresh OpenAI tokens: {}", e))
-            })?;
+            .map_err(|e| AppError::Provider(format!("Failed to refresh OpenAI tokens: {}", e)))?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -234,9 +232,10 @@ impl OAuthProvider for OpenAICodexOAuthProvider {
             )));
         }
 
-        let token_response: TokenResponse = response.json().await.map_err(|e| {
-            AppError::Provider(format!("Failed to parse token response: {}", e))
-        })?;
+        let token_response: TokenResponse = response
+            .json()
+            .await
+            .map_err(|e| AppError::Provider(format!("Failed to parse token response: {}", e)))?;
 
         // Parse JWT to extract account ID
         let account_id = Self::parse_jwt_payload(&token_response.access_token)

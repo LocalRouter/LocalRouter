@@ -42,8 +42,9 @@ impl OpenAIProvider {
     /// * `Err(AppError)` if key doesn't exist or keyring access fails
     pub fn from_stored_key(provider_name: Option<&str>) -> AppResult<Self> {
         let name = provider_name.unwrap_or("openai");
-        let api_key = super::key_storage::get_provider_key(name)?
-            .ok_or_else(|| AppError::Provider(format!("No API key found for provider '{}'", name)))?;
+        let api_key = super::key_storage::get_provider_key(name)?.ok_or_else(|| {
+            AppError::Provider(format!("No API key found for provider '{}'", name))
+        })?;
         Ok(Self::new(api_key))
     }
 
@@ -561,20 +562,23 @@ impl ModelProvider for OpenAIProvider {
         )
     }
 
-    fn get_feature_adapter(&self, feature: &str) -> Option<Box<dyn crate::providers::features::FeatureAdapter>> {
+    fn get_feature_adapter(
+        &self,
+        feature: &str,
+    ) -> Option<Box<dyn crate::providers::features::FeatureAdapter>> {
         match feature {
-            "reasoning_tokens" => {
-                Some(Box::new(crate::providers::features::openai_reasoning::OpenAIReasoningAdapter))
-            }
-            "structured_outputs" => {
-                Some(Box::new(crate::providers::features::structured_outputs::StructuredOutputsAdapter))
-            }
-            "logprobs" => {
-                Some(Box::new(crate::providers::features::logprobs::LogprobsAdapter))
-            }
-            "json_mode" => {
-                Some(Box::new(crate::providers::features::json_mode::JsonModeAdapter))
-            }
+            "reasoning_tokens" => Some(Box::new(
+                crate::providers::features::openai_reasoning::OpenAIReasoningAdapter,
+            )),
+            "structured_outputs" => Some(Box::new(
+                crate::providers::features::structured_outputs::StructuredOutputsAdapter,
+            )),
+            "logprobs" => Some(Box::new(
+                crate::providers::features::logprobs::LogprobsAdapter,
+            )),
+            "json_mode" => Some(Box::new(
+                crate::providers::features::json_mode::JsonModeAdapter,
+            )),
             _ => None,
         }
     }

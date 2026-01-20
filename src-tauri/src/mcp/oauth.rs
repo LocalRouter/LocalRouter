@@ -6,21 +6,21 @@
 use crate::api_keys::{CachedKeychain, KeychainStorage};
 use crate::config::McpOAuthConfig;
 use crate::utils::errors::{AppError, AppResult};
+use axum::{
+    extract::Query,
+    http::StatusCode,
+    response::{Html, IntoResponse},
+    Router,
+};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use chrono::{DateTime, Duration, Utc};
+use parking_lot::{Mutex, RwLock};
+use rand::{thread_rng, Rng};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use sha2::{Sha256, Digest};
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use rand::{thread_rng, Rng};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::Arc;
-use parking_lot::{RwLock, Mutex};
-use axum::{
-    Router,
-    extract::Query,
-    response::{Html, IntoResponse},
-    http::StatusCode,
-};
 use tokio::sync::oneshot;
 
 /// Keychain service name for MCP server OAuth tokens
@@ -214,7 +214,9 @@ pub async fn start_callback_server(
             async move {
                 // Check for errors
                 if let Some(error) = params.error {
-                    let description = params.error_description.unwrap_or_else(|| "Unknown error".to_string());
+                    let description = params
+                        .error_description
+                        .unwrap_or_else(|| "Unknown error".to_string());
                     tracing::error!("OAuth authorization failed: {} - {}", error, description);
 
                     return (
@@ -233,7 +235,8 @@ pub async fn start_callback_server(
                             "#,
                             error, description
                         )),
-                    ).into_response();
+                    )
+                        .into_response();
                 }
 
                 // Extract authorization code
@@ -259,7 +262,11 @@ pub async fn start_callback_server(
                 };
 
                 if state != *expected_state {
-                    tracing::error!("State mismatch: expected {}, got {}", *expected_state, state);
+                    tracing::error!(
+                        "State mismatch: expected {}, got {}",
+                        *expected_state,
+                        state
+                    );
                     return (
                         StatusCode::BAD_REQUEST,
                         Html("<html><body><h1>Error: Invalid state parameter (CSRF protection)</h1></body></html>"),
@@ -294,16 +301,16 @@ pub async fn start_callback_server(
                                 </script>
                             </body>
                         </html>
-                        "#
+                        "#,
                     ),
-                ).into_response()
+                )
+                    .into_response()
             }
         }
     };
 
     // Build router
-    let app = Router::new()
-        .route("/callback", axum::routing::get(callback_handler));
+    let app = Router::new().route("/callback", axum::routing::get(callback_handler));
 
     // Start server
     let addr = format!("127.0.0.1:{}", port);
@@ -323,7 +330,7 @@ pub async fn start_callback_server(
     // Wait for callback with timeout
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(300), // 5 minute timeout
-        rx
+        rx,
     )
     .await
     .map_err(|_| AppError::Mcp("OAuth authorization timeout (5 minutes)".to_string()))?
@@ -337,8 +344,7 @@ pub async fn start_callback_server(
 impl McpOAuthManager {
     /// Create a new OAuth manager
     pub fn new() -> Self {
-        let keychain = CachedKeychain::auto()
-            .expect("Failed to initialize MCP OAuth keychain");
+        let keychain = CachedKeychain::auto().expect("Failed to initialize MCP OAuth keychain");
 
         Self {
             client: Client::new(),
@@ -370,7 +376,10 @@ impl McpOAuthManager {
         let response = match self.client.get(&discovery_url).send().await {
             Ok(resp) => resp,
             Err(e) => {
-                tracing::debug!("OAuth discovery failed (server may not require OAuth): {}", e);
+                tracing::debug!(
+                    "OAuth discovery failed (server may not require OAuth): {}",
+                    e
+                );
                 return Ok(None);
             }
         };
@@ -385,12 +394,14 @@ impl McpOAuthManager {
         }
 
         // Parse discovery response
-        let discovery: OAuthDiscoveryResponse = response
-            .json()
-            .await
-            .map_err(|e| AppError::Mcp(format!("Failed to parse OAuth discovery response: {}", e)))?;
+        let discovery: OAuthDiscoveryResponse = response.json().await.map_err(|e| {
+            AppError::Mcp(format!("Failed to parse OAuth discovery response: {}", e))
+        })?;
 
-        tracing::info!("OAuth discovery successful: token_endpoint={}", discovery.token_endpoint);
+        tracing::info!(
+            "OAuth discovery successful: token_endpoint={}",
+            discovery.token_endpoint
+        );
 
         Ok(Some(discovery))
     }
@@ -478,12 +489,20 @@ impl McpOAuthManager {
 
         // Store in keyring
         self.keychain
-            .store(MCP_OAUTH_SERVICE, &format!("{}_access_token", server_id), &token_info.access_token)
+            .store(
+                MCP_OAUTH_SERVICE,
+                &format!("{}_access_token", server_id),
+                &token_info.access_token,
+            )
             .map_err(|e| AppError::Mcp(format!("Failed to store token in keychain: {}", e)))?;
 
         if let Some(ref refresh_token) = token_info.refresh_token {
             self.keychain
-                .store(MCP_OAUTH_SERVICE, &format!("{}_refresh_token", server_id), refresh_token)
+                .store(
+                    MCP_OAUTH_SERVICE,
+                    &format!("{}_refresh_token", server_id),
+                    refresh_token,
+                )
                 .ok(); // Ignore errors for refresh token
         }
 
@@ -511,7 +530,10 @@ impl McpOAuthManager {
         }
 
         // Try to load from keychain
-        if let Ok(Some(token)) = self.keychain.get(MCP_OAUTH_SERVICE, &format!("{}_access_token", server_id)) {
+        if let Ok(Some(token)) = self
+            .keychain
+            .get(MCP_OAUTH_SERVICE, &format!("{}_access_token", server_id))
+        {
             tracing::debug!("Loaded OAuth token from keychain for: {}", server_id);
             // Note: We don't have expiration info from keychain, so we'll try to use it
             // and let the server reject it if expired
@@ -576,8 +598,12 @@ impl McpOAuthManager {
         if !response.status().is_success() {
             // Clear cached token and force re-authentication
             self.token_cache.write().remove(server_id);
-            self.keychain.delete(MCP_OAUTH_SERVICE, &format!("{}_access_token", server_id)).ok();
-            self.keychain.delete(MCP_OAUTH_SERVICE, &format!("{}_refresh_token", server_id)).ok();
+            self.keychain
+                .delete(MCP_OAUTH_SERVICE, &format!("{}_access_token", server_id))
+                .ok();
+            self.keychain
+                .delete(MCP_OAUTH_SERVICE, &format!("{}_refresh_token", server_id))
+                .ok();
 
             return Err(AppError::Mcp(
                 "Token refresh failed, re-authentication required".to_string(),
@@ -609,12 +635,20 @@ impl McpOAuthManager {
 
         // Update keychain
         self.keychain
-            .store(MCP_OAUTH_SERVICE, &format!("{}_access_token", server_id), &token_info.access_token)
+            .store(
+                MCP_OAUTH_SERVICE,
+                &format!("{}_access_token", server_id),
+                &token_info.access_token,
+            )
             .map_err(|e| AppError::Mcp(format!("Failed to update token in keychain: {}", e)))?;
 
         if let Some(ref refresh_token) = token_info.refresh_token {
             self.keychain
-                .store(MCP_OAUTH_SERVICE, &format!("{}_refresh_token", server_id), refresh_token)
+                .store(
+                    MCP_OAUTH_SERVICE,
+                    &format!("{}_refresh_token", server_id),
+                    refresh_token,
+                )
                 .ok();
         }
 
@@ -629,8 +663,12 @@ impl McpOAuthManager {
     /// * `server_id` - MCP server ID
     pub fn clear_token(&self, server_id: &str) {
         self.token_cache.write().remove(server_id);
-        self.keychain.delete(MCP_OAUTH_SERVICE, &format!("{}_access_token", server_id)).ok();
-        self.keychain.delete(MCP_OAUTH_SERVICE, &format!("{}_refresh_token", server_id)).ok();
+        self.keychain
+            .delete(MCP_OAUTH_SERVICE, &format!("{}_access_token", server_id))
+            .ok();
+        self.keychain
+            .delete(MCP_OAUTH_SERVICE, &format!("{}_refresh_token", server_id))
+            .ok();
     }
 
     /// Build authorization URL for OAuth authorization code flow with PKCE
@@ -748,12 +786,20 @@ impl McpOAuthManager {
 
         // Store in keyring
         self.keychain
-            .store(MCP_OAUTH_SERVICE, &format!("{}_access_token", server_id), &token_info.access_token)
+            .store(
+                MCP_OAUTH_SERVICE,
+                &format!("{}_access_token", server_id),
+                &token_info.access_token,
+            )
             .map_err(|e| AppError::Mcp(format!("Failed to store token in keychain: {}", e)))?;
 
         if let Some(ref refresh_token) = token_info.refresh_token {
             self.keychain
-                .store(MCP_OAUTH_SERVICE, &format!("{}_refresh_token", server_id), refresh_token)
+                .store(
+                    MCP_OAUTH_SERVICE,
+                    &format!("{}_refresh_token", server_id),
+                    refresh_token,
+                )
                 .ok();
         }
 
@@ -822,7 +868,10 @@ mod tests {
         assert_eq!(pkce.code_verifier.len(), 64);
 
         // Verify code_verifier contains only valid characters
-        assert!(pkce.code_verifier.chars().all(|c| c.is_ascii_alphanumeric()));
+        assert!(pkce
+            .code_verifier
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric()));
 
         // Verify code_challenge is base64url encoded
         assert!(!pkce.code_challenge.is_empty());
@@ -875,9 +924,15 @@ mod tests {
         // Verify URL contains all required parameters
         assert!(url.contains("response_type=code"));
         assert!(url.contains(&format!("client_id={}", urlencoding::encode(client_id))));
-        assert!(url.contains(&format!("redirect_uri={}", urlencoding::encode(redirect_uri))));
+        assert!(url.contains(&format!(
+            "redirect_uri={}",
+            urlencoding::encode(redirect_uri)
+        )));
         assert!(url.contains("scope=read%20write"));
-        assert!(url.contains(&format!("code_challenge={}", urlencoding::encode(&pkce.code_challenge))));
+        assert!(url.contains(&format!(
+            "code_challenge={}",
+            urlencoding::encode(&pkce.code_challenge)
+        )));
         assert!(url.contains("code_challenge_method=S256"));
         assert!(url.contains(&format!("state={}", state)));
         assert!(url.starts_with(auth_url));

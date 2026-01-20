@@ -340,11 +340,7 @@ fn test_all_metric_types() {
 
     for metric_type in metric_types {
         let result = simulate_get_global_metrics(&collector, TimeRange::Day, metric_type);
-        assert!(
-            result.is_ok(),
-            "Failed for metric type: {:?}",
-            metric_type
-        );
+        assert!(result.is_ok(), "Failed for metric type: {:?}", metric_type);
     }
 }
 

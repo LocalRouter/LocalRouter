@@ -13,27 +13,20 @@
 
 use serde_json::json;
 
-use crate::utils::errors::{AppError, AppResult};
 use super::{FeatureAdapter, FeatureData, FeatureParams};
 use crate::providers::{CompletionRequest, CompletionResponse};
+use crate::utils::errors::{AppError, AppResult};
 
 /// Feature adapter for Gemini thinking_level parameter
 pub struct GeminiThinkingAdapter;
 
 impl GeminiThinkingAdapter {
     /// Valid thinking level values
-    const VALID_THINKING_LEVELS: &'static [&'static str] = &[
-        "automatic",
-        "baseline",
-        "enhanced",
-        "maximum",
-    ];
+    const VALID_THINKING_LEVELS: &'static [&'static str] =
+        &["automatic", "baseline", "enhanced", "maximum"];
 
     /// Models that support thinking_level
-    const SUPPORTED_MODELS: &'static [&'static str] = &[
-        "gemini-3",
-        "gemini-2.0",
-    ];
+    const SUPPORTED_MODELS: &'static [&'static str] = &["gemini-3", "gemini-2.0"];
 
     /// Check if a model supports thinking_level
     pub fn supports_model(model: &str) -> bool {
@@ -46,9 +39,7 @@ impl GeminiThinkingAdapter {
             .get("thinking_level")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
-            .ok_or_else(|| {
-                AppError::Config("thinking_level parameter is required".to_string())
-            })
+            .ok_or_else(|| AppError::Config("thinking_level parameter is required".to_string()))
     }
 
     /// Validate thinking level value
@@ -75,20 +66,18 @@ impl FeatureAdapter for GeminiThinkingAdapter {
         Ok(())
     }
 
-    fn adapt_request(&self, request: &mut CompletionRequest, params: &FeatureParams) -> AppResult<()> {
+    fn adapt_request(
+        &self,
+        request: &mut CompletionRequest,
+        params: &FeatureParams,
+    ) -> AppResult<()> {
         let thinking_level = Self::get_thinking_level(params)?;
 
         // Add thinking_level to request metadata
         // The Gemini provider will extract this and include it in the API request
-        let mut metadata = request
-            .extensions
-            .clone()
-            .unwrap_or_default();
+        let mut metadata = request.extensions.clone().unwrap_or_default();
 
-        metadata.insert(
-            "thinking_level".to_string(),
-            json!(thinking_level),
-        );
+        metadata.insert("thinking_level".to_string(), json!(thinking_level));
 
         request.extensions = Some(metadata);
 
@@ -109,7 +98,7 @@ impl FeatureAdapter for GeminiThinkingAdapter {
                 "supported": true,
                 "model": response.model.clone(),
                 "note": "Thinking level applied to request"
-            })
+            }),
         )))
     }
 }
@@ -149,7 +138,10 @@ mod tests {
 
         let result = adapter.validate_params(&params);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("thinking_level parameter is required"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("thinking_level parameter is required"));
     }
 
     #[test]
@@ -160,7 +152,10 @@ mod tests {
 
         let result = adapter.validate_params(&params);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Invalid thinking_level"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Invalid thinking_level"));
     }
 
     #[test]

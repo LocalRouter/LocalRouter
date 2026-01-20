@@ -2,7 +2,11 @@
 //!
 //! Lists available models filtered by API key's model selection.
 
-use axum::{extract::{Path, State}, http::Request, Json};
+use axum::{
+    extract::{Path, State},
+    http::Request,
+    Json,
+};
 
 use crate::server::middleware::error::{ApiErrorResponse, ApiResult};
 use crate::server::state::{AppState, AuthContext};
@@ -256,20 +260,15 @@ pub async fn get_model_pricing<B>(
     let provider_instance = state
         .provider_registry
         .get_provider(&provider)
-        .ok_or_else(|| {
-            ApiErrorResponse::not_found(format!("Provider '{}' not found", provider))
-        })?;
+        .ok_or_else(|| ApiErrorResponse::not_found(format!("Provider '{}' not found", provider)))?;
 
     // Get pricing information
-    let pricing_info = provider_instance
-        .get_pricing(&model)
-        .await
-        .map_err(|e| {
-            ApiErrorResponse::internal_error(format!(
-                "Failed to get pricing for model '{}': {}",
-                model, e
-            ))
-        })?;
+    let pricing_info = provider_instance.get_pricing(&model).await.map_err(|e| {
+        ApiErrorResponse::internal_error(format!(
+            "Failed to get pricing for model '{}': {}",
+            model, e
+        ))
+    })?;
 
     Ok(Json(ModelPricing {
         input_cost_per_1k: pricing_info.input_cost_per_1k,

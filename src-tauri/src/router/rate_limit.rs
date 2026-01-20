@@ -144,7 +144,6 @@ impl fmt::Display for RateLimiterKey {
 }
 
 impl RateLimiterKey {
-
     #[allow(dead_code)]
     fn from_string(s: &str) -> Option<Self> {
         let parts: Vec<&str> = s.split(':').collect();

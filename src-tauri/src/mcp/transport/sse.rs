@@ -3,7 +3,7 @@
 //! Communicates with MCP servers via HTTP with SSE for responses.
 //! Uses POST requests for sending JSON-RPC messages and SSE for receiving responses.
 
-use crate::mcp::protocol::{JsonRpcRequest, JsonRpcResponse};
+use crate::mcp::protocol::{JsonRpcNotification, JsonRpcRequest, JsonRpcResponse};
 use crate::mcp::transport::Transport;
 use crate::utils::errors::{AppError, AppResult};
 use async_trait::async_trait;
@@ -15,10 +15,14 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::oneshot;
 
+/// Notification callback type for SSE transport
+pub type SseNotificationCallback = Arc<dyn Fn(JsonRpcNotification) + Send + Sync>;
+
 /// SSE transport implementation
 ///
 /// Sends JSON-RPC requests via HTTP POST and receives responses via Server-Sent Events.
 /// Maintains a persistent SSE connection for receiving responses.
+/// Note: SSE notification support requires persistent streaming (not yet implemented).
 pub struct SseTransport {
     /// Base URL of the MCP server
     url: String,
@@ -39,6 +43,10 @@ pub struct SseTransport {
 
     /// Whether the transport is closed
     closed: Arc<RwLock<bool>>,
+
+    /// Notification callback (optional, currently unused)
+    #[allow(dead_code)]
+    notification_callback: Arc<RwLock<Option<SseNotificationCallback>>>,
 }
 
 impl SseTransport {
@@ -60,7 +68,9 @@ impl SseTransport {
                 }
             }
         }
-        Err(AppError::Mcp("No data field found in SSE response".to_string()))
+        Err(AppError::Mcp(
+            "No data field found in SSE response".to_string(),
+        ))
     }
 
     /// Create a new SSE transport
@@ -109,7 +119,9 @@ impl SseTransport {
         // Add required SSE headers
         validation_req = validation_req.header("Accept", "application/json, text/event-stream");
 
-        let validation_response = validation_req.send().await
+        let validation_response = validation_req
+            .send()
+            .await
             .map_err(|e| AppError::Mcp(format!("Failed to connect to SSE server: {}", e)))?;
 
         if !validation_response.status().is_success() {
@@ -122,15 +134,18 @@ impl SseTransport {
         }
 
         // Read the SSE response as text
-        let sse_text = validation_response.text().await
+        let sse_text = validation_response
+            .text()
+            .await
             .map_err(|e| AppError::Mcp(format!("Failed to read initialize response: {}", e)))?;
 
         // Parse SSE format to extract JSON
         let json_str = Self::parse_sse_response(&sse_text)?;
 
         // Parse the JSON-RPC response
-        let init_response: JsonRpcResponse = serde_json::from_str(&json_str)
-            .map_err(|e| AppError::Mcp(format!("Failed to parse initialize response JSON: {}", e)))?;
+        let init_response: JsonRpcResponse = serde_json::from_str(&json_str).map_err(|e| {
+            AppError::Mcp(format!("Failed to parse initialize response JSON: {}", e))
+        })?;
 
         if let Some(error) = init_response.error {
             return Err(AppError::Mcp(format!(
@@ -146,11 +161,22 @@ impl SseTransport {
             pending: Arc::new(RwLock::new(HashMap::new())),
             next_id: Arc::new(RwLock::new(2)), // Start at 2 since we used 1 for initialization
             closed: Arc::new(RwLock::new(false)),
+            notification_callback: Arc::new(RwLock::new(None)),
         };
 
         tracing::info!("MCP SSE transport connected successfully");
 
         Ok(transport)
+    }
+
+    /// Set a notification callback
+    ///
+    /// # Arguments
+    /// * `callback` - The callback to invoke when notifications are received
+    ///
+    /// Note: SSE notifications require persistent streaming (not yet implemented)
+    pub fn set_notification_callback(&self, callback: SseNotificationCallback) {
+        *self.notification_callback.write() = Some(callback);
     }
 
     /// Generate the next request ID
@@ -200,9 +226,10 @@ impl Transport for SseTransport {
         }
 
         // Send POST request
-        let response = req_builder.send().await.map_err(|e| {
-            AppError::Mcp(format!("Failed to send request: {}", e))
-        })?;
+        let response = req_builder
+            .send()
+            .await
+            .map_err(|e| AppError::Mcp(format!("Failed to send request: {}", e)))?;
 
         // Check response status
         if !response.status().is_success() {
@@ -213,17 +240,17 @@ impl Transport for SseTransport {
         }
 
         // Read the SSE response as text
-        let sse_text = response.text().await.map_err(|e| {
-            AppError::Mcp(format!("Failed to read response: {}", e))
-        })?;
+        let sse_text = response
+            .text()
+            .await
+            .map_err(|e| AppError::Mcp(format!("Failed to read response: {}", e)))?;
 
         // Parse SSE format to extract JSON
         let json_str = Self::parse_sse_response(&sse_text)?;
 
         // Parse the JSON-RPC response
-        let json_response: JsonRpcResponse = serde_json::from_str(&json_str).map_err(|e| {
-            AppError::Mcp(format!("Failed to parse response JSON: {}", e))
-        })?;
+        let json_response: JsonRpcResponse = serde_json::from_str(&json_str)
+            .map_err(|e| AppError::Mcp(format!("Failed to parse response JSON: {}", e)))?;
 
         Ok(json_response)
     }
@@ -251,6 +278,7 @@ mod tests {
             pending: Arc::new(RwLock::new(HashMap::new())),
             next_id: Arc::new(RwLock::new(1)),
             closed: Arc::new(RwLock::new(false)),
+            notification_callback: Arc::new(RwLock::new(None)),
         };
 
         assert_eq!(transport.next_request_id(), 1);

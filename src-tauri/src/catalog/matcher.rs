@@ -27,10 +27,7 @@ impl ModelMatcher {
 
             // Index by provider+model
             if let Some((provider, model_name)) = model.id.split_once('/') {
-                by_provider.insert(
-                    (normalize_id(provider), normalize_id(model_name)),
-                    model,
-                );
+                by_provider.insert((normalize_id(provider), normalize_id(model_name)), model);
             }
 
             // Index by aliases
@@ -52,7 +49,10 @@ impl ModelMatcher {
         let norm_provider = normalize_id(provider);
         let norm_model = normalize_id(model_id);
 
-        if let Some(model) = self.by_provider.get(&(norm_provider.clone(), norm_model.clone())) {
+        if let Some(model) = self
+            .by_provider
+            .get(&(norm_provider.clone(), norm_model.clone()))
+        {
             return Some(model);
         }
 
@@ -71,6 +71,31 @@ impl ModelMatcher {
         self.fuzzy_match(provider, model_id)
     }
 
+    /// Find a model by name only (ignoring provider)
+    ///
+    /// This is useful for multi-provider systems like Ollama, LMStudio, DeepInfra,
+    /// TogetherAI, and OpenRouter where the model can come from various providers.
+    pub fn find_model_by_name(&self, model_id: &str) -> Option<&'static CatalogModel> {
+        let norm_model = normalize_id(model_id);
+
+        // 1. Try exact alias match
+        if let Some(model) = self.by_alias.get(&norm_model) {
+            return Some(model);
+        }
+
+        // 2. Try matching against the model part of "provider/model" IDs
+        for (full_id, model) in &self.by_id {
+            if let Some((_provider, model_name)) = full_id.split_once('/') {
+                if normalize_id(model_name) == norm_model {
+                    return Some(model);
+                }
+            }
+        }
+
+        // 3. Try fuzzy/prefix matching on model names
+        self.fuzzy_match_by_name(&norm_model)
+    }
+
     /// Fuzzy matching for common variations
     fn fuzzy_match(&self, provider: &str, model_id: &str) -> Option<&'static CatalogModel> {
         let norm_provider = normalize_id(provider);
@@ -85,22 +110,32 @@ impl ModelMatcher {
             .filter_map(|k| self.by_id.get(k).copied())
             .next()
     }
+
+    /// Fuzzy matching by model name only (provider-agnostic)
+    fn fuzzy_match_by_name(&self, model_id: &str) -> Option<&'static CatalogModel> {
+        // Try prefix matching on the model part of IDs
+        for (full_id, model) in &self.by_id {
+            if let Some((_provider, model_name)) = full_id.split_once('/') {
+                if model_name.starts_with(model_id) {
+                    return Some(model);
+                }
+            }
+        }
+        None
+    }
 }
 
 /// Normalize model ID for matching
 ///
 /// Converts to lowercase and replaces various separators with hyphens
 fn normalize_id(id: &str) -> String {
-    id.to_lowercase()
-        .replace('_', "-")
-        .replace(':', "-")
-        .replace(' ', "-")
+    id.to_lowercase().replace(['_', ':', ' '], "-")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::catalog::types::{CatalogMetadata, CatalogModel, CatalogPricing, Modality};
+    use crate::catalog::types::{CatalogModel, CatalogPricing, Modality};
 
     fn create_test_models() -> Vec<CatalogModel> {
         vec![
@@ -195,6 +230,83 @@ mod tests {
         let matcher = ModelMatcher::new(models_static);
 
         let result = matcher.find_model("nonexistent", "model");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_find_by_name_exact_alias() {
+        let models = create_test_models();
+        let models_static: &'static [CatalogModel] = Box::leak(models.into_boxed_slice());
+        let matcher = ModelMatcher::new(models_static);
+
+        // Should find by alias
+        let result = matcher.find_model_by_name("gpt-4");
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().id, "openai/gpt-4");
+
+        let result = matcher.find_model_by_name("opus");
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().id, "anthropic/claude-opus-4-20250514");
+    }
+
+    #[test]
+    fn test_find_by_name_model_part() {
+        let models = create_test_models();
+        let models_static: &'static [CatalogModel] = Box::leak(models.into_boxed_slice());
+        let matcher = ModelMatcher::new(models_static);
+
+        // Should find by model part of "provider/model"
+        let result = matcher.find_model_by_name("gpt-4");
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().id, "openai/gpt-4");
+    }
+
+    #[test]
+    fn test_find_by_name_case_insensitive() {
+        let models = create_test_models();
+        let models_static: &'static [CatalogModel] = Box::leak(models.into_boxed_slice());
+        let matcher = ModelMatcher::new(models_static);
+
+        // Should be case insensitive
+        let result = matcher.find_model_by_name("GPT-4");
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().id, "openai/gpt-4");
+
+        let result = matcher.find_model_by_name("OPUS");
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_find_by_name_normalization() {
+        let models = create_test_models();
+        let models_static: &'static [CatalogModel] = Box::leak(models.into_boxed_slice());
+        let matcher = ModelMatcher::new(models_static);
+
+        // Should normalize underscores to hyphens
+        let result = matcher.find_model_by_name("gpt_4");
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().id, "openai/gpt-4");
+    }
+
+    #[test]
+    fn test_find_by_name_prefix_match() {
+        let models = create_test_models();
+        let models_static: &'static [CatalogModel] = Box::leak(models.into_boxed_slice());
+        let matcher = ModelMatcher::new(models_static);
+
+        // Should find by prefix
+        let result = matcher.find_model_by_name("claude-opus");
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().id, "anthropic/claude-opus-4-20250514");
+    }
+
+    #[test]
+    fn test_find_by_name_no_match() {
+        let models = create_test_models();
+        let models_static: &'static [CatalogModel] = Box::leak(models.into_boxed_slice());
+        let matcher = ModelMatcher::new(models_static);
+
+        let result = matcher.find_model_by_name("nonexistent-model");
         assert!(result.is_none());
     }
 }

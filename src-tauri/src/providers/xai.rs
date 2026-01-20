@@ -42,8 +42,9 @@ impl XAIProvider {
     /// Create a new xAI provider from stored API key
     pub fn from_stored_key(provider_name: Option<&str>) -> AppResult<Self> {
         let name = provider_name.unwrap_or("xai");
-        let api_key = super::key_storage::get_provider_key(name)?
-            .ok_or_else(|| AppError::Provider(format!("No API key found for provider '{}'", name)))?;
+        let api_key = super::key_storage::get_provider_key(name)?.ok_or_else(|| {
+            AppError::Provider(format!("No API key found for provider '{}'", name))
+        })?;
         Self::new(api_key)
     }
 

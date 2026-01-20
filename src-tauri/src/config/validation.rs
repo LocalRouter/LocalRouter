@@ -195,7 +195,7 @@ fn validate_cross_references(config: &AppConfig) -> AppResult<()> {
     //             }
     //         }
     //     }
-    // 
+    //
     // Validate router provider filters reference valid providers
     for router in &config.routers {
         if let super::ModelSelectionStrategy::Automatic { providers, .. } = &router.model_selection
@@ -217,27 +217,27 @@ fn validate_cross_references(config: &AppConfig) -> AppResult<()> {
 // #[cfg(test)]
 // mod tests {
 //     use super::*;
-// 
+//
 //     #[test]
 //     fn test_validate_default_config() {
 //         let config = AppConfig::default();
 //         assert!(validate_config(&config).is_ok());
 //     }
-// 
+//
 //     #[test]
 //     fn test_validate_empty_server_host() {
 //         let mut config = AppConfig::default();
 //         config.server.host = String::new();
 //         assert!(validate_config(&config).is_err());
 //     }
-// 
+//
 //     #[test]
 //     fn test_validate_invalid_port() {
 //         let mut config = AppConfig::default();
 //         config.server.port = 0;
 //         assert!(validate_config(&config).is_err());
 //     }
-// 
+//
 //     #[test]
 //     fn test_validate_duplicate_api_key_ids() {
 //         let mut config = AppConfig::default();
@@ -249,11 +249,11 @@ fn validate_cross_references(config: &AppConfig) -> AppResult<()> {
 //         );
 //         let mut key2 = key1.clone();
 //         key2.name = "key2".to_string();
-// 
+//
 //         config.api_keys = vec![key1, key2];
 //         assert!(validate_config(&config).is_err());
 //     }
-// 
+//
 //     #[test]
 //     fn test_validate_empty_api_key_name() {
 //         let mut config = AppConfig::default();
@@ -266,14 +266,14 @@ fn validate_cross_references(config: &AppConfig) -> AppResult<()> {
 //         config.api_keys = vec![key];
 //         assert!(validate_config(&config).is_err());
 //     }
-// 
+//
 //     #[test]
 //     fn test_validate_no_routers() {
 //         let mut config = AppConfig::default();
 //         config.routers.clear();
 //         assert!(validate_config(&config).is_err());
 //     }
-// 
+//
 //     #[test]
 //     fn test_validate_duplicate_router_names() {
 //         let mut config = AppConfig::default();
@@ -282,21 +282,21 @@ fn validate_cross_references(config: &AppConfig) -> AppResult<()> {
 //         config.routers = vec![router1, router2];
 //         assert!(validate_config(&config).is_err());
 //     }
-// 
+//
 //     #[test]
 //     fn test_validate_router_no_strategies() {
 //         let mut config = AppConfig::default();
 //         config.routers[0].strategies.clear();
 //         assert!(validate_config(&config).is_err());
 //     }
-// 
+//
 //     #[test]
 //     fn test_validate_no_providers() {
 //         let mut config = AppConfig::default();
 //         config.providers.clear();
 //         assert!(validate_config(&config).is_err());
 //     }
-// 
+//
 //     #[test]
 //     fn test_validate_duplicate_provider_names() {
 //         let mut config = AppConfig::default();
@@ -305,7 +305,7 @@ fn validate_cross_references(config: &AppConfig) -> AppResult<()> {
 //         config.providers = vec![provider1, provider2];
 //         assert!(validate_config(&config).is_err());
 //     }
-// 
+//
 //     #[test]
 //     fn test_validate_invalid_provider_config() {
 //         use serde_json::json;
@@ -314,7 +314,7 @@ fn validate_cross_references(config: &AppConfig) -> AppResult<()> {
 //         config.providers[0].provider_config = Some(json!("not an object"));
 //         assert!(validate_config(&config).is_err());
 //     }
-// 
+//
 //     #[test]
 //     fn test_validate_api_key_references_nonexistent_router() {
 //         let mut config = AppConfig::default();
@@ -327,7 +327,7 @@ fn validate_cross_references(config: &AppConfig) -> AppResult<()> {
 //         config.api_keys = vec![key];
 //         assert!(validate_config(&config).is_err());
 //     }
-// 
+//
 //     #[test]
 //     fn test_validate_api_key_references_nonexistent_provider() {
 //         let mut config = AppConfig::default();

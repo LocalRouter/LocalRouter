@@ -267,6 +267,58 @@ impl JsonRpcNotification {
     }
 }
 
+// ===== MCP Entity Types =====
+
+/// MCP Tool definition
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpTool {
+    pub name: String,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+
+    #[serde(rename = "inputSchema")]
+    pub input_schema: Value,
+}
+
+/// MCP Resource definition
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpResource {
+    pub name: String,
+
+    pub uri: String,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+
+    #[serde(rename = "mimeType", skip_serializing_if = "Option::is_none")]
+    pub mime_type: Option<String>,
+}
+
+/// MCP Prompt definition
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpPrompt {
+    pub name: String,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arguments: Option<Vec<McpPromptArgument>>,
+}
+
+/// MCP Prompt argument
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpPromptArgument {
+    pub name: String,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub required: Option<bool>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -274,7 +326,11 @@ mod tests {
 
     #[test]
     fn test_request_serialization() {
-        let req = JsonRpcRequest::with_id(1, "test_method".to_string(), Some(json!({"param": "value"})));
+        let req = JsonRpcRequest::with_id(
+            1,
+            "test_method".to_string(),
+            Some(json!({"param": "value"})),
+        );
         let json = serde_json::to_string(&req).unwrap();
         assert!(json.contains("\"jsonrpc\":\"2.0\""));
         assert!(json.contains("\"id\":1"));

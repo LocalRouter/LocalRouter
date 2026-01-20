@@ -42,9 +42,7 @@ impl AnthropicThinkingAdapter {
     fn get_thinking_budget(params: &FeatureParams) -> AppResult<u32> {
         let budget_value = params
             .get("thinking_budget")
-            .ok_or_else(|| {
-                AppError::Config("Missing 'thinking_budget' parameter".to_string())
-            })?;
+            .ok_or_else(|| AppError::Config("Missing 'thinking_budget' parameter".to_string()))?;
 
         // Try to parse as number
         let budget = if let Some(num) = budget_value.as_u64() {
@@ -102,10 +100,7 @@ impl FeatureAdapter for AnthropicThinkingAdapter {
         Ok(())
     }
 
-    fn adapt_response(
-        &self,
-        response: &mut CompletionResponse,
-    ) -> AppResult<Option<FeatureData>> {
+    fn adapt_response(&self, response: &mut CompletionResponse) -> AppResult<Option<FeatureData>> {
         // Extract thinking blocks from response if present
         // In Anthropic's API, thinking content comes as separate content blocks
         // with type "thinking"

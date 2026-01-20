@@ -170,7 +170,8 @@ fn test_client_llm_provider_access() -> AppResult<()> {
     let manager = ClientManager::new(vec![]);
 
     // Create a client
-    let (_client_id, _secret, client) = manager.create_client("Provider Access Test".to_string())?;
+    let (_client_id, _secret, client) =
+        manager.create_client("Provider Access Test".to_string())?;
 
     // Initially no providers allowed
     assert!(client.allowed_llm_providers.is_empty());
@@ -181,7 +182,9 @@ fn test_client_llm_provider_access() -> AppResult<()> {
     // Verify provider was added
     let updated_client = manager.get_client(&client.id).unwrap();
     assert_eq!(updated_client.allowed_llm_providers.len(), 1);
-    assert!(updated_client.allowed_llm_providers.contains(&"openai".to_string()));
+    assert!(updated_client
+        .allowed_llm_providers
+        .contains(&"openai".to_string()));
 
     // Add another provider
     manager.add_llm_provider(&client.id, "anthropic")?;
@@ -189,8 +192,12 @@ fn test_client_llm_provider_access() -> AppResult<()> {
     // Verify both providers
     let updated_client = manager.get_client(&client.id).unwrap();
     assert_eq!(updated_client.allowed_llm_providers.len(), 2);
-    assert!(updated_client.allowed_llm_providers.contains(&"openai".to_string()));
-    assert!(updated_client.allowed_llm_providers.contains(&"anthropic".to_string()));
+    assert!(updated_client
+        .allowed_llm_providers
+        .contains(&"openai".to_string()));
+    assert!(updated_client
+        .allowed_llm_providers
+        .contains(&"anthropic".to_string()));
 
     // Remove a provider
     manager.remove_llm_provider(&client.id, "openai")?;
@@ -198,8 +205,12 @@ fn test_client_llm_provider_access() -> AppResult<()> {
     // Verify only anthropic remains
     let updated_client = manager.get_client(&client.id).unwrap();
     assert_eq!(updated_client.allowed_llm_providers.len(), 1);
-    assert!(updated_client.allowed_llm_providers.contains(&"anthropic".to_string()));
-    assert!(!updated_client.allowed_llm_providers.contains(&"openai".to_string()));
+    assert!(updated_client
+        .allowed_llm_providers
+        .contains(&"anthropic".to_string()));
+    assert!(!updated_client
+        .allowed_llm_providers
+        .contains(&"openai".to_string()));
 
     Ok(())
 }
@@ -220,7 +231,9 @@ fn test_client_mcp_server_access() -> AppResult<()> {
     // Verify server was added
     let updated_client = manager.get_client(&client.id).unwrap();
     assert_eq!(updated_client.allowed_mcp_servers.len(), 1);
-    assert!(updated_client.allowed_mcp_servers.contains(&"server-1".to_string()));
+    assert!(updated_client
+        .allowed_mcp_servers
+        .contains(&"server-1".to_string()));
 
     // Add another server
     manager.add_mcp_server(&client.id, "server-2")?;
@@ -228,8 +241,12 @@ fn test_client_mcp_server_access() -> AppResult<()> {
     // Verify both servers
     let updated_client = manager.get_client(&client.id).unwrap();
     assert_eq!(updated_client.allowed_mcp_servers.len(), 2);
-    assert!(updated_client.allowed_mcp_servers.contains(&"server-1".to_string()));
-    assert!(updated_client.allowed_mcp_servers.contains(&"server-2".to_string()));
+    assert!(updated_client
+        .allowed_mcp_servers
+        .contains(&"server-1".to_string()));
+    assert!(updated_client
+        .allowed_mcp_servers
+        .contains(&"server-2".to_string()));
 
     // Remove a server
     manager.remove_mcp_server(&client.id, "server-1")?;
@@ -237,8 +254,12 @@ fn test_client_mcp_server_access() -> AppResult<()> {
     // Verify only server-2 remains
     let updated_client = manager.get_client(&client.id).unwrap();
     assert_eq!(updated_client.allowed_mcp_servers.len(), 1);
-    assert!(updated_client.allowed_mcp_servers.contains(&"server-2".to_string()));
-    assert!(!updated_client.allowed_mcp_servers.contains(&"server-1".to_string()));
+    assert!(updated_client
+        .allowed_mcp_servers
+        .contains(&"server-2".to_string()));
+    assert!(!updated_client
+        .allowed_mcp_servers
+        .contains(&"server-1".to_string()));
 
     Ok(())
 }

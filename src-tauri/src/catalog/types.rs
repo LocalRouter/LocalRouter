@@ -24,7 +24,7 @@ impl CatalogMetadata {
     pub fn fetch_date(&self) -> DateTime<Utc> {
         Utc.timestamp_opt(self.fetch_timestamp as i64, 0)
             .single()
-            .unwrap_or_else(|| Utc::now())
+            .unwrap_or_else(Utc::now)
     }
 }
 

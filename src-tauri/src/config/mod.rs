@@ -20,8 +20,110 @@ mod storage;
 mod validation;
 
 pub use storage::{load_config, save_config};
+pub use crate::router::rate_limit::RateLimitType;
 
 const CONFIG_VERSION: u32 = 2;
+
+/// Time window for rate limits
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RateLimitTimeWindow {
+    Minute,
+    Hour,
+    Day,
+}
+
+impl RateLimitTimeWindow {
+    pub fn to_seconds(&self) -> i64 {
+        match self {
+            RateLimitTimeWindow::Minute => 60,
+            RateLimitTimeWindow::Hour => 3600,
+            RateLimitTimeWindow::Day => 86400,
+        }
+    }
+}
+
+/// Rate limit configuration for strategies
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StrategyRateLimit {
+    pub limit_type: RateLimitType,
+    pub value: f64,
+    pub time_window: RateLimitTimeWindow,
+}
+
+/// Auto model configuration for localrouter/auto virtual model
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AutoModelConfig {
+    /// Whether auto-routing is enabled
+    pub enabled: bool,
+    /// Prioritized models list (in order) for fallback
+    pub prioritized_models: Vec<(String, String)>,
+    /// Available models (out of rotation)
+    #[serde(default)]
+    pub available_models: Vec<(String, String)>,
+}
+
+/// Routing strategy configuration (separate from clients)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Strategy {
+    /// Unique identifier (UUID)
+    pub id: String,
+    /// User-defined name
+    pub name: String,
+    /// Client ID that owns this strategy (if any)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
+    /// Models that are allowed by this strategy
+    #[serde(default)]
+    pub allowed_models: AvailableModelsSelection,
+    /// Auto-routing configuration for localrouter/auto
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_config: Option<AutoModelConfig>,
+    /// Rate limits for this strategy
+    #[serde(default)]
+    pub rate_limits: Vec<StrategyRateLimit>,
+}
+
+impl Strategy {
+    /// Create a new strategy with default settings
+    pub fn new(name: String) -> Self {
+        Self {
+            id: Uuid::new_v4().to_string(),
+            name,
+            parent: None,
+            allowed_models: AvailableModelsSelection::default(),
+            auto_config: None,
+            rate_limits: vec![],
+        }
+    }
+
+    /// Create a new strategy owned by a client
+    pub fn new_for_client(client_id: String, client_name: String) -> Self {
+        Self {
+            id: Uuid::new_v4().to_string(),
+            name: format!("{}'s strategy", client_name),
+            parent: Some(client_id),
+            allowed_models: AvailableModelsSelection::all(),
+            auto_config: None,
+            rate_limits: vec![],
+        }
+    }
+
+    /// Check if a model is allowed by this strategy
+    pub fn is_model_allowed(&self, provider: &str, model: &str) -> bool {
+        self.allowed_models.is_model_allowed(provider, model)
+    }
+}
+
+impl AvailableModelsSelection {
+    /// Create a selection that allows all models
+    pub fn all() -> Self {
+        Self {
+            all_provider_models: vec![],
+            individual_models: vec![],
+        }
+    }
+}
 
 /// Main application configuration structure
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -33,7 +135,6 @@ pub struct AppConfig {
     /// Server configuration
     #[serde(default)]
     pub server: ServerConfig,
-
 
     /// Router configurations
     #[serde(default)]
@@ -58,6 +159,25 @@ pub struct AppConfig {
     /// Unified clients (replaces api_keys and oauth_clients)
     #[serde(default)]
     pub clients: Vec<Client>,
+
+    /// Routing strategies (separate from clients, reusable)
+    #[serde(default)]
+    pub strategies: Vec<Strategy>,
+
+    /// Pricing overrides for specific provider/model combinations
+    /// Format: {provider_name: {model_name: pricing_override}}
+    #[serde(default)]
+    pub pricing_overrides:
+        std::collections::HashMap<String, std::collections::HashMap<String, ModelPricingOverride>>,
+}
+
+/// Pricing override for a specific model
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ModelPricingOverride {
+    /// Input/prompt price per million tokens
+    pub input_per_million: f64,
+    /// Output/completion price per million tokens
+    pub output_per_million: f64,
 }
 
 /// Server configuration
@@ -182,6 +302,12 @@ pub struct Client {
     #[serde(default)]
     pub allowed_mcp_servers: Vec<String>,
 
+    /// Enable deferred loading for MCP tools (default: false)
+    /// When enabled, only a search tool is initially visible. Tools are activated on-demand
+    /// through search queries, dramatically reducing token consumption for large catalogs.
+    #[serde(default)]
+    pub mcp_deferred_loading: bool,
+
     /// When this client was created
     pub created_at: DateTime<Utc>,
 
@@ -189,8 +315,14 @@ pub struct Client {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_used: Option<DateTime<Utc>>,
 
-    /// Model routing configuration
-    /// Determines which models are available and how requests are routed
+    /// Reference to the routing strategy this client uses
+    #[serde(default = "default_strategy_id")]
+    pub strategy_id: String,
+
+    /// Model routing configuration (deprecated, use strategy_id instead)
+    /// Kept for backward compatibility during migration
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[deprecated(note = "Use strategy_id instead")]
     pub routing_config: Option<ModelRoutingConfig>,
 }
 
@@ -692,56 +824,65 @@ impl ConfigManager {
         // Capture the Tokio runtime handle for spawning tasks from the file watcher thread
         let runtime_handle = tokio::runtime::Handle::current();
 
-        let mut watcher = notify::recommended_watcher(move |result: Result<Event, notify::Error>| {
-            match result {
-                Ok(event) => {
-                    // Only respond to modify events
-                    if matches!(event.kind, EventKind::Modify(_)) {
-                        info!("Configuration file changed, reloading...");
+        let mut watcher =
+            notify::recommended_watcher(move |result: Result<Event, notify::Error>| {
+                match result {
+                    Ok(event) => {
+                        // Only respond to modify events
+                        if matches!(event.kind, EventKind::Modify(_)) {
+                            info!("Configuration file changed, reloading...");
 
-                        // Reload config from disk (blocking operation in event handler)
-                        let config_path_clone = config_path.clone();
-                        let config_arc_clone = config_arc.clone();
-                        let app_handle_clone = app_handle.clone();
+                            // Reload config from disk (blocking operation in event handler)
+                            let config_path_clone = config_path.clone();
+                            let config_arc_clone = config_arc.clone();
+                            let app_handle_clone = app_handle.clone();
 
-                        // Use the captured runtime handle to spawn the task
-                        runtime_handle.spawn(async move {
-                            match load_config(&config_path_clone).await {
-                                Ok(new_config) => {
-                                    // Update in-memory config
-                                    *config_arc_clone.write() = new_config.clone();
+                            // Use the captured runtime handle to spawn the task
+                            runtime_handle.spawn(async move {
+                                match load_config(&config_path_clone).await {
+                                    Ok(new_config) => {
+                                        // Update in-memory config
+                                        *config_arc_clone.write() = new_config.clone();
 
-                                    info!("Configuration reloaded successfully");
+                                        info!("Configuration reloaded successfully");
 
-                                    // Emit event to frontend
-                                    if let Some(handle) = app_handle_clone {
-                                        if let Err(e) = handle.emit("config-changed", &new_config) {
-                                            error!("Failed to emit config-changed event: {}", e);
-                                        } else {
-                                            debug!("Emitted config-changed event to frontend");
+                                        // Emit event to frontend
+                                        if let Some(handle) = app_handle_clone {
+                                            if let Err(e) =
+                                                handle.emit("config-changed", &new_config)
+                                            {
+                                                error!(
+                                                    "Failed to emit config-changed event: {}",
+                                                    e
+                                                );
+                                            } else {
+                                                debug!("Emitted config-changed event to frontend");
+                                            }
                                         }
                                     }
+                                    Err(e) => {
+                                        error!("Failed to reload configuration: {}", e);
+                                    }
                                 }
-                                Err(e) => {
-                                    error!("Failed to reload configuration: {}", e);
-                                }
-                            }
-                        });
+                            });
+                        }
+                    }
+                    Err(e) => {
+                        error!("File watch error: {}", e);
                     }
                 }
-                Err(e) => {
-                    error!("File watch error: {}", e);
-                }
-            }
-        })
-        .map_err(|e| AppError::Config(format!("Failed to create file watcher: {}", e)))?;
+            })
+            .map_err(|e| AppError::Config(format!("Failed to create file watcher: {}", e)))?;
 
         // Watch the config file
         watcher
             .watch(&self.config_path, RecursiveMode::NonRecursive)
             .map_err(|e| AppError::Config(format!("Failed to watch config file: {}", e)))?;
 
-        info!("Started watching configuration file: {:?}", self.config_path);
+        info!(
+            "Started watching configuration file: {:?}",
+            self.config_path
+        );
         Ok(watcher)
     }
 
@@ -843,6 +984,7 @@ impl Default for AppConfig {
             oauth_clients: Vec::new(),
             mcp_servers: Vec::new(),
             clients: Vec::new(),
+            pricing_overrides: std::collections::HashMap::new(),
         }
     }
 }
@@ -956,9 +1098,9 @@ impl ModelRoutingConfig {
     /// Check if a model is allowed by the current active strategy
     pub fn is_model_allowed(&self, provider_name: &str, model_id: &str) -> bool {
         match self.active_strategy {
-            ActiveRoutingStrategy::AvailableModels => {
-                self.available_models.is_model_allowed(provider_name, model_id)
-            }
+            ActiveRoutingStrategy::AvailableModels => self
+                .available_models
+                .is_model_allowed(provider_name, model_id),
             ActiveRoutingStrategy::ForceModel => {
                 // Only the forced model is allowed
                 if let Some((forced_provider, forced_model)) = &self.forced_model {
@@ -1021,7 +1163,6 @@ impl ModelRoutingConfig {
             }
         }
     }
-
 }
 
 impl AvailableModelsSelection {
@@ -1037,9 +1178,9 @@ impl AvailableModelsSelection {
         }
 
         // Check if the specific (provider, model) pair is in individual_models
-        self.individual_models.iter().any(|(p, m)| {
-            p.eq_ignore_ascii_case(provider_name) && m.eq_ignore_ascii_case(model_id)
-        })
+        self.individual_models
+            .iter()
+            .any(|(p, m)| p.eq_ignore_ascii_case(provider_name) && m.eq_ignore_ascii_case(model_id))
     }
 }
 
@@ -1069,6 +1210,7 @@ impl Client {
             enabled: true,
             allowed_llm_providers: Vec::new(),
             allowed_mcp_servers: Vec::new(),
+            mcp_deferred_loading: false,
             created_at: Utc::now(),
             last_used: None,
             routing_config: None,
@@ -1082,7 +1224,10 @@ impl Client {
 
     /// Check if this client can access a specific LLM provider
     pub fn can_access_llm_provider(&self, provider_name: &str) -> bool {
-        self.enabled && self.allowed_llm_providers.contains(&provider_name.to_string())
+        self.enabled
+            && self
+                .allowed_llm_providers
+                .contains(&provider_name.to_string())
     }
 
     /// Check if this client can access a specific MCP server
@@ -1099,7 +1244,11 @@ impl Client {
 
     /// Remove LLM provider access
     pub fn remove_llm_provider(&mut self, provider_name: &str) -> bool {
-        if let Some(pos) = self.allowed_llm_providers.iter().position(|p| p == provider_name) {
+        if let Some(pos) = self
+            .allowed_llm_providers
+            .iter()
+            .position(|p| p == provider_name)
+        {
             self.allowed_llm_providers.remove(pos);
             true
         } else {
@@ -1127,7 +1276,11 @@ impl Client {
 
 impl McpServerConfig {
     /// Create a new MCP server configuration
-    pub fn new(name: String, transport: McpTransportType, transport_config: McpTransportConfig) -> Self {
+    pub fn new(
+        name: String,
+        transport: McpTransportType,
+        transport_config: McpTransportConfig,
+    ) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
             name,
@@ -1141,7 +1294,6 @@ impl McpServerConfig {
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests {

@@ -171,7 +171,7 @@ pub enum ToolChoice {
     Specific {
         #[serde(rename = "type")]
         tool_type: String,
-        function: FunctionName
+        function: FunctionName,
     },
 }
 
@@ -668,15 +668,20 @@ impl From<&crate::providers::ModelInfo> for ModelData {
     fn from(info: &crate::providers::ModelInfo) -> Self {
         use crate::providers::Capability;
 
-        let capabilities = info.capabilities.iter().map(|c| {
-            match c {
-                Capability::Chat => "chat",
-                Capability::Completion => "completion",
-                Capability::Embedding => "embedding",
-                Capability::Vision => "vision",
-                Capability::FunctionCalling => "function_calling",
-            }.to_string()
-        }).collect();
+        let capabilities = info
+            .capabilities
+            .iter()
+            .map(|c| {
+                match c {
+                    Capability::Chat => "chat",
+                    Capability::Completion => "completion",
+                    Capability::Embedding => "embedding",
+                    Capability::Vision => "vision",
+                    Capability::FunctionCalling => "function_calling",
+                }
+                .to_string()
+            })
+            .collect();
 
         Self {
             id: info.id.clone(),
@@ -688,12 +693,12 @@ impl From<&crate::providers::ModelInfo> for ModelData {
             context_window: info.context_window,
             supports_streaming: info.supports_streaming,
             capabilities,
-            pricing: None, // Will be filled separately
+            pricing: None,               // Will be filled separately
             detailed_capabilities: None, // Will be filled by /v1/models endpoint
-            features: None, // Will be filled by /v1/models endpoint
-            supported_parameters: None, // Will be filled by /v1/models endpoint
-            performance: None, // Will be filled by /v1/models endpoint
-            catalog_info: None, // TODO: Populate from catalog
+            features: None,              // Will be filled by /v1/models endpoint
+            supported_parameters: None,  // Will be filled by /v1/models endpoint
+            performance: None,           // Will be filled by /v1/models endpoint
+            catalog_info: None,          // TODO: Populate from catalog
         }
     }
 }

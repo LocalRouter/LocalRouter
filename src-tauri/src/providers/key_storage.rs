@@ -24,7 +24,10 @@ static PROVIDER_KEYCHAIN: OnceLock<CachedKeychain> = OnceLock::new();
 fn get_keychain() -> &'static CachedKeychain {
     PROVIDER_KEYCHAIN.get_or_init(|| {
         CachedKeychain::auto().unwrap_or_else(|e| {
-            warn!("Failed to create auto keychain: {}, falling back to system", e);
+            warn!(
+                "Failed to create auto keychain: {}, falling back to system",
+                e
+            );
             CachedKeychain::system()
         })
     })

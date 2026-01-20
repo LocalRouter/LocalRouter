@@ -38,7 +38,8 @@ impl CatalogCodeGenerator {
         // Write to file
         fs::write(&self.output_path, code)?;
 
-        println!("cargo:warning=Generated catalog.rs with {} models ({} bytes)",
+        println!(
+            "cargo:warning=Generated catalog.rs with {} models ({} bytes)",
             models.len(),
             fs::metadata(&self.output_path)?.len()
         );
@@ -121,10 +122,12 @@ impl CatalogCodeGenerator {
             modality,
             self.format_f64(model.prompt_cost_per_token()),
             self.format_f64(model.completion_cost_per_token()),
-            model.image_cost_per_token()
+            model
+                .image_cost_per_token()
                 .map(|v| format!("Some({})", self.format_f64(v)))
                 .unwrap_or_else(|| "None".to_string()),
-            model.request_cost()
+            model
+                .request_cost()
                 .map(|v| format!("Some({})", self.format_f64(v)))
                 .unwrap_or_else(|| "None".to_string()),
             supported_params

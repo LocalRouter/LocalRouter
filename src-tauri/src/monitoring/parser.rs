@@ -10,9 +10,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
 #[cfg(test)]
 use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::{error, warn};
 
@@ -186,8 +186,7 @@ impl LogParser {
             let minute_ts = entry.timestamp.timestamp() / 60 * 60;
 
             let point = points_map.entry(minute_ts).or_insert_with(|| {
-                let rounded_time =
-                    DateTime::from_timestamp(minute_ts, 0).unwrap_or_else(Utc::now);
+                let rounded_time = DateTime::from_timestamp(minute_ts, 0).unwrap_or_else(Utc::now);
                 MetricDataPoint {
                     timestamp: rounded_time,
                     requests: 0,
@@ -444,11 +443,7 @@ mod tests {
     use std::io::Write;
     use tempfile::TempDir;
 
-    fn create_test_log_file(
-        dir: &Path,
-        date: &str,
-        entries: Vec<AccessLogEntry>,
-    ) -> AppResult<()> {
+    fn create_test_log_file(dir: &Path, date: &str, entries: Vec<AccessLogEntry>) -> AppResult<()> {
         let log_path = dir.join(format!("localrouter-{}.log", date));
         let mut file = File::create(log_path)?;
 

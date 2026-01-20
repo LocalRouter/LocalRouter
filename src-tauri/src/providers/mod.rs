@@ -89,7 +89,10 @@ pub trait ModelProvider: Send + Sync {
     ///
     /// Returns None if the feature is not supported.
     /// Default implementation returns None for all features.
-    fn get_feature_adapter(&self, _feature: &str) -> Option<Box<dyn crate::providers::features::FeatureAdapter>> {
+    fn get_feature_adapter(
+        &self,
+        _feature: &str,
+    ) -> Option<Box<dyn crate::providers::features::FeatureAdapter>> {
         None
     }
 }
@@ -160,6 +163,50 @@ impl ModelInfo {
                 "Model '{}' not found in catalog (provider: {})",
                 self.id,
                 provider_type
+            );
+        }
+
+        self
+    }
+
+    /// Enrich this model with catalog metadata using model name only
+    ///
+    /// This variant is designed for multi-provider systems (Ollama, LMStudio,
+    /// DeepInfra, TogetherAI, OpenRouter, OpenAI-compatible) where the model
+    /// may come from various providers and we want to search by model name only.
+    ///
+    /// # Returns
+    /// Self with potentially updated context_window and capabilities
+    pub fn enrich_with_catalog_by_name(mut self) -> Self {
+        use crate::catalog;
+
+        if let Some(catalog_model) = catalog::find_model_by_name(&self.id) {
+            tracing::debug!(
+                "Enriching model '{}' from catalog (provider-agnostic search)",
+                self.id
+            );
+
+            // Update context window if catalog has better info
+            if catalog_model.context_length > self.context_window {
+                tracing::debug!(
+                    "Updating context window for '{}': {} -> {}",
+                    self.id,
+                    self.context_window,
+                    catalog_model.context_length
+                );
+                self.context_window = catalog_model.context_length;
+            }
+
+            // Add vision capability if multimodal
+            if catalog_model.modality == catalog::Modality::Multimodal
+                && !self.capabilities.contains(&Capability::Vision)
+            {
+                self.capabilities.push(Capability::Vision);
+            }
+        } else {
+            tracing::debug!(
+                "Model '{}' not found in catalog (provider-agnostic search)",
+                self.id
             );
         }
 
@@ -605,7 +652,6 @@ pub struct EmbeddingUsage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
 
     #[test]
     fn test_token_usage_basic_serialization() {

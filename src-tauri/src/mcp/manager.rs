@@ -5,12 +5,18 @@
 use crate::api_keys::keychain_trait::KeychainStorage;
 use crate::config::{McpServerConfig, McpTransportConfig, McpTransportType};
 use crate::mcp::oauth::McpOAuthManager;
+use crate::mcp::protocol::{JsonRpcNotification, JsonRpcRequest, JsonRpcResponse};
 use crate::mcp::transport::{SseTransport, StdioTransport, Transport};
-use crate::mcp::protocol::{JsonRpcRequest, JsonRpcResponse};
 use crate::utils::errors::{AppError, AppResult};
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+
+/// Notification callback type
+///
+/// Called when a notification is received from an MCP server.
+/// Receives the server_id and the notification.
+pub type NotificationCallback = Arc<dyn Fn(String, JsonRpcNotification) + Send + Sync>;
 
 /// MCP server manager
 ///
@@ -30,6 +36,9 @@ pub struct McpServerManager {
 
     /// OAuth manager for MCP servers
     oauth_manager: Arc<McpOAuthManager>,
+
+    /// Notification handlers (server_id -> list of callbacks)
+    notification_handlers: Arc<DashMap<String, Vec<NotificationCallback>>>,
 }
 
 /// Health status for an MCP server
@@ -69,6 +78,34 @@ impl McpServerManager {
             sse_transports: Arc::new(DashMap::new()),
             configs: Arc::new(DashMap::new()),
             oauth_manager: Arc::new(McpOAuthManager::new()),
+            notification_handlers: Arc::new(DashMap::new()),
+        }
+    }
+
+    /// Register a notification handler for a specific server
+    ///
+    /// # Arguments
+    /// * `server_id` - The server ID to register the handler for
+    /// * `callback` - The callback to invoke when notifications are received
+    ///
+    /// Note: Multiple handlers can be registered for the same server.
+    pub fn on_notification(&self, server_id: &str, callback: NotificationCallback) {
+        self.notification_handlers
+            .entry(server_id.to_string())
+            .or_insert_with(Vec::new)
+            .push(callback);
+    }
+
+    /// Dispatch a notification to all registered handlers
+    ///
+    /// # Arguments
+    /// * `server_id` - The server ID that sent the notification
+    /// * `notification` - The notification to dispatch
+    pub(crate) fn dispatch_notification(&self, server_id: &str, notification: JsonRpcNotification) {
+        if let Some(handlers) = self.notification_handlers.get(server_id) {
+            for handler in handlers.iter() {
+                handler(server_id.to_string(), notification.clone());
+            }
         }
     }
 
@@ -101,7 +138,10 @@ impl McpServerManager {
 
     /// List all server configurations
     pub fn list_configs(&self) -> Vec<McpServerConfig> {
-        self.configs.iter().map(|entry| entry.value().clone()).collect()
+        self.configs
+            .iter()
+            .map(|entry| entry.value().clone())
+            .collect()
     }
 
     /// Start an MCP server
@@ -141,11 +181,7 @@ impl McpServerManager {
     }
 
     /// Start a STDIO MCP server
-    async fn start_stdio_server(
-        &self,
-        server_id: &str,
-        config: &McpServerConfig,
-    ) -> AppResult<()> {
+    async fn start_stdio_server(&self, server_id: &str, config: &McpServerConfig) -> AppResult<()> {
         // Extract STDIO config
         let (command, args, mut env) = match &config.transport_config {
             McpTransportConfig::Stdio { command, args, env } => {
@@ -171,6 +207,13 @@ impl McpServerManager {
         // Spawn the STDIO transport
         let transport = StdioTransport::spawn(command, args, env).await?;
 
+        // Set up notification callback
+        let server_id_for_callback = server_id.to_string();
+        let manager_for_callback = self.clone();
+        transport.set_notification_callback(Arc::new(move |notification| {
+            manager_for_callback.dispatch_notification(&server_id_for_callback, notification);
+        }));
+
         // Store the transport
         self.stdio_transports
             .insert(server_id.to_string(), Arc::new(transport));
@@ -179,17 +222,11 @@ impl McpServerManager {
     }
 
     /// Start an SSE MCP server
-    async fn start_sse_server(
-        &self,
-        server_id: &str,
-        config: &McpServerConfig,
-    ) -> AppResult<()> {
+    async fn start_sse_server(&self, server_id: &str, config: &McpServerConfig) -> AppResult<()> {
         // Extract SSE config
         let (url, mut headers) = match &config.transport_config {
-            McpTransportConfig::Sse { url, headers } |
-            McpTransportConfig::HttpSse { url, headers } => {
-                (url.clone(), headers.clone())
-            }
+            McpTransportConfig::Sse { url, headers }
+            | McpTransportConfig::HttpSse { url, headers } => (url.clone(), headers.clone()),
             _ => {
                 return Err(AppError::Mcp(
                     "Invalid transport config for SSE/HttpSse".to_string(),
@@ -210,10 +247,16 @@ impl McpServerManager {
                         headers.insert("Authorization".to_string(), format!("Bearer {}", token));
                         tracing::debug!("Applied bearer token auth for SSE server: {}", server_id);
                     } else {
-                        tracing::warn!("Bearer token not found in keychain for server: {} (tried account: {})", server_id, account_name);
+                        tracing::warn!(
+                            "Bearer token not found in keychain for server: {} (tried account: {})",
+                            server_id,
+                            account_name
+                        );
                     }
                 }
-                crate::config::McpAuthConfig::CustomHeaders { headers: auth_headers } => {
+                crate::config::McpAuthConfig::CustomHeaders {
+                    headers: auth_headers,
+                } => {
                     // Merge custom auth headers with base headers
                     // Auth headers override base headers
                     for (key, value) in auth_headers {
@@ -223,7 +266,10 @@ impl McpServerManager {
                 }
                 crate::config::McpAuthConfig::OAuth { .. } => {
                     // TODO: Implement OAuth token acquisition and refresh
-                    tracing::warn!("OAuth auth not yet implemented for SSE server: {}", server_id);
+                    tracing::warn!(
+                        "OAuth auth not yet implemented for SSE server: {}",
+                        server_id
+                    );
                 }
                 _ => {
                     // None or EnvVars (not applicable for SSE)
@@ -234,6 +280,13 @@ impl McpServerManager {
 
         // Connect to the SSE server
         let transport = SseTransport::connect(url, headers).await?;
+
+        // Set up notification callback
+        let server_id_for_callback = server_id.to_string();
+        let manager_for_callback = self.clone();
+        transport.set_notification_callback(Arc::new(move |notification| {
+            manager_for_callback.dispatch_notification(&server_id_for_callback, notification);
+        }));
 
         // Store the transport
         self.sse_transports
@@ -331,7 +384,9 @@ impl McpServerManager {
 
         McpServerHealth {
             server_id: server_id.to_string(),
-            server_name: config.map(|c| c.name).unwrap_or_else(|| "Unknown".to_string()),
+            server_name: config
+                .map(|c| c.name)
+                .unwrap_or_else(|| "Unknown".to_string()),
             status,
             error,
             last_check: chrono::Utc::now(),
@@ -353,8 +408,7 @@ impl McpServerManager {
 
     /// Check if a server is running
     pub fn is_running(&self, server_id: &str) -> bool {
-        self.stdio_transports.contains_key(server_id)
-            || self.sse_transports.contains_key(server_id)
+        self.stdio_transports.contains_key(server_id) || self.sse_transports.contains_key(server_id)
     }
 
     /// Shutdown all servers

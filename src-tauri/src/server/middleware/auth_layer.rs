@@ -1,11 +1,11 @@
 //! Tower-based authentication layer for Tauri HTTP compatibility
 
-use std::task::{Context, Poll};
+use axum::body::Body;
 use std::future::Future;
 use std::pin::Pin;
-use tower::{Layer, Service};
+use std::task::{Context, Poll};
 use tauri::http::{Request, Response, StatusCode};
-use axum::body::Body;
+use tower::{Layer, Service};
 
 use crate::server::state::{AppState, AuthContext};
 use crate::server::types::{ApiError, ErrorResponse};
@@ -115,7 +115,9 @@ where
 
             // Check if this is the internal test token
             if bearer_token == state.internal_test_secret.as_str() {
-                tracing::debug!("Internal test token detected - bypassing API key restrictions for UI testing");
+                tracing::debug!(
+                    "Internal test token detected - bypassing API key restrictions for UI testing"
+                );
                 let auth_context = AuthContext {
                     api_key_id: "internal-test".to_string(),
                     model_selection: None,
@@ -135,7 +137,8 @@ where
                         // Load routing config from config manager
                         let routing_config = {
                             let config = state.config_manager.get();
-                            config.clients
+                            config
+                                .clients
                                 .iter()
                                 .find(|c| c.id == client.id)
                                 .and_then(|c| c.routing_config.clone())

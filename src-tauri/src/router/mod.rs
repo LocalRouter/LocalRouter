@@ -16,9 +16,7 @@ use crate::utils::errors::{AppError, AppResult};
 pub mod rate_limit;
 
 // Re-export commonly used types
-pub use rate_limit::{
-    RateLimiterManager, UsageInfo,
-};
+pub use rate_limit::{RateLimiterManager, UsageInfo};
 
 /// Wraps a completion stream to count tokens and record usage when complete
 ///
@@ -200,7 +198,11 @@ impl Router {
 
                     // Log error but don't fail the request if usage recording fails
                     // The provider already succeeded and consumed tokens/cost
-                    if let Err(e) = self.rate_limiter.record_api_key_usage(client_id, &usage).await {
+                    if let Err(e) = self
+                        .rate_limiter
+                        .record_api_key_usage(client_id, &usage)
+                        .await
+                    {
                         warn!(
                             "Failed to record usage for API key '{}': {}. Request succeeded but usage not tracked.",
                             client_id, e
@@ -322,7 +324,8 @@ impl Router {
             if config.active_strategy == ActiveRoutingStrategy::PrioritizedList {
                 if config.prioritized_models.is_empty() {
                     return Err(AppError::Router(
-                        "Prioritized List strategy is active but no models are configured".to_string()
+                        "Prioritized List strategy is active but no models are configured"
+                            .to_string(),
                     ));
                 }
 
@@ -365,7 +368,9 @@ impl Router {
                         let mut found_provider = None;
 
                         // Check individual_models first
-                        for (provider_name, model_name) in &config.available_models.individual_models {
+                        for (provider_name, model_name) in
+                            &config.available_models.individual_models
+                        {
                             if model_name.eq_ignore_ascii_case(&request.model) {
                                 found_provider = Some(provider_name.clone());
                                 break;
@@ -375,9 +380,14 @@ impl Router {
                         // If not found, check providers in all_provider_models
                         if found_provider.is_none() {
                             for provider_name in &config.available_models.all_provider_models {
-                                if let Some(provider) = self.provider_registry.get_provider(provider_name) {
+                                if let Some(provider) =
+                                    self.provider_registry.get_provider(provider_name)
+                                {
                                     if let Ok(models) = provider.list_models().await {
-                                        if models.iter().any(|m| m.id.eq_ignore_ascii_case(&request.model)) {
+                                        if models
+                                            .iter()
+                                            .any(|m| m.id.eq_ignore_ascii_case(&request.model))
+                                        {
                                             found_provider = Some(provider_name.clone());
                                             break;
                                         }
@@ -406,7 +416,7 @@ impl Router {
                         (forced_provider.clone(), forced_model.clone())
                     } else {
                         return Err(AppError::Router(
-                            "Force Model strategy is active but no model is configured".to_string()
+                            "Force Model strategy is active but no model is configured".to_string(),
                         ));
                     }
                 }
@@ -431,18 +441,24 @@ impl Router {
         };
 
         // 4. Get provider instance from registry
-        let provider_instance = self.provider_registry.get_provider(&provider).ok_or_else(|| {
-            AppError::Router(format!(
-                "Provider '{}' not found or disabled in registry",
-                provider
-            ))
-        })?;
+        let provider_instance =
+            self.provider_registry
+                .get_provider(&provider)
+                .ok_or_else(|| {
+                    AppError::Router(format!(
+                        "Provider '{}' not found or disabled in registry",
+                        provider
+                    ))
+                })?;
 
         // 5. Check provider health (optional - log warning if unhealthy)
         let health = provider_instance.health_check().await;
         match health.status {
             crate::providers::HealthStatus::Healthy => {
-                debug!("Provider '{}' is healthy (latency: {:?}ms)", provider, health.latency_ms);
+                debug!(
+                    "Provider '{}' is healthy (latency: {:?}ms)",
+                    provider, health.latency_ms
+                );
             }
             crate::providers::HealthStatus::Degraded => {
                 warn!(
@@ -480,29 +496,44 @@ impl Router {
             for (feature_name, feature_params) in extensions {
                 // Check if provider supports this feature
                 if provider_instance.supports_feature(feature_name) {
-                    debug!("Provider '{}' supports feature '{}'", provider, feature_name);
+                    debug!(
+                        "Provider '{}' supports feature '{}'",
+                        provider, feature_name
+                    );
 
                     // Get the feature adapter
                     if let Some(adapter) = provider_instance.get_feature_adapter(feature_name) {
                         // Validate parameters
-                        let mut params: crate::providers::features::FeatureParams = std::collections::HashMap::new();
+                        let mut params: crate::providers::features::FeatureParams =
+                            std::collections::HashMap::new();
                         if let serde_json::Value::Object(map) = feature_params {
                             for (k, v) in map {
                                 params.insert(k.clone(), v.clone());
                             }
                         }
                         adapter.validate_params(&params).map_err(|e| {
-                            warn!("Feature '{}' parameter validation failed: {}", feature_name, e);
+                            warn!(
+                                "Feature '{}' parameter validation failed: {}",
+                                feature_name, e
+                            );
                             e
                         })?;
 
                         // Adapt the request
-                        adapter.adapt_request(&mut modified_request, &params).map_err(|e| {
-                            warn!("Feature '{}' request adaptation failed: {}", feature_name, e);
-                            e
-                        })?;
+                        adapter
+                            .adapt_request(&mut modified_request, &params)
+                            .map_err(|e| {
+                                warn!(
+                                    "Feature '{}' request adaptation failed: {}",
+                                    feature_name, e
+                                );
+                                e
+                            })?;
 
-                        debug!("Successfully applied feature adapter for '{}'", feature_name);
+                        debug!(
+                            "Successfully applied feature adapter for '{}'",
+                            feature_name
+                        );
                     } else {
                         warn!(
                             "Provider '{}' claims to support feature '{}' but no adapter available",
@@ -518,13 +549,16 @@ impl Router {
             }
         }
 
-        let mut response = provider_instance.complete(modified_request).await.map_err(|e| {
-            warn!(
-                "Completion request failed for provider '{}': {}",
-                provider, e
-            );
-            e
-        })?;
+        let mut response = provider_instance
+            .complete(modified_request)
+            .await
+            .map_err(|e| {
+                warn!(
+                    "Completion request failed for provider '{}': {}",
+                    provider, e
+                );
+                e
+            })?;
 
         // Apply feature adapters to response if extensions were present
         if let Some(ref extensions) = request.extensions {
@@ -544,7 +578,10 @@ impl Router {
         // Add extensions to response if any were collected
         if !response_extensions.is_empty() {
             response.extensions = Some(response_extensions);
-            debug!("Added {} feature extensions to response", response.extensions.as_ref().unwrap().len());
+            debug!(
+                "Added {} feature extensions to response",
+                response.extensions.as_ref().unwrap().len()
+            );
         }
 
         // 7. Calculate cost and record usage for rate limiting
@@ -567,7 +604,11 @@ impl Router {
 
         // Log error but don't fail the request if usage recording fails
         // The provider already succeeded and consumed tokens/cost
-        if let Err(e) = self.rate_limiter.record_api_key_usage(client_id, &usage).await {
+        if let Err(e) = self
+            .rate_limiter
+            .record_api_key_usage(client_id, &usage)
+            .await
+        {
             warn!(
                 "Failed to record usage for API key '{}': {}. Request succeeded but usage not tracked.",
                 client_id, e
@@ -586,14 +627,8 @@ impl Router {
     ///
     /// This bypasses all routing config, rate limiting, and client validation.
     /// Used only for the internal test token to allow direct provider testing from the UI.
-    async fn complete_direct(
-        &self,
-        request: CompletionRequest,
-    ) -> AppResult<CompletionResponse> {
-        debug!(
-            "Direct completion request for model '{}'",
-            request.model
-        );
+    async fn complete_direct(&self, request: CompletionRequest) -> AppResult<CompletionResponse> {
+        debug!("Direct completion request for model '{}'", request.model);
 
         // Parse the model from request (format: "provider/model")
         let (provider, model) = if let Some((p, m)) = request.model.split_once('/') {
@@ -606,12 +641,15 @@ impl Router {
         };
 
         // Get provider instance from registry
-        let provider_instance = self.provider_registry.get_provider(&provider).ok_or_else(|| {
-            AppError::Router(format!(
-                "Provider '{}' not found or disabled in registry",
-                provider
-            ))
-        })?;
+        let provider_instance =
+            self.provider_registry
+                .get_provider(&provider)
+                .ok_or_else(|| {
+                    AppError::Router(format!(
+                        "Provider '{}' not found or disabled in registry",
+                        provider
+                    ))
+                })?;
 
         // Execute the completion request directly
         debug!(
@@ -622,13 +660,16 @@ impl Router {
         let mut modified_request = request.clone();
         modified_request.model = model.clone();
 
-        let response = provider_instance.complete(modified_request).await.map_err(|e| {
-            warn!(
-                "Direct completion request failed for provider '{}': {}",
-                provider, e
-            );
-            e
-        })?;
+        let response = provider_instance
+            .complete(modified_request)
+            .await
+            .map_err(|e| {
+                warn!(
+                    "Direct completion request failed for provider '{}': {}",
+                    provider, e
+                );
+                e
+            })?;
 
         info!(
             "Direct completion request successful: provider='{}', model='{}', {} tokens",
@@ -726,7 +767,9 @@ impl Router {
                     } else {
                         // Find provider for this model
                         let mut found_provider = None;
-                        for (provider_name, model_name) in &config.available_models.individual_models {
+                        for (provider_name, model_name) in
+                            &config.available_models.individual_models
+                        {
                             if model_name.eq_ignore_ascii_case(&request.model) {
                                 found_provider = Some(provider_name.clone());
                                 break;
@@ -734,9 +777,14 @@ impl Router {
                         }
                         if found_provider.is_none() {
                             for provider_name in &config.available_models.all_provider_models {
-                                if let Some(provider) = self.provider_registry.get_provider(provider_name) {
+                                if let Some(provider) =
+                                    self.provider_registry.get_provider(provider_name)
+                                {
                                     if let Ok(models) = provider.list_models().await {
-                                        if models.iter().any(|m| m.id.eq_ignore_ascii_case(&request.model)) {
+                                        if models
+                                            .iter()
+                                            .any(|m| m.id.eq_ignore_ascii_case(&request.model))
+                                        {
                                             found_provider = Some(provider_name.clone());
                                             break;
                                         }
@@ -760,7 +808,7 @@ impl Router {
                         (forced_provider.clone(), forced_model.clone())
                     } else {
                         return Err(AppError::Router(
-                            "Force Model strategy is active but no model is configured".to_string()
+                            "Force Model strategy is active but no model is configured".to_string(),
                         ));
                     }
                 }
@@ -772,7 +820,8 @@ impl Router {
                         (first_provider.clone(), first_model.clone())
                     } else {
                         return Err(AppError::Router(
-                            "Prioritized List strategy is active but no models are configured".to_string()
+                            "Prioritized List strategy is active but no models are configured"
+                                .to_string(),
                         ));
                     }
                 }
@@ -792,12 +841,15 @@ impl Router {
         };
 
         // 4. Get provider instance
-        let provider_instance = self.provider_registry.get_provider(&provider).ok_or_else(|| {
-            AppError::Router(format!(
-                "Provider '{}' not found or disabled in registry",
-                provider
-            ))
-        })?;
+        let provider_instance =
+            self.provider_registry
+                .get_provider(&provider)
+                .ok_or_else(|| {
+                    AppError::Router(format!(
+                        "Provider '{}' not found or disabled in registry",
+                        provider
+                    ))
+                })?;
 
         // 5. Check provider health
         let health = provider_instance.health_check().await;
@@ -832,7 +884,8 @@ impl Router {
             stream,
             client_id.to_string(),
             self.rate_limiter.clone(),
-        ).await;
+        )
+        .await;
 
         Ok(tracked_stream)
     }
@@ -861,12 +914,15 @@ impl Router {
         };
 
         // Get provider instance from registry
-        let provider_instance = self.provider_registry.get_provider(&provider).ok_or_else(|| {
-            AppError::Router(format!(
-                "Provider '{}' not found or disabled in registry",
-                provider
-            ))
-        })?;
+        let provider_instance =
+            self.provider_registry
+                .get_provider(&provider)
+                .ok_or_else(|| {
+                    AppError::Router(format!(
+                        "Provider '{}' not found or disabled in registry",
+                        provider
+                    ))
+                })?;
 
         // Execute streaming request directly
         debug!(

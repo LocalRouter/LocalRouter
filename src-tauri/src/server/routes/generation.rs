@@ -36,16 +36,13 @@ pub async fn get_generation(
     State(state): State<AppState>,
     Query(query): Query<GenerationQuery>,
 ) -> ApiResult<Json<GenerationDetailsResponse>> {
-    let details = state
-        .generation_tracker
-        .get(&query.id)
-        .ok_or_else(|| {
-            ApiErrorResponse::new(
-                axum::http::StatusCode::NOT_FOUND,
-                "not_found_error",
-                format!("Generation '{}' not found", query.id),
-            )
-        })?;
+    let details = state.generation_tracker.get(&query.id).ok_or_else(|| {
+        ApiErrorResponse::new(
+            axum::http::StatusCode::NOT_FOUND,
+            "not_found_error",
+            format!("Generation '{}' not found", query.id),
+        )
+    })?;
 
     Ok(Json(details))
 }

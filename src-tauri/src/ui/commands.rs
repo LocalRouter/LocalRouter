@@ -7,7 +7,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::api_keys::keychain_trait::KeychainStorage;
-use crate::config::{ActiveRoutingStrategy, ConfigManager, McpAuthConfig, McpServerConfig, McpTransportConfig, McpTransportType, ModelRoutingConfig, RouterConfig};
+use crate::config::{
+    ActiveRoutingStrategy, ConfigManager, McpAuthConfig, McpServerConfig, McpTransportConfig,
+    McpTransportType, ModelRoutingConfig, RouterConfig,
+};
 use crate::mcp::McpServerManager;
 use crate::oauth_clients::OAuthClientManager;
 use crate::providers::registry::ProviderRegistry;
@@ -17,14 +20,18 @@ use tauri::{Emitter, State};
 
 /// List all routers
 #[tauri::command]
-pub async fn list_routers(config_manager: State<'_, ConfigManager>) -> Result<Vec<RouterConfig>, String> {
+pub async fn list_routers(
+    config_manager: State<'_, ConfigManager>,
+) -> Result<Vec<RouterConfig>, String> {
     let config = config_manager.get();
     Ok(config.routers)
 }
 
 /// Get current configuration
 #[tauri::command]
-pub async fn get_config(config_manager: State<'_, ConfigManager>) -> Result<serde_json::Value, String> {
+pub async fn get_config(
+    config_manager: State<'_, ConfigManager>,
+) -> Result<serde_json::Value, String> {
     let config = config_manager.get();
     serde_json::to_value(config).map_err(|e| e.to_string())
 }
@@ -75,8 +82,7 @@ pub async fn set_provider_api_key(provider: String, api_key: String) -> Result<(
 /// This command only returns whether a key exists, not the actual key value.
 #[tauri::command]
 pub async fn has_provider_api_key(provider: String) -> Result<bool, String> {
-    crate::providers::key_storage::has_provider_key(&provider)
-        .map_err(|e| e.to_string())
+    crate::providers::key_storage::has_provider_key(&provider).map_err(|e| e.to_string())
 }
 
 /// Delete a provider API key from the system keyring
@@ -88,8 +94,7 @@ pub async fn has_provider_api_key(provider: String) -> Result<bool, String> {
 /// * `Ok(())` if successful (even if the key didn't exist)
 #[tauri::command]
 pub async fn delete_provider_api_key(provider: String) -> Result<(), String> {
-    crate::providers::key_storage::delete_provider_key(&provider)
-        .map_err(|e| e.to_string())
+    crate::providers::key_storage::delete_provider_key(&provider).map_err(|e| e.to_string())
 }
 
 /// List all providers (from config) with their key status
@@ -105,12 +110,13 @@ pub async fn list_providers_with_key_status(
     let mut result = Vec::new();
     for provider_config in config.providers {
         // Check if key exists for this provider
-        let key_ref = provider_config.api_key_ref.as_deref()
+        let key_ref = provider_config
+            .api_key_ref
+            .as_deref()
             .unwrap_or(&provider_config.name)
             .to_string();
 
-        let has_key = crate::providers::key_storage::has_provider_key(&key_ref)
-            .unwrap_or(false);
+        let has_key = crate::providers::key_storage::has_provider_key(&key_ref).unwrap_or(false);
 
         result.push(ProviderKeyStatus {
             name: provider_config.name,
@@ -209,10 +215,7 @@ pub async fn create_provider_instance(
         .map_err(|e| e.to_string())?;
 
     // Persist to disk
-    config_manager
-        .save()
-        .await
-        .map_err(|e| e.to_string())?;
+    config_manager.save().await.map_err(|e| e.to_string())?;
 
     // Notify frontend that providers and models changed
     let _ = app.emit("providers-changed", ());
@@ -279,10 +282,7 @@ pub async fn update_provider_instance(
         .map_err(|e| e.to_string())?;
 
     // Persist to disk
-    config_manager
-        .save()
-        .await
-        .map_err(|e| e.to_string())?;
+    config_manager.save().await.map_err(|e| e.to_string())?;
 
     // Notify frontend that providers and models changed
     let _ = app.emit("providers-changed", ());
@@ -340,10 +340,7 @@ pub async fn remove_provider_instance(
         .map_err(|e| e.to_string())?;
 
     // Persist to disk
-    config_manager
-        .save()
-        .await
-        .map_err(|e| e.to_string())?;
+    config_manager.save().await.map_err(|e| e.to_string())?;
 
     // Notify frontend that providers and models changed
     let _ = app.emit("providers-changed", ());
@@ -384,10 +381,7 @@ pub async fn set_provider_enabled(
         .map_err(|e| e.to_string())?;
 
     // Persist to disk
-    config_manager
-        .save()
-        .await
-        .map_err(|e| e.to_string())?;
+    config_manager.save().await.map_err(|e| e.to_string())?;
 
     // Notify frontend that providers and models changed
     let _ = app.emit("providers-changed", ());
@@ -438,10 +432,17 @@ pub async fn list_provider_models(
 pub async fn list_all_models(
     registry: State<'_, Arc<ProviderRegistry>>,
 ) -> Result<Vec<crate::providers::ModelInfo>, String> {
-    registry
-        .list_all_models()
-        .await
-        .map_err(|e| e.to_string())
+    registry.list_all_models().await.map_err(|e| e.to_string())
+}
+
+/// Source of pricing information
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PricingSource {
+    /// Pricing from OpenRouter catalog (embedded at build time)
+    Catalog,
+    /// User-provided pricing override
+    Override,
 }
 
 /// Detailed model information for the frontend
@@ -459,6 +460,9 @@ pub struct DetailedModelInfo {
     pub output_price_per_million: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parameter_count: Option<String>,
+    /// Source of pricing data (catalog or user override)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pricing_source: Option<PricingSource>,
 }
 
 /// List all available models with detailed information
@@ -468,6 +472,7 @@ pub struct DetailedModelInfo {
 #[tauri::command]
 pub async fn list_all_models_detailed(
     registry: State<'_, Arc<ProviderRegistry>>,
+    config_manager: State<'_, ConfigManager>,
 ) -> Result<Vec<DetailedModelInfo>, String> {
     let models = registry
         .list_all_models()
@@ -477,6 +482,8 @@ pub async fn list_all_models_detailed(
     let detailed_models = models
         .into_iter()
         .map(|model| {
+            use crate::catalog;
+
             // Extract provider type from provider instance name
             // Format is typically "provider_type/instance_name" or just "provider_type"
             let provider_type = model
@@ -504,6 +511,66 @@ pub async fn list_all_models_detailed(
                 }
             });
 
+            // Fetch pricing from override first, then catalog
+            // Skip pricing for local/free providers unless there's an override
+            let is_local_provider = matches!(
+                provider_type.as_str(),
+                "ollama" | "lmstudio" | "openai_compatible" | "localai"
+            );
+
+            let config = config_manager.get();
+
+            // Check for pricing override first
+            let override_pricing = config
+                .pricing_overrides
+                .get(&provider_type)
+                .and_then(|models| models.get(&model.id));
+
+            let (input_price_per_million, output_price_per_million, pricing_source) =
+                if let Some(override_price) = override_pricing {
+                    // Use override pricing
+                    (
+                        Some(override_price.input_per_million),
+                        Some(override_price.output_per_million),
+                        Some(PricingSource::Override),
+                    )
+                } else if is_local_provider {
+                    // Local providers are free (unless overridden above)
+                    (None, None, None)
+                } else {
+                    // Try catalog lookup
+                    let catalog_model = catalog::find_model(&provider_type, &model.id)
+                        .or_else(|| catalog::find_model_by_name(&model.id));
+
+                    if let Some(cat_model) = catalog_model {
+                        // Convert from per-token to per-million tokens
+                        let input_price = cat_model.pricing.prompt_per_token * 1_000_000.0;
+                        let output_price = cat_model.pricing.completion_per_token * 1_000_000.0;
+
+                        // Only include pricing if it's non-zero
+                        let input = if input_price > 0.0 {
+                            Some(input_price)
+                        } else {
+                            None
+                        };
+                        let output = if output_price > 0.0 {
+                            Some(output_price)
+                        } else {
+                            None
+                        };
+
+                        let source = if input.is_some() || output.is_some() {
+                            Some(PricingSource::Catalog)
+                        } else {
+                            None
+                        };
+
+                        (input, output, source)
+                    } else {
+                        (None, None, None)
+                    }
+                };
+
             DetailedModelInfo {
                 model_id: model.id,
                 provider_instance: model.provider,
@@ -511,9 +578,10 @@ pub async fn list_all_models_detailed(
                 capabilities,
                 context_window: model.context_window,
                 supports_streaming: model.supports_streaming,
-                input_price_per_million: None,  // Not available yet
-                output_price_per_million: None, // Not available yet
+                input_price_per_million,
+                output_price_per_million,
                 parameter_count,
+                pricing_source,
             }
         })
         .collect();
@@ -573,10 +641,7 @@ pub async fn update_server_config(
         .map_err(|e| e.to_string())?;
 
     // Persist to disk
-    config_manager
-        .save()
-        .await
-        .map_err(|e| e.to_string())
+    config_manager.save().await.map_err(|e| e.to_string())
 }
 
 /// Restart the web server
@@ -905,10 +970,7 @@ pub async fn create_oauth_client(
         .map_err(|e| e.to_string())?;
 
     // Persist to disk
-    config_manager
-        .save()
-        .await
-        .map_err(|e| e.to_string())?;
+    config_manager.save().await.map_err(|e| e.to_string())?;
 
     // Rebuild tray menu
     if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
@@ -979,10 +1041,7 @@ pub async fn delete_oauth_client(
         .map_err(|e| e.to_string())?;
 
     // Persist to disk
-    config_manager
-        .save()
-        .await
-        .map_err(|e| e.to_string())?;
+    config_manager.save().await.map_err(|e| e.to_string())?;
 
     // Rebuild tray menu
     if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
@@ -1034,10 +1093,7 @@ pub async fn update_oauth_client_name(
         .map_err(|e| e.to_string())?;
 
     // Persist to disk
-    config_manager
-        .save()
-        .await
-        .map_err(|e| e.to_string())?;
+    config_manager.save().await.map_err(|e| e.to_string())?;
 
     // Rebuild tray menu
     if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
@@ -1084,10 +1140,7 @@ pub async fn toggle_oauth_client_enabled(
         .map_err(|e| e.to_string())?;
 
     // Persist to disk
-    config_manager
-        .save()
-        .await
-        .map_err(|e| e.to_string())?;
+    config_manager.save().await.map_err(|e| e.to_string())?;
 
     // Rebuild tray menu
     if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
@@ -1134,10 +1187,7 @@ pub async fn link_mcp_server(
         .map_err(|e| e.to_string())?;
 
     // Persist to disk
-    config_manager
-        .save()
-        .await
-        .map_err(|e| e.to_string())?;
+    config_manager.save().await.map_err(|e| e.to_string())?;
 
     // Notify frontend
     let _ = app.emit("oauth-clients-changed", ());
@@ -1177,10 +1227,7 @@ pub async fn unlink_mcp_server(
         .map_err(|e| e.to_string())?;
 
     // Persist to disk
-    config_manager
-        .save()
-        .await
-        .map_err(|e| e.to_string())?;
+    config_manager.save().await.map_err(|e| e.to_string())?;
 
     // Notify frontend
     let _ = app.emit("oauth-clients-changed", ());
@@ -1217,8 +1264,12 @@ pub async fn get_oauth_client_linked_servers(
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum FrontendAuthConfig {
     None,
-    BearerToken { token: String },
-    CustomHeaders { headers: std::collections::HashMap<String, String> },
+    BearerToken {
+        token: String,
+    },
+    CustomHeaders {
+        headers: std::collections::HashMap<String, String>,
+    },
     OAuth {
         client_id: String,
         client_secret: String,
@@ -1226,7 +1277,9 @@ pub enum FrontendAuthConfig {
         token_url: String,
         scopes: Vec<String>,
     },
-    EnvVars { env: std::collections::HashMap<String, String> },
+    EnvVars {
+        env: std::collections::HashMap<String, String>,
+    },
 }
 
 /// Process frontend auth config and store secrets in keychain
@@ -1243,8 +1296,8 @@ fn process_auth_config(
     tracing::debug!("Processing auth config: {}", auth_value);
 
     // Parse frontend format
-    let frontend_auth: FrontendAuthConfig = serde_json::from_value(auth_value.clone())
-        .map_err(|e| {
+    let frontend_auth: FrontendAuthConfig =
+        serde_json::from_value(auth_value.clone()).map_err(|e| {
             tracing::error!("Failed to deserialize frontend auth config: {}", e);
             tracing::error!("Auth value was: {}", auth_value);
             format!("Invalid auth config format: {}", e)
@@ -1299,7 +1352,11 @@ fn process_auth_config(
         FrontendAuthConfig::EnvVars { env } => McpAuthConfig::EnvVars { env },
     };
 
-    tracing::info!("✅ Successfully processed auth config for server {}: {:?}", server_id, backend_auth);
+    tracing::info!(
+        "✅ Successfully processed auth config for server {}: {:?}",
+        server_id,
+        backend_auth
+    );
 
     Ok(Some(backend_auth))
 }
@@ -1402,10 +1459,7 @@ pub async fn create_mcp_server(
         .map_err(|e| e.to_string())?;
 
     // Persist to disk
-    config_manager
-        .save()
-        .await
-        .map_err(|e| e.to_string())?;
+    config_manager.save().await.map_err(|e| e.to_string())?;
 
     // Rebuild tray menu
     if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
@@ -1453,10 +1507,7 @@ pub async fn delete_mcp_server(
         .map_err(|e| e.to_string())?;
 
     // Persist to disk
-    config_manager
-        .save()
-        .await
-        .map_err(|e| e.to_string())?;
+    config_manager.save().await.map_err(|e| e.to_string())?;
 
     // Rebuild tray menu
     if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
@@ -1577,10 +1628,7 @@ pub async fn update_mcp_server_name(
         .map_err(|e| e.to_string())?;
 
     // Persist to disk
-    config_manager
-        .save()
-        .await
-        .map_err(|e| e.to_string())?;
+    config_manager.save().await.map_err(|e| e.to_string())?;
 
     // Rebuild tray menu
     if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
@@ -1667,15 +1715,18 @@ pub async fn update_mcp_server_config(
         .map_err(|e| e.to_string())?;
 
     // Update in manager
-    if let Some(config) = config_manager.get().mcp_servers.iter().find(|s| s.id == server_id).cloned() {
+    if let Some(config) = config_manager
+        .get()
+        .mcp_servers
+        .iter()
+        .find(|s| s.id == server_id)
+        .cloned()
+    {
         mcp_manager.add_config(config);
     }
 
     // Persist to disk
-    config_manager
-        .save()
-        .await
-        .map_err(|e| e.to_string())?;
+    config_manager.save().await.map_err(|e| e.to_string())?;
 
     // Rebuild tray menu
     if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
@@ -1713,10 +1764,7 @@ pub async fn toggle_mcp_server_enabled(
         .map_err(|e| e.to_string())?;
 
     // Persist to disk
-    config_manager
-        .save()
-        .await
-        .map_err(|e| e.to_string())?;
+    config_manager.save().await.map_err(|e| e.to_string())?;
 
     // Rebuild tray menu
     if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
@@ -1764,11 +1812,7 @@ pub async fn list_mcp_tools(
     }
 
     // Create a tools/list request
-    let request = JsonRpcRequest::with_id(
-        1,
-        method.to_string(),
-        None,
-    );
+    let request = JsonRpcRequest::with_id(1, method.to_string(), None);
 
     tracing::debug!("🔄 Sending tools/list request to server {}", server_id);
 
@@ -1778,7 +1822,11 @@ pub async fn list_mcp_tools(
         .await
         .map_err(|e| {
             let latency_ms = start_time.elapsed().as_millis() as u64;
-            tracing::error!("❌ Failed to send tools/list request to server {}: {}", server_id, e);
+            tracing::error!(
+                "❌ Failed to send tools/list request to server {}: {}",
+                server_id,
+                e
+            );
 
             // Log failure (if server is running)
             if let Some(ref state) = app_state {
@@ -1795,14 +1843,16 @@ pub async fn list_mcp_tools(
                 );
 
                 // Record metrics
-                state.metrics_collector.mcp().record(&crate::monitoring::mcp_metrics::McpRequestMetrics {
-                    client_id,
-                    server_id: &server_id,
-                    method,
-                    latency_ms,
-                    success: false,
-                    error_code: None,
-                });
+                state.metrics_collector.mcp().record(
+                    &crate::monitoring::mcp_metrics::McpRequestMetrics {
+                        client_id,
+                        server_id: &server_id,
+                        method,
+                        latency_ms,
+                        success: false,
+                        error_code: None,
+                    },
+                );
             }
 
             format!("Failed to list tools: {}", e)
@@ -1814,7 +1864,9 @@ pub async fn list_mcp_tools(
     if let Some(error) = response.error {
         tracing::error!(
             "❌ MCP server {} returned error for tools/list: {} (code {})",
-            server_id, error.message, error.code
+            server_id,
+            error.message,
+            error.code
         );
 
         // Log failure (if server is running)
@@ -1832,17 +1884,22 @@ pub async fn list_mcp_tools(
             );
 
             // Record metrics
-            state.metrics_collector.mcp().record(&crate::monitoring::mcp_metrics::McpRequestMetrics {
-                client_id,
-                server_id: &server_id,
-                method,
-                latency_ms,
-                success: false,
-                error_code: Some(error.code),
-            });
+            state.metrics_collector.mcp().record(
+                &crate::monitoring::mcp_metrics::McpRequestMetrics {
+                    client_id,
+                    server_id: &server_id,
+                    method,
+                    latency_ms,
+                    success: false,
+                    error_code: Some(error.code),
+                },
+            );
         }
 
-        return Err(format!("MCP error: {} (code {})", error.message, error.code));
+        return Err(format!(
+            "MCP error: {} (code {})",
+            error.message, error.code
+        ));
     }
 
     // Log success (if server is running)
@@ -1858,14 +1915,17 @@ pub async fn list_mcp_tools(
         );
 
         // Record metrics
-        state.metrics_collector.mcp().record(&crate::monitoring::mcp_metrics::McpRequestMetrics {
-            client_id,
-            server_id: &server_id,
-            method,
-            latency_ms,
-            success: true,
-            error_code: None,
-        });
+        state
+            .metrics_collector
+            .mcp()
+            .record(&crate::monitoring::mcp_metrics::McpRequestMetrics {
+                client_id,
+                server_id: &server_id,
+                method,
+                latency_ms,
+                success: true,
+                error_code: None,
+            });
     }
 
     // Return the tools list
@@ -1874,7 +1934,11 @@ pub async fn list_mcp_tools(
     // Log the number of tools if result is an object with "tools" array
     if let Some(obj) = result.as_object() {
         if let Some(tools) = obj.get("tools").and_then(|t| t.as_array()) {
-            tracing::info!("✅ Successfully listed {} tools from MCP server {}", tools.len(), server_id);
+            tracing::info!(
+                "✅ Successfully listed {} tools from MCP server {}",
+                tools.len(),
+                server_id
+            );
             for tool in tools {
                 if let Some(tool_obj) = tool.as_object() {
                     if let Some(name) = tool_obj.get("name").and_then(|n| n.as_str()) {
@@ -1910,7 +1974,11 @@ pub async fn call_mcp_tool(
     use crate::mcp::protocol::JsonRpcRequest;
     use std::time::Instant;
 
-    tracing::info!("🔧 Calling MCP tool '{}' on server: {}", tool_name, server_id);
+    tracing::info!(
+        "🔧 Calling MCP tool '{}' on server: {}",
+        tool_name,
+        server_id
+    );
     tracing::debug!("Tool arguments: {}", arguments);
 
     let start_time = Instant::now();
@@ -1936,13 +2004,13 @@ pub async fn call_mcp_tool(
         "arguments": arguments
     });
 
-    let request = JsonRpcRequest::with_id(
-        1,
-        "tools/call".to_string(),
-        Some(params),
-    );
+    let request = JsonRpcRequest::with_id(1, "tools/call".to_string(), Some(params));
 
-    tracing::debug!("🔄 Sending tools/call request for '{}' to server {}", tool_name, server_id);
+    tracing::debug!(
+        "🔄 Sending tools/call request for '{}' to server {}",
+        tool_name,
+        server_id
+    );
 
     // Send request to MCP server
     let response = mcp_manager
@@ -1950,7 +2018,12 @@ pub async fn call_mcp_tool(
         .await
         .map_err(|e| {
             let latency_ms = start_time.elapsed().as_millis() as u64;
-            tracing::error!("❌ Failed to call tool '{}' on server {}: {}", tool_name, server_id, e);
+            tracing::error!(
+                "❌ Failed to call tool '{}' on server {}: {}",
+                tool_name,
+                server_id,
+                e
+            );
 
             // Log failure (if server is running)
             if let Some(ref state) = app_state {
@@ -1967,14 +2040,16 @@ pub async fn call_mcp_tool(
                 );
 
                 // Record metrics
-                state.metrics_collector.mcp().record(&crate::monitoring::mcp_metrics::McpRequestMetrics {
-                    client_id,
-                    server_id: &server_id,
-                    method: &method,
-                    latency_ms,
-                    success: false,
-                    error_code: None,
-                });
+                state.metrics_collector.mcp().record(
+                    &crate::monitoring::mcp_metrics::McpRequestMetrics {
+                        client_id,
+                        server_id: &server_id,
+                        method: &method,
+                        latency_ms,
+                        success: false,
+                        error_code: None,
+                    },
+                );
             }
 
             format!("Failed to call tool: {}", e)
@@ -1986,7 +2061,10 @@ pub async fn call_mcp_tool(
     if let Some(error) = response.error {
         tracing::error!(
             "❌ MCP server {} returned error for tool '{}': {} (code {})",
-            server_id, tool_name, error.message, error.code
+            server_id,
+            tool_name,
+            error.message,
+            error.code
         );
 
         // Log failure (if server is running)
@@ -2004,17 +2082,22 @@ pub async fn call_mcp_tool(
             );
 
             // Record metrics
-            state.metrics_collector.mcp().record(&crate::monitoring::mcp_metrics::McpRequestMetrics {
-                client_id,
-                server_id: &server_id,
-                method: &method,
-                latency_ms,
-                success: false,
-                error_code: Some(error.code),
-            });
+            state.metrics_collector.mcp().record(
+                &crate::monitoring::mcp_metrics::McpRequestMetrics {
+                    client_id,
+                    server_id: &server_id,
+                    method: &method,
+                    latency_ms,
+                    success: false,
+                    error_code: Some(error.code),
+                },
+            );
         }
 
-        return Err(format!("MCP error: {} (code {})", error.message, error.code));
+        return Err(format!(
+            "MCP error: {} (code {})",
+            error.message, error.code
+        ));
     }
 
     // Log success (if server is running)
@@ -2030,23 +2113,214 @@ pub async fn call_mcp_tool(
         );
 
         // Record metrics
-        state.metrics_collector.mcp().record(&crate::monitoring::mcp_metrics::McpRequestMetrics {
-            client_id,
-            server_id: &server_id,
-            method: &method,
-            latency_ms,
-            success: true,
-            error_code: None,
-        });
+        state
+            .metrics_collector
+            .mcp()
+            .record(&crate::monitoring::mcp_metrics::McpRequestMetrics {
+                client_id,
+                server_id: &server_id,
+                method: &method,
+                latency_ms,
+                success: true,
+                error_code: None,
+            });
     }
 
     // Return the result
     let result = response.result.unwrap_or(serde_json::Value::Null);
 
-    tracing::info!("✅ Successfully executed tool '{}' on server {} in {}ms", tool_name, server_id, latency_ms);
+    tracing::info!(
+        "✅ Successfully executed tool '{}' on server {} in {}ms",
+        tool_name,
+        server_id,
+        latency_ms
+    );
     tracing::debug!("Tool result: {}", result);
 
     Ok(result)
+}
+
+/// Server token statistics for deferred loading analysis
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerTokenStats {
+    pub server_id: String,
+    pub tool_count: usize,
+    pub resource_count: usize,
+    pub prompt_count: usize,
+    pub estimated_tokens: usize,
+}
+
+/// MCP token statistics response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpTokenStats {
+    pub server_stats: Vec<ServerTokenStats>,
+    pub total_tokens: usize,
+    pub deferred_tokens: usize,
+    pub savings_tokens: usize,
+    pub savings_percent: f64,
+}
+
+/// Get MCP token statistics for deferred loading analysis
+///
+/// Calculates token consumption for all MCP servers accessible by a client
+/// to help users understand potential savings with deferred loading.
+///
+/// # Arguments
+/// * `client_id` - Client ID to analyze
+///
+/// # Returns
+/// Token statistics showing per-server breakdowns and potential savings
+#[tauri::command]
+pub async fn get_mcp_token_stats(
+    client_id: String,
+    config_manager: State<'_, ConfigManager>,
+    mcp_manager: State<'_, Arc<McpServerManager>>,
+) -> Result<McpTokenStats, String> {
+    // Get client configuration
+    let config = config_manager.get();
+    let client = config
+        .clients
+        .iter()
+        .find(|c| c.id == client_id)
+        .ok_or_else(|| format!("Client not found: {}", client_id))?;
+
+    let mut server_stats = Vec::new();
+    let mut total_tokens = 0;
+
+    // Analyze each allowed server
+    for server_id in &client.allowed_mcp_servers {
+        // Ensure server is started
+        if !mcp_manager.is_running(server_id) {
+            if let Err(e) = mcp_manager.start_server(server_id).await {
+                tracing::warn!(
+                    "Failed to start server {} for token analysis: {}",
+                    server_id,
+                    e
+                );
+                continue;
+            }
+        }
+
+        // Fetch tools/list
+        let tools_request = crate::mcp::protocol::JsonRpcRequest::new(
+            Some(serde_json::json!(1)),
+            "tools/list".to_string(),
+            None,
+        );
+
+        let tools_count = match mcp_manager.send_request(server_id, tools_request).await {
+            Ok(response) => {
+                if let Some(result) = response.result {
+                    if let Some(tools) = result.get("tools") {
+                        if let Some(array) = tools.as_array() {
+                            array.len()
+                        } else {
+                            0
+                        }
+                    } else {
+                        0
+                    }
+                } else {
+                    0
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to fetch tools from {}: {}", server_id, e);
+                0
+            }
+        };
+
+        // Fetch resources/list
+        let resources_request = crate::mcp::protocol::JsonRpcRequest::new(
+            Some(serde_json::json!(2)),
+            "resources/list".to_string(),
+            None,
+        );
+
+        let resources_count = match mcp_manager.send_request(server_id, resources_request).await {
+            Ok(response) => {
+                if let Some(result) = response.result {
+                    if let Some(resources) = result.get("resources") {
+                        if let Some(array) = resources.as_array() {
+                            array.len()
+                        } else {
+                            0
+                        }
+                    } else {
+                        0
+                    }
+                } else {
+                    0
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to fetch resources from {}: {}", server_id, e);
+                0
+            }
+        };
+
+        // Fetch prompts/list
+        let prompts_request = crate::mcp::protocol::JsonRpcRequest::new(
+            Some(serde_json::json!(3)),
+            "prompts/list".to_string(),
+            None,
+        );
+
+        let prompts_count = match mcp_manager.send_request(server_id, prompts_request).await {
+            Ok(response) => {
+                if let Some(result) = response.result {
+                    if let Some(prompts) = result.get("prompts") {
+                        if let Some(array) = prompts.as_array() {
+                            array.len()
+                        } else {
+                            0
+                        }
+                    } else {
+                        0
+                    }
+                } else {
+                    0
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to fetch prompts from {}: {}", server_id, e);
+                0
+            }
+        };
+
+        // Estimate tokens (rough heuristic: ~200 tokens per tool/resource/prompt)
+        let estimated_tokens = (tools_count + resources_count + prompts_count) * 200;
+        total_tokens += estimated_tokens;
+
+        server_stats.push(ServerTokenStats {
+            server_id: server_id.clone(),
+            tool_count: tools_count,
+            resource_count: resources_count,
+            prompt_count: prompts_count,
+            estimated_tokens,
+        });
+    }
+
+    // Deferred loading: Only search tool visible (~300 tokens)
+    let deferred_tokens = 300;
+    let savings_tokens = if total_tokens > deferred_tokens {
+        total_tokens - deferred_tokens
+    } else {
+        0
+    };
+    let savings_percent = if total_tokens > 0 {
+        (savings_tokens as f64 / total_tokens as f64) * 100.0
+    } else {
+        0.0
+    };
+
+    Ok(McpTokenStats {
+        server_stats,
+        total_tokens,
+        deferred_tokens,
+        savings_tokens,
+        savings_percent,
+    })
 }
 
 // ============================================================================
@@ -2111,10 +2385,7 @@ pub async fn create_client(
         .map_err(|e| e.to_string())?;
 
     // Persist to disk
-    config_manager
-        .save()
-        .await
-        .map_err(|e| e.to_string())?;
+    config_manager.save().await.map_err(|e| e.to_string())?;
 
     // Rebuild tray menu
     if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
@@ -2158,10 +2429,7 @@ pub async fn delete_client(
         .map_err(|e| e.to_string())?;
 
     // Persist to disk
-    config_manager
-        .save()
-        .await
-        .map_err(|e| e.to_string())?;
+    config_manager.save().await.map_err(|e| e.to_string())?;
 
     // Rebuild tray menu
     if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
@@ -2197,10 +2465,7 @@ pub async fn update_client_name(
     }
 
     // Persist to disk
-    config_manager
-        .save()
-        .await
-        .map_err(|e| e.to_string())?;
+    config_manager.save().await.map_err(|e| e.to_string())?;
 
     // Rebuild tray menu
     if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
@@ -2248,10 +2513,7 @@ pub async fn toggle_client_enabled(
     }
 
     // Persist to disk
-    config_manager
-        .save()
-        .await
-        .map_err(|e| e.to_string())?;
+    config_manager.save().await.map_err(|e| e.to_string())?;
 
     // Rebuild tray menu
     if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
@@ -2294,10 +2556,7 @@ pub async fn add_client_llm_provider(
     }
 
     // Persist to disk
-    config_manager
-        .save()
-        .await
-        .map_err(|e| e.to_string())?;
+    config_manager.save().await.map_err(|e| e.to_string())?;
 
     Ok(())
 }
@@ -2310,7 +2569,11 @@ pub async fn remove_client_llm_provider(
     client_manager: State<'_, Arc<crate::clients::ClientManager>>,
     config_manager: State<'_, ConfigManager>,
 ) -> Result<(), String> {
-    tracing::info!("Removing LLM provider {} from client {}", provider, client_id);
+    tracing::info!(
+        "Removing LLM provider {} from client {}",
+        provider,
+        client_id
+    );
 
     // Update in client manager
     client_manager
@@ -2333,10 +2596,7 @@ pub async fn remove_client_llm_provider(
     }
 
     // Persist to disk
-    config_manager
-        .save()
-        .await
-        .map_err(|e| e.to_string())?;
+    config_manager.save().await.map_err(|e| e.to_string())?;
 
     Ok(())
 }
@@ -2374,10 +2634,7 @@ pub async fn add_client_mcp_server(
     }
 
     // Persist to disk
-    config_manager
-        .save()
-        .await
-        .map_err(|e| e.to_string())?;
+    config_manager.save().await.map_err(|e| e.to_string())?;
 
     Ok(())
 }
@@ -2390,7 +2647,11 @@ pub async fn remove_client_mcp_server(
     client_manager: State<'_, Arc<crate::clients::ClientManager>>,
     config_manager: State<'_, ConfigManager>,
 ) -> Result<(), String> {
-    tracing::info!("Removing MCP server {} from client {}", server_id, client_id);
+    tracing::info!(
+        "Removing MCP server {} from client {}",
+        server_id,
+        client_id
+    );
 
     // Update in client manager
     client_manager
@@ -2413,10 +2674,7 @@ pub async fn remove_client_mcp_server(
     }
 
     // Persist to disk
-    config_manager
-        .save()
-        .await
-        .map_err(|e| e.to_string())?;
+    config_manager.save().await.map_err(|e| e.to_string())?;
 
     Ok(())
 }
@@ -2460,7 +2718,11 @@ pub async fn set_client_routing_strategy(
     config_manager: State<'_, ConfigManager>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    tracing::info!("Setting routing strategy for client {} to: {}", client_id, strategy);
+    tracing::info!(
+        "Setting routing strategy for client {} to: {}",
+        client_id,
+        strategy
+    );
 
     let active_strategy = match strategy.as_str() {
         "forced" => ActiveRoutingStrategy::ForceModel,
@@ -2494,10 +2756,7 @@ pub async fn set_client_routing_strategy(
     }
 
     // Persist to disk
-    config_manager
-        .save()
-        .await
-        .map_err(|e| e.to_string())?;
+    config_manager.save().await.map_err(|e| e.to_string())?;
 
     // Rebuild tray menu
     if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
@@ -2553,10 +2812,7 @@ pub async fn set_client_forced_model(
     }
 
     // Persist to disk
-    config_manager
-        .save()
-        .await
-        .map_err(|e| e.to_string())?;
+    config_manager.save().await.map_err(|e| e.to_string())?;
 
     // Rebuild tray menu
     if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
@@ -2610,10 +2866,7 @@ pub async fn update_client_available_models(
     }
 
     // Persist to disk
-    config_manager
-        .save()
-        .await
-        .map_err(|e| e.to_string())?;
+    config_manager.save().await.map_err(|e| e.to_string())?;
 
     // Rebuild tray menu
     if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
@@ -2664,10 +2917,7 @@ pub async fn update_client_prioritized_models(
     }
 
     // Persist to disk
-    config_manager
-        .save()
-        .await
-        .map_err(|e| e.to_string())?;
+    config_manager.save().await.map_err(|e| e.to_string())?;
 
     // Rebuild tray menu
     if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
@@ -2696,8 +2946,7 @@ pub async fn update_client_prioritized_models(
 pub async fn get_openapi_spec(
     server_manager: State<'_, Arc<ServerManager>>,
 ) -> Result<String, String> {
-    let mut spec_json = crate::server::openapi::get_openapi_json()
-        .map_err(|e| e.to_string())?;
+    let mut spec_json = crate::server::openapi::get_openapi_json().map_err(|e| e.to_string())?;
 
     // Get the actual server port and dynamically update the spec
     if let Some(actual_port) = server_manager.get_actual_port() {
@@ -2780,7 +3029,9 @@ pub async fn get_llm_logs(
         if let Ok(file) = fs::File::open(&log_file) {
             let reader = BufReader::new(file);
             for line in reader.lines().map_while(Result::ok) {
-                if let Ok(entry) = serde_json::from_str::<crate::monitoring::logger::AccessLogEntry>(&line) {
+                if let Ok(entry) =
+                    serde_json::from_str::<crate::monitoring::logger::AccessLogEntry>(&line)
+                {
                     entries.push(entry);
                 }
             }
@@ -2844,7 +3095,9 @@ pub async fn get_mcp_logs(
         if let Ok(file) = fs::File::open(&log_file) {
             let reader = BufReader::new(file);
             for line in reader.lines().map_while(Result::ok) {
-                if let Ok(entry) = serde_json::from_str::<crate::monitoring::mcp_logger::McpAccessLogEntry>(&line) {
+                if let Ok(entry) =
+                    serde_json::from_str::<crate::monitoring::mcp_logger::McpAccessLogEntry>(&line)
+                {
                     entries.push(entry);
                 }
             }
@@ -2878,15 +3131,17 @@ fn get_log_directory() -> Result<PathBuf, crate::utils::errors::AppError> {
 
     #[cfg(target_os = "macos")]
     {
-        let home = dirs::home_dir()
-            .ok_or_else(|| crate::utils::errors::AppError::Internal("Failed to get home directory".to_string()))?;
+        let home = dirs::home_dir().ok_or_else(|| {
+            crate::utils::errors::AppError::Internal("Failed to get home directory".to_string())
+        })?;
         Ok(home.join("Library").join("Logs").join("LocalRouter"))
     }
 
     #[cfg(target_os = "windows")]
     {
-        let app_data = std::env::var("APPDATA")
-            .map_err(|_| crate::utils::errors::AppError::Internal("Failed to get APPDATA directory".to_string()))?;
+        let app_data = std::env::var("APPDATA").map_err(|_| {
+            crate::utils::errors::AppError::Internal("Failed to get APPDATA directory".to_string())
+        })?;
         Ok(PathBuf::from(app_data).join("LocalRouter").join("logs"))
     }
 
@@ -2966,4 +3221,71 @@ pub fn get_catalog_stats() -> CatalogStats {
         providers,
         modalities,
     }
+}
+
+// ============================================================================
+// Pricing Override Commands
+// ============================================================================
+
+/// Get pricing override for a specific model
+#[tauri::command]
+pub fn get_pricing_override(
+    provider: String,
+    model: String,
+    config_manager: State<'_, ConfigManager>,
+) -> Option<crate::config::ModelPricingOverride> {
+    let config = config_manager.get();
+    config
+        .pricing_overrides
+        .get(&provider)
+        .and_then(|models| models.get(&model))
+        .cloned()
+}
+
+/// Set or update pricing override for a specific model
+#[tauri::command]
+pub fn set_pricing_override(
+    provider: String,
+    model: String,
+    input_per_million: f64,
+    output_per_million: f64,
+    config_manager: State<'_, ConfigManager>,
+) -> Result<(), String> {
+    config_manager
+        .update(|config| {
+            let provider_overrides = config
+                .pricing_overrides
+                .entry(provider.clone())
+                .or_insert_with(std::collections::HashMap::new);
+
+            provider_overrides.insert(
+                model.clone(),
+                crate::config::ModelPricingOverride {
+                    input_per_million,
+                    output_per_million,
+                },
+            );
+        })
+        .map_err(|e| e.to_string())
+}
+
+/// Delete pricing override for a specific model
+#[tauri::command]
+pub fn delete_pricing_override(
+    provider: String,
+    model: String,
+    config_manager: State<'_, ConfigManager>,
+) -> Result<(), String> {
+    config_manager
+        .update(|config| {
+            if let Some(provider_overrides) = config.pricing_overrides.get_mut(&provider) {
+                provider_overrides.remove(&model);
+
+                // Clean up empty provider entry
+                if provider_overrides.is_empty() {
+                    config.pricing_overrides.remove(&provider);
+                }
+            }
+        })
+        .map_err(|e| e.to_string())
 }

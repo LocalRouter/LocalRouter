@@ -16,15 +16,16 @@ use chrono::Utc;
 use futures::stream::StreamExt;
 use uuid::Uuid;
 
-use crate::providers::{ChatMessage as ProviderChatMessage, CompletionRequest as ProviderCompletionRequest};
+use crate::providers::{
+    ChatMessage as ProviderChatMessage, CompletionRequest as ProviderCompletionRequest,
+};
 use crate::router::UsageInfo;
-use crate::server::middleware::error::{ApiErrorResponse, ApiResult};
 use crate::server::middleware::client_auth::ClientAuthContext;
+use crate::server::middleware::error::{ApiErrorResponse, ApiResult};
 use crate::server::state::{AppState, AuthContext, GenerationDetails};
 use crate::server::types::{
-    ChatCompletionChunk, ChatCompletionChunkChoice, ChatCompletionChoice, ChatCompletionRequest,
-    ChatCompletionResponse, ChatMessage, ChunkDelta, MessageContent,
-    TokenUsage,
+    ChatCompletionChoice, ChatCompletionChunk, ChatCompletionChunkChoice, ChatCompletionRequest,
+    ChatCompletionResponse, ChatMessage, ChunkDelta, MessageContent, TokenUsage,
 };
 
 /// POST /v1/chat/completions
@@ -86,7 +87,9 @@ fn validate_request(request: &ChatCompletionRequest) -> ApiResult<()> {
     }
 
     if request.messages.is_empty() {
-        return Err(ApiErrorResponse::bad_request("messages cannot be empty").with_param("messages"));
+        return Err(
+            ApiErrorResponse::bad_request("messages cannot be empty").with_param("messages")
+        );
     }
 
     // Validate temperature
@@ -120,10 +123,10 @@ fn validate_request(request: &ChatCompletionRequest) -> ApiResult<()> {
     // Validate repetition_penalty (extended parameter)
     if let Some(rep_penalty) = request.repetition_penalty {
         if !(0.0..=2.0).contains(&rep_penalty) {
-            return Err(
-                ApiErrorResponse::bad_request("repetition_penalty must be between 0 and 2")
-                    .with_param("repetition_penalty"),
-            );
+            return Err(ApiErrorResponse::bad_request(
+                "repetition_penalty must be between 0 and 2",
+            )
+            .with_param("repetition_penalty"));
         }
     }
 
@@ -132,25 +135,25 @@ fn validate_request(request: &ChatCompletionRequest) -> ApiResult<()> {
         match format {
             crate::server::types::ResponseFormat::JsonObject { r#type } => {
                 if r#type != "json_object" {
-                    return Err(
-                        ApiErrorResponse::bad_request("response_format type must be 'json_object'")
-                            .with_param("response_format"),
-                    );
+                    return Err(ApiErrorResponse::bad_request(
+                        "response_format type must be 'json_object'",
+                    )
+                    .with_param("response_format"));
                 }
             }
             crate::server::types::ResponseFormat::JsonSchema { r#type, schema } => {
                 if r#type != "json_schema" {
-                    return Err(
-                        ApiErrorResponse::bad_request("response_format type must be 'json_schema'")
-                            .with_param("response_format"),
-                    );
+                    return Err(ApiErrorResponse::bad_request(
+                        "response_format type must be 'json_schema'",
+                    )
+                    .with_param("response_format"));
                 }
                 // Basic validation that schema is an object
                 if !schema.is_object() {
-                    return Err(
-                        ApiErrorResponse::bad_request("response_format schema must be a JSON object")
-                            .with_param("response_format"),
-                    );
+                    return Err(ApiErrorResponse::bad_request(
+                        "response_format schema must be a JSON object",
+                    )
+                    .with_param("response_format"));
                 }
             }
         }
@@ -187,7 +190,9 @@ async fn validate_model_access(
             .provider_registry
             .list_all_models()
             .await
-            .map_err(|e| ApiErrorResponse::internal_error(format!("Failed to list models: {}", e)))?;
+            .map_err(|e| {
+                ApiErrorResponse::internal_error(format!("Failed to list models: {}", e))
+            })?;
 
         let matching_model = all_models
             .iter()
@@ -245,7 +250,9 @@ async fn validate_client_provider_access(
             .provider_registry
             .list_all_models()
             .await
-            .map_err(|e| ApiErrorResponse::internal_error(format!("Failed to list models: {}", e)))?;
+            .map_err(|e| {
+                ApiErrorResponse::internal_error(format!("Failed to list models: {}", e))
+            })?;
 
         let matching_model = all_models
             .iter()
@@ -309,7 +316,9 @@ async fn check_rate_limits(
         ));
 
         if let Some(retry_after) = rate_limit_result.retry_after_secs {
-            error.error = error.error.with_code(format!("retry_after_{}", retry_after));
+            error.error = error
+                .error
+                .with_code(format!("retry_after_{}", retry_after));
         }
 
         return Err(error);
@@ -387,12 +396,9 @@ async fn handle_non_streaming(
         Err(e) => {
             // Record failure metrics
             let latency = Instant::now().duration_since(started_at).as_millis() as u64;
-            state.metrics_collector.record_failure(
-                &auth.api_key_id,
-                "unknown",
-                "unknown",
-                latency,
-            );
+            state
+                .metrics_collector
+                .record_failure(&auth.api_key_id, "unknown", "unknown", latency);
 
             // Log to access log (persistent storage)
             if let Err(log_err) = state.access_logger.log_failure(
@@ -406,7 +412,10 @@ async fn handle_non_streaming(
                 tracing::warn!("Failed to write access log: {}", log_err);
             }
 
-            return Err(ApiErrorResponse::bad_gateway(format!("Provider error: {}", e)));
+            return Err(ApiErrorResponse::bad_gateway(format!(
+                "Provider error: {}",
+                e
+            )));
         }
     };
 
@@ -416,25 +425,29 @@ async fn handle_non_streaming(
     let pricing = match state.provider_registry.get_provider(&response.provider) {
         Some(p) => p.get_pricing(&response.model).await.ok(),
         None => None,
-    }.unwrap_or_else(crate::providers::PricingInfo::free);
+    }
+    .unwrap_or_else(crate::providers::PricingInfo::free);
 
     let cost = {
         let input_cost = (response.usage.prompt_tokens as f64 / 1000.0) * pricing.input_cost_per_1k;
-        let output_cost = (response.usage.completion_tokens as f64 / 1000.0) * pricing.output_cost_per_1k;
+        let output_cost =
+            (response.usage.completion_tokens as f64 / 1000.0) * pricing.output_cost_per_1k;
         input_cost + output_cost
     };
 
     // Record success metrics for all four tiers
     let latency_ms = completed_at.duration_since(started_at).as_millis() as u64;
-    state.metrics_collector.record_success(&crate::monitoring::metrics::RequestMetrics {
-        api_key_name: &auth.api_key_id,
-        provider: &response.provider,
-        model: &response.model,
-        input_tokens: response.usage.prompt_tokens as u64,
-        output_tokens: response.usage.completion_tokens as u64,
-        cost_usd: cost,
-        latency_ms,
-    });
+    state
+        .metrics_collector
+        .record_success(&crate::monitoring::metrics::RequestMetrics {
+            api_key_name: &auth.api_key_id,
+            provider: &response.provider,
+            model: &response.model,
+            input_tokens: response.usage.prompt_tokens as u64,
+            output_tokens: response.usage.completion_tokens as u64,
+            cost_usd: cost,
+            latency_ms,
+        });
 
     // Log to access log (persistent storage)
     if let Err(e) = state.access_logger.log_success(
@@ -451,9 +464,13 @@ async fn handle_non_streaming(
     }
 
     // Emit event for real-time UI updates
-    state.emit_event("metrics-updated", &serde_json::json!({
-        "timestamp": created_at.to_rfc3339(),
-    }).to_string());
+    state.emit_event(
+        "metrics-updated",
+        &serde_json::json!({
+            "timestamp": created_at.to_rfc3339(),
+        })
+        .to_string(),
+    );
 
     // Note: Router already records usage for rate limiting, so we don't need to do it here
 
@@ -492,11 +509,16 @@ async fn handle_non_streaming(
         model: response.model.clone(),
         provider: response.provider.clone(),
         created_at,
-        finish_reason: api_response.choices.first().and_then(|c| c.finish_reason.clone()).unwrap_or_else(|| "unknown".to_string()),
+        finish_reason: api_response
+            .choices
+            .first()
+            .and_then(|c| c.finish_reason.clone())
+            .unwrap_or_else(|| "unknown".to_string()),
         tokens: api_response.usage.clone(),
         cost: Some(crate::server::types::CostDetails {
             prompt_cost: (response.usage.prompt_tokens as f64 / 1000.0) * pricing.input_cost_per_1k,
-            completion_cost: (response.usage.completion_tokens as f64 / 1000.0) * pricing.output_cost_per_1k,
+            completion_cost: (response.usage.completion_tokens as f64 / 1000.0)
+                * pricing.output_cost_per_1k,
             total_cost: cost,
             currency: "USD".to_string(),
         }),
@@ -539,12 +561,9 @@ async fn handle_streaming(
         Err(e) => {
             // Record failure metrics
             let latency = Instant::now().duration_since(started_at).as_millis() as u64;
-            state.metrics_collector.record_failure(
-                &auth.api_key_id,
-                "unknown",
-                &model,
-                latency,
-            );
+            state
+                .metrics_collector
+                .record_failure(&auth.api_key_id, "unknown", &model, latency);
 
             // Log to access log (persistent storage)
             if let Err(log_err) = state.access_logger.log_failure(
@@ -558,7 +577,10 @@ async fn handle_streaming(
                 tracing::warn!("Failed to write access log: {}", log_err);
             }
 
-            return Err(ApiErrorResponse::bad_gateway(format!("Provider error: {}", e)));
+            return Err(ApiErrorResponse::bad_gateway(format!(
+                "Provider error: {}",
+                e
+            )));
         }
     };
 
@@ -567,8 +589,8 @@ async fn handle_streaming(
     let gen_id = generation_id.clone();
 
     // Track token usage across stream
-    use std::sync::Arc;
     use parking_lot::Mutex;
+    use std::sync::Arc;
     let content_accumulator = Arc::new(Mutex::new(String::new())); // Track completion content
     let finish_reason = Arc::new(Mutex::new(String::from("stop")));
 
@@ -585,50 +607,52 @@ async fn handle_streaming(
     let request_user = request.user.clone();
     let request_messages = request.messages.clone();
 
-    let sse_stream = stream.map(move |chunk_result| -> Result<Event, std::convert::Infallible> {
-        match chunk_result {
-            Ok(provider_chunk) => {
-                // Track content for token estimation
-                if let Some(choice) = provider_chunk.choices.first() {
-                    if let Some(content) = &choice.delta.content {
-                        content_accumulator_map.lock().push_str(content);
+    let sse_stream = stream.map(
+        move |chunk_result| -> Result<Event, std::convert::Infallible> {
+            match chunk_result {
+                Ok(provider_chunk) => {
+                    // Track content for token estimation
+                    if let Some(choice) = provider_chunk.choices.first() {
+                        if let Some(content) = &choice.delta.content {
+                            content_accumulator_map.lock().push_str(content);
+                        }
+
+                        // Track finish reason
+                        if let Some(reason) = &choice.finish_reason {
+                            *finish_reason_map.lock() = reason.clone();
+                        }
                     }
 
-                    // Track finish reason
-                    if let Some(reason) = &choice.finish_reason {
-                        *finish_reason_map.lock() = reason.clone();
-                    }
+                    let api_chunk = ChatCompletionChunk {
+                        id: gen_id.clone(),
+                        object: "chat.completion.chunk".to_string(),
+                        created: created_timestamp,
+                        model: model.clone(),
+                        choices: provider_chunk
+                            .choices
+                            .into_iter()
+                            .map(|choice| ChatCompletionChunkChoice {
+                                index: choice.index,
+                                delta: ChunkDelta {
+                                    role: choice.delta.role,
+                                    content: choice.delta.content,
+                                },
+                                finish_reason: choice.finish_reason,
+                            })
+                            .collect(),
+                        usage: None, // Not available in streaming chunks
+                    };
+
+                    let json = serde_json::to_string(&api_chunk).unwrap_or_default();
+                    Ok(Event::default().data(json))
                 }
-
-                let api_chunk = ChatCompletionChunk {
-                    id: gen_id.clone(),
-                    object: "chat.completion.chunk".to_string(),
-                    created: created_timestamp,
-                    model: model.clone(),
-                    choices: provider_chunk
-                        .choices
-                        .into_iter()
-                        .map(|choice| ChatCompletionChunkChoice {
-                            index: choice.index,
-                            delta: ChunkDelta {
-                                role: choice.delta.role,
-                                content: choice.delta.content,
-                            },
-                            finish_reason: choice.finish_reason,
-                        })
-                        .collect(),
-                    usage: None, // Not available in streaming chunks
-                };
-
-                let json = serde_json::to_string(&api_chunk).unwrap_or_default();
-                Ok(Event::default().data(json))
+                Err(e) => {
+                    tracing::error!("Error in streaming: {}", e);
+                    Ok(Event::default().data("[ERROR]"))
+                }
             }
-            Err(e) => {
-                tracing::error!("Error in streaming: {}", e);
-                Ok(Event::default().data("[ERROR]"))
-            }
-        }
-    });
+        },
+    );
 
     // Record generation details after stream completes
     tokio::spawn(async move {
@@ -655,7 +679,8 @@ async fn handle_streaming(
         let pricing = match state_clone.provider_registry.get_provider(&provider) {
             Some(p) => p.get_pricing(&model_clone).await.ok(),
             None => None,
-        }.unwrap_or_else(crate::providers::PricingInfo::free);
+        }
+        .unwrap_or_else(crate::providers::PricingInfo::free);
 
         let cost = {
             let input_cost = (prompt_tokens as f64 / 1000.0) * pricing.input_cost_per_1k;
@@ -665,15 +690,17 @@ async fn handle_streaming(
 
         // Record success metrics for streaming (with estimated tokens)
         let latency_ms = completed_at.duration_since(started_at).as_millis() as u64;
-        state_clone.metrics_collector.record_success(&crate::monitoring::metrics::RequestMetrics {
-            api_key_name: &auth_clone.api_key_id,
-            provider: &provider,
-            model: &model_clone,
-            input_tokens: prompt_tokens as u64,
-            output_tokens: completion_tokens as u64,
-            cost_usd: cost,
-            latency_ms,
-        });
+        state_clone
+            .metrics_collector
+            .record_success(&crate::monitoring::metrics::RequestMetrics {
+                api_key_name: &auth_clone.api_key_id,
+                provider: &provider,
+                model: &model_clone,
+                input_tokens: prompt_tokens as u64,
+                output_tokens: completion_tokens as u64,
+                cost_usd: cost,
+                latency_ms,
+            });
 
         // Log to access log (persistent storage)
         if let Err(e) = state_clone.access_logger.log_success(
@@ -690,9 +717,13 @@ async fn handle_streaming(
         }
 
         // Emit event for real-time UI updates
-        state_clone.emit_event("metrics-updated", &serde_json::json!({
-            "timestamp": created_at_clone.to_rfc3339(),
-        }).to_string());
+        state_clone.emit_event(
+            "metrics-updated",
+            &serde_json::json!({
+                "timestamp": created_at_clone.to_rfc3339(),
+            })
+            .to_string(),
+        );
 
         let generation_details = GenerationDetails {
             id: gen_id_clone,

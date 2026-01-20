@@ -14,20 +14,14 @@ async fn test_cohere_list_models() {
     // Cohere provider returns a static list of known models
     assert!(!models.is_empty());
     assert!(models.iter().all(|m| m.provider == "cohere"));
-    assert!(models
-        .iter()
-        .any(|m| m.id.contains("command")));
+    assert!(models.iter().any(|m| m.id.contains("command")));
 }
 
 #[tokio::test]
 async fn test_cohere_completion() {
     let mock = CohereMockBuilder::new().await.mock_completion().await;
 
-    let provider = CohereProvider::with_base_url(
-        "test-key".to_string(),
-        mock.base_url(),
-    )
-    .unwrap();
+    let provider = CohereProvider::with_base_url("test-key".to_string(), mock.base_url()).unwrap();
 
     let request = standard_completion_request();
     let response = provider.complete(request).await.unwrap();
@@ -44,17 +38,16 @@ async fn test_cohere_streaming() {
         .mock_streaming_completion()
         .await;
 
-    let provider = CohereProvider::with_base_url(
-        "test-key".to_string(),
-        _mock.base_url(),
-    )
-    .unwrap();
+    let provider = CohereProvider::with_base_url("test-key".to_string(), _mock.base_url()).unwrap();
 
     let request = standard_streaming_request();
     let result = provider.stream_complete(request).await;
 
     // Cohere streaming is not yet implemented
-    assert!(result.is_err(), "Cohere streaming should return an error as it's not implemented");
+    assert!(
+        result.is_err(),
+        "Cohere streaming should return an error as it's not implemented"
+    );
 }
 
 #[tokio::test]

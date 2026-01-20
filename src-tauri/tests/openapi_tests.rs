@@ -200,10 +200,7 @@ fn test_tags_present() {
 
     let tags = spec["tags"].as_array().expect("Tags should be an array");
 
-    let tag_names: Vec<&str> = tags
-        .iter()
-        .filter_map(|tag| tag["name"].as_str())
-        .collect();
+    let tag_names: Vec<&str> = tags.iter().filter_map(|tag| tag["name"].as_str()).collect();
 
     assert!(tag_names.contains(&"chat"), "Missing 'chat' tag");
     assert!(
@@ -229,8 +226,7 @@ fn test_json_serialization() {
     let spec_json = openapi::get_openapi_json().expect("Failed to generate OpenAPI JSON");
 
     // Should be valid JSON
-    let _spec: Value =
-        serde_json::from_str(&spec_json).expect("OpenAPI JSON should be valid JSON");
+    let _spec: Value = serde_json::from_str(&spec_json).expect("OpenAPI JSON should be valid JSON");
 
     // Should be pretty-printed
     assert!(
@@ -254,8 +250,7 @@ fn test_yaml_serialization() {
     );
 
     // Should be valid YAML (parseable)
-    let _spec: Value =
-        serde_yaml::from_str(&spec_yaml).expect("OpenAPI YAML should be valid YAML");
+    let _spec: Value = serde_yaml::from_str(&spec_yaml).expect("OpenAPI YAML should be valid YAML");
 }
 
 #[test]
@@ -355,8 +350,7 @@ fn test_feature_adapter_documentation() {
         // Each adapter should have a description
         let adapter_schema = &schemas[adapter];
         assert!(
-            adapter_schema.get("description").is_some()
-                || adapter_schema.get("title").is_some(),
+            adapter_schema.get("description").is_some() || adapter_schema.get("title").is_some(),
             "Feature adapter {} should have description or title",
             adapter
         );
@@ -429,10 +423,6 @@ fn test_examples_present() {
         // Check if example or examples field exists
         let has_example = schema.get("example").is_some() || schema.get("examples").is_some();
 
-        assert!(
-            has_example,
-            "Schema {} should have example(s)",
-            type_name
-        );
+        assert!(has_example, "Schema {} should have example(s)", type_name);
     }
 }

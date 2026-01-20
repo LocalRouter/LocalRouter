@@ -24,6 +24,7 @@ interface Model {
   input_price_per_million?: number
   output_price_per_million?: number
   parameter_count?: string
+  pricing_source?: 'catalog' | 'override'
 }
 
 interface ApiKey {
@@ -41,6 +42,9 @@ export default function ModelDetailPage({ modelKey, onTabChange }: ModelDetailPa
   const [apiKeys, setApiKeys] = useState<ApiKey[]>([])
   const [loading, setLoading] = useState(true)
   const [activeTab, setActiveTab] = useState<string>('metrics')
+  const [isEditingPricing, setIsEditingPricing] = useState(false)
+  const [editInputPrice, setEditInputPrice] = useState<string>('')
+  const [editOutputPrice, setEditOutputPrice] = useState<string>('')
 
   // Memoize context object to prevent re-renders
   // MUST be before any conditional returns (Rules of Hooks)
@@ -218,12 +222,113 @@ export default function ModelDetailPage({ modelKey, onTabChange }: ModelDetailPa
                   {model.supports_streaming ? 'Yes' : 'No'}
                 </span>
               </div>
-              {(model.input_price_per_million || model.output_price_per_million) && (
-                <div className="flex justify-between">
-                  <span className="text-gray-600">Pricing:</span>
-                  <span className="font-medium text-gray-900 text-right">
-                    {formatPrice(model)}
-                  </span>
+              {(model.input_price_per_million || model.output_price_per_million || isEditingPricing) && (
+                <div className="space-y-2">
+                  <div className="flex justify-between items-start">
+                    <span className="text-gray-600">Pricing:</span>
+                    {!isEditingPricing ? (
+                      <div className="text-right">
+                        <span className="font-medium text-gray-900 block">
+                          {formatPrice(model)}
+                        </span>
+                        {model.pricing_source && (
+                          <span className={`text-xs ${model.pricing_source === 'override' ? 'text-purple-600' : 'text-green-600'}`}>
+                            {model.pricing_source === 'override' ? '(Custom Override)' : '(OpenRouter Catalog)'}
+                          </span>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="space-y-2 flex-1 ml-4">
+                        <div>
+                          <label className="text-xs text-gray-600">Input ($/1M tokens):</label>
+                          <input
+                            type="number"
+                            step="0.01"
+                            value={editInputPrice}
+                            onChange={(e) => setEditInputPrice(e.target.value)}
+                            className="w-full px-2 py-1 border border-gray-300 rounded text-sm"
+                            placeholder="0.00"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-xs text-gray-600">Output ($/1M tokens):</label>
+                          <input
+                            type="number"
+                            step="0.01"
+                            value={editOutputPrice}
+                            onChange={(e) => setEditOutputPrice(e.target.value)}
+                            className="w-full px-2 py-1 border border-gray-300 rounded text-sm"
+                            placeholder="0.00"
+                          />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex gap-2 justify-end">
+                    {!isEditingPricing ? (
+                      <button
+                        onClick={() => {
+                          setEditInputPrice(model.input_price_per_million?.toString() || '')
+                          setEditOutputPrice(model.output_price_per_million?.toString() || '')
+                          setIsEditingPricing(true)
+                        }}
+                        className="text-xs text-blue-600 hover:text-blue-700 hover:underline"
+                      >
+                        {model.pricing_source === 'override' ? 'Edit Override' : 'Override Pricing'}
+                      </button>
+                    ) : (
+                      <>
+                        <button
+                          onClick={async () => {
+                            try {
+                              const inputPrice = parseFloat(editInputPrice) || 0
+                              const outputPrice = parseFloat(editOutputPrice) || 0
+                              await invoke('set_pricing_override', {
+                                provider: providerInstance,
+                                model: modelId,
+                                inputPerMillion: inputPrice,
+                                outputPerMillion: outputPrice,
+                              })
+                              setIsEditingPricing(false)
+                              // Reload model data to show new pricing
+                              await loadModelData()
+                            } catch (err) {
+                              console.error('Failed to set pricing override:', err)
+                            }
+                          }}
+                          className="text-xs px-3 py-1 bg-blue-600 text-white rounded hover:bg-blue-700"
+                        >
+                          Save
+                        </button>
+                        <button
+                          onClick={() => setIsEditingPricing(false)}
+                          className="text-xs px-3 py-1 bg-gray-200 text-gray-700 rounded hover:bg-gray-300"
+                        >
+                          Cancel
+                        </button>
+                        {model.pricing_source === 'override' && (
+                          <button
+                            onClick={async () => {
+                              try {
+                                await invoke('delete_pricing_override', {
+                                  provider: providerInstance,
+                                  model: modelId,
+                                })
+                                setIsEditingPricing(false)
+                                // Reload model data to show catalog pricing
+                                await loadModelData()
+                              } catch (err) {
+                                console.error('Failed to delete pricing override:', err)
+                              }
+                            }}
+                            className="text-xs px-3 py-1 bg-red-600 text-white rounded hover:bg-red-700"
+                          >
+                            Delete Override
+                          </button>
+                        )}
+                      </>
+                    )}
+                  </div>
                 </div>
               )}
               {model.parameter_count && (
@@ -247,13 +352,23 @@ export default function ModelDetailPage({ modelKey, onTabChange }: ModelDetailPa
               </div>
             )}
 
-            {catalogMetadata && (
+            {catalogMetadata && model.pricing_source === 'catalog' && (
               <div className="mt-4 pt-4 border-t border-gray-200">
                 <div className="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg p-3">
                   <p className="text-xs text-green-900 dark:text-green-100">
                     <strong>Pricing Source:</strong> OpenRouter model catalog embedded at build time •
                     Last updated: {new Date(catalogMetadata.fetch_date).toLocaleDateString()} •
                     Fully offline-capable
+                  </p>
+                </div>
+              </div>
+            )}
+            {model.pricing_source === 'override' && (
+              <div className="mt-4 pt-4 border-t border-gray-200">
+                <div className="bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-800 rounded-lg p-3">
+                  <p className="text-xs text-purple-900 dark:text-purple-100">
+                    <strong>Pricing Source:</strong> Custom override set by you •
+                    This pricing will be used for rate limiting and cost tracking
                   </p>
                 </div>
               </div>

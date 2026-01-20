@@ -22,7 +22,11 @@ pub async fn get_global_metrics(
     let (start, end) = time_range.get_range();
     let data_points = app_state.metrics_collector.get_global_range(start, end);
 
-    Ok(GraphGenerator::generate(&data_points, metric_type, Some("Global")))
+    Ok(GraphGenerator::generate(
+        &data_points,
+        metric_type,
+        Some("Global"),
+    ))
 }
 
 /// Get API key specific metrics
@@ -38,9 +42,15 @@ pub async fn get_api_key_metrics(
         .ok_or_else(|| "Server is not running".to_string())?;
 
     let (start, end) = time_range.get_range();
-    let data_points = app_state.metrics_collector.get_key_range(&api_key_id, start, end);
+    let data_points = app_state
+        .metrics_collector
+        .get_key_range(&api_key_id, start, end);
 
-    Ok(GraphGenerator::generate(&data_points, metric_type, Some(&api_key_id)))
+    Ok(GraphGenerator::generate(
+        &data_points,
+        metric_type,
+        Some(&api_key_id),
+    ))
 }
 
 /// Get provider specific metrics
@@ -56,9 +66,15 @@ pub async fn get_provider_metrics(
         .ok_or_else(|| "Server is not running".to_string())?;
 
     let (start, end) = time_range.get_range();
-    let data_points = app_state.metrics_collector.get_provider_range(&provider, start, end);
+    let data_points = app_state
+        .metrics_collector
+        .get_provider_range(&provider, start, end);
 
-    Ok(GraphGenerator::generate(&data_points, metric_type, Some(&provider)))
+    Ok(GraphGenerator::generate(
+        &data_points,
+        metric_type,
+        Some(&provider),
+    ))
 }
 
 /// Get model specific metrics
@@ -74,9 +90,15 @@ pub async fn get_model_metrics(
         .ok_or_else(|| "Server is not running".to_string())?;
 
     let (start, end) = time_range.get_range();
-    let data_points = app_state.metrics_collector.get_model_range(&model, start, end);
+    let data_points = app_state
+        .metrics_collector
+        .get_model_range(&model, start, end);
 
-    Ok(GraphGenerator::generate(&data_points, metric_type, Some(&model)))
+    Ok(GraphGenerator::generate(
+        &data_points,
+        metric_type,
+        Some(&model),
+    ))
 }
 
 /// List all tracked models
@@ -162,7 +184,9 @@ pub async fn compare_providers(
     let data_sets: Vec<(String, Vec<_>)> = providers
         .iter()
         .map(|provider| {
-            let points = app_state.metrics_collector.get_provider_range(provider, start, end);
+            let points = app_state
+                .metrics_collector
+                .get_provider_range(provider, start, end);
             (provider.clone(), points)
         })
         .collect();
@@ -192,7 +216,9 @@ pub async fn compare_models(
     let data_sets: Vec<(String, Vec<_>)> = models
         .iter()
         .map(|model| {
-            let points = app_state.metrics_collector.get_model_range(model, start, end);
+            let points = app_state
+                .metrics_collector
+                .get_model_range(model, start, end);
             (model.clone(), points)
         })
         .collect();

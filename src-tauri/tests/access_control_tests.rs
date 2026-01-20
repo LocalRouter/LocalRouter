@@ -24,10 +24,14 @@ fn test_client_llm_provider_access_control() -> AppResult<()> {
     // Verify client now has openai access
     let updated_client = manager.get_client(&client.id).unwrap();
     assert_eq!(updated_client.allowed_llm_providers.len(), 1);
-    assert!(updated_client.allowed_llm_providers.contains(&"openai".to_string()));
+    assert!(updated_client
+        .allowed_llm_providers
+        .contains(&"openai".to_string()));
 
     // Verify client does NOT have anthropic access
-    assert!(!updated_client.allowed_llm_providers.contains(&"anthropic".to_string()));
+    assert!(!updated_client
+        .allowed_llm_providers
+        .contains(&"anthropic".to_string()));
 
     // Add anthropic provider access
     manager.add_llm_provider(&client.id, "anthropic")?;
@@ -35,8 +39,12 @@ fn test_client_llm_provider_access_control() -> AppResult<()> {
     // Verify client now has both
     let updated_client = manager.get_client(&client.id).unwrap();
     assert_eq!(updated_client.allowed_llm_providers.len(), 2);
-    assert!(updated_client.allowed_llm_providers.contains(&"openai".to_string()));
-    assert!(updated_client.allowed_llm_providers.contains(&"anthropic".to_string()));
+    assert!(updated_client
+        .allowed_llm_providers
+        .contains(&"openai".to_string()));
+    assert!(updated_client
+        .allowed_llm_providers
+        .contains(&"anthropic".to_string()));
 
     // Remove openai access
     manager.remove_llm_provider(&client.id, "openai")?;
@@ -44,8 +52,12 @@ fn test_client_llm_provider_access_control() -> AppResult<()> {
     // Verify client only has anthropic now
     let updated_client = manager.get_client(&client.id).unwrap();
     assert_eq!(updated_client.allowed_llm_providers.len(), 1);
-    assert!(!updated_client.allowed_llm_providers.contains(&"openai".to_string()));
-    assert!(updated_client.allowed_llm_providers.contains(&"anthropic".to_string()));
+    assert!(!updated_client
+        .allowed_llm_providers
+        .contains(&"openai".to_string()));
+    assert!(updated_client
+        .allowed_llm_providers
+        .contains(&"anthropic".to_string()));
 
     Ok(())
 }
@@ -136,16 +148,28 @@ fn test_multiple_clients_independent_access() -> AppResult<()> {
     // Verify client1 permissions
     let updated_client1 = manager.get_client(&client1.id).unwrap();
     assert_eq!(updated_client1.allowed_llm_providers.len(), 2);
-    assert!(updated_client1.allowed_llm_providers.contains(&"openai".to_string()));
-    assert!(updated_client1.allowed_llm_providers.contains(&"anthropic".to_string()));
-    assert!(!updated_client1.allowed_llm_providers.contains(&"google".to_string()));
+    assert!(updated_client1
+        .allowed_llm_providers
+        .contains(&"openai".to_string()));
+    assert!(updated_client1
+        .allowed_llm_providers
+        .contains(&"anthropic".to_string()));
+    assert!(!updated_client1
+        .allowed_llm_providers
+        .contains(&"google".to_string()));
 
     // Verify client2 permissions
     let updated_client2 = manager.get_client(&client2.id).unwrap();
     assert_eq!(updated_client2.allowed_llm_providers.len(), 2);
-    assert!(updated_client2.allowed_llm_providers.contains(&"anthropic".to_string()));
-    assert!(updated_client2.allowed_llm_providers.contains(&"google".to_string()));
-    assert!(!updated_client2.allowed_llm_providers.contains(&"openai".to_string()));
+    assert!(updated_client2
+        .allowed_llm_providers
+        .contains(&"anthropic".to_string()));
+    assert!(updated_client2
+        .allowed_llm_providers
+        .contains(&"google".to_string()));
+    assert!(!updated_client2
+        .allowed_llm_providers
+        .contains(&"openai".to_string()));
 
     Ok(())
 }
@@ -163,7 +187,9 @@ fn test_disabled_client_loses_access() -> AppResult<()> {
     assert!(verified.is_some());
     let verified_client = verified.unwrap();
     assert!(verified_client.enabled);
-    assert!(verified_client.allowed_llm_providers.contains(&"openai".to_string()));
+    assert!(verified_client
+        .allowed_llm_providers
+        .contains(&"openai".to_string()));
 
     // Disable the client
     manager.update_client(&client.id, None, Some(false))?;
@@ -175,7 +201,9 @@ fn test_disabled_client_loses_access() -> AppResult<()> {
     // But the client still exists with its permissions
     let client_from_manager = manager.get_client(&client.id).unwrap();
     assert!(!client_from_manager.enabled);
-    assert!(client_from_manager.allowed_llm_providers.contains(&"openai".to_string()));
+    assert!(client_from_manager
+        .allowed_llm_providers
+        .contains(&"openai".to_string()));
 
     Ok(())
 }
@@ -201,10 +229,18 @@ fn test_access_control_persists_across_updates() -> AppResult<()> {
     assert_eq!(updated_client.name, "New Name");
     assert_eq!(updated_client.allowed_llm_providers.len(), 2);
     assert_eq!(updated_client.allowed_mcp_servers.len(), 2);
-    assert!(updated_client.allowed_llm_providers.contains(&"openai".to_string()));
-    assert!(updated_client.allowed_llm_providers.contains(&"anthropic".to_string()));
-    assert!(updated_client.allowed_mcp_servers.contains(&"server-1".to_string()));
-    assert!(updated_client.allowed_mcp_servers.contains(&"server-2".to_string()));
+    assert!(updated_client
+        .allowed_llm_providers
+        .contains(&"openai".to_string()));
+    assert!(updated_client
+        .allowed_llm_providers
+        .contains(&"anthropic".to_string()));
+    assert!(updated_client
+        .allowed_mcp_servers
+        .contains(&"server-1".to_string()));
+    assert!(updated_client
+        .allowed_mcp_servers
+        .contains(&"server-2".to_string()));
 
     // Disable and re-enable client
     manager.update_client(&client.id, None, Some(false))?;
@@ -234,7 +270,9 @@ fn test_duplicate_access_grants_are_idempotent() -> AppResult<()> {
     // Verify only one entry exists
     let updated_client = manager.get_client(&client.id).unwrap();
     assert_eq!(updated_client.allowed_llm_providers.len(), 1);
-    assert!(updated_client.allowed_llm_providers.contains(&"openai".to_string()));
+    assert!(updated_client
+        .allowed_llm_providers
+        .contains(&"openai".to_string()));
 
     // Grant access to same MCP server multiple times
     manager.add_mcp_server(&client.id, "server-1")?;
@@ -243,7 +281,9 @@ fn test_duplicate_access_grants_are_idempotent() -> AppResult<()> {
     // Verify only one entry exists
     let updated_client = manager.get_client(&client.id).unwrap();
     assert_eq!(updated_client.allowed_mcp_servers.len(), 1);
-    assert!(updated_client.allowed_mcp_servers.contains(&"server-1".to_string()));
+    assert!(updated_client
+        .allowed_mcp_servers
+        .contains(&"server-1".to_string()));
 
     Ok(())
 }
@@ -315,9 +355,15 @@ fn test_case_sensitivity_in_provider_names() -> AppResult<()> {
     // Verify all three are stored as separate entries (case-sensitive)
     let updated_client = manager.get_client(&client.id).unwrap();
     assert_eq!(updated_client.allowed_llm_providers.len(), 3);
-    assert!(updated_client.allowed_llm_providers.contains(&"openai".to_string()));
-    assert!(updated_client.allowed_llm_providers.contains(&"OpenAI".to_string()));
-    assert!(updated_client.allowed_llm_providers.contains(&"OPENAI".to_string()));
+    assert!(updated_client
+        .allowed_llm_providers
+        .contains(&"openai".to_string()));
+    assert!(updated_client
+        .allowed_llm_providers
+        .contains(&"OpenAI".to_string()));
+    assert!(updated_client
+        .allowed_llm_providers
+        .contains(&"OPENAI".to_string()));
 
     Ok(())
 }

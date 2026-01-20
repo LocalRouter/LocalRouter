@@ -42,8 +42,9 @@ impl DeepInfraProvider {
     /// Create a new DeepInfra provider from stored API key
     pub fn from_stored_key(provider_name: Option<&str>) -> AppResult<Self> {
         let name = provider_name.unwrap_or("deepinfra");
-        let api_key = super::key_storage::get_provider_key(name)?
-            .ok_or_else(|| AppError::Provider(format!("No API key found for provider '{}'", name)))?;
+        let api_key = super::key_storage::get_provider_key(name)?.ok_or_else(|| {
+            AppError::Provider(format!("No API key found for provider '{}'", name))
+        })?;
         Self::new(api_key)
     }
 
@@ -168,26 +169,31 @@ impl ModelProvider for DeepInfraProvider {
     }
 
     async fn list_models(&self) -> AppResult<Vec<ModelInfo>> {
-        Ok(Self::get_known_models())
+        // Enrich known models with catalog data using model-only search
+        let models = Self::get_known_models()
+            .into_iter()
+            .map(|model| model.enrich_with_catalog_by_name())
+            .collect();
+        Ok(models)
     }
 
     async fn get_pricing(&self, model: &str) -> AppResult<PricingInfo> {
         // DeepInfra pricing as of 2026-01 (approximate)
         let pricing = if model.contains("405B") {
             PricingInfo {
-                input_cost_per_1k: 0.0027, // $2.7 per 1M tokens
+                input_cost_per_1k: 0.0027,  // $2.7 per 1M tokens
                 output_cost_per_1k: 0.0027, // $2.7 per 1M tokens
                 currency: "USD".to_string(),
             }
         } else if model.contains("70B") || model.contains("72B") {
             PricingInfo {
-                input_cost_per_1k: 0.00059, // $0.59 per 1M tokens
+                input_cost_per_1k: 0.00059,  // $0.59 per 1M tokens
                 output_cost_per_1k: 0.00059, // $0.59 per 1M tokens
                 currency: "USD".to_string(),
             }
         } else {
             PricingInfo {
-                input_cost_per_1k: 0.00009, // $0.09 per 1M tokens
+                input_cost_per_1k: 0.00009,  // $0.09 per 1M tokens
                 output_cost_per_1k: 0.00009, // $0.09 per 1M tokens
                 currency: "USD".to_string(),
             }
@@ -218,10 +224,9 @@ impl ModelProvider for DeepInfraProvider {
             )));
         }
 
-        let deepinfra_response: OpenAIChatResponse = response
-            .json()
-            .await
-            .map_err(|e| AppError::Provider(format!("Failed to parse DeepInfra response: {}", e)))?;
+        let deepinfra_response: OpenAIChatResponse = response.json().await.map_err(|e| {
+            AppError::Provider(format!("Failed to parse DeepInfra response: {}", e))
+        })?;
 
         Ok(CompletionResponse {
             id: deepinfra_response.id,
@@ -257,7 +262,9 @@ impl ModelProvider for DeepInfraProvider {
             .json(&request)
             .send()
             .await
-            .map_err(|e| AppError::Provider(format!("DeepInfra streaming request failed: {}", e)))?;
+            .map_err(|e| {
+                AppError::Provider(format!("DeepInfra streaming request failed: {}", e))
+            })?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -352,7 +359,10 @@ mod tests {
     #[tokio::test]
     async fn test_pricing() {
         let provider = DeepInfraProvider::new("test_key".to_string()).unwrap();
-        let pricing = provider.get_pricing("meta-llama/Meta-Llama-3.1-405B-Instruct").await.unwrap();
+        let pricing = provider
+            .get_pricing("meta-llama/Meta-Llama-3.1-405B-Instruct")
+            .await
+            .unwrap();
         assert!(pricing.input_cost_per_1k > 0.0);
     }
 }

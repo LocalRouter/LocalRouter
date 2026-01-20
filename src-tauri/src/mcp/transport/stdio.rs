@@ -3,7 +3,7 @@
 //! Spawns a subprocess and communicates via stdin/stdout using JSON-RPC 2.0.
 //! This is the most common transport type for MCP servers.
 
-use crate::mcp::protocol::{JsonRpcRequest, JsonRpcResponse};
+use crate::mcp::protocol::{JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse};
 use crate::mcp::transport::Transport;
 use crate::utils::errors::{AppError, AppResult};
 use async_trait::async_trait;
@@ -16,10 +16,14 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::{oneshot, Mutex};
 
+/// Notification callback type for STDIO transport
+pub type StdioNotificationCallback = Arc<dyn Fn(JsonRpcNotification) + Send + Sync>;
+
 /// STDIO transport implementation
 ///
 /// Manages a subprocess with JSON-RPC communication over stdin/stdout.
 /// Supports concurrent requests with request/response correlation.
+/// Supports notification handling for server-initiated messages.
 pub struct StdioTransport {
     /// Child process
     child: Arc<RwLock<Option<Child>>>,
@@ -37,6 +41,9 @@ pub struct StdioTransport {
 
     /// Whether the transport is closed
     closed: Arc<RwLock<bool>>,
+
+    /// Notification callback (optional)
+    notification_callback: Arc<RwLock<Option<StdioNotificationCallback>>>,
 }
 
 impl StdioTransport {
@@ -70,13 +77,15 @@ impl StdioTransport {
             })?;
 
         // Take stdin and stdout handles
-        let stdin = child.stdin.take().ok_or_else(|| {
-            AppError::Mcp("Failed to capture stdin of MCP process".to_string())
-        })?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| AppError::Mcp("Failed to capture stdin of MCP process".to_string()))?;
 
-        let stdout = child.stdout.take().ok_or_else(|| {
-            AppError::Mcp("Failed to capture stdout of MCP process".to_string())
-        })?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| AppError::Mcp("Failed to capture stdout of MCP process".to_string()))?;
 
         // Create transport instance
         let transport = Self {
@@ -85,6 +94,7 @@ impl StdioTransport {
             pending: Arc::new(RwLock::new(HashMap::new())),
             next_id: Arc::new(RwLock::new(1)),
             closed: Arc::new(RwLock::new(false)),
+            notification_callback: Arc::new(RwLock::new(None)),
         };
 
         // Start reading stdout in background
@@ -95,10 +105,19 @@ impl StdioTransport {
         Ok(transport)
     }
 
-    /// Start background task to read stdout and dispatch responses
+    /// Set a notification callback
+    ///
+    /// # Arguments
+    /// * `callback` - The callback to invoke when notifications are received
+    pub fn set_notification_callback(&self, callback: StdioNotificationCallback) {
+        *self.notification_callback.write() = Some(callback);
+    }
+
+    /// Start background task to read stdout and dispatch responses/notifications
     fn start_stdout_reader(&self, stdout: ChildStdout) {
         let pending = self.pending.clone();
         let closed = self.closed.clone();
+        let notification_callback = self.notification_callback.clone();
 
         tokio::spawn(async move {
             let mut reader = BufReader::new(stdout);
@@ -115,15 +134,15 @@ impl StdioTransport {
                         break;
                     }
                     Ok(_) => {
-                        // Parse JSON-RPC response
+                        // Parse JSON-RPC message (could be response or notification)
                         let trimmed = line.trim();
                         if trimmed.is_empty() {
                             continue;
                         }
 
-                        match serde_json::from_str::<JsonRpcResponse>(trimmed) {
-                            Ok(response) => {
-                                // Extract ID and find pending sender
+                        match serde_json::from_str::<JsonRpcMessage>(trimmed) {
+                            Ok(JsonRpcMessage::Response(response)) => {
+                                // Handle response
                                 let id_str = response.id.to_string();
 
                                 if let Some(sender) = pending.write().remove(&id_str) {
@@ -141,8 +160,26 @@ impl StdioTransport {
                                     );
                                 }
                             }
+                            Ok(JsonRpcMessage::Notification(notification)) => {
+                                // Handle notification
+                                tracing::debug!("Received notification: {}", notification.method);
+                                if let Some(callback) = notification_callback.read().as_ref() {
+                                    callback(notification);
+                                }
+                            }
+                            Ok(JsonRpcMessage::Request(_)) => {
+                                // Unexpected: server shouldn't send requests to client
+                                tracing::warn!(
+                                    "Received unexpected request from server (ignored): {}",
+                                    trimmed
+                                );
+                            }
                             Err(e) => {
-                                tracing::error!("Failed to parse JSON-RPC response: {}\nLine: {}", e, trimmed);
+                                tracing::error!(
+                                    "Failed to parse JSON-RPC message: {}\nLine: {}",
+                                    e,
+                                    trimmed
+                                );
                             }
                         }
                     }
@@ -211,9 +248,10 @@ impl StdioTransport {
         }; // Lock is dropped here
 
         if let Some(mut process) = child_process {
-            process.kill().await.map_err(|e| {
-                AppError::Mcp(format!("Failed to kill MCP process: {}", e))
-            })?;
+            process
+                .kill()
+                .await
+                .map_err(|e| AppError::Mcp(format!("Failed to kill MCP process: {}", e)))?;
         }
 
         Ok(())
@@ -305,7 +343,10 @@ mod tests {
         // This test is ignored by default as it requires external dependencies
         let result = StdioTransport::spawn(
             "npx".to_string(),
-            vec!["-y".to_string(), "@modelcontextprotocol/server-everything".to_string()],
+            vec![
+                "-y".to_string(),
+                "@modelcontextprotocol/server-everything".to_string(),
+            ],
             HashMap::new(),
         )
         .await;
@@ -326,6 +367,7 @@ mod tests {
             pending: Arc::new(RwLock::new(HashMap::new())),
             next_id: Arc::new(RwLock::new(1)),
             closed: Arc::new(RwLock::new(false)),
+            notification_callback: Arc::new(RwLock::new(None)),
         };
 
         assert_eq!(transport.next_request_id(), 1);
@@ -335,7 +377,8 @@ mod tests {
 
     #[test]
     fn test_json_rpc_serialization() {
-        let request = JsonRpcRequest::with_id(1, "test_method".to_string(), Some(json!({"key": "value"})));
+        let request =
+            JsonRpcRequest::with_id(1, "test_method".to_string(), Some(json!({"key": "value"})));
         let json = serde_json::to_string(&request).unwrap();
         assert!(json.contains("\"jsonrpc\":\"2.0\""));
         assert!(json.contains("\"method\":\"test_method\""));

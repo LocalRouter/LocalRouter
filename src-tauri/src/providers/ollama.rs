@@ -268,8 +268,9 @@ impl ModelProvider for OllamaProvider {
                     context_window: 4096,
                     supports_streaming: true,
                     capabilities: vec![Capability::Chat, Capability::Completion],
-                detailed_capabilities: None,
+                    detailed_capabilities: None,
                 }
+                .enrich_with_catalog_by_name() // Use model-only search for multi-provider system
             })
             .collect();
 
@@ -319,14 +320,15 @@ impl ModelProvider for OllamaProvider {
             .await
             .map_err(|e| AppError::Provider(format!("Failed to parse Ollama response: {}", e)))?;
 
-        let (prompt_tokens, completion_tokens) = if let Some(ref final_data) = ollama_response.final_data {
-            (
-                final_data.prompt_eval_count.unwrap_or(0) as u32,
-                final_data.eval_count.unwrap_or(0) as u32,
-            )
-        } else {
-            (0, 0)
-        };
+        let (prompt_tokens, completion_tokens) =
+            if let Some(ref final_data) = ollama_response.final_data {
+                (
+                    final_data.prompt_eval_count.unwrap_or(0) as u32,
+                    final_data.eval_count.unwrap_or(0) as u32,
+                )
+            } else {
+                (0, 0)
+            };
 
         Ok(CompletionResponse {
             id: format!("chatcmpl-{}", uuid::Uuid::new_v4()),
@@ -395,84 +397,86 @@ impl ModelProvider for OllamaProvider {
         // Buffer for incomplete lines across byte chunks
         let line_buffer = Arc::new(Mutex::new(String::new()));
 
-        let converted_stream = stream
-            .flat_map(move |result| {
-                let model = model.clone();
-                let is_first_chunk = is_first_chunk.clone();
-                let line_buffer = line_buffer.clone();
+        let converted_stream = stream.flat_map(move |result| {
+            let model = model.clone();
+            let is_first_chunk = is_first_chunk.clone();
+            let line_buffer = line_buffer.clone();
 
-                let chunks: Vec<AppResult<CompletionChunk>> = match result {
-                    Ok(bytes) => {
-                        let text = String::from_utf8_lossy(&bytes);
-                        let mut buffer = line_buffer.lock().unwrap();
+            let chunks: Vec<AppResult<CompletionChunk>> = match result {
+                Ok(bytes) => {
+                    let text = String::from_utf8_lossy(&bytes);
+                    let mut buffer = line_buffer.lock().unwrap();
 
-                        // Append new data to buffer
-                        buffer.push_str(&text);
+                    // Append new data to buffer
+                    buffer.push_str(&text);
 
-                        let mut chunks = Vec::new();
+                    let mut chunks = Vec::new();
 
-                        // Process complete lines (those ending with \n)
-                        while let Some(newline_pos) = buffer.find('\n') {
-                            let line = buffer[..newline_pos].to_string();
-                            *buffer = buffer[newline_pos + 1..].to_string();
+                    // Process complete lines (those ending with \n)
+                    while let Some(newline_pos) = buffer.find('\n') {
+                        let line = buffer[..newline_pos].to_string();
+                        *buffer = buffer[newline_pos + 1..].to_string();
 
-                            if line.trim().is_empty() {
-                                continue;
-                            }
+                        if line.trim().is_empty() {
+                            continue;
+                        }
 
-                            match serde_json::from_str::<OllamaStreamResponse>(&line) {
-                                Ok(ollama_chunk) => {
-                                    // Ollama sends incremental/delta content directly, not cumulative
-                                    let delta_content = ollama_chunk.message.content;
-                                    let mut first = is_first_chunk.lock().unwrap();
-                                    let is_first = *first;
+                        match serde_json::from_str::<OllamaStreamResponse>(&line) {
+                            Ok(ollama_chunk) => {
+                                // Ollama sends incremental/delta content directly, not cumulative
+                                let delta_content = ollama_chunk.message.content;
+                                let mut first = is_first_chunk.lock().unwrap();
+                                let is_first = *first;
 
-                                    if !delta_content.is_empty() {
-                                        *first = false;
-                                    }
+                                if !delta_content.is_empty() {
+                                    *first = false;
+                                }
 
-                                    let chunk = CompletionChunk {
-                                        id: format!("chatcmpl-{}", uuid::Uuid::new_v4()),
-                                        object: "chat.completion.chunk".to_string(),
-                                        created: Utc::now().timestamp(),
-                                        model: model.clone(),
-                                        choices: vec![ChunkChoice {
-                                            index: 0,
-                                            delta: ChunkDelta {
-                                                role: if is_first && !delta_content.is_empty() {
-                                                    Some("assistant".to_string())
-                                                } else {
-                                                    None
-                                                },
-                                                content: if !delta_content.is_empty() {
-                                                    Some(delta_content)
-                                                } else {
-                                                    None
-                                                },
-                                            },
-                                            finish_reason: if ollama_chunk.done {
-                                                Some("stop".to_string())
+                                let chunk = CompletionChunk {
+                                    id: format!("chatcmpl-{}", uuid::Uuid::new_v4()),
+                                    object: "chat.completion.chunk".to_string(),
+                                    created: Utc::now().timestamp(),
+                                    model: model.clone(),
+                                    choices: vec![ChunkChoice {
+                                        index: 0,
+                                        delta: ChunkDelta {
+                                            role: if is_first && !delta_content.is_empty() {
+                                                Some("assistant".to_string())
                                             } else {
                                                 None
                                             },
-                                        }],
-                                        extensions: None,
-                                    };
-                                    chunks.push(Ok(chunk));
-                                }
-                                Err(e) => {
-                                    error!("Failed to parse Ollama stream chunk: {} - Line: {}", e, line);
-                                }
+                                            content: if !delta_content.is_empty() {
+                                                Some(delta_content)
+                                            } else {
+                                                None
+                                            },
+                                        },
+                                        finish_reason: if ollama_chunk.done {
+                                            Some("stop".to_string())
+                                        } else {
+                                            None
+                                        },
+                                    }],
+                                    extensions: None,
+                                };
+                                chunks.push(Ok(chunk));
+                            }
+                            Err(e) => {
+                                error!(
+                                    "Failed to parse Ollama stream chunk: {} - Line: {}",
+                                    e, line
+                                );
                             }
                         }
-
-                        chunks
                     }
-                    Err(e) => vec![Err(AppError::Provider(format!("Stream error: {}", e)))],
-                };
 
-                futures::stream::iter(chunks)
-            });
+                    chunks
+                }
+                Err(e) => vec![Err(AppError::Provider(format!("Stream error: {}", e)))],
+            };
+
+            futures::stream::iter(chunks)
+        });
 
         Ok(Box::pin(converted_stream))
     }

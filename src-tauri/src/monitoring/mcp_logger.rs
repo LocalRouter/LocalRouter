@@ -126,10 +126,14 @@ impl McpAccessLogger {
         let log_dir = Self::get_log_directory()?;
 
         // Create log directory if it doesn't exist
-        fs::create_dir_all(&log_dir)
-            .map_err(|e| AppError::Internal(format!("Failed to create MCP log directory: {}", e)))?;
+        fs::create_dir_all(&log_dir).map_err(|e| {
+            AppError::Internal(format!("Failed to create MCP log directory: {}", e))
+        })?;
 
-        info!("MCP access logger initialized with directory: {:?}", log_dir);
+        info!(
+            "MCP access logger initialized with directory: {:?}",
+            log_dir
+        );
 
         Ok(Self {
             log_dir,
@@ -309,12 +313,7 @@ impl McpAccessLogger {
         request_id: &str,
     ) -> AppResult<()> {
         let entry = McpAccessLogEntry::success(
-            client_id,
-            server_id,
-            method,
-            latency_ms,
-            transport,
-            request_id,
+            client_id, server_id, method, latency_ms, transport, request_id,
         );
         self.log(&entry)
     }

@@ -48,9 +48,9 @@
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
-use crate::utils::errors::{AppError, AppResult};
 use super::{FeatureAdapter, FeatureData, FeatureParams};
 use crate::providers::{CompletionRequest, CompletionResponse};
+use crate::utils::errors::{AppError, AppResult};
 
 /// Minimum top_logprobs value
 const MIN_TOP_LOGPROBS: u32 = 0;
@@ -192,10 +192,7 @@ impl FeatureAdapter for LogprobsAdapter {
         Ok(())
     }
 
-    fn adapt_response(
-        &self,
-        response: &mut CompletionResponse,
-    ) -> AppResult<Option<FeatureData>> {
+    fn adapt_response(&self, response: &mut CompletionResponse) -> AppResult<Option<FeatureData>> {
         // Check if logprobs are present in response extensions
         let extensions = match &response.extensions {
             Some(ext) => ext,
@@ -280,10 +277,7 @@ mod tests {
 
         let result = adapter.validate_params(&params);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("must be between"));
+        assert!(result.unwrap_err().to_string().contains("must be between"));
     }
 
     #[test]

@@ -77,8 +77,15 @@ pub async fn start_server(
     info!("Starting web server on {}:{}", config.host, config.port);
 
     // Create shared state
-    let state = AppState::new(router, rate_limiter, provider_registry, config_manager, client_manager, token_store)
-        .with_mcp(mcp_server_manager);
+    let state = AppState::new(
+        router,
+        rate_limiter,
+        provider_registry,
+        config_manager,
+        client_manager,
+        token_store,
+    )
+    .with_mcp(mcp_server_manager);
 
     // Build the router with auth layer applied
     let app = build_app(state.clone(), config.enable_cors);
@@ -94,7 +101,10 @@ pub async fn start_server(
         match TcpListener::bind(addr).await {
             Ok(listener) => {
                 if port != config.port {
-                    info!("Port {} was taken, using port {} instead", config.port, port);
+                    info!(
+                        "Port {} was taken, using port {} instead",
+                        config.port, port
+                    );
                 }
                 break listener;
             }
@@ -119,6 +129,16 @@ pub async fn start_server(
     // Clone state to return before starting server (which runs forever)
     let state_clone = state.clone();
 
+    // Spawn gateway session cleanup task (runs every 10 minutes)
+    let gateway_for_cleanup = state.mcp_gateway.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(600)); // 10 minutes
+        loop {
+            interval.tick().await;
+            gateway_for_cleanup.cleanup_expired_sessions();
+        }
+    });
+
     // Start server (this runs forever)
     let handle = tokio::spawn(async move {
         if let Err(e) = axum::serve(listener, app).await {
@@ -134,8 +154,15 @@ fn build_app(state: AppState, enable_cors: bool) -> Router {
     // Build MCP routes with client auth middleware
     let mcp_routes = Router::new()
         .route("/mcp/health", get(routes::mcp_health_handler))
-        .route("/mcp/:client_id/:server_id", post(routes::mcp_proxy_handler))
-        .layer(axum::middleware::from_fn(middleware::client_auth::client_auth_middleware))
+        .route("/mcp", post(routes::mcp_gateway_handler)) // Unified gateway (no client_id in URL)
+        .route("/mcp/servers/:server_id", post(routes::mcp_server_handler)) // Individual server (auth-based)
+        .route(
+            "/mcp/:client_id/:server_id",
+            post(routes::mcp_proxy_handler), // LEGACY: Direct proxy with client_id in URL (deprecated)
+        )
+        .layer(axum::middleware::from_fn(
+            middleware::client_auth::client_auth_middleware,
+        ))
         .layer(axum::Extension(state.clone()))
         .with_state(state.clone());
 
@@ -163,7 +190,10 @@ fn build_app(state: AppState, enable_cors: bool) -> Router {
         .route("/v1/embeddings", post(routes::embeddings))
         .route("/v1/models", get(routes::list_models))
         .route("/v1/models/:id", get(routes::get_model))
-        .route("/v1/models/:provider/:model/pricing", get(routes::get_model_pricing))
+        .route(
+            "/v1/models/:provider/:model/pricing",
+            get(routes::get_model_pricing),
+        )
         .route("/v1/generation", get(routes::get_generation))
         // Routes without /v1 prefix (for compatibility)
         .route("/chat/completions", post(routes::chat_completions))
@@ -171,7 +201,10 @@ fn build_app(state: AppState, enable_cors: bool) -> Router {
         .route("/embeddings", post(routes::embeddings))
         .route("/models", get(routes::list_models))
         .route("/models/:id", get(routes::get_model))
-        .route("/models/:provider/:model/pricing", get(routes::get_model_pricing))
+        .route(
+            "/models/:provider/:model/pricing",
+            get(routes::get_model_pricing),
+        )
         .route("/generation", get(routes::get_generation))
         .with_state(state.clone());
 

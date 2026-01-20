@@ -190,7 +190,8 @@ impl MetricsDatabase {
 
                 Ok(MetricRow {
                     timestamp: DateTime::from_timestamp(timestamp_i64, 0).unwrap_or_else(Utc::now),
-                    granularity: Granularity::from_str(&granularity_str).unwrap_or(Granularity::Minute),
+                    granularity: Granularity::from_str(&granularity_str)
+                        .unwrap_or(Granularity::Minute),
                     requests: requests_i64 as u64,
                     successful_requests: successful_i64 as u64,
                     failed_requests: failed_i64 as u64,
@@ -288,9 +289,10 @@ impl MetricsDatabase {
         )?;
 
         let metric_types: Vec<String> = stmt
-            .query_map(params![hour_start.timestamp(), hour_end.timestamp()], |row| {
-                row.get(0)
-            })?
+            .query_map(
+                params![hour_start.timestamp(), hour_end.timestamp()],
+                |row| row.get(0),
+            )?
             .collect::<Result<Vec<String>, _>>()?;
 
         let mut aggregated_count = 0;
@@ -439,9 +441,7 @@ mod tests {
         let db = MetricsDatabase::new(db_path).unwrap();
 
         let now = Utc::now();
-        let minute_timestamp = now
-            .duration_trunc(chrono::Duration::minutes(1))
-            .unwrap();
+        let minute_timestamp = now.duration_trunc(chrono::Duration::minutes(1)).unwrap();
 
         let row = MetricRow {
             timestamp: minute_timestamp,
@@ -537,9 +537,7 @@ mod tests {
         let db = MetricsDatabase::new(db_path).unwrap();
 
         let now = Utc::now();
-        let hour_start = now
-            .duration_trunc(chrono::Duration::hours(1))
-            .unwrap();
+        let hour_start = now.duration_trunc(chrono::Duration::hours(1)).unwrap();
 
         // Insert 3 minute data points in the same hour
         for i in 0..3 {

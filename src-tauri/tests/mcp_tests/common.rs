@@ -8,17 +8,17 @@
 // Re-export MockKeychain from the main crate
 pub use localrouter_ai::api_keys::keychain_trait::MockKeychain;
 
-use localrouter_ai::mcp::protocol::{JsonRpcRequest, JsonRpcResponse, JsonRpcError};
+use futures_util::{SinkExt, StreamExt};
+use localrouter_ai::mcp::protocol::{JsonRpcError, JsonRpcRequest, JsonRpcResponse};
 use localrouter_ai::utils::errors::AppResult;
+use parking_lot::RwLock;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use parking_lot::RwLock;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
 use tokio_tungstenite::{accept_async, tungstenite::Message};
-use futures_util::{SinkExt, StreamExt};
 use wiremock::{
     matchers::{header, method as http_method, path, query_param},
     Mock, MockServer, ResponseTemplate,
@@ -93,7 +93,8 @@ impl StdioMockBuilder {
 
     /// Mock an error response for a method
     pub fn mock_error(mut self, method: &str, error_code: i32, message: &str) -> Self {
-        self.errors.insert(method.to_string(), (error_code, message.to_string()));
+        self.errors
+            .insert(method.to_string(), (error_code, message.to_string()));
         self
     }
 
@@ -125,11 +126,10 @@ impl StdioMockBuilder {
         env.insert("MCP_MOCK_RESPONSES".to_string(), responses_json);
 
         // Convert errors to JSON (as map of method -> [code, message])
-        let errors_map: HashMap<String, Vec<Value>> = self.errors
+        let errors_map: HashMap<String, Vec<Value>> = self
+            .errors
             .into_iter()
-            .map(|(method, (code, message))| {
-                (method, vec![json!(code), json!(message)])
-            })
+            .map(|(method, (code, message))| (method, vec![json!(code), json!(message)]))
             .collect();
         let errors_json = serde_json::to_string(&errors_map).unwrap();
         env.insert("MCP_MOCK_ERRORS".to_string(), errors_json);
@@ -203,7 +203,10 @@ impl SseMockBuilder {
         // Build SSE response
         let mut sse_body = String::new();
         for chunk in chunks {
-            sse_body.push_str(&format!("data: {}\n\n", serde_json::to_string(&chunk).unwrap()));
+            sse_body.push_str(&format!(
+                "data: {}\n\n",
+                serde_json::to_string(&chunk).unwrap()
+            ));
         }
 
         Mock::given(http_method("POST"))
@@ -211,7 +214,7 @@ impl SseMockBuilder {
             .respond_with(
                 ResponseTemplate::new(200)
                     .set_body_string(sse_body)
-                    .insert_header("content-type", "text/event-stream")
+                    .insert_header("content-type", "text/event-stream"),
             )
             .mount(&self.server)
             .await;
@@ -320,13 +323,16 @@ impl WebSocketMockServer {
         responses: Arc<RwLock<HashMap<String, Value>>>,
         errors: Arc<RwLock<HashMap<String, (i32, String)>>>,
     ) -> AppResult<()> {
-        let ws_stream = accept_async(stream).await
-            .map_err(|e| localrouter_ai::utils::errors::AppError::Mcp(format!("WebSocket accept failed: {}", e)))?;
+        let ws_stream = accept_async(stream).await.map_err(|e| {
+            localrouter_ai::utils::errors::AppError::Mcp(format!("WebSocket accept failed: {}", e))
+        })?;
 
         let (mut write, mut read) = ws_stream.split();
 
         while let Some(msg) = read.next().await {
-            let msg = msg.map_err(|e| localrouter_ai::utils::errors::AppError::Mcp(format!("WebSocket read error: {}", e)))?;
+            let msg = msg.map_err(|e| {
+                localrouter_ai::utils::errors::AppError::Mcp(format!("WebSocket read error: {}", e))
+            })?;
 
             if let Message::Text(text) = msg {
                 // Parse JSON-RPC request
@@ -335,47 +341,59 @@ impl WebSocketMockServer {
                     let req_id = request.id.clone().unwrap_or(json!(null));
 
                     // Check for error response
-                    let response = if let Some((error_code, error_message)) = errors.read().get(method) {
-                        JsonRpcResponse {
-                            jsonrpc: "2.0".to_string(),
-                            id: req_id,
-                            result: None,
-                            error: Some(JsonRpcError {
-                                code: *error_code,
-                                message: error_message.clone(),
-                                data: None,
-                            }),
-                        }
-                    } else if let Some(result) = responses.read().get(method) {
-                        JsonRpcResponse {
-                            jsonrpc: "2.0".to_string(),
-                            id: req_id,
-                            result: Some(result.clone()),
-                            error: None,
-                        }
-                    } else {
-                        // Method not found
-                        JsonRpcResponse {
-                            jsonrpc: "2.0".to_string(),
-                            id: req_id,
-                            result: None,
-                            error: Some(JsonRpcError {
-                                code: -32601,
-                                message: format!("Method not found: {}", method),
-                                data: None,
-                            }),
-                        }
-                    };
+                    let response =
+                        if let Some((error_code, error_message)) = errors.read().get(method) {
+                            JsonRpcResponse {
+                                jsonrpc: "2.0".to_string(),
+                                id: req_id,
+                                result: None,
+                                error: Some(JsonRpcError {
+                                    code: *error_code,
+                                    message: error_message.clone(),
+                                    data: None,
+                                }),
+                            }
+                        } else if let Some(result) = responses.read().get(method) {
+                            JsonRpcResponse {
+                                jsonrpc: "2.0".to_string(),
+                                id: req_id,
+                                result: Some(result.clone()),
+                                error: None,
+                            }
+                        } else {
+                            // Method not found
+                            JsonRpcResponse {
+                                jsonrpc: "2.0".to_string(),
+                                id: req_id,
+                                result: None,
+                                error: Some(JsonRpcError {
+                                    code: -32601,
+                                    message: format!("Method not found: {}", method),
+                                    data: None,
+                                }),
+                            }
+                        };
 
                     // Send response
                     let response_text = serde_json::to_string(&response).unwrap();
-                    write.send(Message::Text(response_text)).await
-                        .map_err(|e| localrouter_ai::utils::errors::AppError::Mcp(format!("WebSocket write error: {}", e)))?;
+                    write
+                        .send(Message::Text(response_text))
+                        .await
+                        .map_err(|e| {
+                            localrouter_ai::utils::errors::AppError::Mcp(format!(
+                                "WebSocket write error: {}",
+                                e
+                            ))
+                        })?;
                 }
             } else if let Message::Ping(data) = msg {
                 // Respond to ping
-                write.send(Message::Pong(data)).await
-                    .map_err(|e| localrouter_ai::utils::errors::AppError::Mcp(format!("WebSocket pong error: {}", e)))?;
+                write.send(Message::Pong(data)).await.map_err(|e| {
+                    localrouter_ai::utils::errors::AppError::Mcp(format!(
+                        "WebSocket pong error: {}",
+                        e
+                    ))
+                })?;
             } else if let Message::Close(_) = msg {
                 break;
             }
@@ -395,7 +413,9 @@ impl WebSocketMockServer {
 
     /// Mock an error response
     pub fn mock_error(&self, method: &str, error_code: i32, message: &str) {
-        self.errors.write().insert(method.to_string(), (error_code, message.to_string()));
+        self.errors
+            .write()
+            .insert(method.to_string(), (error_code, message.to_string()));
     }
 
     pub async fn shutdown(mut self) {

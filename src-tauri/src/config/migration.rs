@@ -104,7 +104,8 @@ fn migrate_oauth_client_to_client(
     if let Err(e) = keychain.delete(old_service, &oauth_client.id) {
         tracing::warn!(
             "Failed to delete old OAuth client from keychain ({}): {}",
-            oauth_client.id, e
+            oauth_client.id,
+            e
         );
     }
 

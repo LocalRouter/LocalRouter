@@ -60,8 +60,9 @@ impl AnthropicProvider {
     /// * `Err(AppError)` if key doesn't exist or keyring access fails
     pub fn from_stored_key(provider_name: Option<&str>) -> AppResult<Self> {
         let name = provider_name.unwrap_or("anthropic");
-        let api_key = super::key_storage::get_provider_key(name)?
-            .ok_or_else(|| AppError::Provider(format!("No API key found for provider '{}'", name)))?;
+        let api_key = super::key_storage::get_provider_key(name)?.ok_or_else(|| {
+            AppError::Provider(format!("No API key found for provider '{}'", name))
+        })?;
         Self::new(api_key)
     }
 
@@ -557,20 +558,23 @@ impl ModelProvider for AnthropicProvider {
         )
     }
 
-    fn get_feature_adapter(&self, feature: &str) -> Option<Box<dyn crate::providers::features::FeatureAdapter>> {
+    fn get_feature_adapter(
+        &self,
+        feature: &str,
+    ) -> Option<Box<dyn crate::providers::features::FeatureAdapter>> {
         match feature {
-            "extended_thinking" => {
-                Some(Box::new(crate::providers::features::anthropic_thinking::AnthropicThinkingAdapter))
-            }
-            "structured_outputs" => {
-                Some(Box::new(crate::providers::features::structured_outputs::StructuredOutputsAdapter))
-            }
-            "prompt_caching" => {
-                Some(Box::new(crate::providers::features::prompt_caching::PromptCachingAdapter))
-            }
-            "json_mode" => {
-                Some(Box::new(crate::providers::features::json_mode::JsonModeAdapter))
-            }
+            "extended_thinking" => Some(Box::new(
+                crate::providers::features::anthropic_thinking::AnthropicThinkingAdapter,
+            )),
+            "structured_outputs" => Some(Box::new(
+                crate::providers::features::structured_outputs::StructuredOutputsAdapter,
+            )),
+            "prompt_caching" => Some(Box::new(
+                crate::providers::features::prompt_caching::PromptCachingAdapter,
+            )),
+            "json_mode" => Some(Box::new(
+                crate::providers::features::json_mode::JsonModeAdapter,
+            )),
             _ => None,
         }
     }

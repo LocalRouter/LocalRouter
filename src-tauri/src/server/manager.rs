@@ -1,14 +1,14 @@
 //! Server manager for controlling the web server lifecycle
 
-use std::sync::Arc;
 use parking_lot::RwLock;
+use std::sync::Arc;
 use tokio::task::JoinHandle;
 use tracing::info;
 
+use super::{start_server, state::AppState, ServerConfig};
 use crate::mcp::McpServerManager;
 use crate::providers::registry::ProviderRegistry;
 use crate::router::{RateLimiterManager, Router};
-use super::{ServerConfig, start_server, state::AppState};
 
 /// Dependencies needed to start the server
 pub struct ServerDependencies {

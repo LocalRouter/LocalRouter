@@ -562,7 +562,10 @@ async fn test_finish_reason_length() {
     let request = standard_completion_request();
     let response = provider.complete(request).await.unwrap();
 
-    assert_eq!(response.choices[0].finish_reason, Some("length".to_string()));
+    assert_eq!(
+        response.choices[0].finish_reason,
+        Some("length".to_string())
+    );
 }
 
 #[tokio::test]
@@ -595,5 +598,8 @@ async fn test_finish_reason_content_filter() {
     let request = standard_completion_request();
     let response = provider.complete(request).await.unwrap();
 
-    assert_eq!(response.choices[0].finish_reason, Some("content_filter".to_string()));
+    assert_eq!(
+        response.choices[0].finish_reason,
+        Some("content_filter".to_string())
+    );
 }

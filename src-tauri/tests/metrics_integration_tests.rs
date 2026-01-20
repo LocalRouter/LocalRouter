@@ -69,10 +69,8 @@ fn test_global_metrics_retrieval() {
     let collector = create_test_collector_with_data();
     let now = Utc::now();
 
-    let data_points = collector.get_global_range(
-        now - Duration::minutes(5),
-        now + Duration::minutes(5),
-    );
+    let data_points =
+        collector.get_global_range(now - Duration::minutes(5), now + Duration::minutes(5));
 
     // Verify aggregation
     assert_eq!(data_points.len(), 1);
@@ -160,10 +158,8 @@ fn test_graph_generation_from_metrics() {
     let collector = create_test_collector_with_data();
     let now = Utc::now();
 
-    let data_points = collector.get_global_range(
-        now - Duration::minutes(5),
-        now + Duration::minutes(5),
-    );
+    let data_points =
+        collector.get_global_range(now - Duration::minutes(5), now + Duration::minutes(5));
 
     // Generate graph for tokens
     let graph = GraphGenerator::generate(&data_points, MetricType::Tokens, Some("Global"));
@@ -193,17 +189,11 @@ fn test_time_range_filtering() {
     });
 
     // Query with narrow range (should find it)
-    let data = collector.get_global_range(
-        now - Duration::minutes(1),
-        now + Duration::minutes(1),
-    );
+    let data = collector.get_global_range(now - Duration::minutes(1), now + Duration::minutes(1));
     assert_eq!(data.len(), 1);
 
     // Query with range in the past (should not find it)
-    let data = collector.get_global_range(
-        now - Duration::hours(2),
-        now - Duration::hours(1),
-    );
+    let data = collector.get_global_range(now - Duration::hours(2), now - Duration::hours(1));
     assert_eq!(data.len(), 0);
 }
 
@@ -232,10 +222,7 @@ fn test_cost_calculation_accuracy() {
         latency_ms: 120,
     });
 
-    let data = collector.get_global_range(
-        now - Duration::minutes(5),
-        now + Duration::minutes(5),
-    );
+    let data = collector.get_global_range(now - Duration::minutes(5), now + Duration::minutes(5));
 
     assert_eq!(data.len(), 1);
     assert!((data[0].cost_usd - 0.15).abs() < 0.0001);
@@ -276,10 +263,7 @@ fn test_success_rate_calculation() {
     });
     collector.record_failure("key1", "openai", "gpt-4", 1000);
 
-    let data = collector.get_global_range(
-        now - Duration::minutes(5),
-        now + Duration::minutes(5),
-    );
+    let data = collector.get_global_range(now - Duration::minutes(5), now + Duration::minutes(5));
 
     assert_eq!(data.len(), 1);
     assert_eq!(data[0].requests, 4);
@@ -325,17 +309,18 @@ fn test_latency_aggregation() {
         latency_ms: 300,
     });
 
-    let data = collector.get_global_range(
-        now - Duration::minutes(5),
-        now + Duration::minutes(5),
-    );
+    let data = collector.get_global_range(now - Duration::minutes(5), now + Duration::minutes(5));
 
     assert_eq!(data.len(), 1);
 
     // Average latency should be (100 + 200 + 300) / 3 = 200
     let avg_latency = data[0].avg_latency_ms();
     // Use epsilon comparison for floating point
-    assert!((avg_latency - 200.0).abs() < 0.001, "Expected ~200.0, got {}", avg_latency);
+    assert!(
+        (avg_latency - 200.0).abs() < 0.001,
+        "Expected ~200.0, got {}",
+        avg_latency
+    );
 }
 
 #[test]
@@ -370,15 +355,17 @@ fn test_concurrent_metric_recording() {
     }
 
     let now = Utc::now();
-    let data = collector.get_global_range(
-        now - Duration::minutes(5),
-        now + Duration::minutes(5),
-    );
+    let data = collector.get_global_range(now - Duration::minutes(5), now + Duration::minutes(5));
 
     // Should have exactly 1000 requests (10 threads × 100 requests)
     // Sum across all buckets in case test spans multiple minutes
     let total_requests: u64 = data.iter().map(|p| p.requests).sum();
-    assert_eq!(total_requests, 1000, "Expected 1000 total requests across {} bucket(s)", data.len());
+    assert_eq!(
+        total_requests,
+        1000,
+        "Expected 1000 total requests across {} bucket(s)",
+        data.len()
+    );
 }
 
 #[test]
@@ -400,10 +387,7 @@ fn test_multi_dataset_generation() {
 
     // Generate multi-dataset graph
     let graph = GraphGenerator::generate_multi(
-        vec![
-            ("api_key_1", &key1_data[..]),
-            ("api_key_2", &key2_data[..]),
-        ],
+        vec![("api_key_1", &key1_data[..]), ("api_key_2", &key2_data[..])],
         MetricType::Requests,
     );
 
@@ -421,10 +405,7 @@ fn test_empty_data_handling() {
     let now = Utc::now();
 
     // Query without any data
-    let data = collector.get_global_range(
-        now - Duration::minutes(5),
-        now + Duration::minutes(5),
-    );
+    let data = collector.get_global_range(now - Duration::minutes(5), now + Duration::minutes(5));
 
     assert_eq!(data.len(), 0);
 
@@ -445,7 +426,12 @@ fn test_tracked_entity_lists() {
     models.sort();
     assert_eq!(
         models,
-        vec!["claude-3.5-sonnet", "gpt-3.5-turbo", "gpt-4", "llama-3.3-70b"]
+        vec![
+            "claude-3.5-sonnet",
+            "gpt-3.5-turbo",
+            "gpt-4",
+            "llama-3.3-70b"
+        ]
     );
 
     // Test get_provider_names
@@ -559,7 +545,11 @@ fn test_graph_with_multiple_time_points() {
 
     // Should have 2 labels (x-axis points)
     assert_eq!(graph.labels.len(), 2, "Graph should have 2 time points");
-    assert_eq!(graph.datasets[0].data.len(), 2, "Dataset should have 2 data points");
+    assert_eq!(
+        graph.datasets[0].data.len(),
+        2,
+        "Dataset should have 2 data points"
+    );
 
     // Verify values
     assert_eq!(graph.datasets[0].data[0] as u64, 1500); // 1000 + 500
@@ -584,10 +574,7 @@ fn test_latency_percentiles_graph() {
     }
 
     let now = Utc::now();
-    let data = collector.get_global_range(
-        now - Duration::minutes(5),
-        now + Duration::minutes(5),
-    );
+    let data = collector.get_global_range(now - Duration::minutes(5), now + Duration::minutes(5));
 
     // Generate percentile graph
     let graph = GraphGenerator::generate_latency_percentiles(&data);
@@ -619,10 +606,7 @@ fn test_token_breakdown_graph() {
     });
 
     let now = Utc::now();
-    let data = collector.get_global_range(
-        now - Duration::minutes(5),
-        now + Duration::minutes(5),
-    );
+    let data = collector.get_global_range(now - Duration::minutes(5), now + Duration::minutes(5));
 
     // Generate token breakdown graph
     let graph = GraphGenerator::generate_token_breakdown(&data);

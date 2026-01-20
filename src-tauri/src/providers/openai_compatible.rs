@@ -207,16 +207,19 @@ impl ModelProvider for OpenAICompatibleProvider {
         let models = models_response
             .data
             .into_iter()
-            .map(|model| ModelInfo {
-                id: model.id.clone(),
-                name: model.id,
-                provider: self.name.clone(),
-                parameter_count: None, // Not available from API
-                context_window: 4096,  // Default, actual value depends on model
-                supports_streaming: true,
-                capabilities: vec![Capability::Chat, Capability::Completion],
-                detailed_capabilities: None,
-            })
+            .map(|model| {
+                ModelInfo {
+                    id: model.id.clone(),
+                    name: model.id,
+                    provider: self.name.clone(),
+                    parameter_count: None, // Not available from API
+                    context_window: 4096,  // Default, actual value depends on model
+                    supports_streaming: true,
+                    capabilities: vec![Capability::Chat, Capability::Completion],
+                    detailed_capabilities: None,
+                }
+                .enrich_with_catalog_by_name()
+            }) // Use model-only search for multi-provider system
             .collect();
 
         Ok(models)
@@ -455,7 +458,10 @@ mod tests {
             "http://localhost:8080/v1".to_string(),
             Some("test-key-123".to_string()),
         );
-        assert_eq!(provider.auth_header(), Some("Bearer test-key-123".to_string()));
+        assert_eq!(
+            provider.auth_header(),
+            Some("Bearer test-key-123".to_string())
+        );
     }
 
     #[test]

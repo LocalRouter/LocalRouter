@@ -337,7 +337,10 @@ impl GraphGenerator {
     ) -> Vec<MetricDataPoint> {
         // Validate interval to prevent infinite loops
         if interval_minutes <= 0 {
-            panic!("interval_minutes must be positive, got: {}", interval_minutes);
+            panic!(
+                "interval_minutes must be positive, got: {}",
+                interval_minutes
+            );
         }
 
         if data_points.is_empty() {
@@ -387,20 +390,17 @@ mod tests {
     fn create_test_data_points(count: usize) -> Vec<MetricDataPoint> {
         let now = Utc::now();
         (0..count)
-            .map(|i| {
-                
-                MetricDataPoint {
-                    timestamp: now - Duration::minutes((count - i - 1) as i64),
-                    requests: (i + 1) as u64,
-                    input_tokens: (i + 1) as u64 * 100,
-                    output_tokens: (i + 1) as u64 * 200,
-                    total_tokens: (i + 1) as u64 * 300,
-                    cost_usd: (i + 1) as f64 * 0.01,
-                    total_latency_ms: (i + 1) as u64 * 1000,
-                    successful_requests: (i + 1) as u64,
-                    failed_requests: 0,
-                    latency_samples: vec![(i + 1) as u64 * 100],
-                }
+            .map(|i| MetricDataPoint {
+                timestamp: now - Duration::minutes((count - i - 1) as i64),
+                requests: (i + 1) as u64,
+                input_tokens: (i + 1) as u64 * 100,
+                output_tokens: (i + 1) as u64 * 200,
+                total_tokens: (i + 1) as u64 * 300,
+                cost_usd: (i + 1) as f64 * 0.01,
+                total_latency_ms: (i + 1) as u64 * 1000,
+                successful_requests: (i + 1) as u64,
+                failed_requests: 0,
+                latency_samples: vec![(i + 1) as u64 * 100],
             })
             .collect()
     }

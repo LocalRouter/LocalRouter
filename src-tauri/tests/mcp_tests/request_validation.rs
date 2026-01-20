@@ -3,15 +3,12 @@
 //! Provides assertion functions for validating JSON-RPC 2.0 messages
 //! in MCP tests.
 
-use localrouter_ai::mcp::protocol::{JsonRpcRequest, JsonRpcResponse, JsonRpcError};
+use localrouter_ai::mcp::protocol::{JsonRpcError, JsonRpcRequest, JsonRpcResponse};
 use serde_json::Value;
 
 /// Assert that a JSON-RPC response is valid according to the spec
 pub fn assert_valid_jsonrpc_response(response: &JsonRpcResponse) {
-    assert_eq!(
-        response.jsonrpc, "2.0",
-        "JSON-RPC version must be 2.0"
-    );
+    assert_eq!(response.jsonrpc, "2.0", "JSON-RPC version must be 2.0");
     assert!(
         response.result.is_some() || response.error.is_some(),
         "Response must have either result or error"
@@ -30,10 +27,7 @@ pub fn assert_jsonrpc_result(response: &JsonRpcResponse, expected: &Value) {
         "Expected success, got error: {:?}",
         response.error
     );
-    assert!(
-        response.result.is_some(),
-        "Expected result to be present"
-    );
+    assert!(response.result.is_some(), "Expected result to be present");
     assert_eq!(
         response.result.as_ref().unwrap(),
         expected,
@@ -49,10 +43,7 @@ pub fn assert_jsonrpc_error(response: &JsonRpcResponse, expected_code: i32) {
         "Expected error, got result: {:?}",
         response.result
     );
-    assert!(
-        response.error.is_some(),
-        "Expected error to be present"
-    );
+    assert!(response.error.is_some(), "Expected error to be present");
 
     let error = response.error.as_ref().unwrap();
     assert_eq!(
@@ -81,32 +72,20 @@ pub fn assert_jsonrpc_error_message(
 
 /// Assert that a JSON-RPC request is valid according to the spec
 pub fn assert_valid_jsonrpc_request(request: &JsonRpcRequest) {
-    assert_eq!(
-        request.jsonrpc, "2.0",
-        "JSON-RPC version must be 2.0"
-    );
-    assert!(
-        !request.method.is_empty(),
-        "Method name must not be empty"
-    );
+    assert_eq!(request.jsonrpc, "2.0", "JSON-RPC version must be 2.0");
+    assert!(!request.method.is_empty(), "Method name must not be empty");
 }
 
 /// Assert that a JSON-RPC request is a notification (no id)
 pub fn assert_is_notification(request: &JsonRpcRequest) {
     assert_valid_jsonrpc_request(request);
-    assert!(
-        request.id.is_none(),
-        "Notification must not have an id"
-    );
+    assert!(request.id.is_none(), "Notification must not have an id");
 }
 
 /// Assert that a JSON-RPC request has a specific method
 pub fn assert_request_method(request: &JsonRpcRequest, expected_method: &str) {
     assert_valid_jsonrpc_request(request);
-    assert_eq!(
-        request.method, expected_method,
-        "Request method mismatch"
-    );
+    assert_eq!(request.method, expected_method, "Request method mismatch");
 }
 
 /// Assert that response ID matches request ID

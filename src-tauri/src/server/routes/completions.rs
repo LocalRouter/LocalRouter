@@ -7,13 +7,15 @@ use axum::{
     response::{IntoResponse, Response},
     Extension, Json,
 };
-use std::time::Instant;
 use chrono::Utc;
+use std::time::Instant;
 use uuid::Uuid;
 
-use crate::providers::{ChatMessage as ProviderChatMessage, CompletionRequest as ProviderCompletionRequest};
-use crate::server::middleware::error::{ApiErrorResponse, ApiResult};
+use crate::providers::{
+    ChatMessage as ProviderChatMessage, CompletionRequest as ProviderCompletionRequest,
+};
 use crate::server::middleware::client_auth::ClientAuthContext;
+use crate::server::middleware::error::{ApiErrorResponse, ApiResult};
 use crate::server::state::{AppState, AuthContext, GenerationDetails};
 use crate::server::types::{
     CompletionChoice, CompletionRequest, CompletionResponse, PromptInput, TokenUsage,
@@ -244,7 +246,9 @@ async fn validate_client_provider_access(
             .provider_registry
             .list_all_models()
             .await
-            .map_err(|e| ApiErrorResponse::internal_error(format!("Failed to list models: {}", e)))?;
+            .map_err(|e| {
+                ApiErrorResponse::internal_error(format!("Failed to list models: {}", e))
+            })?;
 
         let matching_model = all_models
             .iter()

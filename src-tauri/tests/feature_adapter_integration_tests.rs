@@ -9,15 +9,13 @@
 //! These tests verify end-to-end functionality with realistic scenarios.
 
 use localrouter_ai::providers::{
-    ChatMessage, CompletionRequest, CompletionResponse, CompletionChoice,
-    TokenUsage, PromptTokensDetails,
     features::{
+        json_mode::JsonModeAdapter, logprobs::LogprobsAdapter,
+        prompt_caching::PromptCachingAdapter, structured_outputs::StructuredOutputsAdapter,
         FeatureAdapter,
-        structured_outputs::StructuredOutputsAdapter,
-        prompt_caching::PromptCachingAdapter,
-        logprobs::LogprobsAdapter,
-        json_mode::JsonModeAdapter,
     },
+    ChatMessage, CompletionChoice, CompletionRequest, CompletionResponse, PromptTokensDetails,
+    TokenUsage,
 };
 use serde_json::json;
 use std::collections::HashMap;
@@ -46,12 +44,10 @@ fn test_structured_outputs_person_schema_openai() {
     // Create OpenAI request
     let mut request = CompletionRequest {
         model: "gpt-4".to_string(),
-        messages: vec![
-            ChatMessage {
-                role: "user".to_string(),
-                content: "Generate a person with name and age".to_string(),
-            }
-        ],
+        messages: vec![ChatMessage {
+            role: "user".to_string(),
+            content: "Generate a person with name and age".to_string(),
+        }],
         temperature: None,
         max_tokens: None,
         stream: false,
@@ -105,16 +101,14 @@ fn test_structured_outputs_response_validation_valid() {
         created: 1234567890,
         model: "gpt-4".to_string(),
         provider: "openai".to_string(),
-        choices: vec![
-            CompletionChoice {
-                index: 0,
-                message: ChatMessage {
-                    role: "assistant".to_string(),
-                    content: r#"{"result": "success", "count": 42}"#.to_string(),
-                },
-                finish_reason: Some("stop".to_string()),
-            }
-        ],
+        choices: vec![CompletionChoice {
+            index: 0,
+            message: ChatMessage {
+                role: "assistant".to_string(),
+                content: r#"{"result": "success", "count": 42}"#.to_string(),
+            },
+            finish_reason: Some("stop".to_string()),
+        }],
         usage: TokenUsage {
             prompt_tokens: 100,
             completion_tokens: 50,
@@ -159,16 +153,14 @@ fn test_structured_outputs_response_validation_invalid() {
         created: 1234567890,
         model: "gpt-4".to_string(),
         provider: "openai".to_string(),
-        choices: vec![
-            CompletionChoice {
-                index: 0,
-                message: ChatMessage {
-                    role: "assistant".to_string(),
-                    content: r#"{"age": 30}"#.to_string(), // Missing 'name'
-                },
-                finish_reason: Some("stop".to_string()),
-            }
-        ],
+        choices: vec![CompletionChoice {
+            index: 0,
+            message: ChatMessage {
+                role: "assistant".to_string(),
+                content: r#"{"age": 30}"#.to_string(), // Missing 'name'
+            },
+            finish_reason: Some("stop".to_string()),
+        }],
         usage: TokenUsage {
             prompt_tokens: 100,
             completion_tokens: 50,
@@ -182,7 +174,10 @@ fn test_structured_outputs_response_validation_invalid() {
     // Validate response - should fail
     let result = adapter.adapt_response(&mut response);
     assert!(result.is_err(), "Invalid response should fail validation");
-    assert!(result.unwrap_err().to_string().contains("does not match schema"));
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("does not match schema"));
 }
 
 // ============================================================================
@@ -246,11 +241,14 @@ fn test_prompt_caching_cost_savings_calculation() {
 
     // Simulate Anthropic-style response with cache metrics in extensions.usage
     let mut extensions = HashMap::new();
-    extensions.insert("usage".to_string(), json!({
-        "cache_creation_input_tokens": 500,
-        "cache_read_input_tokens": 500,
-        "input_tokens": 100
-    }));
+    extensions.insert(
+        "usage".to_string(),
+        json!({
+            "cache_creation_input_tokens": 500,
+            "cache_read_input_tokens": 500,
+            "input_tokens": 100
+        }),
+    );
 
     let mut response = CompletionResponse {
         id: "test-id".to_string(),
@@ -258,24 +256,22 @@ fn test_prompt_caching_cost_savings_calculation() {
         created: 1234567890,
         model: "claude-opus-4-5".to_string(),
         provider: "anthropic".to_string(),
-        choices: vec![
-            CompletionChoice {
-                index: 0,
-                message: ChatMessage {
-                    role: "assistant".to_string(),
-                    content: "Response content".to_string(),
-                },
-                finish_reason: Some("stop".to_string()),
-            }
-        ],
+        choices: vec![CompletionChoice {
+            index: 0,
+            message: ChatMessage {
+                role: "assistant".to_string(),
+                content: "Response content".to_string(),
+            },
+            finish_reason: Some("stop".to_string()),
+        }],
         usage: TokenUsage {
-            prompt_tokens: 100,        // Regular prompt tokens
+            prompt_tokens: 100, // Regular prompt tokens
             completion_tokens: 50,
             total_tokens: 1150,
             prompt_tokens_details: Some(PromptTokensDetails {
                 cached_tokens: None,
-                cache_creation_tokens: Some(500),  // Created 500 tokens
-                cache_read_tokens: Some(500),      // Read 500 cached tokens
+                cache_creation_tokens: Some(500), // Created 500 tokens
+                cache_read_tokens: Some(500),     // Read 500 cached tokens
             }),
             completion_tokens_details: None,
         },
@@ -302,7 +298,11 @@ fn test_prompt_caching_cost_savings_calculation() {
     let savings_str = data.data["cache_savings_percent"].as_str().unwrap();
     // Parse "41.0%" -> 41.0
     let savings: f64 = savings_str.trim_end_matches('%').parse().unwrap();
-    assert!(savings > 40.0 && savings < 42.0, "Cache savings should be ~41%, got {}", savings);
+    assert!(
+        savings > 40.0 && savings < 42.0,
+        "Cache savings should be ~41%, got {}",
+        savings
+    );
 }
 
 // ============================================================================
@@ -319,12 +319,10 @@ fn test_logprobs_openai_request() {
     // Create OpenAI request
     let mut request = CompletionRequest {
         model: "gpt-4".to_string(),
-        messages: vec![
-            ChatMessage {
-                role: "user".to_string(),
-                content: "Say hello".to_string(),
-            }
-        ],
+        messages: vec![ChatMessage {
+            role: "user".to_string(),
+            content: "Say hello".to_string(),
+        }],
         temperature: None,
         max_tokens: None,
         stream: false,
@@ -387,16 +385,14 @@ fn test_logprobs_response_extraction() {
         created: 1234567890,
         model: "gpt-4".to_string(),
         provider: "openai".to_string(),
-        choices: vec![
-            CompletionChoice {
-                index: 0,
-                message: ChatMessage {
-                    role: "assistant".to_string(),
-                    content: "Hello world".to_string(),
-                },
-                finish_reason: Some("stop".to_string()),
-            }
-        ],
+        choices: vec![CompletionChoice {
+            index: 0,
+            message: ChatMessage {
+                role: "assistant".to_string(),
+                content: "Hello world".to_string(),
+            },
+            finish_reason: Some("stop".to_string()),
+        }],
         usage: TokenUsage {
             prompt_tokens: 10,
             completion_tokens: 2,
@@ -437,12 +433,10 @@ fn test_logprobs_various_top_values() {
 
         let mut request = CompletionRequest {
             model: "gpt-4".to_string(),
-            messages: vec![
-                ChatMessage {
-                    role: "user".to_string(),
-                    content: "Test".to_string(),
-                }
-            ],
+            messages: vec![ChatMessage {
+                role: "user".to_string(),
+                content: "Test".to_string(),
+            }],
             temperature: None,
             max_tokens: None,
             stream: false,
@@ -495,12 +489,10 @@ fn test_json_mode_openai() {
     // Create OpenAI request
     let mut request = CompletionRequest {
         model: "gpt-4".to_string(),
-        messages: vec![
-            ChatMessage {
-                role: "user".to_string(),
-                content: "Generate a JSON object with a greeting".to_string(),
-            }
-        ],
+        messages: vec![ChatMessage {
+            role: "user".to_string(),
+            content: "Generate a JSON object with a greeting".to_string(),
+        }],
         temperature: None,
         max_tokens: None,
         stream: false,
@@ -534,12 +526,10 @@ fn test_json_mode_anthropic() {
     // Create Anthropic request
     let mut request = CompletionRequest {
         model: "claude-3-opus".to_string(),
-        messages: vec![
-            ChatMessage {
-                role: "user".to_string(),
-                content: "Generate a JSON object".to_string(),
-            }
-        ],
+        messages: vec![ChatMessage {
+            role: "user".to_string(),
+            content: "Generate a JSON object".to_string(),
+        }],
         temperature: None,
         max_tokens: None,
         stream: false,
@@ -577,16 +567,14 @@ fn test_json_mode_validation_valid() {
         created: 1234567890,
         model: "gpt-4".to_string(),
         provider: "openai".to_string(),
-        choices: vec![
-            CompletionChoice {
-                index: 0,
-                message: ChatMessage {
-                    role: "assistant".to_string(),
-                    content: r#"{"greeting": "Hello, World!", "count": 42}"#.to_string(),
-                },
-                finish_reason: Some("stop".to_string()),
-            }
-        ],
+        choices: vec![CompletionChoice {
+            index: 0,
+            message: ChatMessage {
+                role: "assistant".to_string(),
+                content: r#"{"greeting": "Hello, World!", "count": 42}"#.to_string(),
+            },
+            finish_reason: Some("stop".to_string()),
+        }],
         usage: TokenUsage {
             prompt_tokens: 20,
             completion_tokens: 10,
@@ -624,16 +612,14 @@ fn test_json_mode_validation_invalid() {
         created: 1234567890,
         model: "gpt-4".to_string(),
         provider: "openai".to_string(),
-        choices: vec![
-            CompletionChoice {
-                index: 0,
-                message: ChatMessage {
-                    role: "assistant".to_string(),
-                    content: "This is not valid JSON at all".to_string(),
-                },
-                finish_reason: Some("stop".to_string()),
-            }
-        ],
+        choices: vec![CompletionChoice {
+            index: 0,
+            message: ChatMessage {
+                role: "assistant".to_string(),
+                content: "This is not valid JSON at all".to_string(),
+            },
+            finish_reason: Some("stop".to_string()),
+        }],
         usage: TokenUsage {
             prompt_tokens: 20,
             completion_tokens: 10,
@@ -667,12 +653,10 @@ fn test_json_mode_all_providers() {
     for (model, expected_provider) in test_models {
         let mut request = CompletionRequest {
             model: model.to_string(),
-            messages: vec![
-                ChatMessage {
-                    role: "user".to_string(),
-                    content: "Test".to_string(),
-                }
-            ],
+            messages: vec![ChatMessage {
+                role: "user".to_string(),
+                content: "Test".to_string(),
+            }],
             temperature: None,
             max_tokens: None,
             stream: false,
@@ -687,7 +671,12 @@ fn test_json_mode_all_providers() {
         };
 
         let result = adapter.adapt_request(&mut request, &HashMap::new());
-        assert!(result.is_ok(), "JSON mode should support {} ({})", model, expected_provider);
+        assert!(
+            result.is_ok(),
+            "JSON mode should support {} ({})",
+            model,
+            expected_provider
+        );
     }
 }
 
@@ -726,7 +715,7 @@ fn test_structured_outputs_with_prompt_caching() {
             ChatMessage {
                 role: "user".to_string(),
                 content: "What is 2+2?".to_string(),
-            }
+            },
         ],
         temperature: None,
         max_tokens: None,
@@ -751,8 +740,14 @@ fn test_structured_outputs_with_prompt_caching() {
     // Verify both features are configured
     assert!(request.extensions.is_some());
     let extensions = request.extensions.unwrap();
-    assert!(extensions.contains_key("_structured_outputs_schema"), "Should have structured outputs config");
-    assert!(extensions.contains_key("_prompt_caching_breakpoints"), "Should have caching config");
+    assert!(
+        extensions.contains_key("_structured_outputs_schema"),
+        "Should have structured outputs config"
+    );
+    assert!(
+        extensions.contains_key("_prompt_caching_breakpoints"),
+        "Should have caching config"
+    );
 }
 
 #[test]
@@ -769,12 +764,10 @@ fn test_json_mode_with_logprobs() {
     // Create request
     let mut request = CompletionRequest {
         model: "gpt-4".to_string(),
-        messages: vec![
-            ChatMessage {
-                role: "user".to_string(),
-                content: "Generate JSON".to_string(),
-            }
-        ],
+        messages: vec![ChatMessage {
+            role: "user".to_string(),
+            content: "Generate JSON".to_string(),
+        }],
         temperature: None,
         max_tokens: None,
         stream: false,
@@ -798,7 +791,13 @@ fn test_json_mode_with_logprobs() {
     // Verify both features are configured
     assert!(request.extensions.is_some());
     let extensions = request.extensions.unwrap();
-    assert!(extensions.contains_key("response_format"), "Should have JSON mode config");
-    assert!(extensions.contains_key("_logprobs_enabled"), "Should have logprobs config");
+    assert!(
+        extensions.contains_key("response_format"),
+        "Should have JSON mode config"
+    );
+    assert!(
+        extensions.contains_key("_logprobs_enabled"),
+        "Should have logprobs config"
+    );
     assert_eq!(extensions["_logprobs_top_count"], 3);
 }

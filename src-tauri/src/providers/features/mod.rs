@@ -4,19 +4,19 @@
 //! features without polluting the base ModelProvider trait.
 
 pub mod anthropic_thinking;
-pub mod openai_reasoning;
 pub mod gemini_thinking;
-pub mod structured_outputs;
-pub mod prompt_caching;
-pub mod logprobs;
 pub mod json_mode;
+pub mod logprobs;
+pub mod openai_reasoning;
+pub mod prompt_caching;
+pub mod structured_outputs;
 
 use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
 
-use crate::utils::errors::AppResult;
 use super::{CompletionRequest, CompletionResponse};
+use crate::utils::errors::AppResult;
 
 // Re-export feature adapters
 
@@ -82,10 +82,7 @@ pub trait FeatureAdapter: Send + Sync {
     ///
     /// # Returns
     /// Feature-specific data if present, None otherwise
-    fn adapt_response(
-        &self,
-        response: &mut CompletionResponse,
-    ) -> AppResult<Option<FeatureData>> {
+    fn adapt_response(&self, response: &mut CompletionResponse) -> AppResult<Option<FeatureData>> {
         // Default implementation: no response transformation
         let _ = response;
         Ok(None)

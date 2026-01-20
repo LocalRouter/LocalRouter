@@ -42,8 +42,9 @@ impl TogetherAIProvider {
     /// Create a new Together AI provider from stored API key
     pub fn from_stored_key(provider_name: Option<&str>) -> AppResult<Self> {
         let name = provider_name.unwrap_or("togetherai");
-        let api_key = super::key_storage::get_provider_key(name)?
-            .ok_or_else(|| AppError::Provider(format!("No API key found for provider '{}'", name)))?;
+        let api_key = super::key_storage::get_provider_key(name)?.ok_or_else(|| {
+            AppError::Provider(format!("No API key found for provider '{}'", name))
+        })?;
         Self::new(api_key)
     }
 
@@ -168,7 +169,12 @@ impl ModelProvider for TogetherAIProvider {
     }
 
     async fn list_models(&self) -> AppResult<Vec<ModelInfo>> {
-        Ok(Self::get_known_models())
+        // Enrich known models with catalog data using model-only search
+        let models = Self::get_known_models()
+            .into_iter()
+            .map(|model| model.enrich_with_catalog_by_name())
+            .collect();
+        Ok(models)
     }
 
     async fn get_pricing(&self, model: &str) -> AppResult<PricingInfo> {
@@ -181,13 +187,13 @@ impl ModelProvider for TogetherAIProvider {
             }
         } else if model.contains("70B") || model.contains("72B") {
             PricingInfo {
-                input_cost_per_1k: 0.0009, // $0.9 per 1M tokens
+                input_cost_per_1k: 0.0009,  // $0.9 per 1M tokens
                 output_cost_per_1k: 0.0009, // $0.9 per 1M tokens
                 currency: "USD".to_string(),
             }
         } else {
             PricingInfo {
-                input_cost_per_1k: 0.0002, // $0.2 per 1M tokens
+                input_cost_per_1k: 0.0002,  // $0.2 per 1M tokens
                 output_cost_per_1k: 0.0002, // $0.2 per 1M tokens
                 currency: "USD".to_string(),
             }
@@ -218,10 +224,9 @@ impl ModelProvider for TogetherAIProvider {
             )));
         }
 
-        let together_response: OpenAIChatResponse = response
-            .json()
-            .await
-            .map_err(|e| AppError::Provider(format!("Failed to parse Together AI response: {}", e)))?;
+        let together_response: OpenAIChatResponse = response.json().await.map_err(|e| {
+            AppError::Provider(format!("Failed to parse Together AI response: {}", e))
+        })?;
 
         Ok(CompletionResponse {
             id: together_response.id,
@@ -257,7 +262,9 @@ impl ModelProvider for TogetherAIProvider {
             .json(&request)
             .send()
             .await
-            .map_err(|e| AppError::Provider(format!("Together AI streaming request failed: {}", e)))?;
+            .map_err(|e| {
+                AppError::Provider(format!("Together AI streaming request failed: {}", e))
+            })?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -352,7 +359,10 @@ mod tests {
     #[tokio::test]
     async fn test_pricing() {
         let provider = TogetherAIProvider::new("test_key".to_string()).unwrap();
-        let pricing = provider.get_pricing("meta-llama/Meta-Llama-3.1-405B-Instruct-Turbo").await.unwrap();
+        let pricing = provider
+            .get_pricing("meta-llama/Meta-Llama-3.1-405B-Instruct-Turbo")
+            .await
+            .unwrap();
         assert!(pricing.input_cost_per_1k > 0.0);
     }
 }

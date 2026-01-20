@@ -54,11 +54,17 @@ impl CatalogFetcher {
                     // Save to cache
                     self.save_to_cache(&models)?;
                     self.update_timestamp()?;
-                    println!("cargo:warning=Successfully fetched {} models from OpenRouter", models.len());
+                    println!(
+                        "cargo:warning=Successfully fetched {} models from OpenRouter",
+                        models.len()
+                    );
                     Ok(models)
                 }
                 Err(e) => {
-                    println!("cargo:warning=Failed to fetch from OpenRouter: {}. Trying cache...", e);
+                    println!(
+                        "cargo:warning=Failed to fetch from OpenRouter: {}. Trying cache...",
+                        e
+                    );
                     self.load_from_cache()
                 }
             }
@@ -97,7 +103,10 @@ impl CatalogFetcher {
         let content = fs::read_to_string(&self.cache_file)?;
         let parsed: OpenRouterModelsResponse = serde_json::from_str(&content)?;
 
-        println!("cargo:warning=Loaded {} models from cache", parsed.data.len());
+        println!(
+            "cargo:warning=Loaded {} models from cache",
+            parsed.data.len()
+        );
         Ok(parsed.data)
     }
 
@@ -122,9 +131,7 @@ impl CatalogFetcher {
         let timestamp_str = fs::read_to_string(&self.timestamp_file)?;
         let last_fetch: u64 = timestamp_str.trim().parse()?;
 
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)?
-            .as_secs();
+        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
 
         let age_days = (now - last_fetch) / 86400; // seconds per day
 
@@ -133,9 +140,7 @@ impl CatalogFetcher {
 
     /// Update timestamp file
     fn update_timestamp(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)?
-            .as_secs();
+        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
 
         fs::write(&self.timestamp_file, now.to_string())?;
 

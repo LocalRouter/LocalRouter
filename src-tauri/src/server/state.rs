@@ -14,7 +14,7 @@ use uuid::Uuid;
 
 use crate::clients::{ClientManager, TokenStore};
 use crate::config::{self, ConfigManager};
-use crate::mcp::McpServerManager;
+use crate::mcp::{McpGateway, McpServerManager};
 use crate::monitoring::logger::AccessLogger;
 use crate::monitoring::mcp_logger::McpAccessLogger;
 use crate::monitoring::metrics::MetricsCollector;
@@ -22,15 +22,13 @@ use crate::monitoring::storage::MetricsDatabase;
 use crate::providers::registry::ProviderRegistry;
 use crate::router::{RateLimiterManager, Router};
 
-use super::types::{GenerationDetailsResponse, TokenUsage, CostDetails, ProviderHealthSnapshot};
+use super::types::{CostDetails, GenerationDetailsResponse, ProviderHealthSnapshot, TokenUsage};
 
 /// Server state shared across all handlers
 #[derive(Clone)]
 pub struct AppState {
     /// Router for intelligent model selection and routing
     pub router: Arc<Router>,
-
-
 
     /// Unified client manager for authentication (replaces api_key_manager and oauth_client_manager)
     pub client_manager: Arc<ClientManager>,
@@ -40,6 +38,9 @@ pub struct AppState {
 
     /// MCP server manager
     pub mcp_server_manager: Arc<McpServerManager>,
+
+    /// MCP unified gateway
+    pub mcp_gateway: Arc<McpGateway>,
 
     /// Rate limiter manager
     pub rate_limiter: Arc<RateLimiterManager>,
@@ -86,39 +87,42 @@ impl AppState {
         tracing::info!("Generated transient internal test bearer token for UI model testing");
 
         // Initialize access logger with 30-day retention
-        let access_logger = AccessLogger::new(30)
-            .unwrap_or_else(|e| {
-                tracing::error!("Failed to initialize access logger: {}", e);
-                panic!("Access logger initialization failed");
-            });
+        let access_logger = AccessLogger::new(30).unwrap_or_else(|e| {
+            tracing::error!("Failed to initialize access logger: {}", e);
+            panic!("Access logger initialization failed");
+        });
 
         // Initialize MCP access logger with 30-day retention
-        let mcp_access_logger = McpAccessLogger::new(30)
-            .unwrap_or_else(|e| {
-                tracing::error!("Failed to initialize MCP access logger: {}", e);
-                panic!("MCP access logger initialization failed");
-            });
+        let mcp_access_logger = McpAccessLogger::new(30).unwrap_or_else(|e| {
+            tracing::error!("Failed to initialize MCP access logger: {}", e);
+            panic!("MCP access logger initialization failed");
+        });
 
         // Initialize metrics database with 90-day retention
         let metrics_db_path = config::paths::config_dir()
             .unwrap_or_else(|_| std::path::PathBuf::from("."))
             .join("metrics.db");
 
-        let metrics_db = Arc::new(
-            MetricsDatabase::new(metrics_db_path)
-                .unwrap_or_else(|e| {
-                    tracing::error!("Failed to initialize metrics database: {}", e);
-                    panic!("Metrics database initialization failed");
-                })
-        );
+        let metrics_db = Arc::new(MetricsDatabase::new(metrics_db_path).unwrap_or_else(|e| {
+            tracing::error!("Failed to initialize metrics database: {}", e);
+            panic!("Metrics database initialization failed");
+        }));
 
         let metrics_collector = MetricsCollector::new(metrics_db);
+
+        // Create placeholder MCP manager and gateway (will be replaced by with_mcp)
+        let mcp_server_manager = Arc::new(McpServerManager::new());
+        let mcp_gateway = Arc::new(McpGateway::new(
+            mcp_server_manager.clone(),
+            crate::mcp::gateway::GatewayConfig::default(),
+        ));
 
         Self {
             router,
             client_manager,
             token_store,
-            mcp_server_manager: Arc::new(McpServerManager::new()),
+            mcp_server_manager,
+            mcp_gateway,
             rate_limiter,
             provider_registry,
             config_manager,
@@ -132,12 +136,16 @@ impl AppState {
     }
 
     /// Add MCP manager to the state
-    pub fn with_mcp(
-        self,
-        mcp_server_manager: Arc<McpServerManager>,
-    ) -> Self {
+    pub fn with_mcp(self, mcp_server_manager: Arc<McpServerManager>) -> Self {
+        // Create gateway with the actual MCP server manager
+        let mcp_gateway = Arc::new(McpGateway::new(
+            mcp_server_manager.clone(),
+            crate::mcp::gateway::GatewayConfig::default(),
+        ));
+
         Self {
             mcp_server_manager,
+            mcp_gateway,
             ..self
         }
     }
@@ -233,9 +241,8 @@ impl GenerationTracker {
         let now = Utc::now();
         let cutoff = now.timestamp() - self.retention_period_secs;
 
-        self.generations.retain(|_, details| {
-            details.created_at.timestamp() > cutoff
-        });
+        self.generations
+            .retain(|_, details| details.created_at.timestamp() > cutoff);
     }
 }
 
@@ -264,7 +271,10 @@ pub struct GenerationDetails {
 
 impl GenerationDetails {
     pub fn to_response(&self) -> GenerationDetailsResponse {
-        let latency_ms = self.completed_at.duration_since(self.started_at).as_millis() as u64;
+        let latency_ms = self
+            .completed_at
+            .duration_since(self.started_at)
+            .as_millis() as u64;
 
         GenerationDetailsResponse {
             id: self.id.clone(),
@@ -329,10 +339,7 @@ pub enum ModelSelection {
 
     /// Legacy: Direct model selection (deprecated, use Custom instead)
     #[deprecated(note = "Use ModelSelection::Custom instead")]
-    DirectModel {
-        provider: String,
-        model: String,
-    },
+    DirectModel { provider: String, model: String },
 
     /// Legacy: Router-based selection (deprecated)
     #[deprecated(note = "Router-based selection is deprecated")]
@@ -366,8 +373,7 @@ impl ModelSelection {
             }
             #[allow(deprecated)]
             ModelSelection::DirectModel { provider, model } => {
-                provider.eq_ignore_ascii_case(provider_name)
-                    && model.eq_ignore_ascii_case(model_id)
+                provider.eq_ignore_ascii_case(provider_name) && model.eq_ignore_ascii_case(model_id)
             }
             #[allow(deprecated)]
             ModelSelection::Router { .. } => {

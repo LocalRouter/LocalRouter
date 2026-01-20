@@ -22,10 +22,10 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use providers::factory::{
     AnthropicProviderFactory, CerebrasProviderFactory, CohereProviderFactory,
-    DeepInfraProviderFactory, GeminiProviderFactory, GroqProviderFactory,
-    LMStudioProviderFactory, MistralProviderFactory, OllamaProviderFactory,
-    OpenAICompatibleProviderFactory, OpenAIProviderFactory, OpenRouterProviderFactory,
-    PerplexityProviderFactory, TogetherAIProviderFactory, XAIProviderFactory,
+    DeepInfraProviderFactory, GeminiProviderFactory, GroqProviderFactory, LMStudioProviderFactory,
+    MistralProviderFactory, OllamaProviderFactory, OpenAICompatibleProviderFactory,
+    OpenAIProviderFactory, OpenRouterProviderFactory, PerplexityProviderFactory,
+    TogetherAIProviderFactory, XAIProviderFactory,
 };
 use providers::health::HealthCheckManager;
 use providers::registry::ProviderRegistry;
@@ -45,7 +45,8 @@ async fn main() -> anyhow::Result<()> {
     info!("Starting LocalRouter AI...");
 
     // Log configuration directory
-    let config_dir = config::paths::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("unknown"));
+    let config_dir =
+        config::paths::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("unknown"));
     #[cfg(debug_assertions)]
     info!("Running in DEVELOPMENT mode");
     #[cfg(not(debug_assertions))]
@@ -55,7 +56,10 @@ async fn main() -> anyhow::Result<()> {
     // Initialize managers
     let mut config_manager = config::ConfigManager::load().await.unwrap_or_else(|e| {
         tracing::warn!("Failed to load config, using defaults: {}", e);
-        config::ConfigManager::new(config::AppConfig::default(), config::paths::config_file().unwrap())
+        config::ConfigManager::new(
+            config::AppConfig::default(),
+            config::paths::config_file().unwrap(),
+        )
     });
 
     // Initialize unified client manager
@@ -73,7 +77,9 @@ async fn main() -> anyhow::Result<()> {
     // Initialize OAuth client manager for MCP server authentication
     let oauth_client_manager = {
         let config = config_manager.get();
-        Arc::new(oauth_clients::OAuthClientManager::new(config.oauth_clients.clone()))
+        Arc::new(oauth_clients::OAuthClientManager::new(
+            config.oauth_clients.clone(),
+        ))
     };
 
     // Initialize MCP server manager
@@ -156,19 +162,14 @@ async fn main() -> anyhow::Result<()> {
             )
             .await
         {
-            tracing::warn!(
-                "Failed to load provider '{}': {}",
-                provider_config.name,
-                e
-            );
+            tracing::warn!("Failed to load provider '{}': {}", provider_config.name, e);
             continue;
         }
 
         // Set enabled state
-        if let Err(e) = provider_registry.set_provider_enabled(
-            &provider_config.name,
-            provider_config.enabled,
-        ) {
+        if let Err(e) =
+            provider_registry.set_provider_enabled(&provider_config.name, provider_config.enabled)
+        {
             tracing::warn!(
                 "Failed to set provider '{}' enabled state: {}",
                 provider_config.name,
@@ -176,7 +177,10 @@ async fn main() -> anyhow::Result<()> {
             );
         }
     }
-    info!("Loaded {} provider instances", config_manager.get().providers.len());
+    info!(
+        "Loaded {} provider instances",
+        config_manager.get().providers.len()
+    );
 
     // Initialize OAuth manager for subscription-based providers
     info!("Initializing OAuth manager...");
@@ -192,9 +196,15 @@ async fn main() -> anyhow::Result<()> {
 
     // Register OAuth providers
     info!("Registering OAuth providers...");
-    oauth_manager.register_provider(Arc::new(providers::oauth::github_copilot::GitHubCopilotOAuthProvider::new()));
-    oauth_manager.register_provider(Arc::new(providers::oauth::openai_codex::OpenAICodexOAuthProvider::new()));
-    oauth_manager.register_provider(Arc::new(providers::oauth::anthropic_claude::AnthropicClaudeOAuthProvider::new()));
+    oauth_manager.register_provider(Arc::new(
+        providers::oauth::github_copilot::GitHubCopilotOAuthProvider::new(),
+    ));
+    oauth_manager.register_provider(Arc::new(
+        providers::oauth::openai_codex::OpenAICodexOAuthProvider::new(),
+    ));
+    oauth_manager.register_provider(Arc::new(
+        providers::oauth::anthropic_claude::AnthropicClaudeOAuthProvider::new(),
+    ));
     info!("Registered 3 OAuth providers");
 
     // Initialize rate limiter
@@ -468,6 +478,7 @@ async fn main() -> anyhow::Result<()> {
             ui::commands::toggle_mcp_server_enabled,
             ui::commands::list_mcp_tools,
             ui::commands::call_mcp_tool,
+            ui::commands::get_mcp_token_stats,
             // Unified client management commands
             ui::commands::list_clients,
             ui::commands::create_client,
@@ -491,6 +502,10 @@ async fn main() -> anyhow::Result<()> {
             // Access logs commands
             ui::commands::get_llm_logs,
             ui::commands::get_mcp_logs,
+            // Pricing override commands
+            ui::commands::get_pricing_override,
+            ui::commands::set_pricing_override,
+            ui::commands::delete_pricing_override,
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {

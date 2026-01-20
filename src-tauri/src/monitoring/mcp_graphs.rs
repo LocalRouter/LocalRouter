@@ -234,8 +234,8 @@ impl McpGraphGenerator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::{Duration, Utc};
     use crate::monitoring::mcp_metrics::{McpMetricDataPoint, MethodMetrics};
+    use chrono::{Duration, Utc};
 
     #[test]
     fn test_generate_requests_graph() {
@@ -467,7 +467,10 @@ mod tests {
 
         let client1_data = vec![point1];
         let client2_data = vec![point2];
-        let data_sets = vec![("Client 1", client1_data.as_slice()), ("Client 2", client2_data.as_slice())];
+        let data_sets = vec![
+            ("Client 1", client1_data.as_slice()),
+            ("Client 2", client2_data.as_slice()),
+        ];
         let graph = McpGraphGenerator::generate_multi(data_sets, McpMetricType::Requests);
 
         assert_eq!(graph.datasets.len(), 2);

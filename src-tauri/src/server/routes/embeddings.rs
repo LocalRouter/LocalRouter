@@ -61,10 +61,10 @@ fn validate_request(request: &EmbeddingRequest) -> ApiResult<()> {
     // Validate encoding format
     if let Some(format) = &request.encoding_format {
         if format != "float" && format != "base64" {
-            return Err(
-                ApiErrorResponse::bad_request("encoding_format must be 'float' or 'base64'")
-                    .with_param("encoding_format"),
-            );
+            return Err(ApiErrorResponse::bad_request(
+                "encoding_format must be 'float' or 'base64'",
+            )
+            .with_param("encoding_format"));
         }
     }
 

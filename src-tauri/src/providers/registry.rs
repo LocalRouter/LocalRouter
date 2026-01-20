@@ -14,9 +14,9 @@ use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
-use super::{ModelInfo, ModelProvider, ProviderHealth};
 use super::factory::{ProviderFactory, SetupParameter};
 use super::health::HealthCheckManager;
+use super::{ModelInfo, ModelProvider, ProviderHealth};
 use crate::utils::errors::{AppError, AppResult};
 
 /// Central registry for managing provider types and instances
@@ -148,15 +148,17 @@ impl ProviderRegistry {
         }
 
         // Get factory
-        let factory = self.get_factory(&provider_type).ok_or_else(|| {
-            AppError::Config(format!("Unknown provider type: {}", provider_type))
-        })?;
+        let factory = self
+            .get_factory(&provider_type)
+            .ok_or_else(|| AppError::Config(format!("Unknown provider type: {}", provider_type)))?;
 
         // Create provider
         let provider = factory.create(instance_name.clone(), config.clone())?;
 
         // Register with health check manager
-        self.health_manager.register_provider(provider.clone()).await;
+        self.health_manager
+            .register_provider(provider.clone())
+            .await;
 
         // Store instance
         let instance = ProviderInstance {
@@ -168,7 +170,9 @@ impl ProviderRegistry {
             enabled: true,
         };
 
-        self.instances.write().insert(instance_name.clone(), instance);
+        self.instances
+            .write()
+            .insert(instance_name.clone(), instance);
 
         info!("Successfully created provider instance: {}", instance_name);
         Ok(())
@@ -259,15 +263,17 @@ impl ProviderRegistry {
         self.instances.write().remove(&instance_name);
 
         // Get factory
-        let factory = self.get_factory(&provider_type).ok_or_else(|| {
-            AppError::Config(format!("Unknown provider type: {}", provider_type))
-        })?;
+        let factory = self
+            .get_factory(&provider_type)
+            .ok_or_else(|| AppError::Config(format!("Unknown provider type: {}", provider_type)))?;
 
         // Create new provider with updated config
         let provider = factory.create(instance_name.clone(), config.clone())?;
 
         // Register with health check manager
-        self.health_manager.register_provider(provider.clone()).await;
+        self.health_manager
+            .register_provider(provider.clone())
+            .await;
 
         // Store updated instance
         let instance = ProviderInstance {
@@ -279,7 +285,9 @@ impl ProviderRegistry {
             enabled,    // Preserve enabled state
         };
 
-        self.instances.write().insert(instance_name.clone(), instance);
+        self.instances
+            .write()
+            .insert(instance_name.clone(), instance);
 
         info!("Successfully updated provider instance: {}", instance_name);
         Ok(())
@@ -323,10 +331,7 @@ impl ProviderRegistry {
         })?;
 
         instance.enabled = enabled;
-        info!(
-            "Set provider '{}' enabled: {}",
-            instance_name, enabled
-        );
+        info!("Set provider '{}' enabled: {}", instance_name, enabled);
         Ok(())
     }
 
@@ -380,15 +385,17 @@ impl ProviderRegistry {
                 Err(e) => {
                     warn!(
                         "Failed to list models from provider '{}': {}",
-                        instance_name,
-                        e
+                        instance_name, e
                     );
                     // Continue with other providers
                 }
             }
         }
 
-        debug!("Listed {} models from all enabled providers", all_models.len());
+        debug!(
+            "Listed {} models from all enabled providers",
+            all_models.len()
+        );
         Ok(all_models)
     }
 
@@ -450,7 +457,10 @@ impl ProviderRegistry {
         &self,
         provider_configs: Vec<SimpleProviderConfig>,
     ) -> AppResult<()> {
-        info!("Loading {} providers from configuration", provider_configs.len());
+        info!(
+            "Loading {} providers from configuration",
+            provider_configs.len()
+        );
 
         for provider_config in provider_configs {
             let mut config = HashMap::new();
@@ -477,10 +487,9 @@ impl ProviderRegistry {
             match result {
                 Ok(()) => {
                     // Set enabled state
-                    if let Err(e) = self.set_provider_enabled(
-                        &provider_config.name,
-                        provider_config.enabled,
-                    ) {
+                    if let Err(e) =
+                        self.set_provider_enabled(&provider_config.name, provider_config.enabled)
+                    {
                         warn!(
                             "Failed to set provider '{}' enabled state: {}",
                             provider_config.name, e
@@ -488,10 +497,7 @@ impl ProviderRegistry {
                     }
                 }
                 Err(e) => {
-                    warn!(
-                        "Failed to load provider '{}': {}",
-                        provider_config.name, e
-                    );
+                    warn!("Failed to load provider '{}': {}", provider_config.name, e);
                 }
             }
         }

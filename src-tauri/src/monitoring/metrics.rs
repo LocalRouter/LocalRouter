@@ -189,7 +189,8 @@ impl MetricsCollector {
                         requests: existing_row.requests + 1,
                         successful_requests: existing_row.successful_requests + 1,
                         failed_requests: existing_row.failed_requests,
-                        avg_latency_ms: (existing_row.avg_latency_ms * existing_row.requests as f64
+                        avg_latency_ms: (existing_row.avg_latency_ms
+                            * existing_row.requests as f64
                             + metrics.latency_ms as f64)
                             / (existing_row.requests + 1) as f64,
                         input_tokens: Some(
@@ -275,7 +276,8 @@ impl MetricsCollector {
                         requests: existing_row.requests + 1,
                         successful_requests: existing_row.successful_requests,
                         failed_requests: existing_row.failed_requests + 1,
-                        avg_latency_ms: (existing_row.avg_latency_ms * existing_row.requests as f64
+                        avg_latency_ms: (existing_row.avg_latency_ms
+                            * existing_row.requests as f64
                             + latency_ms as f64)
                             / (existing_row.requests + 1) as f64,
                         input_tokens: existing_row.input_tokens,
@@ -368,7 +370,9 @@ impl MetricsCollector {
             .unwrap_or_default()
             .into_iter()
             .filter_map(|metric_type| {
-                metric_type.strip_prefix("llm_key:").map(|name| name.to_string())
+                metric_type
+                    .strip_prefix("llm_key:")
+                    .map(|name| name.to_string())
             })
             .collect()
     }
@@ -380,7 +384,9 @@ impl MetricsCollector {
             .unwrap_or_default()
             .into_iter()
             .filter_map(|metric_type| {
-                metric_type.strip_prefix("llm_provider:").map(|name| name.to_string())
+                metric_type
+                    .strip_prefix("llm_provider:")
+                    .map(|name| name.to_string())
             })
             .collect()
     }
@@ -392,7 +398,9 @@ impl MetricsCollector {
             .unwrap_or_default()
             .into_iter()
             .filter_map(|metric_type| {
-                metric_type.strip_prefix("llm_model:").map(|name| name.to_string())
+                metric_type
+                    .strip_prefix("llm_model:")
+                    .map(|name| name.to_string())
             })
             .collect()
     }
@@ -562,10 +570,8 @@ mod tests {
         });
 
         // Verify global (all requests)
-        let global = collector.get_global_range(
-            now - Duration::minutes(5),
-            now + Duration::minutes(5),
-        );
+        let global =
+            collector.get_global_range(now - Duration::minutes(5), now + Duration::minutes(5));
         assert_eq!(global[0].requests, 3);
 
         // Verify per-key isolation

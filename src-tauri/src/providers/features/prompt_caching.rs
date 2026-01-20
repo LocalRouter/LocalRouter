@@ -34,9 +34,9 @@
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
-use crate::utils::errors::{AppError, AppResult};
 use super::{FeatureAdapter, FeatureData, FeatureParams};
 use crate::providers::{CompletionRequest, CompletionResponse};
+use crate::utils::errors::{AppError, AppResult};
 
 /// Feature adapter for prompt caching
 pub struct PromptCachingAdapter;
@@ -103,7 +103,6 @@ impl PromptCachingAdapter {
         breakpoints
     }
 
-
     /// Calculate cache savings percentage
     fn calculate_cache_savings(
         cache_creation_tokens: u32,
@@ -162,9 +161,9 @@ impl PromptCachingAdapter {
     /// Detect if provider supports caching
     fn supports_caching(model: &str) -> bool {
         // Anthropic Claude 3+ models support caching
-        model.starts_with("claude-3") ||
-        model.starts_with("claude-opus") ||
-        model.starts_with("claude-sonnet")
+        model.starts_with("claude-3")
+            || model.starts_with("claude-opus")
+            || model.starts_with("claude-sonnet")
     }
 }
 
@@ -216,20 +215,14 @@ impl FeatureAdapter for PromptCachingAdapter {
             json!(breakpoints),
         );
 
-        extensions.insert(
-            "_prompt_caching_control".to_string(),
-            cache_control,
-        );
+        extensions.insert("_prompt_caching_control".to_string(), cache_control);
 
         request.extensions = Some(extensions);
 
         Ok(())
     }
 
-    fn adapt_response(
-        &self,
-        response: &mut CompletionResponse,
-    ) -> AppResult<Option<FeatureData>> {
+    fn adapt_response(&self, response: &mut CompletionResponse) -> AppResult<Option<FeatureData>> {
         // Check if caching was used
         let extensions = match &response.extensions {
             Some(ext) => ext,
@@ -307,10 +300,7 @@ mod tests {
     fn test_validate_params_explicit() {
         let adapter = PromptCachingAdapter;
         let mut params = HashMap::new();
-        params.insert(
-            "cache_control".to_string(),
-            json!({"type": "ephemeral"}),
-        );
+        params.insert("cache_control".to_string(), json!({"type": "ephemeral"}));
 
         assert!(adapter.validate_params(&params).is_ok());
     }
@@ -319,14 +309,14 @@ mod tests {
     fn test_validate_params_invalid_type() {
         let adapter = PromptCachingAdapter;
         let mut params = HashMap::new();
-        params.insert(
-            "cache_control".to_string(),
-            json!({"type": "permanent"}),
-        );
+        params.insert("cache_control".to_string(), json!({"type": "permanent"}));
 
         let result = adapter.validate_params(&params);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Only 'ephemeral' is supported"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Only 'ephemeral' is supported"));
     }
 
     #[test]
@@ -475,12 +465,10 @@ mod tests {
         let adapter = PromptCachingAdapter;
         let mut request = CompletionRequest {
             model: "gpt-4".to_string(),
-            messages: vec![
-                crate::providers::ChatMessage {
-                    role: "user".to_string(),
-                    content: "Hello".to_string(),
-                },
-            ],
+            messages: vec![crate::providers::ChatMessage {
+                role: "user".to_string(),
+                content: "Hello".to_string(),
+            }],
             temperature: None,
             max_tokens: None,
             stream: false,

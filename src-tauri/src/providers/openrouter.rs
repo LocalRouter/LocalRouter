@@ -69,8 +69,9 @@ impl OpenRouterProvider {
     /// * `Err(AppError)` if key doesn't exist or keyring access fails
     pub fn from_stored_key(provider_name: Option<&str>) -> AppResult<Self> {
         let name = provider_name.unwrap_or("openrouter");
-        let api_key = super::key_storage::get_provider_key(name)?
-            .ok_or_else(|| AppError::Provider(format!("No API key found for provider '{}'", name)))?;
+        let api_key = super::key_storage::get_provider_key(name)?.ok_or_else(|| {
+            AppError::Provider(format!("No API key found for provider '{}'", name))
+        })?;
         Ok(Self::new(api_key))
     }
 
@@ -203,6 +204,7 @@ impl ModelProvider for OpenRouterProvider {
                     capabilities,
                     detailed_capabilities: None,
                 }
+                .enrich_with_catalog_by_name() // Use model-only search for multi-provider system
             })
             .collect())
     }

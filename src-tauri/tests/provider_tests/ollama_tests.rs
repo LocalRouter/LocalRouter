@@ -14,7 +14,10 @@ async fn test_ollama_health_check() {
 
     let health = provider.health_check().await;
 
-    assert_eq!(health.status, localrouter_ai::providers::HealthStatus::Healthy);
+    assert_eq!(
+        health.status,
+        localrouter_ai::providers::HealthStatus::Healthy
+    );
     assert!(health.latency_ms.is_some());
     assert!(health.last_checked > chrono::Utc::now() - chrono::Duration::seconds(5));
     assert!(health.error_message.is_none());

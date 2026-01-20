@@ -4,10 +4,10 @@
 //! These tests verify the OAuth client system works correctly for MCP authentication.
 
 use super::common::*;
+use base64::{engine::general_purpose::STANDARD, Engine};
 use localrouter_ai::api_keys::KeychainStorage;
 use localrouter_ai::oauth_clients::OAuthClientManager;
 use std::sync::Arc;
-use base64::{engine::general_purpose::STANDARD, Engine};
 
 #[tokio::test]
 async fn test_oauth_client_creation() {
@@ -20,10 +20,16 @@ async fn test_oauth_client_creation() {
         .expect("Failed to create OAuth client");
 
     // Verify client_id format
-    assert!(client_id.starts_with("lr-"), "Client ID should start with lr-");
+    assert!(
+        client_id.starts_with("lr-"),
+        "Client ID should start with lr-"
+    );
 
     // Verify client_secret format
-    assert!(client_secret.starts_with("lr-"), "Client secret should start with lr-");
+    assert!(
+        client_secret.starts_with("lr-"),
+        "Client secret should start with lr-"
+    );
 
     // Verify config
     assert_eq!(config.name, "test-client");
@@ -171,8 +177,12 @@ async fn test_oauth_server_unlinking() {
     let (_, _, config) = manager.create_client(None).await.unwrap();
 
     // Link servers
-    manager.link_server(&config.id, "server-1".to_string()).unwrap();
-    manager.link_server(&config.id, "server-2".to_string()).unwrap();
+    manager
+        .link_server(&config.id, "server-1".to_string())
+        .unwrap();
+    manager
+        .link_server(&config.id, "server-2".to_string())
+        .unwrap();
 
     // Verify both linked
     assert!(manager.can_access_server(&config.id, "server-1"));
@@ -196,12 +206,20 @@ async fn test_oauth_duplicate_link() {
     let (_, _, config) = manager.create_client(None).await.unwrap();
 
     // Link server twice
-    manager.link_server(&config.id, "server-1".to_string()).unwrap();
-    manager.link_server(&config.id, "server-1".to_string()).unwrap();
+    manager
+        .link_server(&config.id, "server-1".to_string())
+        .unwrap();
+    manager
+        .link_server(&config.id, "server-1".to_string())
+        .unwrap();
 
     // Should only be linked once
     let client = manager.get_client(&config.id).unwrap();
-    let count = client.linked_server_ids.iter().filter(|id| *id == "server-1").count();
+    let count = client
+        .linked_server_ids
+        .iter()
+        .filter(|id| *id == "server-1")
+        .count();
     assert_eq!(count, 1, "Server should only be linked once");
 }
 
@@ -273,8 +291,14 @@ async fn test_oauth_list_clients() {
     assert_eq!(manager.list_clients().len(), 0);
 
     // Create some clients
-    let (_, _, config1) = manager.create_client(Some("client-1".to_string())).await.unwrap();
-    let (_, _, config2) = manager.create_client(Some("client-2".to_string())).await.unwrap();
+    let (_, _, config1) = manager
+        .create_client(Some("client-1".to_string()))
+        .await
+        .unwrap();
+    let (_, _, config2) = manager
+        .create_client(Some("client-2".to_string()))
+        .await
+        .unwrap();
 
     // Verify list
     let clients = manager.list_clients();

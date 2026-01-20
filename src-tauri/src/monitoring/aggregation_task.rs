@@ -56,10 +56,8 @@ impl AggregationTask {
         tracing::info!("Starting hourly aggregation");
 
         // Aggregate the previous hour (not the current hour, as it's still ongoing)
-        let hour_start = now
-            .duration_trunc(chrono::Duration::hours(1))
-            .unwrap()
-            - chrono::Duration::hours(1);
+        let hour_start =
+            now.duration_trunc(chrono::Duration::hours(1)).unwrap() - chrono::Duration::hours(1);
 
         match self.db.aggregate_to_hourly(hour_start) {
             Ok(count) => {
@@ -80,12 +78,8 @@ impl AggregationTask {
         tracing::info!("Starting daily aggregation");
 
         // Aggregate the previous day (not today, as it's still ongoing)
-        let day_start = now
-            .date_naive()
-            .and_hms_opt(0, 0, 0)
-            .unwrap()
-            .and_utc()
-            - chrono::Duration::days(1);
+        let day_start =
+            now.date_naive().and_hms_opt(0, 0, 0).unwrap().and_utc() - chrono::Duration::days(1);
 
         match self.db.aggregate_to_daily(day_start) {
             Ok(count) => {
@@ -118,10 +112,7 @@ impl AggregationTask {
 
 /// Check if hourly aggregation should run
 /// Runs once per hour, at the top of the hour
-fn should_run_hourly_aggregation(
-    now: DateTime<Utc>,
-    last_run: Option<DateTime<Utc>>,
-) -> bool {
+fn should_run_hourly_aggregation(now: DateTime<Utc>, last_run: Option<DateTime<Utc>>) -> bool {
     // If we've never run, check if we're at the start of an hour
     if last_run.is_none() {
         return now.minute() < 10; // Run in the first 10 minutes of the hour
@@ -137,10 +128,7 @@ fn should_run_hourly_aggregation(
 
 /// Check if daily aggregation should run
 /// Runs once per day, around midnight
-fn should_run_daily_aggregation(
-    now: DateTime<Utc>,
-    last_run: Option<DateTime<Utc>>,
-) -> bool {
+fn should_run_daily_aggregation(now: DateTime<Utc>, last_run: Option<DateTime<Utc>>) -> bool {
     // If we've never run, check if we're near midnight
     if last_run.is_none() {
         return now.hour() == 0 && now.minute() < 10;

@@ -17,7 +17,11 @@ pub struct ApiErrorResponse {
 }
 
 impl ApiErrorResponse {
-    pub fn new(status: StatusCode, error_type: impl Into<String>, message: impl Into<String>) -> Self {
+    pub fn new(
+        status: StatusCode,
+        error_type: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
         Self {
             status,
             error: ErrorResponse::new(error_type, message),
@@ -50,7 +54,11 @@ impl ApiErrorResponse {
 
     #[allow(dead_code)]
     pub fn service_unavailable(message: impl Into<String>) -> Self {
-        Self::new(StatusCode::SERVICE_UNAVAILABLE, "service_unavailable", message)
+        Self::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "service_unavailable",
+            message,
+        )
     }
 
     #[allow(dead_code)]
@@ -86,30 +94,20 @@ impl From<AppError> for ApiErrorResponse {
             AppError::Provider(msg) => {
                 ApiErrorResponse::bad_gateway(format!("Provider error: {}", msg))
             }
-            AppError::RateLimitExceeded => {
-                ApiErrorResponse::rate_limited("Rate limit exceeded")
-            }
-            AppError::Unauthorized => {
-                ApiErrorResponse::unauthorized("Unauthorized")
-            }
+            AppError::RateLimitExceeded => ApiErrorResponse::rate_limited("Rate limit exceeded"),
+            AppError::Unauthorized => ApiErrorResponse::unauthorized("Unauthorized"),
             AppError::ApiKey(msg) => {
                 ApiErrorResponse::unauthorized(format!("API key error: {}", msg))
             }
-            AppError::Mcp(msg) => {
-                ApiErrorResponse::bad_gateway(format!("MCP error: {}", msg))
-            }
+            AppError::Mcp(msg) => ApiErrorResponse::bad_gateway(format!("MCP error: {}", msg)),
             AppError::Storage(msg) => {
                 ApiErrorResponse::internal_error(format!("Storage error: {}", msg))
             }
             AppError::Router(msg) => {
                 ApiErrorResponse::bad_gateway(format!("Router error: {}", msg))
             }
-            AppError::Internal(msg) => {
-                ApiErrorResponse::internal_error(msg)
-            }
-            AppError::Io(err) => {
-                ApiErrorResponse::internal_error(format!("IO error: {}", err))
-            }
+            AppError::Internal(msg) => ApiErrorResponse::internal_error(msg),
+            AppError::Io(err) => ApiErrorResponse::internal_error(format!("IO error: {}", err)),
             AppError::Serialization(err) => {
                 ApiErrorResponse::internal_error(format!("Serialization error: {}", err))
             }

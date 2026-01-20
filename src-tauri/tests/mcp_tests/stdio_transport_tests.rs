@@ -19,13 +19,9 @@ async fn test_stdio_single_request() {
         .build();
 
     // Spawn transport
-    let transport = StdioTransport::spawn(
-        mock.get_command(),
-        mock.get_args(),
-        mock.get_env(),
-    )
-    .await
-    .expect("Failed to spawn STDIO transport");
+    let transport = StdioTransport::spawn(mock.get_command(), mock.get_args(), mock.get_env())
+        .await
+        .expect("Failed to spawn STDIO transport");
 
     // Send request
     let request = standard_jsonrpc_request("tools/list");
@@ -53,12 +49,18 @@ async fn test_stdio_multiple_sequential_requests() {
 
     // Send first request
     let req1 = standard_jsonrpc_request("tools/list");
-    let resp1 = transport.send_request(req1).await.expect("Request 1 failed");
+    let resp1 = transport
+        .send_request(req1)
+        .await
+        .expect("Request 1 failed");
     assert_jsonrpc_result(&resp1, &json!({"tools": ["tool1", "tool2"]}));
 
     // Send second request
     let req2 = standard_jsonrpc_request("prompts/list");
-    let resp2 = transport.send_request(req2).await.expect("Request 2 failed");
+    let resp2 = transport
+        .send_request(req2)
+        .await
+        .expect("Request 2 failed");
     assert_jsonrpc_result(&resp2, &json!({"prompts": ["prompt1"]}));
 }
 
@@ -173,7 +175,10 @@ async fn test_stdio_environment_variables() {
         .expect("Failed to spawn transport with env vars");
 
     let request = standard_jsonrpc_request("test");
-    let response = transport.send_request(request).await.expect("Request failed");
+    let response = transport
+        .send_request(request)
+        .await
+        .expect("Request failed");
 
     assert_jsonrpc_result(&response, &json!({"ok": true}));
 }
@@ -189,7 +194,10 @@ async fn test_stdio_is_alive() {
         .expect("Failed to spawn transport");
 
     // Should be alive after spawning
-    assert!(transport.is_alive(), "Transport should be alive after spawn");
+    assert!(
+        transport.is_alive(),
+        "Transport should be alive after spawn"
+    );
 
     // Drop transport (process will be killed)
     drop(transport);

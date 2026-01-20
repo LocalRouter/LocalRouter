@@ -228,9 +228,10 @@ impl ModelProvider for LMStudioProvider {
             request = request.header("Authorization", auth);
         }
 
-        let response = request.send().await.map_err(|e| {
-            AppError::Provider(format!("Failed to fetch LM Studio models: {}", e))
-        })?;
+        let response = request
+            .send()
+            .await
+            .map_err(|e| AppError::Provider(format!("Failed to fetch LM Studio models: {}", e)))?;
 
         if !response.status().is_success() {
             return Err(AppError::Provider(format!(
@@ -246,16 +247,19 @@ impl ModelProvider for LMStudioProvider {
         let models: Vec<ModelInfo> = models_response
             .data
             .into_iter()
-            .map(|model| ModelInfo {
-                id: model.id.clone(),
-                name: model.id,
-                provider: "lmstudio".to_string(),
-                parameter_count: None, // LM Studio doesn't expose parameter count
-                context_window: 4096,  // Default, actual value depends on loaded model
-                supports_streaming: true,
-                capabilities: vec![Capability::Chat, Capability::Completion],
-                detailed_capabilities: None,
-            })
+            .map(|model| {
+                ModelInfo {
+                    id: model.id.clone(),
+                    name: model.id,
+                    provider: "lmstudio".to_string(),
+                    parameter_count: None, // LM Studio doesn't expose parameter count
+                    context_window: 4096,  // Default, actual value depends on loaded model
+                    supports_streaming: true,
+                    capabilities: vec![Capability::Chat, Capability::Completion],
+                    detailed_capabilities: None,
+                }
+                .enrich_with_catalog_by_name()
+            }) // Use model-only search for multi-provider system
             .collect();
 
         debug!("Found {} LM Studio models", models.len());
@@ -268,10 +272,7 @@ impl ModelProvider for LMStudioProvider {
     }
 
     async fn complete(&self, request: CompletionRequest) -> AppResult<CompletionResponse> {
-        debug!(
-            "Sending completion request to LM Studio: {}",
-            self.base_url
-        );
+        debug!("Sending completion request to LM Studio: {}", self.base_url);
 
         let lmstudio_request = LMStudioChatRequest {
             model: request.model.clone(),

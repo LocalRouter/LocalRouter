@@ -28,9 +28,9 @@
 
 use serde_json::{json, Value};
 
-use crate::utils::errors::{AppError, AppResult};
 use super::{FeatureAdapter, FeatureData, FeatureParams};
 use crate::providers::{CompletionRequest, CompletionResponse};
+use crate::utils::errors::{AppError, AppResult};
 
 /// Feature adapter for JSON mode
 pub struct JsonModeAdapter;
@@ -147,10 +147,7 @@ impl FeatureAdapter for JsonModeAdapter {
         Ok(())
     }
 
-    fn adapt_response(
-        &self,
-        response: &mut CompletionResponse,
-    ) -> AppResult<Option<FeatureData>> {
+    fn adapt_response(&self, response: &mut CompletionResponse) -> AppResult<Option<FeatureData>> {
         // Check if JSON validation is needed
         let needs_validation = response
             .extensions
@@ -219,9 +216,15 @@ mod tests {
     #[test]
     fn test_detect_provider() {
         assert_eq!(JsonModeAdapter::detect_provider("gpt-4"), "openai");
-        assert_eq!(JsonModeAdapter::detect_provider("claude-3-opus"), "anthropic");
+        assert_eq!(
+            JsonModeAdapter::detect_provider("claude-3-opus"),
+            "anthropic"
+        );
         assert_eq!(JsonModeAdapter::detect_provider("gemini-pro"), "gemini");
-        assert_eq!(JsonModeAdapter::detect_provider("openai/gpt-4"), "openrouter");
+        assert_eq!(
+            JsonModeAdapter::detect_provider("openai/gpt-4"),
+            "openrouter"
+        );
         assert_eq!(JsonModeAdapter::detect_provider("llama-3"), "unknown");
     }
 
@@ -284,7 +287,10 @@ mod tests {
             extensions.get("response_format").unwrap(),
             &json!({"type": "json_object"})
         );
-        assert_eq!(extensions.get("_json_mode_validation").unwrap(), &json!(true));
+        assert_eq!(
+            extensions.get("_json_mode_validation").unwrap(),
+            &json!(true)
+        );
     }
 
     #[test]
@@ -317,7 +323,10 @@ mod tests {
         // Check validation flag was set
         assert!(request.extensions.is_some());
         let extensions = request.extensions.unwrap();
-        assert_eq!(extensions.get("_json_mode_validation").unwrap(), &json!(true));
+        assert_eq!(
+            extensions.get("_json_mode_validation").unwrap(),
+            &json!(true)
+        );
     }
 
     #[test]

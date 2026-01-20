@@ -15,20 +15,15 @@ async fn test_anthropic_list_models() {
     // Anthropic provider returns a static list of known models
     assert!(!models.is_empty());
     assert!(models.iter().all(|m| m.provider == "anthropic"));
-    assert!(models
-        .iter()
-        .any(|m| m.id.contains("claude")));
+    assert!(models.iter().any(|m| m.id.contains("claude")));
 }
 
 #[tokio::test]
 async fn test_anthropic_completion() {
     let mock = AnthropicMockBuilder::new().await.mock_completion().await;
 
-    let provider = AnthropicProvider::with_base_url(
-        "test-key".to_string(),
-        mock.base_url(),
-    )
-    .unwrap();
+    let provider =
+        AnthropicProvider::with_base_url("test-key".to_string(), mock.base_url()).unwrap();
 
     let request = standard_completion_request();
     let response = provider.complete(request).await.unwrap();
@@ -45,11 +40,8 @@ async fn test_anthropic_streaming() {
         .mock_streaming_completion()
         .await;
 
-    let provider = AnthropicProvider::with_base_url(
-        "test-key".to_string(),
-        mock.base_url(),
-    )
-    .unwrap();
+    let provider =
+        AnthropicProvider::with_base_url("test-key".to_string(), mock.base_url()).unwrap();
 
     let request = standard_streaming_request();
     let mut stream = provider.stream_complete(request).await.unwrap();
@@ -67,7 +59,10 @@ async fn test_anthropic_streaming() {
 async fn test_anthropic_pricing() {
     let provider = AnthropicProvider::new("test-key".to_string()).unwrap();
 
-    let pricing = provider.get_pricing("claude-3-5-sonnet-20241022").await.unwrap();
+    let pricing = provider
+        .get_pricing("claude-3-5-sonnet-20241022")
+        .await
+        .unwrap();
 
     assert!(pricing.input_cost_per_1k > 0.0);
     assert!(pricing.output_cost_per_1k > 0.0);

@@ -10,24 +10,14 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    ModelProvider,
-    ollama::OllamaProvider,
-    openai::OpenAIProvider,
-    openai_compatible::OpenAICompatibleProvider,
-    anthropic::AnthropicProvider,
-    gemini::GeminiProvider,
-    openrouter::OpenRouterProvider,
-    groq::GroqProvider,
-    mistral::MistralProvider,
-    cohere::CohereProvider,
-    togetherai::TogetherAIProvider,
-    perplexity::PerplexityProvider,
-    deepinfra::DeepInfraProvider,
-    cerebras::CerebrasProvider,
-    xai::XAIProvider,
-    lmstudio::LMStudioProvider,
+    anthropic::AnthropicProvider, cerebras::CerebrasProvider, cohere::CohereProvider,
+    deepinfra::DeepInfraProvider, gemini::GeminiProvider, groq::GroqProvider,
+    lmstudio::LMStudioProvider, mistral::MistralProvider, ollama::OllamaProvider,
+    openai::OpenAIProvider, openai_compatible::OpenAICompatibleProvider,
+    openrouter::OpenRouterProvider, perplexity::PerplexityProvider, togetherai::TogetherAIProvider,
+    xai::XAIProvider, ModelProvider,
 };
-use crate::utils::errors::{AppResult, AppError};
+use crate::utils::errors::{AppError, AppResult};
 
 /// Factory for creating provider instances
 #[async_trait]
@@ -347,12 +337,7 @@ impl ProviderFactory for OpenRouterProviderFactory {
 
     fn setup_parameters(&self) -> Vec<SetupParameter> {
         vec![
-            SetupParameter::required(
-                "api_key",
-                ParameterType::ApiKey,
-                "OpenRouter API key",
-                true,
-            ),
+            SetupParameter::required("api_key", ParameterType::ApiKey, "OpenRouter API key", true),
             SetupParameter::optional(
                 "app_name",
                 ParameterType::String,
@@ -893,7 +878,8 @@ mod tests {
 
     #[test]
     fn test_setup_parameter_required() {
-        let param = SetupParameter::required("api_key", ParameterType::ApiKey, "OpenAI API key", true);
+        let param =
+            SetupParameter::required("api_key", ParameterType::ApiKey, "OpenAI API key", true);
 
         assert_eq!(param.key, "api_key");
         assert_eq!(param.param_type, ParameterType::ApiKey);
@@ -916,7 +902,10 @@ mod tests {
         assert_eq!(param.param_type, ParameterType::BaseUrl);
         assert!(!param.required);
         assert!(!param.sensitive);
-        assert_eq!(param.default_value, Some("http://localhost:11434".to_string()));
+        assert_eq!(
+            param.default_value,
+            Some("http://localhost:11434".to_string())
+        );
     }
 
     #[test]

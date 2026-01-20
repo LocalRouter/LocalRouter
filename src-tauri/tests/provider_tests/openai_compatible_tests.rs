@@ -15,8 +15,8 @@
 use super::common::*;
 use futures::StreamExt;
 use localrouter_ai::providers::{
-    groq::GroqProvider, lmstudio::LMStudioProvider,
-    openai_compatible::OpenAICompatibleProvider, openrouter::OpenRouterProvider, ModelProvider,
+    groq::GroqProvider, lmstudio::LMStudioProvider, openai_compatible::OpenAICompatibleProvider,
+    openrouter::OpenRouterProvider, ModelProvider,
 };
 
 // ==================== OPENAI TESTS ====================
@@ -163,11 +163,7 @@ async fn test_groq_completion() {
         .mock_completion()
         .await;
 
-    let provider = GroqProvider::with_base_url(
-        "test-key".to_string(),
-        mock.base_url(),
-    )
-    .unwrap();
+    let provider = GroqProvider::with_base_url("test-key".to_string(), mock.base_url()).unwrap();
 
     let request = standard_completion_request();
     let response = provider.complete(request).await.unwrap();
@@ -186,10 +182,7 @@ async fn test_openrouter_completion() {
         .mock_completion()
         .await;
 
-    let provider = OpenRouterProvider::with_base_url(
-        "test-key".to_string(),
-        mock.base_url(),
-    );
+    let provider = OpenRouterProvider::with_base_url("test-key".to_string(), mock.base_url());
 
     let request = standard_completion_request();
     let response = provider.complete(request).await.unwrap();
@@ -279,15 +272,15 @@ async fn test_all_openai_compatible_providers_handle_errors_consistently() {
     let mock = OpenAICompatibleMockBuilder::new().await;
     let base_url = mock.base_url();
 
-    let provider = OpenAICompatibleProvider::new(
-        "test".to_string(),
-        base_url,
-        Some("test-key".to_string()),
-    );
+    let provider =
+        OpenAICompatibleProvider::new("test".to_string(), base_url, Some("test-key".to_string()));
 
     // Test with no mocks - should fail gracefully
     let request = standard_completion_request();
     let result = provider.complete(request).await;
 
-    assert!(result.is_err(), "Should error when API returns unexpected response");
+    assert!(
+        result.is_err(),
+        "Should error when API returns unexpected response"
+    );
 }

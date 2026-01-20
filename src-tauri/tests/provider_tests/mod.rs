@@ -71,14 +71,14 @@
 //! Some providers use hardcoded base URLs and need refactoring to support
 //! custom URLs for testing. These are marked with TODO comments.
 
-mod common;
-mod request_validation;
-mod openai_compatible_tests;
-mod openai_compatible_detailed;
-mod ollama_tests;
 mod anthropic_tests;
-mod gemini_tests;
-mod cohere_tests;
-mod http_scenarios;
-mod sse_scenarios;
 mod bug_detection_tests;
+mod cohere_tests;
+mod common;
+mod gemini_tests;
+mod http_scenarios;
+mod ollama_tests;
+mod openai_compatible_detailed;
+mod openai_compatible_tests;
+mod request_validation;
+mod sse_scenarios;

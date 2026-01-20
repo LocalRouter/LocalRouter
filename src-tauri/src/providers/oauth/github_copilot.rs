@@ -143,15 +143,17 @@ impl OAuthProvider for GitHubCopilotOAuthProvider {
         Ok(OAuthFlowResult::Pending {
             user_code: Some(device_response.user_code),
             verification_url: device_response.verification_uri,
-            instructions: "Visit the verification URL and enter the code to authorize GitHub Copilot access.".to_string(),
+            instructions:
+                "Visit the verification URL and enter the code to authorize GitHub Copilot access."
+                    .to_string(),
         })
     }
 
     async fn poll_oauth_status(&self) -> AppResult<OAuthFlowResult> {
         let flow = self.current_flow.read().await;
-        let flow_state = flow.as_ref().ok_or_else(|| {
-            AppError::Provider("No OAuth flow in progress".to_string())
-        })?;
+        let flow_state = flow
+            .as_ref()
+            .ok_or_else(|| AppError::Provider("No OAuth flow in progress".to_string()))?;
 
         // Check if expired
         let now = Utc::now().timestamp();
@@ -187,9 +189,10 @@ impl OAuthProvider for GitHubCopilotOAuthProvider {
             )));
         }
 
-        let token_response: TokenResponse = response.json().await.map_err(|e| {
-            AppError::Provider(format!("Failed to parse token response: {}", e))
-        })?;
+        let token_response: TokenResponse = response
+            .json()
+            .await
+            .map_err(|e| AppError::Provider(format!("Failed to parse token response: {}", e)))?;
 
         match token_response {
             TokenResponse::Success { access_token, .. } => {
@@ -210,7 +213,10 @@ impl OAuthProvider for GitHubCopilotOAuthProvider {
 
                 Ok(OAuthFlowResult::Success { credentials })
             }
-            TokenResponse::Pending { error, error_description } => {
+            TokenResponse::Pending {
+                error,
+                error_description,
+            } => {
                 if error == "authorization_pending" {
                     // Still waiting for user
                     Ok(OAuthFlowResult::Pending {

@@ -42,8 +42,9 @@ impl MistralProvider {
     /// Create a new Mistral provider from stored API key
     pub fn from_stored_key(provider_name: Option<&str>) -> AppResult<Self> {
         let name = provider_name.unwrap_or("mistral");
-        let api_key = super::key_storage::get_provider_key(name)?
-            .ok_or_else(|| AppError::Provider(format!("No API key found for provider '{}'", name)))?;
+        let api_key = super::key_storage::get_provider_key(name)?.ok_or_else(|| {
+            AppError::Provider(format!("No API key found for provider '{}'", name))
+        })?;
         Self::new(api_key)
     }
 
@@ -229,17 +230,17 @@ impl ModelProvider for MistralProvider {
                 currency: "USD".to_string(),
             },
             "open-mistral-7b" => PricingInfo {
-                input_cost_per_1k: 0.00025, // $0.25 per 1M tokens
+                input_cost_per_1k: 0.00025,  // $0.25 per 1M tokens
                 output_cost_per_1k: 0.00025, // $0.25 per 1M tokens
                 currency: "USD".to_string(),
             },
             "open-mixtral-8x7b" => PricingInfo {
-                input_cost_per_1k: 0.0007, // $0.7 per 1M tokens
+                input_cost_per_1k: 0.0007,  // $0.7 per 1M tokens
                 output_cost_per_1k: 0.0007, // $0.7 per 1M tokens
                 currency: "USD".to_string(),
             },
             "open-mixtral-8x22b" => PricingInfo {
-                input_cost_per_1k: 0.002, // $2 per 1M tokens
+                input_cost_per_1k: 0.002,  // $2 per 1M tokens
                 output_cost_per_1k: 0.006, // $6 per 1M tokens
                 currency: "USD".to_string(),
             },

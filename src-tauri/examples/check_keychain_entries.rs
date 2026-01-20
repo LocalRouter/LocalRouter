@@ -43,10 +43,16 @@ fn main() {
     // Now check with security command
     println!("\n3️⃣  Checking with macOS security command...");
     println!("   Run this command to see where it was stored:");
-    println!("   security find-generic-password -a \"{}\" -w 2>&1", test_account);
+    println!(
+        "   security find-generic-password -a \"{}\" -w 2>&1",
+        test_account
+    );
 
     println!("\n4️⃣  Or search for all entries:");
-    println!("   security dump-keychain | grep -B 2 -A 2 \"{}\"", test_account);
+    println!(
+        "   security dump-keychain | grep -B 2 -A 2 \"{}\"",
+        test_account
+    );
 
     // Cleanup
     println!("\n5️⃣  Cleaning up...");

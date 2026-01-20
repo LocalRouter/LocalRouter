@@ -44,12 +44,13 @@ fn extract_bearer_token(auth_header: &str) -> Option<String> {
 /// 2. Direct client secrets (validated via ClientManager)
 ///
 /// On success, attaches ClientAuthContext to request extensions.
-pub async fn client_auth_middleware(
-    mut req: Request,
-    next: Next,
-) -> Response {
+pub async fn client_auth_middleware(mut req: Request, next: Next) -> Response {
     // Extract Authorization header
-    let auth_header = match req.headers().get("Authorization").and_then(|h| h.to_str().ok()) {
+    let auth_header = match req
+        .headers()
+        .get("Authorization")
+        .and_then(|h| h.to_str().ok())
+    {
         Some(h) => h,
         None => {
             return ApiErrorResponse::unauthorized("Missing Authorization header").into_response();
@@ -61,8 +62,9 @@ pub async fn client_auth_middleware(
         Some(t) => t,
         None => {
             return ApiErrorResponse::unauthorized(
-                "Invalid Authorization header format. Expected: Bearer <token>"
-            ).into_response();
+                "Invalid Authorization header format. Expected: Bearer <token>",
+            )
+            .into_response();
         }
     };
 

@@ -222,10 +222,7 @@ impl OAuthClientManager {
             clients.retain(|c| c.id != id);
 
             if clients.len() == initial_len {
-                return Err(AppError::ApiKey(format!(
-                    "OAuth client not found: {}",
-                    id
-                )));
+                return Err(AppError::ApiKey(format!("OAuth client not found: {}", id)));
             }
         }
 
@@ -252,10 +249,7 @@ impl OAuthClientManager {
         {
             let clients = self.clients.read();
             if !clients.iter().any(|c| c.id == id) {
-                return Err(AppError::ApiKey(format!(
-                    "OAuth client not found: {}",
-                    id
-                )));
+                return Err(AppError::ApiKey(format!("OAuth client not found: {}", id)));
             }
         }
 
@@ -266,8 +260,7 @@ impl OAuthClientManager {
 
         // Update keychain with new secret (same ID)
         // CachedKeychain will automatically update the cache
-        self.keychain
-            .store(OAUTH_CLIENT_SERVICE, id, &new_secret)?;
+        self.keychain.store(OAUTH_CLIENT_SERVICE, id, &new_secret)?;
 
         tracing::info!("Successfully rotated OAuth client secret in keychain");
 
@@ -341,7 +334,9 @@ impl OAuthClientManager {
             }
         }
 
-        tracing::warn!("OAuth client credential verification failed - no matching credentials found");
+        tracing::warn!(
+            "OAuth client credential verification failed - no matching credentials found"
+        );
         None
     }
 

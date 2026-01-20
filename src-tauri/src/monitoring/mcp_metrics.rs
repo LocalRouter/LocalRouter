@@ -17,7 +17,7 @@ use std::sync::Arc;
 pub struct McpRequestMetrics<'a> {
     pub client_id: &'a str,
     pub server_id: &'a str,
-    pub method: &'a str,        // JSON-RPC method name
+    pub method: &'a str, // JSON-RPC method name
     pub latency_ms: u64,
     pub success: bool,
     pub error_code: Option<i32>, // JSON-RPC error code if failed
@@ -188,8 +188,7 @@ impl McpTimeSeries {
                 point.add_request(method, success, latency_ms);
             })
             .or_insert_with(|| {
-                let rounded_time =
-                    DateTime::from_timestamp(minute_ts, 0).unwrap_or_else(Utc::now);
+                let rounded_time = DateTime::from_timestamp(minute_ts, 0).unwrap_or_else(Utc::now);
                 let mut point = McpMetricDataPoint::new(rounded_time);
                 point.add_request(method, success, latency_ms);
                 point
@@ -269,20 +268,34 @@ impl McpMetricsCollector {
     /// Record an MCP request at a specific timestamp (for testing/repopulation)
     pub fn record_at(&self, metrics: &McpRequestMetrics, timestamp: DateTime<Utc>) {
         // Record in global metrics
-        self.global
-            .record(timestamp, metrics.method, metrics.success, metrics.latency_ms);
+        self.global.record(
+            timestamp,
+            metrics.method,
+            metrics.success,
+            metrics.latency_ms,
+        );
 
         // Record in per-client metrics
         self.per_client
             .entry(metrics.client_id.to_string())
             .or_insert_with(McpTimeSeries::new)
-            .record(timestamp, metrics.method, metrics.success, metrics.latency_ms);
+            .record(
+                timestamp,
+                metrics.method,
+                metrics.success,
+                metrics.latency_ms,
+            );
 
         // Record in per-server metrics
         self.per_server
             .entry(metrics.server_id.to_string())
             .or_insert_with(McpTimeSeries::new)
-            .record(timestamp, metrics.method, metrics.success, metrics.latency_ms);
+            .record(
+                timestamp,
+                metrics.method,
+                metrics.success,
+                metrics.latency_ms,
+            );
     }
 
     /// Get global MCP metrics for a time range

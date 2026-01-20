@@ -83,7 +83,9 @@ impl TokenErrorResponse {
     fn unsupported_grant_type() -> Self {
         Self {
             error: "unsupported_grant_type".to_string(),
-            error_description: Some("Only 'client_credentials' grant type is supported".to_string()),
+            error_description: Some(
+                "Only 'client_credentials' grant type is supported".to_string(),
+            ),
         }
     }
 }
@@ -181,34 +183,33 @@ pub async fn token_endpoint(
     }
 
     // Extract credentials from either body or Basic Auth header
-    let (client_id, client_secret) = if let (Some(id), Some(secret)) =
-        (request.client_id, request.client_secret)
-    {
-        // Credentials in body
-        (id, secret)
-    } else if let Some(auth) = headers.get("authorization") {
-        // Try Basic Auth
-        match extract_basic_auth(auth.to_str().ok()) {
-            Some((id, secret)) => (id, secret),
-            None => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(TokenErrorResponse::invalid_request(
-                        "Invalid Authorization header format",
-                    )),
-                )
-                    .into_response();
+    let (client_id, client_secret) =
+        if let (Some(id), Some(secret)) = (request.client_id, request.client_secret) {
+            // Credentials in body
+            (id, secret)
+        } else if let Some(auth) = headers.get("authorization") {
+            // Try Basic Auth
+            match extract_basic_auth(auth.to_str().ok()) {
+                Some((id, secret)) => (id, secret),
+                None => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(TokenErrorResponse::invalid_request(
+                            "Invalid Authorization header format",
+                        )),
+                    )
+                        .into_response();
+                }
             }
-        }
-    } else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(TokenErrorResponse::invalid_request(
-                "Missing client credentials",
-            )),
-        )
-            .into_response();
-    };
+        } else {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(TokenErrorResponse::invalid_request(
+                    "Missing client credentials",
+                )),
+            )
+                .into_response();
+        };
 
     // Verify client credentials
     let client = match state
@@ -252,7 +253,9 @@ pub async fn token_endpoint(
             tracing::error!("Error generating access token: {}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(TokenErrorResponse::invalid_request("Failed to generate token")),
+                Json(TokenErrorResponse::invalid_request(
+                    "Failed to generate token",
+                )),
             )
                 .into_response()
         }

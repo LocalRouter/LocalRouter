@@ -175,10 +175,10 @@ impl utoipa::Modify for SecurityAddon {
                         utoipa::openapi::security::Flow::ClientCredentials(
                             utoipa::openapi::security::ClientCredentials::new(
                                 "/oauth/token",
-                                utoipa::openapi::security::Scopes::new()
-                            )
-                        )
-                    ])
+                                utoipa::openapi::security::Scopes::new(),
+                            ),
+                        ),
+                    ]),
                 ),
             );
         }
@@ -220,9 +220,15 @@ mod tests {
         assert!(spec.paths.paths.contains_key("/v1/embeddings"));
         assert!(spec.paths.paths.contains_key("/v1/models"));
         assert!(spec.paths.paths.contains_key("/v1/models/{id}"));
-        assert!(spec.paths.paths.contains_key("/v1/models/{provider}/{model}/pricing"));
+        assert!(spec
+            .paths
+            .paths
+            .contains_key("/v1/models/{provider}/{model}/pricing"));
         assert!(spec.paths.paths.contains_key("/v1/generation"));
-        assert!(spec.paths.paths.contains_key("/mcp/{client_id}/{server_id}"));
+        assert!(spec
+            .paths
+            .paths
+            .contains_key("/mcp/{client_id}/{server_id}"));
         assert!(spec.paths.paths.contains_key("/health"));
         assert!(spec.paths.paths.contains_key("/"));
 

@@ -42,8 +42,9 @@ impl CerebrasProvider {
     /// Create a new Cerebras provider from stored API key
     pub fn from_stored_key(provider_name: Option<&str>) -> AppResult<Self> {
         let name = provider_name.unwrap_or("cerebras");
-        let api_key = super::key_storage::get_provider_key(name)?
-            .ok_or_else(|| AppError::Provider(format!("No API key found for provider '{}'", name)))?;
+        let api_key = super::key_storage::get_provider_key(name)?.ok_or_else(|| {
+            AppError::Provider(format!("No API key found for provider '{}'", name))
+        })?;
         Self::new(api_key)
     }
 
@@ -145,13 +146,13 @@ impl ModelProvider for CerebrasProvider {
         // Cerebras pricing as of 2026-01
         let pricing = if model.contains("70b") {
             PricingInfo {
-                input_cost_per_1k: 0.0006, // $0.6 per 1M tokens
+                input_cost_per_1k: 0.0006,  // $0.6 per 1M tokens
                 output_cost_per_1k: 0.0006, // $0.6 per 1M tokens
                 currency: "USD".to_string(),
             }
         } else {
             PricingInfo {
-                input_cost_per_1k: 0.0001, // $0.1 per 1M tokens
+                input_cost_per_1k: 0.0001,  // $0.1 per 1M tokens
                 output_cost_per_1k: 0.0001, // $0.1 per 1M tokens
                 currency: "USD".to_string(),
             }

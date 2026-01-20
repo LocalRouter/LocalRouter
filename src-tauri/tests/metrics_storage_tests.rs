@@ -28,9 +28,7 @@ fn test_database_persistence() {
     {
         let db = MetricsDatabase::new(db_path.clone()).unwrap();
         let now = Utc::now();
-        let minute_timestamp = now
-            .duration_trunc(chrono::Duration::minutes(1))
-            .unwrap();
+        let minute_timestamp = now.duration_trunc(chrono::Duration::minutes(1)).unwrap();
 
         let row = MetricRow {
             timestamp: minute_timestamp,
@@ -121,9 +119,7 @@ fn test_hourly_aggregation() {
     let db = Arc::new(MetricsDatabase::new(db_path).unwrap());
 
     let now = Utc::now();
-    let hour_start = now
-        .duration_trunc(chrono::Duration::hours(1))
-        .unwrap();
+    let hour_start = now.duration_trunc(chrono::Duration::hours(1)).unwrap();
 
     // Insert minute data for the previous hour
     let prev_hour_start = hour_start - chrono::Duration::hours(1);
@@ -181,11 +177,7 @@ fn test_daily_aggregation() {
     let db = Arc::new(MetricsDatabase::new(db_path).unwrap());
 
     let now = Utc::now();
-    let day_start = now
-        .date_naive()
-        .and_hms_opt(0, 0, 0)
-        .unwrap()
-        .and_utc();
+    let day_start = now.date_naive().and_hms_opt(0, 0, 0).unwrap().and_utc();
 
     // Insert hourly data for the previous day
     let prev_day_start = day_start - chrono::Duration::days(1);
@@ -336,7 +328,11 @@ fn test_cleanup_retention() {
         .unwrap();
 
     // Should only have recent minute data
-    assert_eq!(minute_results.len(), 1, "Should have exactly 1 recent minute record");
+    assert_eq!(
+        minute_results.len(),
+        1,
+        "Should have exactly 1 recent minute record"
+    );
     assert_eq!(minute_results[0].granularity, Granularity::Minute);
     assert_eq!(minute_results[0].timestamp, recent_minute);
 
@@ -387,7 +383,10 @@ fn test_granularity_selection() {
         now - chrono::Duration::minutes(30),
         now + chrono::Duration::minutes(30),
     );
-    assert!(!minute_range.is_empty(), "Should have data in minute granularity");
+    assert!(
+        !minute_range.is_empty(),
+        "Should have data in minute granularity"
+    );
 
     // The actual granularity selection happens in the database query_metrics method
     // This test verifies that data is returned correctly
@@ -475,5 +474,8 @@ fn test_memory_efficiency() {
     );
 
     assert!(!global.is_empty(), "Should have data stored");
-    assert_eq!(global[0].requests, 1000, "Should have all 1000 requests aggregated");
+    assert_eq!(
+        global[0].requests, 1000,
+        "Should have all 1000 requests aggregated"
+    );
 }

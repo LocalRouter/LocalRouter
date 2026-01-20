@@ -42,8 +42,9 @@ impl PerplexityProvider {
     /// Create a new Perplexity provider from stored API key
     pub fn from_stored_key(provider_name: Option<&str>) -> AppResult<Self> {
         let name = provider_name.unwrap_or("perplexity");
-        let api_key = super::key_storage::get_provider_key(name)?
-            .ok_or_else(|| AppError::Provider(format!("No API key found for provider '{}'", name)))?;
+        let api_key = super::key_storage::get_provider_key(name)?.ok_or_else(|| {
+            AppError::Provider(format!("No API key found for provider '{}'", name))
+        })?;
         Self::new(api_key)
     }
 
@@ -198,7 +199,7 @@ impl ModelProvider for PerplexityProvider {
                 currency: "USD".to_string(),
             },
             _ => PricingInfo {
-                input_cost_per_1k: 0.001,  // Default pricing
+                input_cost_per_1k: 0.001, // Default pricing
                 output_cost_per_1k: 0.001,
                 currency: "USD".to_string(),
             },
@@ -229,10 +230,9 @@ impl ModelProvider for PerplexityProvider {
             )));
         }
 
-        let perplexity_response: OpenAIChatResponse = response
-            .json()
-            .await
-            .map_err(|e| AppError::Provider(format!("Failed to parse Perplexity response: {}", e)))?;
+        let perplexity_response: OpenAIChatResponse = response.json().await.map_err(|e| {
+            AppError::Provider(format!("Failed to parse Perplexity response: {}", e))
+        })?;
 
         Ok(CompletionResponse {
             id: perplexity_response.id,
@@ -268,7 +268,9 @@ impl ModelProvider for PerplexityProvider {
             .json(&request)
             .send()
             .await
-            .map_err(|e| AppError::Provider(format!("Perplexity streaming request failed: {}", e)))?;
+            .map_err(|e| {
+                AppError::Provider(format!("Perplexity streaming request failed: {}", e))
+            })?;
 
         if !response.status().is_success() {
             let status = response.status();

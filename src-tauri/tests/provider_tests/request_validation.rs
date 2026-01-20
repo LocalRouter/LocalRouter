@@ -115,9 +115,10 @@ pub fn assert_json_bool_field(body: &Value, field: &str, expected: bool) {
 
 /// Validate that JSON body has array field with specific length
 pub fn assert_json_array_length(body: &Value, field: &str, expected_length: usize) {
-    let array = body.get(field).and_then(|v| v.as_array()).unwrap_or_else(|| {
-        panic!("JSON body should have array field '{}'", field)
-    });
+    let array = body
+        .get(field)
+        .and_then(|v| v.as_array())
+        .unwrap_or_else(|| panic!("JSON body should have array field '{}'", field));
 
     assert_eq!(
         array.len(),
@@ -134,11 +135,7 @@ pub fn assert_messages_format(body: &Value, expected_count: usize) {
 
     let messages = body.get("messages").unwrap().as_array().unwrap();
     for (i, msg) in messages.iter().enumerate() {
-        assert!(
-            msg.is_object(),
-            "Message {} should be an object",
-            i
-        );
+        assert!(msg.is_object(), "Message {} should be an object", i);
         assert!(
             msg.get("role").is_some(),
             "Message {} should have 'role' field",

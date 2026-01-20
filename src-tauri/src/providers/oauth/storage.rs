@@ -63,9 +63,9 @@ impl OAuthStorage {
     async fn save(&self) -> AppResult<()> {
         // Ensure parent directory exists
         if let Some(parent) = self.storage_path.parent() {
-            fs::create_dir_all(parent)
-                .await
-                .map_err(|e| AppError::Storage(format!("Failed to create storage directory: {}", e)))?;
+            fs::create_dir_all(parent).await.map_err(|e| {
+                AppError::Storage(format!("Failed to create storage directory: {}", e))
+            })?;
         }
 
         let cache = self.cache.read().await;
@@ -175,9 +175,17 @@ mod tests {
         };
 
         storage.store_credentials(&creds).await.unwrap();
-        assert!(storage.get_credentials("test-provider").await.unwrap().is_some());
+        assert!(storage
+            .get_credentials("test-provider")
+            .await
+            .unwrap()
+            .is_some());
 
         storage.delete_credentials("test-provider").await.unwrap();
-        assert!(storage.get_credentials("test-provider").await.unwrap().is_none());
+        assert!(storage
+            .get_credentials("test-provider")
+            .await
+            .unwrap()
+            .is_none());
     }
 }

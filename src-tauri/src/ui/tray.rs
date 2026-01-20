@@ -6,13 +6,13 @@ use crate::clients::ClientManager;
 use crate::config::ConfigManager;
 use crate::mcp::manager::McpServerManager;
 use crate::providers::registry::ProviderRegistry;
+use std::sync::Arc;
 use tauri::{
     menu::{MenuBuilder, MenuItem, SubmenuBuilder},
     tray::TrayIconBuilder,
     App, AppHandle, Emitter, Manager, Runtime,
 };
 use tracing::{error, info};
-use std::sync::Arc;
 
 /// Setup system tray icon and menu
 pub fn setup_tray<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
@@ -26,11 +26,10 @@ pub fn setup_tray<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
     // This is a monochrome icon that will render properly with icon_as_template(true)
     // The icon is embedded at compile time from the icons directory
     const TRAY_ICON: &[u8] = include_bytes!("../../icons/32x32.png");
-    let icon = tauri::image::Image::from_bytes(TRAY_ICON)
-        .map_err(|e| {
-            error!("Failed to load embedded tray icon: {}", e);
-            tauri::Error::Anyhow(anyhow::anyhow!("Failed to load tray icon: {}", e))
-        })?;
+    let icon = tauri::image::Image::from_bytes(TRAY_ICON).map_err(|e| {
+        error!("Failed to load embedded tray icon: {}", e);
+        tauri::Error::Anyhow(anyhow::anyhow!("Failed to load tray icon: {}", e))
+    })?;
 
     // Create the tray icon
     let _tray = TrayIconBuilder::with_id("main")
@@ -85,12 +84,17 @@ pub fn setup_tray<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
                     // Handle copy MCP URL: copy_mcp_url_<client_id>_<server_id>
                     if let Some(rest) = id.strip_prefix("copy_mcp_url_") {
                         if let Some((client_id, server_id)) = rest.split_once('_') {
-                            info!("Copy MCP URL requested: client={}, server={}", client_id, server_id);
+                            info!(
+                                "Copy MCP URL requested: client={}, server={}",
+                                client_id, server_id
+                            );
                             let app_clone = app.clone();
                             let client_id = client_id.to_string();
                             let server_id = server_id.to_string();
                             tauri::async_runtime::spawn(async move {
-                                if let Err(e) = handle_copy_mcp_url(&app_clone, &client_id, &server_id).await {
+                                if let Err(e) =
+                                    handle_copy_mcp_url(&app_clone, &client_id, &server_id).await
+                                {
                                     error!("Failed to copy MCP URL: {}", e);
                                 }
                             });
@@ -99,11 +103,15 @@ pub fn setup_tray<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
                     // Handle copy MCP bearer token: copy_mcp_bearer_<client_id>_<server_id>
                     else if let Some(rest) = id.strip_prefix("copy_mcp_bearer_") {
                         if let Some((client_id, server_id)) = rest.split_once('_') {
-                            info!("Copy MCP bearer token requested: client={}, server={}", client_id, server_id);
+                            info!(
+                                "Copy MCP bearer token requested: client={}, server={}",
+                                client_id, server_id
+                            );
                             let app_clone = app.clone();
                             let client_id = client_id.to_string();
                             tauri::async_runtime::spawn(async move {
-                                if let Err(e) = handle_copy_mcp_bearer(&app_clone, &client_id).await {
+                                if let Err(e) = handle_copy_mcp_bearer(&app_clone, &client_id).await
+                                {
                                     error!("Failed to copy MCP bearer token: {}", e);
                                 }
                             });
@@ -112,12 +120,18 @@ pub fn setup_tray<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
                     // Handle add MCP: add_mcp_<client_id>_<server_id>
                     else if let Some(rest) = id.strip_prefix("add_mcp_") {
                         if let Some((client_id, server_id)) = rest.split_once('_') {
-                            info!("Add MCP requested: client={}, server={}", client_id, server_id);
+                            info!(
+                                "Add MCP requested: client={}, server={}",
+                                client_id, server_id
+                            );
                             let app_clone = app.clone();
                             let client_id = client_id.to_string();
                             let server_id = server_id.to_string();
                             tauri::async_runtime::spawn(async move {
-                                if let Err(e) = handle_add_mcp_to_client(&app_clone, &client_id, &server_id).await {
+                                if let Err(e) =
+                                    handle_add_mcp_to_client(&app_clone, &client_id, &server_id)
+                                        .await
+                                {
                                     error!("Failed to add MCP to client: {}", e);
                                 }
                             });
@@ -177,7 +191,13 @@ fn build_tray_menu<R: Runtime>(app: &App<R>) -> tauri::Result<tauri::menu::Menu<
                 let mut client_submenu = SubmenuBuilder::new(app, &client_name);
 
                 // LLM Models section header
-                let llm_header = MenuItem::with_id(app, &format!("llm_header_{}", client.id), "LLM Models", false, None::<&str>)?;
+                let llm_header = MenuItem::with_id(
+                    app,
+                    format!("llm_header_{}", client.id),
+                    "LLM Models",
+                    false,
+                    None::<&str>,
+                )?;
                 client_submenu = client_submenu.item(&llm_header);
 
                 // Get routing config and models
@@ -191,13 +211,18 @@ fn build_tray_menu<R: Runtime>(app: &App<R>) -> tauri::Result<tauri::menu::Menu<
 
                 if !models.is_empty() {
                     // 1. Force Model submenu
-                    let force_model_text = if matches!(active_strategy, Some(crate::config::ActiveRoutingStrategy::ForceModel)) {
+                    let force_model_text = if matches!(
+                        active_strategy,
+                        Some(crate::config::ActiveRoutingStrategy::ForceModel)
+                    ) {
                         "✓ Force model"
                     } else {
                         "Force model"
                     };
                     let mut force_model_submenu = SubmenuBuilder::new(app, force_model_text);
-                    let forced_model = routing_config.as_ref().and_then(|c| c.forced_model.as_ref());
+                    let forced_model = routing_config
+                        .as_ref()
+                        .and_then(|c| c.forced_model.as_ref());
 
                     for model in models.iter() {
                         let model_display = format!("{} ({})", model.id, model.provider);
@@ -214,7 +239,7 @@ fn build_tray_menu<R: Runtime>(app: &App<R>) -> tauri::Result<tauri::menu::Menu<
 
                         force_model_submenu = force_model_submenu.text(
                             format!("force_model_{}_{}_{}", client.id, model.provider, model.id),
-                            display_text
+                            display_text,
                         );
                     }
 
@@ -222,7 +247,10 @@ fn build_tray_menu<R: Runtime>(app: &App<R>) -> tauri::Result<tauri::menu::Menu<
                     client_submenu = client_submenu.item(&force_model_menu);
 
                     // 2. Multi Model submenu
-                    let multi_model_text = if matches!(active_strategy, Some(crate::config::ActiveRoutingStrategy::AvailableModels)) {
+                    let multi_model_text = if matches!(
+                        active_strategy,
+                        Some(crate::config::ActiveRoutingStrategy::AvailableModels)
+                    ) {
                         "✓ Multi model"
                     } else {
                         "Multi model"
@@ -230,10 +258,19 @@ fn build_tray_menu<R: Runtime>(app: &App<R>) -> tauri::Result<tauri::menu::Menu<
                     let mut multi_model_submenu = SubmenuBuilder::new(app, multi_model_text);
 
                     // Add strategy toggle
-                    let (toggle_text, toggle_id) = if matches!(active_strategy, Some(crate::config::ActiveRoutingStrategy::AvailableModels)) {
-                        ("✓ Client can choose any model", format!("disabled_strategy_{}", client.id))
+                    let (toggle_text, toggle_id) = if matches!(
+                        active_strategy,
+                        Some(crate::config::ActiveRoutingStrategy::AvailableModels)
+                    ) {
+                        (
+                            "✓ Client can choose any model",
+                            format!("disabled_strategy_{}", client.id),
+                        )
                     } else {
-                        ("Enable to use any selected model", format!("enable_available_models_{}", client.id))
+                        (
+                            "Enable to use any selected model",
+                            format!("enable_available_models_{}", client.id),
+                        )
                     };
                     multi_model_submenu = multi_model_submenu.text(toggle_id, toggle_text);
                     multi_model_submenu = multi_model_submenu.separator();
@@ -242,7 +279,8 @@ fn build_tray_menu<R: Runtime>(app: &App<R>) -> tauri::Result<tauri::menu::Menu<
                     let available_models = routing_config.as_ref().map(|c| &c.available_models);
 
                     // Collect unique providers
-                    let mut providers: Vec<String> = models.iter()
+                    let mut providers: Vec<String> = models
+                        .iter()
                         .map(|m| m.provider.clone())
                         .collect::<std::collections::HashSet<_>>()
                         .into_iter()
@@ -263,8 +301,8 @@ fn build_tray_menu<R: Runtime>(app: &App<R>) -> tauri::Result<tauri::menu::Menu<
                                 format!("All {} Models", provider)
                             };
                             multi_model_submenu = multi_model_submenu.text(
-                                format!("toggle_provider_{}_{}",client.id, provider),
-                                provider_text
+                                format!("toggle_provider_{}_{}", client.id, provider),
+                                provider_text,
                             );
                         }
                         multi_model_submenu = multi_model_submenu.separator();
@@ -274,7 +312,10 @@ fn build_tray_menu<R: Runtime>(app: &App<R>) -> tauri::Result<tauri::menu::Menu<
                     for model in models.iter() {
                         let model_display = format!("{} ({})", model.id, model.provider);
                         let is_selected = if let Some(avail) = available_models {
-                            avail.individual_models.iter().any(|(p, m)| p == &model.provider && m == &model.id)
+                            avail
+                                .individual_models
+                                .iter()
+                                .any(|(p, m)| p == &model.provider && m == &model.id)
                         } else {
                             false
                         };
@@ -286,7 +327,7 @@ fn build_tray_menu<R: Runtime>(app: &App<R>) -> tauri::Result<tauri::menu::Menu<
 
                         multi_model_submenu = multi_model_submenu.text(
                             format!("toggle_model_{}_{}_{}", client.id, model.provider, model.id),
-                            display_text
+                            display_text,
                         );
                     }
 
@@ -294,27 +335,34 @@ fn build_tray_menu<R: Runtime>(app: &App<R>) -> tauri::Result<tauri::menu::Menu<
                     client_submenu = client_submenu.item(&multi_model_menu);
 
                     // 3. Prioritized list
-                    let prioritized_list_text = if matches!(active_strategy, Some(crate::config::ActiveRoutingStrategy::PrioritizedList)) {
+                    let prioritized_list_text = if matches!(
+                        active_strategy,
+                        Some(crate::config::ActiveRoutingStrategy::PrioritizedList)
+                    ) {
                         "✓ Prioritized list..."
                     } else {
                         "Prioritized list..."
                     };
                     client_submenu = client_submenu.text(
                         format!("prioritized_list_{}", client.id),
-                        prioritized_list_text
+                        prioritized_list_text,
                     );
                 } else {
-                    client_submenu = client_submenu.text(
-                        format!("no_models_{}", client.id),
-                        "No models available"
-                    );
+                    client_submenu = client_submenu
+                        .text(format!("no_models_{}", client.id), "No models available");
                 }
 
                 // Add separator before Allowed MCPs
                 client_submenu = client_submenu.separator();
 
                 // Allowed MCPs section header
-                let mcp_header = MenuItem::with_id(app, &format!("mcp_header_{}", client.id), "Allowed MCPs", false, None::<&str>)?;
+                let mcp_header = MenuItem::with_id(
+                    app,
+                    format!("mcp_header_{}", client.id),
+                    "Allowed MCPs",
+                    false,
+                    None::<&str>,
+                )?;
                 client_submenu = client_submenu.item(&mcp_header);
 
                 // Get MCP servers this client can access
@@ -332,11 +380,37 @@ fn build_tray_menu<R: Runtime>(app: &App<R>) -> tauri::Result<tauri::menu::Menu<
 
                             let mut mcp_submenu = SubmenuBuilder::new(app, &server_name);
 
-                            mcp_submenu = mcp_submenu
-                                .text(format!("copy_mcp_url_{}_{}", client.id, server.id), "📋 Copy URL");
+                            // Get server URL
+                            let config_manager = app.try_state::<ConfigManager>();
+                            let url = if let Some(cfg_mgr) = config_manager {
+                                let cfg = cfg_mgr.get();
+                                format!(
+                                    "http://{}:{}/mcp/{}",
+                                    cfg.server.host, cfg.server.port, server.id
+                                )
+                            } else {
+                                format!("http://127.0.0.1:3625/mcp/{}", server.id)
+                            };
 
-                            mcp_submenu = mcp_submenu
-                                .text(format!("copy_mcp_bearer_{}_{}", client.id, server.id), "📋 Copy Bearer token");
+                            // Show URL as disabled item
+                            let url_item = MenuItem::with_id(
+                                app,
+                                format!("mcp_url_display_{}_{}", client.id, server.id),
+                                &url,
+                                false,
+                                None::<&str>,
+                            )?;
+                            mcp_submenu = mcp_submenu.item(&url_item);
+
+                            mcp_submenu = mcp_submenu.text(
+                                format!("copy_mcp_url_{}_{}", client.id, server.id),
+                                "📋 Copy URL",
+                            );
+
+                            mcp_submenu = mcp_submenu.text(
+                                format!("copy_mcp_bearer_{}_{}", client.id, server.id),
+                                "📋 Copy Bearer token",
+                            );
 
                             let mcp_menu = mcp_submenu.build()?;
                             client_submenu = client_submenu.item(&mcp_menu);
@@ -364,23 +438,18 @@ fn build_tray_menu<R: Runtime>(app: &App<R>) -> tauri::Result<tauri::menu::Menu<
                                 server.name.clone()
                             };
 
-                            add_mcp_submenu = add_mcp_submenu.text(
-                                format!("add_mcp_{}_{}", client.id, server.id),
-                                server_name
-                            );
+                            add_mcp_submenu = add_mcp_submenu
+                                .text(format!("add_mcp_{}_{}", client.id, server.id), server_name);
                         }
 
                         let add_mcp_menu = add_mcp_submenu.build()?;
                         client_submenu = client_submenu.item(&add_mcp_menu);
-                    } else {
-                        // No available servers to add
-                        client_submenu = client_submenu
-                            .text(format!("no_mcp_to_add_{}", client.id), "No MCPs available")
-                            .enabled(false);
                     }
+                    // If no available servers, just omit the menu item entirely
                 }
 
                 let client_menu = client_submenu.build()?;
+                client_menu.set_enabled(true)?;
                 menu_builder = menu_builder.item(&client_menu);
             }
         }
@@ -395,14 +464,15 @@ fn build_tray_menu<R: Runtime>(app: &App<R>) -> tauri::Result<tauri::menu::Menu<
     // Get port and server status
     let (host, port, server_text) = if let Some(config_manager) = app.try_state::<ConfigManager>() {
         let config = config_manager.get();
-        let status = if let Some(server_manager) = app.try_state::<Arc<crate::server::ServerManager>>() {
-            match server_manager.get_status() {
-                crate::server::ServerStatus::Running => "⏹️ Stop Server",
-                crate::server::ServerStatus::Stopped => "▶️ Start Server",
-            }
-        } else {
-            "▶️ Start Server"
-        };
+        let status =
+            if let Some(server_manager) = app.try_state::<Arc<crate::server::ServerManager>>() {
+                match server_manager.get_status() {
+                    crate::server::ServerStatus::Running => "⏹️ Stop Server",
+                    crate::server::ServerStatus::Stopped => "▶️ Start Server",
+                }
+            } else {
+                "▶️ Start Server"
+            };
         (config.server.host.clone(), config.server.port, status)
     } else {
         ("127.0.0.1".to_string(), 3625, "▶️ Start Server")
@@ -414,7 +484,7 @@ fn build_tray_menu<R: Runtime>(app: &App<R>) -> tauri::Result<tauri::menu::Menu<
         "server_header",
         format!("Listening on {}:{}", host, port),
         false,
-        None::<&str>
+        None::<&str>,
     )?;
     menu_builder = menu_builder.item(&server_header);
 
@@ -447,7 +517,9 @@ pub fn rebuild_tray_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
 }
 
 /// Build tray menu from AppHandle (used for rebuilding)
-fn build_tray_menu_from_handle<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu::Menu<R>> {
+fn build_tray_menu_from_handle<R: Runtime>(
+    app: &AppHandle<R>,
+) -> tauri::Result<tauri::menu::Menu<R>> {
     let mut menu_builder = MenuBuilder::new(app);
 
     // 1. Open Dashboard at the top
@@ -477,7 +549,13 @@ fn build_tray_menu_from_handle<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<
                 let mut client_submenu = SubmenuBuilder::new(app, &client_name);
 
                 // LLM Models section header
-                let llm_header = MenuItem::with_id(app, &format!("llm_header_{}", client.id), "LLM Models", false, None::<&str>)?;
+                let llm_header = MenuItem::with_id(
+                    app,
+                    format!("llm_header_{}", client.id),
+                    "LLM Models",
+                    false,
+                    None::<&str>,
+                )?;
                 client_submenu = client_submenu.item(&llm_header);
 
                 // Get routing config and models
@@ -491,13 +569,18 @@ fn build_tray_menu_from_handle<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<
 
                 if !models.is_empty() {
                     // 1. Force Model submenu
-                    let force_model_text = if matches!(active_strategy, Some(crate::config::ActiveRoutingStrategy::ForceModel)) {
+                    let force_model_text = if matches!(
+                        active_strategy,
+                        Some(crate::config::ActiveRoutingStrategy::ForceModel)
+                    ) {
                         "✓ Force model"
                     } else {
                         "Force model"
                     };
                     let mut force_model_submenu = SubmenuBuilder::new(app, force_model_text);
-                    let forced_model = routing_config.as_ref().and_then(|c| c.forced_model.as_ref());
+                    let forced_model = routing_config
+                        .as_ref()
+                        .and_then(|c| c.forced_model.as_ref());
 
                     for model in models.iter() {
                         let model_display = format!("{} ({})", model.id, model.provider);
@@ -514,7 +597,7 @@ fn build_tray_menu_from_handle<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<
 
                         force_model_submenu = force_model_submenu.text(
                             format!("force_model_{}_{}_{}", client.id, model.provider, model.id),
-                            display_text
+                            display_text,
                         );
                     }
 
@@ -522,7 +605,10 @@ fn build_tray_menu_from_handle<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<
                     client_submenu = client_submenu.item(&force_model_menu);
 
                     // 2. Multi Model submenu
-                    let multi_model_text = if matches!(active_strategy, Some(crate::config::ActiveRoutingStrategy::AvailableModels)) {
+                    let multi_model_text = if matches!(
+                        active_strategy,
+                        Some(crate::config::ActiveRoutingStrategy::AvailableModels)
+                    ) {
                         "✓ Multi model"
                     } else {
                         "Multi model"
@@ -530,10 +616,19 @@ fn build_tray_menu_from_handle<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<
                     let mut multi_model_submenu = SubmenuBuilder::new(app, multi_model_text);
 
                     // Add strategy toggle
-                    let (toggle_text, toggle_id) = if matches!(active_strategy, Some(crate::config::ActiveRoutingStrategy::AvailableModels)) {
-                        ("✓ Client can choose any model", format!("disabled_strategy_{}", client.id))
+                    let (toggle_text, toggle_id) = if matches!(
+                        active_strategy,
+                        Some(crate::config::ActiveRoutingStrategy::AvailableModels)
+                    ) {
+                        (
+                            "✓ Client can choose any model",
+                            format!("disabled_strategy_{}", client.id),
+                        )
                     } else {
-                        ("Enable to use any selected model", format!("enable_available_models_{}", client.id))
+                        (
+                            "Enable to use any selected model",
+                            format!("enable_available_models_{}", client.id),
+                        )
                     };
                     multi_model_submenu = multi_model_submenu.text(toggle_id, toggle_text);
                     multi_model_submenu = multi_model_submenu.separator();
@@ -542,7 +637,8 @@ fn build_tray_menu_from_handle<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<
                     let available_models = routing_config.as_ref().map(|c| &c.available_models);
 
                     // Collect unique providers
-                    let mut providers: Vec<String> = models.iter()
+                    let mut providers: Vec<String> = models
+                        .iter()
                         .map(|m| m.provider.clone())
                         .collect::<std::collections::HashSet<_>>()
                         .into_iter()
@@ -563,8 +659,8 @@ fn build_tray_menu_from_handle<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<
                                 format!("All {} Models", provider)
                             };
                             multi_model_submenu = multi_model_submenu.text(
-                                format!("toggle_provider_{}_{}",client.id, provider),
-                                provider_text
+                                format!("toggle_provider_{}_{}", client.id, provider),
+                                provider_text,
                             );
                         }
                         multi_model_submenu = multi_model_submenu.separator();
@@ -574,7 +670,10 @@ fn build_tray_menu_from_handle<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<
                     for model in models.iter() {
                         let model_display = format!("{} ({})", model.id, model.provider);
                         let is_selected = if let Some(avail) = available_models {
-                            avail.individual_models.iter().any(|(p, m)| p == &model.provider && m == &model.id)
+                            avail
+                                .individual_models
+                                .iter()
+                                .any(|(p, m)| p == &model.provider && m == &model.id)
                         } else {
                             false
                         };
@@ -586,7 +685,7 @@ fn build_tray_menu_from_handle<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<
 
                         multi_model_submenu = multi_model_submenu.text(
                             format!("toggle_model_{}_{}_{}", client.id, model.provider, model.id),
-                            display_text
+                            display_text,
                         );
                     }
 
@@ -594,27 +693,34 @@ fn build_tray_menu_from_handle<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<
                     client_submenu = client_submenu.item(&multi_model_menu);
 
                     // 3. Prioritized list
-                    let prioritized_list_text = if matches!(active_strategy, Some(crate::config::ActiveRoutingStrategy::PrioritizedList)) {
+                    let prioritized_list_text = if matches!(
+                        active_strategy,
+                        Some(crate::config::ActiveRoutingStrategy::PrioritizedList)
+                    ) {
                         "✓ Prioritized list..."
                     } else {
                         "Prioritized list..."
                     };
                     client_submenu = client_submenu.text(
                         format!("prioritized_list_{}", client.id),
-                        prioritized_list_text
+                        prioritized_list_text,
                     );
                 } else {
-                    client_submenu = client_submenu.text(
-                        format!("no_models_{}", client.id),
-                        "No models available"
-                    );
+                    client_submenu = client_submenu
+                        .text(format!("no_models_{}", client.id), "No models available");
                 }
 
                 // Add separator before Allowed MCPs
                 client_submenu = client_submenu.separator();
 
                 // Allowed MCPs section header
-                let mcp_header = MenuItem::with_id(app, &format!("mcp_header_{}", client.id), "Allowed MCPs", false, None::<&str>)?;
+                let mcp_header = MenuItem::with_id(
+                    app,
+                    format!("mcp_header_{}", client.id),
+                    "Allowed MCPs",
+                    false,
+                    None::<&str>,
+                )?;
                 client_submenu = client_submenu.item(&mcp_header);
 
                 // Get MCP servers this client can access
@@ -632,11 +738,37 @@ fn build_tray_menu_from_handle<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<
 
                             let mut mcp_submenu = SubmenuBuilder::new(app, &server_name);
 
-                            mcp_submenu = mcp_submenu
-                                .text(format!("copy_mcp_url_{}_{}", client.id, server.id), "📋 Copy URL");
+                            // Get server URL
+                            let config_manager = app.try_state::<ConfigManager>();
+                            let url = if let Some(cfg_mgr) = config_manager {
+                                let cfg = cfg_mgr.get();
+                                format!(
+                                    "http://{}:{}/mcp/{}",
+                                    cfg.server.host, cfg.server.port, server.id
+                                )
+                            } else {
+                                format!("http://127.0.0.1:3625/mcp/{}", server.id)
+                            };
 
-                            mcp_submenu = mcp_submenu
-                                .text(format!("copy_mcp_bearer_{}_{}", client.id, server.id), "📋 Copy Bearer token");
+                            // Show URL as disabled item
+                            let url_item = MenuItem::with_id(
+                                app,
+                                format!("mcp_url_display_{}_{}", client.id, server.id),
+                                &url,
+                                false,
+                                None::<&str>,
+                            )?;
+                            mcp_submenu = mcp_submenu.item(&url_item);
+
+                            mcp_submenu = mcp_submenu.text(
+                                format!("copy_mcp_url_{}_{}", client.id, server.id),
+                                "📋 Copy URL",
+                            );
+
+                            mcp_submenu = mcp_submenu.text(
+                                format!("copy_mcp_bearer_{}_{}", client.id, server.id),
+                                "📋 Copy Bearer token",
+                            );
 
                             let mcp_menu = mcp_submenu.build()?;
                             client_submenu = client_submenu.item(&mcp_menu);
@@ -664,23 +796,18 @@ fn build_tray_menu_from_handle<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<
                                 server.name.clone()
                             };
 
-                            add_mcp_submenu = add_mcp_submenu.text(
-                                format!("add_mcp_{}_{}", client.id, server.id),
-                                server_name
-                            );
+                            add_mcp_submenu = add_mcp_submenu
+                                .text(format!("add_mcp_{}_{}", client.id, server.id), server_name);
                         }
 
                         let add_mcp_menu = add_mcp_submenu.build()?;
                         client_submenu = client_submenu.item(&add_mcp_menu);
-                    } else {
-                        // No available servers to add
-                        client_submenu = client_submenu
-                            .text(format!("no_mcp_to_add_{}", client.id), "No MCPs available")
-                            .enabled(false);
                     }
+                    // If no available servers, just omit the menu item entirely
                 }
 
                 let client_menu = client_submenu.build()?;
+                client_menu.set_enabled(true)?;
                 menu_builder = menu_builder.item(&client_menu);
             }
         }
@@ -695,14 +822,15 @@ fn build_tray_menu_from_handle<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<
     // Get port and server status
     let (host, port, server_text) = if let Some(config_manager) = app.try_state::<ConfigManager>() {
         let config = config_manager.get();
-        let status = if let Some(server_manager) = app.try_state::<Arc<crate::server::ServerManager>>() {
-            match server_manager.get_status() {
-                crate::server::ServerStatus::Running => "⏹️ Stop Server",
-                crate::server::ServerStatus::Stopped => "▶️ Start Server",
-            }
-        } else {
-            "▶️ Start Server"
-        };
+        let status =
+            if let Some(server_manager) = app.try_state::<Arc<crate::server::ServerManager>>() {
+                match server_manager.get_status() {
+                    crate::server::ServerStatus::Running => "⏹️ Stop Server",
+                    crate::server::ServerStatus::Stopped => "▶️ Start Server",
+                }
+            } else {
+                "▶️ Start Server"
+            };
         (config.server.host.clone(), config.server.port, status)
     } else {
         ("127.0.0.1".to_string(), 3625, "▶️ Start Server")
@@ -714,7 +842,7 @@ fn build_tray_menu_from_handle<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<
         "server_header",
         format!("Listening on {}:{}", host, port),
         false,
-        None::<&str>
+        None::<&str>,
     )?;
     menu_builder = menu_builder.item(&server_header);
 
@@ -811,92 +939,92 @@ async fn handle_toggle_server<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<(
 // /// Handle generating a new API key from the system tray
 // async fn handle_generate_key_from_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
 //     info!("Generating new API key from tray");
-// 
-    // Get managers from state
+//
+// Get managers from state
 //         let key_manager = app.state::<ApiKeyManager>();
 //     let config_manager = app.state::<ConfigManager>();
-// 
-    // Create key with "All" model selection
+//
+// Create key with "All" model selection
 //     let (key_value, config) = key_manager
 //         .create_key(None)
 //         .await
 //         .map_err(|e| tauri::Error::Anyhow(e.into()))?;
-// 
-    // Set model selection to "All"
+//
+// Set model selection to "All"
 //     let _ = key_manager.update_key(&config.id, |cfg| {
 //         cfg.model_selection = Some(ModelSelection::All);
 //     });
-// 
-    // Save to config
+//
+// Save to config
 //     config_manager
 //         .update(|cfg| {
-            // Find and update the key in the config
+// Find and update the key in the config
 //             if let Some(key) = cfg.api_keys.iter_mut().find(|k| k.id == config.id) {
 //                 key.model_selection = Some(ModelSelection::All);
 //             } else {
-                // Key not found, add it
+// Key not found, add it
 //                 let mut new_config = config.clone();
 //                 new_config.model_selection = Some(ModelSelection::All);
 //                 cfg.api_keys.push(new_config);
 //             }
 //         })
 //         .map_err(|e| tauri::Error::Anyhow(e.into()))?;
-// 
+//
 //     config_manager
 //         .save()
 //         .await
 //         .map_err(|e| tauri::Error::Anyhow(e.into()))?;
-// 
-    // Copy to clipboard
+//
+// Copy to clipboard
 //     if let Err(e) = copy_to_clipboard(&key_value) {
 //         error!("Failed to copy to clipboard: {}", e);
 //     }
-// 
-    // Rebuild tray menu
+//
+// Rebuild tray menu
 //     rebuild_tray_menu(app)?;
-// 
+//
 //     info!("API key generated and copied to clipboard: {}", config.name);
-// 
+//
 //     Ok(())
 // }
 // /// Handle copying an API key to clipboard
 // async fn handle_copy_key<R: Runtime>(app: &AppHandle<R>, key_id: &str) -> tauri::Result<()> {
 //         let key_manager = app.state::<ApiKeyManager>();
-// 
+//
 //     let key_value = key_manager
 //         .get_key_value(key_id)
 //         .map_err(|e| tauri::Error::Anyhow(e.into()))?
 //         .ok_or_else(|| tauri::Error::Anyhow(anyhow::anyhow!("API key not found in keychain")))?;
-// 
+//
 //     if let Err(e) = copy_to_clipboard(&key_value) {
 //         error!("Failed to copy to clipboard: {}", e);
 //         return Err(tauri::Error::Anyhow(e));
 //     }
-// 
+//
 //     info!("API key copied to clipboard: {}", key_id);
-// 
+//
 //     Ok(())
 // }
 // /// Handle toggling an API key's enabled state
 // async fn handle_toggle_key<R: Runtime>(app: &AppHandle<R>, key_id: &str) -> tauri::Result<()> {
 //         let key_manager = app.state::<ApiKeyManager>();
 //     let config_manager = app.state::<ConfigManager>();
-// 
-    // Get current state
+//
+// Get current state
 //     let key = key_manager
 //         .get_key(key_id)
 //         .ok_or_else(|| tauri::Error::Anyhow(anyhow::anyhow!("API key not found")))?;
-// 
+//
 //     let new_enabled = !key.enabled;
-// 
-    // Update in key manager
+//
+// Update in key manager
 //     key_manager
 //         .update_key(key_id, |cfg| {
 //             cfg.enabled = new_enabled;
 //         })
 //         .map_err(|e| tauri::Error::Anyhow(e.into()))?;
-// 
-    // Update in config
+//
+// Update in config
 //     config_manager
 //         .update(|cfg| {
 //             if let Some(k) = cfg.api_keys.iter_mut().find(|k| k.id == key_id) {
@@ -904,17 +1032,17 @@ async fn handle_toggle_server<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<(
 //             }
 //         })
 //         .map_err(|e| tauri::Error::Anyhow(e.into()))?;
-// 
+//
 //     config_manager
 //         .save()
 //         .await
 //         .map_err(|e| tauri::Error::Anyhow(e.into()))?;
-// 
-    // Rebuild tray menu
+//
+// Rebuild tray menu
 //     rebuild_tray_menu(app)?;
-// 
+//
 //     info!("API key {} {}", key_id, if new_enabled { "enabled" } else { "disabled" });
-// 
+//
 //     Ok(())
 // }
 
@@ -927,38 +1055,38 @@ async fn handle_toggle_server<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<(
 // async fn handle_set_model<R: Runtime>(app: &AppHandle<R>, key_id: &str, model_spec: &str) -> tauri::Result<()> {
 //         let key_manager = app.state::<ApiKeyManager>();
 //     let config_manager = app.state::<ConfigManager>();
-// 
+//
 //     info!("Setting model {} for key {}", model_spec, key_id);
-// 
-    // Get current key configuration
+//
+// Get current key configuration
 //     let current_key = key_manager
 //         .get_key(key_id)
 //         .ok_or_else(|| tauri::Error::Anyhow(anyhow::anyhow!("API key not found")))?;
-// 
+//
 //     let new_selection = if model_spec == "all" {
-        // Set to "All Models"
+// Set to "All Models"
 //         ModelSelection::All
 //     } else if let Some(provider) = model_spec.strip_prefix("provider_") {
-        // Toggle provider in Custom selection
+// Toggle provider in Custom selection
 //         match &current_key.model_selection {
 //             Some(ModelSelection::Custom { all_provider_models, individual_models }) => {
 //                 let mut new_providers = all_provider_models.clone();
 //                 let new_individual = individual_models.clone();
-// 
-                // Toggle: if provider is already selected, remove it; otherwise add it
+//
+// Toggle: if provider is already selected, remove it; otherwise add it
 //                 if let Some(pos) = new_providers.iter().position(|p| p == provider) {
 //                     new_providers.remove(pos);
 //                 } else {
 //                     new_providers.push(provider.to_string());
 //                 }
-// 
+//
 //                 ModelSelection::Custom {
 //                     all_provider_models: new_providers,
 //                     individual_models: new_individual,
 //                 }
 //             }
 //             _ => {
-                // If not Custom, create new Custom with just this provider
+// If not Custom, create new Custom with just this provider
 //                 ModelSelection::Custom {
 //                     all_provider_models: vec![provider.to_string()],
 //                     individual_models: vec![],
@@ -966,29 +1094,29 @@ async fn handle_toggle_server<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<(
 //             }
 //         }
 //     } else if let Some(rest) = model_spec.strip_prefix("model_") {
-        // Toggle individual model in Custom selection
-        // Format: model_{provider}_{model}
+// Toggle individual model in Custom selection
+// Format: model_{provider}_{model}
 //         if let Some((provider, model)) = rest.split_once('_') {
 //             match &current_key.model_selection {
 //                 Some(ModelSelection::Custom { all_provider_models, individual_models }) => {
 //                     let new_providers = all_provider_models.clone();
 //                     let mut new_individual = individual_models.clone();
-// 
-                    // Toggle: if model is already selected, remove it; otherwise add it
+//
+// Toggle: if model is already selected, remove it; otherwise add it
 //                     let model_tuple = (provider.to_string(), model.to_string());
 //                     if let Some(pos) = new_individual.iter().position(|m| m == &model_tuple) {
 //                         new_individual.remove(pos);
 //                     } else {
 //                         new_individual.push(model_tuple);
 //                     }
-// 
+//
 //                     ModelSelection::Custom {
 //                         all_provider_models: new_providers,
 //                         individual_models: new_individual,
 //                     }
 //                 }
 //                 _ => {
-                    // If not Custom, create new Custom with just this model
+// If not Custom, create new Custom with just this model
 //                     ModelSelection::Custom {
 //                         all_provider_models: vec![],
 //                         individual_models: vec![(provider.to_string(), model.to_string())],
@@ -1001,15 +1129,15 @@ async fn handle_toggle_server<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<(
 //     } else {
 //         return Err(tauri::Error::Anyhow(anyhow::anyhow!("Unknown model spec format")));
 //     };
-// 
-    // Update in key manager
+//
+// Update in key manager
 //     key_manager
 //         .update_key(key_id, |cfg| {
 //             cfg.model_selection = Some(new_selection.clone());
 //         })
 //         .map_err(|e| tauri::Error::Anyhow(e.into()))?;
-// 
-    // Update in config
+//
+// Update in config
 //     config_manager
 //         .update(|cfg| {
 //             if let Some(k) = cfg.api_keys.iter_mut().find(|k| k.id == key_id) {
@@ -1017,18 +1145,18 @@ async fn handle_toggle_server<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<(
 //             }
 //         })
 //         .map_err(|e| tauri::Error::Anyhow(e.into()))?;
-// 
-    // Save to disk
+//
+// Save to disk
 //     config_manager
 //         .save()
 //         .await
 //         .map_err(|e| tauri::Error::Anyhow(e.into()))?;
-// 
-    // Rebuild tray menu to show updated checkmarks
+//
+// Rebuild tray menu to show updated checkmarks
 //     rebuild_tray_menu(app)?;
-// 
+//
 //     info!("Model selection updated for key {}", key_id);
-// 
+//
 //     Ok(())
 // }
 #[allow(dead_code)]
@@ -1101,7 +1229,10 @@ async fn handle_copy_mcp_url<R: Runtime>(
     let config = config_manager.get();
 
     // Build MCP proxy URL
-    let url = format!("http://{}:{}/mcp/{}", config.server.host, config.server.port, server_id);
+    let url = format!(
+        "http://{}:{}/mcp/{}",
+        config.server.host, config.server.port, server_id
+    );
 
     // Copy to clipboard
     if let Err(e) = copy_to_clipboard(&url) {
@@ -1188,8 +1319,9 @@ pub fn update_tray_icon<R: Runtime>(app: &AppHandle<R>, status: &str) -> tauri::
         match status {
             "stopped" => {
                 // Stopped: Use template icon in template mode (monochrome/dimmed)
-                let icon = tauri::image::Image::from_bytes(TRAY_ICON)
-                    .map_err(|e| tauri::Error::Anyhow(anyhow::anyhow!("Failed to load tray icon: {}", e)))?;
+                let icon = tauri::image::Image::from_bytes(TRAY_ICON).map_err(|e| {
+                    tauri::Error::Anyhow(anyhow::anyhow!("Failed to load tray icon: {}", e))
+                })?;
                 tray.set_icon(Some(icon))?;
                 tray.set_icon_as_template(true)?;
                 tray.set_tooltip(Some("LocalRouter AI - Server Stopped"))?;
@@ -1197,8 +1329,9 @@ pub fn update_tray_icon<R: Runtime>(app: &AppHandle<R>, status: &str) -> tauri::
             }
             "running" => {
                 // Running: Use template icon in template mode (monochrome)
-                let icon = tauri::image::Image::from_bytes(TRAY_ICON)
-                    .map_err(|e| tauri::Error::Anyhow(anyhow::anyhow!("Failed to load tray icon: {}", e)))?;
+                let icon = tauri::image::Image::from_bytes(TRAY_ICON).map_err(|e| {
+                    tauri::Error::Anyhow(anyhow::anyhow!("Failed to load tray icon: {}", e))
+                })?;
                 tray.set_icon(Some(icon))?;
                 tray.set_icon_as_template(true)?;
                 tray.set_tooltip(Some("LocalRouter AI - Server Running"))?;
@@ -1206,8 +1339,9 @@ pub fn update_tray_icon<R: Runtime>(app: &AppHandle<R>, status: &str) -> tauri::
             }
             "active" => {
                 // Active: Use active icon in non-template mode to show activity
-                let icon = tauri::image::Image::from_bytes(TRAY_ICON_ACTIVE)
-                    .map_err(|e| tauri::Error::Anyhow(anyhow::anyhow!("Failed to load active tray icon: {}", e)))?;
+                let icon = tauri::image::Image::from_bytes(TRAY_ICON_ACTIVE).map_err(|e| {
+                    tauri::Error::Anyhow(anyhow::anyhow!("Failed to load active tray icon: {}", e))
+                })?;
                 tray.set_icon(Some(icon))?;
                 tray.set_icon_as_template(false)?;
                 tray.set_tooltip(Some("LocalRouter AI - Processing Request"))?;
@@ -1242,4 +1376,3 @@ fn copy_to_clipboard(text: &str) -> Result<(), anyhow::Error> {
 
     Ok(())
 }
-

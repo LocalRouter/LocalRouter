@@ -31,25 +31,34 @@ pub struct SystemKeychain;
 impl KeychainStorage for SystemKeychain {
     fn store(&self, service: &str, account: &str, secret: &str) -> AppResult<()> {
         trace!("SystemKeychain: storing {}:{}", service, account);
-        let entry = keyring::Entry::new(service, account)
-            .map_err(|e| crate::utils::errors::AppError::Internal(format!("Failed to access keyring: {}", e)))?;
+        let entry = keyring::Entry::new(service, account).map_err(|e| {
+            crate::utils::errors::AppError::Internal(format!("Failed to access keyring: {}", e))
+        })?;
 
-        entry
-            .set_password(secret)
-            .map_err(|e| crate::utils::errors::AppError::Internal(format!("Failed to store key: {}", e)))?;
+        entry.set_password(secret).map_err(|e| {
+            crate::utils::errors::AppError::Internal(format!("Failed to store key: {}", e))
+        })?;
 
         debug!("SystemKeychain: stored {}:{}", service, account);
         Ok(())
     }
 
     fn get(&self, service: &str, account: &str) -> AppResult<Option<String>> {
-        trace!("SystemKeychain: retrieving {}:{} from system keyring", service, account);
-        let entry = keyring::Entry::new(service, account)
-            .map_err(|e| crate::utils::errors::AppError::Internal(format!("Failed to access keyring: {}", e)))?;
+        trace!(
+            "SystemKeychain: retrieving {}:{} from system keyring",
+            service,
+            account
+        );
+        let entry = keyring::Entry::new(service, account).map_err(|e| {
+            crate::utils::errors::AppError::Internal(format!("Failed to access keyring: {}", e))
+        })?;
 
         match entry.get_password() {
             Ok(secret) => {
-                debug!("SystemKeychain: retrieved {}:{} from system keyring", service, account);
+                debug!(
+                    "SystemKeychain: retrieved {}:{} from system keyring",
+                    service, account
+                );
                 Ok(Some(secret))
             }
             Err(keyring::Error::NoEntry) => {
@@ -65,8 +74,9 @@ impl KeychainStorage for SystemKeychain {
 
     fn delete(&self, service: &str, account: &str) -> AppResult<()> {
         trace!("SystemKeychain: deleting {}:{}", service, account);
-        let entry = keyring::Entry::new(service, account)
-            .map_err(|e| crate::utils::errors::AppError::Internal(format!("Failed to access keyring: {}", e)))?;
+        let entry = keyring::Entry::new(service, account).map_err(|e| {
+            crate::utils::errors::AppError::Internal(format!("Failed to access keyring: {}", e))
+        })?;
 
         match entry.delete_credential() {
             Ok(()) => {
@@ -74,7 +84,11 @@ impl KeychainStorage for SystemKeychain {
                 Ok(())
             }
             Err(keyring::Error::NoEntry) => {
-                trace!("SystemKeychain: no entry to delete for {}:{}", service, account);
+                trace!(
+                    "SystemKeychain: no entry to delete for {}:{}",
+                    service,
+                    account
+                );
                 Ok(())
             }
             Err(e) => Err(crate::utils::errors::AppError::Internal(format!(
@@ -113,7 +127,10 @@ impl FileKeychain {
         if file_path.exists() {
             keychain.load_from_file()?;
         } else {
-            warn!("FileKeychain: secrets file does not exist, will create on first write: {}", file_path.display());
+            warn!(
+                "FileKeychain: secrets file does not exist, will create on first write: {}",
+                file_path.display()
+            );
         }
 
         Ok(keychain)
@@ -126,24 +143,29 @@ impl FileKeychain {
 
     /// Load secrets from file
     fn load_from_file(&self) -> AppResult<()> {
-        let contents = fs::read_to_string(self.file_path.as_ref())
-            .map_err(|e| crate::utils::errors::AppError::Internal(
-                format!("Failed to read secrets file: {}", e)
-            ))?;
+        let contents = fs::read_to_string(self.file_path.as_ref()).map_err(|e| {
+            crate::utils::errors::AppError::Internal(format!("Failed to read secrets file: {}", e))
+        })?;
 
         // Handle empty file (treat as empty HashMap)
         let data: HashMap<String, String> = if contents.trim().is_empty() {
             HashMap::new()
         } else {
-            serde_json::from_str(&contents)
-                .map_err(|e| crate::utils::errors::AppError::Internal(
-                    format!("Failed to parse secrets file: {}", e)
-                ))?
+            serde_json::from_str(&contents).map_err(|e| {
+                crate::utils::errors::AppError::Internal(format!(
+                    "Failed to parse secrets file: {}",
+                    e
+                ))
+            })?
         };
 
         let mut storage = self.storage.lock().unwrap();
         *storage = data;
-        debug!("FileKeychain: loaded {} secrets from {}", storage.len(), self.file_path.display());
+        debug!(
+            "FileKeychain: loaded {} secrets from {}",
+            storage.len(),
+            self.file_path.display()
+        );
 
         Ok(())
     }
@@ -154,23 +176,27 @@ impl FileKeychain {
 
         // Ensure parent directory exists
         if let Some(parent) = self.file_path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|e| crate::utils::errors::AppError::Internal(
-                    format!("Failed to create secrets directory: {}", e)
-                ))?;
+            fs::create_dir_all(parent).map_err(|e| {
+                crate::utils::errors::AppError::Internal(format!(
+                    "Failed to create secrets directory: {}",
+                    e
+                ))
+            })?;
         }
 
-        let contents = serde_json::to_string_pretty(&*storage)
-            .map_err(|e| crate::utils::errors::AppError::Internal(
-                format!("Failed to serialize secrets: {}", e)
-            ))?;
+        let contents = serde_json::to_string_pretty(&*storage).map_err(|e| {
+            crate::utils::errors::AppError::Internal(format!("Failed to serialize secrets: {}", e))
+        })?;
 
-        fs::write(self.file_path.as_ref(), contents)
-            .map_err(|e| crate::utils::errors::AppError::Internal(
-                format!("Failed to write secrets file: {}", e)
-            ))?;
+        fs::write(self.file_path.as_ref(), contents).map_err(|e| {
+            crate::utils::errors::AppError::Internal(format!("Failed to write secrets file: {}", e))
+        })?;
 
-        debug!("FileKeychain: saved {} secrets to {}", storage.len(), self.file_path.display());
+        debug!(
+            "FileKeychain: saved {} secrets to {}",
+            storage.len(),
+            self.file_path.display()
+        );
         Ok(())
     }
 }
@@ -303,7 +329,11 @@ impl CachedKeychain {
         let cache_key = Self::make_cache_key(service, account);
         let mut cache = self.cache.write();
         cache.remove(&cache_key);
-        trace!("CachedKeychain: invalidated cache for {}:{}", service, account);
+        trace!(
+            "CachedKeychain: invalidated cache for {}:{}",
+            service,
+            account
+        );
     }
 }
 
@@ -333,7 +363,11 @@ impl KeychainStorage for CachedKeychain {
             }
         }
 
-        trace!("CachedKeychain: cache miss for {}:{}, fetching from keyring", service, account);
+        trace!(
+            "CachedKeychain: cache miss for {}:{}, fetching from keyring",
+            service,
+            account
+        );
 
         // Not in cache, fetch from underlying keychain
         let result = self.inner.get(service, account)?;
@@ -356,7 +390,11 @@ impl KeychainStorage for CachedKeychain {
         let cache_key = Self::make_cache_key(service, account);
         let mut cache = self.cache.write();
         cache.remove(&cache_key);
-        trace!("CachedKeychain: removed {}:{} from cache after delete", service, account);
+        trace!(
+            "CachedKeychain: removed {}:{} from cache after delete",
+            service,
+            account
+        );
 
         Ok(())
     }

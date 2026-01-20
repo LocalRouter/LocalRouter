@@ -14,13 +14,13 @@
 pub mod token_store;
 
 use crate::api_keys::keychain_trait::KeychainStorage;
-pub use token_store::TokenStore;
 use crate::api_keys::CachedKeychain;
 use crate::config::Client;
 use crate::utils::crypto;
 use crate::utils::errors::{AppError, AppResult};
 use parking_lot::RwLock;
 use std::sync::Arc;
+pub use token_store::TokenStore;
 
 const CLIENT_SERVICE: &str = "LocalRouter-Clients";
 
@@ -48,10 +48,7 @@ impl ClientManager {
 
     /// Create a new client manager with a specific keychain implementation
     /// Used for testing with mock keychain
-    pub fn with_keychain(
-        clients: Vec<Client>,
-        keychain: Arc<dyn KeychainStorage>,
-    ) -> Self {
+    pub fn with_keychain(clients: Vec<Client>, keychain: Arc<dyn KeychainStorage>) -> Self {
         Self {
             clients: Arc::new(RwLock::new(clients)),
             keychain,
@@ -103,11 +100,12 @@ impl ClientManager {
         clients.retain(|c| c.id != client_id);
 
         // Delete from keychain
-        self.keychain
-            .delete(CLIENT_SERVICE, &id)
-            .map_err(|e| {
-                AppError::Config(format!("Failed to delete client secret from keychain: {}", e))
-            })?;
+        self.keychain.delete(CLIENT_SERVICE, &id).map_err(|e| {
+            AppError::Config(format!(
+                "Failed to delete client secret from keychain: {}",
+                e
+            ))
+        })?;
 
         Ok(())
     }
@@ -137,12 +135,12 @@ impl ClientManager {
         }
 
         // Verify secret from keychain
-        let stored_secret = self
-            .keychain
-            .get(CLIENT_SERVICE, &client.id)
-            .map_err(|e| {
-                AppError::Config(format!("Failed to retrieve client secret from keychain: {}", e))
-            })?;
+        let stored_secret = self.keychain.get(CLIENT_SERVICE, &client.id).map_err(|e| {
+            AppError::Config(format!(
+                "Failed to retrieve client secret from keychain: {}",
+                e
+            ))
+        })?;
 
         match stored_secret {
             Some(secret) if secret == client_secret => {
@@ -170,7 +168,11 @@ impl ClientManager {
     /// * `Ok(None)` if secret doesn't exist
     /// * `Err` on keychain access error
     pub fn get_secret(&self, id: &str) -> AppResult<Option<String>> {
-        tracing::debug!("Retrieving client secret: service={}, account={}", CLIENT_SERVICE, id);
+        tracing::debug!(
+            "Retrieving client secret: service={}, account={}",
+            CLIENT_SERVICE,
+            id
+        );
         let result = self.keychain.get(CLIENT_SERVICE, id)?;
 
         if result.is_none() {
@@ -196,15 +198,12 @@ impl ClientManager {
                 continue;
             }
 
-            let stored_secret = self
-                .keychain
-                .get(CLIENT_SERVICE, &client.id)
-                .map_err(|e| {
-                    AppError::Config(format!(
-                        "Failed to retrieve client secret from keychain: {}",
-                        e
-                    ))
-                })?;
+            let stored_secret = self.keychain.get(CLIENT_SERVICE, &client.id).map_err(|e| {
+                AppError::Config(format!(
+                    "Failed to retrieve client secret from keychain: {}",
+                    e
+                ))
+            })?;
 
             if let Some(s) = stored_secret {
                 if s == secret {
@@ -266,7 +265,10 @@ impl ClientManager {
             .find(|c| c.id == client_id)
             .ok_or_else(|| AppError::Config(format!("Client not found: {}", client_id)))?;
 
-        if !client.allowed_llm_providers.contains(&provider_name.to_string()) {
+        if !client
+            .allowed_llm_providers
+            .contains(&provider_name.to_string())
+        {
             client.allowed_llm_providers.push(provider_name.to_string());
         }
 
@@ -364,7 +366,12 @@ impl ClientManager {
     }
 
     /// Update a client's name and enabled status
-    pub fn update_client(&self, client_id: &str, name: Option<String>, enabled: Option<bool>) -> AppResult<()> {
+    pub fn update_client(
+        &self,
+        client_id: &str,
+        name: Option<String>,
+        enabled: Option<bool>,
+    ) -> AppResult<()> {
         let mut clients = self.clients.write();
 
         let client = clients

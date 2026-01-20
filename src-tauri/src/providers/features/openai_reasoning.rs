@@ -11,20 +11,16 @@
 
 use serde_json::{json, Value};
 
-use crate::utils::errors::AppResult;
 use super::{FeatureAdapter, FeatureData, FeatureParams};
 use crate::providers::{CompletionRequest, CompletionResponse};
+use crate::utils::errors::AppResult;
 
 /// Feature adapter for OpenAI reasoning tokens (o1 series models)
 pub struct OpenAIReasoningAdapter;
 
 impl OpenAIReasoningAdapter {
     /// Models that support reasoning tokens
-    const REASONING_MODELS: &'static [&'static str] = &[
-        "o1-preview",
-        "o1-mini",
-        "o1",
-    ];
+    const REASONING_MODELS: &'static [&'static str] = &["o1-preview", "o1-mini", "o1"];
 
     /// Check if a model supports reasoning tokens
     pub fn supports_model(model: &str) -> bool {
@@ -51,7 +47,11 @@ impl FeatureAdapter for OpenAIReasoningAdapter {
         Ok(())
     }
 
-    fn adapt_request(&self, _request: &mut CompletionRequest, _params: &FeatureParams) -> AppResult<()> {
+    fn adapt_request(
+        &self,
+        _request: &mut CompletionRequest,
+        _params: &FeatureParams,
+    ) -> AppResult<()> {
         // No request modifications needed
         // Reasoning tokens are automatically included in o1 model responses
         Ok(())
@@ -77,7 +77,7 @@ impl FeatureAdapter for OpenAIReasoningAdapter {
                 "supported": true,
                 "model": response.model.clone(),
                 "note": "Reasoning tokens are included in prompt_tokens count"
-            })
+            }),
         )))
     }
 }

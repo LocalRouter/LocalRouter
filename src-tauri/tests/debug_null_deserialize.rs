@@ -17,7 +17,10 @@ fn test_null_result_deserialization() {
     }
 
     // This should pass - null is a valid result
-    assert!(response.result.is_some(), "Result should be Some(Value::Null)");
+    assert!(
+        response.result.is_some(),
+        "Result should be Some(Value::Null)"
+    );
     assert!(response.error.is_none(), "Error should be None");
 }
 

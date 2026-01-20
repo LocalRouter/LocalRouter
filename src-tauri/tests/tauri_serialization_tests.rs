@@ -12,10 +12,7 @@ fn test_time_range_serialization() {
         serde_json::to_value(TimeRange::Hour).unwrap(),
         json!("hour")
     );
-    assert_eq!(
-        serde_json::to_value(TimeRange::Day).unwrap(),
-        json!("day")
-    );
+    assert_eq!(serde_json::to_value(TimeRange::Day).unwrap(), json!("day"));
     assert_eq!(
         serde_json::to_value(TimeRange::Week).unwrap(),
         json!("week")

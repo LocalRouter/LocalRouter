@@ -38,16 +38,16 @@ pub mod common;
 pub mod request_validation;
 
 // Transport tests
-pub mod stdio_transport_tests;
 pub mod sse_transport_tests;
+pub mod stdio_transport_tests;
 
 // OAuth tests
 pub mod oauth_client_tests;
 pub mod oauth_server_tests;
 
 // Integration tests
-pub mod proxy_integration_tests;
 pub mod manager_lifecycle_tests;
+pub mod proxy_integration_tests;
 
 // Edge case tests
 pub mod concurrent_requests_tests;
