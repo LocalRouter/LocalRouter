@@ -284,7 +284,7 @@ impl ModelProvider for OllamaProvider {
 
     async fn complete(&self, request: CompletionRequest) -> AppResult<CompletionResponse> {
         let url = format!("{}/api/chat", self.base_url);
-        debug!("Sending completion request to Ollama: {}", url);
+        debug!("Sending completion request to Ollama: {} - Model: {}", url, request.model);
 
         let ollama_request = OllamaChatRequest {
             model: request.model.clone(),
@@ -304,14 +304,18 @@ impl ModelProvider for OllamaProvider {
             .json(&ollama_request)
             .send()
             .await
-            .map_err(|e| AppError::Provider(format!("Ollama request failed: {}", e)))?;
+            .map_err(|e| {
+                error!("Ollama request failed - URL: {} - Model: {} - Error: {}", url, request.model, e);
+                AppError::Provider(format!("Ollama request failed: {}", e))
+            })?;
 
         if !response.status().is_success() {
             let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
+            error!("Ollama completion failed: {} - Model: {} - Error: {}", status, request.model, error_text);
             return Err(AppError::Provider(format!(
-                "Ollama API error {}: {}",
-                status, error_text
+                "Ollama API error: {} - {}. Model may not be loaded. Try: ollama pull {}",
+                status, error_text, request.model
             )));
         }
 
@@ -357,7 +361,7 @@ impl ModelProvider for OllamaProvider {
         request: CompletionRequest,
     ) -> AppResult<Pin<Box<dyn Stream<Item = AppResult<CompletionChunk>> + Send>>> {
         let url = format!("{}/api/chat", self.base_url);
-        debug!("Sending streaming completion request to Ollama: {}", url);
+        debug!("Sending streaming completion request to Ollama: {} - Model: {}", url, request.model);
 
         let ollama_request = OllamaChatRequest {
             model: request.model.clone(),
@@ -371,19 +375,29 @@ impl ModelProvider for OllamaProvider {
             }),
         };
 
+        debug!("Ollama streaming request body: {:?}", ollama_request);
+
         let response = self
             .http_client
             .post(&url)
             .json(&ollama_request)
             .send()
             .await
-            .map_err(|e| AppError::Provider(format!("Ollama streaming request failed: {}", e)))?;
+            .map_err(|e| {
+                error!("Ollama streaming request failed - URL: {} - Model: {} - Error: {}", url, request.model, e);
+                AppError::Provider(format!("Ollama streaming request failed: {}", e))
+            })?;
 
         if !response.status().is_success() {
             let status = response.status();
+            let error_body = response.text().await.unwrap_or_else(|_| "Unable to read error body".to_string());
+            error!(
+                "Ollama streaming request failed: {} - Model: {} - Error: {}",
+                status, request.model, error_body
+            );
             return Err(AppError::Provider(format!(
-                "Ollama streaming API error: {}",
-                status
+                "Ollama streaming API error: {} - {}. Model may not be loaded. Try: ollama pull {}",
+                status, error_body, request.model
             )));
         }
 
