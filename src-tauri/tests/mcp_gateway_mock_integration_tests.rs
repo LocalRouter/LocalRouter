@@ -16,7 +16,34 @@ use localrouter_ai::mcp::McpServerManager;
 use mcp_tests::common::request_with_params;
 use serde_json::json;
 use std::sync::Arc;
-use wiremock::{matchers::method as http_method, Mock, MockServer, ResponseTemplate};
+use wiremock::{
+    matchers::{method as http_method, path},
+    Match, Mock, MockServer, Request, ResponseTemplate,
+};
+
+/// Custom matcher for JSON-RPC method field
+struct JsonRpcMethodMatcher {
+    method: String,
+}
+
+impl Match for JsonRpcMethodMatcher {
+    fn matches(&self, request: &Request) -> bool {
+        if let Ok(body) = std::str::from_utf8(&request.body) {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(body) {
+                if let Some(method) = json.get("method").and_then(|m| m.as_str()) {
+                    return method == self.method;
+                }
+            }
+        }
+        false
+    }
+}
+
+fn json_rpc_method(method: &str) -> JsonRpcMethodMatcher {
+    JsonRpcMethodMatcher {
+        method: method.to_string(),
+    }
+}
 
 /// Mock MCP server wrapper
 struct MockMcpServer {
@@ -33,27 +60,8 @@ impl MockMcpServer {
             .mount(&server)
             .await;
 
-        // Mock initial initialize request during connection (SSE transport validates on connect)
-        let init_response = json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "result": {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {},
-                "serverInfo": {"name": "mock-server", "version": "1.0"}
-            }
-        });
-
-        // Format as SSE
-        let sse_body = format!("data: {}\n\n", serde_json::to_string(&init_response).unwrap());
-
-        Mock::given(http_method("POST"))
-            .respond_with(ResponseTemplate::new(200)
-                .set_body_string(sse_body)
-                .insert_header("content-type", "text/event-stream"))
-            .up_to_n_times(1) // Only for the initial connection
-            .mount(&server)
-            .await;
+        // Don't set up a default initialize mock - let tests configure their own
+        // This avoids conflicts when tests want to mock specific initialize responses
 
         Self { server }
     }
@@ -62,7 +70,7 @@ impl MockMcpServer {
         self.server.uri()
     }
 
-    async fn mock_method(&self, _method: &str, result: serde_json::Value) {
+    async fn mock_method(&self, method: &str, result: serde_json::Value) {
         let response = json!({
             "jsonrpc": "2.0",
             "id": 1,
@@ -73,6 +81,7 @@ impl MockMcpServer {
         let sse_body = format!("data: {}\n\n", serde_json::to_string(&response).unwrap());
 
         Mock::given(http_method("POST"))
+            .and(json_rpc_method(method))
             .respond_with(ResponseTemplate::new(200)
                 .set_body_string(sse_body)
                 .insert_header("content-type", "text/event-stream"))
@@ -123,6 +132,46 @@ async fn setup_gateway_with_two_servers() -> (
 
     let server2_mock = MockMcpServer::new().await;
     let server2_url = server2_mock.base_url();
+
+    // Set up default initialize mocks for connection validation ONLY
+    // These will be consumed during start_server() calls
+    // Tests should set up their own initialize mocks AFTER setup completes
+    let default_init_response = json!({
+        "protocolVersion": "2024-11-05",
+        "capabilities": {},
+        "serverInfo": {"name": "mock-server", "version": "1.0"}
+    });
+
+    // Limit to exactly 1 call per server (for connection validation)
+    let sse_body1 = format!("data: {}\n\n", serde_json::to_string(&json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": default_init_response.clone()
+    })).unwrap());
+
+    Mock::given(http_method("POST"))
+        .and(json_rpc_method("initialize"))
+        .respond_with(ResponseTemplate::new(200)
+            .set_body_string(sse_body1)
+            .insert_header("content-type", "text/event-stream"))
+        .expect(1) // Exactly 1 call for connection
+        .mount(&server1_mock.server)
+        .await;
+
+    let sse_body2 = format!("data: {}\n\n", serde_json::to_string(&json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": default_init_response
+    })).unwrap());
+
+    Mock::given(http_method("POST"))
+        .and(json_rpc_method("initialize"))
+        .respond_with(ResponseTemplate::new(200)
+            .set_body_string(sse_body2)
+            .insert_header("content-type", "text/event-stream"))
+        .expect(1) // Exactly 1 call for connection
+        .mount(&server2_mock.server)
+        .await;
 
     // Create MCP server manager
     let manager = Arc::new(McpServerManager::new());
@@ -239,11 +288,15 @@ async fn test_gateway_initialize_merges_capabilities() {
     // Verify merged response
     let result = extract_result(&response);
 
+    // Debug: print the actual response to see what we got
+    eprintln!("ACTUAL RESPONSE: {}", serde_json::to_string_pretty(&result).unwrap());
+
     // Check protocol version (should use minimum)
     assert_eq!(result["protocolVersion"], "2024-11-05");
 
     // Check merged capabilities
     let capabilities = &result["capabilities"];
+    eprintln!("CAPABILITIES: {}", serde_json::to_string_pretty(&capabilities).unwrap());
     assert!(capabilities["tools"]["listChanged"].as_bool().unwrap());
     assert!(capabilities["resources"]["subscribe"].as_bool().unwrap());
     assert!(capabilities["resources"]["listChanged"].as_bool().unwrap());
