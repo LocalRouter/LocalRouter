@@ -6,6 +6,7 @@
 
 mod mcp_tests;
 
+use chrono::Utc;
 use localrouter_ai::config::{
     McpAuthConfig, McpServerConfig, McpTransportConfig, McpTransportType,
 };
@@ -32,6 +33,28 @@ impl MockMcpServer {
             .mount(&server)
             .await;
 
+        // Mock initial initialize request during connection (SSE transport validates on connect)
+        let init_response = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "serverInfo": {"name": "mock-server", "version": "1.0"}
+            }
+        });
+
+        // Format as SSE
+        let sse_body = format!("data: {}\n\n", serde_json::to_string(&init_response).unwrap());
+
+        Mock::given(http_method("POST"))
+            .respond_with(ResponseTemplate::new(200)
+                .set_body_string(sse_body)
+                .insert_header("content-type", "text/event-stream"))
+            .up_to_n_times(1) // Only for the initial connection
+            .mount(&server)
+            .await;
+
         Self { server }
     }
 
@@ -46,8 +69,13 @@ impl MockMcpServer {
             "result": result
         });
 
+        // Format as SSE (Server-Sent Events)
+        let sse_body = format!("data: {}\n\n", serde_json::to_string(&response).unwrap());
+
         Mock::given(http_method("POST"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(response))
+            .respond_with(ResponseTemplate::new(200)
+                .set_body_string(sse_body)
+                .insert_header("content-type", "text/event-stream"))
             .up_to_n_times(100) // Allow multiple calls
             .mount(&self.server)
             .await;
@@ -63,8 +91,13 @@ impl MockMcpServer {
             }
         });
 
+        // Format as SSE
+        let sse_body = format!("data: {}\n\n", serde_json::to_string(&response).unwrap());
+
         Mock::given(http_method("POST"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(response))
+            .respond_with(ResponseTemplate::new(200)
+                .set_body_string(sse_body)
+                .insert_header("content-type", "text/event-stream"))
             .mount(&self.server)
             .await;
     }
@@ -98,34 +131,36 @@ async fn setup_gateway_with_two_servers() -> (
     let server1_config = McpServerConfig {
         id: "server1".to_string(),
         name: "Test Server 1".to_string(),
-        enabled: true,
-        transport: McpTransportConfig {
-            transport_type: McpTransportType::Sse,
-            url: Some(server1_url.clone()),
-            command: None,
-            args: None,
-            env: None,
+        transport: McpTransportType::HttpSse,
+        transport_config: McpTransportConfig::HttpSse {
+            url: server1_url.clone(),
+            headers: std::collections::HashMap::new(),
         },
-        auth: McpAuthConfig::None,
+        auth_config: None,
+        discovered_oauth: None,
+        oauth_config: None,
+        enabled: true,
+        created_at: Utc::now(),
     };
 
     let server2_config = McpServerConfig {
         id: "server2".to_string(),
         name: "Test Server 2".to_string(),
-        enabled: true,
-        transport: McpTransportConfig {
-            transport_type: McpTransportType::Sse,
-            url: Some(server2_url.clone()),
-            command: None,
-            args: None,
-            env: None,
+        transport: McpTransportType::HttpSse,
+        transport_config: McpTransportConfig::HttpSse {
+            url: server2_url.clone(),
+            headers: std::collections::HashMap::new(),
         },
-        auth: McpAuthConfig::None,
+        auth_config: None,
+        discovered_oauth: None,
+        oauth_config: None,
+        enabled: true,
+        created_at: Utc::now(),
     };
 
     // Add servers to manager
-    manager.add_server(server1_config).await.unwrap();
-    manager.add_server(server2_config).await.unwrap();
+    manager.add_config(server1_config);
+    manager.add_config(server2_config);
 
     // Start servers
     manager.start_server("server1").await.unwrap();
@@ -1800,8 +1835,7 @@ async fn test_http_500_error() {
 #[tokio::test]
 async fn test_connection_refused() {
     // This test uses servers that were stopped, simulating connection refused
-    let config_manager = create_test_config_manager();
-    let manager = Arc::new(McpServerManager::new(config_manager));
+    let manager = Arc::new(McpServerManager::new());
 
     let gateway_config = GatewayConfig::default();
     let gateway = Arc::new(McpGateway::new(manager, gateway_config));
