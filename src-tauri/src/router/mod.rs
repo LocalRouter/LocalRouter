@@ -6,9 +6,9 @@ use std::sync::Arc;
 
 use futures::{Stream, StreamExt};
 use std::pin::Pin;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
-use crate::config::{ActiveRoutingStrategy, ConfigManager};
+use crate::config::ConfigManager;
 use crate::providers::registry::ProviderRegistry;
 use crate::providers::{CompletionChunk, CompletionRequest, CompletionResponse};
 use crate::utils::errors::{AppError, AppResult};
@@ -17,6 +17,139 @@ pub mod rate_limit;
 
 // Re-export commonly used types
 pub use rate_limit::{RateLimiterManager, UsageInfo};
+
+/// Router error classification for auto-routing fallback decisions
+#[derive(Debug, Clone)]
+pub enum RouterError {
+    /// Provider rate limited - should retry with different model
+    RateLimited {
+        provider: String,
+        model: String,
+        retry_after_secs: u64,
+    },
+    /// Content policy violation - should retry with different model
+    PolicyViolation {
+        provider: String,
+        model: String,
+        reason: String,
+    },
+    /// Context length exceeded - should retry with different model
+    ContextLengthExceeded {
+        provider: String,
+        model: String,
+        max_tokens: u64,
+    },
+    /// Provider unreachable - should retry with different model
+    Unreachable { provider: String, model: String },
+    /// Other error - should not retry
+    Other {
+        provider: String,
+        model: String,
+        error: String,
+    },
+}
+
+impl RouterError {
+    /// Whether this error should trigger fallback to next model
+    pub fn should_retry(&self) -> bool {
+        matches!(
+            self,
+            RouterError::RateLimited { .. }
+                | RouterError::Unreachable { .. }
+                | RouterError::ContextLengthExceeded { .. }
+                | RouterError::PolicyViolation { .. }
+        )
+    }
+
+    /// Classify an AppError into a RouterError
+    pub fn classify(error: &AppError, provider: &str, model: &str) -> Self {
+        match error {
+            AppError::RateLimitExceeded => RouterError::RateLimited {
+                provider: provider.to_string(),
+                model: model.to_string(),
+                retry_after_secs: 60,
+            },
+            AppError::Provider(msg) if msg.contains("policy") || msg.contains("content_policy") => {
+                RouterError::PolicyViolation {
+                    provider: provider.to_string(),
+                    model: model.to_string(),
+                    reason: msg.clone(),
+                }
+            }
+            AppError::Provider(msg)
+                if msg.contains("context") || msg.contains("token") || msg.contains("length") =>
+            {
+                RouterError::ContextLengthExceeded {
+                    provider: provider.to_string(),
+                    model: model.to_string(),
+                    max_tokens: 0,
+                }
+            }
+            AppError::Provider(msg)
+                if msg.contains("unreachable")
+                    || msg.contains("timeout")
+                    || msg.contains("connection") =>
+            {
+                RouterError::Unreachable {
+                    provider: provider.to_string(),
+                    model: model.to_string(),
+                }
+            }
+            AppError::Io(_) => RouterError::Unreachable {
+                provider: provider.to_string(),
+                model: model.to_string(),
+            },
+            _ => RouterError::Other {
+                provider: provider.to_string(),
+                model: model.to_string(),
+                error: error.to_string(),
+            },
+        }
+    }
+
+    /// Get a log-friendly string representation
+    pub fn to_log_string(&self) -> String {
+        match self {
+            RouterError::RateLimited {
+                provider,
+                model,
+                retry_after_secs,
+            } => {
+                format!(
+                    "RATE_LIMITED: {}/{} (retry after {}s)",
+                    provider, model, retry_after_secs
+                )
+            }
+            RouterError::PolicyViolation {
+                provider,
+                model,
+                reason,
+            } => {
+                format!("POLICY_VIOLATION: {}/{} - {}", provider, model, reason)
+            }
+            RouterError::ContextLengthExceeded {
+                provider,
+                model,
+                max_tokens,
+            } => {
+                format!(
+                    "CONTEXT_LENGTH_EXCEEDED: {}/{} (max: {})",
+                    provider, model, max_tokens
+                )
+            }
+            RouterError::Unreachable { provider, model } => {
+                format!("UNREACHABLE: {}/{}", provider, model)
+            }
+            RouterError::Other {
+                provider,
+                model,
+                error,
+            } => {
+                format!("ERROR: {}/{} - {}", provider, model, error)
+            }
+        }
+    }
+}
 
 /// Wraps a completion stream to count tokens and record usage when complete
 ///
@@ -113,6 +246,7 @@ pub struct Router {
     config_manager: Arc<ConfigManager>,
     provider_registry: Arc<ProviderRegistry>,
     rate_limiter: Arc<RateLimiterManager>,
+    metrics_collector: Arc<crate::monitoring::metrics::MetricsCollector>,
 }
 
 impl Router {
@@ -121,12 +255,477 @@ impl Router {
         config_manager: Arc<ConfigManager>,
         provider_registry: Arc<ProviderRegistry>,
         rate_limiter: Arc<RateLimiterManager>,
+        metrics_collector: Arc<crate::monitoring::metrics::MetricsCollector>,
     ) -> Self {
         Self {
             config_manager,
             provider_registry,
             rate_limiter,
+            metrics_collector,
         }
+    }
+
+    /// Parse model string into (provider, model) tuple
+    /// Supports formats: "provider/model" or just "model" (returns empty provider)
+    fn parse_model_string(model: &str) -> (String, String) {
+        if let Some((provider, model_name)) = model.split_once('/') {
+            (provider.to_string(), model_name.to_string())
+        } else {
+            (String::new(), model.to_string())
+        }
+    }
+
+    /// Normalize a model ID for comparison
+    ///
+    /// Different providers return model IDs in different formats:
+    /// - Ollama: "llama2" or "llama2:latest"
+    /// - OpenAI-compatible: "provider/model" or just "model"
+    /// - LMStudio: "model-name"
+    ///
+    /// This function normalizes by:
+    /// 1. Stripping provider prefix (e.g., "openai/gpt-4" -> "gpt-4")
+    /// 2. Stripping tag suffix (e.g., "llama2:latest" -> "llama2")
+    ///
+    /// Returns the normalized model name for case-insensitive comparison
+    fn normalize_model_id(model_id: &str) -> String {
+        // Strip provider prefix if present
+        let without_provider = if let Some((_provider, model)) = model_id.split_once('/') {
+            model
+        } else {
+            model_id
+        };
+
+        // Strip tag suffix if present (e.g., ":latest", ":7b")
+        let without_tag = if let Some((base, _tag)) = without_provider.split_once(':') {
+            base
+        } else {
+            without_provider
+        };
+
+        without_tag.to_lowercase()
+    }
+
+    /// Check strategy rate limits using metrics-based approach
+    /// Returns error if projected usage would exceed any configured limits
+    fn check_strategy_rate_limits(
+        &self,
+        strategy: &crate::config::Strategy,
+        _provider: &str,
+        _model: &str,
+    ) -> AppResult<()> {
+        if strategy.rate_limits.is_empty() {
+            return Ok(());
+        }
+
+        // Get pre-estimates from recent usage (last 10 minutes)
+        let (avg_tokens, avg_cost) = self
+            .metrics_collector
+            .get_pre_estimate_for_strategy(&strategy.id, 10);
+
+        for limit in &strategy.rate_limits {
+            let window_secs = limit.time_window.to_seconds();
+
+            let (current_requests, current_tokens, current_cost) = self
+                .metrics_collector
+                .get_recent_usage_for_strategy(&strategy.id, window_secs);
+
+            let (projected_usage, limit_value) = match limit.limit_type {
+                crate::config::RateLimitType::Requests => {
+                    (current_requests as f64 + 1.0, limit.value)
+                }
+                crate::config::RateLimitType::TotalTokens => {
+                    (current_tokens as f64 + avg_tokens, limit.value)
+                }
+                crate::config::RateLimitType::Cost => {
+                    // Special case: if avg_cost is 0 (free models), don't count against cost limit
+                    if avg_cost == 0.0 {
+                        continue;
+                    }
+                    (current_cost + avg_cost, limit.value)
+                }
+                _ => continue, // InputTokens/OutputTokens not supported for pre-check
+            };
+
+            if projected_usage > limit_value {
+                warn!(
+                    "Strategy rate limit exceeded: {} (current: {:.2}, projected: {:.2}, limit: {:.2})",
+                    match limit.limit_type {
+                        crate::config::RateLimitType::Requests => "requests",
+                        crate::config::RateLimitType::TotalTokens => "tokens",
+                        crate::config::RateLimitType::Cost => "cost",
+                        _ => "unknown",
+                    },
+                    if matches!(limit.limit_type, crate::config::RateLimitType::Requests) {
+                        current_requests as f64
+                    } else if matches!(limit.limit_type, crate::config::RateLimitType::TotalTokens) {
+                        current_tokens as f64
+                    } else {
+                        current_cost
+                    },
+                    projected_usage,
+                    limit_value
+                );
+                return Err(AppError::RateLimitExceeded);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Execute a completion request on a specific provider/model
+    /// This is the core execution logic extracted from the old complete() method
+    async fn execute_request(
+        &self,
+        client_id: &str,
+        provider: &str,
+        model: &str,
+        request: CompletionRequest,
+    ) -> AppResult<CompletionResponse> {
+        // Get provider instance from registry
+        let provider_instance = self
+            .provider_registry
+            .get_provider(provider)
+            .ok_or_else(|| {
+                AppError::Router(format!(
+                    "Provider '{}' not found or disabled in registry",
+                    provider
+                ))
+            })?;
+
+        // Check provider health (log warning if unhealthy)
+        let health = provider_instance.health_check().await;
+        match health.status {
+            crate::providers::HealthStatus::Healthy => {
+                debug!(
+                    "Provider '{}' is healthy (latency: {:?}ms)",
+                    provider, health.latency_ms
+                );
+            }
+            crate::providers::HealthStatus::Degraded => {
+                warn!(
+                    "Provider '{}' is degraded: {}",
+                    provider,
+                    health.error_message.as_deref().unwrap_or("unknown")
+                );
+            }
+            crate::providers::HealthStatus::Unhealthy => {
+                warn!(
+                    "Provider '{}' is unhealthy: {}",
+                    provider,
+                    health.error_message.as_deref().unwrap_or("unknown")
+                );
+                // Continue anyway - let the request fail naturally
+            }
+        }
+
+        // Modify the request to use just the model name (without provider prefix)
+        let mut modified_request = request.clone();
+        modified_request.model = model.to_string();
+
+        // Apply feature adapters if extensions are present
+        if let Some(ref extensions) = request.extensions {
+            for (feature_name, feature_params) in extensions {
+                // Check if provider supports this feature
+                if provider_instance.supports_feature(feature_name) {
+                    debug!(
+                        "Provider '{}' supports feature '{}'",
+                        provider, feature_name
+                    );
+
+                    // Get the feature adapter
+                    if let Some(adapter) = provider_instance.get_feature_adapter(feature_name) {
+                        // Validate parameters
+                        let mut params: crate::providers::features::FeatureParams =
+                            std::collections::HashMap::new();
+                        if let serde_json::Value::Object(map) = feature_params {
+                            for (k, v) in map {
+                                params.insert(k.clone(), v.clone());
+                            }
+                        }
+                        adapter.validate_params(&params).map_err(|e| {
+                            warn!(
+                                "Feature '{}' parameter validation failed: {}",
+                                feature_name, e
+                            );
+                            e
+                        })?;
+
+                        // Adapt the request
+                        adapter
+                            .adapt_request(&mut modified_request, &params)
+                            .map_err(|e| {
+                                warn!(
+                                    "Feature '{}' request adaptation failed: {}",
+                                    feature_name, e
+                                );
+                                e
+                            })?;
+
+                        debug!(
+                            "Successfully applied feature adapter for '{}'",
+                            feature_name
+                        );
+                    }
+                } else {
+                    warn!(
+                        "Provider '{}' does not support feature '{}', ignoring",
+                        provider, feature_name
+                    );
+                }
+            }
+        }
+
+        // Execute the completion
+        let mut response = provider_instance.complete(modified_request).await?;
+
+        // Apply feature adapters to response if needed
+        if let Some(ref extensions) = request.extensions {
+            for (feature_name, _feature_params) in extensions {
+                if provider_instance.supports_feature(feature_name) {
+                    if let Some(adapter) = provider_instance.get_feature_adapter(feature_name) {
+                        adapter.adapt_response(&mut response)?;
+                    }
+                }
+            }
+        }
+
+        // Add provider and model information to response
+        response.provider = provider.to_string();
+        response.model = model.to_string();
+
+        // Calculate cost and record usage for rate limiting
+        let pricing = provider_instance
+            .get_pricing(model)
+            .await
+            .unwrap_or_else(|_| crate::providers::PricingInfo::free());
+
+        let cost = calculate_cost(
+            response.usage.prompt_tokens as u64,
+            response.usage.completion_tokens as u64,
+            &pricing,
+        );
+
+        let usage = UsageInfo {
+            input_tokens: response.usage.prompt_tokens as u64,
+            output_tokens: response.usage.completion_tokens as u64,
+            cost_usd: cost,
+        };
+
+        // Record usage for rate limiting
+        if let Err(e) = self
+            .rate_limiter
+            .record_api_key_usage(client_id, &usage)
+            .await
+        {
+            warn!("Failed to record usage for API key '{}': {}", client_id, e);
+        }
+
+        Ok(response)
+    }
+
+    /// Complete with auto-routing (localrouter/auto virtual model)
+    /// Tries models in prioritized order with intelligent fallback
+    async fn complete_with_auto_routing(
+        &self,
+        client_id: &str,
+        strategy: &crate::config::Strategy,
+        request: CompletionRequest,
+    ) -> AppResult<CompletionResponse> {
+        let auto_config = strategy.auto_config.as_ref().ok_or_else(|| {
+            AppError::Router("localrouter/auto not configured for this strategy".into())
+        })?;
+
+        if !auto_config.enabled {
+            return Err(AppError::Router(
+                "localrouter/auto is disabled for this strategy".into(),
+            ));
+        }
+
+        if auto_config.prioritized_models.is_empty() {
+            return Err(AppError::Router(
+                "No prioritized models configured for auto-routing".into(),
+            ));
+        }
+
+        info!(
+            "Auto-routing for client '{}' with {} prioritized models",
+            client_id,
+            auto_config.prioritized_models.len()
+        );
+
+        let mut last_error = None;
+
+        for (idx, (provider, model)) in auto_config.prioritized_models.iter().enumerate() {
+            debug!(
+                "Auto-routing attempt {}/{}: {}/{}",
+                idx + 1,
+                auto_config.prioritized_models.len(),
+                provider,
+                model
+            );
+
+            // Check strategy rate limits before trying this model
+            if let Err(e) = self.check_strategy_rate_limits(strategy, provider, model) {
+                warn!(
+                    "Strategy rate limit exceeded for {}/{}, trying next model: {}",
+                    provider, model, e
+                );
+                last_error = Some(RouterError::RateLimited {
+                    provider: provider.clone(),
+                    model: model.clone(),
+                    retry_after_secs: 60,
+                });
+                continue;
+            }
+
+            match self
+                .execute_request(client_id, provider, model, request.clone())
+                .await
+            {
+                Ok(response) => {
+                    info!("Auto-routing succeeded with {}/{}", provider, model);
+                    return Ok(response);
+                }
+                Err(e) => {
+                    let router_error = RouterError::classify(&e, provider, model);
+                    warn!(
+                        "Auto-routing attempt failed: {}",
+                        router_error.to_log_string()
+                    );
+
+                    last_error = Some(router_error.clone());
+
+                    // Continue to next model on retryable errors
+                    if !router_error.should_retry() {
+                        error!(
+                            "Non-retryable error encountered: {}",
+                            router_error.to_log_string()
+                        );
+                        return Err(e);
+                    }
+                }
+            }
+        }
+
+        // All models failed
+        Err(AppError::Router(format!(
+            "All auto-routing models failed. Last error: {}",
+            last_error
+                .map(|e| e.to_log_string())
+                .unwrap_or_else(|| "Unknown".to_string())
+        )))
+    }
+
+    /// Stream complete with auto-routing (localrouter/auto virtual model for streaming)
+    /// Tries models in prioritized order with intelligent fallback
+    async fn stream_complete_with_auto_routing(
+        &self,
+        client_id: &str,
+        strategy: &crate::config::Strategy,
+        request: CompletionRequest,
+    ) -> AppResult<Pin<Box<dyn Stream<Item = AppResult<CompletionChunk>> + Send>>> {
+        let auto_config = strategy.auto_config.as_ref().ok_or_else(|| {
+            AppError::Router("localrouter/auto not configured for this strategy".into())
+        })?;
+
+        if !auto_config.enabled {
+            return Err(AppError::Router(
+                "localrouter/auto is disabled for this strategy".into(),
+            ));
+        }
+
+        if auto_config.prioritized_models.is_empty() {
+            return Err(AppError::Router(
+                "No prioritized models configured for auto-routing".into(),
+            ));
+        }
+
+        info!(
+            "Auto-routing streaming for client '{}' with {} prioritized models",
+            client_id,
+            auto_config.prioritized_models.len()
+        );
+
+        let mut last_error = None;
+
+        for (idx, (provider, model)) in auto_config.prioritized_models.iter().enumerate() {
+            debug!(
+                "Auto-routing streaming attempt {}/{}: {}/{}",
+                idx + 1,
+                auto_config.prioritized_models.len(),
+                provider,
+                model
+            );
+
+            // Check strategy rate limits before trying this model
+            if let Err(e) = self.check_strategy_rate_limits(strategy, provider, model) {
+                warn!(
+                    "Strategy rate limit exceeded for {}/{}, trying next model: {}",
+                    provider, model, e
+                );
+                last_error = Some(RouterError::RateLimited {
+                    provider: provider.clone(),
+                    model: model.clone(),
+                    retry_after_secs: 60,
+                });
+                continue;
+            }
+
+            // Get provider instance
+            let provider_instance = match self.provider_registry.get_provider(provider) {
+                Some(p) => p,
+                None => {
+                    warn!("Provider '{}' not found, trying next model", provider);
+                    last_error = Some(RouterError::Unreachable {
+                        provider: provider.clone(),
+                        model: model.clone(),
+                    });
+                    continue;
+                }
+            };
+
+            // Execute streaming request
+            let mut modified_request = request.clone();
+            modified_request.model = model.clone();
+
+            match provider_instance.stream_complete(modified_request).await {
+                Ok(stream) => {
+                    info!("Auto-routing streaming succeeded with {}/{}", provider, model);
+                    return Ok(wrap_stream_with_usage_tracking(
+                        stream,
+                        client_id.to_string(),
+                        self.rate_limiter.clone(),
+                    )
+                    .await);
+                }
+                Err(e) => {
+                    let router_error = RouterError::classify(&e, provider, model);
+                    warn!(
+                        "Auto-routing streaming attempt failed: {}",
+                        router_error.to_log_string()
+                    );
+
+                    last_error = Some(router_error.clone());
+
+                    // Continue to next model on retryable errors
+                    if !router_error.should_retry() {
+                        error!(
+                            "Non-retryable error encountered: {}",
+                            router_error.to_log_string()
+                        );
+                        return Err(e);
+                    }
+                }
+            }
+        }
+
+        // All models failed
+        Err(AppError::Router(format!(
+            "All auto-routing streaming models failed. Last error: {}",
+            last_error
+                .map(|e| e.to_log_string())
+                .unwrap_or_else(|| "Unknown".to_string())
+        )))
     }
 
     /// Try completion with prioritized list of models (with automatic retry on failure)
@@ -134,6 +733,7 @@ impl Router {
     /// Tries each model in the prioritized list in order until one succeeds.
     /// Retries on specific errors like provider unavailable, rate limit, or model not found.
     /// Records usage for rate limiting on success.
+    #[deprecated(note = "Use complete_with_auto_routing instead")]
     async fn complete_with_prioritized_list(
         &self,
         client_id: &str,
@@ -256,10 +856,9 @@ impl Router {
     ///
     /// This method:
     /// 1. Validates the client exists and is enabled
-    /// 2. Checks rate limits
-    /// 3. Routes to the configured provider+model based on routing config
-    /// 4. Executes the request
-    /// 5. Records usage for rate limiting
+    /// 2. Gets the client's routing strategy
+    /// 3. Routes based on requested model (auto vs specific)
+    /// 4. Executes the request with appropriate fallback behavior
     ///
     /// Returns 403 (via AppError::Unauthorized) if client is invalid or disabled
     pub async fn complete(
@@ -272,13 +871,22 @@ impl Router {
             client_id, request.model
         );
 
-        // Special handling for internal test token (bypasses routing config)
+        // Special handling for internal test token (bypasses all routing config)
         if client_id == "internal-test" {
             debug!("Internal test token detected - bypassing routing config");
-            return self.complete_direct(request).await;
+            // For internal tests, parse the model string and execute directly
+            let (provider, model) = Self::parse_model_string(&request.model);
+            if provider.is_empty() {
+                return Err(AppError::Router(
+                    "Internal test requires provider/model format".into(),
+                ));
+            }
+            return self
+                .execute_request(client_id, &provider, &model, request)
+                .await;
         }
 
-        // 1. Get client configuration
+        // 1. Get client and strategy configuration
         let config = self.config_manager.get();
         let client = config
             .clients
@@ -295,7 +903,19 @@ impl Router {
             return Err(AppError::Unauthorized);
         }
 
-        // 2. Check rate limits (pre-request check for request-based limits)
+        let strategy = config
+            .strategies
+            .iter()
+            .find(|s| s.id == client.strategy_id)
+            .ok_or_else(|| {
+                warn!(
+                    "Strategy '{}' not found for client '{}'",
+                    client.strategy_id, client_id
+                );
+                AppError::Router(format!("Strategy '{}' not found", client.strategy_id))
+            })?;
+
+        // 2. Check client-level rate limits (pre-request check for request-based limits)
         let usage_estimate = UsageInfo {
             input_tokens: 0,
             output_tokens: 0,
@@ -316,372 +936,87 @@ impl Router {
             return Err(AppError::RateLimitExceeded);
         }
 
-        // 3. Determine provider and model based on client routing configuration
-        let routing_config = client.routing_config.as_ref();
-
-        // Special handling for Prioritized List: use retry logic
-        if let Some(config) = routing_config {
-            if config.active_strategy == ActiveRoutingStrategy::PrioritizedList {
-                if config.prioritized_models.is_empty() {
-                    return Err(AppError::Router(
-                        "Prioritized List strategy is active but no models are configured"
-                            .to_string(),
-                    ));
-                }
-
-                info!(
-                    "Using Prioritized List strategy with {} models for API key '{}'",
-                    config.prioritized_models.len(),
-                    client_id
-                );
-
-                // Use retry logic for prioritized list
-                return self
-                    .complete_with_prioritized_list(client_id, &config.prioritized_models, request)
-                    .await;
-            }
+        // 3. Route based on requested model
+        if request.model == "localrouter/auto" {
+            // Auto-routing with intelligent fallback
+            // Note: auto-routing handles its own strategy rate limit checks per model
+            debug!("Using auto-routing for client '{}'", client_id);
+            return self
+                .complete_with_auto_routing(client_id, strategy, request)
+                .await;
         }
 
-        let (provider, expected_model) = if let Some(config) = routing_config {
-            // New routing config system
-            match config.active_strategy {
-                ActiveRoutingStrategy::AvailableModels => {
-                    // Allow any model in the available list - find the provider from the request
-                    // Parse the model from request (format: "provider/model" or just "model")
-                    if let Some((p, m)) = request.model.split_once('/') {
-                        debug!("Using provider/model from request: {}/{}", p, m);
+        // 4. For specific model requests, check strategy rate limits
+        // (Auto-routing checks these per-model in complete_with_auto_routing)
+        self.check_strategy_rate_limits(strategy, "", "")?;
 
-                        // Validate the model is in the available list
-                        if !config.is_model_allowed(p, m) {
-                            return Err(AppError::Router(format!(
-                                "Model '{}' is not in the available models list for this API key",
-                                request.model
-                            )));
-                        }
+        // 5. Specific model requested - validate and execute
+        let (provider, model) = Self::parse_model_string(&request.model);
 
-                        (p.to_string(), m.to_string())
-                    } else {
-                        // Just a model name - need to find which provider has it
-                        debug!("Model name only: {}", request.model);
+        // If no provider specified, try to find it from allowed models
+        let (final_provider, final_model) = if provider.is_empty() {
+            // Need to find which provider has this model from allowed list
+            let mut found_provider = None;
+            let normalized_requested = Self::normalize_model_id(&model);
 
-                        // Find the provider for this model from the available list
-                        let mut found_provider = None;
+            // Check individual_models first
+            for (prov, mod_name) in &strategy.allowed_models.individual_models {
+                let normalized_allowed = Self::normalize_model_id(mod_name);
+                if normalized_allowed == normalized_requested {
+                    found_provider = Some(prov.clone());
+                    break;
+                }
+            }
 
-                        // Check individual_models first
-                        for (provider_name, model_name) in
-                            &config.available_models.individual_models
-                        {
-                            if model_name.eq_ignore_ascii_case(&request.model) {
-                                found_provider = Some(provider_name.clone());
+            // If not found, check providers in all_provider_models
+            if found_provider.is_none() {
+                for prov in &strategy.allowed_models.all_provider_models {
+                    if let Some(provider_instance) = self.provider_registry.get_provider(prov) {
+                        if let Ok(models) = provider_instance.list_models().await {
+                            // Use normalized comparison for consistent matching
+                            if models.iter().any(|m| {
+                                let normalized_provider_model = Self::normalize_model_id(&m.id);
+                                normalized_provider_model == normalized_requested
+                            }) {
+                                found_provider = Some(prov.clone());
                                 break;
                             }
                         }
-
-                        // If not found, check providers in all_provider_models
-                        if found_provider.is_none() {
-                            for provider_name in &config.available_models.all_provider_models {
-                                if let Some(provider) =
-                                    self.provider_registry.get_provider(provider_name)
-                                {
-                                    if let Ok(models) = provider.list_models().await {
-                                        if models
-                                            .iter()
-                                            .any(|m| m.id.eq_ignore_ascii_case(&request.model))
-                                        {
-                                            found_provider = Some(provider_name.clone());
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        if let Some(provider) = found_provider {
-                            (provider, request.model.clone())
-                        } else {
-                            return Err(AppError::Router(format!(
-                                "Model '{}' is not in the available models list for this API key",
-                                request.model
-                            )));
-                        }
                     }
-                }
-                ActiveRoutingStrategy::ForceModel => {
-                    // Force a specific model, ignore the request
-                    if let Some((forced_provider, forced_model)) = &config.forced_model {
-                        debug!(
-                            "Forcing model: provider='{}', model='{}' (requested was '{}')",
-                            forced_provider, forced_model, request.model
-                        );
-                        (forced_provider.clone(), forced_model.clone())
-                    } else {
-                        return Err(AppError::Router(
-                            "Force Model strategy is active but no model is configured".to_string(),
-                        ));
-                    }
-                }
-                ActiveRoutingStrategy::PrioritizedList => {
-                    // This is unreachable due to early return at line 229-231
-                    // Added here only to satisfy exhaustive match checking
-                    unreachable!("PrioritizedList should be handled by early return")
                 }
             }
-        } else {
-            // No routing config - allow any model from the request
-            // Parse the model from request (format: "provider/model" or just "model")
-            if let Some((p, m)) = request.model.split_once('/') {
-                debug!("Using provider/model from request: {}/{}", p, m);
-                (p.to_string(), m.to_string())
+
+            if let Some(prov) = found_provider {
+                (prov, model)
             } else {
-                // Just a model name - need to find which provider has it
-                debug!("Model name only: {}", request.model);
-                // This will be handled below when we get the provider
-                ("".to_string(), request.model.clone())
+                return Err(AppError::Router(format!(
+                    "Model '{}' is not allowed by this strategy",
+                    request.model
+                )));
             }
-        };
-
-        // 4. Get provider instance from registry
-        let provider_instance =
-            self.provider_registry
-                .get_provider(&provider)
-                .ok_or_else(|| {
-                    AppError::Router(format!(
-                        "Provider '{}' not found or disabled in registry",
-                        provider
-                    ))
-                })?;
-
-        // 5. Check provider health (optional - log warning if unhealthy)
-        let health = provider_instance.health_check().await;
-        match health.status {
-            crate::providers::HealthStatus::Healthy => {
-                debug!(
-                    "Provider '{}' is healthy (latency: {:?}ms)",
-                    provider, health.latency_ms
-                );
-            }
-            crate::providers::HealthStatus::Degraded => {
-                warn!(
-                    "Provider '{}' is degraded: {}",
-                    provider,
-                    health.error_message.as_deref().unwrap_or("unknown")
-                );
-            }
-            crate::providers::HealthStatus::Unhealthy => {
-                warn!(
-                    "Provider '{}' is unhealthy: {}",
-                    provider,
-                    health.error_message.as_deref().unwrap_or("unknown")
-                );
-                // Continue anyway - let the request fail naturally
-            }
-        }
-
-        // 6. Execute the completion request
-        debug!(
-            "Executing completion request on provider '{}' with model '{}'",
-            provider, expected_model
-        );
-
-        // Modify the request to use just the model name (without provider prefix)
-        // The expected_model already has the provider prefix stripped during routing
-        // This ensures all providers receive just the model ID they expect
-        let mut modified_request = request.clone();
-        modified_request.model = expected_model.clone();
-
-        // Apply feature adapters if extensions are present
-        let mut response_extensions = std::collections::HashMap::new();
-
-        if let Some(ref extensions) = request.extensions {
-            for (feature_name, feature_params) in extensions {
-                // Check if provider supports this feature
-                if provider_instance.supports_feature(feature_name) {
-                    debug!(
-                        "Provider '{}' supports feature '{}'",
-                        provider, feature_name
-                    );
-
-                    // Get the feature adapter
-                    if let Some(adapter) = provider_instance.get_feature_adapter(feature_name) {
-                        // Validate parameters
-                        let mut params: crate::providers::features::FeatureParams =
-                            std::collections::HashMap::new();
-                        if let serde_json::Value::Object(map) = feature_params {
-                            for (k, v) in map {
-                                params.insert(k.clone(), v.clone());
-                            }
-                        }
-                        adapter.validate_params(&params).map_err(|e| {
-                            warn!(
-                                "Feature '{}' parameter validation failed: {}",
-                                feature_name, e
-                            );
-                            e
-                        })?;
-
-                        // Adapt the request
-                        adapter
-                            .adapt_request(&mut modified_request, &params)
-                            .map_err(|e| {
-                                warn!(
-                                    "Feature '{}' request adaptation failed: {}",
-                                    feature_name, e
-                                );
-                                e
-                            })?;
-
-                        debug!(
-                            "Successfully applied feature adapter for '{}'",
-                            feature_name
-                        );
-                    } else {
-                        warn!(
-                            "Provider '{}' claims to support feature '{}' but no adapter available",
-                            provider, feature_name
-                        );
-                    }
-                } else {
-                    warn!(
-                        "Provider '{}' does not support feature '{}' - ignoring",
-                        provider, feature_name
-                    );
-                }
-            }
-        }
-
-        let mut response = provider_instance
-            .complete(modified_request)
-            .await
-            .map_err(|e| {
-                warn!(
-                    "Completion request failed for provider '{}': {}",
-                    provider, e
-                );
-                e
-            })?;
-
-        // Apply feature adapters to response if extensions were present
-        if let Some(ref extensions) = request.extensions {
-            for feature_name in extensions.keys() {
-                if provider_instance.supports_feature(feature_name) {
-                    if let Some(adapter) = provider_instance.get_feature_adapter(feature_name) {
-                        // Adapt the response
-                        if let Ok(Some(feature_data)) = adapter.adapt_response(&mut response) {
-                            response_extensions.insert(feature_name.clone(), feature_data.data);
-                            debug!("Extracted feature data for '{}'", feature_name);
-                        }
-                    }
-                }
-            }
-        }
-
-        // Add extensions to response if any were collected
-        if !response_extensions.is_empty() {
-            response.extensions = Some(response_extensions);
-            debug!(
-                "Added {} feature extensions to response",
-                response.extensions.as_ref().unwrap().len()
-            );
-        }
-
-        // 7. Calculate cost and record usage for rate limiting
-        let pricing = provider_instance
-            .get_pricing(&expected_model)
-            .await
-            .unwrap_or_else(|_| crate::providers::PricingInfo::free());
-
-        let cost = calculate_cost(
-            response.usage.prompt_tokens as u64,
-            response.usage.completion_tokens as u64,
-            &pricing,
-        );
-
-        let usage = UsageInfo {
-            input_tokens: response.usage.prompt_tokens as u64,
-            output_tokens: response.usage.completion_tokens as u64,
-            cost_usd: cost,
-        };
-
-        // Log error but don't fail the request if usage recording fails
-        // The provider already succeeded and consumed tokens/cost
-        if let Err(e) = self
-            .rate_limiter
-            .record_api_key_usage(client_id, &usage)
-            .await
-        {
-            warn!(
-                "Failed to record usage for API key '{}': {}. Request succeeded but usage not tracked.",
-                client_id, e
-            );
-        }
-
-        info!(
-            "Completion request successful for API key '{}': {} tokens",
-            client_id, response.usage.total_tokens
-        );
-
-        Ok(response)
-    }
-
-    /// Direct completion bypass (for internal test token)
-    ///
-    /// This bypasses all routing config, rate limiting, and client validation.
-    /// Used only for the internal test token to allow direct provider testing from the UI.
-    async fn complete_direct(&self, request: CompletionRequest) -> AppResult<CompletionResponse> {
-        debug!("Direct completion request for model '{}'", request.model);
-
-        // Parse the model from request (format: "provider/model")
-        let (provider, model) = if let Some((p, m)) = request.model.split_once('/') {
-            (p.to_string(), m.to_string())
         } else {
-            return Err(AppError::Router(format!(
-                "Model must be in format 'provider/model' for direct access. Got: '{}'",
-                request.model
-            )));
+            // Provider specified - validate it's allowed
+            if !strategy.is_model_allowed(&provider, &model) {
+                return Err(AppError::Router(format!(
+                    "Model '{}/{}' is not allowed by this strategy",
+                    provider, model
+                )));
+            }
+            (provider, model)
         };
 
-        // Get provider instance from registry
-        let provider_instance =
-            self.provider_registry
-                .get_provider(&provider)
-                .ok_or_else(|| {
-                    AppError::Router(format!(
-                        "Provider '{}' not found or disabled in registry",
-                        provider
-                    ))
-                })?;
-
-        // Execute the completion request directly
+        // 6. Execute the request
         debug!(
-            "Executing direct completion request on provider '{}' with model '{}'",
-            provider, model
+            "Executing request for client '{}' on {}/{}",
+            client_id, final_provider, final_model
         );
 
-        let mut modified_request = request.clone();
-        modified_request.model = model.clone();
-
-        let response = provider_instance
-            .complete(modified_request)
+        self.execute_request(client_id, &final_provider, &final_model, request)
             .await
-            .map_err(|e| {
-                warn!(
-                    "Direct completion request failed for provider '{}': {}",
-                    provider, e
-                );
-                e
-            })?;
-
-        info!(
-            "Direct completion request successful: provider='{}', model='{}', {} tokens",
-            provider, model, response.usage.total_tokens
-        );
-
-        Ok(response)
     }
 
     /// Route a streaming completion request based on API key configuration
-    ///
-    /// Similar to `complete()` but returns a stream of completion chunks.
+    /// Note: Auto-routing (localrouter/auto) is not supported for streaming
     pub async fn stream_complete(
         &self,
         client_id: &str,
@@ -692,13 +1027,31 @@ impl Router {
             client_id, request.model
         );
 
-        // Special handling for internal test token (bypasses routing config)
+        // Special handling for internal test token
         if client_id == "internal-test" {
             debug!("Internal test token detected - bypassing routing config for streaming");
-            return self.stream_complete_direct(request).await;
+            let (provider, model) = Self::parse_model_string(&request.model);
+            if provider.is_empty() {
+                return Err(AppError::Router(
+                    "Internal test requires provider/model format".into(),
+                ));
+            }
+            let provider_instance = self
+                .provider_registry
+                .get_provider(&provider)
+                .ok_or_else(|| AppError::Router(format!("Provider '{}' not found", provider)))?;
+            let mut modified_request = request.clone();
+            modified_request.model = model;
+            let stream = provider_instance.stream_complete(modified_request).await?;
+            return Ok(wrap_stream_with_usage_tracking(
+                stream,
+                client_id.to_string(),
+                self.rate_limiter.clone(),
+            )
+            .await);
         }
 
-        // 1. Get client configuration
+        // 1. Get client and strategy
         let config = self.config_manager.get();
         let client = config
             .clients
@@ -709,11 +1062,18 @@ impl Router {
                 AppError::Unauthorized
             })?;
 
-        // Check if client is enabled
         if !client.enabled {
             warn!("Client '{}' is disabled", client_id);
             return Err(AppError::Unauthorized);
         }
+
+        let strategy = config
+            .strategies
+            .iter()
+            .find(|s| s.id == client.strategy_id)
+            .ok_or_else(|| {
+                AppError::Router(format!("Strategy '{}' not found", client.strategy_id))
+            })?;
 
         // 2. Check rate limits
         let usage_estimate = UsageInfo {
@@ -721,226 +1081,86 @@ impl Router {
             output_tokens: 0,
             cost_usd: 0.0,
         };
-
         let rate_check = self
             .rate_limiter
             .check_api_key(client_id, &usage_estimate)
             .await?;
-
         if !rate_check.allowed {
-            warn!(
-                "API key '{}' rate limited. Retry after {} seconds",
-                client_id,
-                rate_check.retry_after_secs.unwrap_or(0)
-            );
+            warn!("API key '{}' rate limited", client_id);
             return Err(AppError::RateLimitExceeded);
         }
 
-        // 3. Determine provider and model based on client routing configuration
-        let routing_config = client.routing_config.as_ref();
-
-        // Check for PrioritizedList strategy - not fully supported for streaming
-        if let Some(config) = routing_config {
-            if config.active_strategy == ActiveRoutingStrategy::PrioritizedList {
-                warn!(
-                    "PrioritizedList strategy does not support automatic retry for streaming requests. \
-                     Will use first model only. API key: '{}'",
-                    client_id
-                );
-                // Continue with first model, but no retry on failure
-            }
+        // 3. Route - handle auto-routing for streaming
+        if request.model == "localrouter/auto" {
+            // Auto-routing with intelligent fallback for streaming
+            debug!("Using auto-routing for streaming client '{}'", client_id);
+            return self
+                .stream_complete_with_auto_routing(client_id, strategy, request)
+                .await;
         }
 
-        let (provider, expected_model) = if let Some(config) = routing_config {
-            // New routing config system (same logic as complete())
-            match config.active_strategy {
-                ActiveRoutingStrategy::AvailableModels => {
-                    // Allow any model in the available list
-                    if let Some((p, m)) = request.model.split_once('/') {
-                        if !config.is_model_allowed(p, m) {
-                            return Err(AppError::Router(format!(
-                                "Model '{}' is not in the available models list for this API key",
-                                request.model
-                            )));
-                        }
-                        (p.to_string(), m.to_string())
-                    } else {
-                        // Find provider for this model
-                        let mut found_provider = None;
-                        for (provider_name, model_name) in
-                            &config.available_models.individual_models
-                        {
-                            if model_name.eq_ignore_ascii_case(&request.model) {
-                                found_provider = Some(provider_name.clone());
+        // 4. Parse and validate model
+        let (provider, model) = Self::parse_model_string(&request.model);
+        let (final_provider, final_model) = if provider.is_empty() {
+            // Find provider from allowed models
+            let mut found = None;
+            let normalized_requested = Self::normalize_model_id(&model);
+
+            // Check individual_models first
+            for (prov, mod_name) in &strategy.allowed_models.individual_models {
+                let normalized_allowed = Self::normalize_model_id(mod_name);
+                if normalized_allowed == normalized_requested {
+                    found = Some(prov.clone());
+                    break;
+                }
+            }
+
+            // If not found, check providers in all_provider_models
+            if found.is_none() {
+                for prov in &strategy.allowed_models.all_provider_models {
+                    if let Some(p) = self.provider_registry.get_provider(prov) {
+                        if let Ok(models) = p.list_models().await {
+                            // Use normalized comparison for consistent matching
+                            if models.iter().any(|m| {
+                                let normalized_provider_model = Self::normalize_model_id(&m.id);
+                                normalized_provider_model == normalized_requested
+                            }) {
+                                found = Some(prov.clone());
                                 break;
                             }
                         }
-                        if found_provider.is_none() {
-                            for provider_name in &config.available_models.all_provider_models {
-                                if let Some(provider) =
-                                    self.provider_registry.get_provider(provider_name)
-                                {
-                                    if let Ok(models) = provider.list_models().await {
-                                        if models
-                                            .iter()
-                                            .any(|m| m.id.eq_ignore_ascii_case(&request.model))
-                                        {
-                                            found_provider = Some(provider_name.clone());
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        if let Some(provider) = found_provider {
-                            (provider, request.model.clone())
-                        } else {
-                            return Err(AppError::Router(format!(
-                                "Model '{}' is not in the available models list for this API key",
-                                request.model
-                            )));
-                        }
-                    }
-                }
-                ActiveRoutingStrategy::ForceModel => {
-                    // Force a specific model
-                    if let Some((forced_provider, forced_model)) = &config.forced_model {
-                        (forced_provider.clone(), forced_model.clone())
-                    } else {
-                        return Err(AppError::Router(
-                            "Force Model strategy is active but no model is configured".to_string(),
-                        ));
-                    }
-                }
-                ActiveRoutingStrategy::PrioritizedList => {
-                    // LIMITATION: Streaming doesn't support automatic retry
-                    // Use first model in prioritized list only (no failover)
-                    // TODO: Implement retry logic by buffering or switching streams mid-flight
-                    if let Some((first_provider, first_model)) = config.prioritized_models.first() {
-                        (first_provider.clone(), first_model.clone())
-                    } else {
-                        return Err(AppError::Router(
-                            "Prioritized List strategy is active but no models are configured"
-                                .to_string(),
-                        ));
                     }
                 }
             }
+
+            found
+                .map(|p| (p, model))
+                .ok_or_else(|| AppError::Router(format!("Model '{}' not allowed", request.model)))?
         } else {
-            // No routing config - allow any model from the request
-            // Parse the model from request (format: "provider/model" or just "model")
-            if let Some((p, m)) = request.model.split_once('/') {
-                debug!("Using provider/model from request: {}/{}", p, m);
-                (p.to_string(), m.to_string())
-            } else {
-                // Just a model name - need to find which provider has it
-                debug!("Model name only: {}", request.model);
-                // This will be handled below when we get the provider
-                ("".to_string(), request.model.clone())
+            if !strategy.is_model_allowed(&provider, &model) {
+                return Err(AppError::Router(format!(
+                    "Model '{}/{}' not allowed",
+                    provider, model
+                )));
             }
+            (provider, model)
         };
 
-        // 4. Get provider instance
-        let provider_instance =
-            self.provider_registry
-                .get_provider(&provider)
-                .ok_or_else(|| {
-                    AppError::Router(format!(
-                        "Provider '{}' not found or disabled in registry",
-                        provider
-                    ))
-                })?;
+        // 5. Execute streaming request
+        let provider_instance = self
+            .provider_registry
+            .get_provider(&final_provider)
+            .ok_or_else(|| AppError::Router(format!("Provider '{}' not found", final_provider)))?;
 
-        // 5. Check provider health
-        let health = provider_instance.health_check().await;
-        if let crate::providers::HealthStatus::Unhealthy = health.status {
-            warn!(
-                "Provider '{}' is unhealthy but proceeding with streaming request",
-                provider
-            );
-        }
-
-        // 6. Execute streaming request
-        debug!(
-            "Executing streaming completion request on provider '{}' with model '{}'",
-            provider, expected_model
-        );
-
-        // Modify the request to use just the model name (without provider prefix)
-        // The expected_model already has the provider prefix stripped during routing
-        // This ensures all providers receive just the model ID they expect
-        let mut modified_request = request;
-        modified_request.model = expected_model.clone();
-
+        let mut modified_request = request.clone();
+        modified_request.model = final_model;
         let stream = provider_instance.stream_complete(modified_request).await?;
-
-        info!(
-            "Streaming completion request started for API key '{}'",
-            client_id
-        );
-
-        // Wrap stream to track usage (approximate token counting)
-        let tracked_stream = wrap_stream_with_usage_tracking(
+        Ok(wrap_stream_with_usage_tracking(
             stream,
             client_id.to_string(),
             self.rate_limiter.clone(),
         )
-        .await;
-
-        Ok(tracked_stream)
-    }
-
-    /// Direct streaming completion bypass (for internal test token)
-    ///
-    /// This bypasses all routing config, rate limiting, and client validation.
-    /// Used only for the internal test token to allow direct provider testing from the UI.
-    async fn stream_complete_direct(
-        &self,
-        request: CompletionRequest,
-    ) -> AppResult<Pin<Box<dyn Stream<Item = AppResult<CompletionChunk>> + Send>>> {
-        debug!(
-            "Direct streaming completion request for model '{}'",
-            request.model
-        );
-
-        // Parse the model from request (format: "provider/model")
-        let (provider, model) = if let Some((p, m)) = request.model.split_once('/') {
-            (p.to_string(), m.to_string())
-        } else {
-            return Err(AppError::Router(format!(
-                "Model must be in format 'provider/model' for direct access. Got: '{}'",
-                request.model
-            )));
-        };
-
-        // Get provider instance from registry
-        let provider_instance =
-            self.provider_registry
-                .get_provider(&provider)
-                .ok_or_else(|| {
-                    AppError::Router(format!(
-                        "Provider '{}' not found or disabled in registry",
-                        provider
-                    ))
-                })?;
-
-        // Execute streaming request directly
-        debug!(
-            "Executing direct streaming completion on provider '{}' with model '{}'",
-            provider, model
-        );
-
-        let mut modified_request = request;
-        modified_request.model = model.clone();
-
-        let stream = provider_instance.stream_complete(modified_request).await?;
-
-        info!(
-            "Direct streaming completion request started: provider='{}', model='{}'",
-            provider, model
-        );
-
-        Ok(stream)
+        .await)
     }
 }
 
@@ -961,7 +1181,21 @@ mod tests {
         let provider_registry = Arc::new(ProviderRegistry::new(health_manager));
         let rate_limiter = Arc::new(RateLimiterManager::new(None));
 
-        let router = Router::new(config_manager, provider_registry, rate_limiter);
+        // Create test metrics collector
+        let metrics_db_path =
+            std::env::temp_dir().join(format!("test_metrics_{}.db", uuid::Uuid::new_v4()));
+        let metrics_db =
+            Arc::new(crate::monitoring::storage::MetricsDatabase::new(&metrics_db_path).unwrap());
+        let metrics_collector = Arc::new(crate::monitoring::metrics::MetricsCollector::new(
+            metrics_db,
+        ));
+
+        let router = Router::new(
+            config_manager,
+            provider_registry,
+            rate_limiter,
+            metrics_collector,
+        );
 
         // Just verify it compiles and constructs
         assert!(Arc::strong_count(&router.config_manager) >= 1);
@@ -978,7 +1212,21 @@ mod tests {
         let provider_registry = Arc::new(ProviderRegistry::new(health_manager));
         let rate_limiter = Arc::new(RateLimiterManager::new(None));
 
-        let router = Router::new(config_manager, provider_registry, rate_limiter);
+        // Create test metrics collector
+        let metrics_db_path =
+            std::env::temp_dir().join(format!("test_metrics_{}.db", uuid::Uuid::new_v4()));
+        let metrics_db =
+            Arc::new(crate::monitoring::storage::MetricsDatabase::new(&metrics_db_path).unwrap());
+        let metrics_collector = Arc::new(crate::monitoring::metrics::MetricsCollector::new(
+            metrics_db,
+        ));
+
+        let router = Router::new(
+            config_manager,
+            provider_registry,
+            rate_limiter,
+            metrics_collector,
+        );
 
         let request = CompletionRequest {
             model: "test-model".to_string(),
@@ -1050,4 +1298,51 @@ mod tests {
     // ============================================================================
 
     // Placeholder for future integration tests - see TODO comment above
+
+    // ============================================================================
+    // Test normalize_model_id
+    // ============================================================================
+
+    #[test]
+    fn test_normalize_model_id_plain() {
+        assert_eq!(Router::normalize_model_id("llama2"), "llama2");
+        assert_eq!(Router::normalize_model_id("gpt-4"), "gpt-4");
+        assert_eq!(Router::normalize_model_id("claude-3-opus"), "claude-3-opus");
+    }
+
+    #[test]
+    fn test_normalize_model_id_with_tag() {
+        assert_eq!(Router::normalize_model_id("llama2:latest"), "llama2");
+        assert_eq!(Router::normalize_model_id("llama2:7b"), "llama2");
+        assert_eq!(Router::normalize_model_id("mistral:instruct"), "mistral");
+    }
+
+    #[test]
+    fn test_normalize_model_id_with_provider_prefix() {
+        assert_eq!(Router::normalize_model_id("openai/gpt-4"), "gpt-4");
+        assert_eq!(Router::normalize_model_id("anthropic/claude-3"), "claude-3");
+        assert_eq!(Router::normalize_model_id("ollama/llama2"), "llama2");
+    }
+
+    #[test]
+    fn test_normalize_model_id_with_both() {
+        assert_eq!(Router::normalize_model_id("openai/gpt-4:turbo"), "gpt-4");
+        assert_eq!(Router::normalize_model_id("ollama/llama2:latest"), "llama2");
+        assert_eq!(Router::normalize_model_id("mistral/mistral:7b"), "mistral");
+    }
+
+    #[test]
+    fn test_normalize_model_id_case_insensitive() {
+        assert_eq!(Router::normalize_model_id("GPT-4"), "gpt-4");
+        assert_eq!(Router::normalize_model_id("LLaMA2"), "llama2");
+        assert_eq!(Router::normalize_model_id("Claude-3-Opus"), "claude-3-opus");
+    }
+
+    #[test]
+    fn test_normalize_model_id_all_together() {
+        // Case: "OpenAI/GPT-4:Turbo" -> "gpt-4"
+        assert_eq!(Router::normalize_model_id("OpenAI/GPT-4:Turbo"), "gpt-4");
+        // Case: "OLLAMA/LLaMA2:Latest" -> "llama2"
+        assert_eq!(Router::normalize_model_id("OLLAMA/LLaMA2:Latest"), "llama2");
+    }
 }
