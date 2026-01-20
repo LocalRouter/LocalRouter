@@ -18,6 +18,7 @@ pub struct RequestMetrics<'a> {
     pub api_key_name: &'a str,
     pub provider: &'a str,
     pub model: &'a str,
+    pub strategy_id: &'a str,
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub cost_usd: f64,
@@ -118,6 +119,9 @@ pub struct MetricsCollector {
 
     /// MCP metrics collector (still in-memory for now)
     mcp_metrics: McpMetricsCollector,
+
+    /// Optional callback to notify when metrics are recorded
+    on_metrics_recorded: parking_lot::RwLock<Option<Box<dyn Fn() + Send + Sync>>>,
 }
 
 impl MetricsCollector {
@@ -126,7 +130,16 @@ impl MetricsCollector {
         Self {
             db,
             mcp_metrics: McpMetricsCollector::new(24), // 24 hour retention for MCP
+            on_metrics_recorded: parking_lot::RwLock::new(None),
         }
+    }
+
+    /// Set callback to be called when metrics are recorded
+    pub fn set_on_metrics_recorded<F>(&self, callback: F)
+    where
+        F: Fn() + Send + Sync + 'static,
+    {
+        *self.on_metrics_recorded.write() = Some(Box::new(callback));
     }
 
     /// Create a new metrics collector with default retention (deprecated)
@@ -166,12 +179,13 @@ impl MetricsCollector {
             p99_latency_ms: Some(metrics.latency_ms as f64),
         };
 
-        // Write to all four tiers
+        // Write to all five tiers
         let metric_types = vec![
             "llm_global".to_string(),
             format!("llm_key:{}", metrics.api_key_name),
             format!("llm_provider:{}", metrics.provider),
             format!("llm_model:{}", metrics.model),
+            format!("llm_strategy:{}", metrics.strategy_id),
         ];
 
         for metric_type in metric_types {
@@ -216,11 +230,30 @@ impl MetricsCollector {
                 let _ = self.db.upsert_metric(&metric_type, &row);
             }
         }
+
+        // Notify callback that metrics were recorded
+        if let Some(ref callback) = *self.on_metrics_recorded.read() {
+            callback();
+        }
     }
 
     /// Record a failed request
-    pub fn record_failure(&self, api_key_name: &str, provider: &str, model: &str, latency_ms: u64) {
-        self.record_failure_at(api_key_name, provider, model, latency_ms, Utc::now());
+    pub fn record_failure(
+        &self,
+        api_key_name: &str,
+        provider: &str,
+        model: &str,
+        strategy_id: &str,
+        latency_ms: u64,
+    ) {
+        self.record_failure_at(
+            api_key_name,
+            provider,
+            model,
+            strategy_id,
+            latency_ms,
+            Utc::now(),
+        );
     }
 
     /// Record a failed request at a specific timestamp (for testing)
@@ -229,6 +262,7 @@ impl MetricsCollector {
         api_key_name: &str,
         provider: &str,
         model: &str,
+        strategy_id: &str,
         latency_ms: u64,
         timestamp: DateTime<Utc>,
     ) {
@@ -253,12 +287,13 @@ impl MetricsCollector {
             p99_latency_ms: Some(latency_ms as f64),
         };
 
-        // Write to all four tiers
+        // Write to all five tiers
         let metric_types = vec![
             "llm_global".to_string(),
             format!("llm_key:{}", api_key_name),
             format!("llm_provider:{}", provider),
             format!("llm_model:{}", model),
+            format!("llm_strategy:{}", strategy_id),
         ];
 
         for metric_type in metric_types {
@@ -363,6 +398,22 @@ impl MetricsCollector {
             .collect()
     }
 
+    /// Get metrics for a specific strategy
+    pub fn get_strategy_range(
+        &self,
+        strategy_id: &str,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> Vec<MetricDataPoint> {
+        let metric_type = format!("llm_strategy:{}", strategy_id);
+        self.db
+            .query_metrics(&metric_type, start, end)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|row| row.into())
+            .collect()
+    }
+
     /// Get all API key names
     pub fn get_api_key_names(&self) -> Vec<String> {
         self.db
@@ -403,6 +454,86 @@ impl MetricsCollector {
                     .map(|name| name.to_string())
             })
             .collect()
+    }
+
+    /// Get all strategy IDs
+    pub fn get_strategy_ids(&self) -> Vec<String> {
+        self.db
+            .get_metric_types()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|metric_type| {
+                metric_type
+                    .strip_prefix("llm_strategy:")
+                    .map(|id| id.to_string())
+            })
+            .collect()
+    }
+
+    /// Get recent usage for a strategy within a time window (for rate limiting)
+    /// Returns (total_requests, total_tokens, total_cost)
+    pub fn get_recent_usage_for_strategy(
+        &self,
+        strategy_id: &str,
+        window_secs: i64,
+    ) -> (u64, u64, f64) {
+        let now = Utc::now();
+        let start = now - chrono::Duration::seconds(window_secs);
+
+        let metric_type = format!("llm_strategy:{}", strategy_id);
+        let data_points = self
+            .db
+            .query_metrics(&metric_type, start, now)
+            .unwrap_or_default();
+
+        let total_requests: u64 = data_points.iter().map(|p| p.requests).sum();
+        let total_tokens: u64 = data_points
+            .iter()
+            .map(|p| p.input_tokens.unwrap_or(0) + p.output_tokens.unwrap_or(0))
+            .sum();
+        let total_cost: f64 = data_points.iter().map(|p| p.cost_usd.unwrap_or(0.0)).sum();
+
+        (total_requests, total_tokens, total_cost)
+    }
+
+    /// Calculate pre-estimate for tokens/cost based on rolling average
+    /// Returns (avg_tokens_per_request, avg_cost_per_request)
+    /// Uses lookback_minutes of recent history to calculate average
+    pub fn get_pre_estimate_for_strategy(
+        &self,
+        strategy_id: &str,
+        lookback_minutes: i64,
+    ) -> (f64, f64) {
+        let now = Utc::now();
+        let start = now - chrono::Duration::minutes(lookback_minutes);
+
+        let metric_type = format!("llm_strategy:{}", strategy_id);
+        let data_points = self
+            .db
+            .query_metrics(&metric_type, start, now)
+            .unwrap_or_default();
+
+        let total_requests: u64 = data_points.iter().map(|p| p.requests).sum();
+        if total_requests == 0 {
+            // No recent data, use conservative estimates
+            // 1k tokens (typical small request), $0.00 cost (assume free until proven otherwise)
+            // Note: We use 0.0 for cost because:
+            // 1. Many providers are free (Ollama, LMStudio, local models)
+            // 2. Router checks "if avg_cost == 0.0" to skip cost limits for free models
+            // 3. After first request, actual cost will be recorded and used
+            return (1000.0, 0.0);
+        }
+
+        let total_tokens: u64 = data_points
+            .iter()
+            .map(|p| p.input_tokens.unwrap_or(0) + p.output_tokens.unwrap_or(0))
+            .sum();
+        let total_cost: f64 = data_points.iter().map(|p| p.cost_usd.unwrap_or(0.0)).sum();
+
+        let avg_tokens = total_tokens as f64 / total_requests as f64;
+        let avg_cost = total_cost / total_requests as f64;
+
+        (avg_tokens, avg_cost)
     }
 
     /// Get MCP metrics collector
@@ -458,6 +589,7 @@ mod tests {
             output_tokens: 200,
             cost_usd: 0.05,
             latency_ms: 1000,
+            strategy_id: "default",
         });
 
         let now = Utc::now();
@@ -485,7 +617,7 @@ mod tests {
     fn test_metrics_collector_record_failure() {
         let (collector, _dir) = create_test_collector();
 
-        collector.record_failure("key1", "openai", "gpt-4", 500);
+        collector.record_failure("key1", "openai", "gpt-4", "default", 500);
 
         let now = Utc::now();
         let start = now - Duration::hours(1);
@@ -508,6 +640,7 @@ mod tests {
             output_tokens: 200,
             cost_usd: 0.05,
             latency_ms: 1000,
+            strategy_id: "default",
         });
         collector.record_success(&RequestMetrics {
             api_key_name: "key2",
@@ -517,6 +650,7 @@ mod tests {
             output_tokens: 200,
             cost_usd: 0.0,
             latency_ms: 1000,
+            strategy_id: "default",
         });
 
         let key_names = collector.get_api_key_names();
@@ -549,6 +683,7 @@ mod tests {
             output_tokens: 500,
             cost_usd: 0.05,
             latency_ms: 100,
+            strategy_id: "default",
         });
         collector.record_success(&RequestMetrics {
             api_key_name: "key1",
@@ -558,6 +693,7 @@ mod tests {
             output_tokens: 400,
             cost_usd: 0.03,
             latency_ms: 80,
+            strategy_id: "default",
         });
         collector.record_success(&RequestMetrics {
             api_key_name: "key2",
@@ -567,6 +703,7 @@ mod tests {
             output_tokens: 250,
             cost_usd: 0.025,
             latency_ms: 90,
+            strategy_id: "default",
         });
 
         // Verify global (all requests)

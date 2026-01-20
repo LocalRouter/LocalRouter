@@ -82,6 +82,7 @@ fn test_metrics_collector_persistence() {
             output_tokens: 200,
             cost_usd: 0.05,
             latency_ms: 1000,
+            strategy_id: "default",
         });
 
         collector.record_success(&RequestMetrics {
@@ -92,6 +93,7 @@ fn test_metrics_collector_persistence() {
             output_tokens: 250,
             cost_usd: 0.07,
             latency_ms: 1200,
+            strategy_id: "default",
         });
     }
 
@@ -410,6 +412,7 @@ fn test_four_tier_metrics_persistence() {
             output_tokens: 200,
             cost_usd: 0.05,
             latency_ms: 1000,
+            strategy_id: "default",
         });
     }
 
@@ -462,6 +465,7 @@ fn test_memory_efficiency() {
             output_tokens: 200,
             cost_usd: 0.05,
             latency_ms: 1000,
+            strategy_id: "default",
         });
     }
 

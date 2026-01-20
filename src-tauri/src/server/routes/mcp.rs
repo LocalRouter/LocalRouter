@@ -502,10 +502,20 @@ mod tests {
             crate::config::AppConfig::default(),
             std::path::PathBuf::from("/tmp/test_config.yaml"),
         ));
+        // Create test metrics collector
+        let metrics_db_path =
+            std::env::temp_dir().join(format!("test_metrics_{}.db", uuid::Uuid::new_v4()));
+        let metrics_db =
+            Arc::new(crate::monitoring::storage::MetricsDatabase::new(metrics_db_path).unwrap());
+        let metrics_collector = Arc::new(crate::monitoring::metrics::MetricsCollector::new(
+            metrics_db,
+        ));
+
         let router = Arc::new(Router::new(
             config_manager.clone(),
             provider_registry.clone(),
             Arc::new(RateLimiterManager::new(None)),
+            metrics_collector.clone(),
         ));
         let rate_limiter = Arc::new(RateLimiterManager::new(None));
         let client_manager = Arc::new(ClientManager::new(vec![]));
@@ -518,6 +528,7 @@ mod tests {
             config_manager.clone(),
             client_manager,
             token_store,
+            metrics_collector,
         )
         .with_mcp(Arc::new(McpServerManager::new()));
 
@@ -556,10 +567,20 @@ mod tests {
             crate::config::AppConfig::default(),
             std::path::PathBuf::from("/tmp/test_config.yaml"),
         ));
+        // Create test metrics collector
+        let metrics_db_path =
+            std::env::temp_dir().join(format!("test_metrics_{}.db", uuid::Uuid::new_v4()));
+        let metrics_db =
+            Arc::new(crate::monitoring::storage::MetricsDatabase::new(metrics_db_path).unwrap());
+        let metrics_collector = Arc::new(crate::monitoring::metrics::MetricsCollector::new(
+            metrics_db,
+        ));
+
         let router = Arc::new(Router::new(
             config_manager.clone(),
             provider_registry.clone(),
             Arc::new(RateLimiterManager::new(None)),
+            metrics_collector.clone(),
         ));
         let rate_limiter = Arc::new(RateLimiterManager::new(None));
         let client_manager = Arc::new(ClientManager::new(vec![]));
@@ -572,6 +593,7 @@ mod tests {
             config_manager.clone(),
             client_manager,
             token_store,
+            metrics_collector,
         )
         .with_mcp(Arc::new(McpServerManager::new()));
 
