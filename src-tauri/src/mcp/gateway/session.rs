@@ -24,6 +24,10 @@ pub struct GatewaySession {
     /// Resource name mapping: namespaced_name -> (server_id, original_name)
     pub resource_mapping: HashMap<String, (String, String)>,
 
+    /// Resource URI mapping: uri -> (server_id, original_name)
+    /// Used for routing resources/read by URI instead of namespaced name
+    pub resource_uri_mapping: HashMap<String, (String, String)>,
+
     /// Prompt name mapping: namespaced_name -> (server_id, original_name)
     pub prompt_mapping: HashMap<String, (String, String)>,
 
@@ -67,6 +71,7 @@ impl GatewaySession {
             merged_capabilities: None,
             tool_mapping: HashMap::new(),
             resource_mapping: HashMap::new(),
+            resource_uri_mapping: HashMap::new(),
             prompt_mapping: HashMap::new(),
             deferred_loading: None,
             cached_tools: None,
@@ -102,9 +107,17 @@ impl GatewaySession {
     /// Update resource mappings from a list of namespaced resources
     pub fn update_resource_mappings(&mut self, resources: &[NamespacedResource]) {
         self.resource_mapping.clear();
+        self.resource_uri_mapping.clear();
         for resource in resources {
+            // Map by namespaced name
             self.resource_mapping.insert(
                 resource.name.clone(),
+                (resource.server_id.clone(), resource.original_name.clone()),
+            );
+
+            // Also map by URI for URI-based routing
+            self.resource_uri_mapping.insert(
+                resource.uri.clone(),
                 (resource.server_id.clone(), resource.original_name.clone()),
             );
         }

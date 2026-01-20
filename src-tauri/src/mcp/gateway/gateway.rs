@@ -753,38 +753,40 @@ impl McpGateway {
         let resource_name = params.get("name").and_then(|n| n.as_str());
 
         let (server_id, original_name) = if let Some(name) = resource_name {
+            // Prefer namespaced name routing
             parse_namespace(name)
                 .ok_or_else(|| AppError::Mcp(format!("Invalid namespaced resource: {}", name)))?
         } else {
-            // Fallback: try to parse URI
-            let _uri = params
+            // Fallback: route by URI
+            let uri = params
                 .get("uri")
                 .and_then(|u| u.as_str())
                 .ok_or_else(|| AppError::Mcp("Missing resource name or URI".to_string()))?;
 
-            // Try to extract server_id from URI (e.g., "resource://filesystem/...")
-            // This is a fallback and may not always work
-            return Err(AppError::Mcp(
-                "Resource routing by URI not yet implemented. Use namespaced name.".to_string(),
-            ));
+            // Look up URI in session mapping
+            let session_read = session.read().await;
+            let mapping = session_read.resource_uri_mapping.get(uri).cloned();
+            drop(session_read);
+
+            mapping.ok_or_else(|| {
+                AppError::Mcp(format!(
+                    "Resource URI not found: {}. Make sure to call resources/list first.",
+                    uri
+                ))
+            })?
         };
 
-        // Verify mapping exists
-        let session_read = session.read().await;
-        let full_name = apply_namespace(&server_id, &original_name);
-        if !session_read.resource_mapping.contains_key(&full_name) {
-            drop(session_read);
-            return Err(AppError::Mcp(format!("Unknown resource: {}", full_name)));
-        }
-        drop(session_read);
-
-        // Transform request: Strip namespace
+        // Transform request based on routing method
         let mut transformed_request = request.clone();
-        if let Some(params) = transformed_request.params.as_mut() {
-            if let Some(obj) = params.as_object_mut() {
-                obj.insert("name".to_string(), json!(original_name));
+        if resource_name.is_some() {
+            // Routed by namespaced name - strip namespace from name parameter
+            if let Some(params) = transformed_request.params.as_mut() {
+                if let Some(obj) = params.as_object_mut() {
+                    obj.insert("name".to_string(), json!(original_name));
+                }
             }
         }
+        // If routed by URI, leave parameters unchanged - backend will handle its own URIs
 
         // Route to server
         self.server_manager
