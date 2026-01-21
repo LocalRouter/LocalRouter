@@ -126,6 +126,11 @@ mod tests {
             seed: None,
             repetition_penalty: None,
             extensions: None,
+            tools: None,
+            tool_choice: None,
+            response_format: None,
+            logprobs: None,
+            top_logprobs: None,
         };
 
         let params = HashMap::new();

@@ -14,7 +14,7 @@ use localrouter_ai::providers::{
         prompt_caching::PromptCachingAdapter, structured_outputs::StructuredOutputsAdapter,
         FeatureAdapter,
     },
-    ChatMessage, CompletionChoice, CompletionRequest, CompletionResponse, PromptTokensDetails,
+    ChatMessage, ChatMessageContent, CompletionChoice, CompletionRequest, CompletionResponse, PromptTokensDetails,
     TokenUsage,
 };
 use serde_json::json;
@@ -46,7 +46,10 @@ fn test_structured_outputs_person_schema_openai() {
         model: "gpt-4".to_string(),
         messages: vec![ChatMessage {
             role: "user".to_string(),
-            content: "Generate a person with name and age".to_string(),
+            content: ChatMessageContent::Text("Generate a person with name and age".to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
         }],
         temperature: None,
         max_tokens: None,
@@ -59,7 +62,12 @@ fn test_structured_outputs_person_schema_openai() {
         seed: None,
         repetition_penalty: None,
         extensions: None,
-    };
+            logprobs: None,
+            top_logprobs: None,
+            response_format: None,
+            tool_choice: None,
+            tools: None,
+        };
 
     // Adapt request
     let result = adapter.adapt_request(&mut request, &params);
@@ -198,19 +206,31 @@ fn test_prompt_caching_anthropic_request() {
         messages: vec![
             ChatMessage {
                 role: "system".to_string(),
-                content: "You are a helpful assistant.".to_string(),
+                content: ChatMessageContent::Text("You are a helpful assistant.".to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
             },
             ChatMessage {
                 role: "user".to_string(),
-                content: "What is the capital of France?".to_string(),
+                content: ChatMessageContent::Text("What is the capital of France?".to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
             },
             ChatMessage {
                 role: "assistant".to_string(),
-                content: "Paris is the capital of France.".to_string(),
+                content: ChatMessageContent::Text("Paris is the capital of France.".to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
             },
             ChatMessage {
                 role: "user".to_string(),
-                content: "What about Germany?".to_string(),
+                content: ChatMessageContent::Text("What about Germany?".to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
             },
         ],
         temperature: None,
@@ -224,7 +244,12 @@ fn test_prompt_caching_anthropic_request() {
         seed: None,
         repetition_penalty: None,
         extensions: None,
-    };
+            logprobs: None,
+            top_logprobs: None,
+            response_format: None,
+            tool_choice: None,
+            tools: None,
+        };
 
     // Adapt request
     let result = adapter.adapt_request(&mut request, &params);
@@ -262,7 +287,10 @@ fn test_prompt_caching_cost_savings_calculation() {
             index: 0,
             message: ChatMessage {
                 role: "assistant".to_string(),
-                content: "Response content".to_string(),
+                content: ChatMessageContent::Text("Response content".to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
             },
             finish_reason: Some("stop".to_string()),
         }],
@@ -324,7 +352,10 @@ fn test_logprobs_openai_request() {
         model: "gpt-4".to_string(),
         messages: vec![ChatMessage {
             role: "user".to_string(),
-            content: "Say hello".to_string(),
+            content: ChatMessageContent::Text("Say hello".to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
         }],
         temperature: None,
         max_tokens: None,
@@ -337,7 +368,12 @@ fn test_logprobs_openai_request() {
         seed: None,
         repetition_penalty: None,
         extensions: None,
-    };
+            logprobs: None,
+            top_logprobs: None,
+            response_format: None,
+            tool_choice: None,
+            tools: None,
+        };
 
     // Adapt request
     let result = adapter.adapt_request(&mut request, &params);
@@ -392,7 +428,10 @@ fn test_logprobs_response_extraction() {
             index: 0,
             message: ChatMessage {
                 role: "assistant".to_string(),
-                content: "Hello world".to_string(),
+                content: ChatMessageContent::Text("Hello world".to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
             },
             finish_reason: Some("stop".to_string()),
         }],
@@ -439,7 +478,10 @@ fn test_logprobs_various_top_values() {
             model: "gpt-4".to_string(),
             messages: vec![ChatMessage {
                 role: "user".to_string(),
-                content: "Test".to_string(),
+                content: ChatMessageContent::Text("Test".to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
             }],
             temperature: None,
             max_tokens: None,
@@ -452,6 +494,11 @@ fn test_logprobs_various_top_values() {
             seed: None,
             repetition_penalty: None,
             extensions: None,
+            logprobs: None,
+            top_logprobs: None,
+            response_format: None,
+            tool_choice: None,
+            tools: None,
         };
 
         let result = adapter.adapt_request(&mut request, &params);
@@ -495,7 +542,10 @@ fn test_json_mode_openai() {
         model: "gpt-4".to_string(),
         messages: vec![ChatMessage {
             role: "user".to_string(),
-            content: "Generate a JSON object with a greeting".to_string(),
+            content: ChatMessageContent::Text("Generate a JSON object with a greeting".to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
         }],
         temperature: None,
         max_tokens: None,
@@ -508,7 +558,12 @@ fn test_json_mode_openai() {
         seed: None,
         repetition_penalty: None,
         extensions: None,
-    };
+            logprobs: None,
+            top_logprobs: None,
+            response_format: None,
+            tool_choice: None,
+            tools: None,
+        };
 
     // Adapt request
     let result = adapter.adapt_request(&mut request, &params);
@@ -532,7 +587,10 @@ fn test_json_mode_anthropic() {
         model: "claude-3-opus".to_string(),
         messages: vec![ChatMessage {
             role: "user".to_string(),
-            content: "Generate a JSON object".to_string(),
+            content: ChatMessageContent::Text("Generate a JSON object".to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
         }],
         temperature: None,
         max_tokens: None,
@@ -545,7 +603,12 @@ fn test_json_mode_anthropic() {
         seed: None,
         repetition_penalty: None,
         extensions: None,
-    };
+            logprobs: None,
+            top_logprobs: None,
+            response_format: None,
+            tool_choice: None,
+            tools: None,
+        };
 
     // Adapt request
     let result = adapter.adapt_request(&mut request, &params);
@@ -621,7 +684,10 @@ fn test_json_mode_validation_invalid() {
             index: 0,
             message: ChatMessage {
                 role: "assistant".to_string(),
-                content: "This is not valid JSON at all".to_string(),
+                content: ChatMessageContent::Text("This is not valid JSON at all".to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
             },
             finish_reason: Some("stop".to_string()),
         }],
@@ -661,7 +727,10 @@ fn test_json_mode_all_providers() {
             model: model.to_string(),
             messages: vec![ChatMessage {
                 role: "user".to_string(),
-                content: "Test".to_string(),
+                content: ChatMessageContent::Text("Test".to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
             }],
             temperature: None,
             max_tokens: None,
@@ -674,6 +743,11 @@ fn test_json_mode_all_providers() {
             seed: None,
             repetition_penalty: None,
             extensions: None,
+            logprobs: None,
+            top_logprobs: None,
+            response_format: None,
+            tool_choice: None,
+            tools: None,
         };
 
         let result = adapter.adapt_request(&mut request, &HashMap::new());
@@ -716,11 +790,17 @@ fn test_structured_outputs_with_prompt_caching() {
         messages: vec![
             ChatMessage {
                 role: "system".to_string(),
-                content: "You are a helpful assistant.".to_string(),
+                content: ChatMessageContent::Text("You are a helpful assistant.".to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
             },
             ChatMessage {
                 role: "user".to_string(),
-                content: "What is 2+2?".to_string(),
+                content: ChatMessageContent::Text("What is 2+2?".to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
             },
         ],
         temperature: None,
@@ -734,7 +814,12 @@ fn test_structured_outputs_with_prompt_caching() {
         seed: None,
         repetition_penalty: None,
         extensions: None,
-    };
+            logprobs: None,
+            top_logprobs: None,
+            response_format: None,
+            tool_choice: None,
+            tools: None,
+        };
 
     // Apply both adapters
     let result1 = structured_adapter.adapt_request(&mut request, &structured_params);
@@ -772,7 +857,10 @@ fn test_json_mode_with_logprobs() {
         model: "gpt-4".to_string(),
         messages: vec![ChatMessage {
             role: "user".to_string(),
-            content: "Generate JSON".to_string(),
+            content: ChatMessageContent::Text("Generate JSON".to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
         }],
         temperature: None,
         max_tokens: None,
@@ -785,7 +873,12 @@ fn test_json_mode_with_logprobs() {
         seed: None,
         repetition_penalty: None,
         extensions: None,
-    };
+            logprobs: None,
+            top_logprobs: None,
+            response_format: None,
+            tool_choice: None,
+            tools: None,
+        };
 
     // Apply both adapters
     let result1 = json_adapter.adapt_request(&mut request, &json_params);

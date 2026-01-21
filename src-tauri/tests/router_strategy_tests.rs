@@ -16,7 +16,7 @@ use localrouter_ai::monitoring::metrics::MetricsCollector;
 use localrouter_ai::monitoring::storage::MetricsDatabase;
 use localrouter_ai::providers::health::HealthCheckManager;
 use localrouter_ai::providers::registry::ProviderRegistry;
-use localrouter_ai::providers::{ChatMessage, CompletionRequest};
+use localrouter_ai::providers::{ChatMessage, ChatMessageContent, CompletionRequest};
 use localrouter_ai::router::{RateLimiterManager, Router};
 use localrouter_ai::utils::errors::AppError;
 use localrouter_ai::config::ConfigManager;
@@ -65,7 +65,10 @@ fn create_test_request(model: &str) -> CompletionRequest {
         model: model.to_string(),
         messages: vec![ChatMessage {
             role: "user".to_string(),
-            content: "test".to_string(),
+            content: ChatMessageContent::Text("test".to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
         }],
         temperature: Some(0.7),
         max_tokens: Some(100),
@@ -78,7 +81,12 @@ fn create_test_request(model: &str) -> CompletionRequest {
         seed: None,
         repetition_penalty: None,
         extensions: None,
-    }
+            logprobs: None,
+            top_logprobs: None,
+            response_format: None,
+            tool_choice: None,
+            tools: None,
+        }
 }
 
 /// Helper to create a test router

@@ -5,7 +5,9 @@
 //! - Standard test requests and expected responses
 //! - Assertion helpers
 
-use localrouter_ai::providers::*;
+use localrouter_ai::providers::{
+    ChatMessage, ChatMessageContent, CompletionRequest, CompletionResponse, TokenUsage,
+};;
 use serde_json::json;
 use wiremock::{
     matchers::{header, method, path, path_regex},
@@ -43,7 +45,12 @@ pub fn standard_completion_request() -> CompletionRequest {
         seed: None,
         repetition_penalty: None,
         extensions: None,
-    }
+            logprobs: None,
+            top_logprobs: None,
+            response_format: None,
+            tool_choice: None,
+            tools: None,
+        }
 }
 
 /// Standard streaming test request
@@ -68,7 +75,12 @@ pub fn standard_streaming_request() -> CompletionRequest {
         seed: None,
         repetition_penalty: None,
         extensions: None,
-    }
+            logprobs: None,
+            top_logprobs: None,
+            response_format: None,
+            tool_choice: None,
+            tools: None,
+        }
 }
 
 /// Test cases to run for all providers
