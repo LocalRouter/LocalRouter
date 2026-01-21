@@ -1239,6 +1239,15 @@ impl ConfigManager {
         &self.config_path
     }
 
+    /// Get global filesystem roots
+    ///
+    /// Returns a clone of the configured global roots for MCP servers.
+    /// Use with per-client roots to determine final roots for a session.
+    pub fn get_roots(&self) -> Vec<RootConfig> {
+        let config = self.config.read();
+        config.roots.clone()
+    }
+
     /// Ensure default strategy exists and assign clients without strategy
     pub async fn ensure_default_strategy(&self) -> AppResult<()> {
         let mut modified = false;

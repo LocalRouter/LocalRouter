@@ -5,6 +5,7 @@ use super::{
     CompletionRequest, CompletionResponse, HealthStatus, ModelInfo, ModelProvider, PricingInfo,
     ProviderHealth, TokenUsage,
 };
+use crate::api_keys::{CachedKeychain, keychain_trait::KeychainStorage};
 use crate::utils::errors::{AppError, AppResult};
 use async_trait::async_trait;
 use chrono::Utc;
@@ -13,8 +14,11 @@ use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use std::pin::Pin;
 use std::time::Instant;
+use tracing::{debug, info};
 
 const OPENAI_API_BASE: &str = "https://api.openai.com/v1";
+const OAUTH_KEYCHAIN_SERVICE: &str = "LocalRouter-ProviderTokens";
+const OAUTH_PROVIDER_ID: &str = "openai-codex";
 
 /// OpenAI provider implementation
 pub struct OpenAIProvider {
@@ -46,6 +50,53 @@ impl OpenAIProvider {
             AppError::Provider(format!("No API key found for provider '{}'", name))
         })?;
         Ok(Self::new(api_key))
+    }
+
+    /// Create a new OpenAI provider from OAuth tokens or API key (OAuth-first)
+    ///
+    /// This method checks for OAuth tokens first, and falls back to API key if:
+    /// - No OAuth tokens are stored
+    /// - OAuth tokens are expired and cannot be refreshed
+    ///
+    /// # Arguments
+    /// * `provider_name` - The provider name used to store the API key (defaults to "openai")
+    ///
+    /// # Returns
+    /// * `Ok(Self)` if either OAuth tokens or API key are available
+    /// * `Err(AppError)` if neither OAuth nor API key authentication is available
+    pub fn from_oauth_or_key(provider_name: Option<&str>) -> AppResult<Self> {
+        let keychain = CachedKeychain::system();
+
+        // Try OAuth first
+        if let Ok(Some(access_token)) = keychain.get(
+            OAUTH_KEYCHAIN_SERVICE,
+            &format!("{}_access_token", OAUTH_PROVIDER_ID),
+        ) {
+            info!("Using OAuth credentials for OpenAI provider");
+            debug!("Loaded OAuth access token from keychain for openai-codex");
+            return Ok(Self::new(access_token));
+        }
+
+        // Fall back to API key
+        debug!("No OAuth credentials found, falling back to API key for OpenAI");
+        Self::from_stored_key(provider_name)
+    }
+
+    /// Check if OAuth credentials are available for this provider
+    ///
+    /// # Returns
+    /// * `true` if OAuth access token exists in keychain
+    /// * `false` otherwise
+    pub fn has_oauth_credentials() -> bool {
+        let keychain = CachedKeychain::system();
+        keychain
+            .get(
+                OAUTH_KEYCHAIN_SERVICE,
+                &format!("{}_access_token", OAUTH_PROVIDER_ID),
+            )
+            .ok()
+            .flatten()
+            .is_some()
     }
 
     /// Get pricing information for known OpenAI models

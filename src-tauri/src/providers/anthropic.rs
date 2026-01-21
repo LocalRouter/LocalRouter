@@ -10,7 +10,9 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::pin::Pin;
 use std::time::Instant;
+use tracing::{debug, info};
 
+use crate::api_keys::{CachedKeychain, keychain_trait::KeychainStorage};
 use crate::utils::errors::{AppError, AppResult};
 
 use super::{
@@ -21,6 +23,8 @@ use super::{
 
 const ANTHROPIC_API_BASE: &str = "https://api.anthropic.com/v1";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
+const OAUTH_KEYCHAIN_SERVICE: &str = "LocalRouter-ProviderTokens";
+const OAUTH_PROVIDER_ID: &str = "anthropic-claude";
 
 /// Anthropic provider for Claude models
 pub struct AnthropicProvider {
@@ -64,6 +68,53 @@ impl AnthropicProvider {
             AppError::Provider(format!("No API key found for provider '{}'", name))
         })?;
         Self::new(api_key)
+    }
+
+    /// Create a new Anthropic provider from OAuth tokens or API key (OAuth-first)
+    ///
+    /// This method checks for OAuth tokens first, and falls back to API key if:
+    /// - No OAuth tokens are stored
+    /// - OAuth tokens are expired and cannot be refreshed
+    ///
+    /// # Arguments
+    /// * `provider_name` - The provider name used to store the API key (defaults to "anthropic")
+    ///
+    /// # Returns
+    /// * `Ok(Self)` if either OAuth tokens or API key are available
+    /// * `Err(AppError)` if neither OAuth nor API key authentication is available
+    pub fn from_oauth_or_key(provider_name: Option<&str>) -> AppResult<Self> {
+        let keychain = CachedKeychain::system();
+
+        // Try OAuth first
+        if let Ok(Some(access_token)) = keychain.get(
+            OAUTH_KEYCHAIN_SERVICE,
+            &format!("{}_access_token", OAUTH_PROVIDER_ID),
+        ) {
+            info!("Using OAuth credentials for Anthropic provider");
+            debug!("Loaded OAuth access token from keychain for anthropic-claude");
+            return Self::new(access_token);
+        }
+
+        // Fall back to API key
+        debug!("No OAuth credentials found, falling back to API key for Anthropic");
+        Self::from_stored_key(provider_name)
+    }
+
+    /// Check if OAuth credentials are available for this provider
+    ///
+    /// # Returns
+    /// * `true` if OAuth access token exists in keychain
+    /// * `false` otherwise
+    pub fn has_oauth_credentials() -> bool {
+        let keychain = CachedKeychain::system();
+        keychain
+            .get(
+                OAUTH_KEYCHAIN_SERVICE,
+                &format!("{}_access_token", OAUTH_PROVIDER_ID),
+            )
+            .ok()
+            .flatten()
+            .is_some()
     }
 
     /// Convert OpenAI format messages to Anthropic format

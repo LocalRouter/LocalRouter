@@ -2,17 +2,49 @@
 //!
 //! Tests the complete flow from HTTP request → gateway → backend servers → response
 
+use localrouter_ai::config::{AppConfig, ConfigManager};
 use localrouter_ai::mcp::gateway::{GatewayConfig, McpGateway};
 use localrouter_ai::mcp::protocol::{JsonRpcRequest, JsonRpcResponse};
 use localrouter_ai::mcp::McpServerManager;
+use localrouter_ai::monitoring::database::MetricsDatabase;
+use localrouter_ai::monitoring::metrics::MetricsCollector;
+use localrouter_ai::providers::health::HealthCheckManager;
+use localrouter_ai::providers::registry::ProviderRegistry;
+use localrouter_ai::router::{RateLimiterManager, Router};
 use serde_json::json;
 use std::sync::Arc;
+
+/// Helper to create a minimal test router for gateway tests
+fn create_test_router() -> Arc<Router> {
+    let config = AppConfig::default();
+    let config_manager = Arc::new(ConfigManager::new(
+        config,
+        std::path::PathBuf::from("/tmp/test_gateway_router.yaml"),
+    ));
+
+    let health_manager = Arc::new(HealthCheckManager::default());
+    let provider_registry = Arc::new(ProviderRegistry::new(health_manager));
+    let rate_limiter = Arc::new(RateLimiterManager::new(None));
+
+    let metrics_db_path =
+        std::env::temp_dir().join(format!("test_gateway_metrics_{}.db", uuid::Uuid::new_v4()));
+    let metrics_db = Arc::new(MetricsDatabase::new(metrics_db_path).unwrap());
+    let metrics_collector = Arc::new(MetricsCollector::new(metrics_db));
+
+    Arc::new(Router::new(
+        config_manager,
+        provider_registry,
+        rate_limiter,
+        metrics_collector,
+    ))
+}
 
 #[tokio::test]
 async fn test_gateway_session_creation() {
     let manager = Arc::new(McpServerManager::new());
     let config = GatewayConfig::default();
-    let gateway = Arc::new(McpGateway::new(manager, config));
+    let router = create_test_router();
+    let gateway = Arc::new(McpGateway::new(manager, config, router));
 
     let request = JsonRpcRequest::new(
         Some(json!(1)),
@@ -56,7 +88,8 @@ async fn test_gateway_namespace_parsing() {
 async fn test_gateway_empty_allowed_servers() {
     let manager = Arc::new(McpServerManager::new());
     let config = GatewayConfig::default();
-    let gateway = Arc::new(McpGateway::new(manager, config));
+    let router = create_test_router();
+    let gateway = Arc::new(McpGateway::new(manager, config, router));
 
     let request = JsonRpcRequest::new(Some(json!(1)), "tools/list".to_string(), Some(json!({})));
 
@@ -101,7 +134,8 @@ async fn test_gateway_session_expiration() {
 async fn test_gateway_concurrent_requests() {
     let manager = Arc::new(McpServerManager::new());
     let config = GatewayConfig::default();
-    let gateway = Arc::new(McpGateway::new(manager, config));
+    let router = create_test_router();
+    let gateway = Arc::new(McpGateway::new(manager, config, router));
 
     // Spawn multiple concurrent requests
     let mut handles = vec![];
@@ -190,7 +224,8 @@ async fn test_gateway_cleanup_expired_sessions() {
     let manager = Arc::new(McpServerManager::new());
     let mut config = GatewayConfig::default();
     config.session_ttl_seconds = 1; // 1 second TTL
-    let gateway = Arc::new(McpGateway::new(manager, config));
+    let router = create_test_router();
+    let gateway = Arc::new(McpGateway::new(manager, config, router));
 
     // Create a session
     let request = JsonRpcRequest::new(Some(json!(1)), "ping".to_string(), None);

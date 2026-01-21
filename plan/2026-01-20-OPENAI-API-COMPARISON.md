@@ -202,24 +202,50 @@ Err(ApiErrorResponse::new(
 - Maps `delta.content` to `text` field in chunk choices
 - Tracks tokens and records metrics asynchronously after stream completes
 
-#### Bug #3: Multimodal Content Rejected
-**File**: `src-tauri/src/server/routes/chat.rs:340-347`
-**Issue**: Rejects `content` with image parts
-**Impact**: Cannot use vision models (GPT-4 Vision, Claude 3, etc.)
-**Fix Required**:
-1. Extract and pass multimodal content to providers
-2. Update provider trait to support multimodal messages
-3. Implement image_url handling
+#### ✅ Bug #3: Multimodal Content Rejected (FIXED)
+**File**: `src-tauri/src/server/routes/chat.rs`, `src-tauri/src/providers/mod.rs`
+**Status**: ✅ FIXED (2026-01-21)
+**Issue**: Previously rejected `content` with image parts
+**Fix Applied**:
+1. ✅ Added `ChatMessageContent` enum to support text-only or multimodal parts
+2. ✅ Added `ContentPart` enum with `Text` and `ImageUrl` variants
+3. ✅ Added `ImageUrl` struct with `url` and optional `detail` fields
+4. ✅ Updated `ChatMessage.content` from `String` to `ChatMessageContent`
+5. ✅ Updated `convert_to_provider_request()` to properly convert multimodal content
+6. ✅ Added helper methods: `as_text()`, `as_str()`, `is_empty()`, `has_images()`
+7. ✅ Updated all providers to handle `ChatMessageContent`
 
-**Code Location**:
+**Implementation Details**:
+- `ChatMessageContent::Text(String)` - simple text messages
+- `ChatMessageContent::Parts(Vec<ContentPart>)` - multimodal messages with text and images
+- Providers that don't support vision use `.as_text()` to extract text content
+- Vision-capable providers (Anthropic Claude, OpenAI GPT-4V, Gemini) can now handle image URLs
+- Fully compatible with OpenAI's multimodal content format
+
+**Code Location** (after fix):
 ```rust
-// Line 340-347
-Some(MessageContent::Parts(_)) => {
-    // For now, extract text from parts
-    // Full multimodal support would require more complex handling
-    return Err(ApiErrorResponse::bad_request(
-        "Multimodal content not yet fully supported",
-    ));
+// Line 395-428: chat.rs
+Some(MessageContent::Parts(parts)) => {
+    // Convert server content parts to provider content parts
+    let provider_parts: Vec<ProviderContentPart> = parts
+        .iter()
+        .map(|part| match part {
+            crate::server::types::ContentPart::Text { text } => {
+                ProviderContentPart::Text {
+                    text: text.clone(),
+                }
+            }
+            crate::server::types::ContentPart::ImageUrl { image_url } => {
+                ProviderContentPart::ImageUrl {
+                    image_url: ProviderImageUrl {
+                        url: image_url.url.clone(),
+                        detail: image_url.detail.clone(),
+                    },
+                }
+            }
+        })
+        .collect();
+    ProviderMessageContent::Parts(provider_parts)
 }
 ```
 
@@ -411,7 +437,7 @@ Based on the analysis:
 | Moderations | ✅ | ❌ | Future consideration |
 | Streaming | ✅ | ✅ | Chat + Completions (Bug #1 FIXED) |
 | Tool Calling | ✅ | ❌ | Defined but not implemented |
-| Multimodal | ✅ | ❌ | Vision not supported |
+| Multimodal | ✅ | ✅ | Vision models supported (Bug #3 FIXED) |
 | JSON Mode | ✅ | ⚠️ | Validated but not enforced |
 | Structured Outputs | ✅ | ⚠️ | Schema defined but not enforced |
 
@@ -427,9 +453,9 @@ Based on the analysis:
 ### P1 - Major Issues (Fix Within 1 Week)
 2. ~~**Bug #1**: Completions streaming not supported~~ ✅ FIXED (2026-01-20)
 
-3. **Bug #3**: Multimodal content rejected
-   - **Rationale**: Cannot use vision models
-   - **User Impact**: MEDIUM - Blocks GPT-4V, Claude 3 Opus usage
+3. ~~**Bug #3**: Multimodal content rejected~~ ✅ FIXED (2026-01-21)
+   - **Rationale**: Vision models now supported
+   - **User Impact**: NOW ENABLED - GPT-4V, Claude 3 Opus, Gemini vision models can process images
 
 ### P2 - Important Issues (Fix Within 1 Month)
 4. **Bug #4**: Tool calling not implemented

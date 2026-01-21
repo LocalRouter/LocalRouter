@@ -8,6 +8,7 @@ mod clients;
 mod config;
 mod mcp;
 mod monitoring;
+mod oauth_browser;
 mod oauth_clients;
 mod providers;
 mod routellm;
@@ -298,10 +299,10 @@ async fn run_gui_mode() -> anyhow::Result<()> {
         providers::oauth::github_copilot::GitHubCopilotOAuthProvider::new(),
     ));
     oauth_manager.register_provider(Arc::new(
-        providers::oauth::openai_codex::OpenAICodexOAuthProvider::new(),
+        providers::oauth::openai_codex::OpenAICodexOAuthProvider::new(keychain.clone()),
     ));
     oauth_manager.register_provider(Arc::new(
-        providers::oauth::anthropic_claude::AnthropicClaudeOAuthProvider::new(),
+        providers::oauth::anthropic_claude::AnthropicClaudeOAuthProvider::new(keychain.clone()),
     ));
     info!("Registered 3 OAuth providers");
 

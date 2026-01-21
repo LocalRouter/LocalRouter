@@ -123,6 +123,7 @@ impl AppState {
         let mcp_gateway = Arc::new(McpGateway::new(
             mcp_server_manager.clone(),
             crate::mcp::gateway::GatewayConfig::default(),
+            router.clone(),
         ));
 
         Self {
@@ -152,6 +153,7 @@ impl AppState {
         let mcp_gateway = Arc::new(McpGateway::new(
             mcp_server_manager.clone(),
             crate::mcp::gateway::GatewayConfig::default(),
+            self.router.clone(),
         ));
 
         Self {

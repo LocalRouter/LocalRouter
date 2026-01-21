@@ -48,7 +48,7 @@ impl AnthropicClaudeOAuthProvider {
 
 impl Default for AnthropicClaudeOAuthProvider {
     fn default() -> Self {
-        Self::new(CachedKeychain::new())
+        Self::new(CachedKeychain::system())
     }
 }
 
@@ -188,7 +188,7 @@ impl OAuthProvider for AnthropicClaudeOAuthProvider {
 
         // Use unified token exchanger
         let token_exchanger = crate::oauth_browser::TokenExchanger::new();
-        let keychain = CachedKeychain::new();
+        let keychain = CachedKeychain::system();
 
         let new_tokens = token_exchanger
             .refresh_tokens(&config, refresh_token, &keychain)
@@ -210,7 +210,7 @@ impl OAuthProvider for AnthropicClaudeOAuthProvider {
     }
 
     async fn cancel_oauth_flow(&self) {
-        if let Some(flow_id) = *self.current_flow.write().await.take() {
+        if let Some(flow_id) = self.current_flow.write().await.take() {
             if let Err(e) = self.flow_manager.cancel_flow(flow_id) {
                 warn!("Failed to cancel Anthropic Claude OAuth flow: {}", e);
             } else {

@@ -102,15 +102,21 @@ impl CallbackServerManager {
         };
 
         // Get or create server for this port
-        let mut servers = self.active_servers.lock();
+        let server_exists = {
+            let servers = self.active_servers.lock();
+            servers.get(&port).is_some()
+        };
 
-        if let Some(server) = servers.get(&port) {
+        if server_exists {
             // Server already exists, add listener
             info!(
                 "Adding listener for flow {} to existing server on port {}",
                 flow_id, port
             );
-            server.lock().listeners.insert(flow_id, listener);
+            let servers = self.active_servers.lock();
+            if let Some(server) = servers.get(&port) {
+                server.lock().listeners.insert(flow_id, listener);
+            }
         } else {
             // Start new server
             info!("Starting new OAuth callback server on port {}", port);
@@ -124,6 +130,8 @@ impl CallbackServerManager {
             // Start the HTTP server
             self.start_server(port, Arc::clone(&server_state)).await?;
 
+            // Insert into map after await
+            let mut servers = self.active_servers.lock();
             servers.insert(port, server_state);
         }
 

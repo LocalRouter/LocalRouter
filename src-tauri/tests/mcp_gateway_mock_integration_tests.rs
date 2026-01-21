@@ -8,11 +8,16 @@ mod mcp_tests;
 
 use chrono::Utc;
 use localrouter_ai::config::{
-    McpAuthConfig, McpServerConfig, McpTransportConfig, McpTransportType,
+    AppConfig, ConfigManager, McpAuthConfig, McpServerConfig, McpTransportConfig, McpTransportType,
 };
 use localrouter_ai::mcp::gateway::{GatewayConfig, McpGateway};
 use localrouter_ai::mcp::protocol::{JsonRpcRequest, JsonRpcResponse};
 use localrouter_ai::mcp::McpServerManager;
+use localrouter_ai::monitoring::database::MetricsDatabase;
+use localrouter_ai::monitoring::metrics::MetricsCollector;
+use localrouter_ai::providers::health::HealthCheckManager;
+use localrouter_ai::providers::registry::ProviderRegistry;
+use localrouter_ai::router::{RateLimiterManager, Router};
 use mcp_tests::common::request_with_params;
 use serde_json::json;
 use std::sync::Arc;
@@ -20,6 +25,31 @@ use wiremock::{
     matchers::{method as http_method, path},
     Match, Mock, MockServer, Request, ResponseTemplate,
 };
+
+/// Helper to create a minimal test router for gateway tests
+fn create_test_router() -> Arc<Router> {
+    let config = AppConfig::default();
+    let config_manager = Arc::new(ConfigManager::new(
+        config,
+        std::path::PathBuf::from("/tmp/test_gateway_mock_router.yaml"),
+    ));
+
+    let health_manager = Arc::new(HealthCheckManager::default());
+    let provider_registry = Arc::new(ProviderRegistry::new(health_manager));
+    let rate_limiter = Arc::new(RateLimiterManager::new(None));
+
+    let metrics_db_path =
+        std::env::temp_dir().join(format!("test_gateway_mock_metrics_{}.db", uuid::Uuid::new_v4()));
+    let metrics_db = Arc::new(MetricsDatabase::new(metrics_db_path).unwrap());
+    let metrics_collector = Arc::new(MetricsCollector::new(metrics_db));
+
+    Arc::new(Router::new(
+        config_manager,
+        provider_registry,
+        rate_limiter,
+        metrics_collector,
+    ))
+}
 
 /// Custom matcher for JSON-RPC method field
 struct JsonRpcMethodMatcher {
@@ -224,7 +254,8 @@ async fn setup_gateway_with_two_servers() -> (
 
     // Create gateway
     let config = GatewayConfig::default();
-    let gateway = Arc::new(McpGateway::new(manager.clone(), config));
+    let router = create_test_router();
+    let gateway = Arc::new(McpGateway::new(manager.clone(), config, router));
 
     (gateway, manager, server1_mock, server2_mock)
 }

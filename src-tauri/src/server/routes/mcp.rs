@@ -92,9 +92,8 @@ pub async fn mcp_gateway_handler(
     );
 
     // Merge global and per-client roots
-    let config = state.config.read();
-    let roots = merge_roots(&config.roots, client.roots.as_ref());
-    drop(config);
+    let global_roots = state.config_manager.get_roots();
+    let roots = merge_roots(&global_roots, client.roots.as_ref());
 
     // Handle request via gateway
     match state
@@ -195,6 +194,69 @@ pub async fn mcp_server_handler(
         if let Err(e) = state.mcp_server_manager.start_server(&server_id).await {
             return ApiErrorResponse::bad_gateway(format!("Failed to start MCP server: {}", e))
                 .into_response();
+        }
+    }
+
+    // Intercept client capability methods (handle by gateway, not backend server)
+    // These are requests FROM backend server TO gateway (gateway acts as MCP client)
+    match request.method.as_str() {
+        "roots/list" => {
+            // Return configured roots for this client
+            let global_roots = state.config_manager.get_roots();
+            let roots = merge_roots(&global_roots, client.roots.as_ref());
+
+            let result = serde_json::json!({
+                "roots": roots
+            });
+
+            let response = crate::mcp::protocol::JsonRpcResponse::success(
+                request.id.unwrap_or(serde_json::Value::Null),
+                result,
+            );
+
+            return Json(response).into_response();
+        }
+
+        "sampling/createMessage" => {
+            // Return "not yet implemented" for sampling
+            let error = crate::mcp::protocol::JsonRpcError::custom(
+                -32601,
+                "sampling/createMessage not yet fully implemented".to_string(),
+                Some(serde_json::json!({
+                    "status": "partial",
+                    "hint": "Sampling infrastructure is in place but requires provider integration"
+                })),
+            );
+
+            let response = crate::mcp::protocol::JsonRpcResponse::error(
+                request.id.unwrap_or(serde_json::Value::Null),
+                error,
+            );
+
+            return Json(response).into_response();
+        }
+
+        "elicitation/requestInput" => {
+            // Return "not yet implemented" for elicitation
+            let error = crate::mcp::protocol::JsonRpcError::custom(
+                -32601,
+                "elicitation/requestInput not yet implemented".to_string(),
+                Some(serde_json::json!({
+                    "status": "planned",
+                    "hint": "Elicitation support planned for future release"
+                })),
+            );
+
+            let response = crate::mcp::protocol::JsonRpcResponse::error(
+                request.id.unwrap_or(serde_json::Value::Null),
+                error,
+            );
+
+            return Json(response).into_response();
+        }
+
+        _ => {
+            // Normal request - forward to backend server
         }
     }
 
@@ -436,4 +498,75 @@ fn merge_roots(global_roots: &[RootConfig], client_roots: Option<&Vec<RootConfig
             name: r.name.clone(),
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_merge_roots_uses_global_when_no_client_override() {
+        let global_roots = vec![
+            RootConfig {
+                uri: "file:///global/path1".to_string(),
+                name: Some("Global 1".to_string()),
+                enabled: true,
+            },
+            RootConfig {
+                uri: "file:///global/path2".to_string(),
+                name: None,
+                enabled: true,
+            },
+        ];
+
+        let result = merge_roots(&global_roots, None);
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].uri, "file:///global/path1");
+        assert_eq!(result[0].name, Some("Global 1".to_string()));
+        assert_eq!(result[1].uri, "file:///global/path2");
+        assert_eq!(result[1].name, None);
+    }
+
+    #[test]
+    fn test_merge_roots_uses_client_override_exclusively() {
+        let global_roots = vec![RootConfig {
+            uri: "file:///global/path".to_string(),
+            name: Some("Global".to_string()),
+            enabled: true,
+        }];
+
+        let client_roots = vec![RootConfig {
+            uri: "file:///client/path".to_string(),
+            name: Some("Client".to_string()),
+            enabled: true,
+        }];
+
+        let result = merge_roots(&global_roots, Some(&client_roots));
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].uri, "file:///client/path");
+        assert_eq!(result[0].name, Some("Client".to_string()));
+    }
+
+    #[test]
+    fn test_merge_roots_filters_disabled() {
+        let global_roots = vec![
+            RootConfig {
+                uri: "file:///enabled".to_string(),
+                name: Some("Enabled".to_string()),
+                enabled: true,
+            },
+            RootConfig {
+                uri: "file:///disabled".to_string(),
+                name: Some("Disabled".to_string()),
+                enabled: false,
+            },
+        ];
+
+        let result = merge_roots(&global_roots, None);
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].uri, "file:///enabled");
+    }
 }

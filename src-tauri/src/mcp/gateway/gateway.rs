@@ -8,6 +8,7 @@ use tokio::sync::RwLock;
 
 use crate::mcp::manager::McpServerManager;
 use crate::mcp::protocol::{JsonRpcError, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, McpPrompt, McpResource, McpTool};
+use crate::router::Router;
 use crate::utils::errors::{AppError, AppResult};
 
 use super::deferred::{create_search_tool, search_prompts, search_resources, search_tools};
@@ -34,18 +35,22 @@ pub struct McpGateway {
     /// Allows external clients to subscribe to real-time notifications from MCP servers
     /// Format: (server_id, notification)
     notification_broadcast: Option<Arc<tokio::sync::broadcast::Sender<(String, JsonRpcNotification)>>>,
+
+    /// Router for LLM provider access (for sampling/createMessage support)
+    router: Arc<Router>,
 }
 
 impl McpGateway {
     /// Create a new MCP gateway
-    pub fn new(server_manager: Arc<McpServerManager>, config: GatewayConfig) -> Self {
-        Self::new_with_broadcast(server_manager, config, None)
+    pub fn new(server_manager: Arc<McpServerManager>, config: GatewayConfig, router: Arc<Router>) -> Self {
+        Self::new_with_broadcast(server_manager, config, router, None)
     }
 
     /// Create a new MCP gateway with optional broadcast channel for client notifications
     pub fn new_with_broadcast(
         server_manager: Arc<McpServerManager>,
         config: GatewayConfig,
+        router: Arc<Router>,
         notification_broadcast: Option<Arc<tokio::sync::broadcast::Sender<(String, JsonRpcNotification)>>>,
     ) -> Self {
         Self {
@@ -54,6 +59,7 @@ impl McpGateway {
             config,
             notification_handlers_registered: Arc::new(DashMap::new()),
             notification_broadcast,
+            router,
         }
     }
 
