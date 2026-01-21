@@ -74,6 +74,28 @@ pub struct RouteLLMDownloadStatus {
     pub error: Option<String>,
 }
 
+/// MCP filesystem root configuration
+///
+/// Represents a directory boundary for MCP servers.
+/// Note: Roots are advisory only, not enforced as a security boundary.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RootConfig {
+    /// File URI (must use file:// scheme)
+    pub uri: String,
+
+    /// Optional display name for the root
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+
+    /// Whether this root is enabled
+    #[serde(default = "default_root_enabled")]
+    pub enabled: bool,
+}
+
+fn default_root_enabled() -> bool {
+    true
+}
+
 /// Global RouteLLM settings (stored in AppConfig)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RouteLLMGlobalSettings {
@@ -279,6 +301,10 @@ pub struct AppConfig {
     /// Model cache configuration
     #[serde(default)]
     pub model_cache: ModelCacheConfig,
+
+    /// Global MCP filesystem roots (advisory boundaries)
+    #[serde(default)]
+    pub roots: Vec<RootConfig>,
 }
 
 /// Pricing override for a specific model
@@ -519,6 +545,12 @@ pub struct Client {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[deprecated(note = "Use strategy_id instead")]
     pub routing_config: Option<ModelRoutingConfig>,
+
+    /// MCP filesystem roots override (per-client)
+    /// If None, uses global roots from AppConfig
+    /// If Some, replaces global roots entirely for this client
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub roots: Option<Vec<RootConfig>>,
 }
 
 /// MCP server configuration
@@ -1241,6 +1273,7 @@ impl ConfigManager {
             last_used: None,
             #[allow(deprecated)]
             routing_config: None,
+            roots: None,
         };
 
         self.update(|cfg| {
@@ -1370,6 +1403,7 @@ impl Default for AppConfig {
             routellm_settings: RouteLLMGlobalSettings::default(),
             update: UpdateConfig::default(),
             model_cache: ModelCacheConfig::default(),
+            roots: Vec::new(),
         }
     }
 }
@@ -1621,6 +1655,7 @@ impl Client {
             strategy_id: "default".to_string(),
             #[allow(deprecated)]
             routing_config: None,
+            roots: None,
         }
     }
 

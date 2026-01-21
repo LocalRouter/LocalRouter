@@ -378,6 +378,7 @@ mod tests {
                 last_used: None,
                 strategy_id: "default".to_string(),
                 routing_config: None,
+                roots: None,
             },
             Client {
                 id: "disabled_client".to_string(),
@@ -390,6 +391,7 @@ mod tests {
                 last_used: None,
                 strategy_id: "default".to_string(),
                 routing_config: None,
+                roots: None,
             },
             Client {
                 id: "no_mcp_client".to_string(),
@@ -402,6 +404,7 @@ mod tests {
                 last_used: None,
                 strategy_id: "default".to_string(),
                 routing_config: None,
+                roots: None,
             },
         ];
         config
