@@ -492,7 +492,7 @@ async fn test_response_field_mapping() {
     assert_eq!(response.choices.len(), 1);
     assert_eq!(response.choices[0].index, 0);
     assert_eq!(response.choices[0].message.role, "assistant");
-    assert_eq!(response.choices[0].message.content, "Test response");
+    assert_eq!(response.choices[0].message.content.as_text(), "Test response");
     assert_eq!(response.choices[0].finish_reason, Some("stop".to_string()));
     assert_eq!(response.usage.prompt_tokens, 15);
     assert_eq!(response.usage.completion_tokens, 10);

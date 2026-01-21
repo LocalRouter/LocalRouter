@@ -19,11 +19,17 @@ pub fn standard_completion_request() -> CompletionRequest {
         messages: vec![
             ChatMessage {
                 role: "system".to_string(),
-                content: "You are a helpful assistant.".to_string(),
+                content: ChatMessageContent::Text("You are a helpful assistant.".to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
             },
             ChatMessage {
                 role: "user".to_string(),
-                content: "Say hello".to_string(),
+                content: ChatMessageContent::Text("Say hello".to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
             },
         ],
         temperature: Some(0.7),
@@ -46,7 +52,10 @@ pub fn standard_streaming_request() -> CompletionRequest {
         model: "test-model".to_string(),
         messages: vec![ChatMessage {
             role: "user".to_string(),
-            content: "Count to 3".to_string(),
+            content: ChatMessageContent::Text("Count to 3".to_string()),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
         }],
         temperature: Some(0.5),
         max_tokens: Some(50),

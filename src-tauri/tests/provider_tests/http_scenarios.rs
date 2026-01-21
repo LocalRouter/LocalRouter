@@ -537,7 +537,7 @@ async fn test_unicode_content() {
     let response = provider.complete(request).await.unwrap();
 
     assert_eq!(
-        response.choices[0].message.content,
+        response.choices[0].message.content.as_text(),
         "Hello 世界! 🌍 Привет мир"
     );
 }

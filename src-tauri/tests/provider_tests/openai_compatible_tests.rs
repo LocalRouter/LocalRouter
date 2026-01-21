@@ -104,7 +104,7 @@ async fn test_openai_compatible_completion() {
     assert_valid_completion(&response);
     assert_eq!(response.model, "test-model");
     assert_eq!(
-        response.choices[0].message.content,
+        response.choices[0].message.content.as_text(),
         "Hello! How can I help you today?"
     );
 }

@@ -79,12 +79,12 @@ fn test_all_endpoints_present() {
 
     // MCP endpoints
     assert!(
-        paths.contains_key("/mcp/{client_id}/{server_id}"),
-        "Missing /mcp/:client_id/:server_id endpoint"
+        paths.contains_key("/mcp/{server_id}"),
+        "Missing /mcp/:server_id endpoint"
     );
     assert!(
-        paths.contains_key("/mcp/health"),
-        "Missing /mcp/health endpoint"
+        paths.contains_key("/mcp/{server_id}/stream"),
+        "Missing /mcp/:server_id/stream endpoint"
     );
 
     // OAuth endpoints

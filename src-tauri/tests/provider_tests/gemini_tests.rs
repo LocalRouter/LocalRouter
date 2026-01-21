@@ -29,7 +29,7 @@ async fn test_gemini_completion() {
 
     assert_valid_completion(&response);
     assert_eq!(
-        response.choices[0].message.content,
+        response.choices[0].message.content.as_text(),
         "Hello! How can I help you today?"
     );
 }
