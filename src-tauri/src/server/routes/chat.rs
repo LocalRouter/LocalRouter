@@ -560,8 +560,16 @@ async fn handle_non_streaming(
     }
     .unwrap_or_else(crate::providers::PricingInfo::free);
 
+    // For chat messages, calculate incremental token count (last message only)
+    // instead of cumulative (all conversation history)
+    let incremental_prompt_tokens = if let Some(last_msg) = request.messages.last() {
+        estimate_token_count(&[last_msg.clone()]) as u32
+    } else {
+        response.usage.prompt_tokens
+    };
+
     let cost = {
-        let input_cost = (response.usage.prompt_tokens as f64 / 1000.0) * pricing.input_cost_per_1k;
+        let input_cost = (incremental_prompt_tokens as f64 / 1000.0) * pricing.input_cost_per_1k;
         let output_cost =
             (response.usage.completion_tokens as f64 / 1000.0) * pricing.output_cost_per_1k;
         input_cost + output_cost
@@ -583,7 +591,7 @@ async fn handle_non_streaming(
             provider: &response.provider,
             model: &response.model,
             strategy_id: &strategy_id,
-            input_tokens: response.usage.prompt_tokens as u64,
+            input_tokens: incremental_prompt_tokens as u64,
             output_tokens: response.usage.completion_tokens as u64,
             cost_usd: cost,
             latency_ms,
@@ -592,7 +600,7 @@ async fn handle_non_streaming(
     // Record tokens for tray graph (real-time tracking for Fast/Medium modes)
     if let Some(ref tray_graph) = *state.tray_graph_manager.read() {
         tray_graph.record_tokens(
-            (response.usage.prompt_tokens + response.usage.completion_tokens) as u64,
+            (incremental_prompt_tokens + response.usage.completion_tokens) as u64,
         );
     }
 
@@ -601,7 +609,7 @@ async fn handle_non_streaming(
         &auth.api_key_id,
         &response.provider,
         &response.model,
-        response.usage.prompt_tokens as u64,
+        incremental_prompt_tokens as u64,
         response.usage.completion_tokens as u64,
         cost,
         latency_ms,
@@ -715,9 +723,9 @@ async fn handle_non_streaming(
             })
             .collect(),
         usage: TokenUsage {
-            prompt_tokens: response.usage.prompt_tokens,
+            prompt_tokens: incremental_prompt_tokens,
             completion_tokens: response.usage.completion_tokens,
-            total_tokens: response.usage.total_tokens,
+            total_tokens: incremental_prompt_tokens + response.usage.completion_tokens,
             prompt_tokens_details: response.usage.prompt_tokens_details,
             completion_tokens_details: response.usage.completion_tokens_details,
         },
@@ -737,7 +745,7 @@ async fn handle_non_streaming(
             .unwrap_or_else(|| "unknown".to_string()),
         tokens: api_response.usage.clone(),
         cost: Some(crate::server::types::CostDetails {
-            prompt_cost: (response.usage.prompt_tokens as f64 / 1000.0) * pricing.input_cost_per_1k,
+            prompt_cost: (incremental_prompt_tokens as f64 / 1000.0) * pricing.input_cost_per_1k,
             completion_cost: (response.usage.completion_tokens as f64 / 1000.0)
                 * pricing.output_cost_per_1k,
             total_cost: cost,
@@ -914,8 +922,14 @@ async fn handle_streaming(
         let completion_content = content_accumulator.lock().clone();
         let finish_reason_final = finish_reason.lock().clone();
 
-        // Estimate tokens (rough estimate: ~4 chars per token)
-        let prompt_tokens = estimate_token_count(&request_messages) as u32;
+        // Estimate tokens for this message only (not the entire conversation)
+        // Count only the last user message (the new message that was just sent)
+        let last_user_message_tokens = if let Some(last_msg) = request_messages.last() {
+            estimate_token_count(&[last_msg.clone()])
+        } else {
+            0
+        };
+        let prompt_tokens = last_user_message_tokens as u32;
         let completion_tokens = (completion_content.len() / 4).max(1) as u32;
         let total_tokens = prompt_tokens + completion_tokens;
 
