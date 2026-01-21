@@ -58,11 +58,7 @@ async fn test_gateway_empty_allowed_servers() {
     let config = GatewayConfig::default();
     let gateway = Arc::new(McpGateway::new(manager, config));
 
-    let request = JsonRpcRequest::new(
-        Some(json!(1)),
-        "tools/list".to_string(),
-        Some(json!({})),
-    );
+    let request = JsonRpcRequest::new(Some(json!(1)), "tools/list".to_string(), Some(json!({})));
 
     // With empty allowed_servers, should handle gracefully
     let result = gateway
@@ -113,11 +109,7 @@ async fn test_gateway_concurrent_requests() {
     for i in 0..10 {
         let gateway_clone = gateway.clone();
         let handle = tokio::spawn(async move {
-            let request = JsonRpcRequest::new(
-                Some(json!(i)),
-                "ping".to_string(),
-                None,
-            );
+            let request = JsonRpcRequest::new(Some(json!(i)), "ping".to_string(), None);
 
             gateway_clone
                 .handle_request(&format!("client-{}", i), vec![], false, request)

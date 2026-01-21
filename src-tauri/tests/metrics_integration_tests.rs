@@ -2,6 +2,8 @@
 //!
 //! Tests the complete flow of recording metrics, querying data, and generating graphs.
 
+#![allow(deprecated)]
+
 use chrono::{Duration, Utc};
 use localrouter_ai::monitoring::graphs::{GraphGenerator, MetricType};
 use localrouter_ai::monitoring::metrics::{MetricsCollector, RequestMetrics};
@@ -585,6 +587,7 @@ fn test_latency_percentiles_graph() {
             api_key_name: "key1",
             provider: "openai",
             model: "gpt-4",
+            strategy_id: "default",
             input_tokens: 1000,
             output_tokens: 500,
             cost_usd: 0.05,
