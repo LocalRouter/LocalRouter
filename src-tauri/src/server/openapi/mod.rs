@@ -80,11 +80,17 @@ use utoipa::OpenApi;
             crate::server::types::ContentPart,
             crate::server::types::ImageUrl,
 
-            // Tool types
+            // Tool types (request)
             crate::server::types::Tool,
             crate::server::types::ToolChoice,
             crate::server::types::FunctionDefinition,
             crate::server::types::FunctionName,
+
+            // Tool types (response)
+            crate::server::types::ToolCall,
+            crate::server::types::FunctionCall,
+            crate::server::types::ToolCallDelta,
+            crate::server::types::FunctionCallDelta,
 
             // Token usage types
             crate::server::types::TokenUsage,
