@@ -408,6 +408,159 @@ pub struct McpPromptArgument {
     pub required: Option<bool>,
 }
 
+// ===== MCP Client Capabilities =====
+
+// ----- Elicitation Types -----
+
+/// Request for structured user input from the client
+///
+/// Backend MCP servers can request structured input from users through the gateway.
+/// The gateway forwards the request to the external client (via WebSocket or HTTP callback),
+/// which presents a UI to the user. The response is validated against the provided JSON Schema.
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct ElicitationRequest {
+    /// Human-readable message explaining what input is needed
+    pub message: String,
+
+    /// JSON Schema defining the structure and validation rules for the expected input
+    pub schema: Value,
+}
+
+/// User's response to an elicitation request
+///
+/// Contains the data provided by the user, validated against the request's JSON Schema.
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct ElicitationResponse {
+    /// User-provided data matching the request schema
+    pub data: Value,
+}
+
+// ----- Roots Types -----
+
+/// Filesystem root boundary
+///
+/// Represents a directory that MCP servers can operate within.
+/// Note: Roots are advisory only, not enforced as a security boundary.
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct Root {
+    /// File URI (must use file:// scheme)
+    pub uri: String,
+
+    /// Optional display name for the root
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+/// Response to roots/list request
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct RootsListResult {
+    /// List of available filesystem roots
+    pub roots: Vec<Root>,
+}
+
+// ----- Sampling Types -----
+
+/// Message in a sampling request
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct SamplingMessage {
+    /// Role of the message sender ("user", "assistant", or "system")
+    pub role: String,
+
+    /// Message content (text or structured)
+    pub content: SamplingContent,
+}
+
+/// Content of a sampling message
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(untagged)]
+pub enum SamplingContent {
+    /// Plain text content
+    Text(String),
+
+    /// Structured content (for multimodal messages)
+    Structured(Value),
+}
+
+/// Model selection preferences for sampling
+///
+/// Backend servers can provide hints and priority weights to guide model selection.
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct ModelPreferences {
+    /// Preferred model names (in priority order)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hints: Option<Vec<ModelHint>>,
+
+    /// Priority weight for cost optimization (0.0 - 1.0)
+    #[serde(rename = "costPriority", skip_serializing_if = "Option::is_none")]
+    pub cost_priority: Option<f64>,
+
+    /// Priority weight for speed optimization (0.0 - 1.0)
+    #[serde(rename = "speedPriority", skip_serializing_if = "Option::is_none")]
+    pub speed_priority: Option<f64>,
+
+    /// Priority weight for intelligence/capability (0.0 - 1.0)
+    #[serde(rename = "intelligencePriority", skip_serializing_if = "Option::is_none")]
+    pub intelligence_priority: Option<f64>,
+}
+
+/// Model name hint for sampling
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct ModelHint {
+    /// Model name (e.g., "claude-sonnet-4", "gpt-4")
+    pub name: String,
+}
+
+/// Request for LLM completion from backend server
+///
+/// Backend MCP servers can request the gateway to perform LLM completions
+/// using the gateway's configured providers.
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct SamplingRequest {
+    /// Conversation messages
+    pub messages: Vec<SamplingMessage>,
+
+    /// Model selection preferences
+    #[serde(rename = "modelPreferences", skip_serializing_if = "Option::is_none")]
+    pub model_preferences: Option<ModelPreferences>,
+
+    /// System prompt (alternative to system message)
+    #[serde(rename = "systemPrompt", skip_serializing_if = "Option::is_none")]
+    pub system_prompt: Option<String>,
+
+    /// Maximum tokens to generate
+    #[serde(rename = "maxTokens", skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
+
+    /// Sampling temperature (0.0 - 1.0)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f32>,
+
+    /// Stop sequences
+    #[serde(rename = "stopSequences", skip_serializing_if = "Option::is_none")]
+    pub stop_sequences: Option<Vec<String>>,
+
+    /// Additional metadata
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Value>,
+}
+
+/// LLM completion response
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct SamplingResponse {
+    /// Model that generated the response
+    pub model: String,
+
+    /// Reason the generation stopped
+    #[serde(rename = "stopReason")]
+    pub stop_reason: String, // "end_turn", "max_tokens", "stop_sequence"
+
+    /// Role of the responder (always "assistant")
+    pub role: String,
+
+    /// Generated content
+    pub content: SamplingContent,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -510,5 +663,203 @@ mod tests {
         assert_eq!(parsed.id, req.id);
         assert_eq!(parsed.method, req.method);
         assert_eq!(parsed.params, req.params);
+    }
+
+    // ===== MCP Client Capabilities Tests =====
+
+    #[test]
+    fn test_elicitation_request_serialization() {
+        let req = ElicitationRequest {
+            message: "Please confirm your booking".to_string(),
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "confirm": {"type": "boolean"}
+                },
+                "required": ["confirm"]
+            }),
+        };
+
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("Please confirm your booking"));
+        assert!(json.contains("confirm"));
+
+        // Round-trip
+        let parsed: ElicitationRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.message, req.message);
+    }
+
+    #[test]
+    fn test_elicitation_response_serialization() {
+        let resp = ElicitationResponse {
+            data: json!({"confirm": true, "seatPreference": "window"}),
+        };
+
+        let json = serde_json::to_string(&resp).unwrap();
+        let parsed: ElicitationResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.data["confirm"], true);
+        assert_eq!(parsed.data["seatPreference"], "window");
+    }
+
+    #[test]
+    fn test_root_serialization() {
+        let root = Root {
+            uri: "file:///Users/test/projects".to_string(),
+            name: Some("Projects".to_string()),
+        };
+
+        let json = serde_json::to_string(&root).unwrap();
+        assert!(json.contains("file:///Users/test/projects"));
+        assert!(json.contains("Projects"));
+
+        // Round-trip
+        let parsed: Root = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.uri, root.uri);
+        assert_eq!(parsed.name, root.name);
+    }
+
+    #[test]
+    fn test_roots_list_result_serialization() {
+        let result = RootsListResult {
+            roots: vec![
+                Root {
+                    uri: "file:///Users/test/projects".to_string(),
+                    name: Some("Projects".to_string()),
+                },
+                Root {
+                    uri: "file:///var/data".to_string(),
+                    name: None,
+                },
+            ],
+        };
+
+        let json = serde_json::to_string(&result).unwrap();
+        let parsed: RootsListResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.roots.len(), 2);
+        assert_eq!(parsed.roots[0].uri, "file:///Users/test/projects");
+        assert_eq!(parsed.roots[1].name, None);
+    }
+
+    #[test]
+    fn test_sampling_message_text_content() {
+        let msg = SamplingMessage {
+            role: "user".to_string(),
+            content: SamplingContent::Text("Hello, world!".to_string()),
+        };
+
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("user"));
+        assert!(json.contains("Hello, world!"));
+
+        // Round-trip
+        let parsed: SamplingMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.role, "user");
+        if let SamplingContent::Text(text) = parsed.content {
+            assert_eq!(text, "Hello, world!");
+        } else {
+            panic!("Expected text content");
+        }
+    }
+
+    #[test]
+    fn test_sampling_message_structured_content() {
+        let msg = SamplingMessage {
+            role: "assistant".to_string(),
+            content: SamplingContent::Structured(json!({
+                "type": "text",
+                "text": "Structured response"
+            })),
+        };
+
+        let json = serde_json::to_string(&msg).unwrap();
+        let parsed: SamplingMessage = serde_json::from_str(&json).unwrap();
+
+        if let SamplingContent::Structured(value) = parsed.content {
+            assert_eq!(value["type"], "text");
+            assert_eq!(value["text"], "Structured response");
+        } else {
+            panic!("Expected structured content");
+        }
+    }
+
+    #[test]
+    fn test_model_preferences_serialization() {
+        let prefs = ModelPreferences {
+            hints: Some(vec![
+                ModelHint {
+                    name: "claude-sonnet-4".to_string(),
+                },
+                ModelHint {
+                    name: "gpt-4".to_string(),
+                },
+            ]),
+            cost_priority: Some(0.3),
+            speed_priority: Some(0.2),
+            intelligence_priority: Some(0.9),
+        };
+
+        let json = serde_json::to_string(&prefs).unwrap();
+        assert!(json.contains("claude-sonnet-4"));
+        assert!(json.contains("costPriority"));
+        assert!(json.contains("0.3"));
+
+        // Round-trip
+        let parsed: ModelPreferences = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.hints.as_ref().unwrap().len(), 2);
+        assert_eq!(parsed.cost_priority, Some(0.3));
+    }
+
+    #[test]
+    fn test_sampling_request_serialization() {
+        let req = SamplingRequest {
+            messages: vec![SamplingMessage {
+                role: "user".to_string(),
+                content: SamplingContent::Text("Analyze this data".to_string()),
+            }],
+            model_preferences: Some(ModelPreferences {
+                hints: Some(vec![ModelHint {
+                    name: "claude-sonnet-4".to_string(),
+                }]),
+                cost_priority: None,
+                speed_priority: None,
+                intelligence_priority: Some(0.9),
+            }),
+            system_prompt: Some("You are a data analyst".to_string()),
+            max_tokens: Some(1500),
+            temperature: Some(0.7),
+            stop_sequences: None,
+            metadata: None,
+        };
+
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("Analyze this data"));
+        assert!(json.contains("systemPrompt"));
+        assert!(json.contains("maxTokens"));
+
+        // Round-trip
+        let parsed: SamplingRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.messages.len(), 1);
+        assert_eq!(parsed.max_tokens, Some(1500));
+        assert_eq!(parsed.temperature, Some(0.7));
+    }
+
+    #[test]
+    fn test_sampling_response_serialization() {
+        let resp = SamplingResponse {
+            model: "claude-sonnet-4-20250514".to_string(),
+            stop_reason: "end_turn".to_string(),
+            role: "assistant".to_string(),
+            content: SamplingContent::Text("Here is my analysis...".to_string()),
+        };
+
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("claude-sonnet-4-20250514"));
+        assert!(json.contains("stopReason"));
+        assert!(json.contains("end_turn"));
+
+        // Round-trip
+        let parsed: SamplingResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.model, "claude-sonnet-4-20250514");
+        assert_eq!(parsed.stop_reason, "end_turn");
     }
 }
