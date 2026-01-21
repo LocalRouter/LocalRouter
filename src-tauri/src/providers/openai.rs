@@ -181,6 +181,7 @@ struct OpenAIChoice {
     index: u32,
     message: ChatMessage,
     finish_reason: Option<String>,
+    logprobs: Option<super::Logprobs>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -471,6 +472,7 @@ impl ModelProvider for OpenAIProvider {
                     index: choice.index,
                     message: choice.message,
                     finish_reason: choice.finish_reason,
+                    logprobs: choice.logprobs,
                 })
                 .collect(),
             usage: TokenUsage {

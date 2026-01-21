@@ -296,7 +296,6 @@ impl ModelProvider for OpenRouterProvider {
                     index: choice.index,
                     message: choice.message,
                     finish_reason: choice.finish_reason,
-                    logprobs: None,
                     logprobs: None, // OpenRouter does not support logprobs
                 })
                 .collect(),

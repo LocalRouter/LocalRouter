@@ -10,6 +10,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
+#[cfg(test)]
+use chrono::Duration;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
@@ -17,7 +19,41 @@ use tracing::{debug, info, warn};
 use super::factory::{ProviderFactory, SetupParameter};
 use super::health::HealthCheckManager;
 use super::{ModelInfo, ModelProvider, ProviderHealth};
+use crate::config::ModelCacheConfig;
 use crate::utils::errors::{AppError, AppResult};
+
+/// Cached model list for a single provider
+#[derive(Clone)]
+struct ModelCache {
+    /// The cached models
+    models: Vec<ModelInfo>,
+    /// When this cache was populated
+    fetched_at: DateTime<Utc>,
+    /// Provider-specific TTL (from config or default)
+    ttl_seconds: u64,
+}
+
+impl ModelCache {
+    fn new(models: Vec<ModelInfo>, ttl_seconds: u64) -> Self {
+        Self {
+            models,
+            fetched_at: Utc::now(),
+            ttl_seconds,
+        }
+    }
+
+    /// Check if cache is expired
+    fn is_expired(&self) -> bool {
+        let elapsed = Utc::now().signed_duration_since(self.fetched_at);
+        elapsed.num_seconds() as u64 >= self.ttl_seconds
+    }
+
+    /// Get remaining seconds until expiration
+    fn expires_in(&self) -> i64 {
+        let elapsed = Utc::now().signed_duration_since(self.fetched_at);
+        (self.ttl_seconds as i64) - elapsed.num_seconds()
+    }
+}
 
 /// Central registry for managing provider types and instances
 pub struct ProviderRegistry {
@@ -32,6 +68,12 @@ pub struct ProviderRegistry {
 
     /// Cached models from all providers (for synchronous access in UI)
     cached_models: RwLock<Vec<ModelInfo>>,
+
+    /// Per-provider model cache
+    model_cache: Arc<RwLock<HashMap<String, ModelCache>>>,
+
+    /// Cache configuration
+    cache_config: Arc<RwLock<ModelCacheConfig>>,
 }
 
 /// A registered provider instance
@@ -85,6 +127,8 @@ impl ProviderRegistry {
             instances: RwLock::new(HashMap::new()),
             health_manager,
             cached_models: RwLock::new(Vec::new()),
+            model_cache: Arc::new(RwLock::new(HashMap::new())),
+            cache_config: Arc::new(RwLock::new(ModelCacheConfig::default())),
         }
     }
 
@@ -335,6 +379,178 @@ impl ProviderRegistry {
         Ok(())
     }
 
+    // ===== MODEL CACHE MANAGEMENT =====
+
+    /// Get TTL for a specific provider instance
+    fn get_provider_ttl(&self, instance_name: &str) -> u64 {
+        let config = self.cache_config.read();
+
+        // Check instance-specific override first
+        if let Some(&ttl) = config.provider_ttl_overrides.get(instance_name) {
+            return ttl;
+        }
+
+        // Check provider-type override
+        if let Some(instance) = self.instances.read().get(instance_name) {
+            if let Some(&ttl) = config.provider_ttl_overrides.get(&instance.provider_type) {
+                return ttl;
+            }
+        }
+
+        // Use default
+        config.default_ttl_seconds
+    }
+
+    /// Get cached models for a provider
+    fn get_cached_models_for_provider(&self, instance_name: &str) -> Option<ModelCache> {
+        self.model_cache.read().get(instance_name).cloned()
+    }
+
+    /// Update cache for a provider
+    async fn update_model_cache(&self, instance_name: &str, models: Vec<ModelInfo>) {
+        let ttl = self.get_provider_ttl(instance_name);
+        let cache = ModelCache::new(models, ttl);
+        self.model_cache
+            .write()
+            .insert(instance_name.to_string(), cache);
+        debug!(
+            "Updated model cache for '{}' (TTL: {}s)",
+            instance_name, ttl
+        );
+    }
+
+    /// Get models from OpenRouter catalog for a provider type
+    fn get_models_from_catalog(&self, provider_type: &str) -> Vec<ModelInfo> {
+        crate::catalog::models()
+            .iter()
+            .filter(|m| m.id.starts_with(&format!("{}/", provider_type)))
+            .map(|m| {
+                let capabilities = match m.modality {
+                    crate::catalog::Modality::Multimodal => {
+                        vec![
+                            crate::providers::Capability::Chat,
+                            crate::providers::Capability::Vision,
+                        ]
+                    }
+                    _ => vec![crate::providers::Capability::Chat],
+                };
+
+                ModelInfo {
+                    id: m.id.split('/').last().unwrap_or(&m.id).to_string(),
+                    name: m.name.to_string(),
+                    provider: provider_type.to_string(),
+                    parameter_count: None,
+                    context_window: m.context_length,
+                    supports_streaming: true,
+                    capabilities,
+                    detailed_capabilities: None,
+                }
+            })
+            .collect()
+    }
+
+    /// Fallback to catalog or stale cache
+    async fn fallback_to_catalog_or_stale_cache(
+        &self,
+        instance_name: &str,
+        provider_type: &str,
+    ) -> AppResult<Vec<ModelInfo>> {
+        let config = self.cache_config.read();
+
+        if config.use_catalog_fallback {
+            // Try OpenRouter catalog
+            let catalog_models = self.get_models_from_catalog(provider_type);
+            if !catalog_models.is_empty() {
+                info!(
+                    "Using OpenRouter catalog fallback for '{}' ({} models)",
+                    instance_name,
+                    catalog_models.len()
+                );
+                return Ok(catalog_models);
+            }
+        }
+
+        // Use stale cache if available
+        if let Some(cached) = self.get_cached_models_for_provider(instance_name) {
+            warn!(
+                "Using stale cache for '{}' (expired {} seconds ago)",
+                instance_name,
+                -cached.expires_in()
+            );
+            return Ok(cached.models.clone());
+        }
+
+        // Complete failure
+        Err(AppError::Provider(format!(
+            "No models available for '{}': API failed, no catalog data, no stale cache",
+            instance_name
+        )))
+    }
+
+    /// List models from a provider with caching
+    pub async fn list_provider_models_cached(
+        &self,
+        instance_name: &str,
+    ) -> AppResult<Vec<ModelInfo>> {
+        // 1. Try cache first
+        if let Some(cached) = self.get_cached_models_for_provider(instance_name) {
+            if !cached.is_expired() {
+                debug!(
+                    "Using cached models for '{}' (expires in {}s)",
+                    instance_name,
+                    cached.expires_in()
+                );
+                return Ok(cached.models.clone());
+            }
+        }
+
+        // 2. Try fetching from provider API
+        let provider_instance = self
+            .instances
+            .read()
+            .get(instance_name)
+            .cloned()
+            .ok_or_else(|| {
+                AppError::Config(format!("Provider '{}' not found", instance_name))
+            })?;
+
+        match provider_instance.provider.list_models().await {
+            Ok(models) => {
+                // Success: Cache and return
+                self.update_model_cache(instance_name, models.clone()).await;
+                Ok(models)
+            }
+            Err(e) => {
+                warn!("Failed to fetch models from '{}': {}", instance_name, e);
+
+                // 3. Fallback strategy
+                self.fallback_to_catalog_or_stale_cache(
+                    instance_name,
+                    &provider_instance.provider_type,
+                )
+                .await
+            }
+        }
+    }
+
+    /// Invalidate cache for a specific provider
+    pub fn invalidate_provider_cache(&self, instance_name: &str) {
+        self.model_cache.write().remove(instance_name);
+        info!("Invalidated model cache for '{}'", instance_name);
+    }
+
+    /// Invalidate all caches
+    pub fn invalidate_all_caches(&self) {
+        self.model_cache.write().clear();
+        info!("Invalidated all model caches");
+    }
+
+    /// Update cache configuration at runtime
+    pub fn update_cache_config(&self, config: ModelCacheConfig) {
+        *self.cache_config.write() = config;
+        info!("Model cache configuration updated");
+    }
+
     // ===== MODEL AGGREGATION (for /v1/models endpoint) =====
 
     /// Get cached models (synchronous, for UI)
@@ -360,21 +576,22 @@ impl ProviderRegistry {
     ///
     /// This is the main method for GET /v1/models endpoint.
     /// It queries all enabled providers and aggregates their models.
+    /// Uses caching to minimize API calls.
     ///
     /// Returns: Combined list of ModelInfo from all providers
     pub async fn list_all_models(&self) -> AppResult<Vec<ModelInfo>> {
-        let enabled_instances: Vec<(String, Arc<dyn ModelProvider>)> = self
+        let enabled_instances: Vec<String> = self
             .instances
             .read()
             .values()
             .filter(|inst| inst.enabled)
-            .map(|inst| (inst.instance_name.clone(), inst.provider.clone()))
+            .map(|inst| inst.instance_name.clone())
             .collect();
 
         let mut all_models = Vec::new();
 
-        for (instance_name, provider) in enabled_instances {
-            match provider.list_models().await {
+        for instance_name in enabled_instances {
+            match self.list_provider_models_cached(&instance_name).await {
                 Ok(mut models) => {
                     // Override provider field with instance name
                     for model in &mut models {
@@ -383,10 +600,7 @@ impl ProviderRegistry {
                     all_models.extend(models);
                 }
                 Err(e) => {
-                    warn!(
-                        "Failed to list models from provider '{}': {}",
-                        instance_name, e
-                    );
+                    warn!("Failed to list models from '{}': {}", instance_name, e);
                     // Continue with other providers
                 }
             }
@@ -651,5 +865,80 @@ mod tests {
         registry.remove_provider("test").unwrap();
 
         assert_eq!(registry.list_providers().len(), 0);
+    }
+
+    #[test]
+    fn test_model_cache_expiration() {
+        let cache = ModelCache::new(vec![], 3600);
+        assert!(!cache.is_expired());
+
+        let mut old_cache = ModelCache::new(vec![], 3600);
+        old_cache.fetched_at = Utc::now() - Duration::seconds(3601);
+        assert!(old_cache.is_expired());
+    }
+
+    #[test]
+    fn test_cache_expires_in() {
+        let cache = ModelCache::new(vec![], 3600);
+        assert!(cache.expires_in() > 3590);
+        assert!(cache.expires_in() <= 3600);
+    }
+
+    #[tokio::test]
+    async fn test_cache_config_update() {
+        let health_mgr = Arc::new(HealthCheckManager::default());
+        let registry = ProviderRegistry::new(health_mgr);
+
+        let mut new_config = ModelCacheConfig::default();
+        new_config.default_ttl_seconds = 7200;
+        new_config
+            .provider_ttl_overrides
+            .insert("ollama".to_string(), 300);
+
+        registry.update_cache_config(new_config.clone());
+
+        let config = registry.cache_config.read();
+        assert_eq!(config.default_ttl_seconds, 7200);
+        assert_eq!(config.provider_ttl_overrides.get("ollama"), Some(&300));
+    }
+
+    #[tokio::test]
+    async fn test_invalidate_cache() {
+        let health_mgr = Arc::new(HealthCheckManager::default());
+        let registry = ProviderRegistry::new(health_mgr);
+
+        // Manually add a cache entry
+        registry
+            .model_cache
+            .write()
+            .insert("test".to_string(), ModelCache::new(vec![], 3600));
+
+        assert!(registry.model_cache.read().contains_key("test"));
+
+        registry.invalidate_provider_cache("test");
+
+        assert!(!registry.model_cache.read().contains_key("test"));
+    }
+
+    #[tokio::test]
+    async fn test_invalidate_all_caches() {
+        let health_mgr = Arc::new(HealthCheckManager::default());
+        let registry = ProviderRegistry::new(health_mgr);
+
+        // Manually add cache entries
+        registry
+            .model_cache
+            .write()
+            .insert("test1".to_string(), ModelCache::new(vec![], 3600));
+        registry
+            .model_cache
+            .write()
+            .insert("test2".to_string(), ModelCache::new(vec![], 3600));
+
+        assert_eq!(registry.model_cache.read().len(), 2);
+
+        registry.invalidate_all_caches();
+
+        assert_eq!(registry.model_cache.read().len(), 0);
     }
 }

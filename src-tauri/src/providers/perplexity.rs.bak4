@@ -1,7 +1,7 @@
-//! xAI (Grok) provider implementation
+//! Perplexity provider implementation
 //!
-//! Implements the ModelProvider trait for xAI's Grok models.
-//! xAI offers the Grok series of models with real-time knowledge access.
+//! Implements the ModelProvider trait for Perplexity's search-augmented LLM API.
+//! Perplexity models can search the web and provide sourced answers.
 
 use async_trait::async_trait;
 use chrono::Utc;
@@ -19,17 +19,17 @@ use super::{
     ProviderHealth, TokenUsage,
 };
 
-const XAI_API_BASE: &str = "https://api.x.ai/v1";
+const PERPLEXITY_API_BASE: &str = "https://api.perplexity.ai";
 
-/// xAI (Grok) provider
-pub struct XAIProvider {
+/// Perplexity AI provider
+pub struct PerplexityProvider {
     client: Client,
     api_key: String,
 }
 
 #[allow(dead_code)]
-impl XAIProvider {
-    /// Create a new xAI provider with an API key
+impl PerplexityProvider {
+    /// Create a new Perplexity provider with an API key
     pub fn new(api_key: String) -> AppResult<Self> {
         let client = Client::builder()
             .timeout(std::time::Duration::from_secs(120))
@@ -39,9 +39,9 @@ impl XAIProvider {
         Ok(Self { client, api_key })
     }
 
-    /// Create a new xAI provider from stored API key
+    /// Create a new Perplexity provider from stored API key
     pub fn from_stored_key(provider_name: Option<&str>) -> AppResult<Self> {
-        let name = provider_name.unwrap_or("xai");
+        let name = provider_name.unwrap_or("perplexity");
         let api_key = super::key_storage::get_provider_key(name)?.ok_or_else(|| {
             AppError::Provider(format!("No API key found for provider '{}'", name))
         })?;
@@ -52,31 +52,41 @@ impl XAIProvider {
     fn get_known_models() -> Vec<ModelInfo> {
         vec![
             ModelInfo {
-                id: "grok-2".to_string(),
-                name: "Grok 2".to_string(),
-                provider: "xai".to_string(),
-                parameter_count: None,
-                context_window: 131_072,
+                id: "sonar".to_string(),
+                name: "Sonar".to_string(),
+                provider: "perplexity".to_string(),
+                parameter_count: Some(70_000_000_000), // Based on Llama 3.3 70B
+                context_window: 128_000,
                 supports_streaming: true,
-                capabilities: vec![Capability::Chat, Capability::FunctionCalling],
+                capabilities: vec![Capability::Chat],
                 detailed_capabilities: None,
             },
             ModelInfo {
-                id: "grok-2-mini".to_string(),
-                name: "Grok 2 Mini".to_string(),
-                provider: "xai".to_string(),
-                parameter_count: None,
-                context_window: 131_072,
+                id: "sonar-pro".to_string(),
+                name: "Sonar Pro".to_string(),
+                provider: "perplexity".to_string(),
+                parameter_count: Some(70_000_000_000),
+                context_window: 200_000,
                 supports_streaming: true,
-                capabilities: vec![Capability::Chat, Capability::FunctionCalling],
+                capabilities: vec![Capability::Chat],
                 detailed_capabilities: None,
             },
             ModelInfo {
-                id: "grok-beta".to_string(),
-                name: "Grok Beta".to_string(),
-                provider: "xai".to_string(),
+                id: "sonar-reasoning-pro".to_string(),
+                name: "Sonar Reasoning Pro".to_string(),
+                provider: "perplexity".to_string(),
+                parameter_count: None, // DeepSeek-R1 based
+                context_window: 128_000,
+                supports_streaming: true,
+                capabilities: vec![Capability::Chat],
+                detailed_capabilities: None,
+            },
+            ModelInfo {
+                id: "sonar-deep-research".to_string(),
+                name: "Sonar Deep Research".to_string(),
+                provider: "perplexity".to_string(),
                 parameter_count: None,
-                context_window: 131_072,
+                context_window: 128_000,
                 supports_streaming: true,
                 capabilities: vec![Capability::Chat],
                 detailed_capabilities: None,
@@ -121,9 +131,9 @@ struct OpenAIStreamChoice {
 
 #[async_trait]
 #[allow(dead_code)]
-impl ModelProvider for XAIProvider {
+impl ModelProvider for PerplexityProvider {
     fn name(&self) -> &str {
-        "xai"
+        "perplexity"
     }
 
     async fn health_check(&self) -> ProviderHealth {
@@ -153,26 +163,44 @@ impl ModelProvider for XAIProvider {
     }
 
     async fn get_pricing(&self, model: &str) -> AppResult<PricingInfo> {
-        // xAI pricing as of 2026-01
+        // Try catalog first (embedded OpenRouter data)
+        if let Some(catalog_model) = crate::catalog::find_model("perplexity", model) {
+            tracing::debug!("Using catalog pricing for Perplexity model: {}", model);
+            return Ok(PricingInfo {
+                input_cost_per_1k: catalog_model.pricing.prompt_cost_per_1k(),
+                output_cost_per_1k: catalog_model.pricing.completion_cost_per_1k(),
+                currency: catalog_model.pricing.currency.to_string(),
+            });
+        }
+
+        // Fallback to hardcoded pricing
+        tracing::debug!("Using fallback pricing for Perplexity model: {}", model);
+
+        // Perplexity pricing as of 2026-01
         let pricing = match model {
-            "grok-2" => PricingInfo {
-                input_cost_per_1k: 0.002,  // $2 per 1M tokens
-                output_cost_per_1k: 0.010, // $10 per 1M tokens
-                currency: "USD".to_string(),
-            },
-            "grok-2-mini" => PricingInfo {
-                input_cost_per_1k: 0.0002, // $0.2 per 1M tokens
+            "sonar" => PricingInfo {
+                input_cost_per_1k: 0.001,  // $1 per 1M tokens
                 output_cost_per_1k: 0.001, // $1 per 1M tokens
                 currency: "USD".to_string(),
             },
-            "grok-beta" => PricingInfo {
-                input_cost_per_1k: 0.005,  // $5 per 1M tokens
+            "sonar-pro" => PricingInfo {
+                input_cost_per_1k: 0.003,  // $3 per 1M tokens
                 output_cost_per_1k: 0.015, // $15 per 1M tokens
                 currency: "USD".to_string(),
             },
+            "sonar-reasoning-pro" => PricingInfo {
+                input_cost_per_1k: 0.001,  // $1 per 1M tokens
+                output_cost_per_1k: 0.005, // $5 per 1M tokens
+                currency: "USD".to_string(),
+            },
+            "sonar-deep-research" => PricingInfo {
+                input_cost_per_1k: 0.005,  // $5 per 1M tokens
+                output_cost_per_1k: 0.005, // $5 per 1M tokens
+                currency: "USD".to_string(),
+            },
             _ => PricingInfo {
-                input_cost_per_1k: 0.002,
-                output_cost_per_1k: 0.010,
+                input_cost_per_1k: 0.001, // Default pricing
+                output_cost_per_1k: 0.001,
                 currency: "USD".to_string(),
             },
         };
@@ -181,7 +209,7 @@ impl ModelProvider for XAIProvider {
     }
 
     async fn complete(&self, request: CompletionRequest) -> AppResult<CompletionResponse> {
-        let url = format!("{}/chat/completions", XAI_API_BASE);
+        let url = format!("{}/chat/completions", PERPLEXITY_API_BASE);
 
         let response = self
             .client
@@ -191,39 +219,38 @@ impl ModelProvider for XAIProvider {
             .json(&request)
             .send()
             .await
-            .map_err(|e| AppError::Provider(format!("xAI request failed: {}", e)))?;
+            .map_err(|e| AppError::Provider(format!("Perplexity request failed: {}", e)))?;
 
         if !response.status().is_success() {
             let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
             return Err(AppError::Provider(format!(
-                "xAI API error {}: {}",
+                "Perplexity API error {}: {}",
                 status, error_text
             )));
         }
 
-        let xai_response: OpenAIChatResponse = response
-            .json()
-            .await
-            .map_err(|e| AppError::Provider(format!("Failed to parse xAI response: {}", e)))?;
+        let perplexity_response: OpenAIChatResponse = response.json().await.map_err(|e| {
+            AppError::Provider(format!("Failed to parse Perplexity response: {}", e))
+        })?;
 
         Ok(CompletionResponse {
-            id: xai_response.id,
-            object: xai_response.object,
-            created: xai_response.created,
-            model: xai_response.model,
+            id: perplexity_response.id,
+            object: perplexity_response.object,
+            created: perplexity_response.created,
+            model: perplexity_response.model,
             provider: self.name().to_string(),
-            choices: xai_response
+            choices: perplexity_response
                 .choices
                 .into_iter()
                 .map(|choice| CompletionChoice {
                     index: choice.index,
                     message: choice.message,
                     finish_reason: choice.finish_reason,
-                    logprobs: None, // xAI does not support logprobs
+                    logprobs: None, // Perplexity does not support logprobs
                 })
                 .collect(),
-            usage: xai_response.usage,
+            usage: perplexity_response.usage,
             extensions: None,
             routellm_win_rate: None,
         })
@@ -233,7 +260,7 @@ impl ModelProvider for XAIProvider {
         &self,
         request: CompletionRequest,
     ) -> AppResult<Pin<Box<dyn Stream<Item = AppResult<CompletionChunk>> + Send>>> {
-        let url = format!("{}/chat/completions", XAI_API_BASE);
+        let url = format!("{}/chat/completions", PERPLEXITY_API_BASE);
 
         let response = self
             .client
@@ -243,12 +270,14 @@ impl ModelProvider for XAIProvider {
             .json(&request)
             .send()
             .await
-            .map_err(|e| AppError::Provider(format!("xAI streaming request failed: {}", e)))?;
+            .map_err(|e| {
+                AppError::Provider(format!("Perplexity streaming request failed: {}", e))
+            })?;
 
         if !response.status().is_success() {
             let status = response.status();
             return Err(AppError::Provider(format!(
-                "xAI streaming API error: {}",
+                "Perplexity streaming API error: {}",
                 status
             )));
         }
@@ -284,13 +313,13 @@ impl ModelProvider for XAIProvider {
                         }
 
                         match serde_json::from_str::<OpenAIStreamChunk>(data) {
-                            Ok(xai_chunk) => {
+                            Ok(perplexity_chunk) => {
                                 let chunk = CompletionChunk {
-                                    id: xai_chunk.id,
-                                    object: xai_chunk.object,
-                                    created: xai_chunk.created,
-                                    model: xai_chunk.model,
-                                    choices: xai_chunk
+                                    id: perplexity_chunk.id,
+                                    object: perplexity_chunk.object,
+                                    created: perplexity_chunk.created,
+                                    model: perplexity_chunk.model,
+                                    choices: perplexity_chunk
                                         .choices
                                         .into_iter()
                                         .map(|choice| ChunkChoice {
@@ -330,15 +359,15 @@ mod tests {
 
     #[test]
     fn test_known_models() {
-        let models = XAIProvider::get_known_models();
+        let models = PerplexityProvider::get_known_models();
         assert!(!models.is_empty());
-        assert!(models.iter().any(|m| m.id == "grok-2"));
+        assert!(models.iter().any(|m| m.id.contains("sonar")));
     }
 
     #[tokio::test]
     async fn test_pricing() {
-        let provider = XAIProvider::new("test_key".to_string()).unwrap();
-        let pricing = provider.get_pricing("grok-2").await.unwrap();
+        let provider = PerplexityProvider::new("test_key".to_string()).unwrap();
+        let pricing = provider.get_pricing("sonar").await.unwrap();
         assert!(pricing.input_cost_per_1k > 0.0);
     }
 }

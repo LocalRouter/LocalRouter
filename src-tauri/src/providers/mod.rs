@@ -2,6 +2,8 @@
 //!
 //! Abstractions and implementations for various AI model providers.
 
+#![allow(dead_code)]
+
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use futures::Stream;
@@ -446,6 +448,14 @@ pub struct CompletionRequest {
     /// Note: Providers should enforce this using their native JSON mode or structured output features
     #[serde(skip_serializing_if = "Option::is_none")]
     pub response_format: Option<ResponseFormat>,
+
+    // Log probabilities (Bug #6 fix)
+    /// Whether to return log probabilities of the output tokens
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logprobs: Option<bool>,
+    /// Number of most likely tokens to return at each position (0-20)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_logprobs: Option<u32>,
 }
 
 /// Tool definition for function calling
@@ -645,6 +655,43 @@ pub struct CompletionChoice {
     pub message: ChatMessage,
     /// Finish reason ("stop", "length", "content_filter", "tool_calls")
     pub finish_reason: Option<String>,
+    /// Log probability information for the choice
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logprobs: Option<Logprobs>,
+}
+
+/// Log probability information for tokens
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct Logprobs {
+    /// List of message content tokens with log probability information
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<Vec<TokenLogprob>>,
+}
+
+/// Log probability information for a single token
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct TokenLogprob {
+    /// The token
+    pub token: String,
+    /// The log probability of this token
+    pub logprob: f64,
+    /// A list of integers representing the UTF-8 bytes of the token
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bytes: Option<Vec<u8>>,
+    /// List of the most likely tokens and their log probabilities
+    pub top_logprobs: Vec<TopLogprob>,
+}
+
+/// Top alternative token with log probability
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct TopLogprob {
+    /// The token
+    pub token: String,
+    /// The log probability of this token
+    pub logprob: f64,
+    /// A list of integers representing the UTF-8 bytes of the token
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bytes: Option<Vec<u8>>,
 }
 
 /// Token usage information

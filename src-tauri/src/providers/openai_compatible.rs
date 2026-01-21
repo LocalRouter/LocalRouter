@@ -338,6 +338,7 @@ impl ModelProvider for OpenAICompatibleProvider {
                 index: choice.index,
                 message: choice.message,
                 finish_reason: choice.finish_reason,
+                logprobs: None, // OpenAI-compatible providers may not support logprobs
             })
             .collect();
 

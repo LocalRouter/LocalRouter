@@ -322,6 +322,11 @@ mod tests {
             seed: None,
             repetition_penalty: None,
             extensions: None,
+            tools: None,
+            tool_choice: None,
+            response_format: None,
+            logprobs: None,
+            top_logprobs: None,
         };
 
         let mut params = HashMap::new();
@@ -365,6 +370,11 @@ mod tests {
             seed: None,
             repetition_penalty: None,
             extensions: None,
+            tools: None,
+            tool_choice: None,
+            response_format: None,
+            logprobs: None,
+            top_logprobs: None,
         };
 
         let mut params = HashMap::new();
@@ -490,6 +500,7 @@ mod tests {
                     name: None,
                 },
                 finish_reason: Some("stop".to_string()),
+                logprobs: None,
             }],
             usage: crate::providers::TokenUsage {
                 prompt_tokens: 100,
@@ -544,6 +555,7 @@ mod tests {
                     name: None,
                 },
                 finish_reason: Some("stop".to_string()),
+                logprobs: None,
             }],
             usage: crate::providers::TokenUsage {
                 prompt_tokens: 100,

@@ -241,6 +241,7 @@ impl ModelProvider for TogetherAIProvider {
                     index: choice.index,
                     message: choice.message,
                     finish_reason: choice.finish_reason,
+                    logprobs: None, // TogetherAI does not support logprobs
                 })
                 .collect(),
             usage: together_response.usage,

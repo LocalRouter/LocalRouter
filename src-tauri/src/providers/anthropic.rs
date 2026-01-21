@@ -14,9 +14,9 @@ use std::time::Instant;
 use crate::utils::errors::{AppError, AppResult};
 
 use super::{
-    Capability, ChatMessage, ChunkChoice, ChunkDelta, CompletionChoice, CompletionChunk,
-    CompletionRequest, CompletionResponse, HealthStatus, ModelInfo, ModelProvider, PricingInfo,
-    ProviderHealth, TokenUsage,
+    Capability, ChatMessage, ChatMessageContent, ChunkChoice, ChunkDelta, CompletionChoice,
+    CompletionChunk, CompletionRequest, CompletionResponse, HealthStatus, ModelInfo,
+    ModelProvider, PricingInfo, ProviderHealth, TokenUsage,
 };
 
 const ANTHROPIC_API_BASE: &str = "https://api.anthropic.com/v1";
@@ -394,6 +394,7 @@ impl ModelProvider for AnthropicProvider {
                         .stop_reason
                         .unwrap_or_else(|| "stop".to_string()),
                 ),
+                logprobs: None, // Anthropic does not support logprobs
             }],
             usage: TokenUsage {
                 prompt_tokens: anthropic_response.usage.input_tokens,
@@ -656,14 +657,14 @@ mod tests {
         let messages = vec![
             ChatMessage {
                 role: "system".to_string(),
-                content: super::ChatMessageContent::Text("You are a helpful assistant.".to_string()),
+                content: ChatMessageContent::Text("You are a helpful assistant.".to_string()),
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,
             },
             ChatMessage {
                 role: "user".to_string(),
-                content: super::ChatMessageContent::Text("Hello!".to_string()),
+                content: ChatMessageContent::Text("Hello!".to_string()),
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,
@@ -683,14 +684,14 @@ mod tests {
         let messages = vec![
             ChatMessage {
                 role: "user".to_string(),
-                content: super::ChatMessageContent::Text("Hello!".to_string()),
+                content: ChatMessageContent::Text("Hello!".to_string()),
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,
             },
             ChatMessage {
                 role: "assistant".to_string(),
-                content: super::ChatMessageContent::Text("Hi there!".to_string()),
+                content: ChatMessageContent::Text("Hi there!".to_string()),
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,

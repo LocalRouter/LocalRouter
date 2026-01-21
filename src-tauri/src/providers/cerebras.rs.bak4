@@ -1,7 +1,7 @@
-//! xAI (Grok) provider implementation
+//! Cerebras provider implementation
 //!
-//! Implements the ModelProvider trait for xAI's Grok models.
-//! xAI offers the Grok series of models with real-time knowledge access.
+//! Implements the ModelProvider trait for Cerebras' ultra-fast inference platform.
+//! Cerebras offers extremely fast inference speeds with their specialized hardware.
 
 use async_trait::async_trait;
 use chrono::Utc;
@@ -19,17 +19,17 @@ use super::{
     ProviderHealth, TokenUsage,
 };
 
-const XAI_API_BASE: &str = "https://api.x.ai/v1";
+const CEREBRAS_API_BASE: &str = "https://api.cerebras.ai/v1";
 
-/// xAI (Grok) provider
-pub struct XAIProvider {
+/// Cerebras provider
+pub struct CerebrasProvider {
     client: Client,
     api_key: String,
 }
 
 #[allow(dead_code)]
-impl XAIProvider {
-    /// Create a new xAI provider with an API key
+impl CerebrasProvider {
+    /// Create a new Cerebras provider with an API key
     pub fn new(api_key: String) -> AppResult<Self> {
         let client = Client::builder()
             .timeout(std::time::Duration::from_secs(120))
@@ -39,9 +39,9 @@ impl XAIProvider {
         Ok(Self { client, api_key })
     }
 
-    /// Create a new xAI provider from stored API key
+    /// Create a new Cerebras provider from stored API key
     pub fn from_stored_key(provider_name: Option<&str>) -> AppResult<Self> {
-        let name = provider_name.unwrap_or("xai");
+        let name = provider_name.unwrap_or("cerebras");
         let api_key = super::key_storage::get_provider_key(name)?.ok_or_else(|| {
             AppError::Provider(format!("No API key found for provider '{}'", name))
         })?;
@@ -52,33 +52,23 @@ impl XAIProvider {
     fn get_known_models() -> Vec<ModelInfo> {
         vec![
             ModelInfo {
-                id: "grok-2".to_string(),
-                name: "Grok 2".to_string(),
-                provider: "xai".to_string(),
-                parameter_count: None,
-                context_window: 131_072,
+                id: "llama3.1-70b".to_string(),
+                name: "Llama 3.1 70B".to_string(),
+                provider: "cerebras".to_string(),
+                parameter_count: Some(70_000_000_000),
+                context_window: 128_000,
                 supports_streaming: true,
                 capabilities: vec![Capability::Chat, Capability::FunctionCalling],
                 detailed_capabilities: None,
             },
             ModelInfo {
-                id: "grok-2-mini".to_string(),
-                name: "Grok 2 Mini".to_string(),
-                provider: "xai".to_string(),
-                parameter_count: None,
-                context_window: 131_072,
+                id: "llama3.1-8b".to_string(),
+                name: "Llama 3.1 8B".to_string(),
+                provider: "cerebras".to_string(),
+                parameter_count: Some(8_000_000_000),
+                context_window: 128_000,
                 supports_streaming: true,
                 capabilities: vec![Capability::Chat, Capability::FunctionCalling],
-                detailed_capabilities: None,
-            },
-            ModelInfo {
-                id: "grok-beta".to_string(),
-                name: "Grok Beta".to_string(),
-                provider: "xai".to_string(),
-                parameter_count: None,
-                context_window: 131_072,
-                supports_streaming: true,
-                capabilities: vec![Capability::Chat],
                 detailed_capabilities: None,
             },
         ]
@@ -121,9 +111,9 @@ struct OpenAIStreamChoice {
 
 #[async_trait]
 #[allow(dead_code)]
-impl ModelProvider for XAIProvider {
+impl ModelProvider for CerebrasProvider {
     fn name(&self) -> &str {
-        "xai"
+        "cerebras"
     }
 
     async fn health_check(&self) -> ProviderHealth {
@@ -153,35 +143,26 @@ impl ModelProvider for XAIProvider {
     }
 
     async fn get_pricing(&self, model: &str) -> AppResult<PricingInfo> {
-        // xAI pricing as of 2026-01
-        let pricing = match model {
-            "grok-2" => PricingInfo {
-                input_cost_per_1k: 0.002,  // $2 per 1M tokens
-                output_cost_per_1k: 0.010, // $10 per 1M tokens
+        // Cerebras pricing as of 2026-01
+        let pricing = if model.contains("70b") {
+            PricingInfo {
+                input_cost_per_1k: 0.0006,  // $0.6 per 1M tokens
+                output_cost_per_1k: 0.0006, // $0.6 per 1M tokens
                 currency: "USD".to_string(),
-            },
-            "grok-2-mini" => PricingInfo {
-                input_cost_per_1k: 0.0002, // $0.2 per 1M tokens
-                output_cost_per_1k: 0.001, // $1 per 1M tokens
+            }
+        } else {
+            PricingInfo {
+                input_cost_per_1k: 0.0001,  // $0.1 per 1M tokens
+                output_cost_per_1k: 0.0001, // $0.1 per 1M tokens
                 currency: "USD".to_string(),
-            },
-            "grok-beta" => PricingInfo {
-                input_cost_per_1k: 0.005,  // $5 per 1M tokens
-                output_cost_per_1k: 0.015, // $15 per 1M tokens
-                currency: "USD".to_string(),
-            },
-            _ => PricingInfo {
-                input_cost_per_1k: 0.002,
-                output_cost_per_1k: 0.010,
-                currency: "USD".to_string(),
-            },
+            }
         };
 
         Ok(pricing)
     }
 
     async fn complete(&self, request: CompletionRequest) -> AppResult<CompletionResponse> {
-        let url = format!("{}/chat/completions", XAI_API_BASE);
+        let url = format!("{}/chat/completions", CEREBRAS_API_BASE);
 
         let response = self
             .client
@@ -191,39 +172,39 @@ impl ModelProvider for XAIProvider {
             .json(&request)
             .send()
             .await
-            .map_err(|e| AppError::Provider(format!("xAI request failed: {}", e)))?;
+            .map_err(|e| AppError::Provider(format!("Cerebras request failed: {}", e)))?;
 
         if !response.status().is_success() {
             let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
             return Err(AppError::Provider(format!(
-                "xAI API error {}: {}",
+                "Cerebras API error {}: {}",
                 status, error_text
             )));
         }
 
-        let xai_response: OpenAIChatResponse = response
+        let cerebras_response: OpenAIChatResponse = response
             .json()
             .await
-            .map_err(|e| AppError::Provider(format!("Failed to parse xAI response: {}", e)))?;
+            .map_err(|e| AppError::Provider(format!("Failed to parse Cerebras response: {}", e)))?;
 
         Ok(CompletionResponse {
-            id: xai_response.id,
-            object: xai_response.object,
-            created: xai_response.created,
-            model: xai_response.model,
+            id: cerebras_response.id,
+            object: cerebras_response.object,
+            created: cerebras_response.created,
+            model: cerebras_response.model,
             provider: self.name().to_string(),
-            choices: xai_response
+            choices: cerebras_response
                 .choices
                 .into_iter()
                 .map(|choice| CompletionChoice {
                     index: choice.index,
                     message: choice.message,
                     finish_reason: choice.finish_reason,
-                    logprobs: None, // xAI does not support logprobs
+                    logprobs: None, // Cerebras does not support logprobs
                 })
                 .collect(),
-            usage: xai_response.usage,
+            usage: cerebras_response.usage,
             extensions: None,
             routellm_win_rate: None,
         })
@@ -233,7 +214,7 @@ impl ModelProvider for XAIProvider {
         &self,
         request: CompletionRequest,
     ) -> AppResult<Pin<Box<dyn Stream<Item = AppResult<CompletionChunk>> + Send>>> {
-        let url = format!("{}/chat/completions", XAI_API_BASE);
+        let url = format!("{}/chat/completions", CEREBRAS_API_BASE);
 
         let response = self
             .client
@@ -243,12 +224,12 @@ impl ModelProvider for XAIProvider {
             .json(&request)
             .send()
             .await
-            .map_err(|e| AppError::Provider(format!("xAI streaming request failed: {}", e)))?;
+            .map_err(|e| AppError::Provider(format!("Cerebras streaming request failed: {}", e)))?;
 
         if !response.status().is_success() {
             let status = response.status();
             return Err(AppError::Provider(format!(
-                "xAI streaming API error: {}",
+                "Cerebras streaming API error: {}",
                 status
             )));
         }
@@ -284,13 +265,13 @@ impl ModelProvider for XAIProvider {
                         }
 
                         match serde_json::from_str::<OpenAIStreamChunk>(data) {
-                            Ok(xai_chunk) => {
+                            Ok(cerebras_chunk) => {
                                 let chunk = CompletionChunk {
-                                    id: xai_chunk.id,
-                                    object: xai_chunk.object,
-                                    created: xai_chunk.created,
-                                    model: xai_chunk.model,
-                                    choices: xai_chunk
+                                    id: cerebras_chunk.id,
+                                    object: cerebras_chunk.object,
+                                    created: cerebras_chunk.created,
+                                    model: cerebras_chunk.model,
+                                    choices: cerebras_chunk
                                         .choices
                                         .into_iter()
                                         .map(|choice| ChunkChoice {
@@ -330,15 +311,15 @@ mod tests {
 
     #[test]
     fn test_known_models() {
-        let models = XAIProvider::get_known_models();
+        let models = CerebrasProvider::get_known_models();
         assert!(!models.is_empty());
-        assert!(models.iter().any(|m| m.id == "grok-2"));
+        assert!(models.iter().any(|m| m.id == "llama3.1-70b"));
     }
 
     #[tokio::test]
     async fn test_pricing() {
-        let provider = XAIProvider::new("test_key".to_string()).unwrap();
-        let pricing = provider.get_pricing("grok-2").await.unwrap();
+        let provider = CerebrasProvider::new("test_key".to_string()).unwrap();
+        let pricing = provider.get_pricing("llama3.1-70b").await.unwrap();
         assert!(pricing.input_cost_per_1k > 0.0);
     }
 }

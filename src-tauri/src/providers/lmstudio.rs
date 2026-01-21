@@ -327,6 +327,7 @@ impl ModelProvider for LMStudioProvider {
                     index: choice.index,
                     message: choice.message,
                     finish_reason: choice.finish_reason,
+                    logprobs: None, // LMStudio does not support logprobs
                 })
                 .collect(),
             usage: TokenUsage {

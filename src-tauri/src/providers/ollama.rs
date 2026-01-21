@@ -366,6 +366,7 @@ impl ModelProvider for OllamaProvider {
                 index: 0,
                 message: ollama_response.message,
                 finish_reason: Some("stop".to_string()),
+                logprobs: None, // Ollama does not support logprobs
             }],
             usage: TokenUsage {
                 prompt_tokens,

@@ -280,6 +280,7 @@ impl FeatureAdapter for PromptCachingAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::providers::ChatMessageContent;
 
     #[test]
     fn test_feature_name() {
@@ -327,10 +328,16 @@ mod tests {
                 crate::providers::ChatMessage {
                     role: "system".to_string(),
                     content: ChatMessageContent::Text("You are a helpful assistant.".to_string()),
+                    tool_calls: None,
+                    tool_call_id: None,
+                    name: None,
                 },
                 crate::providers::ChatMessage {
                     role: "user".to_string(),
                     content: ChatMessageContent::Text("Hello".to_string()),
+                    tool_calls: None,
+                    tool_call_id: None,
+                    name: None,
                 },
             ],
             temperature: None,
@@ -344,6 +351,11 @@ mod tests {
             seed: None,
             repetition_penalty: None,
             extensions: None,
+            tools: None,
+            tool_choice: None,
+            response_format: None,
+            logprobs: None,
+            top_logprobs: None,
         };
 
         let breakpoints = PromptCachingAdapter::determine_cache_breakpoints(&request);
@@ -358,18 +370,30 @@ mod tests {
                 crate::providers::ChatMessage {
                     role: "system".to_string(),
                     content: ChatMessageContent::Text("System prompt".to_string()),
+                    tool_calls: None,
+                    tool_call_id: None,
+                    name: None,
                 },
                 crate::providers::ChatMessage {
                     role: "user".to_string(),
                     content: ChatMessageContent::Text("Message 1".to_string()),
+                    tool_calls: None,
+                    tool_call_id: None,
+                    name: None,
                 },
                 crate::providers::ChatMessage {
                     role: "assistant".to_string(),
                     content: ChatMessageContent::Text("Response 1".to_string()),
+                    tool_calls: None,
+                    tool_call_id: None,
+                    name: None,
                 },
                 crate::providers::ChatMessage {
                     role: "user".to_string(),
                     content: ChatMessageContent::Text("Message 2".to_string()),
+                    tool_calls: None,
+                    tool_call_id: None,
+                    name: None,
                 },
             ],
             temperature: None,
@@ -383,6 +407,11 @@ mod tests {
             seed: None,
             repetition_penalty: None,
             extensions: None,
+            tools: None,
+            tool_choice: None,
+            response_format: None,
+            logprobs: None,
+            top_logprobs: None,
         };
 
         let breakpoints = PromptCachingAdapter::determine_cache_breakpoints(&request);
@@ -431,10 +460,16 @@ mod tests {
                 crate::providers::ChatMessage {
                     role: "system".to_string(),
                     content: ChatMessageContent::Text("System prompt".to_string()),
+                    tool_calls: None,
+                    tool_call_id: None,
+                    name: None,
                 },
                 crate::providers::ChatMessage {
                     role: "user".to_string(),
                     content: ChatMessageContent::Text("User message".to_string()),
+                    tool_calls: None,
+                    tool_call_id: None,
+                    name: None,
                 },
             ],
             temperature: None,
@@ -448,6 +483,11 @@ mod tests {
             seed: None,
             repetition_penalty: None,
             extensions: None,
+            tools: None,
+            tool_choice: None,
+            response_format: None,
+            logprobs: None,
+            top_logprobs: None,
         };
 
         let params = HashMap::new();
@@ -468,6 +508,9 @@ mod tests {
             messages: vec![crate::providers::ChatMessage {
                 role: "user".to_string(),
                 content: ChatMessageContent::Text("Hello".to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
             }],
             temperature: None,
             max_tokens: None,
@@ -480,6 +523,11 @@ mod tests {
             seed: None,
             repetition_penalty: None,
             extensions: None,
+            tools: None,
+            tool_choice: None,
+            response_format: None,
+            logprobs: None,
+            top_logprobs: None,
         };
 
         let params = HashMap::new();

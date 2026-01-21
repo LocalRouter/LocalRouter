@@ -12,9 +12,9 @@ use std::time::Instant;
 use tracing::{debug, error, warn};
 
 use super::{
-    Capability, ChatMessage, ChunkChoice, ChunkDelta, CompletionChoice, CompletionChunk,
-    CompletionRequest, CompletionResponse, HealthStatus, ModelInfo, ModelProvider, PricingInfo,
-    ProviderHealth, TokenUsage,
+    Capability, ChatMessage, ChatMessageContent, ChunkChoice, ChunkDelta, CompletionChoice,
+    CompletionChunk, CompletionRequest, CompletionResponse, HealthStatus, ModelInfo,
+    ModelProvider, PricingInfo, ProviderHealth, TokenUsage,
 };
 use crate::utils::errors::{AppError, AppResult};
 
@@ -335,6 +335,7 @@ impl ModelProvider for GeminiProvider {
                     name: None,
                 },
                 finish_reason: Some(finish_reason.to_string()),
+                logprobs: None, // Gemini does not support logprobs
             }],
             usage: TokenUsage {
                 prompt_tokens: usage.map(|u| u.prompt_token_count).unwrap_or(0),
@@ -621,14 +622,14 @@ mod tests {
         let messages = vec![
             ChatMessage {
                 role: "system".to_string(),
-                content: super::ChatMessageContent::Text("You are helpful".to_string()),
+                content: ChatMessageContent::Text("You are helpful".to_string()),
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,
             },
             ChatMessage {
                 role: "user".to_string(),
-                content: super::ChatMessageContent::Text("Hello".to_string()),
+                content: ChatMessageContent::Text("Hello".to_string()),
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,
@@ -703,6 +704,11 @@ mod tests {
             seed: None,
             repetition_penalty: None,
             extensions: None,
+            logprobs: None,
+            top_logprobs: None,
+            response_format: None,
+            tool_choice: None,
+            tools: None,
         };
 
         let response = provider.complete(request).await.unwrap();

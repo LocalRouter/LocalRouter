@@ -294,6 +294,8 @@ impl ModelProvider for MistralProvider {
                     index: choice.index,
                     message: choice.message,
                     finish_reason: choice.finish_reason,
+                    logprobs: None,
+                    logprobs: None, // Mistral does not support logprobs
                 })
                 .collect(),
             usage: mistral_response.usage,

@@ -201,6 +201,8 @@ impl ModelProvider for CerebrasProvider {
                     index: choice.index,
                     message: choice.message,
                     finish_reason: choice.finish_reason,
+                    logprobs: None,
+                    logprobs: None, // Cerebras does not support logprobs
                 })
                 .collect(),
             usage: cerebras_response.usage,

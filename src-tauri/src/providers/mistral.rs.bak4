@@ -1,7 +1,7 @@
-//! xAI (Grok) provider implementation
+//! Mistral AI provider implementation
 //!
-//! Implements the ModelProvider trait for xAI's Grok models.
-//! xAI offers the Grok series of models with real-time knowledge access.
+//! Implements the ModelProvider trait for Mistral's LLM API.
+//! Mistral offers models like Mistral Small, Medium, Large, and Mixtral.
 
 use async_trait::async_trait;
 use chrono::Utc;
@@ -19,17 +19,17 @@ use super::{
     ProviderHealth, TokenUsage,
 };
 
-const XAI_API_BASE: &str = "https://api.x.ai/v1";
+const MISTRAL_API_BASE: &str = "https://api.mistral.ai/v1";
 
-/// xAI (Grok) provider
-pub struct XAIProvider {
+/// Mistral AI provider
+pub struct MistralProvider {
     client: Client,
     api_key: String,
 }
 
 #[allow(dead_code)]
-impl XAIProvider {
-    /// Create a new xAI provider with an API key
+impl MistralProvider {
+    /// Create a new Mistral provider with an API key
     pub fn new(api_key: String) -> AppResult<Self> {
         let client = Client::builder()
             .timeout(std::time::Duration::from_secs(120))
@@ -39,9 +39,9 @@ impl XAIProvider {
         Ok(Self { client, api_key })
     }
 
-    /// Create a new xAI provider from stored API key
+    /// Create a new Mistral provider from stored API key
     pub fn from_stored_key(provider_name: Option<&str>) -> AppResult<Self> {
-        let name = provider_name.unwrap_or("xai");
+        let name = provider_name.unwrap_or("mistral");
         let api_key = super::key_storage::get_provider_key(name)?.ok_or_else(|| {
             AppError::Provider(format!("No API key found for provider '{}'", name))
         })?;
@@ -52,33 +52,73 @@ impl XAIProvider {
     fn get_known_models() -> Vec<ModelInfo> {
         vec![
             ModelInfo {
-                id: "grok-2".to_string(),
-                name: "Grok 2".to_string(),
-                provider: "xai".to_string(),
+                id: "mistral-large-latest".to_string(),
+                name: "Mistral Large".to_string(),
+                provider: "mistral".to_string(),
                 parameter_count: None,
-                context_window: 131_072,
+                context_window: 128_000,
                 supports_streaming: true,
                 capabilities: vec![Capability::Chat, Capability::FunctionCalling],
                 detailed_capabilities: None,
             },
             ModelInfo {
-                id: "grok-2-mini".to_string(),
-                name: "Grok 2 Mini".to_string(),
-                provider: "xai".to_string(),
+                id: "mistral-small-latest".to_string(),
+                name: "Mistral Small".to_string(),
+                provider: "mistral".to_string(),
                 parameter_count: None,
-                context_window: 131_072,
+                context_window: 32_000,
                 supports_streaming: true,
                 capabilities: vec![Capability::Chat, Capability::FunctionCalling],
                 detailed_capabilities: None,
             },
             ModelInfo {
-                id: "grok-beta".to_string(),
-                name: "Grok Beta".to_string(),
-                provider: "xai".to_string(),
+                id: "codestral-latest".to_string(),
+                name: "Codestral (Code Specialist)".to_string(),
+                provider: "mistral".to_string(),
                 parameter_count: None,
-                context_window: 131_072,
+                context_window: 32_000,
+                supports_streaming: true,
+                capabilities: vec![Capability::Chat, Capability::Completion],
+                detailed_capabilities: None,
+            },
+            ModelInfo {
+                id: "mistral-medium-latest".to_string(),
+                name: "Mistral Medium".to_string(),
+                provider: "mistral".to_string(),
+                parameter_count: None,
+                context_window: 32_000,
+                supports_streaming: true,
+                capabilities: vec![Capability::Chat, Capability::FunctionCalling],
+                detailed_capabilities: None,
+            },
+            ModelInfo {
+                id: "open-mistral-7b".to_string(),
+                name: "Open Mistral 7B".to_string(),
+                provider: "mistral".to_string(),
+                parameter_count: Some(7_000_000_000),
+                context_window: 32_000,
                 supports_streaming: true,
                 capabilities: vec![Capability::Chat],
+                detailed_capabilities: None,
+            },
+            ModelInfo {
+                id: "open-mixtral-8x7b".to_string(),
+                name: "Open Mixtral 8x7B".to_string(),
+                provider: "mistral".to_string(),
+                parameter_count: Some(47_000_000_000),
+                context_window: 32_000,
+                supports_streaming: true,
+                capabilities: vec![Capability::Chat],
+                detailed_capabilities: None,
+            },
+            ModelInfo {
+                id: "open-mixtral-8x22b".to_string(),
+                name: "Open Mixtral 8x22B".to_string(),
+                provider: "mistral".to_string(),
+                parameter_count: Some(141_000_000_000),
+                context_window: 64_000,
+                supports_streaming: true,
+                capabilities: vec![Capability::Chat, Capability::FunctionCalling],
                 detailed_capabilities: None,
             },
         ]
@@ -121,9 +161,9 @@ struct OpenAIStreamChoice {
 
 #[async_trait]
 #[allow(dead_code)]
-impl ModelProvider for XAIProvider {
+impl ModelProvider for MistralProvider {
     fn name(&self) -> &str {
-        "xai"
+        "mistral"
     }
 
     async fn health_check(&self) -> ProviderHealth {
@@ -149,30 +189,64 @@ impl ModelProvider for XAIProvider {
     }
 
     async fn list_models(&self) -> AppResult<Vec<ModelInfo>> {
+        // Return known models
         Ok(Self::get_known_models())
     }
 
     async fn get_pricing(&self, model: &str) -> AppResult<PricingInfo> {
-        // xAI pricing as of 2026-01
+        // Try catalog first (embedded OpenRouter data)
+        if let Some(catalog_model) = crate::catalog::find_model("mistralai", model) {
+            tracing::debug!("Using catalog pricing for Mistral model: {}", model);
+            return Ok(PricingInfo {
+                input_cost_per_1k: catalog_model.pricing.prompt_cost_per_1k(),
+                output_cost_per_1k: catalog_model.pricing.completion_cost_per_1k(),
+                currency: catalog_model.pricing.currency.to_string(),
+            });
+        }
+
+        // Fallback to hardcoded pricing
+        tracing::debug!("Using fallback pricing for Mistral model: {}", model);
+
+        // Mistral pricing as of 2026-01
         let pricing = match model {
-            "grok-2" => PricingInfo {
+            "mistral-large-latest" | "mistral-large-2411" => PricingInfo {
                 input_cost_per_1k: 0.002,  // $2 per 1M tokens
-                output_cost_per_1k: 0.010, // $10 per 1M tokens
+                output_cost_per_1k: 0.006, // $6 per 1M tokens
                 currency: "USD".to_string(),
             },
-            "grok-2-mini" => PricingInfo {
-                input_cost_per_1k: 0.0002, // $0.2 per 1M tokens
-                output_cost_per_1k: 0.001, // $1 per 1M tokens
+            "mistral-medium-latest" => PricingInfo {
+                input_cost_per_1k: 0.00275, // $2.75 per 1M tokens
+                output_cost_per_1k: 0.0081, // $8.1 per 1M tokens
                 currency: "USD".to_string(),
             },
-            "grok-beta" => PricingInfo {
-                input_cost_per_1k: 0.005,  // $5 per 1M tokens
-                output_cost_per_1k: 0.015, // $15 per 1M tokens
+            "mistral-small-latest" | "mistral-small-2409" => PricingInfo {
+                input_cost_per_1k: 0.0002,  // $0.2 per 1M tokens
+                output_cost_per_1k: 0.0006, // $0.6 per 1M tokens
+                currency: "USD".to_string(),
+            },
+            "codestral-latest" => PricingInfo {
+                input_cost_per_1k: 0.0002,  // $0.2 per 1M tokens
+                output_cost_per_1k: 0.0006, // $0.6 per 1M tokens
+                currency: "USD".to_string(),
+            },
+            "open-mistral-7b" => PricingInfo {
+                input_cost_per_1k: 0.00025,  // $0.25 per 1M tokens
+                output_cost_per_1k: 0.00025, // $0.25 per 1M tokens
+                currency: "USD".to_string(),
+            },
+            "open-mixtral-8x7b" => PricingInfo {
+                input_cost_per_1k: 0.0007,  // $0.7 per 1M tokens
+                output_cost_per_1k: 0.0007, // $0.7 per 1M tokens
+                currency: "USD".to_string(),
+            },
+            "open-mixtral-8x22b" => PricingInfo {
+                input_cost_per_1k: 0.002,  // $2 per 1M tokens
+                output_cost_per_1k: 0.006, // $6 per 1M tokens
                 currency: "USD".to_string(),
             },
             _ => PricingInfo {
-                input_cost_per_1k: 0.002,
-                output_cost_per_1k: 0.010,
+                input_cost_per_1k: 0.001,
+                output_cost_per_1k: 0.003,
                 currency: "USD".to_string(),
             },
         };
@@ -181,7 +255,7 @@ impl ModelProvider for XAIProvider {
     }
 
     async fn complete(&self, request: CompletionRequest) -> AppResult<CompletionResponse> {
-        let url = format!("{}/chat/completions", XAI_API_BASE);
+        let url = format!("{}/chat/completions", MISTRAL_API_BASE);
 
         let response = self
             .client
@@ -191,39 +265,39 @@ impl ModelProvider for XAIProvider {
             .json(&request)
             .send()
             .await
-            .map_err(|e| AppError::Provider(format!("xAI request failed: {}", e)))?;
+            .map_err(|e| AppError::Provider(format!("Mistral request failed: {}", e)))?;
 
         if !response.status().is_success() {
             let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
             return Err(AppError::Provider(format!(
-                "xAI API error {}: {}",
+                "Mistral API error {}: {}",
                 status, error_text
             )));
         }
 
-        let xai_response: OpenAIChatResponse = response
+        let mistral_response: OpenAIChatResponse = response
             .json()
             .await
-            .map_err(|e| AppError::Provider(format!("Failed to parse xAI response: {}", e)))?;
+            .map_err(|e| AppError::Provider(format!("Failed to parse Mistral response: {}", e)))?;
 
         Ok(CompletionResponse {
-            id: xai_response.id,
-            object: xai_response.object,
-            created: xai_response.created,
-            model: xai_response.model,
+            id: mistral_response.id,
+            object: mistral_response.object,
+            created: mistral_response.created,
+            model: mistral_response.model,
             provider: self.name().to_string(),
-            choices: xai_response
+            choices: mistral_response
                 .choices
                 .into_iter()
                 .map(|choice| CompletionChoice {
                     index: choice.index,
                     message: choice.message,
                     finish_reason: choice.finish_reason,
-                    logprobs: None, // xAI does not support logprobs
+                    logprobs: None, // Mistral does not support logprobs
                 })
                 .collect(),
-            usage: xai_response.usage,
+            usage: mistral_response.usage,
             extensions: None,
             routellm_win_rate: None,
         })
@@ -233,7 +307,7 @@ impl ModelProvider for XAIProvider {
         &self,
         request: CompletionRequest,
     ) -> AppResult<Pin<Box<dyn Stream<Item = AppResult<CompletionChunk>> + Send>>> {
-        let url = format!("{}/chat/completions", XAI_API_BASE);
+        let url = format!("{}/chat/completions", MISTRAL_API_BASE);
 
         let response = self
             .client
@@ -243,12 +317,12 @@ impl ModelProvider for XAIProvider {
             .json(&request)
             .send()
             .await
-            .map_err(|e| AppError::Provider(format!("xAI streaming request failed: {}", e)))?;
+            .map_err(|e| AppError::Provider(format!("Mistral streaming request failed: {}", e)))?;
 
         if !response.status().is_success() {
             let status = response.status();
             return Err(AppError::Provider(format!(
-                "xAI streaming API error: {}",
+                "Mistral streaming API error: {}",
                 status
             )));
         }
@@ -284,13 +358,13 @@ impl ModelProvider for XAIProvider {
                         }
 
                         match serde_json::from_str::<OpenAIStreamChunk>(data) {
-                            Ok(xai_chunk) => {
+                            Ok(mistral_chunk) => {
                                 let chunk = CompletionChunk {
-                                    id: xai_chunk.id,
-                                    object: xai_chunk.object,
-                                    created: xai_chunk.created,
-                                    model: xai_chunk.model,
-                                    choices: xai_chunk
+                                    id: mistral_chunk.id,
+                                    object: mistral_chunk.object,
+                                    created: mistral_chunk.created,
+                                    model: mistral_chunk.model,
+                                    choices: mistral_chunk
                                         .choices
                                         .into_iter()
                                         .map(|choice| ChunkChoice {
@@ -330,15 +404,15 @@ mod tests {
 
     #[test]
     fn test_known_models() {
-        let models = XAIProvider::get_known_models();
+        let models = MistralProvider::get_known_models();
         assert!(!models.is_empty());
-        assert!(models.iter().any(|m| m.id == "grok-2"));
+        assert!(models.iter().any(|m| m.id == "mistral-large-latest"));
     }
 
     #[tokio::test]
     async fn test_pricing() {
-        let provider = XAIProvider::new("test_key".to_string()).unwrap();
-        let pricing = provider.get_pricing("grok-2").await.unwrap();
+        let provider = MistralProvider::new("test_key".to_string()).unwrap();
+        let pricing = provider.get_pricing("mistral-large-latest").await.unwrap();
         assert!(pricing.input_cost_per_1k > 0.0);
     }
 }

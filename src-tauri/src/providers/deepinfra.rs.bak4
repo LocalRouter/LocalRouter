@@ -1,7 +1,7 @@
-//! xAI (Grok) provider implementation
+//! DeepInfra provider implementation
 //!
-//! Implements the ModelProvider trait for xAI's Grok models.
-//! xAI offers the Grok series of models with real-time knowledge access.
+//! Implements the ModelProvider trait for DeepInfra's platform.
+//! DeepInfra offers cost-effective hosting of open-source models.
 
 use async_trait::async_trait;
 use chrono::Utc;
@@ -19,17 +19,17 @@ use super::{
     ProviderHealth, TokenUsage,
 };
 
-const XAI_API_BASE: &str = "https://api.x.ai/v1";
+const DEEPINFRA_API_BASE: &str = "https://api.deepinfra.com/v1/openai";
 
-/// xAI (Grok) provider
-pub struct XAIProvider {
+/// DeepInfra provider
+pub struct DeepInfraProvider {
     client: Client,
     api_key: String,
 }
 
 #[allow(dead_code)]
-impl XAIProvider {
-    /// Create a new xAI provider with an API key
+impl DeepInfraProvider {
+    /// Create a new DeepInfra provider with an API key
     pub fn new(api_key: String) -> AppResult<Self> {
         let client = Client::builder()
             .timeout(std::time::Duration::from_secs(120))
@@ -39,9 +39,9 @@ impl XAIProvider {
         Ok(Self { client, api_key })
     }
 
-    /// Create a new xAI provider from stored API key
+    /// Create a new DeepInfra provider from stored API key
     pub fn from_stored_key(provider_name: Option<&str>) -> AppResult<Self> {
-        let name = provider_name.unwrap_or("xai");
+        let name = provider_name.unwrap_or("deepinfra");
         let api_key = super::key_storage::get_provider_key(name)?.ok_or_else(|| {
             AppError::Provider(format!("No API key found for provider '{}'", name))
         })?;
@@ -52,31 +52,51 @@ impl XAIProvider {
     fn get_known_models() -> Vec<ModelInfo> {
         vec![
             ModelInfo {
-                id: "grok-2".to_string(),
-                name: "Grok 2".to_string(),
-                provider: "xai".to_string(),
-                parameter_count: None,
-                context_window: 131_072,
+                id: "meta-llama/Meta-Llama-3.1-405B-Instruct".to_string(),
+                name: "Llama 3.1 405B Instruct".to_string(),
+                provider: "deepinfra".to_string(),
+                parameter_count: Some(405_000_000_000),
+                context_window: 32_000,
                 supports_streaming: true,
-                capabilities: vec![Capability::Chat, Capability::FunctionCalling],
+                capabilities: vec![Capability::Chat],
                 detailed_capabilities: None,
             },
             ModelInfo {
-                id: "grok-2-mini".to_string(),
-                name: "Grok 2 Mini".to_string(),
-                provider: "xai".to_string(),
-                parameter_count: None,
-                context_window: 131_072,
+                id: "meta-llama/Meta-Llama-3.1-70B-Instruct".to_string(),
+                name: "Llama 3.1 70B Instruct".to_string(),
+                provider: "deepinfra".to_string(),
+                parameter_count: Some(70_000_000_000),
+                context_window: 128_000,
                 supports_streaming: true,
-                capabilities: vec![Capability::Chat, Capability::FunctionCalling],
+                capabilities: vec![Capability::Chat],
                 detailed_capabilities: None,
             },
             ModelInfo {
-                id: "grok-beta".to_string(),
-                name: "Grok Beta".to_string(),
-                provider: "xai".to_string(),
-                parameter_count: None,
-                context_window: 131_072,
+                id: "meta-llama/Meta-Llama-3.1-8B-Instruct".to_string(),
+                name: "Llama 3.1 8B Instruct".to_string(),
+                provider: "deepinfra".to_string(),
+                parameter_count: Some(8_000_000_000),
+                context_window: 128_000,
+                supports_streaming: true,
+                capabilities: vec![Capability::Chat],
+                detailed_capabilities: None,
+            },
+            ModelInfo {
+                id: "Qwen/Qwen2.5-72B-Instruct".to_string(),
+                name: "Qwen 2.5 72B Instruct".to_string(),
+                provider: "deepinfra".to_string(),
+                parameter_count: Some(72_000_000_000),
+                context_window: 32_000,
+                supports_streaming: true,
+                capabilities: vec![Capability::Chat],
+                detailed_capabilities: None,
+            },
+            ModelInfo {
+                id: "mistralai/Mixtral-8x7B-Instruct-v0.1".to_string(),
+                name: "Mixtral 8x7B Instruct".to_string(),
+                provider: "deepinfra".to_string(),
+                parameter_count: Some(47_000_000_000),
+                context_window: 32_000,
                 supports_streaming: true,
                 capabilities: vec![Capability::Chat],
                 detailed_capabilities: None,
@@ -121,9 +141,9 @@ struct OpenAIStreamChoice {
 
 #[async_trait]
 #[allow(dead_code)]
-impl ModelProvider for XAIProvider {
+impl ModelProvider for DeepInfraProvider {
     fn name(&self) -> &str {
-        "xai"
+        "deepinfra"
     }
 
     async fn health_check(&self) -> ProviderHealth {
@@ -149,39 +169,41 @@ impl ModelProvider for XAIProvider {
     }
 
     async fn list_models(&self) -> AppResult<Vec<ModelInfo>> {
-        Ok(Self::get_known_models())
+        // Enrich known models with catalog data using model-only search
+        let models = Self::get_known_models()
+            .into_iter()
+            .map(|model| model.enrich_with_catalog_by_name())
+            .collect();
+        Ok(models)
     }
 
     async fn get_pricing(&self, model: &str) -> AppResult<PricingInfo> {
-        // xAI pricing as of 2026-01
-        let pricing = match model {
-            "grok-2" => PricingInfo {
-                input_cost_per_1k: 0.002,  // $2 per 1M tokens
-                output_cost_per_1k: 0.010, // $10 per 1M tokens
+        // DeepInfra pricing as of 2026-01 (approximate)
+        let pricing = if model.contains("405B") {
+            PricingInfo {
+                input_cost_per_1k: 0.0027,  // $2.7 per 1M tokens
+                output_cost_per_1k: 0.0027, // $2.7 per 1M tokens
                 currency: "USD".to_string(),
-            },
-            "grok-2-mini" => PricingInfo {
-                input_cost_per_1k: 0.0002, // $0.2 per 1M tokens
-                output_cost_per_1k: 0.001, // $1 per 1M tokens
+            }
+        } else if model.contains("70B") || model.contains("72B") {
+            PricingInfo {
+                input_cost_per_1k: 0.00059,  // $0.59 per 1M tokens
+                output_cost_per_1k: 0.00059, // $0.59 per 1M tokens
                 currency: "USD".to_string(),
-            },
-            "grok-beta" => PricingInfo {
-                input_cost_per_1k: 0.005,  // $5 per 1M tokens
-                output_cost_per_1k: 0.015, // $15 per 1M tokens
+            }
+        } else {
+            PricingInfo {
+                input_cost_per_1k: 0.00009,  // $0.09 per 1M tokens
+                output_cost_per_1k: 0.00009, // $0.09 per 1M tokens
                 currency: "USD".to_string(),
-            },
-            _ => PricingInfo {
-                input_cost_per_1k: 0.002,
-                output_cost_per_1k: 0.010,
-                currency: "USD".to_string(),
-            },
+            }
         };
 
         Ok(pricing)
     }
 
     async fn complete(&self, request: CompletionRequest) -> AppResult<CompletionResponse> {
-        let url = format!("{}/chat/completions", XAI_API_BASE);
+        let url = format!("{}/chat/completions", DEEPINFRA_API_BASE);
 
         let response = self
             .client
@@ -191,39 +213,38 @@ impl ModelProvider for XAIProvider {
             .json(&request)
             .send()
             .await
-            .map_err(|e| AppError::Provider(format!("xAI request failed: {}", e)))?;
+            .map_err(|e| AppError::Provider(format!("DeepInfra request failed: {}", e)))?;
 
         if !response.status().is_success() {
             let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
             return Err(AppError::Provider(format!(
-                "xAI API error {}: {}",
+                "DeepInfra API error {}: {}",
                 status, error_text
             )));
         }
 
-        let xai_response: OpenAIChatResponse = response
-            .json()
-            .await
-            .map_err(|e| AppError::Provider(format!("Failed to parse xAI response: {}", e)))?;
+        let deepinfra_response: OpenAIChatResponse = response.json().await.map_err(|e| {
+            AppError::Provider(format!("Failed to parse DeepInfra response: {}", e))
+        })?;
 
         Ok(CompletionResponse {
-            id: xai_response.id,
-            object: xai_response.object,
-            created: xai_response.created,
-            model: xai_response.model,
+            id: deepinfra_response.id,
+            object: deepinfra_response.object,
+            created: deepinfra_response.created,
+            model: deepinfra_response.model,
             provider: self.name().to_string(),
-            choices: xai_response
+            choices: deepinfra_response
                 .choices
                 .into_iter()
                 .map(|choice| CompletionChoice {
                     index: choice.index,
                     message: choice.message,
                     finish_reason: choice.finish_reason,
-                    logprobs: None, // xAI does not support logprobs
+                    logprobs: None, // DeepInfra does not support logprobs
                 })
                 .collect(),
-            usage: xai_response.usage,
+            usage: deepinfra_response.usage,
             extensions: None,
             routellm_win_rate: None,
         })
@@ -233,7 +254,7 @@ impl ModelProvider for XAIProvider {
         &self,
         request: CompletionRequest,
     ) -> AppResult<Pin<Box<dyn Stream<Item = AppResult<CompletionChunk>> + Send>>> {
-        let url = format!("{}/chat/completions", XAI_API_BASE);
+        let url = format!("{}/chat/completions", DEEPINFRA_API_BASE);
 
         let response = self
             .client
@@ -243,12 +264,14 @@ impl ModelProvider for XAIProvider {
             .json(&request)
             .send()
             .await
-            .map_err(|e| AppError::Provider(format!("xAI streaming request failed: {}", e)))?;
+            .map_err(|e| {
+                AppError::Provider(format!("DeepInfra streaming request failed: {}", e))
+            })?;
 
         if !response.status().is_success() {
             let status = response.status();
             return Err(AppError::Provider(format!(
-                "xAI streaming API error: {}",
+                "DeepInfra streaming API error: {}",
                 status
             )));
         }
@@ -284,13 +307,13 @@ impl ModelProvider for XAIProvider {
                         }
 
                         match serde_json::from_str::<OpenAIStreamChunk>(data) {
-                            Ok(xai_chunk) => {
+                            Ok(deepinfra_chunk) => {
                                 let chunk = CompletionChunk {
-                                    id: xai_chunk.id,
-                                    object: xai_chunk.object,
-                                    created: xai_chunk.created,
-                                    model: xai_chunk.model,
-                                    choices: xai_chunk
+                                    id: deepinfra_chunk.id,
+                                    object: deepinfra_chunk.object,
+                                    created: deepinfra_chunk.created,
+                                    model: deepinfra_chunk.model,
+                                    choices: deepinfra_chunk
                                         .choices
                                         .into_iter()
                                         .map(|choice| ChunkChoice {
@@ -330,15 +353,18 @@ mod tests {
 
     #[test]
     fn test_known_models() {
-        let models = XAIProvider::get_known_models();
+        let models = DeepInfraProvider::get_known_models();
         assert!(!models.is_empty());
-        assert!(models.iter().any(|m| m.id == "grok-2"));
+        assert!(models.iter().any(|m| m.id.contains("Llama-3.1-405B")));
     }
 
     #[tokio::test]
     async fn test_pricing() {
-        let provider = XAIProvider::new("test_key".to_string()).unwrap();
-        let pricing = provider.get_pricing("grok-2").await.unwrap();
+        let provider = DeepInfraProvider::new("test_key".to_string()).unwrap();
+        let pricing = provider
+            .get_pricing("meta-llama/Meta-Llama-3.1-405B-Instruct")
+            .await
+            .unwrap();
         assert!(pricing.input_cost_per_1k > 0.0);
     }
 }
