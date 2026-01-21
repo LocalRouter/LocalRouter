@@ -3,6 +3,8 @@
 //! Handles OAuth 2.0 client credentials (client_id + client_secret) used by external
 //! MCP clients to authenticate with LocalRouter. This mirrors the API key system but
 //! uses OAuth client credentials flow instead.
+
+#![allow(dead_code)]
 //!
 //! OAuth clients can be linked to specific MCP servers, enabling granular access control.
 

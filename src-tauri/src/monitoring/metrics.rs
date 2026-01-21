@@ -3,6 +3,8 @@
 //! Tracks usage metrics with progressive aggregation:
 //! - Per-minute: Last 24 hours
 //! - Per-hour: Last 7 days
+
+#![allow(dead_code)]
 //! - Per-day: Last 90 days
 
 use chrono::{DateTime, DurationRound, Utc};

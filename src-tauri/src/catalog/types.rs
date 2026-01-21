@@ -29,6 +29,7 @@ impl CatalogMetadata {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct CatalogModel {
     pub id: &'static str,
     pub aliases: &'static [&'static str],
@@ -41,6 +42,7 @@ pub struct CatalogModel {
 }
 
 #[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
 pub struct CatalogPricing {
     /// Cost per token (not per 1K!)
     pub prompt_per_token: f64,
@@ -54,6 +56,7 @@ pub struct CatalogPricing {
     pub currency: &'static str,
 }
 
+#[allow(dead_code)]
 impl CatalogPricing {
     /// Get prompt cost per 1K tokens
     pub fn prompt_cost_per_1k(&self) -> f64 {

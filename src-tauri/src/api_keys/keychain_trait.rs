@@ -404,6 +404,7 @@ impl KeychainStorage for CachedKeychain {
 ///
 /// Key format: "service:account"
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct MockKeychain {
     storage: Arc<Mutex<HashMap<String, String>>>,
 }
