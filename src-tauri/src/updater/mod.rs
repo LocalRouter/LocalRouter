@@ -3,6 +3,8 @@
 //! Handles background update check scheduling and configuration.
 //! The actual update checking is done by the Tauri updater plugin from the frontend.
 
+#![allow(dead_code)]
+
 use crate::config::{ConfigManager, UpdateMode};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};

@@ -2,6 +2,8 @@
 //!
 //! Generates 32x32 PNG sparkline graphs showing token usage over time.
 
+#![allow(dead_code)]
+
 use chrono::{DateTime, Utc};
 use image::{codecs::png::PngEncoder, ImageEncoder, Rgba, RgbaImage};
 use std::io::Cursor;

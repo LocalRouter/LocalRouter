@@ -2,6 +2,8 @@
 //!
 //! Handles system tray icon and menu.
 
+#![allow(dead_code)]
+
 use crate::clients::ClientManager;
 use crate::config::{ConfigManager, UiConfig};
 use crate::mcp::manager::McpServerManager;
