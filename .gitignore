@@ -39,3 +39,23 @@ pnpm-debug.log*
 # LocalRouter specific
 *.localrouter/
 localrouter-*.log
+
+# Tauri signing keys (NEVER commit these!)
+*.key
+*.priv
+*_private_key*
+
+# Backup and temporary files
+*.bak
+*.bak2
+*.dup
+*.fix
+*.tmp
+*.chunk2
+
+# Development scripts and reports
+dark-mode-*.txt
+find-dark-mode-issues.sh
+fix-dark-mode-bulk.sh
+run-debug-*.sh
+test-routellm-performance.sh
