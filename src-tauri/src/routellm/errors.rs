@@ -1,5 +1,7 @@
 //! RouteLLM-specific error types
 
+#![allow(dead_code)]
+
 use thiserror::Error;
 
 /// RouteLLM-specific errors

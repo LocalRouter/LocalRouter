@@ -88,6 +88,9 @@ pub async fn completions(
         tool_choice: None,
         // Response format (not supported in legacy completions endpoint)
         response_format: None,
+        // Log probabilities (not supported in legacy completions endpoint)
+        logprobs: None,
+        top_logprobs: None,
     };
 
     if request.stream {

@@ -1,5 +1,7 @@
 //! Model downloader from HuggingFace
 
+#![allow(dead_code)]
+
 use crate::config::RouteLLMDownloadStatus;
 use crate::routellm::errors::{RouteLLMError, RouteLLMResult};
 use hf_hub::api::tokio::Api;
@@ -293,6 +295,8 @@ struct DownloadError {
 /// Get download status
 ///
 /// Checks if SafeTensors model files are downloaded
+/// Note: After first load, the original model.safetensors is deleted and only
+/// model.patched.safetensors remains (to save 1GB disk space)
 pub fn get_download_status(
     model_path: &Path,
     tokenizer_path: &Path,
@@ -300,9 +304,13 @@ pub fn get_download_status(
     use crate::config::RouteLLMDownloadState;
 
     let model_file = model_path.join("model.safetensors");
+    let patched_model_file = model_path.join("model.patched.safetensors");
     let tokenizer_file = tokenizer_path.join("tokenizer.json");
 
-    if model_file.exists() && tokenizer_file.exists() {
+    // Check for either original or patched model file
+    let model_exists = model_file.exists() || patched_model_file.exists();
+
+    if model_exists && tokenizer_file.exists() {
         RouteLLMDownloadStatus {
             state: RouteLLMDownloadState::Downloaded,
             progress: 1.0,

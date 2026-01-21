@@ -26,9 +26,8 @@ use crate::server::middleware::client_auth::ClientAuthContext;
 use crate::server::middleware::error::{ApiErrorResponse, ApiResult};
 use crate::server::state::{AppState, AuthContext, GenerationDetails};
 use crate::server::types::{
-    ChatCompletionChoice, ChatCompletionChunk, ChatCompletionChunkChoice, ChatCompletionLogprobs,
-    ChatCompletionRequest, ChatCompletionResponse, ChatCompletionTokenLogprob, ChatMessage,
-    ChunkDelta, MessageContent, TokenUsage, TopLogprob,
+    ChatCompletionChoice, ChatCompletionChunk, ChatCompletionChunkChoice, ChatCompletionRequest,
+    ChatCompletionResponse, ChatMessage, ChunkDelta, MessageContent, TokenUsage,
 };
 
 /// POST /v1/chat/completions
@@ -157,6 +156,13 @@ fn validate_request(request: &ChatCompletionRequest) -> ApiResult<()> {
             // This is a limitation that will be fixed in a future update
             tracing::warn!("n > 1 requested but only first completion will be generated (not yet fully supported)");
         }
+    }
+
+    // Validate logprobs
+    if request.logprobs == Some(true) {
+        // Note: logprobs is accepted but not yet fully implemented
+        // The field will be null in responses until provider support is added
+        tracing::warn!("logprobs requested but not yet fully supported - will return null");
     }
 
     // Validate top_logprobs (requires logprobs to be true)
@@ -499,9 +505,6 @@ fn convert_to_provider_request(
         tool_choice,
         // Response format (Bug #7 fix)
         response_format,
-        // Log probabilities (Bug #6 fix)
-        logprobs: request.logprobs,
-        top_logprobs: request.top_logprobs,
     })
 }
 
@@ -693,29 +696,7 @@ async fn handle_non_streaming(
                         tool_call_id: choice.message.tool_call_id,
                     },
                     finish_reason: choice.finish_reason,
-                    logprobs: choice.logprobs.map(|provider_logprobs| {
-                        ChatCompletionLogprobs {
-                            content: provider_logprobs.content.map(|tokens| {
-                                tokens
-                                    .into_iter()
-                                    .map(|token| ChatCompletionTokenLogprob {
-                                        token: token.token,
-                                        logprob: token.logprob,
-                                        bytes: token.bytes,
-                                        top_logprobs: token
-                                            .top_logprobs
-                                            .into_iter()
-                                            .map(|top| TopLogprob {
-                                                token: top.token,
-                                                logprob: top.logprob,
-                                                bytes: top.bytes,
-                                            })
-                                            .collect(),
-                                    })
-                                    .collect()
-                            }),
-                        }
-                    }),
+                    logprobs: None, // TODO: Implement logprobs support (Bug #6)
                 }
             })
             .collect(),
@@ -1064,8 +1045,6 @@ mod tests {
                 role: "user".to_string(),
                 content: Some(MessageContent::Text("Hello".to_string())),
                 name: None,
-                tool_calls: None,
-                tool_call_id: None,
             }],
             temperature: None,
             max_tokens: None,
@@ -1082,10 +1061,6 @@ mod tests {
             tool_choice: None,
             extensions: None,
             user: None,
-            max_completion_tokens: None,
-            n: None,
-            logprobs: None,
-            top_logprobs: None,
         };
 
         assert!(validate_request(&request).is_ok());
@@ -1099,8 +1074,6 @@ mod tests {
                 role: "user".to_string(),
                 content: Some(MessageContent::Text("Hello".to_string())),
                 name: None,
-                tool_calls: None,
-                tool_call_id: None,
             }],
             temperature: None,
             max_tokens: None,
@@ -1117,10 +1090,6 @@ mod tests {
             tool_choice: None,
             extensions: None,
             user: None,
-            max_completion_tokens: None,
-            n: None,
-            logprobs: None,
-            top_logprobs: None,
         };
 
         assert!(validate_request(&request).is_err());
@@ -1146,10 +1115,6 @@ mod tests {
             tool_choice: None,
             extensions: None,
             user: None,
-            max_completion_tokens: None,
-            n: None,
-            logprobs: None,
-            top_logprobs: None,
         };
 
         assert!(validate_request(&request).is_err());
@@ -1163,8 +1128,6 @@ mod tests {
                 role: "user".to_string(),
                 content: Some(MessageContent::Text("Hello".to_string())),
                 name: None,
-                tool_calls: None,
-                tool_call_id: None,
             }],
             temperature: Some(0.7),
             max_tokens: None,
@@ -1181,10 +1144,6 @@ mod tests {
             tool_choice: None,
             extensions: None,
             user: None,
-            max_completion_tokens: None,
-            n: None,
-            logprobs: None,
-            top_logprobs: None,
         };
 
         assert!(validate_request(&request).is_ok());
@@ -1198,8 +1157,6 @@ mod tests {
                 role: "user".to_string(),
                 content: Some(MessageContent::Text("Hello".to_string())),
                 name: None,
-                tool_calls: None,
-                tool_call_id: None,
             }],
             temperature: Some(2.5),
             max_tokens: None,
@@ -1216,10 +1173,6 @@ mod tests {
             tool_choice: None,
             extensions: None,
             user: None,
-            max_completion_tokens: None,
-            n: None,
-            logprobs: None,
-            top_logprobs: None,
         };
 
         assert!(validate_request(&request).is_err());
@@ -1233,8 +1186,6 @@ mod tests {
                 role: "user".to_string(),
                 content: Some(MessageContent::Text("Hello".to_string())),
                 name: None,
-                tool_calls: None,
-                tool_call_id: None,
             }],
             temperature: None,
             max_tokens: None,
@@ -1251,10 +1202,6 @@ mod tests {
             tool_choice: None,
             extensions: None,
             user: None,
-            max_completion_tokens: None,
-            n: None,
-            logprobs: None,
-            top_logprobs: None,
         };
 
         assert!(validate_request(&request).is_ok());
@@ -1268,8 +1215,6 @@ mod tests {
                 role: "user".to_string(),
                 content: Some(MessageContent::Text("Hello".to_string())),
                 name: None,
-                tool_calls: None,
-                tool_call_id: None,
             }],
             temperature: None,
             max_tokens: None,
@@ -1286,10 +1231,6 @@ mod tests {
             tool_choice: None,
             extensions: None,
             user: None,
-            max_completion_tokens: None,
-            n: None,
-            logprobs: None,
-            top_logprobs: None,
         };
 
         assert!(validate_request(&request).is_err());
@@ -1303,8 +1244,6 @@ mod tests {
                 role: "user".to_string(),
                 content: Some(MessageContent::Text("Hello".to_string())),
                 name: None,
-                tool_calls: None,
-                tool_call_id: None,
             }],
             temperature: None,
             max_tokens: None,
@@ -1321,10 +1260,6 @@ mod tests {
             tool_choice: None,
             extensions: None,
             user: None,
-            max_completion_tokens: None,
-            n: None,
-            logprobs: None,
-            top_logprobs: None,
         };
 
         assert!(validate_request(&request).is_ok());
@@ -1338,8 +1273,6 @@ mod tests {
                 role: "user".to_string(),
                 content: Some(MessageContent::Text("Hello".to_string())),
                 name: None,
-                tool_calls: None,
-                tool_call_id: None,
             }],
             temperature: None,
             max_tokens: None,
@@ -1356,10 +1289,6 @@ mod tests {
             tool_choice: None,
             extensions: None,
             user: None,
-            max_completion_tokens: None,
-            n: None,
-            logprobs: None,
-            top_logprobs: None,
         };
 
         assert!(validate_request(&request).is_err());
@@ -1373,8 +1302,6 @@ mod tests {
                 role: "user".to_string(),
                 content: Some(MessageContent::Text("Hello".to_string())),
                 name: None,
-                tool_calls: None,
-                tool_call_id: None,
             }],
             temperature: None,
             max_tokens: None,
@@ -1393,10 +1320,6 @@ mod tests {
             tool_choice: None,
             extensions: None,
             user: None,
-            max_completion_tokens: None,
-            n: None,
-            logprobs: None,
-            top_logprobs: None,
         };
 
         assert!(validate_request(&request).is_ok());
@@ -1410,8 +1333,6 @@ mod tests {
                 role: "user".to_string(),
                 content: Some(MessageContent::Text("Hello".to_string())),
                 name: None,
-                tool_calls: None,
-                tool_call_id: None,
             }],
             temperature: None,
             max_tokens: None,
@@ -1430,10 +1351,6 @@ mod tests {
             tool_choice: None,
             extensions: None,
             user: None,
-            max_completion_tokens: None,
-            n: None,
-            logprobs: None,
-            top_logprobs: None,
         };
 
         assert!(validate_request(&request).is_err());
@@ -1447,8 +1364,6 @@ mod tests {
                 role: "user".to_string(),
                 content: Some(MessageContent::Text("Hello".to_string())),
                 name: None,
-                tool_calls: None,
-                tool_call_id: None,
             }],
             temperature: None,
             max_tokens: None,
@@ -1473,10 +1388,6 @@ mod tests {
             tool_choice: None,
             extensions: None,
             user: None,
-            max_completion_tokens: None,
-            n: None,
-            logprobs: None,
-            top_logprobs: None,
         };
 
         assert!(validate_request(&request).is_ok());
@@ -1490,8 +1401,6 @@ mod tests {
                 role: "user".to_string(),
                 content: Some(MessageContent::Text("Hello".to_string())),
                 name: None,
-                tool_calls: None,
-                tool_call_id: None,
             }],
             temperature: None,
             max_tokens: None,
@@ -1511,10 +1420,6 @@ mod tests {
             tool_choice: None,
             extensions: None,
             user: None,
-            max_completion_tokens: None,
-            n: None,
-            logprobs: None,
-            top_logprobs: None,
         };
 
         assert!(validate_request(&request).is_err());
@@ -1528,8 +1433,6 @@ mod tests {
                 role: "user".to_string(),
                 content: Some(MessageContent::Text("Hello".to_string())),
                 name: None,
-                tool_calls: None,
-                tool_call_id: None,
             }],
             temperature: Some(0.7),
             max_tokens: Some(100),
@@ -1546,10 +1449,6 @@ mod tests {
             tool_choice: None,
             extensions: None,
             user: None,
-            max_completion_tokens: None,
-            n: None,
-            logprobs: None,
-            top_logprobs: None,
         };
 
         let result = convert_to_provider_request(&request);
@@ -1570,15 +1469,11 @@ mod tests {
                 role: "user".to_string(),
                 content: Some(MessageContent::Text("Hello, how are you?".to_string())), // ~20 chars = 5 tokens
                 name: None,
-                tool_calls: None,
-                tool_call_id: None,
             },
             ChatMessage {
                 role: "assistant".to_string(),
                 content: Some(MessageContent::Text("I'm doing well!".to_string())), // ~15 chars = 3-4 tokens
                 name: None,
-                tool_calls: None,
-                tool_call_id: None,
             },
         ];
 

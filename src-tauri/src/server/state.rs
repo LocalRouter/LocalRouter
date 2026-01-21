@@ -3,6 +3,8 @@
 //! Shared state for the web server including router, API key manager,
 //! rate limiter, and generation tracking.
 
+#![allow(dead_code)]
+
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -14,6 +16,7 @@ use uuid::Uuid;
 
 use crate::clients::{ClientManager, TokenStore};
 use crate::config::ConfigManager;
+use crate::mcp::protocol::JsonRpcNotification;
 use crate::mcp::{McpGateway, McpServerManager};
 use crate::monitoring::logger::AccessLogger;
 use crate::monitoring::mcp_logger::McpAccessLogger;
@@ -76,6 +79,11 @@ pub struct AppState {
     /// Tray graph manager for real-time token visualization (optional, only in UI mode)
     /// Behind RwLock to allow setting it after AppState creation during Tauri setup
     pub tray_graph_manager: Arc<RwLock<Option<Arc<TrayGraphManager>>>>,
+
+    /// Broadcast channel for MCP server notifications
+    /// Allows multiple clients to subscribe to real-time notifications from MCP servers
+    /// Format: (server_id, notification)
+    pub mcp_notification_broadcast: Arc<tokio::sync::broadcast::Sender<(String, JsonRpcNotification)>>,
 }
 
 impl AppState {
@@ -106,6 +114,10 @@ impl AppState {
             panic!("MCP access logger initialization failed");
         });
 
+        // Create broadcast channel for MCP notifications
+        // Capacity of 1000 messages - old messages dropped if no subscribers are reading fast enough
+        let (notification_tx, _rx) = tokio::sync::broadcast::channel(1000);
+
         // Create placeholder MCP manager and gateway (will be replaced by with_mcp)
         let mcp_server_manager = Arc::new(McpServerManager::new());
         let mcp_gateway = Arc::new(McpGateway::new(
@@ -130,6 +142,7 @@ impl AppState {
             internal_test_secret: Arc::new(internal_test_secret),
             routellm_service: None,
             tray_graph_manager: Arc::new(RwLock::new(None)),
+            mcp_notification_broadcast: Arc::new(notification_tx),
         }
     }
 

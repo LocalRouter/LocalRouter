@@ -171,23 +171,35 @@ impl CandleRouter {
         };
 
         // Load model weights from SafeTensors
-        let model_file = model_path.join("model.safetensors");
-        if !model_file.exists() {
-            return Err(RouteLLMError::ModelNotDownloaded(format!(
-                "Model file not found at {:?}",
-                model_file
-            )));
-        }
-
-        debug!("Loading model weights from {:?}", model_file);
-
         // RoBERTa's token_type_embeddings has shape [1, 768] but Candle's BERT expects [2, 768]
-        // Create a patched version of the model with padded embeddings
+        // We use a patched version of the model with padded embeddings
         let patched_model_file = model_path.join("model.patched.safetensors");
+        let model_file = model_path.join("model.safetensors");
+
+        // Check if we need to create the patched file
         if !patched_model_file.exists() {
+            // Need to create the patched file from the original
+            if !model_file.exists() {
+                return Err(RouteLLMError::ModelNotDownloaded(format!(
+                    "Model file not found at {:?}",
+                    model_file
+                )));
+            }
+
             debug!("Creating patched model with padded token_type_embeddings");
             pad_token_type_embeddings(&model_file, &patched_model_file)?;
+
+            // Delete the original file to save disk space (we only need the patched version)
+            debug!("Deleting original model.safetensors to save disk space");
+            if let Err(e) = std::fs::remove_file(&model_file) {
+                // Log warning but don't fail - the patched file works fine
+                info!("Could not delete original model file (non-critical): {}", e);
+            } else {
+                info!("Deleted original model.safetensors (saved 1GB disk space)");
+            }
         }
+
+        debug!("Loading model weights from {:?}", patched_model_file);
 
         let vb = unsafe {
             VarBuilder::from_mmaped_safetensors(

@@ -1409,6 +1409,11 @@ mod tests {
             seed: None,
             repetition_penalty: None,
             extensions: None,
+            logprobs: None,
+            top_logprobs: None,
+            response_format: None,
+            tool_choice: None,
+            tools: None,
         };
 
         let result = router.complete("invalid-key-id", request).await;
