@@ -581,7 +581,7 @@ async fn test_very_long_content() {
     let request = standard_completion_request();
     let response = provider.complete(request).await.unwrap();
 
-    assert_eq!(response.choices[0].message.content.len(), 100_000);
+    assert_eq!(response.choices[0].message.content.as_text().len(), 100_000);
     assert_eq!(
         response.choices[0].finish_reason,
         Some("length".to_string())

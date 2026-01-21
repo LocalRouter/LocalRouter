@@ -356,5 +356,5 @@ async fn test_very_large_response_doesnt_crash() {
     // PASSES: Can handle 1MB response
     assert!(result.is_ok());
     let response = result.unwrap();
-    assert_eq!(response.choices[0].message.content.len(), 1_000_000);
+    assert_eq!(response.choices[0].message.content.as_text().len(), 1_000_000);
 }

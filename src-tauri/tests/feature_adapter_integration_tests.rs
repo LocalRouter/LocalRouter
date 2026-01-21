@@ -113,9 +113,13 @@ fn test_structured_outputs_response_validation_valid() {
             index: 0,
             message: ChatMessage {
                 role: "assistant".to_string(),
-                content: r#"{"result": "success", "count": 42}"#.to_string(),
+                content: ChatMessageContent::Text(r#"{"result": "success", "count": 42}"#.to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
             },
             finish_reason: Some("stop".to_string()),
+            logprobs: None,
         }],
         usage: TokenUsage {
             prompt_tokens: 100,
@@ -166,7 +170,10 @@ fn test_structured_outputs_response_validation_invalid() {
             index: 0,
             message: ChatMessage {
                 role: "assistant".to_string(),
-                content: r#"{"age": 30}"#.to_string(), // Missing 'name'
+                content: ChatMessageContent::Text(r#"{"age": 30}"#.to_string()), // Missing 'name'
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
             },
             finish_reason: Some("stop".to_string()),
         }],
@@ -244,7 +251,6 @@ fn test_prompt_caching_anthropic_request() {
         seed: None,
         repetition_penalty: None,
         extensions: None,
-            logprobs: None,
             top_logprobs: None,
             response_format: None,
             tool_choice: None,
@@ -293,6 +299,7 @@ fn test_prompt_caching_cost_savings_calculation() {
                 name: None,
             },
             finish_reason: Some("stop".to_string()),
+            logprobs: None,
         }],
         usage: TokenUsage {
             prompt_tokens: 100, // Regular prompt tokens
@@ -368,7 +375,6 @@ fn test_logprobs_openai_request() {
         seed: None,
         repetition_penalty: None,
         extensions: None,
-            logprobs: None,
             top_logprobs: None,
             response_format: None,
             tool_choice: None,
@@ -434,6 +440,7 @@ fn test_logprobs_response_extraction() {
                 name: None,
             },
             finish_reason: Some("stop".to_string()),
+            logprobs: None,
         }],
         usage: TokenUsage {
             prompt_tokens: 10,
@@ -494,7 +501,6 @@ fn test_logprobs_various_top_values() {
             seed: None,
             repetition_penalty: None,
             extensions: None,
-            logprobs: None,
             top_logprobs: None,
             response_format: None,
             tool_choice: None,
@@ -617,7 +623,7 @@ fn test_json_mode_anthropic() {
     // Verify system message was added for Anthropic
     assert_eq!(request.messages.len(), 2);
     assert_eq!(request.messages[0].role, "system");
-    assert!(request.messages[0].content.contains("valid JSON"));
+    assert!(request.messages[0].content.as_text().contains("valid JSON"));
 }
 
 #[test]
@@ -638,9 +644,13 @@ fn test_json_mode_validation_valid() {
             index: 0,
             message: ChatMessage {
                 role: "assistant".to_string(),
-                content: r#"{"greeting": "Hello, World!", "count": 42}"#.to_string(),
+                content: ChatMessageContent::Text(r#"{"greeting": "Hello, World!", "count": 42}"#.to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
             },
             finish_reason: Some("stop".to_string()),
+            logprobs: None,
         }],
         usage: TokenUsage {
             prompt_tokens: 20,
@@ -743,7 +753,6 @@ fn test_json_mode_all_providers() {
             seed: None,
             repetition_penalty: None,
             extensions: None,
-            logprobs: None,
             top_logprobs: None,
             response_format: None,
             tool_choice: None,

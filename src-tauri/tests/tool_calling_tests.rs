@@ -84,6 +84,8 @@ fn test_completion_request_with_tools() {
         }]),
         tool_choice: Some(ToolChoice::Auto("auto".to_string())),
         response_format: None,
+        logprobs: None,
+        top_logprobs: None,
     };
 
     // Verify tools are present
