@@ -84,11 +84,81 @@ impl AnthropicProvider {
                     }
                     system_prompt = Some(msg.content.as_text());
                 }
-                "user" | "assistant" => {
-                    anthropic_messages.push(AnthropicMessage {
-                        role: msg.role.clone(),
-                        content: msg.content.as_text(),
-                    });
+                "user" => {
+                    // User messages can include tool results
+                    if let Some(tool_call_id) = &msg.tool_call_id {
+                        // This is a tool result message
+                        let content = AnthropicMessageContent::Blocks(vec![
+                            AnthropicContentBlock::ToolResult {
+                                tool_use_id: tool_call_id.clone(),
+                                content: msg.content.as_text(),
+                            },
+                        ]);
+                        anthropic_messages.push(AnthropicMessage {
+                            role: "user".to_string(),
+                            content,
+                        });
+                    } else {
+                        // Regular user message
+                        anthropic_messages.push(AnthropicMessage {
+                            role: msg.role.clone(),
+                            content: AnthropicMessageContent::Text(msg.content.as_text()),
+                        });
+                    }
+                }
+                "assistant" => {
+                    // Assistant messages can include tool calls
+                    if let Some(tool_calls) = &msg.tool_calls {
+                        // Convert tool calls to Anthropic tool_use blocks
+                        let mut blocks = Vec::new();
+
+                        // Add text content if present and non-empty
+                        let text_content = msg.content.as_text();
+                        if !text_content.is_empty() {
+                            blocks.push(AnthropicContentBlock::Text { text: text_content });
+                        }
+
+                        // Add tool use blocks
+                        for tool_call in tool_calls {
+                            let input: serde_json::Value = serde_json::from_str(&tool_call.function.arguments)
+                                .unwrap_or(serde_json::json!({}));
+                            blocks.push(AnthropicContentBlock::ToolUse {
+                                id: tool_call.id.clone(),
+                                name: tool_call.function.name.clone(),
+                                input,
+                            });
+                        }
+
+                        anthropic_messages.push(AnthropicMessage {
+                            role: msg.role.clone(),
+                            content: AnthropicMessageContent::Blocks(blocks),
+                        });
+                    } else {
+                        // Regular assistant message
+                        anthropic_messages.push(AnthropicMessage {
+                            role: msg.role.clone(),
+                            content: AnthropicMessageContent::Text(msg.content.as_text()),
+                        });
+                    }
+                }
+                "tool" => {
+                    // Tool role messages are converted to user messages with tool_result blocks
+                    if let Some(tool_call_id) = &msg.tool_call_id {
+                        let content = AnthropicMessageContent::Blocks(vec![
+                            AnthropicContentBlock::ToolResult {
+                                tool_use_id: tool_call_id.clone(),
+                                content: msg.content.as_text(),
+                            },
+                        ]);
+                        anthropic_messages.push(AnthropicMessage {
+                            role: "user".to_string(),
+                            content,
+                        });
+                    } else {
+                        return Err(AppError::Provider(
+                            "Tool message missing tool_call_id".to_string(),
+                        ));
+                    }
                 }
                 _ => {
                     return Err(AppError::Provider(format!(
@@ -328,6 +398,18 @@ impl ModelProvider for AnthropicProvider {
     async fn complete(&self, request: CompletionRequest) -> AppResult<CompletionResponse> {
         let (system, messages) = Self::convert_messages(&request.messages)?;
 
+        // Convert tools from OpenAI format to Anthropic format
+        let tools = request.tools.as_ref().map(|openai_tools| {
+            openai_tools
+                .iter()
+                .map(|t| AnthropicTool {
+                    name: t.function.name.clone(),
+                    description: t.function.description.clone(),
+                    input_schema: t.function.parameters.clone(),
+                })
+                .collect()
+        });
+
         let anthropic_request = AnthropicRequest {
             model: request.model.clone(),
             messages,
@@ -337,6 +419,7 @@ impl ModelProvider for AnthropicProvider {
             top_p: request.top_p,
             stop_sequences: request.stop,
             stream: Some(false),
+            tools,
         };
 
         let response = self
@@ -368,11 +451,47 @@ impl ModelProvider for AnthropicProvider {
             .map_err(|e| AppError::Provider(format!("Failed to parse response: {}", e)))?;
 
         // Convert Anthropic response to OpenAI format
-        let content = anthropic_response
-            .content
-            .first()
-            .map(|c| c.text.clone())
-            .unwrap_or_default();
+        // Parse content blocks - extract text and tool_use blocks
+        let mut text_content = String::new();
+        let mut tool_calls = Vec::new();
+
+        for content_block in &anthropic_response.content {
+            match content_block {
+                AnthropicResponseContent::Text { text } => {
+                    if !text_content.is_empty() {
+                        text_content.push('\n');
+                    }
+                    text_content.push_str(text);
+                }
+                AnthropicResponseContent::ToolUse { id, name, input } => {
+                    tool_calls.push(super::ToolCall {
+                        id: id.clone(),
+                        tool_type: "function".to_string(),
+                        function: super::FunctionCall {
+                            name: name.clone(),
+                            arguments: serde_json::to_string(input).unwrap_or_default(),
+                        },
+                    });
+                }
+            }
+        }
+
+        let tool_calls_opt = if tool_calls.is_empty() {
+            None
+        } else {
+            Some(tool_calls)
+        };
+
+        // Determine finish reason - if tool_calls present and stop_reason is "end_turn", change to "tool_calls"
+        let finish_reason = if tool_calls_opt.is_some() {
+            Some("tool_calls".to_string())
+        } else {
+            Some(
+                anthropic_response
+                    .stop_reason
+                    .unwrap_or_else(|| "stop".to_string()),
+            )
+        };
 
         Ok(CompletionResponse {
             id: anthropic_response.id,
@@ -384,16 +503,12 @@ impl ModelProvider for AnthropicProvider {
                 index: 0,
                 message: ChatMessage {
                     role: "assistant".to_string(),
-                    content: super::ChatMessageContent::Text(content),
-                    tool_calls: None,
+                    content: super::ChatMessageContent::Text(text_content),
+                    tool_calls: tool_calls_opt,
                     tool_call_id: None,
                     name: None,
                 },
-                finish_reason: Some(
-                    anthropic_response
-                        .stop_reason
-                        .unwrap_or_else(|| "stop".to_string()),
-                ),
+                finish_reason,
                 logprobs: None, // Anthropic does not support logprobs
             }],
             usage: TokenUsage {
@@ -604,26 +719,75 @@ struct AnthropicRequest {
     stop_sequences: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     stream: Option<bool>,
+    /// Tool definitions for function calling
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Vec<AnthropicTool>>,
 }
 
+/// Anthropic tool definition
+#[derive(Debug, Serialize, Deserialize)]
+struct AnthropicTool {
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    input_schema: serde_json::Value,
+}
+
+/// Anthropic message with content blocks
 #[derive(Debug, Serialize, Deserialize)]
 struct AnthropicMessage {
     role: String,
-    content: String,
+    content: AnthropicMessageContent,
+}
+
+/// Anthropic message content (can be string or array of content blocks)
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+enum AnthropicMessageContent {
+    Text(String),
+    Blocks(Vec<AnthropicContentBlock>),
+}
+
+/// Anthropic content block
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type")]
+enum AnthropicContentBlock {
+    #[serde(rename = "text")]
+    Text { text: String },
+    #[serde(rename = "tool_use")]
+    ToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
+    #[serde(rename = "tool_result")]
+    ToolResult {
+        tool_use_id: String,
+        content: String,
+    },
 }
 
 #[derive(Debug, Deserialize)]
 struct AnthropicResponse {
     id: String,
     model: String,
-    content: Vec<AnthropicContent>,
+    content: Vec<AnthropicResponseContent>,
     stop_reason: Option<String>,
     usage: AnthropicUsage,
 }
 
+/// Anthropic response content block
 #[derive(Debug, Deserialize)]
-struct AnthropicContent {
-    text: String,
+#[serde(tag = "type")]
+enum AnthropicResponseContent {
+    #[serde(rename = "text")]
+    Text { text: String },
+    #[serde(rename = "tool_use")]
+    ToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
 }
 
 #[derive(Debug, Deserialize)]
