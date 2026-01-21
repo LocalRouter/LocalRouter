@@ -8,6 +8,7 @@ import McpConfigForm, { McpConfigFormData } from './McpConfigForm'
 import MetricsPanel from '../MetricsPanel'
 import FilteredAccessLogs from '../logs/FilteredAccessLogs'
 import { useMetricsSubscription } from '../../hooks/useMetricsSubscription'
+import { McpOAuthModal } from './McpOAuthModal'
 
 interface McpServerDetailPageProps {
   serverId: string
@@ -34,6 +35,7 @@ type AuthConfig =
   | { type: 'bearer_token'; token_ref: string }
   | { type: 'custom_headers'; headers: Record<string, string> }
   | { type: 'oauth'; client_id: string; client_secret_ref: string; auth_url: string; token_url: string; scopes: string[] }
+  | { type: 'oauth_browser'; client_id: string; client_secret_ref: string; auth_url: string; token_url: string; scopes: string[]; redirect_uri: string }
   | { type: 'env_vars'; env: Record<string, string> }
 
 interface OAuthConfig {
@@ -84,6 +86,18 @@ export default function McpServerDetailPage({ serverId, onBack }: McpServerDetai
     oauthAuthUrl: '',
     oauthTokenUrl: '',
     oauthScopes: '',
+    oauthBrowserClientId: '',
+    oauthBrowserClientSecret: '',
+    oauthBrowserAuthUrl: '',
+    oauthBrowserTokenUrl: '',
+    oauthBrowserScopes: '',
+    oauthBrowserRedirectUri: 'http://localhost:8080/callback',
+  })
+
+  // OAuth browser auth state
+  const [showOAuthModal, setShowOAuthModal] = useState(false)
+  const [oauthStatus, setOauthStatus] = useState({
+    authenticated: false,
   })
 
   // Try tab state
@@ -142,6 +156,12 @@ export default function McpServerDetailPage({ serverId, onBack }: McpServerDetai
       oauthAuthUrl: '',
       oauthTokenUrl: '',
       oauthScopes: '',
+      oauthBrowserClientId: '',
+      oauthBrowserClientSecret: '',
+      oauthBrowserAuthUrl: '',
+      oauthBrowserTokenUrl: '',
+      oauthBrowserScopes: '',
+      oauthBrowserRedirectUri: 'http://localhost:8080/callback',
     }
 
     // Populate transport config (tagged union format)
@@ -181,6 +201,13 @@ export default function McpServerDetailPage({ serverId, onBack }: McpServerDetai
         newFormData.oauthAuthUrl = authConfig.auth_url
         newFormData.oauthTokenUrl = authConfig.token_url
         newFormData.oauthScopes = authConfig.scopes.join('\n')
+      } else if (authConfig.type === 'oauth_browser') {
+        newFormData.authMethod = 'oauth_browser'
+        newFormData.oauthBrowserClientId = authConfig.client_id
+        newFormData.oauthBrowserAuthUrl = authConfig.auth_url
+        newFormData.oauthBrowserTokenUrl = authConfig.token_url
+        newFormData.oauthBrowserScopes = authConfig.scopes.join(' ')
+        newFormData.oauthBrowserRedirectUri = authConfig.redirect_uri
       } else if (authConfig.type === 'env_vars') {
         newFormData.authMethod = 'env_vars'
         newFormData.authEnvVars = Object.entries(authConfig.env)
@@ -190,10 +217,71 @@ export default function McpServerDetailPage({ serverId, onBack }: McpServerDetai
     }
 
     setFormData(newFormData)
+
+    // Check OAuth browser auth status if applicable
+    if (serverData.auth_config?.type === 'oauth_browser') {
+      checkOAuthStatus()
+    }
   }
 
   const handleFormChange = (field: keyof McpConfigFormData, value: string) => {
     setFormData((prev) => ({ ...prev, [field]: value }))
+  }
+
+  // OAuth browser auth handlers
+  const checkOAuthStatus = async () => {
+    if (!server) return
+
+    try {
+      const isValid = await invoke<boolean>('test_mcp_oauth_connection', {
+        serverId: server.id,
+      })
+      setOauthStatus({ authenticated: isValid })
+    } catch (err) {
+      console.error('Failed to check OAuth status:', err)
+      setOauthStatus({ authenticated: false })
+    }
+  }
+
+  const handleTestConnection = async () => {
+    if (!server) return
+
+    try {
+      const isValid = await invoke<boolean>('test_mcp_oauth_connection', {
+        serverId: server.id,
+      })
+
+      if (isValid) {
+        alert('✅ Connection successful! Token is valid.')
+      } else {
+        alert('❌ Connection failed. Token may be expired or invalid.')
+      }
+    } catch (err) {
+      alert(`❌ Connection test failed: ${err}`)
+    }
+  }
+
+  const handleRevokeTokens = async () => {
+    if (!server) return
+
+    const confirmed = confirm(
+      'Are you sure you want to revoke OAuth tokens? You will need to re-authenticate.'
+    )
+
+    if (!confirmed) return
+
+    try {
+      await invoke('revoke_mcp_oauth_tokens', { serverId: server.id })
+      setOauthStatus({ authenticated: false })
+      alert('✅ OAuth tokens have been revoked.')
+    } catch (err) {
+      alert(`Failed to revoke tokens: ${err}`)
+    }
+  }
+
+  const handleOAuthSuccess = () => {
+    setOauthStatus({ authenticated: true })
+    checkOAuthStatus() // Refresh status
   }
 
   const handleSaveConfiguration = async () => {
@@ -453,6 +541,47 @@ export default function McpServerDetailPage({ serverId, onBack }: McpServerDetai
                 showTransportType={true}
               />
 
+              {/* OAuth Browser Authentication Status */}
+              {server.auth_config?.type === 'oauth_browser' && (
+                <div className="mt-4 p-4 bg-gray-50 dark:bg-gray-800 rounded border border-gray-200 dark:border-gray-700">
+                  <div className="flex items-center justify-between mb-3">
+                    <div>
+                      <h4 className="font-medium text-gray-900 dark:text-gray-100">
+                        OAuth Authentication Status
+                      </h4>
+                      <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
+                        {oauthStatus.authenticated
+                          ? 'Authenticated and ready to use'
+                          : 'Not authenticated - click "Authenticate" to complete browser login'}
+                      </p>
+                    </div>
+                    <Badge variant={oauthStatus.authenticated ? 'success' : 'warning'}>
+                      {oauthStatus.authenticated ? 'Authenticated' : 'Not Authenticated'}
+                    </Badge>
+                  </div>
+
+                  <div className="flex gap-2">
+                    <Button
+                      onClick={() => setShowOAuthModal(true)}
+                      variant={oauthStatus.authenticated ? 'secondary' : 'primary'}
+                    >
+                      {oauthStatus.authenticated ? 'Re-authenticate' : 'Authenticate'}
+                    </Button>
+
+                    {oauthStatus.authenticated && (
+                      <>
+                        <Button onClick={handleTestConnection} variant="secondary">
+                          Test Connection
+                        </Button>
+                        <Button onClick={handleRevokeTokens} variant="danger">
+                          Revoke Access
+                        </Button>
+                      </>
+                    )}
+                  </div>
+                </div>
+              )}
+
               <div className="flex justify-end gap-2">
                 <Button variant="secondary" onClick={loadServerData}>
                   Reset
@@ -463,6 +592,17 @@ export default function McpServerDetailPage({ serverId, onBack }: McpServerDetai
               </div>
             </div>
           </Card>
+
+          {/* OAuth Modal */}
+          {server.auth_config?.type === 'oauth_browser' && (
+            <McpOAuthModal
+              isOpen={showOAuthModal}
+              onClose={() => setShowOAuthModal(false)}
+              serverId={server.id}
+              serverName={server.name}
+              onSuccess={handleOAuthSuccess}
+            />
+          )}
         </div>
       ),
     },

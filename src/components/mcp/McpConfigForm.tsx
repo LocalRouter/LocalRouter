@@ -56,7 +56,7 @@ export interface McpConfigFormData {
   url: string
   headers: string
   // Auth config
-  authMethod: 'none' | 'bearer' | 'custom_headers' | 'oauth' | 'env_vars'
+  authMethod: 'none' | 'bearer' | 'custom_headers' | 'oauth' | 'oauth_browser' | 'env_vars'
   bearerToken: string
   authHeaders: string
   authEnvVars: string
@@ -65,6 +65,13 @@ export interface McpConfigFormData {
   oauthAuthUrl: string
   oauthTokenUrl: string
   oauthScopes: string
+  // OAuth Browser fields
+  oauthBrowserClientId: string
+  oauthBrowserClientSecret: string
+  oauthBrowserAuthUrl: string
+  oauthBrowserTokenUrl: string
+  oauthBrowserScopes: string
+  oauthBrowserRedirectUri: string
 }
 
 interface McpConfigFormProps {
@@ -205,7 +212,8 @@ export default function McpConfigForm({ formData, onChange, disabled = false, sh
             <option value="none">None / Via headers</option>
             {formData.transportType !== 'Stdio' && <option value="bearer">Bearer Token</option>}
             {formData.transportType !== 'Stdio' && <option value="custom_headers">Custom Headers</option>}
-            {formData.transportType !== 'Stdio' && <option value="oauth">OAuth (Pre-registered)</option>}
+            {formData.transportType !== 'Stdio' && <option value="oauth">OAuth (Client Credentials)</option>}
+            {formData.transportType !== 'Stdio' && <option value="oauth_browser">OAuth (Browser Flow)</option>}
             {formData.transportType === 'Stdio' && <option value="env_vars">Environment Variables</option>}
           </Select>
         </div>
@@ -299,6 +307,94 @@ export default function McpConfigForm({ formData, onChange, disabled = false, sh
               <p className="text-yellow-200 dark:text-yellow-300 text-sm">
                 <strong>Note:</strong> OAuth URLs are auto-discovered from the MCP server.
               </p>
+            </div>
+          </div>
+        )}
+
+        {/* OAuth Browser Auth */}
+        {formData.authMethod === 'oauth_browser' && (
+          <div className="mt-3 space-y-3">
+            <div className="bg-blue-900/20 dark:bg-blue-900/30 border border-blue-700 dark:border-blue-600 rounded p-3">
+              <p className="text-blue-200 dark:text-blue-300 text-sm">
+                <strong>Browser-based OAuth:</strong> User will authenticate via browser when clicking "Authenticate" button.
+                Endpoints will be auto-discovered from the server's <code className="text-xs bg-blue-800/30 px-1 rounded">.well-known/oauth-protected-resource</code> endpoint.
+              </p>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium mb-2">
+                OAuth Client ID
+              </label>
+              <Input
+                value={formData.oauthBrowserClientId}
+                onChange={(e) => onChange('oauthBrowserClientId', e.target.value)}
+                placeholder="your-oauth-app-client-id"
+                disabled={disabled}
+                required
+              />
+              <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                Create an OAuth app in your provider (GitHub, GitLab, etc.)
+              </p>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium mb-2">
+                OAuth Client Secret
+              </label>
+              <Input
+                type="password"
+                value={formData.oauthBrowserClientSecret}
+                onChange={(e) => onChange('oauthBrowserClientSecret', e.target.value)}
+                placeholder="your-oauth-app-client-secret"
+                disabled={disabled}
+                required
+              />
+              <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                Secret will be stored securely in system keychain
+              </p>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium mb-2">
+                Scopes (space-separated)
+              </label>
+              <Input
+                value={formData.oauthBrowserScopes}
+                onChange={(e) => onChange('oauthBrowserScopes', e.target.value)}
+                placeholder="read write"
+                disabled={disabled}
+              />
+              <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                Optional: Leave blank to use default scopes
+              </p>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium mb-2">
+                Redirect URI
+              </label>
+              <Input
+                value={formData.oauthBrowserRedirectUri}
+                onChange={(e) => onChange('oauthBrowserRedirectUri', e.target.value)}
+                placeholder="http://localhost:8080/callback"
+                disabled={disabled}
+              />
+              <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                Must match the redirect URI configured in your OAuth app (default: http://localhost:8080/callback)
+              </p>
+            </div>
+
+            <div className="bg-gray-800/50 dark:bg-gray-900/50 border border-gray-700 dark:border-gray-600 rounded p-3">
+              <p className="text-xs text-gray-400 dark:text-gray-500 mb-2">
+                <strong>Setup Instructions:</strong>
+              </p>
+              <ol className="text-xs text-gray-400 dark:text-gray-500 space-y-1 list-decimal list-inside">
+                <li>Create an OAuth application in your provider's developer settings</li>
+                <li>Set the authorization callback URL to: <code className="bg-gray-700/50 px-1 rounded">http://localhost:8080/callback</code></li>
+                <li>Copy the Client ID and Client Secret above</li>
+                <li>Save the server configuration</li>
+                <li>Click "Authenticate" button on the server detail page to complete authentication</li>
+              </ol>
             </div>
           </div>
         )}
