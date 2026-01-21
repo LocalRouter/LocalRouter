@@ -12,7 +12,7 @@ import { CatalogMetadata } from '../../lib/catalog-types'
 
 interface ModelDetailPageProps {
   modelKey: string // format: "provider/model_id"
-  onTabChange?: (tab: 'providers' | 'api-keys', subTab: string) => void
+  onTabChange?: (tab: 'providers', subTab: string) => void
 }
 
 interface Model {
@@ -28,19 +28,12 @@ interface Model {
   pricing_source?: 'catalog' | 'override'
 }
 
-interface ApiKey {
-  id: string
-  name: string
-  enabled: boolean
-  model_selection: any
-}
 
 export default function ModelDetailPage({ modelKey, onTabChange }: ModelDetailPageProps) {
   const refreshKey = useMetricsSubscription()
   const [providerInstance, modelId] = modelKey.split('/')
   const [model, setModel] = useState<Model | null>(null)
   const [catalogMetadata, setCatalogMetadata] = useState<CatalogMetadata | null>(null)
-  const [apiKeys, setApiKeys] = useState<ApiKey[]>([])
   const [loading, setLoading] = useState(true)
   const [activeTab, setActiveTab] = useState<string>('metrics')
   const [isEditingPricing, setIsEditingPricing] = useState(false)
@@ -72,40 +65,15 @@ export default function ModelDetailPage({ modelKey, onTabChange }: ModelDetailPa
   const loadModelData = async () => {
     setLoading(true)
     try {
-      const [basicModels, keys] = await Promise.all([
-        invoke<Array<{ id: string; provider: string }>>('list_all_models'),
-        invoke<ApiKey[]>('list_api_keys').catch(() => []),
-      ])
+      const detailedModels = await invoke<Model[]>('list_all_models_detailed')
 
-      const foundModel = basicModels.find((m) => m.provider === providerInstance && m.id === modelId)
+      const foundModel = detailedModels.find(
+        (m) => m.provider_instance === providerInstance && m.model_id === modelId
+      )
 
       if (foundModel) {
-        setModel({
-          model_id: foundModel.id,
-          provider_instance: foundModel.provider,
-          capabilities: [],
-          context_window: 0,
-          supports_streaming: true,
-        })
+        setModel(foundModel)
       }
-
-      // Filter API keys that can use this model
-      const filteredKeys = keys.filter((key) => {
-        if (!key.model_selection) return false
-        if (key.model_selection.type === 'all') return true
-        if (key.model_selection.type === 'custom') {
-          const providers = key.model_selection.all_provider_models || []
-          const individualModels = key.model_selection.individual_models || []
-          // Check if this provider is in the all_provider_models list
-          if (providers.includes(providerInstance)) return true
-          // Check if this specific model is in individual_models
-          return individualModels.some(
-            ([provider, model]: [string, string]) => provider === providerInstance && model === modelId
-          )
-        }
-        return false
-      })
-      setApiKeys(filteredKeys)
     } catch (error) {
       console.error('Failed to load model data:', error)
     } finally {
@@ -361,32 +329,6 @@ export default function ModelDetailPage({ modelKey, onTabChange }: ModelDetailPa
               </div>
             </div>
           </Card>
-
-          {apiKeys.length > 0 && (
-            <Card>
-              <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-4">
-                API Keys Using This Model ({apiKeys.length})
-              </h3>
-              <div className="space-y-2">
-                {apiKeys.map((key) => (
-                  <div
-                    key={key.id}
-                    onClick={() => onTabChange?.('api-keys', key.id)}
-                    className="bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-3 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors cursor-pointer"
-                  >
-                    <div className="flex justify-between items-center">
-                      <div>
-                        <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">{key.name}</h4>
-                      </div>
-                      <Badge variant={key.enabled ? 'success' : 'warning'}>
-                        {key.enabled ? 'Enabled' : 'Disabled'}
-                      </Badge>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </Card>
-          )}
         </div>
       ),
     },
