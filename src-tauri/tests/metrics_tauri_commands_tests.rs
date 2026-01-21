@@ -131,7 +131,7 @@ fn test_get_global_metrics_command() {
         output_tokens: 500,
         cost_usd: 0.05,
         latency_ms: 100,
-            strategy_id: "default",
+        strategy_id: "default",
     });
 
     let result = simulate_get_global_metrics(&collector, TimeRange::Day, MetricType::Tokens);
@@ -154,7 +154,7 @@ fn test_get_api_key_metrics_command() {
         output_tokens: 500,
         cost_usd: 0.05,
         latency_ms: 100,
-            strategy_id: "default",
+        strategy_id: "default",
     });
 
     let result = simulate_get_api_key_metrics(
@@ -182,7 +182,7 @@ fn test_get_provider_metrics_command() {
         output_tokens: 400,
         cost_usd: 0.03,
         latency_ms: 80,
-            strategy_id: "default",
+        strategy_id: "default",
     });
 
     let result = simulate_get_provider_metrics(
@@ -210,7 +210,7 @@ fn test_get_model_metrics_command() {
         output_tokens: 500,
         cost_usd: 0.05,
         latency_ms: 100,
-            strategy_id: "default",
+        strategy_id: "default",
     });
     collector.record_success(&RequestMetrics {
         api_key_name: "key2",
@@ -220,7 +220,7 @@ fn test_get_model_metrics_command() {
         output_tokens: 250,
         cost_usd: 0.025,
         latency_ms: 90,
-            strategy_id: "default",
+        strategy_id: "default",
     });
 
     let result = simulate_get_model_metrics(
@@ -248,7 +248,7 @@ fn test_compare_providers_command() {
         output_tokens: 500,
         cost_usd: 0.05,
         latency_ms: 100,
-            strategy_id: "default",
+        strategy_id: "default",
     });
     collector.record_success(&RequestMetrics {
         api_key_name: "key1",
@@ -258,7 +258,7 @@ fn test_compare_providers_command() {
         output_tokens: 400,
         cost_usd: 0.03,
         latency_ms: 80,
-            strategy_id: "default",
+        strategy_id: "default",
     });
 
     let result = simulate_compare_providers(
@@ -287,7 +287,7 @@ fn test_compare_api_keys_command() {
         output_tokens: 500,
         cost_usd: 0.05,
         latency_ms: 100,
-            strategy_id: "default",
+        strategy_id: "default",
     });
     collector.record_success(&RequestMetrics {
         api_key_name: "key1",
@@ -297,7 +297,7 @@ fn test_compare_api_keys_command() {
         output_tokens: 250,
         cost_usd: 0.025,
         latency_ms: 90,
-            strategy_id: "default",
+        strategy_id: "default",
     });
     collector.record_success(&RequestMetrics {
         api_key_name: "key2",
@@ -307,7 +307,7 @@ fn test_compare_api_keys_command() {
         output_tokens: 400,
         cost_usd: 0.03,
         latency_ms: 80,
-            strategy_id: "default",
+        strategy_id: "default",
     });
 
     let result = simulate_compare_api_keys(
@@ -338,7 +338,7 @@ fn test_all_metric_types() {
         output_tokens: 500,
         cost_usd: 0.05,
         latency_ms: 100,
-            strategy_id: "default",
+        strategy_id: "default",
     });
 
     let metric_types = vec![
@@ -367,7 +367,7 @@ fn test_all_time_ranges() {
         output_tokens: 500,
         cost_usd: 0.05,
         latency_ms: 100,
-            strategy_id: "default",
+        strategy_id: "default",
     });
 
     let time_ranges = vec![

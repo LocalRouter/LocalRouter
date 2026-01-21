@@ -80,11 +80,14 @@ async fn test_sse_error_response() {
     let mock = SseMockBuilder::new()
         .await
         // First mock initialize for connection validation
-        .mock_method("initialize", json!({
-            "protocolVersion": "2024-11-05",
-            "capabilities": {},
-            "serverInfo": {"name": "test", "version": "1.0"}
-        }))
+        .mock_method(
+            "initialize",
+            json!({
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "serverInfo": {"name": "test", "version": "1.0"}
+            }),
+        )
         .await
         // Then mock error for invalid_method
         .mock_error("invalid_method", -32601, "Method not found")
@@ -105,11 +108,14 @@ async fn test_sse_404_error() {
     let mock = SseMockBuilder::new()
         .await
         // First mock initialize for connection validation
-        .mock_method("initialize", json!({
-            "protocolVersion": "2024-11-05",
-            "capabilities": {},
-            "serverInfo": {"name": "test", "version": "1.0"}
-        }))
+        .mock_method(
+            "initialize",
+            json!({
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "serverInfo": {"name": "test", "version": "1.0"}
+            }),
+        )
         .await
         // Then set up 404 for subsequent requests
         .mock_404()

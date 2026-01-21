@@ -83,7 +83,8 @@ pub struct AppState {
     /// Broadcast channel for MCP server notifications
     /// Allows multiple clients to subscribe to real-time notifications from MCP servers
     /// Format: (server_id, notification)
-    pub mcp_notification_broadcast: Arc<tokio::sync::broadcast::Sender<(String, JsonRpcNotification)>>,
+    pub mcp_notification_broadcast:
+        Arc<tokio::sync::broadcast::Sender<(String, JsonRpcNotification)>>,
 }
 
 impl AppState {

@@ -10,13 +10,12 @@ use tokio::time::sleep;
 /// - model/model.safetensors
 /// - tokenizer/tokenizer.json
 fn create_test_service() -> RouteLLMService {
-    let test_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("test_models/routellm");
+    let test_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("test_models/routellm");
 
     RouteLLMService::new(
-        test_dir.join("model"),      // Directory containing model.safetensors
-        test_dir.join("tokenizer"),  // Directory containing tokenizer.json
-        5, // 5 second idle timeout for testing
+        test_dir.join("model"),     // Directory containing model.safetensors
+        test_dir.join("tokenizer"), // Directory containing tokenizer.json
+        5,                          // 5 second idle timeout for testing
     )
 }
 
@@ -76,7 +75,10 @@ async fn test_simple_prompt_prediction() {
     // Simple arithmetic should route to weak model
     assert!(!is_strong, "Simple prompt should not route to strong model");
     assert!(win_rate < 0.5, "Win rate should be < 0.5 for simple prompt");
-    assert!(win_rate >= 0.0 && win_rate <= 1.0, "Win rate should be between 0 and 1");
+    assert!(
+        win_rate >= 0.0 && win_rate <= 1.0,
+        "Win rate should be between 0 and 1"
+    );
 }
 
 #[tokio::test]
@@ -94,7 +96,10 @@ async fn test_complex_prompt_prediction() {
 
     // Complex philosophical/scientific query should have higher win rate
     // Note: This is probabilistic, so we just check the win rate is valid
-    assert!(win_rate >= 0.0 && win_rate <= 1.0, "Win rate should be between 0 and 1");
+    assert!(
+        win_rate >= 0.0 && win_rate <= 1.0,
+        "Win rate should be between 0 and 1"
+    );
 }
 
 #[tokio::test]
@@ -114,7 +119,10 @@ async fn test_predict_with_custom_threshold() {
 
         // Verify threshold logic
         if win_rate >= threshold {
-            assert!(is_strong, "Should route to strong when win_rate >= threshold");
+            assert!(
+                is_strong,
+                "Should route to strong when win_rate >= threshold"
+            );
         } else {
             assert!(!is_strong, "Should route to weak when win_rate < threshold");
         }
@@ -169,7 +177,10 @@ async fn test_last_access_tracking() {
     let service = create_test_service();
 
     // Make first prediction
-    service.predict("test").await.expect("First prediction failed");
+    service
+        .predict("test")
+        .await
+        .expect("First prediction failed");
 
     let status1 = service.get_status().await;
     assert!(status1.last_access_secs_ago.unwrap() < 2);
@@ -190,11 +201,8 @@ async fn test_concurrent_predictions() {
     // Spawn multiple concurrent prediction tasks
     for i in 0..10 {
         let service_clone = Arc::clone(&service);
-        let handle = tokio::spawn(async move {
-            service_clone
-                .predict(&format!("Test prompt {}", i))
-                .await
-        });
+        let handle =
+            tokio::spawn(async move { service_clone.predict(&format!("Test prompt {}", i)).await });
         handles.push(handle);
     }
 
@@ -246,7 +254,11 @@ async fn test_performance_short_vs_long_text() {
     let result = service.predict(short_text).await;
     let short_duration = start.elapsed();
     assert!(result.is_ok(), "Short text prediction failed");
-    println!("Short text ({} chars): {:?}", short_text.len(), short_duration);
+    println!(
+        "Short text ({} chars): {:?}",
+        short_text.len(),
+        short_duration
+    );
 
     // Test 2: Medium text (~500 chars)
     let medium_text = "a".repeat(500);
@@ -254,7 +266,11 @@ async fn test_performance_short_vs_long_text() {
     let result = service.predict(&medium_text).await;
     let medium_duration = start.elapsed();
     assert!(result.is_ok(), "Medium text prediction failed");
-    println!("Medium text ({} chars): {:?}", medium_text.len(), medium_duration);
+    println!(
+        "Medium text ({} chars): {:?}",
+        medium_text.len(),
+        medium_duration
+    );
 
     // Test 3: Long text similar to user's log output (~1500 chars)
     let long_text = "2026-01-21T04:22:37.434492Z  INFO localrouter_ai: Initializing rate limiter...\n\
@@ -284,13 +300,19 @@ async fn test_performance_short_vs_long_text() {
     let result = service.predict(&very_long_text).await;
     let very_long_duration = start.elapsed();
     assert!(result.is_ok(), "Very long text prediction failed");
-    println!("Very long text ({} chars): {:?}", very_long_text.len(), very_long_duration);
+    println!(
+        "Very long text ({} chars): {:?}",
+        very_long_text.len(),
+        very_long_duration
+    );
 
     // Performance assertions
     // Long text should not take more than 10x the short text time
     // (This will fail before our fix, helping demonstrate the issue)
-    println!("\nPerformance ratio (long/short): {:.2}x",
-             very_long_duration.as_secs_f64() / short_duration.as_secs_f64());
+    println!(
+        "\nPerformance ratio (long/short): {:.2}x",
+        very_long_duration.as_secs_f64() / short_duration.as_secs_f64()
+    );
 
     // After fix with truncation, this should pass
     // assert!(very_long_duration.as_secs() < 10,
@@ -320,10 +342,16 @@ async fn test_threshold_edge_cases() {
 
     // Test edge thresholds
     let (is_strong_0, win_rate) = service.predict_with_threshold(prompt, 0.0).await.unwrap();
-    assert!(is_strong_0 || win_rate == 0.0, "Threshold 0.0: should route to strong unless win_rate is exactly 0");
+    assert!(
+        is_strong_0 || win_rate == 0.0,
+        "Threshold 0.0: should route to strong unless win_rate is exactly 0"
+    );
 
     let (is_strong_1, _) = service.predict_with_threshold(prompt, 1.0).await.unwrap();
-    assert!(!is_strong_1, "Threshold 1.0: should route to weak (win_rate can't be > 1.0)");
+    assert!(
+        !is_strong_1,
+        "Threshold 1.0: should route to weak (win_rate can't be > 1.0)"
+    );
 }
 
 #[cfg(test)]
@@ -356,14 +384,20 @@ mod auto_unload_tests {
         start_auto_unload_task(Arc::clone(&service));
 
         // Make initial prediction
-        service.predict("test1").await.expect("First prediction failed");
+        service
+            .predict("test1")
+            .await
+            .expect("First prediction failed");
         assert!(service.is_loaded().await);
 
         // Wait 3 seconds (less than timeout)
         sleep(Duration::from_secs(3)).await;
 
         // Make another prediction (resets timer)
-        service.predict("test2").await.expect("Second prediction failed");
+        service
+            .predict("test2")
+            .await
+            .expect("Second prediction failed");
 
         // Wait another 3 seconds
         sleep(Duration::from_secs(3)).await;
@@ -446,7 +480,11 @@ mod downloader_tests {
             }
         }
 
-        assert!(tokenizer_result.is_ok(), "Failed to load tokenizer: {:?}", tokenizer_result.err());
+        assert!(
+            tokenizer_result.is_ok(),
+            "Failed to load tokenizer: {:?}",
+            tokenizer_result.err()
+        );
         println!("  ✓ Tokenizer loaded successfully");
 
         // Test that we can load the full model
@@ -459,15 +497,24 @@ mod downloader_tests {
             println!("Error: {:?}", e);
         }
 
-        assert!(router_result.is_ok(), "Failed to load model: {:?}", router_result.err());
+        assert!(
+            router_result.is_ok(),
+            "Failed to load model: {:?}",
+            router_result.err()
+        );
         println!("  ✓ Model loaded successfully");
 
         // Test prediction
         println!("\n🎯 Testing prediction...");
         let router = router_result.unwrap();
-        let score = router.calculate_strong_win_rate("test prompt").expect("Prediction failed");
+        let score = router
+            .calculate_strong_win_rate("test prompt")
+            .expect("Prediction failed");
         println!("  ✓ Prediction score: {:.3}", score);
-        assert!(score >= 0.0 && score <= 1.0, "Score should be between 0 and 1");
+        assert!(
+            score >= 0.0 && score <= 1.0,
+            "Score should be between 0 and 1"
+        );
 
         println!("\n✅ All tests passed!");
     }
@@ -479,7 +526,10 @@ mod downloader_tests {
 
         let status = downloader::get_download_status(&model_path, &tokenizer_path);
 
-        assert_eq!(status.state, crate::config::RouteLLMDownloadState::NotDownloaded);
+        assert_eq!(
+            status.state,
+            crate::config::RouteLLMDownloadState::NotDownloaded
+        );
         assert_eq!(status.progress, 0.0);
         assert_eq!(status.total_bytes, 440_000_000); // SafeTensors size
     }

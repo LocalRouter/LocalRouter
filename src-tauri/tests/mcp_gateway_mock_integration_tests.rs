@@ -38,8 +38,10 @@ fn create_test_router() -> Arc<Router> {
     let provider_registry = Arc::new(ProviderRegistry::new(health_manager));
     let rate_limiter = Arc::new(RateLimiterManager::new(None));
 
-    let metrics_db_path =
-        std::env::temp_dir().join(format!("test_gateway_mock_metrics_{}.db", uuid::Uuid::new_v4()));
+    let metrics_db_path = std::env::temp_dir().join(format!(
+        "test_gateway_mock_metrics_{}.db",
+        uuid::Uuid::new_v4()
+    ));
     let metrics_db = Arc::new(MetricsDatabase::new(metrics_db_path).unwrap());
     let metrics_collector = Arc::new(MetricsCollector::new(metrics_db));
 
@@ -112,9 +114,11 @@ impl MockMcpServer {
 
         Mock::given(http_method("POST"))
             .and(json_rpc_method(method))
-            .respond_with(ResponseTemplate::new(200)
-                .set_body_string(sse_body)
-                .insert_header("content-type", "text/event-stream"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(sse_body)
+                    .insert_header("content-type", "text/event-stream"),
+            )
             .up_to_n_times(100) // Allow multiple calls
             .with_priority(1) // Higher priority than default mocks (default is 5)
             .mount(&self.server)
@@ -135,9 +139,11 @@ impl MockMcpServer {
         let sse_body = format!("data: {}\n\n", serde_json::to_string(&response).unwrap());
 
         Mock::given(http_method("POST"))
-            .respond_with(ResponseTemplate::new(200)
-                .set_body_string(sse_body)
-                .insert_header("content-type", "text/event-stream"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(sse_body)
+                    .insert_header("content-type", "text/event-stream"),
+            )
             .with_priority(1) // Higher priority than default mocks
             .mount(&self.server)
             .await;
@@ -176,34 +182,46 @@ async fn setup_gateway_with_two_servers() -> (
     });
 
     // Use up_to_n_times instead of expect to allow tests to override with more specific mocks
-    let sse_body1 = format!("data: {}\n\n", serde_json::to_string(&json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "result": default_init_response.clone()
-    })).unwrap());
+    let sse_body1 = format!(
+        "data: {}\n\n",
+        serde_json::to_string(&json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": default_init_response.clone()
+        }))
+        .unwrap()
+    );
 
     Mock::given(http_method("POST"))
         .and(json_rpc_method("initialize"))
-        .respond_with(ResponseTemplate::new(200)
-            .set_body_string(sse_body1)
-            .insert_header("content-type", "text/event-stream"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(sse_body1)
+                .insert_header("content-type", "text/event-stream"),
+        )
         .up_to_n_times(100) // Allow multiple calls, will be overridden by test-specific mocks
         .with_priority(10) // Lower priority (higher number) than test-specific mocks
         .named("default-init-server1")
         .mount(&server1_mock.server)
         .await;
 
-    let sse_body2 = format!("data: {}\n\n", serde_json::to_string(&json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "result": default_init_response
-    })).unwrap());
+    let sse_body2 = format!(
+        "data: {}\n\n",
+        serde_json::to_string(&json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": default_init_response
+        }))
+        .unwrap()
+    );
 
     Mock::given(http_method("POST"))
         .and(json_rpc_method("initialize"))
-        .respond_with(ResponseTemplate::new(200)
-            .set_body_string(sse_body2)
-            .insert_header("content-type", "text/event-stream"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(sse_body2)
+                .insert_header("content-type", "text/event-stream"),
+        )
         .up_to_n_times(100) // Allow multiple calls, will be overridden by test-specific mocks
         .with_priority(10) // Lower priority (higher number) than test-specific mocks
         .named("default-init-server2")
@@ -327,14 +345,20 @@ async fn test_gateway_initialize_merges_capabilities() {
     let result = extract_result(&response);
 
     // Debug: print the actual response to see what we got
-    eprintln!("ACTUAL RESPONSE: {}", serde_json::to_string_pretty(&result).unwrap());
+    eprintln!(
+        "ACTUAL RESPONSE: {}",
+        serde_json::to_string_pretty(&result).unwrap()
+    );
 
     // Check protocol version (should use minimum)
     assert_eq!(result["protocolVersion"], "2024-11-05");
 
     // Check merged capabilities
     let capabilities = &result["capabilities"];
-    eprintln!("CAPABILITIES: {}", serde_json::to_string_pretty(&capabilities).unwrap());
+    eprintln!(
+        "CAPABILITIES: {}",
+        serde_json::to_string_pretty(&capabilities).unwrap()
+    );
     assert!(capabilities["tools"]["listChanged"].as_bool().unwrap());
     assert!(capabilities["resources"]["subscribe"].as_bool().unwrap());
     assert!(capabilities["resources"]["listChanged"].as_bool().unwrap());
@@ -933,39 +957,55 @@ async fn test_resources_read_routes_by_uri() {
     let (gateway, _manager, server1_mock, _server2_mock) = setup_gateway_with_two_servers().await;
 
     // First populate session with resources/list
-    server1_mock.mock_method("resources/list", json!({
-        "resources": [
-            {
-                "name": "config",
-                "uri": "file:///config.json",
-                "description": "Configuration file",
-                "mimeType": "application/json"
-            }
-        ]
-    })).await;
+    server1_mock
+        .mock_method(
+            "resources/list",
+            json!({
+                "resources": [
+                    {
+                        "name": "config",
+                        "uri": "file:///config.json",
+                        "description": "Configuration file",
+                        "mimeType": "application/json"
+                    }
+                ]
+            }),
+        )
+        .await;
 
     let allowed_servers = vec!["server1".to_string()];
-    let list_request = JsonRpcRequest::new(Some(json!(1)), "resources/list".to_string(), Some(json!({})));
+    let list_request = JsonRpcRequest::new(
+        Some(json!(1)),
+        "resources/list".to_string(),
+        Some(json!({})),
+    );
 
     let _ = gateway
-        .handle_request("test-client-res", allowed_servers.clone(), false, list_request)
+        .handle_request(
+            "test-client-res",
+            allowed_servers.clone(),
+            false,
+            list_request,
+        )
         .await
         .unwrap();
 
     // Mock resources/read response
-    server1_mock.mock_method("resources/read", json!({
-        "contents": [{
-            "uri": "file:///config.json",
-            "mimeType": "application/json",
-            "text": "{\"key\": \"value\"}"
-        }]
-    })).await;
+    server1_mock
+        .mock_method(
+            "resources/read",
+            json!({
+                "contents": [{
+                    "uri": "file:///config.json",
+                    "mimeType": "application/json",
+                    "text": "{\"key\": \"value\"}"
+                }]
+            }),
+        )
+        .await;
 
     // Read resource by URI
-    let read_request = request_with_params(
-        "resources/read",
-        json!({"uri": "file:///config.json"}),
-    );
+    let read_request = request_with_params("resources/read", json!({"uri": "file:///config.json"}));
 
     let response = gateway
         .handle_request("test-client-res", allowed_servers, false, read_request)
@@ -984,38 +1024,54 @@ async fn test_resources_read_by_name() {
     let (gateway, _manager, server1_mock, _server2_mock) = setup_gateway_with_two_servers().await;
 
     // First populate session with resources/list
-    server1_mock.mock_method("resources/list", json!({
-        "resources": [
-            {
-                "name": "logs",
-                "uri": "file:///var/log/app.log",
-                "description": "Application logs"
-            }
-        ]
-    })).await;
+    server1_mock
+        .mock_method(
+            "resources/list",
+            json!({
+                "resources": [
+                    {
+                        "name": "logs",
+                        "uri": "file:///var/log/app.log",
+                        "description": "Application logs"
+                    }
+                ]
+            }),
+        )
+        .await;
 
     let allowed_servers = vec!["server1".to_string()];
-    let list_request = JsonRpcRequest::new(Some(json!(1)), "resources/list".to_string(), Some(json!({})));
+    let list_request = JsonRpcRequest::new(
+        Some(json!(1)),
+        "resources/list".to_string(),
+        Some(json!({})),
+    );
 
     let _ = gateway
-        .handle_request("test-client-res2", allowed_servers.clone(), false, list_request)
+        .handle_request(
+            "test-client-res2",
+            allowed_servers.clone(),
+            false,
+            list_request,
+        )
         .await
         .unwrap();
 
     // Mock resources/read response
-    server1_mock.mock_method("resources/read", json!({
-        "contents": [{
-            "uri": "file:///var/log/app.log",
-            "mimeType": "text/plain",
-            "text": "Log entry 1\nLog entry 2"
-        }]
-    })).await;
+    server1_mock
+        .mock_method(
+            "resources/read",
+            json!({
+                "contents": [{
+                    "uri": "file:///var/log/app.log",
+                    "mimeType": "text/plain",
+                    "text": "Log entry 1\nLog entry 2"
+                }]
+            }),
+        )
+        .await;
 
     // Read resource by namespaced name
-    let read_request = request_with_params(
-        "resources/read",
-        json!({"name": "server1__logs"}),
-    );
+    let read_request = request_with_params("resources/read", json!({"name": "server1__logs"}));
 
     let response = gateway
         .handle_request("test-client-res2", allowed_servers, false, read_request)
@@ -1031,21 +1087,30 @@ async fn test_resources_read_not_found() {
     let (gateway, _manager, server1_mock, _server2_mock) = setup_gateway_with_two_servers().await;
 
     // Populate session with empty resources
-    server1_mock.mock_method("resources/list", json!({"resources": []})).await;
+    server1_mock
+        .mock_method("resources/list", json!({"resources": []}))
+        .await;
 
     let allowed_servers = vec!["server1".to_string()];
-    let list_request = JsonRpcRequest::new(Some(json!(1)), "resources/list".to_string(), Some(json!({})));
+    let list_request = JsonRpcRequest::new(
+        Some(json!(1)),
+        "resources/list".to_string(),
+        Some(json!({})),
+    );
 
     let _ = gateway
-        .handle_request("test-client-res3", allowed_servers.clone(), false, list_request)
+        .handle_request(
+            "test-client-res3",
+            allowed_servers.clone(),
+            false,
+            list_request,
+        )
         .await
         .unwrap();
 
     // Try to read non-existent resource
-    let read_request = request_with_params(
-        "resources/read",
-        json!({"name": "server1__nonexistent"}),
-    );
+    let read_request =
+        request_with_params("resources/read", json!({"name": "server1__nonexistent"}));
 
     let result = gateway
         .handle_request("test-client-res3", allowed_servers, false, read_request)
@@ -1060,19 +1125,33 @@ async fn test_resources_read_binary_content() {
     let (gateway, _manager, server1_mock, _server2_mock) = setup_gateway_with_two_servers().await;
 
     // First populate session with resources/list
-    server1_mock.mock_method("resources/list", json!({
-        "resources": [{
-            "name": "image",
-            "uri": "file:///image.png",
-            "mimeType": "image/png"
-        }]
-    })).await;
+    server1_mock
+        .mock_method(
+            "resources/list",
+            json!({
+                "resources": [{
+                    "name": "image",
+                    "uri": "file:///image.png",
+                    "mimeType": "image/png"
+                }]
+            }),
+        )
+        .await;
 
     let allowed_servers = vec!["server1".to_string()];
-    let list_request = JsonRpcRequest::new(Some(json!(1)), "resources/list".to_string(), Some(json!({})));
+    let list_request = JsonRpcRequest::new(
+        Some(json!(1)),
+        "resources/list".to_string(),
+        Some(json!({})),
+    );
 
     let _ = gateway
-        .handle_request("test-client-res4", allowed_servers.clone(), false, list_request)
+        .handle_request(
+            "test-client-res4",
+            allowed_servers.clone(),
+            false,
+            list_request,
+        )
         .await
         .unwrap();
 
@@ -1085,10 +1164,7 @@ async fn test_resources_read_binary_content() {
         }]
     })).await;
 
-    let read_request = request_with_params(
-        "resources/read",
-        json!({"uri": "file:///image.png"}),
-    );
+    let read_request = request_with_params("resources/read", json!({"uri": "file:///image.png"}));
 
     let response = gateway
         .handle_request("test-client-res4", allowed_servers, false, read_request)
@@ -1106,24 +1182,38 @@ async fn test_resources_list_with_templates() {
     let (gateway, _manager, server1_mock, server2_mock) = setup_gateway_with_two_servers().await;
 
     // Resources with URI templates
-    server1_mock.mock_method("resources/list", json!({
-        "resources": [{
-            "name": "file",
-            "uri": "file:///{path}",
-            "description": "Read any file",
-            "mimeType": "text/plain"
-        }]
-    })).await;
+    server1_mock
+        .mock_method(
+            "resources/list",
+            json!({
+                "resources": [{
+                    "name": "file",
+                    "uri": "file:///{path}",
+                    "description": "Read any file",
+                    "mimeType": "text/plain"
+                }]
+            }),
+        )
+        .await;
 
-    server2_mock.mock_method("resources/list", json!({
-        "resources": [{
-            "name": "user",
-            "uri": "https://api.example.com/users/{id}",
-            "description": "User profile"
-        }]
-    })).await;
+    server2_mock
+        .mock_method(
+            "resources/list",
+            json!({
+                "resources": [{
+                    "name": "user",
+                    "uri": "https://api.example.com/users/{id}",
+                    "description": "User profile"
+                }]
+            }),
+        )
+        .await;
 
-    let request = JsonRpcRequest::new(Some(json!(1)), "resources/list".to_string(), Some(json!({})));
+    let request = JsonRpcRequest::new(
+        Some(json!(1)),
+        "resources/list".to_string(),
+        Some(json!({})),
+    );
 
     let allowed_servers = vec!["server1".to_string(), "server2".to_string()];
     let response = gateway
@@ -1135,8 +1225,12 @@ async fn test_resources_list_with_templates() {
     let resources = result["resources"].as_array().unwrap();
 
     // Should preserve URI templates
-    assert!(resources.iter().any(|r| r["uri"].as_str().unwrap().contains("{path}")));
-    assert!(resources.iter().any(|r| r["uri"].as_str().unwrap().contains("{id}")));
+    assert!(resources
+        .iter()
+        .any(|r| r["uri"].as_str().unwrap().contains("{path}")));
+    assert!(resources
+        .iter()
+        .any(|r| r["uri"].as_str().unwrap().contains("{id}")));
 
     // Should namespace names only
     assert!(resources.iter().any(|r| r["name"] == "server1__file"));
@@ -1152,35 +1246,48 @@ async fn test_prompts_get_routes_by_namespace() {
     let (gateway, _manager, server1_mock, _server2_mock) = setup_gateway_with_two_servers().await;
 
     // First populate session with prompts/list
-    server1_mock.mock_method("prompts/list", json!({
-        "prompts": [{
-            "name": "review",
-            "description": "Code review prompt",
-            "arguments": []
-        }]
-    })).await;
+    server1_mock
+        .mock_method(
+            "prompts/list",
+            json!({
+                "prompts": [{
+                    "name": "review",
+                    "description": "Code review prompt",
+                    "arguments": []
+                }]
+            }),
+        )
+        .await;
 
     let allowed_servers = vec!["server1".to_string()];
-    let list_request = JsonRpcRequest::new(Some(json!(1)), "prompts/list".to_string(), Some(json!({})));
+    let list_request =
+        JsonRpcRequest::new(Some(json!(1)), "prompts/list".to_string(), Some(json!({})));
 
     let _ = gateway
-        .handle_request("test-client-prompt", allowed_servers.clone(), false, list_request)
+        .handle_request(
+            "test-client-prompt",
+            allowed_servers.clone(),
+            false,
+            list_request,
+        )
         .await
         .unwrap();
 
     // Mock prompts/get response
-    server1_mock.mock_method("prompts/get", json!({
-        "description": "Code review prompt",
-        "messages": [
-            {"role": "user", "content": {"type": "text", "text": "Please review this code"}}
-        ]
-    })).await;
+    server1_mock
+        .mock_method(
+            "prompts/get",
+            json!({
+                "description": "Code review prompt",
+                "messages": [
+                    {"role": "user", "content": {"type": "text", "text": "Please review this code"}}
+                ]
+            }),
+        )
+        .await;
 
     // Get prompt by namespaced name
-    let get_request = request_with_params(
-        "prompts/get",
-        json!({"name": "server1__review"}),
-    );
+    let get_request = request_with_params("prompts/get", json!({"name": "server1__review"}));
 
     let response = gateway
         .handle_request("test-client-prompt", allowed_servers, false, get_request)
@@ -1197,31 +1304,47 @@ async fn test_prompts_get_with_arguments() {
     let (gateway, _manager, server1_mock, _server2_mock) = setup_gateway_with_two_servers().await;
 
     // Populate session with prompts/list
-    server1_mock.mock_method("prompts/list", json!({
-        "prompts": [{
-            "name": "greet",
-            "description": "Greeting prompt",
-            "arguments": [
-                {"name": "name", "description": "Name to greet", "required": true}
-            ]
-        }]
-    })).await;
+    server1_mock
+        .mock_method(
+            "prompts/list",
+            json!({
+                "prompts": [{
+                    "name": "greet",
+                    "description": "Greeting prompt",
+                    "arguments": [
+                        {"name": "name", "description": "Name to greet", "required": true}
+                    ]
+                }]
+            }),
+        )
+        .await;
 
     let allowed_servers = vec!["server1".to_string()];
-    let list_request = JsonRpcRequest::new(Some(json!(1)), "prompts/list".to_string(), Some(json!({})));
+    let list_request =
+        JsonRpcRequest::new(Some(json!(1)), "prompts/list".to_string(), Some(json!({})));
 
     let _ = gateway
-        .handle_request("test-client-prompt2", allowed_servers.clone(), false, list_request)
+        .handle_request(
+            "test-client-prompt2",
+            allowed_servers.clone(),
+            false,
+            list_request,
+        )
         .await
         .unwrap();
 
     // Mock prompts/get with arguments
-    server1_mock.mock_method("prompts/get", json!({
-        "description": "Greeting prompt",
-        "messages": [
-            {"role": "user", "content": {"type": "text", "text": "Hello, Alice!"}}
-        ]
-    })).await;
+    server1_mock
+        .mock_method(
+            "prompts/get",
+            json!({
+                "description": "Greeting prompt",
+                "messages": [
+                    {"role": "user", "content": {"type": "text", "text": "Hello, Alice!"}}
+                ]
+            }),
+        )
+        .await;
 
     let get_request = request_with_params(
         "prompts/get",
@@ -1242,21 +1365,26 @@ async fn test_prompts_get_not_found() {
     let (gateway, _manager, server1_mock, _server2_mock) = setup_gateway_with_two_servers().await;
 
     // Populate session with empty prompts
-    server1_mock.mock_method("prompts/list", json!({"prompts": []})).await;
+    server1_mock
+        .mock_method("prompts/list", json!({"prompts": []}))
+        .await;
 
     let allowed_servers = vec!["server1".to_string()];
-    let list_request = JsonRpcRequest::new(Some(json!(1)), "prompts/list".to_string(), Some(json!({})));
+    let list_request =
+        JsonRpcRequest::new(Some(json!(1)), "prompts/list".to_string(), Some(json!({})));
 
     let _ = gateway
-        .handle_request("test-client-prompt3", allowed_servers.clone(), false, list_request)
+        .handle_request(
+            "test-client-prompt3",
+            allowed_servers.clone(),
+            false,
+            list_request,
+        )
         .await
         .unwrap();
 
     // Try to get non-existent prompt
-    let get_request = request_with_params(
-        "prompts/get",
-        json!({"name": "server1__nonexistent"}),
-    );
+    let get_request = request_with_params("prompts/get", json!({"name": "server1__nonexistent"}));
 
     let result = gateway
         .handle_request("test-client-prompt3", allowed_servers, false, get_request)
@@ -1271,16 +1399,21 @@ async fn test_prompts_list_with_arguments() {
     let (gateway, _manager, server1_mock, server2_mock) = setup_gateway_with_two_servers().await;
 
     // Prompts with different argument sets
-    server1_mock.mock_method("prompts/list", json!({
-        "prompts": [{
-            "name": "translate",
-            "description": "Translation prompt",
-            "arguments": [
-                {"name": "text", "description": "Text to translate", "required": true},
-                {"name": "target_lang", "description": "Target language", "required": true}
-            ]
-        }]
-    })).await;
+    server1_mock
+        .mock_method(
+            "prompts/list",
+            json!({
+                "prompts": [{
+                    "name": "translate",
+                    "description": "Translation prompt",
+                    "arguments": [
+                        {"name": "text", "description": "Text to translate", "required": true},
+                        {"name": "target_lang", "description": "Target language", "required": true}
+                    ]
+                }]
+            }),
+        )
+        .await;
 
     server2_mock.mock_method("prompts/list", json!({
         "prompts": [{
@@ -1305,10 +1438,16 @@ async fn test_prompts_list_with_arguments() {
     let prompts = result["prompts"].as_array().unwrap();
 
     // Should preserve argument schemas
-    let translate = prompts.iter().find(|p| p["name"] == "server1__translate").unwrap();
+    let translate = prompts
+        .iter()
+        .find(|p| p["name"] == "server1__translate")
+        .unwrap();
     assert_eq!(translate["arguments"].as_array().unwrap().len(), 2);
 
-    let summarize = prompts.iter().find(|p| p["name"] == "server2__summarize").unwrap();
+    let summarize = prompts
+        .iter()
+        .find(|p| p["name"] == "server2__summarize")
+        .unwrap();
     assert_eq!(summarize["arguments"].as_array().unwrap().len(), 2);
 }
 
@@ -1360,17 +1499,28 @@ async fn test_tools_call_strips_namespace() {
     })).await;
 
     let allowed_servers = vec!["server1".to_string()];
-    let list_request = JsonRpcRequest::new(Some(json!(1)), "tools/list".to_string(), Some(json!({})));
+    let list_request =
+        JsonRpcRequest::new(Some(json!(1)), "tools/list".to_string(), Some(json!({})));
 
     let _ = gateway
-        .handle_request("test-client-strip", allowed_servers.clone(), false, list_request)
+        .handle_request(
+            "test-client-strip",
+            allowed_servers.clone(),
+            false,
+            list_request,
+        )
         .await
         .unwrap();
 
     // Mock tools/call - backend should receive original name without namespace
-    server1_mock.mock_method("tools/call", json!({
-        "content": [{"type": "text", "text": "Command executed"}]
-    })).await;
+    server1_mock
+        .mock_method(
+            "tools/call",
+            json!({
+                "content": [{"type": "text", "text": "Command executed"}]
+            }),
+        )
+        .await;
 
     let call_request = request_with_params(
         "tools/call",
@@ -1396,17 +1546,28 @@ async fn test_tools_call_passes_arguments() {
     })).await;
 
     let allowed_servers = vec!["server1".to_string()];
-    let list_request = JsonRpcRequest::new(Some(json!(1)), "tools/list".to_string(), Some(json!({})));
+    let list_request =
+        JsonRpcRequest::new(Some(json!(1)), "tools/list".to_string(), Some(json!({})));
 
     let _ = gateway
-        .handle_request("test-client-args2", allowed_servers.clone(), false, list_request)
+        .handle_request(
+            "test-client-args2",
+            allowed_servers.clone(),
+            false,
+            list_request,
+        )
         .await
         .unwrap();
 
     // Mock tools/call
-    server1_mock.mock_method("tools/call", json!({
-        "content": [{"type": "text", "text": "Result: 42"}]
-    })).await;
+    server1_mock
+        .mock_method(
+            "tools/call",
+            json!({
+                "content": [{"type": "text", "text": "Result: 42"}]
+            }),
+        )
+        .await;
 
     // Call with complex arguments
     let call_request = request_with_params(
@@ -1440,15 +1601,23 @@ async fn test_tools_call_handles_error_response() {
     })).await;
 
     let allowed_servers = vec!["server1".to_string()];
-    let list_request = JsonRpcRequest::new(Some(json!(1)), "tools/list".to_string(), Some(json!({})));
+    let list_request =
+        JsonRpcRequest::new(Some(json!(1)), "tools/list".to_string(), Some(json!({})));
 
     let _ = gateway
-        .handle_request("test-client-err", allowed_servers.clone(), false, list_request)
+        .handle_request(
+            "test-client-err",
+            allowed_servers.clone(),
+            false,
+            list_request,
+        )
         .await
         .unwrap();
 
     // Backend returns error
-    server1_mock.mock_error(-32000, "Tool execution failed").await;
+    server1_mock
+        .mock_error(-32000, "Tool execution failed")
+        .await;
 
     let call_request = request_with_params(
         "tools/call",
@@ -1563,7 +1732,12 @@ async fn test_notification_invalidates_tools_cache() {
 
     // First request - caches tools
     let response1 = gateway
-        .handle_request("test-client-notif", allowed_servers.clone(), false, request.clone())
+        .handle_request(
+            "test-client-notif",
+            allowed_servers.clone(),
+            false,
+            request.clone(),
+        )
         .await
         .unwrap();
 
@@ -1593,11 +1767,20 @@ async fn test_notification_invalidates_resources_cache() {
     })).await;
 
     let allowed_servers = vec!["server1".to_string()];
-    let request = JsonRpcRequest::new(Some(json!(1)), "resources/list".to_string(), Some(json!({})));
+    let request = JsonRpcRequest::new(
+        Some(json!(1)),
+        "resources/list".to_string(),
+        Some(json!({})),
+    );
 
     // First request - caches resources
     let response1 = gateway
-        .handle_request("test-client-notif2", allowed_servers.clone(), false, request.clone())
+        .handle_request(
+            "test-client-notif2",
+            allowed_servers.clone(),
+            false,
+            request.clone(),
+        )
         .await
         .unwrap();
 
@@ -1611,16 +1794,26 @@ async fn test_notification_invalidates_resources_cache() {
 async fn test_notification_invalidates_prompts_cache() {
     let (gateway, _manager, server1_mock, _server2_mock) = setup_gateway_with_two_servers().await;
 
-    server1_mock.mock_method("prompts/list", json!({
-        "prompts": [{"name": "old_prompt", "description": "Old prompt"}]
-    })).await;
+    server1_mock
+        .mock_method(
+            "prompts/list",
+            json!({
+                "prompts": [{"name": "old_prompt", "description": "Old prompt"}]
+            }),
+        )
+        .await;
 
     let allowed_servers = vec!["server1".to_string()];
     let request = JsonRpcRequest::new(Some(json!(1)), "prompts/list".to_string(), Some(json!({})));
 
     // First request - caches prompts
     let response1 = gateway
-        .handle_request("test-client-notif3", allowed_servers.clone(), false, request.clone())
+        .handle_request(
+            "test-client-notif3",
+            allowed_servers.clone(),
+            false,
+            request.clone(),
+        )
         .await
         .unwrap();
 
@@ -1646,12 +1839,15 @@ async fn test_notification_forwarded_to_client() {
     // Gateway should forward to client (when WebSocket support added)
 
     // Placeholder test - verify gateway can handle ping
-    assert!(gateway.handle_request(
-        "test-client-notif4",
-        vec!["server1".to_string()],
-        false,
-        JsonRpcRequest::new(Some(json!(1)), "ping".to_string(), Some(json!({})))
-    ).await.is_ok());
+    assert!(gateway
+        .handle_request(
+            "test-client-notif4",
+            vec!["server1".to_string()],
+            false,
+            JsonRpcRequest::new(Some(json!(1)), "ping".to_string(), Some(json!({})))
+        )
+        .await
+        .is_ok());
 }
 
 // ============================================================================
@@ -1665,17 +1861,27 @@ async fn test_initialize_latency() {
     let (gateway, _manager, server1_mock, server2_mock) = setup_gateway_with_two_servers().await;
 
     // Mock initialize responses
-    server1_mock.mock_method("initialize", json!({
-        "protocolVersion": "2024-11-05",
-        "capabilities": {"tools": {}},
-        "serverInfo": {"name": "server1", "version": "1.0"}
-    })).await;
+    server1_mock
+        .mock_method(
+            "initialize",
+            json!({
+                "protocolVersion": "2024-11-05",
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "server1", "version": "1.0"}
+            }),
+        )
+        .await;
 
-    server2_mock.mock_method("initialize", json!({
-        "protocolVersion": "2024-11-05",
-        "capabilities": {"resources": {}},
-        "serverInfo": {"name": "server2", "version": "1.0"}
-    })).await;
+    server2_mock
+        .mock_method(
+            "initialize",
+            json!({
+                "protocolVersion": "2024-11-05",
+                "capabilities": {"resources": {}},
+                "serverInfo": {"name": "server2", "version": "1.0"}
+            }),
+        )
+        .await;
 
     let request = JsonRpcRequest::new(
         Some(json!(1)),
@@ -1719,7 +1925,12 @@ async fn test_tools_list_cached_latency() {
 
     // First request - uncached
     let _ = gateway
-        .handle_request("test-client-perf2", allowed_servers.clone(), false, request.clone())
+        .handle_request(
+            "test-client-perf2",
+            allowed_servers.clone(),
+            false,
+            request.clone(),
+        )
         .await
         .unwrap();
 
@@ -1784,17 +1995,28 @@ async fn test_tools_call_overhead() {
     })).await;
 
     let allowed_servers = vec!["server1".to_string()];
-    let list_request = JsonRpcRequest::new(Some(json!(1)), "tools/list".to_string(), Some(json!({})));
+    let list_request =
+        JsonRpcRequest::new(Some(json!(1)), "tools/list".to_string(), Some(json!({})));
 
     let _ = gateway
-        .handle_request("test-client-perf4", allowed_servers.clone(), false, list_request)
+        .handle_request(
+            "test-client-perf4",
+            allowed_servers.clone(),
+            false,
+            list_request,
+        )
         .await
         .unwrap();
 
     // Mock instant response from backend
-    server1_mock.mock_method("tools/call", json!({
-        "content": [{"type": "text", "text": "done"}]
-    })).await;
+    server1_mock
+        .mock_method(
+            "tools/call",
+            json!({
+                "content": [{"type": "text", "text": "done"}]
+            }),
+        )
+        .await;
 
     let call_request = request_with_params(
         "tools/call",
@@ -1965,10 +2187,16 @@ async fn test_invalid_namespace_format() {
     })).await;
 
     let allowed_servers = vec!["server1".to_string()];
-    let list_request = JsonRpcRequest::new(Some(json!(1)), "tools/list".to_string(), Some(json!({})));
+    let list_request =
+        JsonRpcRequest::new(Some(json!(1)), "tools/list".to_string(), Some(json!({})));
 
     let _ = gateway
-        .handle_request("test-client-invalid", allowed_servers.clone(), false, list_request)
+        .handle_request(
+            "test-client-invalid",
+            allowed_servers.clone(),
+            false,
+            list_request,
+        )
         .await
         .unwrap();
 
@@ -2047,17 +2275,27 @@ async fn test_deferred_loading_enabled_with_client_capability() {
     let (gateway, _manager, server1_mock, server2_mock) = setup_gateway_with_two_servers().await;
 
     // Mock initialize responses
-    server1_mock.mock_method("initialize", json!({
-        "protocolVersion": "2024-11-05",
-        "capabilities": { "tools": {} },
-        "serverInfo": { "name": "Server 1", "version": "1.0.0" }
-    })).await;
+    server1_mock
+        .mock_method(
+            "initialize",
+            json!({
+                "protocolVersion": "2024-11-05",
+                "capabilities": { "tools": {} },
+                "serverInfo": { "name": "Server 1", "version": "1.0.0" }
+            }),
+        )
+        .await;
 
-    server2_mock.mock_method("initialize", json!({
-        "protocolVersion": "2024-11-05",
-        "capabilities": { "resources": {} },
-        "serverInfo": { "name": "Server 2", "version": "2.0.0" }
-    })).await;
+    server2_mock
+        .mock_method(
+            "initialize",
+            json!({
+                "protocolVersion": "2024-11-05",
+                "capabilities": { "resources": {} },
+                "serverInfo": { "name": "Server 2", "version": "2.0.0" }
+            }),
+        )
+        .await;
 
     // Mock tools/list for catalog fetch (deferred loading needs full catalog)
     server1_mock.mock_method("tools/list", json!({
@@ -2074,10 +2312,18 @@ async fn test_deferred_loading_enabled_with_client_capability() {
     })).await;
 
     // Mock resources/list and prompts/list
-    server1_mock.mock_method("resources/list", json!({"resources": []})).await;
-    server2_mock.mock_method("resources/list", json!({"resources": []})).await;
-    server1_mock.mock_method("prompts/list", json!({"prompts": []})).await;
-    server2_mock.mock_method("prompts/list", json!({"prompts": []})).await;
+    server1_mock
+        .mock_method("resources/list", json!({"resources": []}))
+        .await;
+    server2_mock
+        .mock_method("resources/list", json!({"resources": []}))
+        .await;
+    server1_mock
+        .mock_method("prompts/list", json!({"prompts": []}))
+        .await;
+    server2_mock
+        .mock_method("prompts/list", json!({"prompts": []}))
+        .await;
 
     // Client declares support for tools.listChanged
     let initialize_request = JsonRpcRequest::new(
@@ -2093,10 +2339,16 @@ async fn test_deferred_loading_enabled_with_client_capability() {
     );
 
     let allowed_servers = vec!["server1".to_string(), "server2".to_string()];
-    
+
     // Request with deferred_loading = true
     let response = gateway
-        .handle_request("test-client-deferred", allowed_servers.clone(), true, vec![], initialize_request)
+        .handle_request(
+            "test-client-deferred",
+            allowed_servers.clone(),
+            true,
+            vec![],
+            initialize_request,
+        )
         .await
         .unwrap();
 
@@ -2104,10 +2356,17 @@ async fn test_deferred_loading_enabled_with_client_capability() {
     assert!(response.result.is_some());
 
     // Now request tools/list - should return only the search tool initially
-    let tools_request = JsonRpcRequest::new(Some(json!(2)), "tools/list".to_string(), Some(json!({})));
-    
+    let tools_request =
+        JsonRpcRequest::new(Some(json!(2)), "tools/list".to_string(), Some(json!({})));
+
     let tools_response = gateway
-        .handle_request("test-client-deferred", allowed_servers, false, vec![], tools_request)
+        .handle_request(
+            "test-client-deferred",
+            allowed_servers,
+            false,
+            vec![],
+            tools_request,
+        )
         .await
         .unwrap();
 
@@ -2117,7 +2376,10 @@ async fn test_deferred_loading_enabled_with_client_capability() {
     // With deferred loading enabled, should see only the search tool initially
     assert_eq!(tools.len(), 1);
     assert_eq!(tools[0]["name"], "search");
-    assert!(tools[0]["description"].as_str().unwrap().contains("Search for tools"));
+    assert!(tools[0]["description"]
+        .as_str()
+        .unwrap()
+        .contains("Search for tools"));
 }
 
 #[tokio::test]
@@ -2125,17 +2387,27 @@ async fn test_deferred_loading_falls_back_without_client_capability() {
     let (gateway, _manager, server1_mock, server2_mock) = setup_gateway_with_two_servers().await;
 
     // Mock initialize responses
-    server1_mock.mock_method("initialize", json!({
-        "protocolVersion": "2024-11-05",
-        "capabilities": { "tools": {} },
-        "serverInfo": { "name": "Server 1", "version": "1.0.0" }
-    })).await;
+    server1_mock
+        .mock_method(
+            "initialize",
+            json!({
+                "protocolVersion": "2024-11-05",
+                "capabilities": { "tools": {} },
+                "serverInfo": { "name": "Server 1", "version": "1.0.0" }
+            }),
+        )
+        .await;
 
-    server2_mock.mock_method("initialize", json!({
-        "protocolVersion": "2024-11-05",
-        "capabilities": { "resources": {} },
-        "serverInfo": { "name": "Server 2", "version": "2.0.0" }
-    })).await;
+    server2_mock
+        .mock_method(
+            "initialize",
+            json!({
+                "protocolVersion": "2024-11-05",
+                "capabilities": { "resources": {} },
+                "serverInfo": { "name": "Server 2", "version": "2.0.0" }
+            }),
+        )
+        .await;
 
     // Mock tools/list for normal mode
     server1_mock.mock_method("tools/list", json!({
@@ -2165,10 +2437,16 @@ async fn test_deferred_loading_falls_back_without_client_capability() {
     );
 
     let allowed_servers = vec!["server1".to_string(), "server2".to_string()];
-    
+
     // Request with deferred_loading = true, but client doesn't support it
     let response = gateway
-        .handle_request("test-client-no-cap", allowed_servers.clone(), true, vec![], initialize_request)
+        .handle_request(
+            "test-client-no-cap",
+            allowed_servers.clone(),
+            true,
+            vec![],
+            initialize_request,
+        )
         .await
         .unwrap();
 
@@ -2176,10 +2454,17 @@ async fn test_deferred_loading_falls_back_without_client_capability() {
     assert!(response.result.is_some());
 
     // Now request tools/list - should return ALL tools (normal mode fallback)
-    let tools_request = JsonRpcRequest::new(Some(json!(2)), "tools/list".to_string(), Some(json!({})));
-    
+    let tools_request =
+        JsonRpcRequest::new(Some(json!(2)), "tools/list".to_string(), Some(json!({})));
+
     let tools_response = gateway
-        .handle_request("test-client-no-cap", allowed_servers, false, vec![], tools_request)
+        .handle_request(
+            "test-client-no-cap",
+            allowed_servers,
+            false,
+            vec![],
+            tools_request,
+        )
         .await
         .unwrap();
 
@@ -2191,7 +2476,7 @@ async fn test_deferred_loading_falls_back_without_client_capability() {
     assert!(tools.iter().any(|t| t["name"] == "server1__read_file"));
     assert!(tools.iter().any(|t| t["name"] == "server1__write_file"));
     assert!(tools.iter().any(|t| t["name"] == "server2__github_issue"));
-    
+
     // Should NOT have the search tool
     assert!(!tools.iter().any(|t| t["name"] == "search"));
 }
@@ -2201,17 +2486,27 @@ async fn test_deferred_loading_not_requested() {
     let (gateway, _manager, server1_mock, server2_mock) = setup_gateway_with_two_servers().await;
 
     // Mock initialize responses
-    server1_mock.mock_method("initialize", json!({
-        "protocolVersion": "2024-11-05",
-        "capabilities": { "tools": {} },
-        "serverInfo": { "name": "Server 1", "version": "1.0.0" }
-    })).await;
+    server1_mock
+        .mock_method(
+            "initialize",
+            json!({
+                "protocolVersion": "2024-11-05",
+                "capabilities": { "tools": {} },
+                "serverInfo": { "name": "Server 1", "version": "1.0.0" }
+            }),
+        )
+        .await;
 
-    server2_mock.mock_method("initialize", json!({
-        "protocolVersion": "2024-11-05",
-        "capabilities": {},
-        "serverInfo": { "name": "Server 2", "version": "2.0.0" }
-    })).await;
+    server2_mock
+        .mock_method(
+            "initialize",
+            json!({
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "serverInfo": { "name": "Server 2", "version": "2.0.0" }
+            }),
+        )
+        .await;
 
     // Mock tools/list
     server1_mock.mock_method("tools/list", json!({
@@ -2236,20 +2531,33 @@ async fn test_deferred_loading_not_requested() {
     );
 
     let allowed_servers = vec!["server1".to_string(), "server2".to_string()];
-    
+
     // deferred_loading = false
     let response = gateway
-        .handle_request("test-client-normal", allowed_servers.clone(), false, vec![], initialize_request)
+        .handle_request(
+            "test-client-normal",
+            allowed_servers.clone(),
+            false,
+            vec![],
+            initialize_request,
+        )
         .await
         .unwrap();
 
     assert!(response.result.is_some());
 
     // Request tools/list - should return all tools (normal mode)
-    let tools_request = JsonRpcRequest::new(Some(json!(2)), "tools/list".to_string(), Some(json!({})));
-    
+    let tools_request =
+        JsonRpcRequest::new(Some(json!(2)), "tools/list".to_string(), Some(json!({})));
+
     let tools_response = gateway
-        .handle_request("test-client-normal", allowed_servers, false, vec![], tools_request)
+        .handle_request(
+            "test-client-normal",
+            allowed_servers,
+            false,
+            vec![],
+            tools_request,
+        )
         .await
         .unwrap();
 
@@ -2260,7 +2568,7 @@ async fn test_deferred_loading_not_requested() {
     assert!(tools.len() >= 2);
     assert!(tools.iter().any(|t| t["name"] == "server1__tool1"));
     assert!(tools.iter().any(|t| t["name"] == "server2__tool2"));
-    
+
     // Should NOT have the search tool
     assert!(!tools.iter().any(|t| t["name"] == "search"));
 }

@@ -9,11 +9,11 @@ use crate::config::{McpServerConfig, McpTransportConfig, McpTransportType};
 use crate::mcp::oauth::McpOAuthManager;
 use crate::mcp::protocol::{JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, StreamingChunk};
 use crate::mcp::transport::{SseTransport, StdioTransport, Transport, WebSocketTransport};
-use futures_util::stream::Stream;
-use std::pin::Pin;
 use crate::utils::errors::{AppError, AppResult};
 use dashmap::DashMap;
+use futures_util::stream::Stream;
 use serde::{Deserialize, Serialize};
+use std::pin::Pin;
 use std::sync::Arc;
 
 /// Notification callback type
@@ -287,7 +287,9 @@ impl McpServerManager {
                         .unwrap_or_else(|_| crate::api_keys::CachedKeychain::system());
 
                     // Get client secret from keychain
-                    let client_secret = match keychain.get("LocalRouter-McpServers", client_secret_ref) {
+                    let client_secret = match keychain
+                        .get("LocalRouter-McpServers", client_secret_ref)
+                    {
                         Ok(Some(secret)) => secret,
                         Ok(None) => {
                             tracing::warn!(
@@ -341,18 +343,23 @@ impl McpServerManager {
                     }
 
                     // Parse token response
-                    let token_json: serde_json::Value = token_response
-                        .json()
-                        .await
-                        .map_err(|e| AppError::Mcp(format!("Failed to parse OAuth token response: {}", e)))?;
+                    let token_json: serde_json::Value =
+                        token_response.json().await.map_err(|e| {
+                            AppError::Mcp(format!("Failed to parse OAuth token response: {}", e))
+                        })?;
 
                     let access_token = token_json
                         .get("access_token")
                         .and_then(|v| v.as_str())
-                        .ok_or_else(|| AppError::Mcp("OAuth response missing access_token".to_string()))?;
+                        .ok_or_else(|| {
+                            AppError::Mcp("OAuth response missing access_token".to_string())
+                        })?;
 
                     // Add Authorization header with token
-                    headers.insert("Authorization".to_string(), format!("Bearer {}", access_token));
+                    headers.insert(
+                        "Authorization".to_string(),
+                        format!("Bearer {}", access_token),
+                    );
 
                     tracing::info!("Applied OAuth token for SSE server: {}", server_id);
                 }
@@ -366,8 +373,12 @@ impl McpServerManager {
                     let account_name = format!("{}_access_token", config.id);
                     match keychain.get("LocalRouter-McpServerTokens", &account_name) {
                         Ok(Some(token)) => {
-                            headers.insert("Authorization".to_string(), format!("Bearer {}", token));
-                            tracing::debug!("Applied OAuth browser token for SSE server: {}", server_id);
+                            headers
+                                .insert("Authorization".to_string(), format!("Bearer {}", token));
+                            tracing::debug!(
+                                "Applied OAuth browser token for SSE server: {}",
+                                server_id
+                            );
                         }
                         Ok(None) => {
                             tracing::warn!(
@@ -410,7 +421,11 @@ impl McpServerManager {
     }
 
     /// Start a WebSocket MCP server
-    async fn start_websocket_server(&self, server_id: &str, config: &McpServerConfig) -> AppResult<()> {
+    async fn start_websocket_server(
+        &self,
+        server_id: &str,
+        config: &McpServerConfig,
+    ) -> AppResult<()> {
         // Extract WebSocket config
         let (url, mut headers) = match &config.transport_config {
             McpTransportConfig::WebSocket { url, headers } => (url.clone(), headers.clone()),
@@ -431,7 +446,10 @@ impl McpServerManager {
                     let account_name = format!("{}_bearer_token", config.id);
                     if let Ok(Some(token)) = keychain.get("LocalRouter-McpServers", &account_name) {
                         headers.insert("Authorization".to_string(), format!("Bearer {}", token));
-                        tracing::debug!("Applied bearer token auth for WebSocket server: {}", server_id);
+                        tracing::debug!(
+                            "Applied bearer token auth for WebSocket server: {}",
+                            server_id
+                        );
                     } else {
                         tracing::warn!(
                             "Bearer token not found in keychain for server: {} (tried account: {})",
@@ -446,7 +464,10 @@ impl McpServerManager {
                     for (key, value) in auth_headers {
                         headers.insert(key.clone(), value.clone());
                     }
-                    tracing::debug!("Applied custom headers auth for WebSocket server: {}", server_id);
+                    tracing::debug!(
+                        "Applied custom headers auth for WebSocket server: {}",
+                        server_id
+                    );
                 }
                 crate::config::McpAuthConfig::OAuth {
                     client_id,
@@ -460,7 +481,9 @@ impl McpServerManager {
                         .unwrap_or_else(|_| crate::api_keys::CachedKeychain::system());
 
                     // Get client secret from keychain
-                    let client_secret = match keychain.get("LocalRouter-McpServers", client_secret_ref) {
+                    let client_secret = match keychain
+                        .get("LocalRouter-McpServers", client_secret_ref)
+                    {
                         Ok(Some(secret)) => secret,
                         Ok(None) => {
                             tracing::warn!(
@@ -510,22 +533,30 @@ impl McpServerManager {
                         )));
                     }
 
-                    let token_json: serde_json::Value = token_response
-                        .json()
-                        .await
-                        .map_err(|e| AppError::Mcp(format!("Failed to parse OAuth token response: {}", e)))?;
+                    let token_json: serde_json::Value =
+                        token_response.json().await.map_err(|e| {
+                            AppError::Mcp(format!("Failed to parse OAuth token response: {}", e))
+                        })?;
 
                     let access_token = token_json
                         .get("access_token")
                         .and_then(|v| v.as_str())
-                        .ok_or_else(|| AppError::Mcp("OAuth response missing access_token".to_string()))?;
+                        .ok_or_else(|| {
+                            AppError::Mcp("OAuth response missing access_token".to_string())
+                        })?;
 
-                    headers.insert("Authorization".to_string(), format!("Bearer {}", access_token));
+                    headers.insert(
+                        "Authorization".to_string(),
+                        format!("Bearer {}", access_token),
+                    );
 
                     tracing::info!("Applied OAuth token for WebSocket server: {}", server_id);
                 }
                 _ => {
-                    tracing::debug!("No applicable auth config for WebSocket server: {}", server_id);
+                    tracing::debug!(
+                        "No applicable auth config for WebSocket server: {}",
+                        server_id
+                    );
                 }
             }
         }

@@ -5,7 +5,7 @@ use super::{
     CompletionRequest, CompletionResponse, HealthStatus, ModelInfo, ModelProvider, PricingInfo,
     ProviderHealth, TokenUsage,
 };
-use crate::api_keys::{CachedKeychain, keychain_trait::KeychainStorage};
+use crate::api_keys::{keychain_trait::KeychainStorage, CachedKeychain};
 use crate::utils::errors::{AppError, AppResult};
 use async_trait::async_trait;
 use chrono::Utc;

@@ -306,7 +306,10 @@ impl ModelProvider for OllamaProvider {
 
     async fn complete(&self, request: CompletionRequest) -> AppResult<CompletionResponse> {
         let url = format!("{}/api/chat", self.base_url);
-        debug!("Sending completion request to Ollama: {} - Model: {}", url, request.model);
+        debug!(
+            "Sending completion request to Ollama: {} - Model: {}",
+            url, request.model
+        );
 
         let ollama_request = OllamaChatRequest {
             model: request.model.clone(),
@@ -327,14 +330,20 @@ impl ModelProvider for OllamaProvider {
             .send()
             .await
             .map_err(|e| {
-                error!("Ollama request failed - URL: {} - Model: {} - Error: {}", url, request.model, e);
+                error!(
+                    "Ollama request failed - URL: {} - Model: {} - Error: {}",
+                    url, request.model, e
+                );
                 AppError::Provider(format!("Ollama request failed: {}", e))
             })?;
 
         if !response.status().is_success() {
             let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
-            error!("Ollama completion failed: {} - Model: {} - Error: {}", status, request.model, error_text);
+            error!(
+                "Ollama completion failed: {} - Model: {} - Error: {}",
+                status, request.model, error_text
+            );
             return Err(AppError::Provider(format!(
                 "Ollama API error: {} - {}. Model may not be loaded. Try: ollama pull {}",
                 status, error_text, request.model
@@ -385,7 +394,10 @@ impl ModelProvider for OllamaProvider {
         request: CompletionRequest,
     ) -> AppResult<Pin<Box<dyn Stream<Item = AppResult<CompletionChunk>> + Send>>> {
         let url = format!("{}/api/chat", self.base_url);
-        debug!("Sending streaming completion request to Ollama: {} - Model: {}", url, request.model);
+        debug!(
+            "Sending streaming completion request to Ollama: {} - Model: {}",
+            url, request.model
+        );
 
         let ollama_request = OllamaChatRequest {
             model: request.model.clone(),
@@ -408,13 +420,19 @@ impl ModelProvider for OllamaProvider {
             .send()
             .await
             .map_err(|e| {
-                error!("Ollama streaming request failed - URL: {} - Model: {} - Error: {}", url, request.model, e);
+                error!(
+                    "Ollama streaming request failed - URL: {} - Model: {} - Error: {}",
+                    url, request.model, e
+                );
                 AppError::Provider(format!("Ollama streaming request failed: {}", e))
             })?;
 
         if !response.status().is_success() {
             let status = response.status();
-            let error_body = response.text().await.unwrap_or_else(|_| "Unable to read error body".to_string());
+            let error_body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unable to read error body".to_string());
             error!(
                 "Ollama streaming request failed: {} - Model: {} - Error: {}",
                 status, request.model, error_body
@@ -557,10 +575,9 @@ impl ModelProvider for OllamaProvider {
             )));
         }
 
-        let ollama_response: OllamaEmbedResponse = response
-            .json()
-            .await
-            .map_err(|e| AppError::Provider(format!("Failed to parse Ollama embed response: {}", e)))?;
+        let ollama_response: OllamaEmbedResponse = response.json().await.map_err(|e| {
+            AppError::Provider(format!("Failed to parse Ollama embed response: {}", e))
+        })?;
 
         // Convert Ollama response to our generic format
         let embeddings = if is_multiple {

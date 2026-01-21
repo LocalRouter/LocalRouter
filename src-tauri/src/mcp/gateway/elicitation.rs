@@ -152,10 +152,7 @@ impl ElicitationManager {
                     })?;
                 }
 
-                info!(
-                    "Response submitted for elicitation request {}",
-                    request_id
-                );
+                info!("Response submitted for elicitation request {}", request_id);
                 Ok(())
             }
             None => {
@@ -345,10 +342,7 @@ mod tests {
             .await;
 
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("timed out"));
+        assert!(result.unwrap_err().to_string().contains("timed out"));
     }
 }
 

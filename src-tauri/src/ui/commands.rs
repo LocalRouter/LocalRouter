@@ -3731,10 +3731,7 @@ pub async fn update_tray_graph_settings(
         .map_err(|e| e.to_string())?;
 
     // Save to disk
-    config_manager
-        .save()
-        .await
-        .map_err(|e| e.to_string())?;
+    config_manager.save().await.map_err(|e| e.to_string())?;
 
     // Update tray graph manager (this triggers a refresh with new rate)
     let new_config = config_manager.get().ui.clone();
@@ -3761,7 +3758,9 @@ pub fn get_app_version() -> String {
 
 /// Get update configuration
 #[tauri::command]
-pub async fn get_update_config(config_manager: State<'_, ConfigManager>) -> Result<crate::config::UpdateConfig, String> {
+pub async fn get_update_config(
+    config_manager: State<'_, ConfigManager>,
+) -> Result<crate::config::UpdateConfig, String> {
     Ok(config_manager.get().update.clone())
 }
 
@@ -3786,10 +3785,7 @@ pub async fn update_update_config(
         .map_err(|e| e.to_string())?;
 
     // Save to disk
-    config_manager
-        .save()
-        .await
-        .map_err(|e| e.to_string())?;
+    config_manager.save().await.map_err(|e| e.to_string())?;
 
     Ok(())
 }
@@ -3816,26 +3812,18 @@ pub async fn skip_update_version(
         })
         .map_err(|e| e.to_string())?;
 
-    config_manager
-        .save()
-        .await
-        .map_err(|e| e.to_string())?;
+    config_manager.save().await.map_err(|e| e.to_string())?;
 
     // Clear update notification from tray
-    crate::ui::tray::set_update_available(&app, false)
-        .map_err(|e| e.to_string())?;
+    crate::ui::tray::set_update_available(&app, false).map_err(|e| e.to_string())?;
 
     Ok(())
 }
 
 /// Set update notification in tray menu
 #[tauri::command]
-pub fn set_update_notification(
-    app: tauri::AppHandle,
-    available: bool,
-) -> Result<(), String> {
-    crate::ui::tray::set_update_available(&app, available)
-        .map_err(|e| e.to_string())
+pub fn set_update_notification(app: tauri::AppHandle, available: bool) -> Result<(), String> {
+    crate::ui::tray::set_update_available(&app, available).map_err(|e| e.to_string())
 }
 
 // ============================================================================

@@ -1591,9 +1591,9 @@ impl TrayGraphManager {
                 *last_activity_clone.write() = Utc::now();
 
                 // Start timer loop for active period
-                let mut interval = tokio::time::interval(
-                    tokio::time::Duration::from_millis(UPDATE_CHECK_INTERVAL_MS)
-                );
+                let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(
+                    UPDATE_CHECK_INTERVAL_MS,
+                ));
                 interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
                 // Keep updating while active (not idle)
@@ -1601,7 +1601,9 @@ impl TrayGraphManager {
                     // Check for new activity notifications (non-blocking)
                     while let Ok(()) = activity_rx.try_recv() {
                         *last_activity_clone.write() = Utc::now();
-                        debug!("TrayGraphManager: Activity notification received during update loop");
+                        debug!(
+                            "TrayGraphManager: Activity notification received during update loop"
+                        );
                     }
 
                     interval.tick().await;
@@ -1643,8 +1645,13 @@ impl TrayGraphManager {
 
                     // Perform update
                     let is_first_update = last_update_clone.read().is_none();
-                    if let Err(e) =
-                        Self::update_tray_graph_impl(&app_handle_clone, is_first_update, &buckets_clone, &accumulated_tokens_clone).await
+                    if let Err(e) = Self::update_tray_graph_impl(
+                        &app_handle_clone,
+                        is_first_update,
+                        &buckets_clone,
+                        &accumulated_tokens_clone,
+                    )
+                    .await
                     {
                         error!("Failed to update tray graph: {}", e);
                     } else {
@@ -1785,8 +1792,12 @@ impl TrayGraphManager {
                         }
 
                         // Determine how many buckets we can actually place (some might fall outside window)
+                        // Check both that bucket_age_secs >= 0 (not too recent) and < window_secs (not too old)
                         let num_buckets_in_window = (0..6)
-                            .filter(|&offset| age_secs + (offset * 10) < window_secs)
+                            .filter(|&offset| {
+                                let bucket_age = age_secs.saturating_sub(offset * 10);
+                                bucket_age >= 0 && bucket_age < window_secs
+                            })
                             .count() as u64;
 
                         if num_buckets_in_window == 0 {
@@ -1796,9 +1807,11 @@ impl TrayGraphManager {
                         let tokens_per_bucket = metric.total_tokens / num_buckets_in_window;
 
                         for offset in 0..6 {
-                            let bucket_age_secs = age_secs + (offset * 10);
-                            if bucket_age_secs >= window_secs {
-                                break;
+                            // Spread the minute forward in time (subtract offset, not add)
+                            // If metric is 100 seconds ago, spread to: 100, 90, 80, 70, 60, 50 seconds ago
+                            let bucket_age_secs = age_secs.saturating_sub(offset * 10);
+                            if bucket_age_secs < 0 || bucket_age_secs >= window_secs {
+                                continue;
                             }
 
                             let bucket_index = (NUM_BUCKETS - 1) - (bucket_age_secs / 10);
@@ -1885,7 +1898,10 @@ impl TrayGraphManager {
             tray.set_icon_as_template(false)
                 .map_err(|e| anyhow::anyhow!("Failed to set template mode: {}", e))?;
 
-            debug!("Tray icon updated with graph ({} buckets)", data_points.len());
+            debug!(
+                "Tray icon updated with graph ({} buckets)",
+                data_points.len()
+            );
         } else {
             return Err(anyhow::anyhow!("Tray icon 'main' not found"));
         }
@@ -2007,7 +2023,10 @@ mod tests {
         let metric = create_metric(now - Duration::seconds(3), 100);
         let buckets = bucket_metrics(vec![metric], now, interval_secs);
 
-        assert_eq!(buckets[28], 100, "Metric with age 3s should be in bucket 28");
+        assert_eq!(
+            buckets[28], 100,
+            "Metric with age 3s should be in bucket 28"
+        );
         assert_eq!(
             buckets.iter().sum::<u64>(),
             100,
@@ -2050,10 +2069,7 @@ mod tests {
             base_time + Duration::seconds(58),
             interval_secs,
         );
-        assert_eq!(
-            buckets_t58[0], 100,
-            "At T+58, metric should be in bucket 0"
-        );
+        assert_eq!(buckets_t58[0], 100, "At T+58, metric should be in bucket 0");
     }
 
     #[test]
@@ -2111,11 +2127,7 @@ mod tests {
         assert_eq!(buckets[28], 100, "Metric 1 should be in bucket 28");
         assert_eq!(buckets[27], 200, "Metric 2 should be in bucket 27");
         assert_eq!(buckets[26], 300, "Metric 3 should be in bucket 26");
-        assert_eq!(
-            buckets.iter().sum::<u64>(),
-            600,
-            "Total should be 600"
-        );
+        assert_eq!(buckets.iter().sum::<u64>(), 600, "Total should be 600");
     }
 
     #[test]
@@ -2157,12 +2169,8 @@ mod tests {
         let interval_secs = 2;
 
         // Simulate a metric stored at the minute boundary (like in production)
-        let metric_time = now
-            .with_second(0)
-            .unwrap()
-            .with_nanosecond(0)
-            .unwrap()
-            - Duration::minutes(0); // Current minute
+        let metric_time =
+            now.with_second(0).unwrap().with_nanosecond(0).unwrap() - Duration::minutes(0); // Current minute
 
         let metric = create_metric(metric_time, 100);
 
@@ -2243,11 +2251,7 @@ mod tests {
 
         // Each bucket should have exactly 100 tokens
         for (i, &tokens) in buckets.iter().enumerate() {
-            assert_eq!(
-                tokens, 100,
-                "Bucket {} should have 100 tokens",
-                i
-            );
+            assert_eq!(tokens, 100, "Bucket {} should have 100 tokens", i);
         }
 
         assert_eq!(
@@ -2283,7 +2287,7 @@ mod tests {
     /// Fast mode does NOT use metrics - it only tracks real-time tokens
     fn simulate_fast_mode_buckets(
         buckets: &mut Vec<u64>,
-        accumulated_tokens: u64,  // Real-time tokens since last update
+        accumulated_tokens: u64, // Real-time tokens since last update
         is_first_update: bool,
     ) {
         const NUM_BUCKETS: usize = 26;
@@ -2334,10 +2338,7 @@ mod tests {
         // Original 100 tokens from T=0 should have fallen off (26+ shifts)
         // But we should still have recent data from the last 26 updates
         let sum: u64 = buckets.iter().sum();
-        assert!(
-            sum > 0,
-            "T=26: Should still have recent data"
-        );
+        assert!(sum > 0, "T=26: Should still have recent data");
         assert_eq!(
             buckets.iter().filter(|&&x| x == 0).count(),
             0,
@@ -2378,7 +2379,10 @@ mod tests {
         }
 
         // At T=29, rightmost bucket should have the latest data (390 tokens)
-        assert_eq!(buckets[25], 390, "Latest data should be in rightmost bucket");
+        assert_eq!(
+            buckets[25], 390,
+            "Latest data should be in rightmost bucket"
+        );
     }
 
     /// Simulates Medium mode bucketing (10 seconds per bar, 26 bars)
@@ -2388,7 +2392,7 @@ mod tests {
         buckets: &mut Vec<u64>,
         metrics: Vec<MetricDataPoint>,
         virtual_now: DateTime<Utc>,
-        accumulated_tokens: u64,  // Real-time tokens since last update (used in runtime)
+        accumulated_tokens: u64, // Real-time tokens since last update (used in runtime)
         is_first_update: bool,
     ) {
         const NUM_BUCKETS: usize = 26;
@@ -2515,8 +2519,8 @@ mod tests {
         // Create 3 minute-level metrics, each 60 seconds apart
         let metrics = vec![
             create_metric(base_time - Duration::seconds(120), 600), // 2 minutes ago
-            create_metric(base_time - Duration::seconds(60), 1200),  // 1 minute ago
-            create_metric(base_time, 1800),                          // now
+            create_metric(base_time - Duration::seconds(60), 1200), // 1 minute ago
+            create_metric(base_time, 1800),                         // now
         ];
 
         simulate_medium_mode_buckets(&mut buckets, metrics, base_time, 0, true);
@@ -2527,29 +2531,17 @@ mod tests {
 
         // Most recent minute (buckets 20-25) should have 1800/6 = 300 per bucket
         for i in 20..26 {
-            assert_eq!(
-                buckets[i], 300,
-                "Bucket {} should have 300 tokens",
-                i
-            );
+            assert_eq!(buckets[i], 300, "Bucket {} should have 300 tokens", i);
         }
 
         // Middle minute (buckets 14-19) should have 1200/6 = 200 per bucket
         for i in 14..20 {
-            assert_eq!(
-                buckets[i], 200,
-                "Bucket {} should have 200 tokens",
-                i
-            );
+            assert_eq!(buckets[i], 200, "Bucket {} should have 200 tokens", i);
         }
 
         // Oldest minute (buckets 8-13) should have 600/6 = 100 per bucket
         for i in 8..14 {
-            assert_eq!(
-                buckets[i], 100,
-                "Bucket {} should have 100 tokens",
-                i
-            );
+            assert_eq!(buckets[i], 100, "Bucket {} should have 100 tokens", i);
         }
     }
 
@@ -2629,9 +2621,18 @@ mod tests {
         let buckets_t60 = simulate_slow_mode_buckets(metrics.clone(), t60);
 
         assert_eq!(buckets_t60[25], 4000, "T=60: new data in bucket 25");
-        assert_eq!(buckets_t60[24], 3000, "T=60: previous bucket 25 shifted to 24");
-        assert_eq!(buckets_t60[23], 2000, "T=60: previous bucket 24 shifted to 23");
-        assert_eq!(buckets_t60[22], 1000, "T=60: previous bucket 23 shifted to 22");
+        assert_eq!(
+            buckets_t60[24], 3000,
+            "T=60: previous bucket 25 shifted to 24"
+        );
+        assert_eq!(
+            buckets_t60[23], 2000,
+            "T=60: previous bucket 24 shifted to 23"
+        );
+        assert_eq!(
+            buckets_t60[22], 1000,
+            "T=60: previous bucket 23 shifted to 22"
+        );
 
         // Advance time by another 60 seconds (T=120)
         let t120 = base_time + Duration::seconds(120);
@@ -2684,7 +2685,13 @@ mod tests {
 
         // Medium mode
         let mut medium_buckets = vec![0u64; 26];
-        simulate_medium_mode_buckets(&mut medium_buckets, empty_metrics.clone(), base_time, 0, true);
+        simulate_medium_mode_buckets(
+            &mut medium_buckets,
+            empty_metrics.clone(),
+            base_time,
+            0,
+            true,
+        );
         assert_eq!(
             medium_buckets.iter().sum::<u64>(),
             0,
@@ -2723,7 +2730,13 @@ mod tests {
 
         // Medium mode: Should interpolate metrics on initial load
         let mut medium_buckets = vec![0u64; 26];
-        simulate_medium_mode_buckets(&mut medium_buckets, sparse_metrics.clone(), base_time, 0, true);
+        simulate_medium_mode_buckets(
+            &mut medium_buckets,
+            sparse_metrics.clone(),
+            base_time,
+            0,
+            true,
+        );
         assert!(
             medium_buckets.iter().sum::<u64>() >= 100,
             "Medium mode: should have at least recent data"
@@ -2761,10 +2774,7 @@ mod tests {
         let slow_sum: u64 = slow_buckets.iter().sum();
 
         // Fast mode starts empty (no metrics)
-        assert_eq!(
-            fast_sum, 0,
-            "Fast mode starts empty (no historical data)"
-        );
+        assert_eq!(fast_sum, 0, "Fast mode starts empty (no historical data)");
 
         // Medium and slow should both capture all 5 minutes of data
         // Note: Medium mode may lose a few tokens to integer division rounding during interpolation

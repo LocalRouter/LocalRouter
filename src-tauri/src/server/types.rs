@@ -82,7 +82,6 @@ pub struct ChatCompletionRequest {
 
     // Extended sampling parameters (Layer 2 - Extended OpenAI Compatibility)
     // Note: These are LocalRouter extensions not present in the standard OpenAI API
-
     /// Top-K sampling (LocalRouter extension, not in OpenAI API)
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(minimum = 1)]

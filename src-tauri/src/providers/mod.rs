@@ -564,16 +564,14 @@ impl ChatMessageContent {
     pub fn as_text(&self) -> String {
         match self {
             ChatMessageContent::Text(text) => text.clone(),
-            ChatMessageContent::Parts(parts) => {
-                parts
-                    .iter()
-                    .filter_map(|part| match part {
-                        ContentPart::Text { text } => Some(text.clone()),
-                        ContentPart::ImageUrl { .. } => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            }
+            ChatMessageContent::Parts(parts) => parts
+                .iter()
+                .filter_map(|part| match part {
+                    ContentPart::Text { text } => Some(text.clone()),
+                    ContentPart::ImageUrl { .. } => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
         }
     }
 
@@ -581,7 +579,9 @@ impl ChatMessageContent {
     pub fn has_images(&self) -> bool {
         match self {
             ChatMessageContent::Text(_) => false,
-            ChatMessageContent::Parts(parts) => parts.iter().any(|part| matches!(part, ContentPart::ImageUrl { .. })),
+            ChatMessageContent::Parts(parts) => parts
+                .iter()
+                .any(|part| matches!(part, ContentPart::ImageUrl { .. })),
         }
     }
 

@@ -33,7 +33,7 @@ use crate::server::state::AppState;
 ///
 /// # Example
 /// ```javascript
-/// const ws = new WebSocket('ws://localhost:3625/mcp/ws', {
+/// const ws = new WebSocket('ws://localhost:3625/ws', {
 ///   headers: { 'Authorization': 'Bearer lr-your-token' }
 /// });
 /// ws.onmessage = (event) => {
@@ -162,7 +162,10 @@ async fn handle_websocket(
                     }
                 }
                 Ok(Message::Close(_)) => {
-                    tracing::debug!("WebSocket close message received from client {}", client_id_receive);
+                    tracing::debug!(
+                        "WebSocket close message received from client {}",
+                        client_id_receive
+                    );
                     break;
                 }
                 Err(e) => {

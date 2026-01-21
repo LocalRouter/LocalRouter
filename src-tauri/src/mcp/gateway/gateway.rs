@@ -7,7 +7,10 @@ use std::time::Duration;
 use tokio::sync::RwLock;
 
 use crate::mcp::manager::McpServerManager;
-use crate::mcp::protocol::{JsonRpcError, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, McpPrompt, McpResource, McpTool};
+use crate::mcp::protocol::{
+    JsonRpcError, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, McpPrompt, McpResource,
+    McpTool,
+};
 use crate::router::Router;
 use crate::utils::errors::{AppError, AppResult};
 
@@ -35,7 +38,8 @@ pub struct McpGateway {
     /// Broadcast sender for client notifications (optional)
     /// Allows external clients to subscribe to real-time notifications from MCP servers
     /// Format: (server_id, notification)
-    notification_broadcast: Option<Arc<tokio::sync::broadcast::Sender<(String, JsonRpcNotification)>>>,
+    notification_broadcast:
+        Option<Arc<tokio::sync::broadcast::Sender<(String, JsonRpcNotification)>>>,
 
     /// Router for LLM provider access (for sampling/createMessage support)
     router: Arc<Router>,
@@ -46,7 +50,11 @@ pub struct McpGateway {
 
 impl McpGateway {
     /// Create a new MCP gateway
-    pub fn new(server_manager: Arc<McpServerManager>, config: GatewayConfig, router: Arc<Router>) -> Self {
+    pub fn new(
+        server_manager: Arc<McpServerManager>,
+        config: GatewayConfig,
+        router: Arc<Router>,
+    ) -> Self {
         Self::new_with_broadcast(server_manager, config, router, None)
     }
 
@@ -55,7 +63,9 @@ impl McpGateway {
         server_manager: Arc<McpServerManager>,
         config: GatewayConfig,
         router: Arc<Router>,
-        notification_broadcast: Option<Arc<tokio::sync::broadcast::Sender<(String, JsonRpcNotification)>>>,
+        notification_broadcast: Option<
+            Arc<tokio::sync::broadcast::Sender<(String, JsonRpcNotification)>>,
+        >,
     ) -> Self {
         Self {
             sessions: Arc::new(DashMap::new()),
@@ -135,8 +145,7 @@ impl McpGateway {
         let session = Arc::new(RwLock::new(session_data));
 
         // Register GLOBAL notification handlers for each server (if not already registered)
-        self.register_notification_handlers(&allowed_servers)
-            .await;
+        self.register_notification_handlers(&allowed_servers).await;
 
         self.sessions.insert(client_id.to_string(), session.clone());
 
@@ -145,18 +154,19 @@ impl McpGateway {
 
     /// Register GLOBAL notification handlers for servers (one handler per server, shared across sessions)
     /// This prevents memory leaks from per-session handlers
-    async fn register_notification_handlers(
-        &self,
-        allowed_servers: &[String],
-    ) {
+    async fn register_notification_handlers(&self, allowed_servers: &[String]) {
         for server_id in allowed_servers {
             // Check if handler already registered for this server
-            if self.notification_handlers_registered.contains_key(server_id) {
+            if self
+                .notification_handlers_registered
+                .contains_key(server_id)
+            {
                 continue;
             }
 
             // Mark as registered (prevent duplicate registration)
-            self.notification_handlers_registered.insert(server_id.clone(), true);
+            self.notification_handlers_registered
+                .insert(server_id.clone(), true);
 
             let sessions_clone = self.sessions.clone();
             let server_id_clone = server_id.clone();
@@ -181,13 +191,17 @@ impl McpGateway {
                                 for entry in sessions_inner.iter() {
                                     let session = entry.value();
                                     if let Ok(mut session_write) = session.try_write() {
-                                        if session_write.allowed_servers.contains(&server_id_inner) {
+                                        if session_write.allowed_servers.contains(&server_id_inner)
+                                        {
                                             session_write.cache_ttl_manager.record_invalidation();
                                             session_write.cached_tools = None;
                                         }
                                     }
                                 }
-                                tracing::debug!("Invalidated tools cache for all sessions using server: {}", server_id_inner);
+                                tracing::debug!(
+                                    "Invalidated tools cache for all sessions using server: {}",
+                                    server_id_inner
+                                );
                             }
                             "notifications/resources/list_changed" => {
                                 tracing::info!(
@@ -198,13 +212,17 @@ impl McpGateway {
                                 for entry in sessions_inner.iter() {
                                     let session = entry.value();
                                     if let Ok(mut session_write) = session.try_write() {
-                                        if session_write.allowed_servers.contains(&server_id_inner) {
+                                        if session_write.allowed_servers.contains(&server_id_inner)
+                                        {
                                             session_write.cache_ttl_manager.record_invalidation();
                                             session_write.cached_resources = None;
                                         }
                                     }
                                 }
-                                tracing::debug!("Invalidated resources cache for all sessions using server: {}", server_id_inner);
+                                tracing::debug!(
+                                    "Invalidated resources cache for all sessions using server: {}",
+                                    server_id_inner
+                                );
                             }
                             "notifications/prompts/list_changed" => {
                                 tracing::info!(
@@ -215,13 +233,17 @@ impl McpGateway {
                                 for entry in sessions_inner.iter() {
                                     let session = entry.value();
                                     if let Ok(mut session_write) = session.try_write() {
-                                        if session_write.allowed_servers.contains(&server_id_inner) {
+                                        if session_write.allowed_servers.contains(&server_id_inner)
+                                        {
                                             session_write.cache_ttl_manager.record_invalidation();
                                             session_write.cached_prompts = None;
                                         }
                                     }
                                 }
-                                tracing::debug!("Invalidated prompts cache for all sessions using server: {}", server_id_inner);
+                                tracing::debug!(
+                                    "Invalidated prompts cache for all sessions using server: {}",
+                                    server_id_inner
+                                );
                             }
                             other_method => {
                                 tracing::debug!(
@@ -411,16 +433,20 @@ impl McpGateway {
         request: JsonRpcRequest,
     ) -> AppResult<JsonRpcResponse> {
         // Parse elicitation request from params
-        let elicitation_req: crate::mcp::protocol::ElicitationRequest = match request.params.as_ref() {
-            Some(params) => serde_json::from_value(params.clone())
-                .map_err(|e| AppError::InvalidParams(format!("Invalid elicitation request: {}", e)))?,
-            None => {
-                return Ok(JsonRpcResponse::error(
-                    request.id.unwrap_or(Value::Null),
-                    JsonRpcError::invalid_params("Missing params for elicitation request".to_string()),
-                ));
-            }
-        };
+        let elicitation_req: crate::mcp::protocol::ElicitationRequest =
+            match request.params.as_ref() {
+                Some(params) => serde_json::from_value(params.clone()).map_err(|e| {
+                    AppError::InvalidParams(format!("Invalid elicitation request: {}", e))
+                })?,
+                None => {
+                    return Ok(JsonRpcResponse::error(
+                        request.id.unwrap_or(Value::Null),
+                        JsonRpcError::invalid_params(
+                            "Missing params for elicitation request".to_string(),
+                        ),
+                    ));
+                }
+            };
 
         // Get the server ID that initiated this request
         let session_read = session.read().await;
@@ -428,27 +454,23 @@ impl McpGateway {
         drop(session_read);
 
         // Request input from user via elicitation manager
-        match self.elicitation_manager.request_input(
-            server_id,
-            elicitation_req,
-            None, // Use default timeout
-        ).await {
-            Ok(response) => {
-                Ok(JsonRpcResponse::success(
-                    request.id.unwrap_or(Value::Null),
-                    serde_json::to_value(response)?,
-                ))
-            }
-            Err(e) => {
-                Ok(JsonRpcResponse::error(
-                    request.id.unwrap_or(Value::Null),
-                    JsonRpcError::custom(
-                        -32603,
-                        format!("Elicitation failed: {}", e),
-                        None,
-                    ),
-                ))
-            }
+        match self
+            .elicitation_manager
+            .request_input(
+                server_id,
+                elicitation_req,
+                None, // Use default timeout
+            )
+            .await
+        {
+            Ok(response) => Ok(JsonRpcResponse::success(
+                request.id.unwrap_or(Value::Null),
+                serde_json::to_value(response)?,
+            )),
+            Err(e) => Ok(JsonRpcResponse::error(
+                request.id.unwrap_or(Value::Null),
+                JsonRpcError::custom(-32603, format!("Elicitation failed: {}", e), None),
+            )),
         }
     }
 
@@ -471,7 +493,9 @@ impl McpGateway {
         if let Some(ref caps) = client_capabilities {
             tracing::debug!("Client capabilities received: {:?}", caps);
         } else {
-            tracing::debug!("Client did not provide capabilities in initialize request (optional per MCP spec)");
+            tracing::debug!(
+                "Client did not provide capabilities in initialize request (optional per MCP spec)"
+            );
         }
 
         let session_read = session.read().await;
@@ -563,62 +587,62 @@ impl McpGateway {
                     client_id_for_log
                 );
 
-            // Ensure servers are started
-            for server_id in &allowed_servers_for_deferred {
-                if !self.server_manager.is_running(server_id) {
-                    self.server_manager.start_server(server_id).await?;
+                // Ensure servers are started
+                for server_id in &allowed_servers_for_deferred {
+                    if !self.server_manager.is_running(server_id) {
+                        self.server_manager.start_server(server_id).await?;
+                    }
                 }
-            }
 
-            // Fetch full catalog from all backend servers
-            let (tools, _) = self
-                .fetch_and_merge_tools(
-                    &allowed_servers_for_deferred,
-                    JsonRpcRequest::new(
-                        Some(serde_json::json!(1)),
-                        "tools/list".to_string(),
-                        None,
-                    ),
-                )
-                .await
-                .unwrap_or_default();
+                // Fetch full catalog from all backend servers
+                let (tools, _) = self
+                    .fetch_and_merge_tools(
+                        &allowed_servers_for_deferred,
+                        JsonRpcRequest::new(
+                            Some(serde_json::json!(1)),
+                            "tools/list".to_string(),
+                            None,
+                        ),
+                    )
+                    .await
+                    .unwrap_or_default();
 
-            let (resources, _) = self
-                .fetch_and_merge_resources(
-                    &allowed_servers_for_deferred,
-                    JsonRpcRequest::new(
-                        Some(serde_json::json!(2)),
-                        "resources/list".to_string(),
-                        None,
-                    ),
-                )
-                .await
-                .unwrap_or_default();
+                let (resources, _) = self
+                    .fetch_and_merge_resources(
+                        &allowed_servers_for_deferred,
+                        JsonRpcRequest::new(
+                            Some(serde_json::json!(2)),
+                            "resources/list".to_string(),
+                            None,
+                        ),
+                    )
+                    .await
+                    .unwrap_or_default();
 
-            let (prompts, _) = self
-                .fetch_and_merge_prompts(
-                    &allowed_servers_for_deferred,
-                    JsonRpcRequest::new(
-                        Some(serde_json::json!(3)),
-                        "prompts/list".to_string(),
-                        None,
-                    ),
-                )
-                .await
-                .unwrap_or_default();
+                let (prompts, _) = self
+                    .fetch_and_merge_prompts(
+                        &allowed_servers_for_deferred,
+                        JsonRpcRequest::new(
+                            Some(serde_json::json!(3)),
+                            "prompts/list".to_string(),
+                            None,
+                        ),
+                    )
+                    .await
+                    .unwrap_or_default();
 
-            let mut session_write = session.write().await;
-            session_write.deferred_loading = Some(DeferredLoadingState {
-                enabled: true,
-                activated_tools: std::collections::HashSet::new(),
-                full_catalog: tools.clone(),
-                activated_resources: std::collections::HashSet::new(),
-                full_resource_catalog: resources.clone(),
-                activated_prompts: std::collections::HashSet::new(),
-                full_prompt_catalog: prompts.clone(),
-            });
+                let mut session_write = session.write().await;
+                session_write.deferred_loading = Some(DeferredLoadingState {
+                    enabled: true,
+                    activated_tools: std::collections::HashSet::new(),
+                    full_catalog: tools.clone(),
+                    activated_resources: std::collections::HashSet::new(),
+                    full_resource_catalog: resources.clone(),
+                    activated_prompts: std::collections::HashSet::new(),
+                    full_prompt_catalog: prompts.clone(),
+                });
 
-            tracing::info!(
+                tracing::info!(
                 "Deferred loading enabled for client {}: {} tools, {} resources, {} prompts in catalog",
                 client_id_for_log,
                 tools.len(),
@@ -1087,9 +1111,15 @@ impl McpGateway {
             }
         };
 
-        let search_type = arguments.get("type").and_then(|t| t.as_str()).unwrap_or("all");
+        let search_type = arguments
+            .get("type")
+            .and_then(|t| t.as_str())
+            .unwrap_or("all");
 
-        let limit = arguments.get("limit").and_then(|l| l.as_u64()).unwrap_or(10) as usize;
+        let limit = arguments
+            .get("limit")
+            .and_then(|l| l.as_u64())
+            .unwrap_or(10) as usize;
 
         // Search based on type
         let mut activated_names = Vec::new();
@@ -1183,7 +1213,10 @@ impl McpGateway {
                 None => {
                     return Ok(JsonRpcResponse::error(
                         request.id.unwrap_or(Value::Null),
-                        JsonRpcError::invalid_params(format!("Invalid namespaced resource: {}", name)),
+                        JsonRpcError::invalid_params(format!(
+                            "Invalid namespaced resource: {}",
+                            name
+                        )),
                     ));
                 }
             }
@@ -1306,7 +1339,10 @@ impl McpGateway {
             None => {
                 return Ok(JsonRpcResponse::error(
                     request.id.unwrap_or(Value::Null),
-                    JsonRpcError::invalid_params(format!("Invalid namespaced prompt: {}", prompt_name)),
+                    JsonRpcError::invalid_params(format!(
+                        "Invalid namespaced prompt: {}",
+                        prompt_name
+                    )),
                 ));
             }
         };

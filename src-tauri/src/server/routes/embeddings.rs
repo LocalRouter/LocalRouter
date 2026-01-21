@@ -2,12 +2,16 @@
 //!
 //! Convert text to vector embeddings.
 
-use axum::{extract::State, response::{IntoResponse, Response}, Extension, Json};
+use axum::{
+    extract::State,
+    response::{IntoResponse, Response},
+    Extension, Json,
+};
 use uuid::Uuid;
 
 use crate::server::middleware::error::{ApiErrorResponse, ApiResult};
 use crate::server::state::{AppState, AuthContext};
-use crate::server::types::{EmbeddingRequest, EmbeddingResponse, EmbeddingData, EmbeddingVector};
+use crate::server::types::{EmbeddingData, EmbeddingRequest, EmbeddingResponse, EmbeddingVector};
 
 /// POST /v1/embeddings
 /// Generate embeddings for input text(s)
@@ -42,16 +46,23 @@ pub async fn embeddings(
     let request_id = format!("emb-{}", Uuid::new_v4());
 
     // Convert encoding_format from String to EncodingFormat
-    let encoding_format = request.encoding_format.as_ref().and_then(|fmt| match fmt.as_str() {
-        "float" => Some(crate::providers::EncodingFormat::Float),
-        "base64" => Some(crate::providers::EncodingFormat::Base64),
-        _ => None,
-    });
+    let encoding_format = request
+        .encoding_format
+        .as_ref()
+        .and_then(|fmt| match fmt.as_str() {
+            "float" => Some(crate::providers::EncodingFormat::Float),
+            "base64" => Some(crate::providers::EncodingFormat::Base64),
+            _ => None,
+        });
 
     // Convert server EmbeddingInput to provider EmbeddingInput
     let provider_input = match request.input.clone() {
-        crate::server::types::EmbeddingInput::Single(s) => crate::providers::EmbeddingInput::Single(s),
-        crate::server::types::EmbeddingInput::Multiple(v) => crate::providers::EmbeddingInput::Multiple(v),
+        crate::server::types::EmbeddingInput::Single(s) => {
+            crate::providers::EmbeddingInput::Single(s)
+        }
+        crate::server::types::EmbeddingInput::Multiple(v) => {
+            crate::providers::EmbeddingInput::Multiple(v)
+        }
     };
 
     // Convert to provider format
@@ -86,7 +97,7 @@ pub async fn embeddings(
                 embedding: if let Some(vec) = emb.embedding {
                     EmbeddingVector::Float(vec)
                 } else {
-                    EmbeddingVector::Float(vec![])  // Default to empty if none
+                    EmbeddingVector::Float(vec![]) // Default to empty if none
                 },
                 index: emb.index as u32,
             })

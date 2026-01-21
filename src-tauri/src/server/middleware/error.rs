@@ -117,6 +117,9 @@ impl From<AppError> for ApiErrorResponse {
             AppError::OAuthBrowser(msg) => {
                 ApiErrorResponse::internal_error(format!("OAuth browser error: {}", msg))
             }
+            AppError::InvalidParams(msg) => {
+                ApiErrorResponse::bad_request(format!("Invalid parameters: {}", msg))
+            }
         }
     }
 }

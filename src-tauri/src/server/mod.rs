@@ -163,7 +163,7 @@ fn build_app(state: AppState, enable_cors: bool) -> Router {
             "/mcp/:server_id/stream",
             post(routes::mcp_server_streaming_handler), // MCP streaming endpoint (SSE)
         )
-        .route("/mcp/ws", get(routes::mcp_websocket_handler)) // WebSocket notifications
+        .route("/ws", get(routes::mcp_websocket_handler)) // WebSocket notifications
         .layer(axum::middleware::from_fn(
             middleware::client_auth::client_auth_middleware,
         ))
@@ -285,7 +285,7 @@ async fn root_handler() -> &'static str {
        POST /                       - Unified MCP gateway (all servers)\n\
        POST /mcp/{server_id}        - Individual MCP server proxy\n\
        POST /mcp/{server_id}/stream - Streaming MCP endpoint (SSE)\n\
-       GET  /mcp/ws                 - WebSocket real-time notifications\n\
+       GET  /ws                     - WebSocket real-time notifications\n\
      \n\
      Documentation:\n\
        GET  /openapi.json - OpenAPI specification (JSON)\n\

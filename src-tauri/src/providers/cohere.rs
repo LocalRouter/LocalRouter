@@ -417,10 +417,9 @@ impl ModelProvider for CohereProvider {
             )));
         }
 
-        let cohere_response: CohereEmbedResponse = response
-            .json()
-            .await
-            .map_err(|e| AppError::Provider(format!("Failed to parse Cohere embed response: {}", e)))?;
+        let cohere_response: CohereEmbedResponse = response.json().await.map_err(|e| {
+            AppError::Provider(format!("Failed to parse Cohere embed response: {}", e))
+        })?;
 
         // Convert Cohere response to our generic format
         let embeddings = cohere_response

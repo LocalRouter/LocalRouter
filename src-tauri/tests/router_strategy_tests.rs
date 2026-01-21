@@ -8,6 +8,7 @@
 //! - Parent lifecycle management
 //! - Strategy metrics tracking
 
+use localrouter_ai::config::ConfigManager;
 use localrouter_ai::config::{
     AppConfig, AutoModelConfig, AvailableModelsSelection, Client, RateLimitTimeWindow,
     RateLimitType, Strategy, StrategyRateLimit,
@@ -19,7 +20,6 @@ use localrouter_ai::providers::registry::ProviderRegistry;
 use localrouter_ai::providers::{ChatMessage, ChatMessageContent, CompletionRequest};
 use localrouter_ai::router::{RateLimiterManager, Router};
 use localrouter_ai::utils::errors::AppError;
-use localrouter_ai::config::ConfigManager;
 use std::sync::Arc;
 
 /// Helper to create a test config with client and strategy
@@ -66,9 +66,9 @@ fn create_test_request(model: &str) -> CompletionRequest {
         messages: vec![ChatMessage {
             role: "user".to_string(),
             content: ChatMessageContent::Text("test".to_string()),
-                tool_calls: None,
-                tool_call_id: None,
-                name: None,
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
         }],
         temperature: Some(0.7),
         max_tokens: Some(100),
@@ -81,12 +81,12 @@ fn create_test_request(model: &str) -> CompletionRequest {
         seed: None,
         repetition_penalty: None,
         extensions: None,
-            logprobs: None,
-            top_logprobs: None,
-            response_format: None,
-            tool_choice: None,
-            tools: None,
-        }
+        logprobs: None,
+        top_logprobs: None,
+        response_format: None,
+        tool_choice: None,
+        tools: None,
+    }
 }
 
 /// Helper to create a test router
@@ -293,10 +293,7 @@ async fn test_auto_routing_without_config() {
                 msg
             );
         }
-        Err(e) => panic!(
-            "Expected Router error with 'not configured', got: {:?}",
-            e
-        ),
+        Err(e) => panic!("Expected Router error with 'not configured', got: {:?}", e),
         Ok(_) => panic!("Expected error for missing auto config"),
     }
 }
@@ -513,7 +510,10 @@ async fn test_client_with_missing_strategy() {
                 msg
             );
         }
-        Err(e) => panic!("Expected Router error with 'Strategy not found', got: {:?}", e),
+        Err(e) => panic!(
+            "Expected Router error with 'Strategy not found', got: {:?}",
+            e
+        ),
         Ok(_) => panic!("Expected error for missing strategy"),
     }
 }
@@ -553,7 +553,10 @@ async fn test_streaming_supports_auto_routing() {
             );
             // Expected: provider not found, unreachable, or "failed"
             assert!(
-                msg.contains("Provider") || msg.contains("not found") || msg.contains("failed") || msg.contains("UNREACHABLE"),
+                msg.contains("Provider")
+                    || msg.contains("not found")
+                    || msg.contains("failed")
+                    || msg.contains("UNREACHABLE"),
                 "Expected provider-related error, got: {}",
                 msg
             );
@@ -692,11 +695,15 @@ async fn test_bug_conservative_cost_estimate_for_free_models() {
     let metrics_collector = Arc::new(MetricsCollector::new(metrics_db));
 
     // Get pre-estimate for strategy with no history
-    let (avg_tokens, avg_cost) = metrics_collector.get_pre_estimate_for_strategy("test-strategy", 10);
+    let (avg_tokens, avg_cost) =
+        metrics_collector.get_pre_estimate_for_strategy("test-strategy", 10);
 
     // The bug: avg_cost should be 0.0 for strategies with no history
     // but it returns 0.01 as "conservative estimate"
-    println!("Conservative estimate: tokens={}, cost=${}", avg_tokens, avg_cost);
+    println!(
+        "Conservative estimate: tokens={}, cost=${}",
+        avg_tokens, avg_cost
+    );
 
     // This assertion will FAIL, demonstrating the bug
     // Expected: 0.0 (no data = can't estimate, assume free)
@@ -908,8 +915,8 @@ async fn test_auto_routing_strategy_rate_limits_checked_per_model() {
     // Verify that strategy rate limits are checked for each model attempt
     // This prevents the first model from being tried if its rate limit is exceeded
 
-    use localrouter_ai::config::RateLimitType;
     use localrouter_ai::config::RateLimitTimeWindow;
+    use localrouter_ai::config::RateLimitType;
 
     let auto_config = AutoModelConfig {
         enabled: true,
@@ -933,7 +940,12 @@ async fn test_auto_routing_strategy_rate_limits_checked_per_model() {
         time_window: RateLimitTimeWindow::Minute,
     }];
 
-    let config = create_test_config("test-strategy", allowed_models, Some(auto_config), rate_limits);
+    let config = create_test_config(
+        "test-strategy",
+        allowed_models,
+        Some(auto_config),
+        rate_limits,
+    );
     let router = create_test_router(config);
 
     let request = create_test_request("localrouter/auto");
@@ -948,10 +960,7 @@ async fn test_auto_routing_strategy_rate_limits_checked_per_model() {
             // Also acceptable: wrapped in Router error
             println!("Rate limit error (expected): {}", msg);
         }
-        Err(e) => panic!(
-            "Expected RateLimitExceeded or Router error, got: {:?}",
-            e
-        ),
+        Err(e) => panic!("Expected RateLimitExceeded or Router error, got: {:?}", e),
         Ok(_) => panic!("Expected rate limit error"),
     }
 }

@@ -456,8 +456,9 @@ impl ModelProvider for OpenRouterProvider {
         let embeddings: Vec<super::Embedding> = data
             .iter()
             .map(|item| {
-                let embedding_array = item["embedding"].as_array()
-                    .ok_or_else(|| AppError::Provider("No embedding array in data item".to_string()))?;
+                let embedding_array = item["embedding"].as_array().ok_or_else(|| {
+                    AppError::Provider("No embedding array in data item".to_string())
+                })?;
                 let embedding: Vec<f32> = embedding_array
                     .iter()
                     .map(|v| v.as_f64().unwrap_or(0.0) as f32)
@@ -470,13 +471,20 @@ impl ModelProvider for OpenRouterProvider {
             })
             .collect::<AppResult<Vec<_>>>()?;
 
-        let usage = api_response["usage"].as_object()
+        let usage = api_response["usage"]
+            .as_object()
             .ok_or_else(|| AppError::Provider("No usage in response".to_string()))?;
 
         Ok(super::EmbeddingResponse {
-            object: api_response["object"].as_str().unwrap_or("list").to_string(),
+            object: api_response["object"]
+                .as_str()
+                .unwrap_or("list")
+                .to_string(),
             data: embeddings,
-            model: api_response["model"].as_str().unwrap_or(&request.model).to_string(),
+            model: api_response["model"]
+                .as_str()
+                .unwrap_or(&request.model)
+                .to_string(),
             usage: super::EmbeddingUsage {
                 prompt_tokens: usage["prompt_tokens"].as_u64().unwrap_or(0) as u32,
                 total_tokens: usage["total_tokens"].as_u64().unwrap_or(0) as u32,
@@ -559,7 +567,7 @@ struct OpenRouterPricing {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::providers::ChatMessageContent;
+    use crate::providers::{ChatMessageContent, FunctionCall, ToolCall};
 
     #[test]
     fn test_provider_name() {
@@ -622,7 +630,9 @@ mod tests {
             model: "openai/gpt-3.5-turbo".to_string(),
             messages: vec![ChatMessage {
                 role: "user".to_string(),
-                content: ChatMessageContent::Text("Say 'Hello, World!' and nothing else.".to_string()),
+                content: ChatMessageContent::Text(
+                    "Say 'Hello, World!' and nothing else.".to_string(),
+                ),
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,

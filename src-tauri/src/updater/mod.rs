@@ -27,9 +27,7 @@ pub struct UpdateInfo {
 }
 
 /// Save the last check timestamp to config
-pub async fn save_last_check_timestamp(
-    config_manager: &ConfigManager,
-) -> Result<(), String> {
+pub async fn save_last_check_timestamp(config_manager: &ConfigManager) -> Result<(), String> {
     let now = Utc::now();
 
     config_manager
@@ -38,10 +36,7 @@ pub async fn save_last_check_timestamp(
         })
         .map_err(|e| e.to_string())?;
 
-    config_manager
-        .save()
-        .await
-        .map_err(|e| e.to_string())?;
+    config_manager.save().await.map_err(|e| e.to_string())?;
 
     debug!("Updated last_check timestamp to {}", now);
     Ok(())

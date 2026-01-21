@@ -62,8 +62,7 @@ fn init_logging() {
                 .unwrap_or_else(|_| "localrouter_ai=info".into()),
         )
         .with(
-            tracing_subscriber::fmt::layer()
-                .with_writer(std::io::stderr), // Always to stderr
+            tracing_subscriber::fmt::layer().with_writer(std::io::stderr), // Always to stderr
         )
         .init();
 }
@@ -89,19 +88,17 @@ async fn run_bridge_mode(client_id: Option<String>) -> anyhow::Result<()> {
     eprintln!();
 
     // Create and run bridge (loads config for client secret only)
-    let bridge = mcp::StdioBridge::new(client_id, None)
-        .await
-        .map_err(|e| {
-            eprintln!("ERROR: Failed to initialize bridge: {}", e);
-            eprintln!();
-            eprintln!("Common issues:");
-            eprintln!("  - LocalRouter GUI not running (start it first)");
-            eprintln!("  - Client not configured in config.yaml");
-            eprintln!("  - Client secret not found (run GUI once)");
-            eprintln!("  - LOCALROUTER_CLIENT_SECRET not set (if using env var)");
-            eprintln!();
-            e
-        })?;
+    let bridge = mcp::StdioBridge::new(client_id, None).await.map_err(|e| {
+        eprintln!("ERROR: Failed to initialize bridge: {}", e);
+        eprintln!();
+        eprintln!("Common issues:");
+        eprintln!("  - LocalRouter GUI not running (start it first)");
+        eprintln!("  - Client not configured in config.yaml");
+        eprintln!("  - Client secret not found (run GUI once)");
+        eprintln!("  - LOCALROUTER_CLIENT_SECRET not set (if using env var)");
+        eprintln!();
+        e
+    })?;
 
     eprintln!("Bridge ready! Forwarding JSON-RPC requests...");
     eprintln!("==========================================================");
@@ -168,11 +165,10 @@ async fn run_gui_mode() -> anyhow::Result<()> {
     };
 
     // Initialize keychain for secure storage
-    let keychain = api_keys::keychain_trait::CachedKeychain::auto()
-        .unwrap_or_else(|e| {
-            error!("Failed to initialize keychain: {}", e);
-            api_keys::keychain_trait::CachedKeychain::system()
-        });
+    let keychain = api_keys::keychain_trait::CachedKeychain::auto().unwrap_or_else(|e| {
+        error!("Failed to initialize keychain: {}", e);
+        api_keys::keychain_trait::CachedKeychain::system()
+    });
 
     // Initialize MCP server manager
     let mcp_server_manager = {
@@ -334,7 +330,10 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                 let service_arc = Arc::new(service);
                 // Start auto-unload background task
                 let _ = service_arc.clone().start_auto_unload_task();
-                info!("RouteLLM service initialized with idle timeout: {}s", idle_timeout);
+                info!(
+                    "RouteLLM service initialized with idle timeout: {}s",
+                    idle_timeout
+                );
                 Some(service_arc)
             }
             Err(e) => {
@@ -596,7 +595,8 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             let app_handle_for_updater = app.handle().clone();
             let config_manager_for_updater = Arc::new(config_manager.clone());
             tokio::spawn(async move {
-                updater::start_update_timer(app_handle_for_updater, config_manager_for_updater).await;
+                updater::start_update_timer(app_handle_for_updater, config_manager_for_updater)
+                    .await;
             });
             info!("Background update checker started");
 

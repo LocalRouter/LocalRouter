@@ -10,7 +10,9 @@ use tracing::{debug, error, info, warn};
 
 use crate::config::ConfigManager;
 use crate::providers::registry::ProviderRegistry;
-use crate::providers::{CompletionChunk, CompletionRequest, CompletionResponse, EmbeddingRequest, EmbeddingResponse};
+use crate::providers::{
+    CompletionChunk, CompletionRequest, CompletionResponse, EmbeddingRequest, EmbeddingResponse,
+};
 use crate::utils::errors::{AppError, AppResult};
 
 pub mod rate_limit;
@@ -665,59 +667,60 @@ impl Router {
         }
 
         // ============ RouteLLM PREDICTION ============
-        let (selected_models, routellm_win_rate) =
-            if let Some(routellm_config) = &auto_config.routellm_config {
-                if routellm_config.enabled {
-                    // Extract prompt from request messages
-                    let prompt = request
-                        .messages
-                        .iter()
-                        .map(|m| m.content.as_str())
-                        .collect::<Vec<_>>()
-                        .join("\n");
+        let (selected_models, routellm_win_rate) = if let Some(routellm_config) =
+            &auto_config.routellm_config
+        {
+            if routellm_config.enabled {
+                // Extract prompt from request messages
+                let prompt = request
+                    .messages
+                    .iter()
+                    .map(|m| m.content.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n");
 
-                    // Get RouteLLM service
-                    if let Some(service) = &self.routellm_service {
-                        // Predict with threshold
-                        match service
-                            .predict_with_threshold(&prompt, routellm_config.threshold)
-                            .await
-                        {
-                            Ok((is_strong, win_rate)) => {
-                                // Select models based on prediction
-                                let models = if is_strong {
-                                    &routellm_config.strong_models
-                                } else {
-                                    &routellm_config.weak_models
-                                };
+                // Get RouteLLM service
+                if let Some(service) = &self.routellm_service {
+                    // Predict with threshold
+                    match service
+                        .predict_with_threshold(&prompt, routellm_config.threshold)
+                        .await
+                    {
+                        Ok((is_strong, win_rate)) => {
+                            // Select models based on prediction
+                            let models = if is_strong {
+                                &routellm_config.strong_models
+                            } else {
+                                &routellm_config.weak_models
+                            };
 
-                                info!(
-                                    "RouteLLM: win_rate={:.3}, threshold={:.3}, selected={}",
-                                    win_rate,
-                                    routellm_config.threshold,
-                                    if is_strong { "strong" } else { "weak" }
-                                );
+                            info!(
+                                "RouteLLM: win_rate={:.3}, threshold={:.3}, selected={}",
+                                win_rate,
+                                routellm_config.threshold,
+                                if is_strong { "strong" } else { "weak" }
+                            );
 
-                                (models.clone(), Some(win_rate))
-                            }
-                            Err(e) => {
-                                warn!(
-                                    "RouteLLM prediction failed: {}, fallback to prioritized models",
-                                    e
-                                );
-                                (auto_config.prioritized_models.clone(), None)
-                            }
+                            (models.clone(), Some(win_rate))
                         }
-                    } else {
-                        warn!("RouteLLM enabled but service not available, using prioritized models");
-                        (auto_config.prioritized_models.clone(), None)
+                        Err(e) => {
+                            warn!(
+                                "RouteLLM prediction failed: {}, fallback to prioritized models",
+                                e
+                            );
+                            (auto_config.prioritized_models.clone(), None)
+                        }
                     }
                 } else {
+                    warn!("RouteLLM enabled but service not available, using prioritized models");
                     (auto_config.prioritized_models.clone(), None)
                 }
             } else {
                 (auto_config.prioritized_models.clone(), None)
-            };
+            }
+        } else {
+            (auto_config.prioritized_models.clone(), None)
+        };
         // ============ END RouteLLM ============
 
         if selected_models.is_empty() {
@@ -879,7 +882,10 @@ impl Router {
 
             match provider_instance.stream_complete(modified_request).await {
                 Ok(stream) => {
-                    info!("Auto-routing streaming succeeded with {}/{}", provider, model);
+                    info!(
+                        "Auto-routing streaming succeeded with {}/{}",
+                        provider, model
+                    );
                     return Ok(wrap_stream_with_usage_tracking(
                         stream,
                         client_id.to_string(),
@@ -1342,7 +1348,10 @@ impl Router {
                 .await
             {
                 Ok(response) => {
-                    info!("Auto-routing embeddings succeeded with {}/{}", provider, model);
+                    info!(
+                        "Auto-routing embeddings succeeded with {}/{}",
+                        provider, model
+                    );
                     return Ok(response);
                 }
                 Err(e) => {

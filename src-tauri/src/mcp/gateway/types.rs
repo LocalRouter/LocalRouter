@@ -40,7 +40,8 @@ impl DynamicCacheTTL {
 
     /// Record a cache invalidation event
     pub fn record_invalidation(&self) {
-        self.invalidation_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.invalidation_count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Get the current TTL based on invalidation frequency
@@ -61,7 +62,8 @@ impl DynamicCacheTTL {
                 // Double-check elapsed time after acquiring write lock
                 if now.duration_since(*last_reset) >= std::time::Duration::from_secs(3600) {
                     // Reset counter after an hour
-                    self.invalidation_count.store(0, std::sync::atomic::Ordering::Relaxed);
+                    self.invalidation_count
+                        .store(0, std::sync::atomic::Ordering::Relaxed);
                     *last_reset = now;
                 }
             }
@@ -69,7 +71,9 @@ impl DynamicCacheTTL {
         }
 
         // Calculate TTL based on invalidation frequency
-        let invalidations = self.invalidation_count.load(std::sync::atomic::Ordering::Relaxed);
+        let invalidations = self
+            .invalidation_count
+            .load(std::sync::atomic::Ordering::Relaxed);
 
         if invalidations > 20 {
             // High invalidation rate - use short TTL
@@ -89,7 +93,8 @@ impl Clone for DynamicCacheTTL {
         Self {
             base_ttl_seconds: self.base_ttl_seconds,
             invalidation_count: std::sync::atomic::AtomicU32::new(
-                self.invalidation_count.load(std::sync::atomic::Ordering::Relaxed)
+                self.invalidation_count
+                    .load(std::sync::atomic::Ordering::Relaxed),
             ),
             last_reset: self.last_reset.clone(),
         }
@@ -275,22 +280,66 @@ pub struct InitializeResult {
 }
 
 /// Client capabilities (sent by MCP client during initialization)
+/// Mirrors ServerCapabilities structure - declares what the client supports receiving
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ClientCapabilities {
+    /// Tools capability - client can receive notifications/tools/list_changed
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub experimental: Option<serde_json::Value>,
+    pub tools: Option<ToolsCapability>,
 
+    /// Resources capability - client can receive notifications/resources/list_changed
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resources: Option<ResourcesCapability>,
+
+    /// Prompts capability - client can receive notifications/prompts/list_changed
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompts: Option<PromptsCapability>,
+
+    /// Roots capability - client can receive roots/list_changed notifications
     #[serde(skip_serializing_if = "Option::is_none")]
     pub roots: Option<ClientRootsCapability>,
 
+    /// Sampling capability - client supports sampling/createMessage requests from server
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sampling: Option<serde_json::Value>,
+
+    /// Experimental capabilities
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub experimental: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientRootsCapability {
     #[serde(rename = "listChanged", skip_serializing_if = "Option::is_none")]
     pub list_changed: Option<bool>,
+}
+
+impl ClientCapabilities {
+    /// Check if client explicitly declared support for notifications/tools/list_changed
+    /// If not explicitly declared, defaults to false for safety.
+    /// Deferred loading REQUIRES this capability.
+    pub fn supports_tools_list_changed(&self) -> bool {
+        self.tools
+            .as_ref()
+            .and_then(|t| t.list_changed)
+            .unwrap_or(false)
+    }
+
+    /// Check if client explicitly declared support for notifications/resources/list_changed
+    pub fn supports_resources_list_changed(&self) -> bool {
+        self.resources
+            .as_ref()
+            .and_then(|r| r.list_changed)
+            .unwrap_or(false)
+    }
+
+    /// Check if client explicitly declared support for notifications/prompts/list_changed
+    pub fn supports_prompts_list_changed(&self) -> bool {
+        self.prompts
+            .as_ref()
+            .and_then(|p| p.list_changed)
+            .unwrap_or(false)
+    }
 }
 
 /// Server capabilities

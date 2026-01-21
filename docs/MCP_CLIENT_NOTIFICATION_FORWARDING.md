@@ -114,7 +114,7 @@ Created dedicated WebSocket handler for client notifications:
 
 Request (WebSocket upgrade):
 ```http
-GET /mcp/ws HTTP/1.1
+GET /ws HTTP/1.1
 Host: localhost:3625
 Connection: Upgrade
 Upgrade: websocket
@@ -145,7 +145,7 @@ Server → Client: "pong"
 Registered WebSocket endpoint in MCP routes:
 
 ```rust
-.route("/mcp/ws", get(routes::mcp_websocket_handler))
+.route("/ws", get(routes::mcp_websocket_handler))
 ```
 
 **Middleware**: Uses `client_auth_middleware` (same as other MCP endpoints)
@@ -158,7 +158,7 @@ Registered WebSocket endpoint in MCP routes:
 
 ```javascript
 // Connect to WebSocket (requires authentication token)
-const ws = new WebSocket('ws://localhost:3625/mcp/ws', {
+const ws = new WebSocket('ws://localhost:3625/ws', {
   headers: {
     'Authorization': 'Bearer lr-your-token'
   }
@@ -219,7 +219,7 @@ import websockets
 import json
 
 async def connect_to_mcp_notifications():
-    uri = "ws://localhost:3625/mcp/ws"
+    uri = "ws://localhost:3625/ws"
     headers = {
         "Authorization": "Bearer lr-your-token"
     }
@@ -327,7 +327,7 @@ Verified correct implementation:
 ### Endpoint
 
 ```
-GET /mcp/ws
+GET /ws
 ```
 
 **Description**: Upgrade to WebSocket connection for receiving real-time MCP server notifications
@@ -400,7 +400,7 @@ Allow clients to subscribe to specific notification types:
 ### Priority 3: Notification Replay
 Store recent notifications and allow clients to catch up:
 ```http
-GET /mcp/ws?since=<timestamp>
+GET /ws?since=<timestamp>
 ```
 
 ### Priority 4: SSE Alternative

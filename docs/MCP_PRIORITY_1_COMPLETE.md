@@ -45,7 +45,7 @@ Created dedicated WebSocket handler with:
 **File**: `src-tauri/src/server/mod.rs`
 
 Registered new endpoint:
-- `GET /mcp/ws` - WebSocket upgrade for notifications
+- `GET /ws` - WebSocket upgrade for notifications
 - Added to MCP routes with client auth middleware
 - Updated root handler documentation
 
@@ -155,7 +155,7 @@ This ensures proper authorization and prevents data leakage.
 
 **WebSocket Upgrade**:
 ```
-GET /mcp/ws HTTP/1.1
+GET /ws HTTP/1.1
 Authorization: Bearer lr-your-token
 Connection: Upgrade
 Upgrade: websocket
@@ -185,7 +185,7 @@ Upgrade: websocket
 ### JavaScript Example
 
 ```javascript
-const ws = new WebSocket('ws://localhost:3625/mcp/ws', {
+const ws = new WebSocket('ws://localhost:3625/ws', {
   headers: { 'Authorization': 'Bearer lr-your-token' }
 });
 
@@ -204,7 +204,7 @@ ws.onmessage = (event) => {
 
 ```python
 async with websockets.connect(
-    "ws://localhost:3625/mcp/ws",
+    "ws://localhost:3625/ws",
     extra_headers={"Authorization": "Bearer lr-your-token"}
 ) as websocket:
     async for message in websocket:

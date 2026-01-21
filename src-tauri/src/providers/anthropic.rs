@@ -12,13 +12,13 @@ use std::pin::Pin;
 use std::time::Instant;
 use tracing::{debug, info};
 
-use crate::api_keys::{CachedKeychain, keychain_trait::KeychainStorage};
+use crate::api_keys::{keychain_trait::KeychainStorage, CachedKeychain};
 use crate::utils::errors::{AppError, AppResult};
 
 use super::{
-    Capability, ChatMessage, ChunkChoice, ChunkDelta, CompletionChoice,
-    CompletionChunk, CompletionRequest, CompletionResponse, HealthStatus, ModelInfo,
-    ModelProvider, PricingInfo, ProviderHealth, TokenUsage,
+    Capability, ChatMessage, ChunkChoice, ChunkDelta, CompletionChoice, CompletionChunk,
+    CompletionRequest, CompletionResponse, FunctionCall, HealthStatus, ModelInfo, ModelProvider,
+    PricingInfo, ProviderHealth, TokenUsage, ToolCall,
 };
 
 const ANTHROPIC_API_BASE: &str = "https://api.anthropic.com/v1";
@@ -171,8 +171,9 @@ impl AnthropicProvider {
 
                         // Add tool use blocks
                         for tool_call in tool_calls {
-                            let input: serde_json::Value = serde_json::from_str(&tool_call.function.arguments)
-                                .unwrap_or(serde_json::json!({}));
+                            let input: serde_json::Value =
+                                serde_json::from_str(&tool_call.function.arguments)
+                                    .unwrap_or(serde_json::json!({}));
                             blocks.push(AnthropicContentBlock::ToolUse {
                                 id: tool_call.id.clone(),
                                 name: tool_call.function.name.clone(),
@@ -515,10 +516,10 @@ impl ModelProvider for AnthropicProvider {
                     text_content.push_str(text);
                 }
                 AnthropicResponseContent::ToolUse { id, name, input } => {
-                    tool_calls.push(super::ToolCall {
+                    tool_calls.push(ToolCall {
                         id: id.clone(),
                         tool_type: "function".to_string(),
-                        function: super::FunctionCall {
+                        function: FunctionCall {
                             name: name.clone(),
                             arguments: serde_json::to_string(input).unwrap_or_default(),
                         },
@@ -879,7 +880,7 @@ struct AnthropicDelta {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::providers::ChatMessageContent;
+    use crate::providers::{ChatMessageContent, FunctionCall, ToolCall};
 
     #[test]
     fn test_convert_messages_with_system() {
@@ -957,6 +958,223 @@ mod tests {
     fn test_model_info_unknown() {
         let info = AnthropicProvider::get_model_info("unknown-model");
         assert!(info.is_none());
+    }
+
+    #[test]
+    fn test_convert_messages_with_tool_calls() {
+        let messages = vec![
+            ChatMessage {
+                role: "user".to_string(),
+                content: ChatMessageContent::Text("What's the weather?".to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
+            },
+            ChatMessage {
+                role: "assistant".to_string(),
+                content: ChatMessageContent::Text("".to_string()),
+                tool_calls: Some(vec![ToolCall {
+                    id: "toolu_123".to_string(),
+                    tool_type: "function".to_string(),
+                    function: FunctionCall {
+                        name: "get_weather".to_string(),
+                        arguments: r#"{"location":"San Francisco","unit":"fahrenheit"}"#
+                            .to_string(),
+                    },
+                }]),
+                tool_call_id: None,
+                name: None,
+            },
+        ];
+
+        let (system, anthropic_messages) = AnthropicProvider::convert_messages(&messages).unwrap();
+
+        assert_eq!(system, None);
+        assert_eq!(anthropic_messages.len(), 2);
+
+        // Check that the assistant message has ToolUse content block
+        match &anthropic_messages[1].content {
+            AnthropicMessageContent::Blocks(blocks) => {
+                assert_eq!(blocks.len(), 1);
+                match &blocks[0] {
+                    AnthropicContentBlock::ToolUse { id, name, input } => {
+                        assert_eq!(id, "toolu_123");
+                        assert_eq!(name, "get_weather");
+                        assert_eq!(
+                            input,
+                            &serde_json::json!({"location": "San Francisco", "unit": "fahrenheit"})
+                        );
+                    }
+                    _ => panic!("Expected ToolUse block"),
+                }
+            }
+            _ => panic!("Expected Blocks content"),
+        }
+    }
+
+    #[test]
+    fn test_convert_messages_with_tool_response() {
+        let messages = vec![
+            ChatMessage {
+                role: "user".to_string(),
+                content: ChatMessageContent::Text("What's the weather?".to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
+            },
+            ChatMessage {
+                role: "assistant".to_string(),
+                content: ChatMessageContent::Text("".to_string()),
+                tool_calls: Some(vec![ToolCall {
+                    id: "toolu_123".to_string(),
+                    tool_type: "function".to_string(),
+                    function: FunctionCall {
+                        name: "get_weather".to_string(),
+                        arguments: r#"{"location":"San Francisco"}"#.to_string(),
+                    },
+                }]),
+                tool_call_id: None,
+                name: None,
+            },
+            ChatMessage {
+                role: "tool".to_string(),
+                content: ChatMessageContent::Text(
+                    r#"{"temperature":72,"conditions":"sunny"}"#.to_string(),
+                ),
+                tool_calls: None,
+                tool_call_id: Some("toolu_123".to_string()),
+                name: Some("get_weather".to_string()),
+            },
+        ];
+
+        let (system, anthropic_messages) = AnthropicProvider::convert_messages(&messages).unwrap();
+
+        assert_eq!(system, None);
+        assert_eq!(anthropic_messages.len(), 3);
+
+        // Check that the tool message was converted to user role with ToolResult block
+        assert_eq!(anthropic_messages[2].role, "user");
+        match &anthropic_messages[2].content {
+            AnthropicMessageContent::Blocks(blocks) => {
+                assert_eq!(blocks.len(), 1);
+                match &blocks[0] {
+                    AnthropicContentBlock::ToolResult {
+                        tool_use_id,
+                        content,
+                    } => {
+                        assert_eq!(tool_use_id, "toolu_123");
+                        assert_eq!(content, r#"{"temperature":72,"conditions":"sunny"}"#);
+                    }
+                    _ => panic!("Expected ToolResult block"),
+                }
+            }
+            _ => panic!("Expected Blocks content"),
+        }
+    }
+
+    #[test]
+    fn test_parse_response_with_tool_use() {
+        use serde_json::json;
+
+        // Create a mock Anthropic response with tool use
+        let anthropic_response = AnthropicResponse {
+            id: "msg_123".to_string(),
+            model: "claude-3-5-sonnet-20241022".to_string(),
+            content: vec![AnthropicResponseContent::ToolUse {
+                id: "toolu_456".to_string(),
+                name: "get_weather".to_string(),
+                input: json!({"location": "San Francisco", "unit": "celsius"}),
+            }],
+            stop_reason: Some("tool_use".to_string()),
+            usage: AnthropicUsage {
+                input_tokens: 100,
+                output_tokens: 50,
+            },
+        };
+
+        // Simulate parsing logic from complete() method
+        let mut text_content = String::new();
+        let mut tool_calls = Vec::new();
+
+        for content_block in &anthropic_response.content {
+            match content_block {
+                AnthropicResponseContent::Text { text } => {
+                    text_content.push_str(text);
+                }
+                AnthropicResponseContent::ToolUse { id, name, input } => {
+                    tool_calls.push(ToolCall {
+                        id: id.clone(),
+                        tool_type: "function".to_string(),
+                        function: FunctionCall {
+                            name: name.clone(),
+                            arguments: serde_json::to_string(input).unwrap_or_default(),
+                        },
+                    });
+                }
+            }
+        }
+
+        // Verify
+        assert_eq!(text_content, "");
+        assert_eq!(tool_calls.len(), 1);
+        assert_eq!(tool_calls[0].id, "toolu_456");
+        assert_eq!(tool_calls[0].function.name, "get_weather");
+        assert_eq!(
+            tool_calls[0].function.arguments,
+            r#"{"location":"San Francisco","unit":"celsius"}"#
+        );
+    }
+
+    #[test]
+    fn test_parse_response_with_text_and_tool_use() {
+        use serde_json::json;
+
+        // Create a mock Anthropic response with both text and tool use
+        let anthropic_response = AnthropicResponse {
+            id: "msg_123".to_string(),
+            model: "claude-3-5-sonnet-20241022".to_string(),
+            content: vec![
+                AnthropicResponseContent::Text {
+                    text: "Let me check the weather for you.".to_string(),
+                },
+                AnthropicResponseContent::ToolUse {
+                    id: "toolu_789".to_string(),
+                    name: "get_weather".to_string(),
+                    input: json!({"location": "San Francisco"}),
+                },
+            ],
+            stop_reason: Some("tool_use".to_string()),
+            usage: AnthropicUsage {
+                input_tokens: 100,
+                output_tokens: 50,
+            },
+        };
+
+        let mut text_content = String::new();
+        let mut tool_calls = Vec::new();
+
+        for content_block in &anthropic_response.content {
+            match content_block {
+                AnthropicResponseContent::Text { text } => {
+                    text_content.push_str(text);
+                }
+                AnthropicResponseContent::ToolUse { id, name, input } => {
+                    tool_calls.push(ToolCall {
+                        id: id.clone(),
+                        tool_type: "function".to_string(),
+                        function: FunctionCall {
+                            name: name.clone(),
+                            arguments: serde_json::to_string(input).unwrap_or_default(),
+                        },
+                    });
+                }
+            }
+        }
+
+        // Verify both text and tool calls are extracted
+        assert_eq!(text_content, "Let me check the weather for you.");
+        assert_eq!(tool_calls.len(), 1);
+        assert_eq!(tool_calls[0].function.name, "get_weather");
     }
 
     #[tokio::test]

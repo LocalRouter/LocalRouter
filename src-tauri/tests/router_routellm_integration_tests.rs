@@ -2,7 +2,6 @@
 ///!
 ///! These tests verify that RouteLLM configuration structs are properly defined
 ///! and that the routing logic works as expected.
-
 use localrouter_ai::config::{AutoModelConfig, RouteLLMConfig, RouteLLMGlobalSettings};
 
 #[cfg(test)]
@@ -96,19 +95,20 @@ mod routing_logic_tests {
     fn test_threshold_decision_logic() {
         // Simulate routing decision based on win_rate and threshold
         let test_cases = vec![
-            (0.8, 0.5, true),  // High win rate with medium threshold -> strong
-            (0.2, 0.5, false), // Low win rate with medium threshold -> weak
-            (0.5, 0.5, true),  // At threshold -> strong (inclusive)
+            (0.8, 0.5, true),   // High win rate with medium threshold -> strong
+            (0.2, 0.5, false),  // Low win rate with medium threshold -> weak
+            (0.5, 0.5, true),   // At threshold -> strong (inclusive)
             (0.49, 0.5, false), // Just below threshold -> weak
-            (0.51, 0.5, true), // Just above threshold -> strong
-            (0.9, 0.7, true),  // High win rate with high threshold -> strong
-            (0.6, 0.7, false), // Medium win rate with high threshold -> weak
+            (0.51, 0.5, true),  // Just above threshold -> strong
+            (0.9, 0.7, true),   // High win rate with high threshold -> strong
+            (0.6, 0.7, false),  // Medium win rate with high threshold -> weak
         ];
 
         for (win_rate, threshold, expected_strong) in test_cases {
             let is_strong = win_rate >= threshold;
             assert_eq!(
-                is_strong, expected_strong,
+                is_strong,
+                expected_strong,
                 "Win rate {} with threshold {} should route to {}",
                 win_rate,
                 threshold,

@@ -104,7 +104,7 @@ async fn test_non_streaming_completion_basic() {
     assert_eq!(response.choices.len(), 1);
     assert_eq!(
         response.choices[0].message.content.as_text(),
-        "Hello! How can I help you today!"
+        "Hello! How can I help you today?"
     );
     assert_eq!(response.choices[0].finish_reason, Some("stop".to_string()));
     assert_eq!(response.usage.prompt_tokens, 10);
@@ -209,10 +209,7 @@ async fn test_streaming_completion_basic() {
     assert_eq!(chunks[2].choices[0].delta.content, Some("!".to_string()));
 
     // Verify finish reason on last chunk
-    assert_eq!(
-        chunks[2].choices[0].finish_reason,
-        Some("stop".to_string())
-    );
+    assert_eq!(chunks[2].choices[0].finish_reason, Some("stop".to_string()));
 }
 
 #[tokio::test]
@@ -221,7 +218,9 @@ async fn test_streaming_completion_long_response() {
 
     // Simulate a longer streaming response with many chunks
     let mut stream_parts = vec![];
-    let words = vec!["The", "quick", "brown", "fox", "jumps", "over", "lazy", "dog"];
+    let words = vec![
+        "The", "quick", "brown", "fox", "jumps", "over", "lazy", "dog",
+    ];
 
     for (i, word) in words.iter().enumerate() {
         let is_last = i == words.len() - 1;
@@ -442,8 +441,5 @@ async fn test_completion_chunk_format_conversion() {
 
     // Verify finish reason only on last chunk
     assert!(chunks[0].choices[0].finish_reason.is_none());
-    assert_eq!(
-        chunks[1].choices[0].finish_reason,
-        Some("stop".to_string())
-    );
+    assert_eq!(chunks[1].choices[0].finish_reason, Some("stop".to_string()));
 }

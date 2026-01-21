@@ -210,7 +210,10 @@ impl SseMockBuilder {
             error: None,
         };
 
-        let sse_body = format!("data: {}\n\n", serde_json::to_string(&init_response).unwrap());
+        let sse_body = format!(
+            "data: {}\n\n",
+            serde_json::to_string(&init_response).unwrap()
+        );
 
         Mock::given(http_method("POST"))
             .and(json_rpc_method("initialize"))
@@ -243,7 +246,7 @@ impl SseMockBuilder {
 
         Mock::given(http_method("POST"))
             .and(header("content-type", "application/json"))
-            .and(json_rpc_method(method))  // Match on JSON-RPC method
+            .and(json_rpc_method(method)) // Match on JSON-RPC method
             .respond_with(
                 ResponseTemplate::new(200)
                     .set_body_string(sse_body)
@@ -296,7 +299,7 @@ impl SseMockBuilder {
         let sse_body = format!("data: {}\n\n", serde_json::to_string(&response).unwrap());
 
         Mock::given(http_method("POST"))
-            .and(json_rpc_method(method))  // Match on JSON-RPC method
+            .and(json_rpc_method(method)) // Match on JSON-RPC method
             .respond_with(
                 ResponseTemplate::new(200)
                     .set_body_string(sse_body)

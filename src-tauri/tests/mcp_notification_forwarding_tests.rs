@@ -30,8 +30,10 @@ fn create_test_router() -> Arc<Router> {
     let provider_registry = Arc::new(ProviderRegistry::new(health_manager));
     let rate_limiter = Arc::new(RateLimiterManager::new(None));
 
-    let metrics_db_path = std::env::temp_dir()
-        .join(format!("test_notification_metrics_{}.db", uuid::Uuid::new_v4()));
+    let metrics_db_path = std::env::temp_dir().join(format!(
+        "test_notification_metrics_{}.db",
+        uuid::Uuid::new_v4()
+    ));
     let metrics_db = Arc::new(MetricsDatabase::new(metrics_db_path).unwrap());
     let metrics_collector = Arc::new(MetricsCollector::new(metrics_db));
 
@@ -47,7 +49,8 @@ fn create_test_router() -> Arc<Router> {
 fn create_test_app_state() -> AppState {
     let router = create_test_router();
     let config = AppConfig::default();
-    let config_path = std::env::temp_dir().join(format!("test_config_{}.yaml", uuid::Uuid::new_v4()));
+    let config_path =
+        std::env::temp_dir().join(format!("test_config_{}.yaml", uuid::Uuid::new_v4()));
     let config_manager = Arc::new(ConfigManager::new(config, config_path));
     let client_manager = Arc::new(ClientManager::new(vec![])); // Empty client list for tests
     let token_store = Arc::new(TokenStore::new());
@@ -56,7 +59,8 @@ fn create_test_app_state() -> AppState {
     let provider_registry = Arc::new(ProviderRegistry::new(health_manager));
     let rate_limiter = Arc::new(RateLimiterManager::new(None));
 
-    let metrics_db_path = std::env::temp_dir().join(format!("test_metrics_{}.db", uuid::Uuid::new_v4()));
+    let metrics_db_path =
+        std::env::temp_dir().join(format!("test_metrics_{}.db", uuid::Uuid::new_v4()));
     let metrics_db = Arc::new(MetricsDatabase::new(metrics_db_path).unwrap());
     let metrics_collector = Arc::new(MetricsCollector::new(metrics_db));
 
@@ -170,18 +174,9 @@ async fn test_broadcast_multiple_subscribers() {
     assert_eq!(received2.0, "test_server");
     assert_eq!(received3.0, "test_server");
 
-    assert_eq!(
-        received1.1.method,
-        "notifications/resources/list_changed"
-    );
-    assert_eq!(
-        received2.1.method,
-        "notifications/resources/list_changed"
-    );
-    assert_eq!(
-        received3.1.method,
-        "notifications/resources/list_changed"
-    );
+    assert_eq!(received1.1.method, "notifications/resources/list_changed");
+    assert_eq!(received2.1.method, "notifications/resources/list_changed");
+    assert_eq!(received3.1.method, "notifications/resources/list_changed");
 }
 
 /// Test that old messages are dropped when channel is full

@@ -499,7 +499,10 @@ pub struct ModelPreferences {
     pub speed_priority: Option<f64>,
 
     /// Priority weight for intelligence/capability (0.0 - 1.0)
-    #[serde(rename = "intelligencePriority", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "intelligencePriority",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub intelligence_priority: Option<f64>,
 }
 

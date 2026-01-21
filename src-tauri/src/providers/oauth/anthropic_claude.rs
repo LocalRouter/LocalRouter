@@ -25,7 +25,7 @@ const ANTHROPIC_CLIENT_ID: &str = "claude-web";
 const ANTHROPIC_AUTHORIZE_URL: &str = "https://console.anthropic.com/oauth/authorize";
 const ANTHROPIC_TOKEN_URL: &str = "https://console.anthropic.com/oauth/token";
 const REDIRECT_URI: &str = "http://127.0.0.1:1456/callback";
-const CALLBACK_PORT: u16 = 1456;
+pub const CALLBACK_PORT: u16 = 1456;
 
 /// Anthropic Claude Pro OAuth provider
 pub struct AnthropicClaudeOAuthProvider {
@@ -106,13 +106,11 @@ impl OAuthProvider for AnthropicClaudeOAuthProvider {
 
         // Convert to provider format
         match result {
-            crate::oauth_browser::OAuthFlowResult::Pending { .. } => {
-                Ok(OAuthFlowResult::Pending {
-                    user_code: None,
-                    verification_url: "Waiting for browser authorization...".to_string(),
-                    instructions: "Complete the authorization in your browser".to_string(),
-                })
-            }
+            crate::oauth_browser::OAuthFlowResult::Pending { .. } => Ok(OAuthFlowResult::Pending {
+                user_code: None,
+                verification_url: "Waiting for browser authorization...".to_string(),
+                instructions: "Complete the authorization in your browser".to_string(),
+            }),
             crate::oauth_browser::OAuthFlowResult::ExchangingToken => {
                 Ok(OAuthFlowResult::Pending {
                     user_code: None,

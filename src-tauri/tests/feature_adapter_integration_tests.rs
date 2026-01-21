@@ -14,8 +14,8 @@ use localrouter_ai::providers::{
         prompt_caching::PromptCachingAdapter, structured_outputs::StructuredOutputsAdapter,
         FeatureAdapter,
     },
-    ChatMessage, ChatMessageContent, CompletionChoice, CompletionRequest, CompletionResponse, PromptTokensDetails,
-    TokenUsage,
+    ChatMessage, ChatMessageContent, CompletionChoice, CompletionRequest, CompletionResponse,
+    PromptTokensDetails, TokenUsage,
 };
 use serde_json::json;
 use std::collections::HashMap;
@@ -47,9 +47,9 @@ fn test_structured_outputs_person_schema_openai() {
         messages: vec![ChatMessage {
             role: "user".to_string(),
             content: ChatMessageContent::Text("Generate a person with name and age".to_string()),
-                tool_calls: None,
-                tool_call_id: None,
-                name: None,
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
         }],
         temperature: None,
         max_tokens: None,
@@ -62,12 +62,12 @@ fn test_structured_outputs_person_schema_openai() {
         seed: None,
         repetition_penalty: None,
         extensions: None,
-            logprobs: None,
-            top_logprobs: None,
-            response_format: None,
-            tool_choice: None,
-            tools: None,
-        };
+        logprobs: None,
+        top_logprobs: None,
+        response_format: None,
+        tool_choice: None,
+        tools: None,
+    };
 
     // Adapt request
     let result = adapter.adapt_request(&mut request, &params);
@@ -113,7 +113,9 @@ fn test_structured_outputs_response_validation_valid() {
             index: 0,
             message: ChatMessage {
                 role: "assistant".to_string(),
-                content: ChatMessageContent::Text(r#"{"result": "success", "count": 42}"#.to_string()),
+                content: ChatMessageContent::Text(
+                    r#"{"result": "success", "count": 42}"#.to_string(),
+                ),
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,
@@ -251,11 +253,11 @@ fn test_prompt_caching_anthropic_request() {
         seed: None,
         repetition_penalty: None,
         extensions: None,
-            top_logprobs: None,
-            response_format: None,
-            tool_choice: None,
-            tools: None,
-        };
+        top_logprobs: None,
+        response_format: None,
+        tool_choice: None,
+        tools: None,
+    };
 
     // Adapt request
     let result = adapter.adapt_request(&mut request, &params);
@@ -360,9 +362,9 @@ fn test_logprobs_openai_request() {
         messages: vec![ChatMessage {
             role: "user".to_string(),
             content: ChatMessageContent::Text("Say hello".to_string()),
-                tool_calls: None,
-                tool_call_id: None,
-                name: None,
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
         }],
         temperature: None,
         max_tokens: None,
@@ -375,11 +377,11 @@ fn test_logprobs_openai_request() {
         seed: None,
         repetition_penalty: None,
         extensions: None,
-            top_logprobs: None,
-            response_format: None,
-            tool_choice: None,
-            tools: None,
-        };
+        top_logprobs: None,
+        response_format: None,
+        tool_choice: None,
+        tools: None,
+    };
 
     // Adapt request
     let result = adapter.adapt_request(&mut request, &params);
@@ -549,9 +551,9 @@ fn test_json_mode_openai() {
         messages: vec![ChatMessage {
             role: "user".to_string(),
             content: ChatMessageContent::Text("Generate a JSON object with a greeting".to_string()),
-                tool_calls: None,
-                tool_call_id: None,
-                name: None,
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
         }],
         temperature: None,
         max_tokens: None,
@@ -564,12 +566,12 @@ fn test_json_mode_openai() {
         seed: None,
         repetition_penalty: None,
         extensions: None,
-            logprobs: None,
-            top_logprobs: None,
-            response_format: None,
-            tool_choice: None,
-            tools: None,
-        };
+        logprobs: None,
+        top_logprobs: None,
+        response_format: None,
+        tool_choice: None,
+        tools: None,
+    };
 
     // Adapt request
     let result = adapter.adapt_request(&mut request, &params);
@@ -594,9 +596,9 @@ fn test_json_mode_anthropic() {
         messages: vec![ChatMessage {
             role: "user".to_string(),
             content: ChatMessageContent::Text("Generate a JSON object".to_string()),
-                tool_calls: None,
-                tool_call_id: None,
-                name: None,
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
         }],
         temperature: None,
         max_tokens: None,
@@ -609,12 +611,12 @@ fn test_json_mode_anthropic() {
         seed: None,
         repetition_penalty: None,
         extensions: None,
-            logprobs: None,
-            top_logprobs: None,
-            response_format: None,
-            tool_choice: None,
-            tools: None,
-        };
+        logprobs: None,
+        top_logprobs: None,
+        response_format: None,
+        tool_choice: None,
+        tools: None,
+    };
 
     // Adapt request
     let result = adapter.adapt_request(&mut request, &params);
@@ -644,7 +646,9 @@ fn test_json_mode_validation_valid() {
             index: 0,
             message: ChatMessage {
                 role: "assistant".to_string(),
-                content: ChatMessageContent::Text(r#"{"greeting": "Hello, World!", "count": 42}"#.to_string()),
+                content: ChatMessageContent::Text(
+                    r#"{"greeting": "Hello, World!", "count": 42}"#.to_string(),
+                ),
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,
@@ -823,12 +827,12 @@ fn test_structured_outputs_with_prompt_caching() {
         seed: None,
         repetition_penalty: None,
         extensions: None,
-            logprobs: None,
-            top_logprobs: None,
-            response_format: None,
-            tool_choice: None,
-            tools: None,
-        };
+        logprobs: None,
+        top_logprobs: None,
+        response_format: None,
+        tool_choice: None,
+        tools: None,
+    };
 
     // Apply both adapters
     let result1 = structured_adapter.adapt_request(&mut request, &structured_params);
@@ -867,9 +871,9 @@ fn test_json_mode_with_logprobs() {
         messages: vec![ChatMessage {
             role: "user".to_string(),
             content: ChatMessageContent::Text("Generate JSON".to_string()),
-                tool_calls: None,
-                tool_call_id: None,
-                name: None,
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
         }],
         temperature: None,
         max_tokens: None,
@@ -882,12 +886,12 @@ fn test_json_mode_with_logprobs() {
         seed: None,
         repetition_penalty: None,
         extensions: None,
-            logprobs: None,
-            top_logprobs: None,
-            response_format: None,
-            tool_choice: None,
-            tools: None,
-        };
+        logprobs: None,
+        top_logprobs: None,
+        response_format: None,
+        tool_choice: None,
+        tools: None,
+    };
 
     // Apply both adapters
     let result1 = json_adapter.adapt_request(&mut request, &json_params);

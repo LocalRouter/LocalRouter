@@ -3,10 +3,10 @@
 //! These tests verify that the STDIO bridge correctly forwards JSON-RPC requests
 //! to the LocalRouter HTTP server and returns responses.
 
+use chrono::Utc;
 use localrouter_ai::config::{AppConfig, Client};
 use localrouter_ai::mcp::bridge::StdioBridge;
 use localrouter_ai::mcp::protocol::{JsonRpcRequest, JsonRpcResponse};
-use chrono::Utc;
 use serde_json::{json, Value};
 
 /// Helper to create a test configuration

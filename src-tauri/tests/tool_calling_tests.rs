@@ -126,9 +126,7 @@ fn test_chat_message_with_tool_calls() {
 fn test_tool_response_message() {
     let message = ChatMessage {
         role: "tool".to_string(),
-        content: ChatMessageContent::Text(
-            r#"{"temperature":72,"conditions":"sunny"}"#.to_string(),
-        ),
+        content: ChatMessageContent::Text(r#"{"temperature":72,"conditions":"sunny"}"#.to_string()),
         tool_calls: None,
         tool_call_id: Some("call_abc123".to_string()),
         name: Some("get_weather".to_string()),

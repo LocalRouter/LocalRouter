@@ -5,11 +5,11 @@
 //! 2. Cache miss (fetch from API)
 //! 3. API failure (fallback to catalog)
 
-use localrouter_ai::providers::registry::ProviderRegistry;
-use localrouter_ai::providers::health::HealthCheckManager;
 use localrouter_ai::config::ModelCacheConfig;
-use std::sync::Arc;
+use localrouter_ai::providers::health::HealthCheckManager;
+use localrouter_ai::providers::registry::ProviderRegistry;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 #[tokio::test]
 async fn test_model_caching_with_ollama() {
@@ -59,7 +59,11 @@ async fn test_model_caching_with_ollama() {
 
     // Verify both calls returned same data
     if let (Ok(m1), Ok(m2)) = (models1, models2) {
-        assert_eq!(m1.len(), m2.len(), "Cache should return same number of models");
+        assert_eq!(
+            m1.len(),
+            m2.len(),
+            "Cache should return same number of models"
+        );
         println!("✅ Cache consistency verified");
     }
 
@@ -70,7 +74,10 @@ async fn test_model_caching_with_ollama() {
     // Third call - should fetch fresh data
     let models3 = registry.list_provider_models_cached("test-ollama").await;
     match models3 {
-        Ok(m) => println!("✅ Third call: Got {} models after cache expiration", m.len()),
+        Ok(m) => println!(
+            "✅ Third call: Got {} models after cache expiration",
+            m.len()
+        ),
         Err(e) => println!("⚠️  Third call failed: {}", e),
     }
 
@@ -112,15 +119,22 @@ async fn test_catalog_fallback() {
 
     match models {
         Ok(m) => {
-            println!("✅ Catalog fallback: Got {} models from OpenRouter catalog", m.len());
+            println!(
+                "✅ Catalog fallback: Got {} models from OpenRouter catalog",
+                m.len()
+            );
             assert!(!m.is_empty(), "Should have models from catalog");
 
             // Verify we got Claude models
-            let claude_models: Vec<_> = m.iter()
+            let claude_models: Vec<_> = m
+                .iter()
                 .filter(|model| model.id.contains("claude"))
                 .collect();
             println!("   Found {} Claude models in catalog", claude_models.len());
-            assert!(!claude_models.is_empty(), "Should have Claude models from catalog");
+            assert!(
+                !claude_models.is_empty(),
+                "Should have Claude models from catalog"
+            );
         }
         Err(e) => {
             println!("⚠️  Catalog fallback failed: {}", e);

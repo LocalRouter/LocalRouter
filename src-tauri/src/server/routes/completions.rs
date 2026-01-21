@@ -16,7 +16,8 @@ use std::time::Instant;
 use uuid::Uuid;
 
 use crate::providers::{
-    ChatMessage as ProviderChatMessage, ChatMessageContent, CompletionRequest as ProviderCompletionRequest,
+    ChatMessage as ProviderChatMessage, ChatMessageContent,
+    CompletionRequest as ProviderCompletionRequest,
 };
 use crate::server::middleware::client_auth::ClientAuthContext;
 use crate::server::middleware::error::{ApiErrorResponse, ApiResult};
@@ -243,7 +244,9 @@ async fn handle_non_streaming(
 
     // Record tokens for tray graph (real-time tracking for Fast/Medium modes)
     if let Some(ref tray_graph) = *state.tray_graph_manager.read() {
-        tray_graph.record_tokens((response.usage.prompt_tokens + response.usage.completion_tokens) as u64);
+        tray_graph.record_tokens(
+            (response.usage.prompt_tokens + response.usage.completion_tokens) as u64,
+        );
     }
 
     // Log to access log (persistent storage)

@@ -3,8 +3,8 @@
 //! Core functionality for the LocalRouter AI application.
 
 pub mod api_keys;
-pub mod cli;
 pub mod catalog;
+pub mod cli;
 pub mod clients;
 pub mod config;
 pub mod mcp;

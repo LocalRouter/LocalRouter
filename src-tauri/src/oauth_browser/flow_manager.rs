@@ -160,7 +160,9 @@ impl OAuthFlowManager {
     /// Background task to handle callback and token exchange
     async fn handle_callback(
         flow_id: FlowId,
-        callback_rx: tokio::sync::oneshot::Receiver<AppResult<crate::oauth_browser::callback_server::CallbackResult>>,
+        callback_rx: tokio::sync::oneshot::Receiver<
+            AppResult<crate::oauth_browser::callback_server::CallbackResult>,
+        >,
         flows: Arc<RwLock<HashMap<FlowId, OAuthFlowState>>>,
         callback_manager: Arc<CallbackServerManager>,
         token_exchanger: Arc<TokenExchanger>,
@@ -240,7 +242,10 @@ impl OAuthFlowManager {
             }
             Err(_) => {
                 // Timeout
-                warn!("Flow {} timed out after {} seconds", flow_id, FLOW_TIMEOUT_SECS);
+                warn!(
+                    "Flow {} timed out after {} seconds",
+                    flow_id, FLOW_TIMEOUT_SECS
+                );
                 let mut flows = flows.write();
                 if let Some(flow) = flows.get_mut(&flow_id) {
                     flow.status = FlowStatus::Timeout;
@@ -275,10 +280,9 @@ impl OAuthFlowManager {
             FlowStatus::Pending => OAuthFlowResult::Pending { time_remaining },
             FlowStatus::ExchangingToken => OAuthFlowResult::ExchangingToken,
             FlowStatus::Success => {
-                let tokens = flow
-                    .tokens
-                    .clone()
-                    .ok_or_else(|| AppError::OAuthBrowser("No tokens in successful flow".to_string()))?;
+                let tokens = flow.tokens.clone().ok_or_else(|| {
+                    AppError::OAuthBrowser("No tokens in successful flow".to_string())
+                })?;
                 OAuthFlowResult::Success { tokens }
             }
             FlowStatus::Error { message } => OAuthFlowResult::Error {
@@ -365,7 +369,7 @@ mod tests {
 
     #[test]
     fn test_build_authorization_url() {
-        let keychain = CachedKeychain::new();
+        let keychain = CachedKeychain::system();
         let manager = OAuthFlowManager::new(keychain);
         let config = create_test_config();
 
@@ -383,7 +387,7 @@ mod tests {
 
     #[test]
     fn test_build_authorization_url_extra_params() {
-        let keychain = CachedKeychain::new();
+        let keychain = CachedKeychain::system();
         let manager = OAuthFlowManager::new(keychain);
         let mut config = create_test_config();
         config
@@ -399,14 +403,14 @@ mod tests {
 
     #[test]
     fn test_flow_manager_creation() {
-        let keychain = CachedKeychain::new();
+        let keychain = CachedKeychain::system();
         let manager = OAuthFlowManager::new(keychain);
         assert_eq!(manager.active_flow_count(), 0);
     }
 
     #[test]
     fn test_cleanup_flows() {
-        let keychain = CachedKeychain::new();
+        let keychain = CachedKeychain::system();
         let manager = OAuthFlowManager::new(keychain);
 
         // Manually insert an old completed flow

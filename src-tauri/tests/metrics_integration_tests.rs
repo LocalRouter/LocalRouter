@@ -22,7 +22,7 @@ fn create_test_collector_with_data() -> Arc<MetricsCollector> {
         output_tokens: 500,
         cost_usd: 0.05,
         latency_ms: 100,
-            strategy_id: "default",
+        strategy_id: "default",
     });
     collector.record_success(&RequestMetrics {
         api_key_name: "api_key_1",
@@ -32,7 +32,7 @@ fn create_test_collector_with_data() -> Arc<MetricsCollector> {
         output_tokens: 250,
         cost_usd: 0.005,
         latency_ms: 50,
-            strategy_id: "default",
+        strategy_id: "default",
     });
     collector.record_success(&RequestMetrics {
         api_key_name: "api_key_1",
@@ -42,7 +42,7 @@ fn create_test_collector_with_data() -> Arc<MetricsCollector> {
         output_tokens: 400,
         cost_usd: 0.03,
         latency_ms: 80,
-            strategy_id: "default",
+        strategy_id: "default",
     });
 
     collector.record_success(&RequestMetrics {
@@ -53,7 +53,7 @@ fn create_test_collector_with_data() -> Arc<MetricsCollector> {
         output_tokens: 300,
         cost_usd: 0.03,
         latency_ms: 90,
-            strategy_id: "default",
+        strategy_id: "default",
     });
     collector.record_success(&RequestMetrics {
         api_key_name: "api_key_2",
@@ -63,7 +63,7 @@ fn create_test_collector_with_data() -> Arc<MetricsCollector> {
         output_tokens: 1000,
         cost_usd: 0.0,
         latency_ms: 200,
-            strategy_id: "default",
+        strategy_id: "default",
     });
 
     collector.record_failure("api_key_1", "openai", "gpt-4", "default", 1000);
@@ -193,7 +193,7 @@ fn test_time_range_filtering() {
         output_tokens: 500,
         cost_usd: 0.05,
         latency_ms: 100,
-            strategy_id: "default",
+        strategy_id: "default",
     });
 
     // Query with narrow range (should find it)
@@ -219,7 +219,7 @@ fn test_cost_calculation_accuracy() {
         output_tokens: 500,
         cost_usd: 0.05,
         latency_ms: 100,
-            strategy_id: "default",
+        strategy_id: "default",
     });
     collector.record_success(&RequestMetrics {
         api_key_name: "key1",
@@ -229,7 +229,7 @@ fn test_cost_calculation_accuracy() {
         output_tokens: 1000,
         cost_usd: 0.10,
         latency_ms: 120,
-            strategy_id: "default",
+        strategy_id: "default",
     });
 
     let data = collector.get_global_range(now - Duration::minutes(5), now + Duration::minutes(5));
@@ -252,7 +252,7 @@ fn test_success_rate_calculation() {
         output_tokens: 500,
         cost_usd: 0.05,
         latency_ms: 100,
-            strategy_id: "default",
+        strategy_id: "default",
     });
     collector.record_success(&RequestMetrics {
         api_key_name: "key1",
@@ -262,7 +262,7 @@ fn test_success_rate_calculation() {
         output_tokens: 500,
         cost_usd: 0.05,
         latency_ms: 100,
-            strategy_id: "default",
+        strategy_id: "default",
     });
     collector.record_success(&RequestMetrics {
         api_key_name: "key1",
@@ -272,7 +272,7 @@ fn test_success_rate_calculation() {
         output_tokens: 500,
         cost_usd: 0.05,
         latency_ms: 100,
-            strategy_id: "default",
+        strategy_id: "default",
     });
     collector.record_failure("key1", "openai", "gpt-4", "default", 1000);
 
@@ -302,7 +302,7 @@ fn test_latency_aggregation() {
         output_tokens: 500,
         cost_usd: 0.05,
         latency_ms: 100,
-            strategy_id: "default",
+        strategy_id: "default",
     });
     collector.record_success(&RequestMetrics {
         api_key_name: "key1",
@@ -312,7 +312,7 @@ fn test_latency_aggregation() {
         output_tokens: 500,
         cost_usd: 0.05,
         latency_ms: 200,
-            strategy_id: "default",
+        strategy_id: "default",
     });
     collector.record_success(&RequestMetrics {
         api_key_name: "key1",
@@ -322,7 +322,7 @@ fn test_latency_aggregation() {
         output_tokens: 500,
         cost_usd: 0.05,
         latency_ms: 300,
-            strategy_id: "default",
+        strategy_id: "default",
     });
 
     let data = collector.get_global_range(now - Duration::minutes(5), now + Duration::minutes(5));
@@ -359,7 +359,7 @@ fn test_concurrent_metric_recording() {
                     output_tokens: 500,
                     cost_usd: 0.05,
                     latency_ms: 100,
-            strategy_id: "default",
+                    strategy_id: "default",
                 });
             }
         });
@@ -625,7 +625,7 @@ fn test_token_breakdown_graph() {
         output_tokens: 500,
         cost_usd: 0.05,
         latency_ms: 100,
-            strategy_id: "default",
+        strategy_id: "default",
     });
 
     let now = Utc::now();

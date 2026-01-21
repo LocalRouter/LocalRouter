@@ -12,9 +12,9 @@ use std::time::Instant;
 use tracing::{debug, error, warn};
 
 use super::{
-    Capability, ChatMessage, ChunkChoice, ChunkDelta, CompletionChoice,
-    CompletionChunk, CompletionRequest, CompletionResponse, HealthStatus, ModelInfo,
-    ModelProvider, PricingInfo, ProviderHealth, TokenUsage,
+    Capability, ChatMessage, ChunkChoice, ChunkDelta, CompletionChoice, CompletionChunk,
+    CompletionRequest, CompletionResponse, FunctionCall, HealthStatus, ModelInfo, ModelProvider,
+    PricingInfo, ProviderHealth, TokenUsage, ToolCall,
 };
 use crate::utils::errors::{AppError, AppResult};
 
@@ -75,9 +75,10 @@ impl GeminiProvider {
                     // Tool response message - convert to user role with FunctionResponse
                     if let Some(_tool_call_id) = &msg.tool_call_id {
                         let tool_name = msg.name.clone().unwrap_or_else(|| "unknown".to_string());
-                        let response_data: serde_json::Value =
-                            serde_json::from_str(&msg.content.as_text())
-                                .unwrap_or_else(|_| serde_json::json!({"result": msg.content.as_text()}));
+                        let response_data: serde_json::Value = serde_json::from_str(
+                            &msg.content.as_text(),
+                        )
+                        .unwrap_or_else(|_| serde_json::json!({"result": msg.content.as_text()}));
 
                         gemini_contents.push(GeminiContent {
                             role: "user".to_string(),
@@ -104,8 +105,9 @@ impl GeminiProvider {
 
                         // Add function calls
                         for tool_call in tool_calls {
-                            let args: serde_json::Value = serde_json::from_str(&tool_call.function.arguments)
-                                .unwrap_or(serde_json::json!({}));
+                            let args: serde_json::Value =
+                                serde_json::from_str(&tool_call.function.arguments)
+                                    .unwrap_or(serde_json::json!({}));
 
                             parts.push(GeminiPart::FunctionCall {
                                 function_call: GeminiFunctionCall {
@@ -399,10 +401,10 @@ impl ModelProvider for GeminiProvider {
         let mut tool_calls = Vec::new();
         for (idx, part) in candidate.content.parts.iter().enumerate() {
             if let GeminiPart::FunctionCall { function_call } = part {
-                tool_calls.push(super::ToolCall {
+                tool_calls.push(ToolCall {
                     id: format!("call_gemini_{}", idx),
                     tool_type: "function".to_string(),
-                    function: super::FunctionCall {
+                    function: FunctionCall {
                         name: function_call.name.clone(),
                         arguments: serde_json::to_string(&function_call.args).unwrap_or_default(),
                     },
@@ -435,7 +437,11 @@ impl ModelProvider for GeminiProvider {
                 message: ChatMessage {
                     role: "assistant".to_string(),
                     content: super::ChatMessageContent::Text(content),
-                    tool_calls: if tool_calls.is_empty() { None } else { Some(tool_calls) },
+                    tool_calls: if tool_calls.is_empty() {
+                        None
+                    } else {
+                        Some(tool_calls)
+                    },
                     tool_call_id: None,
                     name: None,
                 },
@@ -557,8 +563,11 @@ impl ModelProvider for GeminiProvider {
 
                                         // Extract function calls (tool calls) as deltas
                                         let mut tool_call_deltas = Vec::new();
-                                        for (idx, part) in candidate.content.parts.iter().enumerate() {
-                                            if let GeminiPart::FunctionCall { function_call } = part {
+                                        for (idx, part) in
+                                            candidate.content.parts.iter().enumerate()
+                                        {
+                                            if let GeminiPart::FunctionCall { function_call } = part
+                                            {
                                                 tool_call_deltas.push(super::ToolCallDelta {
                                                     index: idx as u32,
                                                     id: Some(format!("call_gemini_{}", idx)),
@@ -566,8 +575,10 @@ impl ModelProvider for GeminiProvider {
                                                     function: Some(super::FunctionCallDelta {
                                                         name: Some(function_call.name.clone()),
                                                         arguments: Some(
-                                                            serde_json::to_string(&function_call.args)
-                                                                .unwrap_or_default(),
+                                                            serde_json::to_string(
+                                                                &function_call.args,
+                                                            )
+                                                            .unwrap_or_default(),
                                                         ),
                                                     }),
                                                 });
@@ -576,13 +587,17 @@ impl ModelProvider for GeminiProvider {
 
                                         // Determine finish reason
                                         let has_tool_calls = !tool_call_deltas.is_empty();
-                                        let finish_reason = if has_tool_calls && candidate.finish_reason.is_some() {
+                                        let finish_reason = if has_tool_calls
+                                            && candidate.finish_reason.is_some()
+                                        {
                                             Some("tool_calls".to_string())
                                         } else {
                                             match candidate.finish_reason.as_deref() {
                                                 Some("STOP") => Some("stop".to_string()),
                                                 Some("MAX_TOKENS") => Some("length".to_string()),
-                                                Some("SAFETY") => Some("content_filter".to_string()),
+                                                Some("SAFETY") => {
+                                                    Some("content_filter".to_string())
+                                                }
                                                 _ => None,
                                             }
                                         };
@@ -866,7 +881,7 @@ struct GeminiUsageMetadata {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::providers::ChatMessageContent;
+    use crate::providers::{ChatMessageContent, FunctionCall, ToolCall};
 
     #[test]
     fn test_provider_name() {
@@ -939,6 +954,234 @@ mod tests {
             _ => panic!("Expected Text part"),
         }
         assert_eq!(gemini_contents[1].role, "model");
+    }
+
+    #[test]
+    fn test_convert_messages_with_tool_calls() {
+        let provider = GeminiProvider::new("test-key".to_string());
+        let messages = vec![
+            ChatMessage {
+                role: "user".to_string(),
+                content: ChatMessageContent::Text("What's the weather?".to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
+            },
+            ChatMessage {
+                role: "assistant".to_string(),
+                content: ChatMessageContent::Text("".to_string()),
+                tool_calls: Some(vec![ToolCall {
+                    id: "call_123".to_string(),
+                    tool_type: "function".to_string(),
+                    function: FunctionCall {
+                        name: "get_weather".to_string(),
+                        arguments: r#"{"location":"San Francisco"}"#.to_string(),
+                    },
+                }]),
+                tool_call_id: None,
+                name: None,
+            },
+        ];
+
+        let gemini_contents = provider.convert_messages_to_gemini(&messages);
+
+        assert_eq!(gemini_contents.len(), 2);
+        assert_eq!(gemini_contents[0].role, "user");
+        assert_eq!(gemini_contents[1].role, "model");
+
+        // Check that the assistant message has a FunctionCall part
+        assert_eq!(gemini_contents[1].parts.len(), 1);
+        match &gemini_contents[1].parts[0] {
+            GeminiPart::FunctionCall { function_call } => {
+                assert_eq!(function_call.name, "get_weather");
+                assert_eq!(
+                    function_call.args,
+                    serde_json::json!({"location": "San Francisco"})
+                );
+            }
+            _ => panic!("Expected FunctionCall part"),
+        }
+    }
+
+    #[test]
+    fn test_convert_messages_with_tool_response() {
+        let provider = GeminiProvider::new("test-key".to_string());
+        let messages = vec![
+            ChatMessage {
+                role: "user".to_string(),
+                content: ChatMessageContent::Text("What's the weather?".to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
+            },
+            ChatMessage {
+                role: "assistant".to_string(),
+                content: ChatMessageContent::Text("".to_string()),
+                tool_calls: Some(vec![ToolCall {
+                    id: "call_123".to_string(),
+                    tool_type: "function".to_string(),
+                    function: FunctionCall {
+                        name: "get_weather".to_string(),
+                        arguments: r#"{"location":"San Francisco"}"#.to_string(),
+                    },
+                }]),
+                tool_call_id: None,
+                name: None,
+            },
+            ChatMessage {
+                role: "tool".to_string(),
+                content: ChatMessageContent::Text(
+                    r#"{"temperature":72,"conditions":"sunny"}"#.to_string(),
+                ),
+                tool_calls: None,
+                tool_call_id: Some("call_123".to_string()),
+                name: Some("get_weather".to_string()),
+            },
+        ];
+
+        let gemini_contents = provider.convert_messages_to_gemini(&messages);
+
+        assert_eq!(gemini_contents.len(), 3);
+
+        // Check that the tool message was converted to user role with FunctionResponse
+        assert_eq!(gemini_contents[2].role, "user");
+        assert_eq!(gemini_contents[2].parts.len(), 1);
+        match &gemini_contents[2].parts[0] {
+            GeminiPart::FunctionResponse { function_response } => {
+                assert_eq!(function_response.name, "get_weather");
+                assert_eq!(
+                    function_response.response,
+                    serde_json::json!({"temperature": 72, "conditions": "sunny"})
+                );
+            }
+            _ => panic!("Expected FunctionResponse part"),
+        }
+    }
+
+    #[test]
+    fn test_parse_response_with_function_call() {
+        use serde_json::json;
+
+        // Create a mock Gemini response with a function call
+        let gemini_response = GeminiResponse {
+            candidates: vec![GeminiCandidate {
+                content: GeminiContent {
+                    role: "model".to_string(),
+                    parts: vec![GeminiPart::FunctionCall {
+                        function_call: GeminiFunctionCall {
+                            name: "get_weather".to_string(),
+                            args: json!({"location": "San Francisco", "unit": "celsius"}),
+                        },
+                    }],
+                },
+                finish_reason: Some("STOP".to_string()),
+            }],
+            usage_metadata: Some(GeminiUsageMetadata {
+                prompt_token_count: 10,
+                candidates_token_count: 5,
+                total_token_count: 15,
+            }),
+        };
+
+        // Simulate parsing logic from complete() method
+        let candidate = &gemini_response.candidates[0];
+
+        // Extract text content
+        let content = candidate
+            .content
+            .parts
+            .iter()
+            .filter_map(|p| match p {
+                GeminiPart::Text { text } => Some(text.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("");
+
+        // Extract function calls (tool calls)
+        let mut tool_calls = Vec::new();
+        for (idx, part) in candidate.content.parts.iter().enumerate() {
+            if let GeminiPart::FunctionCall { function_call } = part {
+                tool_calls.push(ToolCall {
+                    id: format!("call_gemini_{}", idx),
+                    tool_type: "function".to_string(),
+                    function: FunctionCall {
+                        name: function_call.name.clone(),
+                        arguments: serde_json::to_string(&function_call.args).unwrap_or_default(),
+                    },
+                });
+            }
+        }
+
+        // Verify
+        assert_eq!(content, ""); // No text content
+        assert_eq!(tool_calls.len(), 1);
+        assert_eq!(tool_calls[0].function.name, "get_weather");
+        assert_eq!(
+            tool_calls[0].function.arguments,
+            r#"{"location":"San Francisco","unit":"celsius"}"#
+        );
+    }
+
+    #[test]
+    fn test_parse_response_with_text_and_function_call() {
+        use serde_json::json;
+
+        // Create a mock Gemini response with both text and function call
+        let gemini_response = GeminiResponse {
+            candidates: vec![GeminiCandidate {
+                content: GeminiContent {
+                    role: "model".to_string(),
+                    parts: vec![
+                        GeminiPart::Text {
+                            text: "Let me check the weather for you.".to_string(),
+                        },
+                        GeminiPart::FunctionCall {
+                            function_call: GeminiFunctionCall {
+                                name: "get_weather".to_string(),
+                                args: json!({"location": "San Francisco"}),
+                            },
+                        },
+                    ],
+                },
+                finish_reason: Some("STOP".to_string()),
+            }],
+            usage_metadata: None,
+        };
+
+        let candidate = &gemini_response.candidates[0];
+
+        // Extract text content
+        let content = candidate
+            .content
+            .parts
+            .iter()
+            .filter_map(|p| match p {
+                GeminiPart::Text { text } => Some(text.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("");
+
+        // Extract function calls
+        let mut tool_calls = Vec::new();
+        for (idx, part) in candidate.content.parts.iter().enumerate() {
+            if let GeminiPart::FunctionCall { function_call } = part {
+                tool_calls.push(ToolCall {
+                    id: format!("call_gemini_{}", idx),
+                    tool_type: "function".to_string(),
+                    function: FunctionCall {
+                        name: function_call.name.clone(),
+                        arguments: serde_json::to_string(&function_call.args).unwrap_or_default(),
+                    },
+                });
+            }
+        }
+
+        // Verify both text and tool calls are extracted
+        assert_eq!(content, "Let me check the weather for you.");
+        assert_eq!(tool_calls.len(), 1);
+        assert_eq!(tool_calls[0].function.name, "get_weather");
     }
 
     // Integration tests (require valid API key)

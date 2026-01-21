@@ -28,7 +28,7 @@ const OPENAI_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const OPENAI_AUTHORIZE_URL: &str = "https://auth.openai.com/authorize";
 const OPENAI_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
 const REDIRECT_URI: &str = "http://127.0.0.1:1455/callback";
-const CALLBACK_PORT: u16 = 1455;
+pub const CALLBACK_PORT: u16 = 1455;
 
 /// JWT payload (simplified, for extracting account ID)
 #[derive(Debug, Deserialize)]
@@ -143,13 +143,11 @@ impl OAuthProvider for OpenAICodexOAuthProvider {
 
         // Convert to provider format
         match result {
-            crate::oauth_browser::OAuthFlowResult::Pending { .. } => {
-                Ok(OAuthFlowResult::Pending {
-                    user_code: None,
-                    verification_url: "Waiting for browser authorization...".to_string(),
-                    instructions: "Complete the authorization in your browser".to_string(),
-                })
-            }
+            crate::oauth_browser::OAuthFlowResult::Pending { .. } => Ok(OAuthFlowResult::Pending {
+                user_code: None,
+                verification_url: "Waiting for browser authorization...".to_string(),
+                instructions: "Complete the authorization in your browser".to_string(),
+            }),
             crate::oauth_browser::OAuthFlowResult::ExchangingToken => {
                 Ok(OAuthFlowResult::Pending {
                     user_code: None,

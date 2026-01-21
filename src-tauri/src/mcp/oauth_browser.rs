@@ -152,10 +152,9 @@ impl McpOAuthBrowserManager {
         let start_result = self.flow_manager.start_flow(config).await?;
 
         // Track flow_id for this server
-        self.server_flows.write().insert(
-            server_id.to_string(),
-            (start_result.flow_id, Utc::now()),
-        );
+        self.server_flows
+            .write()
+            .insert(server_id.to_string(), (start_result.flow_id, Utc::now()));
 
         // Return in MCP format (unchanged public API)
         Ok(OAuthBrowserFlowResult {
@@ -210,10 +209,11 @@ impl McpOAuthBrowserManager {
             OAuthFlowResult::ExchangingToken => Ok(OAuthBrowserFlowStatus::Pending),
             OAuthFlowResult::Success { tokens } => {
                 // Update OAuth manager's token cache
-                if let Err(e) = self
-                    .oauth_manager
-                    .update_token_cache(server_id, &tokens.access_token, tokens.expires_at)
-                {
+                if let Err(e) = self.oauth_manager.update_token_cache(
+                    server_id,
+                    &tokens.access_token,
+                    tokens.expires_at,
+                ) {
                     error!("Failed to update token cache: {}", e);
                 }
 
@@ -311,7 +311,10 @@ impl McpOAuthBrowserManager {
     /// # Returns
     /// * `true` if server has valid token
     pub async fn has_valid_auth(&self, server_id: &str) -> bool {
-        self.oauth_manager.get_cached_token(server_id).await.is_some()
+        self.oauth_manager
+            .get_cached_token(server_id)
+            .await
+            .is_some()
     }
 }
 

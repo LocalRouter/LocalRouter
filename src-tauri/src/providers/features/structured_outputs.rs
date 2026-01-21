@@ -494,7 +494,9 @@ mod tests {
                 index: 0,
                 message: crate::providers::ChatMessage {
                     role: "assistant".to_string(),
-                    content: crate::providers::ChatMessageContent::Text(r#"{"result": "success"}"#.to_string()),
+                    content: crate::providers::ChatMessageContent::Text(
+                        r#"{"result": "success"}"#.to_string(),
+                    ),
                     tool_calls: None,
                     tool_call_id: None,
                     name: None,
@@ -549,7 +551,9 @@ mod tests {
                 index: 0,
                 message: crate::providers::ChatMessage {
                     role: "assistant".to_string(),
-                    content: crate::providers::ChatMessageContent::Text(r#"{"wrong_field": "value"}"#.to_string()),
+                    content: crate::providers::ChatMessageContent::Text(
+                        r#"{"wrong_field": "value"}"#.to_string(),
+                    ),
                     tool_calls: None,
                     tool_call_id: None,
                     name: None,

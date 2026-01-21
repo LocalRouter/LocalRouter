@@ -9,7 +9,9 @@ use tracing::info;
 
 /// Get global RouteLLM status
 #[tauri::command]
-pub async fn routellm_get_status(state: State<'_, Arc<AppState>>) -> Result<RouteLLMStatus, String> {
+pub async fn routellm_get_status(
+    state: State<'_, Arc<AppState>>,
+) -> Result<RouteLLMStatus, String> {
     // Check if RouteLLM service is available in Router
     if let Some(service) = state.router.get_routellm_service() {
         Ok(service.get_status().await)
@@ -122,7 +124,16 @@ pub async fn routellm_update_settings(
         .map_err(|e| e.to_string())?;
 
     // Persist to disk
-    state.config_manager.save().await.map_err(|e| e.to_string())?;
+    state
+        .config_manager
+        .save()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Update the running service's timeout setting
+    if let Some(service) = state.router.get_routellm_service() {
+        service.set_idle_timeout(idle_timeout_secs).await;
+    }
 
     info!(
         "RouteLLM settings updated: idle_timeout_secs={}",

@@ -232,7 +232,10 @@ impl CallbackServerManager {
                                 };
 
                                 if sender.send(Ok(result)).is_err() {
-                                    error!("Failed to send OAuth callback result for flow {}", flow_id);
+                                    error!(
+                                        "Failed to send OAuth callback result for flow {}",
+                                        flow_id
+                                    );
                                 }
                             }
 
@@ -283,9 +286,12 @@ impl CallbackServerManager {
         let addr = format!("127.0.0.1:{}", port);
         info!("Binding OAuth callback server to http://{}/callback", addr);
 
-        let listener = tokio::net::TcpListener::bind(&addr)
-            .await
-            .map_err(|e| AppError::OAuthBrowser(format!("Failed to bind callback server on port {}: {}", port, e)))?;
+        let listener = tokio::net::TcpListener::bind(&addr).await.map_err(|e| {
+            AppError::OAuthBrowser(format!(
+                "Failed to bind callback server on port {}: {}",
+                port, e
+            ))
+        })?;
 
         // Spawn server in background
         tokio::spawn(async move {
@@ -294,7 +300,10 @@ impl CallbackServerManager {
             }
         });
 
-        info!("OAuth callback server started successfully on port {}", port);
+        info!(
+            "OAuth callback server started successfully on port {}",
+            port
+        );
         Ok(())
     }
 

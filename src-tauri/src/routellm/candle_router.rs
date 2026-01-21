@@ -3,15 +3,15 @@
 //! This module implements a pure Rust BERT classifier using the Candle framework.
 //! It loads SafeTensors models directly from HuggingFace without requiring conversion.
 
-use candle_core::{Device, Tensor, Module};
+use crate::routellm::errors::{RouteLLMError, RouteLLMResult};
+use candle_core::{Device, Module, Tensor};
 use candle_nn::{linear, Linear, VarBuilder};
 use candle_transformers::models::bert::{BertModel, Config, HiddenAct, DTYPE};
-use tokenizers::{Tokenizer, TruncationDirection};
-use crate::routellm::errors::{RouteLLMError, RouteLLMResult};
-use std::path::Path;
-use tracing::{debug, info};
-use safetensors::{SafeTensors, tensor::TensorView};
+use safetensors::{tensor::TensorView, SafeTensors};
 use std::collections::HashMap;
+use std::path::Path;
+use tokenizers::{Tokenizer, TruncationDirection};
+use tracing::{debug, info};
 
 /// Pad RoBERTa's token_type_embeddings from [1, 768] to [2, 768] for Candle compatibility
 ///
@@ -46,7 +46,11 @@ fn pad_token_type_embeddings(input_file: &Path, output_file: &Path) -> RouteLLMR
 
         if name == token_type_key {
             // Pad this tensor from [1, 768] to [2, 768]
-            debug!("Padding {} from {:?} to [2, 768]", name, tensor_view.shape());
+            debug!(
+                "Padding {} from {:?} to [2, 768]",
+                name,
+                tensor_view.shape()
+            );
 
             // Original data is [1, 768] in f32
             let original_data = tensor_view.data();
@@ -61,7 +65,7 @@ fn pad_token_type_embeddings(input_file: &Path, output_file: &Path) -> RouteLLMR
             // Copy as-is
             tensor_data.insert(
                 name.to_string(),
-                (tensor_view.shape().to_vec(), tensor_view.data().to_vec())
+                (tensor_view.shape().to_vec(), tensor_view.data().to_vec()),
             );
         }
     }
@@ -71,11 +75,10 @@ fn pad_token_type_embeddings(input_file: &Path, output_file: &Path) -> RouteLLMR
     let views: Vec<(&str, TensorView)> = tensor_data
         .iter()
         .map(|(name, (shape, data))| {
-            (name.as_str(), TensorView::new(
-                safetensors::Dtype::F32,
-                shape.clone(),
-                data.as_slice()
-            ).unwrap())
+            (
+                name.as_str(),
+                TensorView::new(safetensors::Dtype::F32, shape.clone(), data.as_slice()).unwrap(),
+            )
         })
         .collect();
 
@@ -96,9 +99,9 @@ fn pad_token_type_embeddings(input_file: &Path, output_file: &Path) -> RouteLLMR
 /// Note: The model is XLM-RoBERTa (not BERT base) from routellm/bert_gpt4_augmented
 /// Architecture: 12 layers, 768 hidden size, 250k vocab, 3-class classifier
 pub struct CandleRouter {
-    model: BertModel,  // Candle's BERT model works for RoBERTa variants
-    classifier_dense: Linear,  // 768 → 768 (first layer)
-    classifier_out: Linear,    // 768 → 3 (output layer for 3-class classification)
+    model: BertModel,         // Candle's BERT model works for RoBERTa variants
+    classifier_dense: Linear, // 768 → 768 (first layer)
+    classifier_out: Linear,   // 768 → 3 (output layer for 3-class classification)
     tokenizer: Tokenizer,
     device: Device,
 }
@@ -157,19 +160,20 @@ impl CandleRouter {
 
         // XLM-RoBERTa configuration (from routellm/bert_gpt4_augmented)
         let config = Config {
-            vocab_size: 250002,  // XLM-RoBERTa multilingual vocab
+            vocab_size: 250002, // XLM-RoBERTa multilingual vocab
             hidden_size: 768,
             num_hidden_layers: 12,
             num_attention_heads: 12,
             intermediate_size: 3072,
             hidden_act: HiddenAct::Gelu,
             hidden_dropout_prob: 0.1,
-            max_position_embeddings: 514,  // XLM-RoBERTa uses 514
-            type_vocab_size: 2,  // Set to 2 for Candle compatibility, even though RoBERTa only uses type 0
+            max_position_embeddings: 514, // XLM-RoBERTa uses 514
+            type_vocab_size: 2, // Set to 2 for Candle compatibility, even though RoBERTa only uses type 0
             initializer_range: 0.02,
-            layer_norm_eps: 1e-5,  // Different from BERT's 1e-12
-            pad_token_id: 1,  // RoBERTa PAD token
-            position_embedding_type: candle_transformers::models::bert::PositionEmbeddingType::Absolute,
+            layer_norm_eps: 1e-5, // Different from BERT's 1e-12
+            pad_token_id: 1,      // RoBERTa PAD token
+            position_embedding_type:
+                candle_transformers::models::bert::PositionEmbeddingType::Absolute,
             use_cache: false,
             classifier_dropout: Some(0.1),
             model_type: None,
@@ -201,7 +205,10 @@ impl CandleRouter {
             info!("Deleting original model to save disk space...");
             if let Err(e) = std::fs::remove_file(&model_file) {
                 // Log warning but don't fail - the patched file works fine
-                info!("  Could not delete original model file (non-critical): {}", e);
+                info!(
+                    "  Could not delete original model file (non-critical): {}",
+                    e
+                );
                 info!("  Disk usage: ~880 MB (both original and patched)");
             } else {
                 info!("  ✓ Original model deleted successfully");
@@ -214,13 +221,9 @@ impl CandleRouter {
         debug!("Loading model weights from {:?}", patched_model_file);
 
         let vb = unsafe {
-            VarBuilder::from_mmaped_safetensors(
-                &[patched_model_file],
-                DTYPE,
-                &device,
-            ).map_err(|e| {
-                RouteLLMError::ModelLoadingFailed(format!("Failed to load SafeTensors: {}", e))
-            })?
+            VarBuilder::from_mmaped_safetensors(&[patched_model_file], DTYPE, &device).map_err(
+                |e| RouteLLMError::ModelLoadingFailed(format!("Failed to load SafeTensors: {}", e)),
+            )?
         };
 
         // Load RoBERTa model (note: prefix is "roberta" not "bert")
@@ -280,9 +283,7 @@ impl CandleRouter {
         let mut encoding = self
             .tokenizer
             .encode(prompt, true)
-            .map_err(|e| {
-                RouteLLMError::PredictionFailed(format!("Tokenization failed: {}", e))
-            })?;
+            .map_err(|e| RouteLLMError::PredictionFailed(format!("Tokenization failed: {}", e)))?;
 
         // Truncate to max 512 tokens if needed
         // This prevents quadratic performance degradation with long inputs
@@ -296,15 +297,22 @@ impl CandleRouter {
         let input_ids = encoding.get_ids();
         let attention_mask = encoding.get_attention_mask();
 
-        debug!("Tokenized to {} tokens (original: {}, truncated: {})",
-               input_ids.len(), original_len, original_len > MAX_TOKENS);
+        debug!(
+            "Tokenized to {} tokens (original: {}, truncated: {})",
+            input_ids.len(),
+            original_len,
+            original_len > MAX_TOKENS
+        );
 
         // Convert to tensors
         let input_ids_tensor = Tensor::new(input_ids, &self.device).map_err(|e| {
             RouteLLMError::PredictionFailed(format!("Failed to create input_ids tensor: {}", e))
         })?;
         let attention_mask_tensor = Tensor::new(attention_mask, &self.device).map_err(|e| {
-            RouteLLMError::PredictionFailed(format!("Failed to create attention_mask tensor: {}", e))
+            RouteLLMError::PredictionFailed(format!(
+                "Failed to create attention_mask tensor: {}",
+                e
+            ))
         })?;
 
         // Add batch dimension
@@ -325,9 +333,10 @@ impl CandleRouter {
         // Create token_type_ids as zeros with shape matching input_ids
         let seq_len = input_ids.len();
         let token_type_ids_vec = vec![0u32; seq_len];
-        let token_type_ids_tensor = Tensor::new(&token_type_ids_vec[..], &self.device).map_err(|e| {
-            RouteLLMError::PredictionFailed(format!("Failed to create token_type_ids: {}", e))
-        })?;
+        let token_type_ids_tensor =
+            Tensor::new(&token_type_ids_vec[..], &self.device).map_err(|e| {
+                RouteLLMError::PredictionFailed(format!("Failed to create token_type_ids: {}", e))
+            })?;
         let token_type_ids_tensor = token_type_ids_tensor.unsqueeze(0).map_err(|e| {
             RouteLLMError::PredictionFailed(format!("Failed to unsqueeze token_type_ids: {}", e))
         })?;
@@ -335,7 +344,11 @@ impl CandleRouter {
 
         let bert_output = self
             .model
-            .forward(&input_ids_tensor, &attention_mask_tensor, Some(&token_type_ids_tensor))
+            .forward(
+                &input_ids_tensor,
+                &attention_mask_tensor,
+                Some(&token_type_ids_tensor),
+            )
             .map_err(|e| {
                 RouteLLMError::PredictionFailed(format!("BERT forward pass failed: {}", e))
             })?;
@@ -344,9 +357,7 @@ impl CandleRouter {
         // Extract first element of batch dimension, then first token, then restore batch dimension
         let cls_embedding = bert_output
             .get(0)
-            .map_err(|e| {
-                RouteLLMError::PredictionFailed(format!("Failed to get batch: {}", e))
-            })?
+            .map_err(|e| RouteLLMError::PredictionFailed(format!("Failed to get batch: {}", e)))?
             .get(0)
             .map_err(|e| {
                 RouteLLMError::PredictionFailed(format!("Failed to get CLS token: {}", e))
@@ -368,7 +379,10 @@ impl CandleRouter {
         })?;
 
         let logits = self.classifier_out.forward(&hidden).map_err(|e| {
-            RouteLLMError::PredictionFailed(format!("Classifier out_proj forward pass failed: {}", e))
+            RouteLLMError::PredictionFailed(format!(
+                "Classifier out_proj forward pass failed: {}",
+                e
+            ))
         })?;
 
         // Remove batch dimension from logits: [1, 3] → [3]
@@ -383,8 +397,10 @@ impl CandleRouter {
         // Return probability of LABEL_2 (strong model needed) as win_rate
         let win_rate = probs[2];
 
-        debug!("Win rate: {:.3} (class probs: [{:.3}, {:.3}, {:.3}])",
-               win_rate, probs[0], probs[1], probs[2]);
+        debug!(
+            "Win rate: {:.3} (class probs: [{:.3}, {:.3}, {:.3}])",
+            win_rate, probs[0], probs[1], probs[2]
+        );
         Ok(win_rate)
     }
 }
@@ -396,32 +412,33 @@ impl CandleRouter {
 /// Uses numerically stable formula by subtracting max value before exp
 fn softmax(x: &Tensor) -> RouteLLMResult<Vec<f32>> {
     // Extract values
-    let values = x.to_vec1::<f32>()
+    let values = x
+        .to_vec1::<f32>()
         .map_err(|e| RouteLLMError::PredictionFailed(format!("Failed to extract logits: {}", e)))?;
 
     if values.is_empty() {
-        return Err(RouteLLMError::PredictionFailed("Empty logits tensor".to_string()));
+        return Err(RouteLLMError::PredictionFailed(
+            "Empty logits tensor".to_string(),
+        ));
     }
 
     // Find max for numerical stability (prevents overflow)
     let max_val = values.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
 
     // Compute exp(x - max) for each element
-    let exp_values: Vec<f32> = values.iter()
-        .map(|&v| (v - max_val).exp())
-        .collect();
+    let exp_values: Vec<f32> = values.iter().map(|&v| (v - max_val).exp()).collect();
 
     // Compute sum of exponentials
     let sum: f32 = exp_values.iter().sum();
 
     if sum == 0.0 {
-        return Err(RouteLLMError::PredictionFailed("Softmax sum is zero".to_string()));
+        return Err(RouteLLMError::PredictionFailed(
+            "Softmax sum is zero".to_string(),
+        ));
     }
 
     // Normalize to get probabilities
-    let probs: Vec<f32> = exp_values.iter()
-        .map(|&v| v / sum)
-        .collect();
+    let probs: Vec<f32> = exp_values.iter().map(|&v| v / sum).collect();
 
     Ok(probs)
 }
@@ -454,7 +471,11 @@ mod tests {
         let router = CandleRouter::new(&model_path, &tokenizer_path).unwrap();
         let win_rate = router.calculate_strong_win_rate("What is 2+2?").unwrap();
 
-        assert!(win_rate >= 0.0 && win_rate <= 1.0, "Win rate out of bounds: {}", win_rate);
+        assert!(
+            win_rate >= 0.0 && win_rate <= 1.0,
+            "Win rate out of bounds: {}",
+            win_rate
+        );
     }
 
     #[test]
@@ -466,18 +487,34 @@ mod tests {
         let result = softmax(&equal_logits).unwrap();
         assert_eq!(result.len(), 3, "Should return 3 probabilities");
         for prob in &result {
-            assert!((prob - 0.333).abs() < 0.01, "Equal logits should give ~0.333, got {}", prob);
+            assert!(
+                (prob - 0.333).abs() < 0.01,
+                "Equal logits should give ~0.333, got {}",
+                prob
+            );
         }
 
         // Test sum equals 1
         let sum: f32 = result.iter().sum();
-        assert!((sum - 1.0).abs() < 0.001, "Probabilities should sum to 1.0, got {}", sum);
+        assert!(
+            (sum - 1.0).abs() < 0.001,
+            "Probabilities should sum to 1.0, got {}",
+            sum
+        );
 
         // Test softmax with one dominant logit
         let dominant = Tensor::new(&[-10.0f32, 0.0, 10.0], &device).unwrap();
         let result = softmax(&dominant).unwrap();
-        assert!(result[0] < 0.01, "P(LABEL_0) should be near 0, got {}", result[0]);
-        assert!(result[2] > 0.99, "P(LABEL_2) should be near 1, got {}", result[2]);
+        assert!(
+            result[0] < 0.01,
+            "P(LABEL_0) should be near 0, got {}",
+            result[0]
+        );
+        assert!(
+            result[2] > 0.99,
+            "P(LABEL_2) should be near 1, got {}",
+            result[2]
+        );
 
         // Test numerical stability with extreme values
         let extreme = Tensor::new(&[100.0f32, 200.0, 300.0], &device).unwrap();
@@ -492,9 +529,17 @@ mod tests {
         let result = softmax(&typical).unwrap();
         assert_eq!(result.len(), 3);
         for prob in &result {
-            assert!(*prob >= 0.0 && *prob <= 1.0, "Probability {} not in [0, 1]", prob);
+            assert!(
+                *prob >= 0.0 && *prob <= 1.0,
+                "Probability {} not in [0, 1]",
+                prob
+            );
         }
         let sum: f32 = result.iter().sum();
-        assert!((sum - 1.0).abs() < 0.001, "Probabilities should sum to 1.0, got {}", sum);
+        assert!(
+            (sum - 1.0).abs() < 0.001,
+            "Probabilities should sum to 1.0, got {}",
+            sum
+        );
     }
 }

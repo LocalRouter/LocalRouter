@@ -26,7 +26,7 @@ pub use crate::routellm::status::{RouteLLMState, RouteLLMStatus, RouteLLMTestRes
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::{RwLock, Mutex};
+use tokio::sync::{Mutex, RwLock};
 use tracing::info;
 
 /// Global RouteLLM service state
@@ -73,7 +73,7 @@ impl RouteLLMService {
         let routellm_dir = config_dir.join("routellm");
 
         // Paths for SafeTensors models (directories, not files)
-        let model_path = routellm_dir.join("model");        // Contains model.safetensors
+        let model_path = routellm_dir.join("model"); // Contains model.safetensors
         let tokenizer_path = routellm_dir.join("tokenizer"); // Contains tokenizer.json
 
         Ok(Self::new(model_path, tokenizer_path, idle_timeout_secs))
@@ -125,11 +125,10 @@ impl RouteLLMService {
         let model_path = self.model_path.clone();
         let tokenizer_path = self.tokenizer_path.clone();
 
-        let result = tokio::task::spawn_blocking(move || {
-            RouterWrapper::new(&model_path, &tokenizer_path)
-        })
-        .await
-        .map_err(|e| RouteLLMError::Internal(format!("Task join error: {}", e)))?;
+        let result =
+            tokio::task::spawn_blocking(move || RouterWrapper::new(&model_path, &tokenizer_path))
+                .await
+                .map_err(|e| RouteLLMError::Internal(format!("Task join error: {}", e)))?;
 
         // Clear initializing flag before checking result
         *self.is_initializing.write().await = false;
@@ -265,6 +264,6 @@ mod tests;
 
 // Re-export for tests
 #[cfg(test)]
-pub use memory::start_auto_unload_task;
-#[cfg(test)]
 pub use downloader::download_models;
+#[cfg(test)]
+pub use memory::start_auto_unload_task;

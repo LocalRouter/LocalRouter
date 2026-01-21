@@ -3,15 +3,13 @@
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
-use tracing::{info, debug};
+use tracing::{debug, info};
 
 /// Auto-unload task that unloads models after idle timeout
 ///
 /// This task reads the idle timeout from the service on each check,
 /// so it respects runtime configuration changes.
-pub fn start_auto_unload_task(
-    service: Arc<super::RouteLLMService>,
-) -> tokio::task::JoinHandle<()> {
+pub fn start_auto_unload_task(service: Arc<super::RouteLLMService>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         loop {
             sleep(Duration::from_secs(60)).await; // Check every minute

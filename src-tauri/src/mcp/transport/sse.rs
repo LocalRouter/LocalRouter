@@ -6,7 +6,9 @@
 //!
 //! This provides bidirectional communication using HTTP + SSE.
 
-use crate::mcp::protocol::{JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, StreamingChunk};
+use crate::mcp::protocol::{
+    JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, StreamingChunk,
+};
 use crate::mcp::transport::Transport;
 use crate::utils::errors::{AppError, AppResult};
 use async_trait::async_trait;
@@ -292,7 +294,9 @@ impl SseTransport {
                             // Parse SSE event
                             if let Ok(json_str) = Self::parse_sse_response(&event_text) {
                                 // Try to parse as JSON-RPC message
-                                if let Ok(message) = serde_json::from_str::<JsonRpcMessage>(&json_str) {
+                                if let Ok(message) =
+                                    serde_json::from_str::<JsonRpcMessage>(&json_str)
+                                {
                                     match message {
                                         JsonRpcMessage::Response(response) => {
                                             // Find pending request
@@ -302,12 +306,17 @@ impl SseTransport {
                                                     tracing::warn!("Failed to send response to pending request: {}", id_str);
                                                 }
                                             } else {
-                                                tracing::debug!("Received response for unknown request ID: {}", id_str);
+                                                tracing::debug!(
+                                                    "Received response for unknown request ID: {}",
+                                                    id_str
+                                                );
                                             }
                                         }
                                         JsonRpcMessage::Notification(notification) => {
                                             // Invoke notification callback
-                                            if let Some(callback) = notification_callback.read().as_ref() {
+                                            if let Some(callback) =
+                                                notification_callback.read().as_ref()
+                                            {
                                                 callback(notification);
                                             }
                                         }
@@ -402,14 +411,11 @@ impl Transport for SseTransport {
         }
 
         // Send POST request (don't wait for response - it arrives via SSE stream)
-        let post_response = req_builder
-            .send()
-            .await
-            .map_err(|e| {
-                // Remove from pending on error
-                self.pending.write().remove(&request_id);
-                AppError::Mcp(format!("Failed to send request: {}", e))
-            })?;
+        let post_response = req_builder.send().await.map_err(|e| {
+            // Remove from pending on error
+            self.pending.write().remove(&request_id);
+            AppError::Mcp(format!("Failed to send request: {}", e))
+        })?;
 
         // Check POST status (should be 202 Accepted or 200 OK)
         if !post_response.status().is_success() {

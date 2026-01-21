@@ -25,6 +25,9 @@ pub enum AppError {
     #[error("Storage error: {0}")]
     Storage(String),
 
+    #[error("Invalid parameters: {0}")]
+    InvalidParams(String),
+
     #[error("Authentication failed")]
     Unauthorized,
 

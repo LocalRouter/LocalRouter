@@ -9,9 +9,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use chrono::{DateTime, Utc};
 #[cfg(test)]
 use chrono::Duration;
+use chrono::{DateTime, Utc};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
@@ -510,9 +510,7 @@ impl ProviderRegistry {
             .read()
             .get(instance_name)
             .cloned()
-            .ok_or_else(|| {
-                AppError::Config(format!("Provider '{}' not found", instance_name))
-            })?;
+            .ok_or_else(|| AppError::Config(format!("Provider '{}' not found", instance_name)))?;
 
         match provider_instance.provider.list_models().await {
             Ok(models) => {

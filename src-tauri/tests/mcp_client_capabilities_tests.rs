@@ -114,10 +114,7 @@ fn test_client_roots_configuration() {
 
     assert!(client.roots.is_some());
     assert_eq!(client.roots.as_ref().unwrap().len(), 1);
-    assert_eq!(
-        client.roots.as_ref().unwrap()[0].uri,
-        "file:///custom/path"
-    );
+    assert_eq!(client.roots.as_ref().unwrap()[0].uri, "file:///custom/path");
 }
 
 #[test]

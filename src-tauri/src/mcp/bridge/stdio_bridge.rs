@@ -208,10 +208,7 @@ impl StdioBridge {
         let response = self
             .http_client
             .post(&self.server_url)
-            .header(
-                "Authorization",
-                format!("Bearer {}", self.client_secret),
-            )
+            .header("Authorization", format!("Bearer {}", self.client_secret))
             .header("Content-Type", "application/json")
             .body(body)
             .send()
@@ -250,9 +247,10 @@ impl StdioBridge {
         }
 
         // Parse JSON-RPC response
-        let json_rpc_response: JsonRpcResponse = response.json().await.map_err(|e| {
-            AppError::Mcp(format!("Failed to parse server response: {}", e))
-        })?;
+        let json_rpc_response: JsonRpcResponse = response
+            .json()
+            .await
+            .map_err(|e| AppError::Mcp(format!("Failed to parse server response: {}", e)))?;
 
         trace!("Received response from server");
         Ok(json_rpc_response)

@@ -6,8 +6,8 @@ use localrouter_ai::config::{AppConfig, ConfigManager};
 use localrouter_ai::mcp::gateway::{GatewayConfig, McpGateway};
 use localrouter_ai::mcp::protocol::{JsonRpcRequest, JsonRpcResponse};
 use localrouter_ai::mcp::McpServerManager;
-use localrouter_ai::monitoring::database::MetricsDatabase;
 use localrouter_ai::monitoring::metrics::MetricsCollector;
+use localrouter_ai::monitoring::storage::MetricsDatabase;
 use localrouter_ai::providers::health::HealthCheckManager;
 use localrouter_ai::providers::registry::ProviderRegistry;
 use localrouter_ai::router::{RateLimiterManager, Router};
@@ -58,7 +58,7 @@ async fn test_gateway_session_creation() {
 
     // This should create a session even with empty allowed_servers (though it will have no access)
     let result = gateway
-        .handle_request("test-client", vec![], false, request)
+        .handle_request("test-client", vec![], false, vec![], request)
         .await;
 
     // Expect an error or empty response since no servers are allowed
@@ -95,7 +95,7 @@ async fn test_gateway_empty_allowed_servers() {
 
     // With empty allowed_servers, should handle gracefully
     let result = gateway
-        .handle_request("test-client", vec![], false, request)
+        .handle_request("test-client", vec![], false, vec![], request)
         .await;
 
     // Should either succeed with empty list or return appropriate response
@@ -122,6 +122,9 @@ async fn test_gateway_session_expiration() {
         "test-client".to_string(),
         vec!["filesystem".to_string()],
         Duration::from_millis(100),
+        300,    // base_cache_ttl_seconds
+        vec![], // roots
+        false,  // deferred_loading_requested
     );
 
     assert!(!session.is_expired());
@@ -146,7 +149,7 @@ async fn test_gateway_concurrent_requests() {
             let request = JsonRpcRequest::new(Some(json!(i)), "ping".to_string(), None);
 
             gateway_clone
-                .handle_request(&format!("client-{}", i), vec![], false, request)
+                .handle_request(&format!("client-{}", i), vec![], false, vec![], request)
                 .await
         });
 
@@ -231,7 +234,7 @@ async fn test_gateway_cleanup_expired_sessions() {
     let request = JsonRpcRequest::new(Some(json!(1)), "ping".to_string(), None);
 
     let _ = gateway
-        .handle_request("test-client", vec![], false, request)
+        .handle_request("test-client", vec![], false, vec![], request)
         .await;
 
     // Wait for session to expire

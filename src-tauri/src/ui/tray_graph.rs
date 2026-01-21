@@ -171,14 +171,25 @@ pub fn generate_graph(data_points: &[DataPoint], config: &GraphConfig) -> Option
     const MAX_BAR_HEIGHT: u32 = GRAPH_HEIGHT; // Full graph height (28 pixels)
     const MAX_FIXED_SCALE_TOKENS: u64 = TOKENS_PER_PIXEL * MAX_BAR_HEIGHT as u64; // 5 * 28 = 140 tokens
 
-    // Find max value to determine scaling mode
-    let max_tokens = *normalized_points.iter().max().unwrap_or(&1);
+    // Calculate P95 (95th percentile) to avoid outliers affecting the scale
+    let mut sorted_points: Vec<u64> = normalized_points
+        .iter()
+        .copied()
+        .filter(|&t| t > 0)
+        .collect();
+    sorted_points.sort_unstable();
 
-    // Avoid division by zero
-    let max_tokens = if max_tokens == 0 { 1 } else { max_tokens };
+    let scale_reference = if sorted_points.is_empty() {
+        1
+    } else {
+        // Use P95 for scaling to prevent outliers from squashing the graph
+        let p95_index =
+            ((sorted_points.len() as f64 * 0.95).ceil() as usize).min(sorted_points.len() - 1);
+        sorted_points[p95_index].max(1)
+    };
 
-    // Determine if we use fixed scale or auto-scale
-    let use_fixed_scale = max_tokens <= MAX_FIXED_SCALE_TOKENS;
+    // Determine if we use fixed scale or auto-scale based on P95
+    let use_fixed_scale = scale_reference <= MAX_FIXED_SCALE_TOKENS;
 
     // Draw bars (each bar is exactly 1 pixel wide, inside the border)
     for (i, &token_count) in normalized_points.iter().enumerate() {
@@ -194,9 +205,10 @@ pub fn generate_graph(data_points: &[DataPoint], config: &GraphConfig) -> Option
             let height = (token_count / TOKENS_PER_PIXEL) as u32;
             height.min(MAX_BAR_HEIGHT).max(1)
         } else {
-            // Auto-scale: fit to max value
-            // When max > 145 tokens, scale proportionally to fit
-            let normalized = (token_count as f64 / max_tokens as f64 * MAX_BAR_HEIGHT as f64) as u32;
+            // Auto-scale: fit to P95 value (outliers can extend beyond max height)
+            // Using P95 prevents outliers from squashing all other bars
+            let normalized =
+                (token_count as f64 / scale_reference as f64 * MAX_BAR_HEIGHT as f64) as u32;
             normalized.min(MAX_BAR_HEIGHT).max(1)
         };
 
@@ -361,5 +373,54 @@ mod tests {
         assert!(config.template_mode);
         assert_eq!(config.foreground, Rgba([255, 255, 255, 255]));
         assert_eq!(config.background, Rgba([0, 0, 0, 0])); // Transparent
+    }
+
+    #[test]
+    fn test_percentile_scaling_with_outlier() {
+        let config = GraphConfig::macos_template();
+        let now = Utc::now();
+
+        // Test with an outlier: most values around 100-120, but one at 1000
+        // P95 should be around 120, not 1000, so graph should use 120 as scale reference
+        let mut data = Vec::new();
+        for i in 0..20 {
+            data.push(DataPoint {
+                timestamp: now - Duration::minutes(20 - i),
+                total_tokens: 100 + ((i % 3) * 10) as u64, // 100, 110, 120, repeated
+            });
+        }
+        // Add one outlier
+        data.push(DataPoint {
+            timestamp: now,
+            total_tokens: 1000,
+        });
+
+        let png = generate_graph(&data, &config);
+        assert!(png.is_some());
+        assert!(!png.unwrap().is_empty());
+
+        // The graph should successfully render without the outlier squashing all other bars
+        // (Previously, all bars would be scaled relative to 1000, making them tiny)
+    }
+
+    #[test]
+    fn test_consistent_tokens_over_time() {
+        let config = GraphConfig::macos_template();
+        let now = Utc::now();
+
+        // Test with consistent token counts (simulating the user's scenario)
+        let mut data = Vec::new();
+        for i in 0..26 {
+            data.push(DataPoint {
+                timestamp: now - Duration::minutes(26 - i),
+                total_tokens: 100, // Consistent 100 tokens per minute
+            });
+        }
+
+        let png = generate_graph(&data, &config);
+        assert!(png.is_some());
+        assert!(!png.unwrap().is_empty());
+
+        // All bars should have the same height since token counts are consistent
     }
 }

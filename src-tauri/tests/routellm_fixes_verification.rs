@@ -10,7 +10,7 @@ async fn test_fix_1_path_handling_no_panic() {
     use localrouter_ai::routellm::downloader;
 
     let result = downloader::download_models(
-        std::path::Path::new("/"),  // Root has no parent
+        std::path::Path::new("/"), // Root has no parent
         std::path::Path::new("/tmp/tokenizer"),
         None,
     )
@@ -19,7 +19,11 @@ async fn test_fix_1_path_handling_no_panic() {
     // Should return error, not panic
     assert!(result.is_err());
     let err_msg = result.unwrap_err().to_string();
-    assert!(err_msg.contains("parent"), "Error should mention parent directory: {}", err_msg);
+    assert!(
+        err_msg.contains("parent"),
+        "Error should mention parent directory: {}",
+        err_msg
+    );
 }
 
 #[tokio::test]
@@ -37,7 +41,8 @@ async fn test_fix_2_initialization_race_condition() {
 
     // Check if models exist before attempting
     let model_file = PathBuf::from(&home).join(".localrouter-dev/routellm/model/model.safetensors");
-    let patched_file = PathBuf::from(&home).join(".localrouter-dev/routellm/model/model.patched.safetensors");
+    let patched_file =
+        PathBuf::from(&home).join(".localrouter-dev/routellm/model/model.patched.safetensors");
 
     if !model_file.exists() && !patched_file.exists() {
         println!("⏩ Skipping test: models not downloaded");
@@ -48,9 +53,8 @@ async fn test_fix_2_initialization_race_condition() {
     let mut handles = vec![];
     for i in 0..10 {
         let service_clone = service.clone();
-        let handle = tokio::spawn(async move {
-            service_clone.predict(&format!("test prompt {}", i)).await
-        });
+        let handle =
+            tokio::spawn(async move { service_clone.predict(&format!("test prompt {}", i)).await });
         handles.push(handle);
     }
 
@@ -65,7 +69,10 @@ async fn test_fix_2_initialization_race_condition() {
     assert_eq!(success_count, 10, "All predictions should succeed");
 
     // Verify only one router instance was created (should be loaded after predictions)
-    assert!(service.is_loaded().await, "Service should be loaded after predictions");
+    assert!(
+        service.is_loaded().await,
+        "Service should be loaded after predictions"
+    );
 }
 
 #[tokio::test]
@@ -83,28 +90,34 @@ async fn test_fix_3_download_concurrency_protection() {
     // Try two concurrent downloads (both will fail due to network, but we test mutex)
     let mp1 = model_path.clone();
     let tp1 = tokenizer_path.clone();
-    let handle1 = tokio::spawn(async move {
-        downloader::download_models(&mp1, &tp1, None).await
-    });
+    let handle1 = tokio::spawn(async move { downloader::download_models(&mp1, &tp1, None).await });
 
     // Give first download a tiny head start
     tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
     let mp2 = model_path.clone();
     let tp2 = tokenizer_path.clone();
-    let handle2 = tokio::spawn(async move {
-        downloader::download_models(&mp2, &tp2, None).await
-    });
+    let handle2 = tokio::spawn(async move { downloader::download_models(&mp2, &tp2, None).await });
 
     let result1 = handle1.await.unwrap();
     let result2 = handle2.await.unwrap();
 
     // At least one should fail with "already in progress" message
-    let already_in_progress =
-        (result2.is_err() && result2.unwrap_err().to_string().contains("already in progress")) ||
-        (result1.is_err() && result1.unwrap_err().to_string().contains("already in progress"));
+    let already_in_progress = (result2.is_err()
+        && result2
+            .unwrap_err()
+            .to_string()
+            .contains("already in progress"))
+        || (result1.is_err()
+            && result1
+                .unwrap_err()
+                .to_string()
+                .contains("already in progress"));
 
-    assert!(already_in_progress, "Should detect concurrent download attempt");
+    assert!(
+        already_in_progress,
+        "Should detect concurrent download attempt"
+    );
 
     // Clean up
     let _ = tokio::fs::remove_dir_all(&model_path).await;
@@ -125,7 +138,8 @@ async fn test_fix_6_initializing_state() {
 
     // Check if models exist
     let model_file = PathBuf::from(&home).join(".localrouter-dev/routellm/model/model.safetensors");
-    let patched_file = PathBuf::from(&home).join(".localrouter-dev/routellm/model/model.patched.safetensors");
+    let patched_file =
+        PathBuf::from(&home).join(".localrouter-dev/routellm/model/model.patched.safetensors");
 
     if !model_file.exists() && !patched_file.exists() {
         println!("⏩ Skipping test: models not downloaded");
@@ -138,9 +152,7 @@ async fn test_fix_6_initializing_state() {
 
     // Trigger initialization in background
     let service_clone = service.clone();
-    let init_handle = tokio::spawn(async move {
-        service_clone.initialize().await
-    });
+    let init_handle = tokio::spawn(async move { service_clone.initialize().await });
 
     // Try to catch Initializing state (timing-dependent)
     let mut saw_initializing = false;
@@ -186,10 +198,16 @@ fn test_patched_model_detection() {
     let tokenizer_file = tokenizer_path.join("tokenizer.json");
 
     if (model_file.exists() || patched_file.exists()) && tokenizer_file.exists() {
-        assert_eq!(status.state, localrouter_ai::config::RouteLLMDownloadState::Downloaded);
+        assert_eq!(
+            status.state,
+            localrouter_ai::config::RouteLLMDownloadState::Downloaded
+        );
         println!("✓ Correctly detected downloaded models (original or patched)");
     } else {
-        assert_eq!(status.state, localrouter_ai::config::RouteLLMDownloadState::NotDownloaded);
+        assert_eq!(
+            status.state,
+            localrouter_ai::config::RouteLLMDownloadState::NotDownloaded
+        );
         println!("⏩ Models not downloaded");
     }
 }

@@ -3,8 +3,8 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
-use crate::mcp::protocol::Root;
 use super::types::*;
+use crate::mcp::protocol::Root;
 
 /// Gateway session (one per client)
 #[derive(Debug)]

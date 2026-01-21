@@ -24,10 +24,7 @@ pub type WebSocketNotificationCallback = Arc<dyn Fn(JsonRpcNotification) + Send 
 type WsSink = Arc<
     RwLock<
         Option<
-            futures_util::stream::SplitSink<
-                WebSocketStream<MaybeTlsStream<TcpStream>>,
-                Message,
-            >,
+            futures_util::stream::SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
         >,
     >,
 >;
@@ -76,9 +73,9 @@ impl WebSocketTransport {
         tracing::info!("Connecting to MCP WebSocket server: {}", url);
 
         // Connect to WebSocket
-        let (ws_stream, _) = connect_async(&url).await.map_err(|e| {
-            AppError::Mcp(format!("Failed to connect to WebSocket server: {}", e))
-        })?;
+        let (ws_stream, _) = connect_async(&url)
+            .await
+            .map_err(|e| AppError::Mcp(format!("Failed to connect to WebSocket server: {}", e)))?;
 
         // Split the WebSocket stream
         let (write, mut read) = ws_stream.split();
@@ -263,13 +260,10 @@ impl Transport for WebSocketTransport {
             };
 
             // Send the message
-            write_handle
-                .send(Message::Text(json))
-                .await
-                .map_err(|e| {
-                    self.pending.write().remove(&request_id);
-                    AppError::Mcp(format!("Failed to send message: {}", e))
-                })?;
+            write_handle.send(Message::Text(json)).await.map_err(|e| {
+                self.pending.write().remove(&request_id);
+                AppError::Mcp(format!("Failed to send message: {}", e))
+            })?;
 
             // Put write handle back
             *self.write.write() = Some(write_handle);

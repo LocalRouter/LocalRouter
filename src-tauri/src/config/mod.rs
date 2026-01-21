@@ -1408,7 +1408,6 @@ fn default_strategy_id() -> String {
     "default".to_string()
 }
 
-
 impl Default for AppConfig {
     fn default() -> Self {
         Self {

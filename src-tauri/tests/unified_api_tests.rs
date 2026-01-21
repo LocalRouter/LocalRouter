@@ -3,6 +3,7 @@
 //! Tests the unified API surface where MCP and OpenAI endpoints coexist
 //! under the same base URL with no path conflicts.
 
+use localrouter_ai::clients::{ClientManager, TokenStore};
 use localrouter_ai::config::AppConfig;
 use localrouter_ai::mcp::McpServerManager;
 use localrouter_ai::monitoring::metrics::MetricsCollector;
@@ -11,7 +12,6 @@ use localrouter_ai::providers::health::HealthCheckManager;
 use localrouter_ai::providers::registry::ProviderRegistry;
 use localrouter_ai::router::{RateLimiterManager, Router};
 use localrouter_ai::server;
-use localrouter_ai::clients::{ClientManager, TokenStore};
 use std::sync::Arc;
 use tokio::time::{sleep, Duration};
 
@@ -80,11 +80,7 @@ async fn test_root_get_returns_documentation() {
     let (base_url, _handle) = start_test_server().await;
 
     let client = reqwest::Client::new();
-    let response = client
-        .get(&base_url)
-        .send()
-        .await
-        .expect("Failed to GET /");
+    let response = client.get(&base_url).send().await.expect("Failed to GET /");
 
     assert_eq!(response.status(), 200);
     let body = response.text().await.expect("Failed to read body");
@@ -244,11 +240,7 @@ async fn test_no_path_conflicts_get_vs_post_root() {
     let client = reqwest::Client::new();
 
     // GET / should return documentation
-    let get_response = client
-        .get(&base_url)
-        .send()
-        .await
-        .expect("Failed to GET /");
+    let get_response = client.get(&base_url).send().await.expect("Failed to GET /");
     assert_eq!(get_response.status(), 200);
     let get_body = get_response.text().await.expect("Failed to read body");
     assert!(get_body.contains("LocalRouter AI"));
@@ -298,12 +290,10 @@ async fn test_all_expected_endpoints_exist() {
         let url = format!("{}{}", base_url, path);
         let response = match method {
             "GET" => client.get(&url).send().await,
-            "POST" => client.post(&url)
-                .json(&serde_json::json!({}))
-                .send()
-                .await,
+            "POST" => client.post(&url).json(&serde_json::json!({})).send().await,
             _ => panic!("Unsupported method: {}", method),
-        }.expect(&format!("Failed to {} {}", method, path));
+        }
+        .expect(&format!("Failed to {} {}", method, path));
 
         // Should not get 404 (endpoint exists)
         assert_ne!(
@@ -358,7 +348,8 @@ async fn test_deprecated_endpoints_removed() {
     // Should get an error (not a health check response)
     // Could be 404 (server not found) or 500 (error processing)
     assert!(
-        response_with_auth.status().is_client_error() || response_with_auth.status().is_server_error(),
+        response_with_auth.status().is_client_error()
+            || response_with_auth.status().is_server_error(),
         "/mcp/health with auth should return error (not health check), got: {}",
         response_with_auth.status()
     );

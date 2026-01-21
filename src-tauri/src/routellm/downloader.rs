@@ -11,7 +11,7 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 use tokio::sync::Mutex;
 use tokio::time::timeout;
-use tracing::{info, warn, debug};
+use tracing::{debug, info, warn};
 
 // Global download lock to prevent concurrent downloads
 static DOWNLOAD_LOCK: once_cell::sync::Lazy<Arc<Mutex<()>>> =
@@ -40,28 +40,37 @@ fn check_disk_space(path: &Path) -> RouteLLMResult<u64> {
             .arg("-k") // Output in KB
             .arg(check_path)
             .output()
-            .map_err(|e| RouteLLMError::DownloadFailed(format!("Failed to check disk space: {}", e)))?;
+            .map_err(|e| {
+                RouteLLMError::DownloadFailed(format!("Failed to check disk space: {}", e))
+            })?;
 
         if !output.status.success() {
-            return Err(RouteLLMError::DownloadFailed("Failed to check disk space".to_string()));
+            return Err(RouteLLMError::DownloadFailed(
+                "Failed to check disk space".to_string(),
+            ));
         }
 
         let output_str = String::from_utf8_lossy(&output.stdout);
         let lines: Vec<&str> = output_str.lines().collect();
 
         if lines.len() < 2 {
-            return Err(RouteLLMError::DownloadFailed("Unexpected df output".to_string()));
+            return Err(RouteLLMError::DownloadFailed(
+                "Unexpected df output".to_string(),
+            ));
         }
 
         // Parse the second line (data line)
         let parts: Vec<&str> = lines[1].split_whitespace().collect();
         if parts.len() < 4 {
-            return Err(RouteLLMError::DownloadFailed("Failed to parse df output".to_string()));
+            return Err(RouteLLMError::DownloadFailed(
+                "Failed to parse df output".to_string(),
+            ));
         }
 
         // Column 3 is available space in KB
-        let available_kb: u64 = parts[3].parse()
-            .map_err(|e| RouteLLMError::DownloadFailed(format!("Failed to parse available space: {}", e)))?;
+        let available_kb: u64 = parts[3].parse().map_err(|e| {
+            RouteLLMError::DownloadFailed(format!("Failed to parse available space: {}", e))
+        })?;
 
         Ok(available_kb * 1024) // Convert to bytes
     }
@@ -80,26 +89,35 @@ fn check_disk_space(path: &Path) -> RouteLLMResult<u64> {
             .arg("-B1") // Output in bytes
             .arg(check_path)
             .output()
-            .map_err(|e| RouteLLMError::DownloadFailed(format!("Failed to check disk space: {}", e)))?;
+            .map_err(|e| {
+                RouteLLMError::DownloadFailed(format!("Failed to check disk space: {}", e))
+            })?;
 
         if !output.status.success() {
-            return Err(RouteLLMError::DownloadFailed("Failed to check disk space".to_string()));
+            return Err(RouteLLMError::DownloadFailed(
+                "Failed to check disk space".to_string(),
+            ));
         }
 
         let output_str = String::from_utf8_lossy(&output.stdout);
         let lines: Vec<&str> = output_str.lines().collect();
 
         if lines.len() < 2 {
-            return Err(RouteLLMError::DownloadFailed("Unexpected df output".to_string()));
+            return Err(RouteLLMError::DownloadFailed(
+                "Unexpected df output".to_string(),
+            ));
         }
 
         let parts: Vec<&str> = lines[1].split_whitespace().collect();
         if parts.len() < 4 {
-            return Err(RouteLLMError::DownloadFailed("Failed to parse df output".to_string()));
+            return Err(RouteLLMError::DownloadFailed(
+                "Failed to parse df output".to_string(),
+            ));
         }
 
-        let available_bytes: u64 = parts[3].parse()
-            .map_err(|e| RouteLLMError::DownloadFailed(format!("Failed to parse available space: {}", e)))?;
+        let available_bytes: u64 = parts[3].parse().map_err(|e| {
+            RouteLLMError::DownloadFailed(format!("Failed to parse available space: {}", e))
+        })?;
 
         Ok(available_bytes)
     }
@@ -138,7 +156,7 @@ pub async fn download_models(
     let lock_result = DOWNLOAD_LOCK.try_lock();
     if lock_result.is_err() {
         return Err(RouteLLMError::DownloadFailed(
-            "Another download is already in progress. Please wait for it to complete.".to_string()
+            "Another download is already in progress. Please wait for it to complete.".to_string(),
         ));
     }
     let _lock = lock_result.unwrap();
@@ -176,11 +194,15 @@ pub async fn download_models(
     // Use temporary directories for atomic download
     let temp_model_path = model_path
         .parent()
-        .ok_or_else(|| RouteLLMError::DownloadFailed("Model path has no parent directory".to_string()))?
+        .ok_or_else(|| {
+            RouteLLMError::DownloadFailed("Model path has no parent directory".to_string())
+        })?
         .join("model.tmp");
     let temp_tokenizer_path = tokenizer_path
         .parent()
-        .ok_or_else(|| RouteLLMError::DownloadFailed("Tokenizer path has no parent directory".to_string()))?
+        .ok_or_else(|| {
+            RouteLLMError::DownloadFailed("Tokenizer path has no parent directory".to_string())
+        })?
         .join("tokenizer.tmp");
 
     // Remove old temp directories if they exist
@@ -196,12 +218,19 @@ pub async fn download_models(
     }
 
     // Create temporary directories
-    tokio::fs::create_dir_all(&temp_model_path).await.map_err(|e| {
-        RouteLLMError::DownloadFailed(format!("Failed to create temp model directory: {}", e))
-    })?;
-    tokio::fs::create_dir_all(&temp_tokenizer_path).await.map_err(|e| {
-        RouteLLMError::DownloadFailed(format!("Failed to create temp tokenizer directory: {}", e))
-    })?;
+    tokio::fs::create_dir_all(&temp_model_path)
+        .await
+        .map_err(|e| {
+            RouteLLMError::DownloadFailed(format!("Failed to create temp model directory: {}", e))
+        })?;
+    tokio::fs::create_dir_all(&temp_tokenizer_path)
+        .await
+        .map_err(|e| {
+            RouteLLMError::DownloadFailed(format!(
+                "Failed to create temp tokenizer directory: {}",
+                e
+            ))
+        })?;
 
     // Emit initial progress event
     if let Some(ref handle) = app_handle {
@@ -249,8 +278,14 @@ pub async fn download_models(
                     last_error = Some(format!("{}", e));
                 }
                 Err(_) => {
-                    warn!("Download attempt {} timed out after {} seconds", attempt, DOWNLOAD_TIMEOUT_SECS);
-                    last_error = Some(format!("Download timed out after {} seconds", DOWNLOAD_TIMEOUT_SECS));
+                    warn!(
+                        "Download attempt {} timed out after {} seconds",
+                        attempt, DOWNLOAD_TIMEOUT_SECS
+                    );
+                    last_error = Some(format!(
+                        "Download timed out after {} seconds",
+                        DOWNLOAD_TIMEOUT_SECS
+                    ));
                 }
             }
 
@@ -287,12 +322,13 @@ pub async fn download_models(
     };
 
     let temp_model_file = temp_model_path.join("model.safetensors");
-    debug!("Copying model.safetensors to temp location: {:?}", temp_model_file);
+    debug!(
+        "Copying model.safetensors to temp location: {:?}",
+        temp_model_file
+    );
     tokio::fs::copy(&downloaded_model, &temp_model_file)
         .await
-        .map_err(|e| {
-            RouteLLMError::DownloadFailed(format!("Failed to copy model file: {}", e))
-        })?;
+        .map_err(|e| RouteLLMError::DownloadFailed(format!("Failed to copy model file: {}", e)))?;
 
     info!("Model downloaded to temporary location");
 
@@ -314,7 +350,7 @@ pub async fn download_models(
     let tokenizer_files = vec![
         "tokenizer.json",
         "tokenizer_config.json",
-        "sentencepiece.bpe.model",  // XLM-RoBERTa uses SentencePiece
+        "sentencepiece.bpe.model", // XLM-RoBERTa uses SentencePiece
         "special_tokens_map.json",
         "config.json", // Model config
     ];
@@ -410,7 +446,10 @@ pub async fn download_models(
     let verification_result = verify_model_loads(&temp_model_path, &temp_tokenizer_path).await;
 
     if let Err(e) = verification_result {
-        let error_msg = format!("Model verification failed: {}. The downloaded model appears corrupted.", e);
+        let error_msg = format!(
+            "Model verification failed: {}. The downloaded model appears corrupted.",
+            e
+        );
         warn!("{}", error_msg);
 
         // Clean up temp directories
@@ -440,18 +479,30 @@ pub async fn download_models(
         })?;
     }
     if tokenizer_path.exists() {
-        tokio::fs::remove_dir_all(tokenizer_path).await.map_err(|e| {
-            RouteLLMError::DownloadFailed(format!("Failed to remove old tokenizer directory: {}", e))
-        })?;
+        tokio::fs::remove_dir_all(tokenizer_path)
+            .await
+            .map_err(|e| {
+                RouteLLMError::DownloadFailed(format!(
+                    "Failed to remove old tokenizer directory: {}",
+                    e
+                ))
+            })?;
     }
 
     // Move temp directories to final locations
-    tokio::fs::rename(&temp_model_path, model_path).await.map_err(|e| {
-        RouteLLMError::DownloadFailed(format!("Failed to move model to final location: {}", e))
-    })?;
-    tokio::fs::rename(&temp_tokenizer_path, tokenizer_path).await.map_err(|e| {
-        RouteLLMError::DownloadFailed(format!("Failed to move tokenizer to final location: {}", e))
-    })?;
+    tokio::fs::rename(&temp_model_path, model_path)
+        .await
+        .map_err(|e| {
+            RouteLLMError::DownloadFailed(format!("Failed to move model to final location: {}", e))
+        })?;
+    tokio::fs::rename(&temp_tokenizer_path, tokenizer_path)
+        .await
+        .map_err(|e| {
+            RouteLLMError::DownloadFailed(format!(
+                "Failed to move tokenizer to final location: {}",
+                e
+            ))
+        })?;
 
     info!("Models moved to final location successfully");
 
@@ -467,10 +518,7 @@ pub async fn download_models(
 /// Verify that the downloaded model can be loaded
 ///
 /// This runs a quick test to ensure the model files are not corrupted
-async fn verify_model_loads(
-    model_path: &Path,
-    tokenizer_path: &Path,
-) -> RouteLLMResult<()> {
+async fn verify_model_loads(model_path: &Path, tokenizer_path: &Path) -> RouteLLMResult<()> {
     use crate::routellm::candle_router::CandleRouter;
 
     info!("Testing model loading from temp location...");

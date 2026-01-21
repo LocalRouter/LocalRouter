@@ -118,12 +118,24 @@ pub async fn mcp_gateway_handler(
             }
 
             // Parse sampling request from params
-            let sampling_req: crate::mcp::protocol::SamplingRequest = match request.params.as_ref() {
-                Some(params) => match serde_json::from_value(params.clone()) {
-                    Ok(req) => req,
-                    Err(e) => {
+            let sampling_req: crate::mcp::protocol::SamplingRequest =
+                match request.params.as_ref() {
+                    Some(params) => match serde_json::from_value(params.clone()) {
+                        Ok(req) => req,
+                        Err(e) => {
+                            let error = crate::mcp::protocol::JsonRpcError::invalid_params(
+                                format!("Invalid sampling request: {}", e),
+                            );
+                            let response = crate::mcp::protocol::JsonRpcResponse::error(
+                                request.id.unwrap_or(serde_json::Value::Null),
+                                error,
+                            );
+                            return Json(response).into_response();
+                        }
+                    },
+                    None => {
                         let error = crate::mcp::protocol::JsonRpcError::invalid_params(
-                            format!("Invalid sampling request: {}", e)
+                            "Missing params for sampling request".to_string(),
                         );
                         let response = crate::mcp::protocol::JsonRpcResponse::error(
                             request.id.unwrap_or(serde_json::Value::Null),
@@ -131,35 +143,26 @@ pub async fn mcp_gateway_handler(
                         );
                         return Json(response).into_response();
                     }
-                },
-                None => {
-                    let error = crate::mcp::protocol::JsonRpcError::invalid_params(
-                        "Missing params for sampling request".to_string()
-                    );
-                    let response = crate::mcp::protocol::JsonRpcResponse::error(
-                        request.id.unwrap_or(serde_json::Value::Null),
-                        error,
-                    );
-                    return Json(response).into_response();
-                }
-            };
+                };
 
             // Convert MCP sampling request to provider completion request
-            let mut completion_req = match crate::mcp::gateway::sampling::convert_sampling_to_chat_request(sampling_req) {
-                Ok(req) => req,
-                Err(e) => {
-                    let error = crate::mcp::protocol::JsonRpcError::custom(
-                        -32603,
-                        format!("Failed to convert sampling request: {}", e),
-                        None,
-                    );
-                    let response = crate::mcp::protocol::JsonRpcResponse::error(
-                        request.id.unwrap_or(serde_json::Value::Null),
-                        error,
-                    );
-                    return Json(response).into_response();
-                }
-            };
+            let mut completion_req =
+                match crate::mcp::gateway::sampling::convert_sampling_to_chat_request(sampling_req)
+                {
+                    Ok(req) => req,
+                    Err(e) => {
+                        let error = crate::mcp::protocol::JsonRpcError::custom(
+                            -32603,
+                            format!("Failed to convert sampling request: {}", e),
+                            None,
+                        );
+                        let response = crate::mcp::protocol::JsonRpcResponse::error(
+                            request.id.unwrap_or(serde_json::Value::Null),
+                            error,
+                        );
+                        return Json(response).into_response();
+                    }
+                };
 
             // Default to auto-routing if no specific model requested
             if completion_req.model.is_empty() {
@@ -184,21 +187,24 @@ pub async fn mcp_gateway_handler(
             };
 
             // Convert provider response back to MCP sampling response
-            let sampling_resp = match crate::mcp::gateway::sampling::convert_chat_to_sampling_response(completion_resp) {
-                Ok(resp) => resp,
-                Err(e) => {
-                    let error = crate::mcp::protocol::JsonRpcError::custom(
-                        -32603,
-                        format!("Failed to convert completion response: {}", e),
-                        None,
-                    );
-                    let response = crate::mcp::protocol::JsonRpcResponse::error(
-                        request.id.unwrap_or(serde_json::Value::Null),
-                        error,
-                    );
-                    return Json(response).into_response();
-                }
-            };
+            let sampling_resp =
+                match crate::mcp::gateway::sampling::convert_chat_to_sampling_response(
+                    completion_resp,
+                ) {
+                    Ok(resp) => resp,
+                    Err(e) => {
+                        let error = crate::mcp::protocol::JsonRpcError::custom(
+                            -32603,
+                            format!("Failed to convert completion response: {}", e),
+                            None,
+                        );
+                        let response = crate::mcp::protocol::JsonRpcResponse::error(
+                            request.id.unwrap_or(serde_json::Value::Null),
+                            error,
+                        );
+                        return Json(response).into_response();
+                    }
+                };
 
             // Return success response
             let response = crate::mcp::protocol::JsonRpcResponse::success(
@@ -356,12 +362,24 @@ pub async fn mcp_server_handler(
             }
 
             // Parse sampling request from params
-            let sampling_req: crate::mcp::protocol::SamplingRequest = match request.params.as_ref() {
-                Some(params) => match serde_json::from_value(params.clone()) {
-                    Ok(req) => req,
-                    Err(e) => {
+            let sampling_req: crate::mcp::protocol::SamplingRequest =
+                match request.params.as_ref() {
+                    Some(params) => match serde_json::from_value(params.clone()) {
+                        Ok(req) => req,
+                        Err(e) => {
+                            let error = crate::mcp::protocol::JsonRpcError::invalid_params(
+                                format!("Invalid sampling request: {}", e),
+                            );
+                            let response = crate::mcp::protocol::JsonRpcResponse::error(
+                                request.id.unwrap_or(serde_json::Value::Null),
+                                error,
+                            );
+                            return Json(response).into_response();
+                        }
+                    },
+                    None => {
                         let error = crate::mcp::protocol::JsonRpcError::invalid_params(
-                            format!("Invalid sampling request: {}", e)
+                            "Missing params for sampling request".to_string(),
                         );
                         let response = crate::mcp::protocol::JsonRpcResponse::error(
                             request.id.unwrap_or(serde_json::Value::Null),
@@ -369,35 +387,26 @@ pub async fn mcp_server_handler(
                         );
                         return Json(response).into_response();
                     }
-                },
-                None => {
-                    let error = crate::mcp::protocol::JsonRpcError::invalid_params(
-                        "Missing params for sampling request".to_string()
-                    );
-                    let response = crate::mcp::protocol::JsonRpcResponse::error(
-                        request.id.unwrap_or(serde_json::Value::Null),
-                        error,
-                    );
-                    return Json(response).into_response();
-                }
-            };
+                };
 
             // Convert MCP sampling request to provider completion request
-            let mut completion_req = match crate::mcp::gateway::sampling::convert_sampling_to_chat_request(sampling_req) {
-                Ok(req) => req,
-                Err(e) => {
-                    let error = crate::mcp::protocol::JsonRpcError::custom(
-                        -32603,
-                        format!("Failed to convert sampling request: {}", e),
-                        None,
-                    );
-                    let response = crate::mcp::protocol::JsonRpcResponse::error(
-                        request.id.unwrap_or(serde_json::Value::Null),
-                        error,
-                    );
-                    return Json(response).into_response();
-                }
-            };
+            let mut completion_req =
+                match crate::mcp::gateway::sampling::convert_sampling_to_chat_request(sampling_req)
+                {
+                    Ok(req) => req,
+                    Err(e) => {
+                        let error = crate::mcp::protocol::JsonRpcError::custom(
+                            -32603,
+                            format!("Failed to convert sampling request: {}", e),
+                            None,
+                        );
+                        let response = crate::mcp::protocol::JsonRpcResponse::error(
+                            request.id.unwrap_or(serde_json::Value::Null),
+                            error,
+                        );
+                        return Json(response).into_response();
+                    }
+                };
 
             // Default to auto-routing if no specific model requested
             if completion_req.model.is_empty() {
@@ -422,21 +431,24 @@ pub async fn mcp_server_handler(
             };
 
             // Convert provider response back to MCP sampling response
-            let sampling_resp = match crate::mcp::gateway::sampling::convert_chat_to_sampling_response(completion_resp) {
-                Ok(resp) => resp,
-                Err(e) => {
-                    let error = crate::mcp::protocol::JsonRpcError::custom(
-                        -32603,
-                        format!("Failed to convert completion response: {}", e),
-                        None,
-                    );
-                    let response = crate::mcp::protocol::JsonRpcResponse::error(
-                        request.id.unwrap_or(serde_json::Value::Null),
-                        error,
-                    );
-                    return Json(response).into_response();
-                }
-            };
+            let sampling_resp =
+                match crate::mcp::gateway::sampling::convert_chat_to_sampling_response(
+                    completion_resp,
+                ) {
+                    Ok(resp) => resp,
+                    Err(e) => {
+                        let error = crate::mcp::protocol::JsonRpcError::custom(
+                            -32603,
+                            format!("Failed to convert completion response: {}", e),
+                            None,
+                        );
+                        let response = crate::mcp::protocol::JsonRpcResponse::error(
+                            request.id.unwrap_or(serde_json::Value::Null),
+                            error,
+                        );
+                        return Json(response).into_response();
+                    }
+                };
 
             // Return success response
             let response = crate::mcp::protocol::JsonRpcResponse::success(
@@ -449,12 +461,24 @@ pub async fn mcp_server_handler(
 
         "elicitation/requestInput" => {
             // Parse elicitation request from params
-            let elicitation_req: crate::mcp::protocol::ElicitationRequest = match request.params.as_ref() {
-                Some(params) => match serde_json::from_value(params.clone()) {
-                    Ok(req) => req,
-                    Err(e) => {
+            let elicitation_req: crate::mcp::protocol::ElicitationRequest =
+                match request.params.as_ref() {
+                    Some(params) => match serde_json::from_value(params.clone()) {
+                        Ok(req) => req,
+                        Err(e) => {
+                            let error = crate::mcp::protocol::JsonRpcError::invalid_params(
+                                format!("Invalid elicitation request: {}", e),
+                            );
+                            let response = crate::mcp::protocol::JsonRpcResponse::error(
+                                request.id.unwrap_or(serde_json::Value::Null),
+                                error,
+                            );
+                            return Json(response).into_response();
+                        }
+                    },
+                    None => {
                         let error = crate::mcp::protocol::JsonRpcError::invalid_params(
-                            format!("Invalid elicitation request: {}", e)
+                            "Missing params for elicitation request".to_string(),
                         );
                         let response = crate::mcp::protocol::JsonRpcResponse::error(
                             request.id.unwrap_or(serde_json::Value::Null),
@@ -462,18 +486,7 @@ pub async fn mcp_server_handler(
                         );
                         return Json(response).into_response();
                     }
-                },
-                None => {
-                    let error = crate::mcp::protocol::JsonRpcError::invalid_params(
-                        "Missing params for elicitation request".to_string()
-                    );
-                    let response = crate::mcp::protocol::JsonRpcResponse::error(
-                        request.id.unwrap_or(serde_json::Value::Null),
-                        error,
-                    );
-                    return Json(response).into_response();
-                }
-            };
+                };
 
             // Get the elicitation manager from gateway
             // For now, return a helpful message that elicitation needs WebSocket support

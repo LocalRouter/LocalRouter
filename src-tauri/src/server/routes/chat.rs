@@ -137,20 +137,16 @@ fn validate_request(request: &ChatCompletionRequest) -> ApiResult<()> {
     // Validate n parameter
     if let Some(n) = request.n {
         if n == 0 {
-            return Err(
-                ApiErrorResponse::bad_request("n must be at least 1").with_param("n")
-            );
+            return Err(ApiErrorResponse::bad_request("n must be at least 1").with_param("n"));
         }
         if n > 128 {
-            return Err(
-                ApiErrorResponse::bad_request("n must be at most 128").with_param("n")
-            );
+            return Err(ApiErrorResponse::bad_request("n must be at most 128").with_param("n"));
         }
         if n > 1 && request.stream {
-            return Err(ApiErrorResponse::bad_request(
-                "n > 1 is not supported with streaming",
-            )
-            .with_param("n"));
+            return Err(
+                ApiErrorResponse::bad_request("n > 1 is not supported with streaming")
+                    .with_param("n"),
+            );
         }
         if n > 1 {
             // Note: Currently n > 1 is accepted but only the first completion will be generated
@@ -162,16 +158,16 @@ fn validate_request(request: &ChatCompletionRequest) -> ApiResult<()> {
     // Validate top_logprobs (requires logprobs to be true)
     if let Some(top_logprobs) = request.top_logprobs {
         if request.logprobs != Some(true) {
-            return Err(ApiErrorResponse::bad_request(
-                "top_logprobs requires logprobs to be true",
-            )
-            .with_param("top_logprobs"));
+            return Err(
+                ApiErrorResponse::bad_request("top_logprobs requires logprobs to be true")
+                    .with_param("top_logprobs"),
+            );
         }
         if top_logprobs > 20 {
-            return Err(ApiErrorResponse::bad_request(
-                "top_logprobs must be between 0 and 20",
-            )
-            .with_param("top_logprobs"));
+            return Err(
+                ApiErrorResponse::bad_request("top_logprobs must be between 0 and 20")
+                    .with_param("top_logprobs"),
+            );
         }
     }
 
@@ -349,7 +345,8 @@ async fn check_rate_limits(
 ) -> ApiResult<()> {
     // Estimate usage for rate limit check (rough estimate)
     let estimated_tokens = estimate_token_count(&request.messages);
-    let max_output_tokens = request.max_completion_tokens
+    let max_output_tokens = request
+        .max_completion_tokens
         .or(request.max_tokens)
         .unwrap_or(100);
     let usage_estimate = UsageInfo {
@@ -398,9 +395,7 @@ fn convert_to_provider_request(
                         .iter()
                         .map(|part| match part {
                             crate::server::types::ContentPart::Text { text } => {
-                                ProviderContentPart::Text {
-                                    text: text.clone(),
-                                }
+                                ProviderContentPart::Text { text: text.clone() }
                             }
                             crate::server::types::ContentPart::ImageUrl { image_url } => {
                                 ProviderContentPart::ImageUrl {
@@ -420,8 +415,8 @@ fn convert_to_provider_request(
             Ok(ProviderChatMessage {
                 role: msg.role.clone(),
                 content,
-                tool_calls: None,      // Input messages don't have tool_calls initially
-                tool_call_id: None,    // Only for tool role messages
+                tool_calls: None,   // Input messages don't have tool_calls initially
+                tool_call_id: None, // Only for tool role messages
                 name: msg.name.clone(),
             })
         })
@@ -460,18 +455,16 @@ fn convert_to_provider_request(
     });
 
     // Convert response_format from server types to provider types (Bug #7 fix)
-    let response_format = request.response_format.as_ref().map(|format| {
-        match format {
-            crate::server::types::ResponseFormat::JsonObject { r#type } => {
-                crate::providers::ResponseFormat::JsonObject {
-                    format_type: r#type.clone(),
-                }
+    let response_format = request.response_format.as_ref().map(|format| match format {
+        crate::server::types::ResponseFormat::JsonObject { r#type } => {
+            crate::providers::ResponseFormat::JsonObject {
+                format_type: r#type.clone(),
             }
-            crate::server::types::ResponseFormat::JsonSchema { r#type, schema } => {
-                crate::providers::ResponseFormat::JsonSchema {
-                    format_type: r#type.clone(),
-                    schema: schema.clone(),
-                }
+        }
+        crate::server::types::ResponseFormat::JsonSchema { r#type, schema } => {
+            crate::providers::ResponseFormat::JsonSchema {
+                format_type: r#type.clone(),
+                schema: schema.clone(),
             }
         }
     });
@@ -598,7 +591,9 @@ async fn handle_non_streaming(
 
     // Record tokens for tray graph (real-time tracking for Fast/Medium modes)
     if let Some(ref tray_graph) = *state.tray_graph_manager.read() {
-        tray_graph.record_tokens((response.usage.prompt_tokens + response.usage.completion_tokens) as u64);
+        tray_graph.record_tokens(
+            (response.usage.prompt_tokens + response.usage.completion_tokens) as u64,
+        );
     }
 
     // Log to access log (persistent storage)
@@ -693,8 +688,9 @@ async fn handle_non_streaming(
                         tool_call_id: choice.message.tool_call_id,
                     },
                     finish_reason: choice.finish_reason,
-                    logprobs: choice.logprobs.map(|provider_logprobs| {
-                        ChatCompletionLogprobs {
+                    logprobs: choice
+                        .logprobs
+                        .map(|provider_logprobs| ChatCompletionLogprobs {
                             content: provider_logprobs.content.map(|tokens| {
                                 tokens
                                     .into_iter()
@@ -714,8 +710,7 @@ async fn handle_non_streaming(
                                     })
                                     .collect()
                             }),
-                        }
-                    }),
+                        }),
                 }
             })
             .collect(),

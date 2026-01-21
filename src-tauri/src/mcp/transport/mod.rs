@@ -57,9 +57,9 @@ pub trait Transport: Send + Sync {
             response.result.unwrap_or(serde_json::json!(null)),
         );
 
-        Ok(Box::pin(futures_util::stream::once(async move {
-            Ok(chunk)
-        })))
+        Ok(Box::pin(futures_util::stream::once(
+            async move { Ok(chunk) },
+        )))
     }
 
     /// Check if the transport supports streaming responses
