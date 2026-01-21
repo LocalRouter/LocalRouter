@@ -39,6 +39,7 @@ pub struct CallbackResult {
 /// A registered callback listener for a specific flow
 struct CallbackListener {
     /// Flow ID
+    #[allow(dead_code)]
     flow_id: FlowId,
     /// Expected CSRF state parameter
     expected_state: String,
@@ -49,6 +50,7 @@ struct CallbackListener {
 /// Active server on a specific port
 struct ActiveServer {
     /// Port number
+    #[allow(dead_code)]
     port: u16,
     /// Registered listeners by flow ID
     listeners: HashMap<FlowId, CallbackListener>,

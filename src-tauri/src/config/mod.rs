@@ -551,6 +551,26 @@ pub struct Client {
     /// If Some, replaces global roots entirely for this client
     #[serde(skip_serializing_if = "Option::is_none")]
     pub roots: Option<Vec<RootConfig>>,
+
+    /// Enable MCP sampling (backend servers can request LLM completions)
+    /// Default: false (sampling disabled for security)
+    #[serde(default)]
+    pub mcp_sampling_enabled: bool,
+
+    /// Require user approval for each sampling request
+    /// Default: true (when sampling is enabled)
+    #[serde(default = "default_true")]
+    pub mcp_sampling_requires_approval: bool,
+
+    /// Maximum tokens per sampling request
+    /// None = unlimited (uses provider defaults)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mcp_sampling_max_tokens: Option<u32>,
+
+    /// Maximum sampling requests per hour
+    /// None = unlimited
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mcp_sampling_rate_limit: Option<u32>,
 }
 
 /// MCP server configuration
@@ -1274,6 +1294,10 @@ impl ConfigManager {
             #[allow(deprecated)]
             routing_config: None,
             roots: None,
+            mcp_sampling_enabled: false,
+            mcp_sampling_requires_approval: true,
+            mcp_sampling_max_tokens: None,
+            mcp_sampling_rate_limit: None,
         };
 
         self.update(|cfg| {
@@ -1656,6 +1680,10 @@ impl Client {
             #[allow(deprecated)]
             routing_config: None,
             roots: None,
+            mcp_sampling_enabled: false,
+            mcp_sampling_requires_approval: true,
+            mcp_sampling_max_tokens: None,
+            mcp_sampling_rate_limit: None,
         }
     }
 
@@ -1797,5 +1825,62 @@ mod tests {
         let yaml = serde_yaml::to_string(&config).unwrap();
         let deserialized: AppConfig = serde_yaml::from_str(&yaml).unwrap();
         assert_eq!(config, deserialized);
+    }
+
+    #[test]
+    fn test_root_config_serialization() {
+        let root = RootConfig {
+            uri: "file:///Users/test/projects".to_string(),
+            name: Some("Projects".to_string()),
+            enabled: true,
+        };
+
+        let yaml = serde_yaml::to_string(&root).unwrap();
+        let deserialized: RootConfig = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(root, deserialized);
+    }
+
+    #[test]
+    fn test_app_config_with_roots() {
+        let mut config = AppConfig::default();
+        config.roots = vec![
+            RootConfig {
+                uri: "file:///Users/test/projects".to_string(),
+                name: Some("Projects".to_string()),
+                enabled: true,
+            },
+            RootConfig {
+                uri: "file:///var/data".to_string(),
+                name: None,
+                enabled: true,
+            },
+        ];
+
+        let yaml = serde_yaml::to_string(&config).unwrap();
+        let deserialized: AppConfig = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(config.roots.len(), 2);
+        assert_eq!(deserialized.roots.len(), 2);
+        assert_eq!(deserialized.roots[0].uri, "file:///Users/test/projects");
+        assert_eq!(deserialized.roots[1].name, None);
+    }
+
+    #[test]
+    fn test_client_with_roots_override() {
+        let mut client = Client::new("Test Client".to_string());
+        client.roots = Some(vec![RootConfig {
+            uri: "file:///custom/path".to_string(),
+            name: Some("Custom".to_string()),
+            enabled: true,
+        }]);
+
+        // Verify serialization
+        let yaml = serde_yaml::to_string(&client).unwrap();
+        let deserialized: Client = serde_yaml::from_str(&yaml).unwrap();
+        assert!(deserialized.roots.is_some());
+        assert_eq!(deserialized.roots.as_ref().unwrap().len(), 1);
+        assert_eq!(
+            deserialized.roots.as_ref().unwrap()[0].uri,
+            "file:///custom/path"
+        );
     }
 }

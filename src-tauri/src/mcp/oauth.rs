@@ -673,6 +673,34 @@ impl McpOAuthManager {
             .ok();
     }
 
+    /// Update token cache with new access token
+    ///
+    /// # Arguments
+    /// * `server_id` - MCP server ID
+    /// * `access_token` - Access token
+    /// * `expires_at` - Optional expiration time
+    ///
+    /// # Returns
+    /// * Result indicating success or failure
+    pub fn update_token_cache(
+        &self,
+        server_id: &str,
+        access_token: &str,
+        expires_at: Option<DateTime<Utc>>,
+    ) -> AppResult<()> {
+        let token_info = CachedTokenInfo {
+            access_token: access_token.to_string(),
+            expires_at: expires_at.unwrap_or_else(|| Utc::now() + Duration::hours(1)),
+            refresh_token: None,
+        };
+
+        self.token_cache
+            .write()
+            .insert(server_id.to_string(), token_info);
+
+        Ok(())
+    }
+
     /// Build authorization URL for OAuth authorization code flow with PKCE
     ///
     /// # Arguments

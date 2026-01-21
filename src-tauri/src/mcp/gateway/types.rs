@@ -274,6 +274,25 @@ pub struct InitializeResult {
     pub server_info: ServerInfo,
 }
 
+/// Client capabilities (sent by MCP client during initialization)
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ClientCapabilities {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub experimental: Option<serde_json::Value>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub roots: Option<ClientRootsCapability>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sampling: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClientRootsCapability {
+    #[serde(rename = "listChanged", skip_serializing_if = "Option::is_none")]
+    pub list_changed: Option<bool>,
+}
+
 /// Server capabilities
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ServerCapabilities {

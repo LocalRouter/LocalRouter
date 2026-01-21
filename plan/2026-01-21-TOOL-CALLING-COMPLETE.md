@@ -477,6 +477,9 @@ POST /v1/chat/completions
 ### OpenAPI Documentation
 - `src-tauri/src/server/openapi/mod.rs` - Schema registrations
 
+### Error Handling
+- `src-tauri/src/server/middleware/error.rs` - Added OAuthBrowser error handling
+
 ### Tests
 - `src-tauri/tests/tool_calling_tests.rs` - New test file (7 tests)
 - `src-tauri/tests/feature_adapter_integration_tests.rs` - Fixed (16 tests)
@@ -486,14 +489,42 @@ POST /v1/chat/completions
 
 ## Known Limitations
 
-### Streaming for Anthropic & Gemini
-- Anthropic streaming tool calls implementation is complete
-- Gemini response parsing for function calls needs enhancement
-- Both providers support streaming but may need additional testing
-
 ### Cohere & Cerebras
 - Not implemented - these providers use different APIs
 - Would require custom adapters
+
+## Update: Gemini Function Call Parsing Complete (2026-01-21)
+
+After the initial implementation, Gemini function call response parsing was completed:
+
+### Added:
+1. **Non-streaming response parsing** - Extracts FunctionCall parts from Gemini responses
+2. **Streaming response parsing** - Handles FunctionCall parts in streaming chunks
+3. **Message conversion** - Full bidirectional conversion:
+   - OpenAI `tool_calls` → Gemini `FunctionCall` parts
+   - OpenAI `tool` role → Gemini `FunctionResponse` parts
+   - Gemini `FunctionCall` parts → OpenAI `ToolCall` format
+
+### Implementation Details:
+
+**Response Parsing (src-tauri/src/providers/gemini.rs:320-370)**:
+- Extracts both Text and FunctionCall parts from candidates
+- Converts FunctionCall to OpenAI ToolCall format
+- Sets finish_reason to "tool_calls" when tools are used
+- Generates unique IDs for each tool call
+
+**Streaming Response Parsing (src-tauri/src/providers/gemini.rs:480-560)**:
+- Handles FunctionCall parts in streaming chunks
+- Creates ToolCallDelta with index, id, type, and function
+- Proper finish_reason handling for streaming tool calls
+
+**Message Conversion (src-tauri/src/providers/gemini.rs:65-160)**:
+- Converts tool role messages to user role with FunctionResponse
+- Converts assistant tool_calls to model role with FunctionCall parts
+- Preserves text content alongside function calls
+- Handles JSON parsing of tool arguments and responses
+
+**Status**: ✅ **Complete** - Gemini now has full tool calling support including response parsing
 
 ## Testing Results
 
@@ -550,12 +581,13 @@ test result: ok. 16 passed; 0 failed; 0 ignored
 
 While the implementation is complete, potential future improvements include:
 
-1. **Enhanced Streaming**: Additional testing for Anthropic/Gemini streaming
-2. **Gemini Response Parsing**: Complete implementation of FunctionCall part parsing
+1. ~~**Enhanced Streaming**: Additional testing for Anthropic/Gemini streaming~~ ✅ **COMPLETE**
+2. ~~**Gemini Response Parsing**: Complete implementation of FunctionCall part parsing~~ ✅ **COMPLETE**
 3. **Additional Providers**: Cohere, Cerebras support (if APIs support it)
 4. **Tool Call Validation**: Schema validation for tool arguments
 5. **Rate Limiting**: Per-tool rate limits
 6. **Caching**: Cache tool definitions per request
+7. **Integration Testing**: End-to-end tests with actual API calls (requires API keys)
 
 ## Conclusion
 

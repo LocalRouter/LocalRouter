@@ -269,6 +269,7 @@ mod tests {
             vec!["filesystem".to_string(), "github".to_string()],
             Duration::from_secs(3600),
             300,
+            Vec::new(),
         );
 
         assert_eq!(session.client_id, "client-123");
@@ -286,6 +287,7 @@ mod tests {
             vec!["filesystem".to_string()],
             Duration::from_millis(100),
             300,
+            Vec::new(),
         );
 
         assert!(!session.is_expired());

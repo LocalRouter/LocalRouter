@@ -3,8 +3,7 @@
 use crate::api_keys::CachedKeychain;
 use crate::oauth_browser::{
     generate_pkce_challenge, generate_state, CallbackServerManager, FlowId, FlowStatus,
-    OAuthFlowConfig, OAuthFlowResult, OAuthFlowStart, OAuthFlowState, OAuthTokens,
-    TokenExchanger,
+    OAuthFlowConfig, OAuthFlowResult, OAuthFlowStart, OAuthFlowState, TokenExchanger,
 };
 use crate::utils::errors::{AppError, AppResult};
 use chrono::{Duration, Utc};

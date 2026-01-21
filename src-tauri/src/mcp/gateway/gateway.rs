@@ -108,87 +108,16 @@ impl McpGateway {
             }
         }
 
-        // Create new session
+        // Create new session (deferred loading will be set up in handle_initialize if supported)
         let ttl = Duration::from_secs(self.config.session_ttl_seconds);
-        let mut session_data = GatewaySession::new(
+        let session_data = GatewaySession::new(
             client_id.to_string(),
             allowed_servers.clone(),
             ttl,
             self.config.cache_ttl_seconds,
+            Vec::new(), // TODO: Pass actual roots from config (global + per-client)
+            enable_deferred_loading,
         );
-
-        // Initialize deferred loading if enabled
-        if enable_deferred_loading {
-            // Ensure servers are started
-            for server_id in &allowed_servers {
-                if !self.server_manager.is_running(server_id) {
-                    self.server_manager.start_server(server_id).await?;
-                }
-            }
-
-            // Fetch full catalog from all servers
-            let (tools, _) = self
-                .fetch_and_merge_tools(
-                    &allowed_servers,
-                    JsonRpcRequest::new(Some(serde_json::json!(1)), "tools/list".to_string(), None),
-                )
-                .await
-                .unwrap_or_default();
-
-            let (resources, _) = self
-                .fetch_and_merge_resources(
-                    &allowed_servers,
-                    JsonRpcRequest::new(
-                        Some(serde_json::json!(2)),
-                        "resources/list".to_string(),
-                        None,
-                    ),
-                )
-                .await
-                .unwrap_or_default();
-
-            let (prompts, _) = self
-                .fetch_and_merge_prompts(
-                    &allowed_servers,
-                    JsonRpcRequest::new(
-                        Some(serde_json::json!(3)),
-                        "prompts/list".to_string(),
-                        None,
-                    ),
-                )
-                .await
-                .unwrap_or_default();
-
-            session_data.deferred_loading = Some(DeferredLoadingState {
-                enabled: true,
-                activated_tools: std::collections::HashSet::new(),
-                full_catalog: tools,
-                activated_resources: std::collections::HashSet::new(),
-                full_resource_catalog: resources,
-                activated_prompts: std::collections::HashSet::new(),
-                full_prompt_catalog: prompts,
-            });
-
-            tracing::info!(
-                "Initialized deferred loading for client {}: {} tools, {} resources, {} prompts",
-                client_id,
-                session_data
-                    .deferred_loading
-                    .as_ref()
-                    .map(|d| d.full_catalog.len())
-                    .unwrap_or(0),
-                session_data
-                    .deferred_loading
-                    .as_ref()
-                    .map(|d| d.full_resource_catalog.len())
-                    .unwrap_or(0),
-                session_data
-                    .deferred_loading
-                    .as_ref()
-                    .map(|d| d.full_prompt_catalog.len())
-                    .unwrap_or(0),
-            );
-        }
 
         let session = Arc::new(RwLock::new(session_data));
 
@@ -383,20 +312,7 @@ impl McpGateway {
                 ))
             }
 
-            "roots/list" => {
-                Ok(JsonRpcResponse::error(
-                    request.id.unwrap_or(Value::Null),
-                    JsonRpcError::custom(
-                        -32601,
-                        "roots/list is a client capability. Clients provide filesystem roots to servers, not gateways.".to_string(),
-                        Some(json!({
-                            "method_type": "client_capability",
-                            "direction": "client_to_server",
-                            "hint": "This method should be implemented by your MCP client, not the gateway"
-                        }))
-                    )
-                ))
-            }
+            "roots/list" => self.handle_roots_list(session, request).await,
 
             // Future MCP features - return not implemented with workarounds
             "resources/subscribe" => {
@@ -434,12 +350,61 @@ impl McpGateway {
         }
     }
 
+    /// Handle roots/list request (MCP client capability)
+    ///
+    /// Returns the filesystem roots configured for this session.
+    /// Roots are advisory boundaries, not security boundaries.
+    async fn handle_roots_list(
+        &self,
+        session: Arc<RwLock<GatewaySession>>,
+        request: JsonRpcRequest,
+    ) -> AppResult<JsonRpcResponse> {
+        let session_read = session.read().await;
+        let roots = session_read.roots.clone();
+        drop(session_read);
+
+        // Convert Root to MCP protocol format
+        let roots_value: Vec<Value> = roots
+            .iter()
+            .map(|root| {
+                let mut obj = serde_json::Map::new();
+                obj.insert("uri".to_string(), json!(root.uri));
+                if let Some(name) = &root.name {
+                    obj.insert("name".to_string(), json!(name));
+                }
+                Value::Object(obj)
+            })
+            .collect();
+
+        let result = json!({
+            "roots": roots_value
+        });
+
+        Ok(JsonRpcResponse::success(
+            request.id.unwrap_or(Value::Null),
+            result,
+        ))
+    }
+
     /// Handle initialize request
     async fn handle_initialize(
         &self,
         session: Arc<RwLock<GatewaySession>>,
         request: JsonRpcRequest,
     ) -> AppResult<JsonRpcResponse> {
+        // Extract client capabilities from request params
+        let client_capabilities = request
+            .params
+            .as_ref()
+            .and_then(|params| params.get("capabilities"))
+            .and_then(|caps| serde_json::from_value::<ClientCapabilities>(caps.clone()).ok());
+
+        if let Some(ref caps) = client_capabilities {
+            tracing::debug!("Client capabilities received: {:?}", caps);
+        } else {
+            tracing::warn!("Client did not provide capabilities in initialize request");
+        }
+
         let session_read = session.read().await;
         let allowed_servers = session_read.allowed_servers.clone();
         drop(session_read);
@@ -497,6 +462,113 @@ impl McpGateway {
         {
             let mut session_write = session.write().await;
             session_write.merged_capabilities = Some(merged.clone());
+            session_write.client_capabilities = client_capabilities.clone();
+        }
+
+        // Check if we should enable deferred loading
+        // Deferred loading requires that at least one server supports listChanged notifications
+        // and that the client can receive these notifications (implied by MCP spec)
+        let session_read = session.read().await;
+        let should_enable_deferred = session_read.deferred_loading_requested;
+        let client_id_for_log = session_read.client_id.clone();
+        let allowed_servers_for_deferred = session_read.allowed_servers.clone();
+        drop(session_read);
+
+        if should_enable_deferred {
+            // Check if any server supports listChanged for tools
+            let any_server_supports_list_changed = merged
+                .capabilities
+                .tools
+                .as_ref()
+                .and_then(|t| t.list_changed)
+                .unwrap_or(false)
+                || merged
+                    .capabilities
+                    .resources
+                    .as_ref()
+                    .and_then(|r| r.list_changed)
+                    .unwrap_or(false)
+                || merged
+                    .capabilities
+                    .prompts
+                    .as_ref()
+                    .and_then(|p| p.list_changed)
+                    .unwrap_or(false);
+
+            if any_server_supports_list_changed {
+                tracing::info!(
+                    "Setting up deferred loading for client {}: servers support listChanged",
+                    client_id_for_log
+                );
+
+                // Ensure servers are started
+                for server_id in &allowed_servers_for_deferred {
+                    if !self.server_manager.is_running(server_id) {
+                        self.server_manager.start_server(server_id).await?;
+                    }
+                }
+
+                // Fetch full catalog from all servers
+                let (tools, _) = self
+                    .fetch_and_merge_tools(
+                        &allowed_servers_for_deferred,
+                        JsonRpcRequest::new(
+                            Some(serde_json::json!(1)),
+                            "tools/list".to_string(),
+                            None,
+                        ),
+                    )
+                    .await
+                    .unwrap_or_default();
+
+                let (resources, _) = self
+                    .fetch_and_merge_resources(
+                        &allowed_servers_for_deferred,
+                        JsonRpcRequest::new(
+                            Some(serde_json::json!(2)),
+                            "resources/list".to_string(),
+                            None,
+                        ),
+                    )
+                    .await
+                    .unwrap_or_default();
+
+                let (prompts, _) = self
+                    .fetch_and_merge_prompts(
+                        &allowed_servers_for_deferred,
+                        JsonRpcRequest::new(
+                            Some(serde_json::json!(3)),
+                            "prompts/list".to_string(),
+                            None,
+                        ),
+                    )
+                    .await
+                    .unwrap_or_default();
+
+                let mut session_write = session.write().await;
+                session_write.deferred_loading = Some(DeferredLoadingState {
+                    enabled: true,
+                    activated_tools: std::collections::HashSet::new(),
+                    full_catalog: tools.clone(),
+                    activated_resources: std::collections::HashSet::new(),
+                    full_resource_catalog: resources.clone(),
+                    activated_prompts: std::collections::HashSet::new(),
+                    full_prompt_catalog: prompts.clone(),
+                });
+
+                tracing::info!(
+                    "Deferred loading enabled for client {}: {} tools, {} resources, {} prompts",
+                    client_id_for_log,
+                    tools.len(),
+                    resources.len(),
+                    prompts.len(),
+                );
+            } else {
+                tracing::warn!(
+                    "Deferred loading requested for client {} but no servers support listChanged notifications. Falling back to normal mode.",
+                    client_id_for_log
+                );
+            }
         }
 
         // Build response

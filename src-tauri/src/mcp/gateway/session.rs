@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
+use crate::mcp::protocol::Root;
 use super::types::*;
 
 /// Gateway session (one per client)
@@ -20,6 +21,9 @@ pub struct GatewaySession {
     /// Merged capabilities (cached after successful initialization)
     pub merged_capabilities: Option<MergedCapabilities>,
 
+    /// Client capabilities (from initialize request params)
+    pub client_capabilities: Option<ClientCapabilities>,
+
     /// Tool name mapping: namespaced_name -> (server_id, original_name)
     pub tool_mapping: HashMap<String, (String, String)>,
 
@@ -33,7 +37,10 @@ pub struct GatewaySession {
     /// Prompt name mapping: namespaced_name -> (server_id, original_name)
     pub prompt_mapping: HashMap<String, (String, String)>,
 
-    /// Deferred loading state (if enabled)
+    /// Whether deferred loading is requested by client config
+    pub deferred_loading_requested: bool,
+
+    /// Deferred loading state (if enabled after capability check)
     pub deferred_loading: Option<DeferredLoadingState>,
 
     /// Cached tools list
@@ -62,6 +69,10 @@ pub struct GatewaySession {
 
     /// Track if resources/list was fetched (to avoid redundant auto-fetches in URI fallback)
     pub resources_list_fetched: bool,
+
+    /// Filesystem roots for this session (advisory boundaries)
+    /// Merged from global config + per-client overrides
+    pub roots: Vec<Root>,
 }
 
 impl GatewaySession {
@@ -71,6 +82,8 @@ impl GatewaySession {
         allowed_servers: Vec<String>,
         ttl: std::time::Duration,
         base_cache_ttl_seconds: u64,
+        roots: Vec<Root>,
+        deferred_loading_requested: bool,
     ) -> Self {
         let now = Instant::now();
         let mut server_init_status = HashMap::new();
@@ -85,10 +98,12 @@ impl GatewaySession {
             allowed_servers,
             server_init_status,
             merged_capabilities: None,
+            client_capabilities: None,
             tool_mapping: HashMap::new(),
             resource_mapping: HashMap::new(),
             resource_uri_mapping: HashMap::new(),
             prompt_mapping: HashMap::new(),
+            deferred_loading_requested,
             deferred_loading: None,
             cached_tools: None,
             cached_resources: None,
@@ -99,6 +114,7 @@ impl GatewaySession {
             cache_ttl_manager: DynamicCacheTTL::new(base_cache_ttl_seconds),
             last_broadcast_failures: Vec::new(),
             resources_list_fetched: false,
+            roots,
         }
     }
 
@@ -223,6 +239,8 @@ mod tests {
             vec!["filesystem".to_string(), "github".to_string()],
             Duration::from_secs(3600),
             300,
+            Vec::new(),
+            false,
         );
 
         assert_eq!(session.client_id, "client-123");
@@ -238,6 +256,8 @@ mod tests {
             vec!["filesystem".to_string()],
             Duration::from_millis(100),
             300,
+            Vec::new(),
+            false,
         );
 
         assert!(!session.is_expired());
@@ -258,6 +278,8 @@ mod tests {
             vec!["filesystem".to_string()],
             Duration::from_secs(3600),
             300,
+            Vec::new(),
+            false,
         );
 
         let tools = vec![NamespacedTool {
@@ -284,6 +306,8 @@ mod tests {
             vec!["filesystem".to_string()],
             Duration::from_secs(3600),
             300,
+            Vec::new(),
+            false,
         );
 
         // Set caches
