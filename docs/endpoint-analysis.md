@@ -33,14 +33,14 @@ All endpoints use consistent authentication (Bearer tokens) and share the same b
 
 ### MCP (Model Context Protocol) Endpoints
 
-**Note**: All MCP endpoints now share the same root path as OpenAI endpoints for a unified API surface.
+**Note**: MCP endpoints share the same base URL as OpenAI endpoints for a unified API surface.
 
 #### Unified Gateway
 - `POST /` - Unified MCP gateway (aggregates all MCP servers, namespaced tools/resources)
 
 #### Individual Servers
-- `POST /servers/:server_id` - Individual MCP server access
-- `POST /servers/:server_id/stream` - MCP streaming endpoint (SSE)
+- `POST /mcp/:server_id` - Individual MCP server proxy
+- `POST /mcp/:server_id/stream` - MCP streaming endpoint (SSE)
 
 ## Conflict Analysis
 
@@ -50,7 +50,7 @@ All endpoints use consistent authentication (Bearer tokens) and share the same b
 |-----------|---------------|---------|
 | **LLM API** | `/health`, `/openapi.*`, `/v1/*`, `/chat/*`, `/completions`, `/embeddings`, `/models/*`, `/generation` | GET, POST |
 | **OAuth** | `/oauth/*` | POST |
-| **MCP** | `/` (POST only), `/servers/*` | POST |
+| **MCP** | `/` (POST only), `/mcp/*` | POST |
 | **System** | `/` (GET only) | GET |
 
 ### Key Design Decisions
@@ -61,14 +61,15 @@ All endpoints use consistent authentication (Bearer tokens) and share the same b
 - **Status**: No conflict - different HTTP methods serve different purposes
 
 #### 2. Path Namespacing ✅
-- **MCP Individual Servers**: `/servers/:server_id` (no `/mcp` prefix needed)
+- **MCP Unified Gateway**: `POST /` (root path, method-separated from GET)
+- **MCP Individual Servers**: `/mcp/:server_id` (clear namespace for individual proxy)
 - **OAuth**: `/oauth/token` (clear authentication namespace)
 - **OpenAI API**: `/v1/*` and unprefixed variants (`/chat/*`, `/models`, etc.)
 - **Status**: All paths are mutually exclusive
 
 #### 3. Removed Endpoints ✅
 - **Removed**: `GET /mcp/health` (redundant with `GET /health`)
-- **Removed**: `POST /mcp/:client_id/:server_id` (deprecated wildcard route)
+- **Removed**: `POST /mcp/:client_id/:server_id` (deprecated wildcard route with client_id)
 - **Benefit**: Simpler API surface, no ambiguous routes
 
 #### 4. Unified Authentication ✅
@@ -100,8 +101,8 @@ All endpoints use consistent authentication (Bearer tokens) and share the same b
 | `/v1/generation` | ✅ OpenAI | - | Generation status |
 | `/generation` | ✅ OpenAI | - | No /v1 prefix |
 | `/oauth/token` | - | ✅ OAuth | Client credentials |
-| `/servers/:server_id` | - | ✅ MCP | Individual server |
-| `/servers/:server_id/stream` | - | ✅ MCP | SSE streaming |
+| `/mcp/:server_id` | - | ✅ MCP | Individual server proxy |
+| `/mcp/:server_id/stream` | - | ✅ MCP | SSE streaming |
 
 ## Authentication & Authorization
 
@@ -136,10 +137,10 @@ All endpoints use consistent authentication (Bearer tokens) and share the same b
 LocalRouter AI now provides a single, unified API surface for both OpenAI-compatible and MCP endpoints:
 
 1. **Single Base URL**: All endpoints share `http://localhost:3625` (or configured port)
-2. **Method-Based Routing**: `POST /` serves MCP, `GET /` serves API documentation
-3. **Clean Paths**: Removed `/mcp` prefix - individual servers at `/servers/:id`
+2. **Method-Based Routing**: `POST /` serves MCP gateway, `GET /` serves API documentation
+3. **Clean Paths**: Unified gateway at `/`, individual servers at `/mcp/:server_id`
 4. **Consistent Auth**: All endpoints use Bearer token authentication
-5. **No Conflicts**: HTTP method separation ensures no path collisions
+5. **No Conflicts**: HTTP method separation and namespacing ensure no path collisions
 
 ### Benefits of Unified Architecture
 
@@ -152,11 +153,11 @@ LocalRouter AI now provides a single, unified API surface for both OpenAI-compat
 
 **Completed:**
 1. ✅ Removed redundant `/mcp/health` endpoint
-2. ✅ Moved `/mcp` → `/` (POST method only)
-3. ✅ Moved `/mcp/servers/*` → `/servers/*`
-4. ✅ Removed deprecated `/mcp/:client_id/:server_id` endpoint
-5. ✅ Updated OpenAPI documentation paths
-6. ✅ Backend generates proper server URLs in `McpServerInfo`
+2. ✅ Moved unified gateway: `/mcp` → `/` (POST method only)
+3. ✅ Simplified individual servers: `/mcp/:client_id/:server_id` → `/mcp/:server_id`
+4. ✅ Updated OpenAPI documentation paths
+5. ✅ Backend generates `proxy_url` and `gateway_url` in `McpServerInfo`
+6. ✅ Consistent Bearer token authentication across all MCP endpoints
 
 **Recommended Next Steps:**
 1. Update UI to show unified endpoint messaging
