@@ -12,6 +12,7 @@ use crate::router::Router;
 use crate::utils::errors::{AppError, AppResult};
 
 use super::deferred::{create_search_tool, search_prompts, search_resources, search_tools};
+use super::elicitation::ElicitationManager;
 use super::merger::{merge_initialize_results, merge_prompts, merge_resources, merge_tools};
 use super::router::{broadcast_request, separate_results, should_broadcast};
 use super::session::GatewaySession;
@@ -38,6 +39,9 @@ pub struct McpGateway {
 
     /// Router for LLM provider access (for sampling/createMessage support)
     router: Arc<Router>,
+
+    /// Elicitation manager for handling structured user input requests
+    elicitation_manager: Arc<ElicitationManager>,
 }
 
 impl McpGateway {
@@ -60,6 +64,7 @@ impl McpGateway {
             notification_handlers_registered: Arc::new(DashMap::new()),
             notification_broadcast,
             router,
+            elicitation_manager: Arc::new(ElicitationManager::default()),
         }
     }
 
@@ -307,18 +312,22 @@ impl McpGateway {
             }
 
             "sampling/createMessage" => {
-                // TODO: Full implementation requires provider manager and router integration
+                // Sampling is handled in route handlers (mcp.rs) not in gateway
+                // This shouldn't be called from unified gateway - use individual server proxy instead
                 Ok(JsonRpcResponse::error(
                     request.id.unwrap_or(Value::Null),
                     JsonRpcError::custom(
                         -32601,
-                        "sampling/createMessage not yet fully implemented. Protocol types and conversion logic are ready.".to_string(),
+                        "sampling/createMessage should use individual server proxy endpoint".to_string(),
                         Some(json!({
-                            "status": "partial",
-                            "hint": "Sampling support infrastructure is in place but requires provider/router integration"
+                            "hint": "Use POST /mcp/:server_id for sampling requests from backend servers"
                         }))
                     )
                 ))
+            }
+
+            "elicitation/requestInput" => {
+                self.handle_elicitation_request(session, request).await
             }
 
             "roots/list" => self.handle_roots_list(session, request).await,
@@ -395,6 +404,54 @@ impl McpGateway {
         ))
     }
 
+    /// Handle elicitation/requestInput
+    async fn handle_elicitation_request(
+        &self,
+        session: Arc<RwLock<GatewaySession>>,
+        request: JsonRpcRequest,
+    ) -> AppResult<JsonRpcResponse> {
+        // Parse elicitation request from params
+        let elicitation_req: crate::mcp::protocol::ElicitationRequest = match request.params.as_ref() {
+            Some(params) => serde_json::from_value(params.clone())
+                .map_err(|e| AppError::InvalidParams(format!("Invalid elicitation request: {}", e)))?,
+            None => {
+                return Ok(JsonRpcResponse::error(
+                    request.id.unwrap_or(Value::Null),
+                    JsonRpcError::invalid_params("Missing params for elicitation request".to_string()),
+                ));
+            }
+        };
+
+        // Get the server ID that initiated this request
+        let session_read = session.read().await;
+        let server_id = session_read.client_id.clone(); // Use client_id as fallback
+        drop(session_read);
+
+        // Request input from user via elicitation manager
+        match self.elicitation_manager.request_input(
+            server_id,
+            elicitation_req,
+            None, // Use default timeout
+        ).await {
+            Ok(response) => {
+                Ok(JsonRpcResponse::success(
+                    request.id.unwrap_or(Value::Null),
+                    serde_json::to_value(response)?,
+                ))
+            }
+            Err(e) => {
+                Ok(JsonRpcResponse::error(
+                    request.id.unwrap_or(Value::Null),
+                    JsonRpcError::custom(
+                        -32603,
+                        format!("Elicitation failed: {}", e),
+                        None,
+                    ),
+                ))
+            }
+        }
+    }
+
     /// Handle initialize request
     async fn handle_initialize(
         &self,
@@ -402,6 +459,9 @@ impl McpGateway {
         request: JsonRpcRequest,
     ) -> AppResult<JsonRpcResponse> {
         // Extract client capabilities from request params
+        // NOTE: Per MCP spec, all clients must handle notifications including listChanged.
+        // We store capabilities for potential future features (sampling, roots/listChanged, etc.)
+        // but don't gate deferred loading on them since notification support is mandatory.
         let client_capabilities = request
             .params
             .as_ref()
@@ -411,7 +471,7 @@ impl McpGateway {
         if let Some(ref caps) = client_capabilities {
             tracing::debug!("Client capabilities received: {:?}", caps);
         } else {
-            tracing::warn!("Client did not provide capabilities in initialize request");
+            tracing::debug!("Client did not provide capabilities in initialize request (optional per MCP spec)");
         }
 
         let session_read = session.read().await;
@@ -467,16 +527,17 @@ impl McpGateway {
         // Merge results
         let merged = merge_initialize_results(init_results, failures);
 
-        // Store in session
+        // Store capabilities in session
         {
             let mut session_write = session.write().await;
             session_write.merged_capabilities = Some(merged.clone());
             session_write.client_capabilities = client_capabilities.clone();
         }
 
-        // Check if we should enable deferred loading
-        // Deferred loading requires that at least one server supports listChanged notifications
-        // and that the client can receive these notifications (implied by MCP spec)
+        // Enable deferred loading if requested AND client supports listChanged notifications
+        // The unified MCP gateway acts as a server to the client and sends listChanged notifications
+        // when tools are activated via the search tool. Backend MCP servers don't need to support
+        // listChanged - they just provide their tools normally.
         let session_read = session.read().await;
         let should_enable_deferred = session_read.deferred_loading_requested;
         let client_id_for_log = session_read.client_id.clone();
@@ -484,101 +545,88 @@ impl McpGateway {
         drop(session_read);
 
         if should_enable_deferred {
-            // Check if any server supports listChanged for tools
-            let any_server_supports_list_changed = merged
-                .capabilities
-                .tools
+            // Check if client supports receiving listChanged notifications
+            let client_supports_notifications = client_capabilities
                 .as_ref()
-                .and_then(|t| t.list_changed)
-                .unwrap_or(false)
-                || merged
-                    .capabilities
-                    .resources
-                    .as_ref()
-                    .and_then(|r| r.list_changed)
-                    .unwrap_or(false)
-                || merged
-                    .capabilities
-                    .prompts
-                    .as_ref()
-                    .and_then(|p| p.list_changed)
-                    .unwrap_or(false);
+                .map(|caps| caps.supports_tools_list_changed())
+                .unwrap_or(false);
 
-            if any_server_supports_list_changed {
-                tracing::info!(
-                    "Setting up deferred loading for client {}: servers support listChanged",
+            if !client_supports_notifications {
+                tracing::warn!(
+                    "Deferred loading requested for client {} but client does not support tools.listChanged notifications. \
+                     Falling back to normal mode. Client must declare {{ tools: {{ listChanged: true }} }} in initialize capabilities.",
                     client_id_for_log
-                );
-
-                // Ensure servers are started
-                for server_id in &allowed_servers_for_deferred {
-                    if !self.server_manager.is_running(server_id) {
-                        self.server_manager.start_server(server_id).await?;
-                    }
-                }
-
-                // Fetch full catalog from all servers
-                let (tools, _) = self
-                    .fetch_and_merge_tools(
-                        &allowed_servers_for_deferred,
-                        JsonRpcRequest::new(
-                            Some(serde_json::json!(1)),
-                            "tools/list".to_string(),
-                            None,
-                        ),
-                    )
-                    .await
-                    .unwrap_or_default();
-
-                let (resources, _) = self
-                    .fetch_and_merge_resources(
-                        &allowed_servers_for_deferred,
-                        JsonRpcRequest::new(
-                            Some(serde_json::json!(2)),
-                            "resources/list".to_string(),
-                            None,
-                        ),
-                    )
-                    .await
-                    .unwrap_or_default();
-
-                let (prompts, _) = self
-                    .fetch_and_merge_prompts(
-                        &allowed_servers_for_deferred,
-                        JsonRpcRequest::new(
-                            Some(serde_json::json!(3)),
-                            "prompts/list".to_string(),
-                            None,
-                        ),
-                    )
-                    .await
-                    .unwrap_or_default();
-
-                let mut session_write = session.write().await;
-                session_write.deferred_loading = Some(DeferredLoadingState {
-                    enabled: true,
-                    activated_tools: std::collections::HashSet::new(),
-                    full_catalog: tools.clone(),
-                    activated_resources: std::collections::HashSet::new(),
-                    full_resource_catalog: resources.clone(),
-                    activated_prompts: std::collections::HashSet::new(),
-                    full_prompt_catalog: prompts.clone(),
-                });
-
-                tracing::info!(
-                    "Deferred loading enabled for client {}: {} tools, {} resources, {} prompts",
-                    client_id_for_log,
-                    tools.len(),
-                    resources.len(),
-                    prompts.len(),
                 );
             } else {
-                tracing::warn!(
-                    "Deferred loading requested for client {} but no servers support listChanged notifications. Falling back to normal mode.",
+                tracing::info!(
+                    "Setting up deferred loading for client {}: client supports listChanged, fetching full catalog from backend servers",
                     client_id_for_log
                 );
+
+            // Ensure servers are started
+            for server_id in &allowed_servers_for_deferred {
+                if !self.server_manager.is_running(server_id) {
+                    self.server_manager.start_server(server_id).await?;
+                }
             }
-        }
+
+            // Fetch full catalog from all backend servers
+            let (tools, _) = self
+                .fetch_and_merge_tools(
+                    &allowed_servers_for_deferred,
+                    JsonRpcRequest::new(
+                        Some(serde_json::json!(1)),
+                        "tools/list".to_string(),
+                        None,
+                    ),
+                )
+                .await
+                .unwrap_or_default();
+
+            let (resources, _) = self
+                .fetch_and_merge_resources(
+                    &allowed_servers_for_deferred,
+                    JsonRpcRequest::new(
+                        Some(serde_json::json!(2)),
+                        "resources/list".to_string(),
+                        None,
+                    ),
+                )
+                .await
+                .unwrap_or_default();
+
+            let (prompts, _) = self
+                .fetch_and_merge_prompts(
+                    &allowed_servers_for_deferred,
+                    JsonRpcRequest::new(
+                        Some(serde_json::json!(3)),
+                        "prompts/list".to_string(),
+                        None,
+                    ),
+                )
+                .await
+                .unwrap_or_default();
+
+            let mut session_write = session.write().await;
+            session_write.deferred_loading = Some(DeferredLoadingState {
+                enabled: true,
+                activated_tools: std::collections::HashSet::new(),
+                full_catalog: tools.clone(),
+                activated_resources: std::collections::HashSet::new(),
+                full_resource_catalog: resources.clone(),
+                activated_prompts: std::collections::HashSet::new(),
+                full_prompt_catalog: prompts.clone(),
+            });
+
+            tracing::info!(
+                "Deferred loading enabled for client {}: {} tools, {} resources, {} prompts in catalog",
+                client_id_for_log,
+                tools.len(),
+                resources.len(),
+                prompts.len(),
+            );
+            } // end of if client_supports_notifications
+        } // end of if should_enable_deferred
 
         // Build response
         let result = json!({

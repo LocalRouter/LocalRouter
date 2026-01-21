@@ -291,6 +291,107 @@ impl Router {
         }
     }
 
+    /// Validate client exists and is enabled, then get their strategy
+    /// Returns 403 (via AppError::Unauthorized) if client is invalid or disabled
+    fn validate_client_and_strategy(
+        &self,
+        client_id: &str,
+    ) -> AppResult<(crate::config::Client, crate::config::Strategy)> {
+        let config = self.config_manager.get();
+
+        let client = config
+            .clients
+            .iter()
+            .find(|c| c.id == client_id)
+            .ok_or_else(|| {
+                warn!("Client '{}' not found", client_id);
+                AppError::Unauthorized
+            })?
+            .clone();
+
+        if !client.enabled {
+            warn!("Client '{}' is disabled", client_id);
+            return Err(AppError::Unauthorized);
+        }
+
+        let strategy = config
+            .strategies
+            .iter()
+            .find(|s| s.id == client.strategy_id)
+            .ok_or_else(|| {
+                warn!(
+                    "Strategy '{}' not found for client '{}'",
+                    client.strategy_id, client_id
+                );
+                AppError::Router(format!("Strategy '{}' not found", client.strategy_id))
+            })?
+            .clone();
+
+        Ok((client, strategy))
+    }
+
+    /// Check client-level rate limits
+    async fn check_client_rate_limits(&self, client_id: &str) -> AppResult<()> {
+        let usage_estimate = UsageInfo {
+            input_tokens: 0,
+            output_tokens: 0,
+            cost_usd: 0.0,
+        };
+
+        let rate_check = self
+            .rate_limiter
+            .check_api_key(client_id, &usage_estimate)
+            .await?;
+
+        if !rate_check.allowed {
+            warn!(
+                "Client '{}' rate limited. Retry after {} seconds",
+                client_id,
+                rate_check.retry_after_secs.unwrap_or(0)
+            );
+            return Err(AppError::RateLimitExceeded);
+        }
+
+        Ok(())
+    }
+
+    /// Find provider for a model when no provider is specified in model string
+    /// Searches through strategy's allowed models to find which provider has this model
+    async fn find_provider_for_model(
+        &self,
+        model: &str,
+        strategy: &crate::config::Strategy,
+    ) -> AppResult<(String, String)> {
+        let normalized_requested = Self::normalize_model_id(model);
+
+        // Check individual_models first
+        for (prov, mod_name) in &strategy.allowed_models.individual_models {
+            let normalized_allowed = Self::normalize_model_id(mod_name);
+            if normalized_allowed == normalized_requested {
+                return Ok((prov.clone(), model.to_string()));
+            }
+        }
+
+        // If not found, check providers in all_provider_models
+        for prov in &strategy.allowed_models.all_provider_models {
+            if let Some(provider_instance) = self.provider_registry.get_provider(prov) {
+                if let Ok(models) = provider_instance.list_models().await {
+                    if models.iter().any(|m| {
+                        let normalized_provider_model = Self::normalize_model_id(&m.id);
+                        normalized_provider_model == normalized_requested
+                    }) {
+                        return Ok((prov.clone(), model.to_string()));
+                    }
+                }
+            }
+        }
+
+        Err(AppError::Router(format!(
+            "Model '{}' is not allowed by this strategy",
+            model
+        )))
+    }
+
     /// Normalize a model ID for comparison
     ///
     /// Different providers return model IDs in different formats:
@@ -963,7 +1064,6 @@ impl Router {
         // Special handling for internal test token (bypasses all routing config)
         if client_id == "internal-test" {
             debug!("Internal test token detected - bypassing routing config");
-            // For internal tests, parse the model string and execute directly
             let (provider, model) = Self::parse_model_string(&request.model);
             if provider.is_empty() {
                 return Err(AppError::Router(
@@ -975,114 +1075,28 @@ impl Router {
                 .await;
         }
 
-        // 1. Get client and strategy configuration
-        let config = self.config_manager.get();
-        let client = config
-            .clients
-            .iter()
-            .find(|c| c.id == client_id)
-            .ok_or_else(|| {
-                warn!("Client '{}' not found", client_id);
-                AppError::Unauthorized
-            })?;
+        // 1. Validate client and get strategy
+        let (_client, strategy) = self.validate_client_and_strategy(client_id)?;
 
-        // Check if client is enabled
-        if !client.enabled {
-            warn!("Client '{}' is disabled", client_id);
-            return Err(AppError::Unauthorized);
-        }
-
-        let strategy = config
-            .strategies
-            .iter()
-            .find(|s| s.id == client.strategy_id)
-            .ok_or_else(|| {
-                warn!(
-                    "Strategy '{}' not found for client '{}'",
-                    client.strategy_id, client_id
-                );
-                AppError::Router(format!("Strategy '{}' not found", client.strategy_id))
-            })?;
-
-        // 2. Check client-level rate limits (pre-request check for request-based limits)
-        let usage_estimate = UsageInfo {
-            input_tokens: 0,
-            output_tokens: 0,
-            cost_usd: 0.0,
-        };
-
-        let rate_check = self
-            .rate_limiter
-            .check_api_key(client_id, &usage_estimate)
-            .await?;
-
-        if !rate_check.allowed {
-            warn!(
-                "API key '{}' rate limited. Retry after {} seconds",
-                client_id,
-                rate_check.retry_after_secs.unwrap_or(0)
-            );
-            return Err(AppError::RateLimitExceeded);
-        }
+        // 2. Check client-level rate limits
+        self.check_client_rate_limits(client_id).await?;
 
         // 3. Route based on requested model
         if request.model == "localrouter/auto" {
-            // Auto-routing with intelligent fallback
-            // Note: auto-routing handles its own strategy rate limit checks per model
             debug!("Using auto-routing for client '{}'", client_id);
             return self
-                .complete_with_auto_routing(client_id, strategy, request)
+                .complete_with_auto_routing(client_id, &strategy, request)
                 .await;
         }
 
         // 4. For specific model requests, check strategy rate limits
-        // (Auto-routing checks these per-model in complete_with_auto_routing)
-        self.check_strategy_rate_limits(strategy, "", "")?;
+        self.check_strategy_rate_limits(&strategy, "", "")?;
 
-        // 5. Specific model requested - validate and execute
+        // 5. Parse and validate model
         let (provider, model) = Self::parse_model_string(&request.model);
 
-        // If no provider specified, try to find it from allowed models
         let (final_provider, final_model) = if provider.is_empty() {
-            // Need to find which provider has this model from allowed list
-            let mut found_provider = None;
-            let normalized_requested = Self::normalize_model_id(&model);
-
-            // Check individual_models first
-            for (prov, mod_name) in &strategy.allowed_models.individual_models {
-                let normalized_allowed = Self::normalize_model_id(mod_name);
-                if normalized_allowed == normalized_requested {
-                    found_provider = Some(prov.clone());
-                    break;
-                }
-            }
-
-            // If not found, check providers in all_provider_models
-            if found_provider.is_none() {
-                for prov in &strategy.allowed_models.all_provider_models {
-                    if let Some(provider_instance) = self.provider_registry.get_provider(prov) {
-                        if let Ok(models) = provider_instance.list_models().await {
-                            // Use normalized comparison for consistent matching
-                            if models.iter().any(|m| {
-                                let normalized_provider_model = Self::normalize_model_id(&m.id);
-                                normalized_provider_model == normalized_requested
-                            }) {
-                                found_provider = Some(prov.clone());
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-
-            if let Some(prov) = found_provider {
-                (prov, model)
-            } else {
-                return Err(AppError::Router(format!(
-                    "Model '{}' is not allowed by this strategy",
-                    request.model
-                )));
-            }
+            self.find_provider_for_model(&model, &strategy).await?
         } else {
             // Provider specified - validate it's allowed
             if !strategy.is_model_allowed(&provider, &model) {
@@ -1105,7 +1119,6 @@ impl Router {
     }
 
     /// Route a streaming completion request based on API key configuration
-    /// Note: Auto-routing (localrouter/auto) is not supported for streaming
     pub async fn stream_complete(
         &self,
         client_id: &str,
@@ -1140,91 +1153,25 @@ impl Router {
             .await);
         }
 
-        // 1. Get client and strategy
-        let config = self.config_manager.get();
-        let client = config
-            .clients
-            .iter()
-            .find(|c| c.id == client_id)
-            .ok_or_else(|| {
-                warn!("Client '{}' not found", client_id);
-                AppError::Unauthorized
-            })?;
-
-        if !client.enabled {
-            warn!("Client '{}' is disabled", client_id);
-            return Err(AppError::Unauthorized);
-        }
-
-        let strategy = config
-            .strategies
-            .iter()
-            .find(|s| s.id == client.strategy_id)
-            .ok_or_else(|| {
-                AppError::Router(format!("Strategy '{}' not found", client.strategy_id))
-            })?;
+        // 1. Validate client and get strategy
+        let (_client, strategy) = self.validate_client_and_strategy(client_id)?;
 
         // 2. Check rate limits
-        let usage_estimate = UsageInfo {
-            input_tokens: 0,
-            output_tokens: 0,
-            cost_usd: 0.0,
-        };
-        let rate_check = self
-            .rate_limiter
-            .check_api_key(client_id, &usage_estimate)
-            .await?;
-        if !rate_check.allowed {
-            warn!("API key '{}' rate limited", client_id);
-            return Err(AppError::RateLimitExceeded);
-        }
+        self.check_client_rate_limits(client_id).await?;
 
         // 3. Route - handle auto-routing for streaming
         if request.model == "localrouter/auto" {
-            // Auto-routing with intelligent fallback for streaming
             debug!("Using auto-routing for streaming client '{}'", client_id);
             return self
-                .stream_complete_with_auto_routing(client_id, strategy, request)
+                .stream_complete_with_auto_routing(client_id, &strategy, request)
                 .await;
         }
 
         // 4. Parse and validate model
         let (provider, model) = Self::parse_model_string(&request.model);
+
         let (final_provider, final_model) = if provider.is_empty() {
-            // Find provider from allowed models
-            let mut found = None;
-            let normalized_requested = Self::normalize_model_id(&model);
-
-            // Check individual_models first
-            for (prov, mod_name) in &strategy.allowed_models.individual_models {
-                let normalized_allowed = Self::normalize_model_id(mod_name);
-                if normalized_allowed == normalized_requested {
-                    found = Some(prov.clone());
-                    break;
-                }
-            }
-
-            // If not found, check providers in all_provider_models
-            if found.is_none() {
-                for prov in &strategy.allowed_models.all_provider_models {
-                    if let Some(p) = self.provider_registry.get_provider(prov) {
-                        if let Ok(models) = p.list_models().await {
-                            // Use normalized comparison for consistent matching
-                            if models.iter().any(|m| {
-                                let normalized_provider_model = Self::normalize_model_id(&m.id);
-                                normalized_provider_model == normalized_requested
-                            }) {
-                                found = Some(prov.clone());
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-
-            found
-                .map(|p| (p, model))
-                .ok_or_else(|| AppError::Router(format!("Model '{}' not allowed", request.model)))?
+            self.find_provider_for_model(&model, &strategy).await?
         } else {
             if !strategy.is_model_allowed(&provider, &model) {
                 return Err(AppError::Router(format!(
@@ -1235,9 +1182,8 @@ impl Router {
             (provider, model)
         };
 
-        // 5. Check strategy rate limits for specific model requests
-        // (Auto-routing checks these per-model in stream_complete_with_auto_routing)
-        self.check_strategy_rate_limits(strategy, &final_provider, &final_model)?;
+        // 5. Check strategy rate limits
+        self.check_strategy_rate_limits(&strategy, &final_provider, &final_model)?;
 
         // 6. Execute streaming request
         let provider_instance = self
@@ -1451,7 +1397,6 @@ impl Router {
         // Special handling for internal test token (bypasses all routing config)
         if client_id == "internal-test" {
             debug!("Internal test token detected - bypassing routing config");
-            // For internal tests, parse the model string and execute directly
             let (provider, model) = Self::parse_model_string(&request.model);
             if provider.is_empty() {
                 return Err(AppError::Router(
@@ -1463,112 +1408,28 @@ impl Router {
                 .await;
         }
 
-        // 1. Get client and strategy configuration
-        let config = self.config_manager.get();
-        let client = config
-            .clients
-            .iter()
-            .find(|c| c.id == client_id)
-            .ok_or_else(|| {
-                warn!("Client '{}' not found", client_id);
-                AppError::Unauthorized
-            })?;
-
-        // Check if client is enabled
-        if !client.enabled {
-            warn!("Client '{}' is disabled", client_id);
-            return Err(AppError::Unauthorized);
-        }
-
-        let strategy = config
-            .strategies
-            .iter()
-            .find(|s| s.id == client.strategy_id)
-            .ok_or_else(|| {
-                warn!(
-                    "Strategy '{}' not found for client '{}'",
-                    client.strategy_id, client_id
-                );
-                AppError::Router(format!("Strategy '{}' not found", client.strategy_id))
-            })?;
+        // 1. Validate client and get strategy
+        let (_client, strategy) = self.validate_client_and_strategy(client_id)?;
 
         // 2. Check client-level rate limits
-        let usage_estimate = UsageInfo {
-            input_tokens: 0,
-            output_tokens: 0,
-            cost_usd: 0.0,
-        };
-
-        let rate_check = self
-            .rate_limiter
-            .check_api_key(client_id, &usage_estimate)
-            .await?;
-
-        if !rate_check.allowed {
-            warn!(
-                "Client '{}' rate limited. Retry after {} seconds",
-                client_id,
-                rate_check.retry_after_secs.unwrap_or(0)
-            );
-            return Err(AppError::RateLimitExceeded);
-        }
+        self.check_client_rate_limits(client_id).await?;
 
         // 3. Route based on requested model
         if request.model == "localrouter/auto" {
-            // Auto-routing with intelligent fallback
             debug!("Using auto-routing for embeddings client '{}'", client_id);
             return self
-                .embed_with_auto_routing(client_id, strategy, request)
+                .embed_with_auto_routing(client_id, &strategy, request)
                 .await;
         }
 
         // 4. For specific model requests, check strategy rate limits
-        self.check_strategy_rate_limits(strategy, "", "")?;
+        self.check_strategy_rate_limits(&strategy, "", "")?;
 
-        // 5. Specific model requested - validate and execute
+        // 5. Parse and validate model
         let (provider, model) = Self::parse_model_string(&request.model);
 
-        // If no provider specified, try to find it from allowed models
         let (final_provider, final_model) = if provider.is_empty() {
-            // Need to find which provider has this model from allowed list
-            let mut found_provider = None;
-            let normalized_requested = Self::normalize_model_id(&model);
-
-            // Check individual_models first
-            for (prov, mod_name) in &strategy.allowed_models.individual_models {
-                let normalized_allowed = Self::normalize_model_id(mod_name);
-                if normalized_allowed == normalized_requested {
-                    found_provider = Some(prov.clone());
-                    break;
-                }
-            }
-
-            // If not found, check providers in all_provider_models
-            if found_provider.is_none() {
-                for prov in &strategy.allowed_models.all_provider_models {
-                    if let Some(provider_instance) = self.provider_registry.get_provider(prov) {
-                        if let Ok(models) = provider_instance.list_models().await {
-                            // Use normalized comparison for consistent matching
-                            if models.iter().any(|m| {
-                                let normalized_provider_model = Self::normalize_model_id(&m.id);
-                                normalized_provider_model == normalized_requested
-                            }) {
-                                found_provider = Some(prov.clone());
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-
-            if let Some(prov) = found_provider {
-                (prov, model)
-            } else {
-                return Err(AppError::Router(format!(
-                    "Model '{}' is not allowed by this strategy",
-                    request.model
-                )));
-            }
+            self.find_provider_for_model(&model, &strategy).await?
         } else {
             // Provider specified - validate it's allowed
             if !strategy.is_model_allowed(&provider, &model) {

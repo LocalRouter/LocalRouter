@@ -4,6 +4,7 @@
 //! into a single interface with namespace-based routing and deferred loading.
 
 pub mod deferred;
+pub mod elicitation;
 #[allow(clippy::module_inception)]
 mod gateway;
 mod merger;

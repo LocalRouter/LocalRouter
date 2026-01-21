@@ -95,6 +95,125 @@ pub async fn mcp_gateway_handler(
     let global_roots = state.config_manager.get_roots();
     let roots = merge_roots(&global_roots, client.roots.as_ref());
 
+    // Intercept client capability methods before routing to gateway
+    // These are requests FROM backend servers TO gateway (gateway acts as MCP client)
+    match request.method.as_str() {
+        "sampling/createMessage" => {
+            // Check if sampling is enabled for this client
+            if !client.mcp_sampling_enabled {
+                let error = crate::mcp::protocol::JsonRpcError::custom(
+                    -32601,
+                    "Sampling is disabled for this client".to_string(),
+                    Some(serde_json::json!({
+                        "hint": "Contact administrator to enable mcp_sampling_enabled for your client"
+                    })),
+                );
+
+                let response = crate::mcp::protocol::JsonRpcResponse::error(
+                    request.id.unwrap_or(serde_json::Value::Null),
+                    error,
+                );
+
+                return Json(response).into_response();
+            }
+
+            // Parse sampling request from params
+            let sampling_req: crate::mcp::protocol::SamplingRequest = match request.params.as_ref() {
+                Some(params) => match serde_json::from_value(params.clone()) {
+                    Ok(req) => req,
+                    Err(e) => {
+                        let error = crate::mcp::protocol::JsonRpcError::invalid_params(
+                            format!("Invalid sampling request: {}", e)
+                        );
+                        let response = crate::mcp::protocol::JsonRpcResponse::error(
+                            request.id.unwrap_or(serde_json::Value::Null),
+                            error,
+                        );
+                        return Json(response).into_response();
+                    }
+                },
+                None => {
+                    let error = crate::mcp::protocol::JsonRpcError::invalid_params(
+                        "Missing params for sampling request".to_string()
+                    );
+                    let response = crate::mcp::protocol::JsonRpcResponse::error(
+                        request.id.unwrap_or(serde_json::Value::Null),
+                        error,
+                    );
+                    return Json(response).into_response();
+                }
+            };
+
+            // Convert MCP sampling request to provider completion request
+            let mut completion_req = match crate::mcp::gateway::sampling::convert_sampling_to_chat_request(sampling_req) {
+                Ok(req) => req,
+                Err(e) => {
+                    let error = crate::mcp::protocol::JsonRpcError::custom(
+                        -32603,
+                        format!("Failed to convert sampling request: {}", e),
+                        None,
+                    );
+                    let response = crate::mcp::protocol::JsonRpcResponse::error(
+                        request.id.unwrap_or(serde_json::Value::Null),
+                        error,
+                    );
+                    return Json(response).into_response();
+                }
+            };
+
+            // Default to auto-routing if no specific model requested
+            if completion_req.model.is_empty() {
+                completion_req.model = "localrouter/auto".to_string();
+            }
+
+            // Call router to execute completion
+            let completion_resp = match state.router.complete(&client_id, completion_req).await {
+                Ok(resp) => resp,
+                Err(e) => {
+                    let error = crate::mcp::protocol::JsonRpcError::custom(
+                        -32603,
+                        format!("LLM completion failed: {}", e),
+                        None,
+                    );
+                    let response = crate::mcp::protocol::JsonRpcResponse::error(
+                        request.id.unwrap_or(serde_json::Value::Null),
+                        error,
+                    );
+                    return Json(response).into_response();
+                }
+            };
+
+            // Convert provider response back to MCP sampling response
+            let sampling_resp = match crate::mcp::gateway::sampling::convert_chat_to_sampling_response(completion_resp) {
+                Ok(resp) => resp,
+                Err(e) => {
+                    let error = crate::mcp::protocol::JsonRpcError::custom(
+                        -32603,
+                        format!("Failed to convert completion response: {}", e),
+                        None,
+                    );
+                    let response = crate::mcp::protocol::JsonRpcResponse::error(
+                        request.id.unwrap_or(serde_json::Value::Null),
+                        error,
+                    );
+                    return Json(response).into_response();
+                }
+            };
+
+            // Return success response
+            let response = crate::mcp::protocol::JsonRpcResponse::success(
+                request.id.unwrap_or(serde_json::Value::Null),
+                serde_json::to_value(sampling_resp).unwrap(),
+            );
+
+            return Json(response).into_response();
+        }
+
+        _ => {
+            // Continue with normal gateway handling for other methods
+        }
+    }
+
     // Handle request via gateway
     match state
         .mcp_gateway
@@ -218,32 +337,154 @@ pub async fn mcp_server_handler(
         }
 
         "sampling/createMessage" => {
-            // Return "not yet implemented" for sampling
-            let error = crate::mcp::protocol::JsonRpcError::custom(
-                -32601,
-                "sampling/createMessage not yet fully implemented".to_string(),
-                Some(serde_json::json!({
-                    "status": "partial",
-                    "hint": "Sampling infrastructure is in place but requires provider integration"
-                })),
-            );
+            // Check if sampling is enabled for this client
+            if !client.mcp_sampling_enabled {
+                let error = crate::mcp::protocol::JsonRpcError::custom(
+                    -32601,
+                    "Sampling is disabled for this client".to_string(),
+                    Some(serde_json::json!({
+                        "hint": "Contact administrator to enable mcp_sampling_enabled for your client"
+                    })),
+                );
 
-            let response = crate::mcp::protocol::JsonRpcResponse::error(
+                let response = crate::mcp::protocol::JsonRpcResponse::error(
+                    request.id.unwrap_or(serde_json::Value::Null),
+                    error,
+                );
+
+                return Json(response).into_response();
+            }
+
+            // Parse sampling request from params
+            let sampling_req: crate::mcp::protocol::SamplingRequest = match request.params.as_ref() {
+                Some(params) => match serde_json::from_value(params.clone()) {
+                    Ok(req) => req,
+                    Err(e) => {
+                        let error = crate::mcp::protocol::JsonRpcError::invalid_params(
+                            format!("Invalid sampling request: {}", e)
+                        );
+                        let response = crate::mcp::protocol::JsonRpcResponse::error(
+                            request.id.unwrap_or(serde_json::Value::Null),
+                            error,
+                        );
+                        return Json(response).into_response();
+                    }
+                },
+                None => {
+                    let error = crate::mcp::protocol::JsonRpcError::invalid_params(
+                        "Missing params for sampling request".to_string()
+                    );
+                    let response = crate::mcp::protocol::JsonRpcResponse::error(
+                        request.id.unwrap_or(serde_json::Value::Null),
+                        error,
+                    );
+                    return Json(response).into_response();
+                }
+            };
+
+            // Convert MCP sampling request to provider completion request
+            let mut completion_req = match crate::mcp::gateway::sampling::convert_sampling_to_chat_request(sampling_req) {
+                Ok(req) => req,
+                Err(e) => {
+                    let error = crate::mcp::protocol::JsonRpcError::custom(
+                        -32603,
+                        format!("Failed to convert sampling request: {}", e),
+                        None,
+                    );
+                    let response = crate::mcp::protocol::JsonRpcResponse::error(
+                        request.id.unwrap_or(serde_json::Value::Null),
+                        error,
+                    );
+                    return Json(response).into_response();
+                }
+            };
+
+            // Default to auto-routing if no specific model requested
+            if completion_req.model.is_empty() {
+                completion_req.model = "localrouter/auto".to_string();
+            }
+
+            // Call router to execute completion
+            let completion_resp = match state.router.complete(&client_id, completion_req).await {
+                Ok(resp) => resp,
+                Err(e) => {
+                    let error = crate::mcp::protocol::JsonRpcError::custom(
+                        -32603,
+                        format!("LLM completion failed: {}", e),
+                        None,
+                    );
+                    let response = crate::mcp::protocol::JsonRpcResponse::error(
+                        request.id.unwrap_or(serde_json::Value::Null),
+                        error,
+                    );
+                    return Json(response).into_response();
+                }
+            };
+
+            // Convert provider response back to MCP sampling response
+            let sampling_resp = match crate::mcp::gateway::sampling::convert_chat_to_sampling_response(completion_resp) {
+                Ok(resp) => resp,
+                Err(e) => {
+                    let error = crate::mcp::protocol::JsonRpcError::custom(
+                        -32603,
+                        format!("Failed to convert completion response: {}", e),
+                        None,
+                    );
+                    let response = crate::mcp::protocol::JsonRpcResponse::error(
+                        request.id.unwrap_or(serde_json::Value::Null),
+                        error,
+                    );
+                    return Json(response).into_response();
+                }
+            };
+
+            // Return success response
+            let response = crate::mcp::protocol::JsonRpcResponse::success(
                 request.id.unwrap_or(serde_json::Value::Null),
-                error,
+                serde_json::to_value(sampling_resp).unwrap(),
             );
 
             return Json(response).into_response();
         }
 
         "elicitation/requestInput" => {
-            // Return "not yet implemented" for elicitation
+            // Parse elicitation request from params
+            let elicitation_req: crate::mcp::protocol::ElicitationRequest = match request.params.as_ref() {
+                Some(params) => match serde_json::from_value(params.clone()) {
+                    Ok(req) => req,
+                    Err(e) => {
+                        let error = crate::mcp::protocol::JsonRpcError::invalid_params(
+                            format!("Invalid elicitation request: {}", e)
+                        );
+                        let response = crate::mcp::protocol::JsonRpcResponse::error(
+                            request.id.unwrap_or(serde_json::Value::Null),
+                            error,
+                        );
+                        return Json(response).into_response();
+                    }
+                },
+                None => {
+                    let error = crate::mcp::protocol::JsonRpcError::invalid_params(
+                        "Missing params for elicitation request".to_string()
+                    );
+                    let response = crate::mcp::protocol::JsonRpcResponse::error(
+                        request.id.unwrap_or(serde_json::Value::Null),
+                        error,
+                    );
+                    return Json(response).into_response();
+                }
+            };
+
+            // Get the elicitation manager from gateway
+            // For now, return a helpful message that elicitation needs WebSocket support
             let error = crate::mcp::protocol::JsonRpcError::custom(
                 -32601,
-                "elicitation/requestInput not yet implemented".to_string(),
+                "Elicitation requires WebSocket notification infrastructure".to_string(),
                 Some(serde_json::json!({
-                    "status": "planned",
-                    "hint": "Elicitation support planned for future release"
+                    "status": "partial",
+                    "hint": "Elicitation module created but needs WebSocket event emission to notify external clients",
+                    "message": elicitation_req.message,
+                    "requires": "WebSocket connection for user interaction"
                 })),
             );
 

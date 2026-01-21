@@ -7,29 +7,60 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use localrouter_ai::clients::{ClientManager, TokenStore};
-use localrouter_ai::config::ConfigManager;
+use localrouter_ai::config::{AppConfig, ConfigManager};
 use localrouter_ai::mcp::gateway::{GatewayConfig, McpGateway};
 use localrouter_ai::mcp::manager::McpServerManager;
 use localrouter_ai::mcp::protocol::{JsonRpcNotification, JsonRpcRequest};
 use localrouter_ai::monitoring::metrics::MetricsCollector;
+use localrouter_ai::monitoring::storage::MetricsDatabase;
+use localrouter_ai::providers::health::HealthCheckManager;
 use localrouter_ai::providers::registry::ProviderRegistry;
 use localrouter_ai::router::{RateLimiterManager, Router};
 use localrouter_ai::server::state::AppState;
 
-/// Test that broadcast channel is properly integrated into AppState and Gateway
-#[tokio::test]
-async fn test_broadcast_channel_integration() {
-    // Create minimal dependencies
-    let router = Arc::new(Router::new(vec![]));
-    let rate_limiter = Arc::new(RateLimiterManager::new());
-    let provider_registry = Arc::new(ProviderRegistry::new());
-    let config_manager = Arc::new(ConfigManager::for_testing());
-    let client_manager = Arc::new(ClientManager::new(config_manager.clone()));
-    let token_store = Arc::new(TokenStore::new());
-    let metrics_collector = Arc::new(MetricsCollector::new());
+/// Helper to create a minimal test router for gateway tests
+fn create_test_router() -> Arc<Router> {
+    let config = AppConfig::default();
+    let config_manager = Arc::new(ConfigManager::new(
+        config,
+        std::path::PathBuf::from("/tmp/test_notification_router.yaml"),
+    ));
 
-    // Create AppState (this creates the broadcast channel)
-    let state = AppState::new(
+    let health_manager = Arc::new(HealthCheckManager::default());
+    let provider_registry = Arc::new(ProviderRegistry::new(health_manager));
+    let rate_limiter = Arc::new(RateLimiterManager::new(None));
+
+    let metrics_db_path = std::env::temp_dir()
+        .join(format!("test_notification_metrics_{}.db", uuid::Uuid::new_v4()));
+    let metrics_db = Arc::new(MetricsDatabase::new(metrics_db_path).unwrap());
+    let metrics_collector = Arc::new(MetricsCollector::new(metrics_db));
+
+    Arc::new(Router::new(
+        config_manager,
+        provider_registry,
+        rate_limiter,
+        metrics_collector,
+    ))
+}
+
+/// Helper to create a minimal test AppState
+fn create_test_app_state() -> AppState {
+    let router = create_test_router();
+    let config = AppConfig::default();
+    let config_path = std::env::temp_dir().join(format!("test_config_{}.yaml", uuid::Uuid::new_v4()));
+    let config_manager = Arc::new(ConfigManager::new(config, config_path));
+    let client_manager = Arc::new(ClientManager::new(vec![])); // Empty client list for tests
+    let token_store = Arc::new(TokenStore::new());
+
+    let health_manager = Arc::new(HealthCheckManager::default());
+    let provider_registry = Arc::new(ProviderRegistry::new(health_manager));
+    let rate_limiter = Arc::new(RateLimiterManager::new(None));
+
+    let metrics_db_path = std::env::temp_dir().join(format!("test_metrics_{}.db", uuid::Uuid::new_v4()));
+    let metrics_db = Arc::new(MetricsDatabase::new(metrics_db_path).unwrap());
+    let metrics_collector = Arc::new(MetricsCollector::new(metrics_db));
+
+    AppState::new(
         router,
         rate_limiter,
         provider_registry,
@@ -37,7 +68,14 @@ async fn test_broadcast_channel_integration() {
         client_manager,
         token_store,
         metrics_collector,
-    );
+    )
+}
+
+/// Test that broadcast channel is properly integrated into AppState and Gateway
+#[tokio::test]
+async fn test_broadcast_channel_integration() {
+    // Create test AppState (this creates the broadcast channel)
+    let state = create_test_app_state();
 
     // Verify broadcast channel exists
     assert!(
@@ -59,24 +97,8 @@ async fn test_broadcast_channel_integration() {
 /// Test that notifications can be sent and received through the broadcast channel
 #[tokio::test]
 async fn test_broadcast_channel_send_receive() {
-    // Create minimal AppState
-    let router = Arc::new(Router::new(vec![]));
-    let rate_limiter = Arc::new(RateLimiterManager::new());
-    let provider_registry = Arc::new(ProviderRegistry::new());
-    let config_manager = Arc::new(ConfigManager::for_testing());
-    let client_manager = Arc::new(ClientManager::new(config_manager.clone()));
-    let token_store = Arc::new(TokenStore::new());
-    let metrics_collector = Arc::new(MetricsCollector::new());
-
-    let state = AppState::new(
-        router,
-        rate_limiter,
-        provider_registry,
-        config_manager,
-        client_manager,
-        token_store,
-        metrics_collector,
-    );
+    // Create test AppState
+    let state = create_test_app_state();
 
     // Subscribe to broadcast channel (like a WebSocket client would)
     let mut rx = state.mcp_notification_broadcast.subscribe();
@@ -113,24 +135,8 @@ async fn test_broadcast_channel_send_receive() {
 /// Test that multiple subscribers can receive the same notification
 #[tokio::test]
 async fn test_broadcast_multiple_subscribers() {
-    // Create minimal AppState
-    let router = Arc::new(Router::new(vec![]));
-    let rate_limiter = Arc::new(RateLimiterManager::new());
-    let provider_registry = Arc::new(ProviderRegistry::new());
-    let config_manager = Arc::new(ConfigManager::for_testing());
-    let client_manager = Arc::new(ClientManager::new(config_manager.clone()));
-    let token_store = Arc::new(TokenStore::new());
-    let metrics_collector = Arc::new(MetricsCollector::new());
-
-    let state = AppState::new(
-        router,
-        rate_limiter,
-        provider_registry,
-        config_manager,
-        client_manager,
-        token_store,
-        metrics_collector,
-    );
+    // Create test AppState
+    let state = create_test_app_state();
 
     // Create multiple subscribers (simulate multiple WebSocket clients)
     let mut rx1 = state.mcp_notification_broadcast.subscribe();
@@ -181,24 +187,8 @@ async fn test_broadcast_multiple_subscribers() {
 /// Test that old messages are dropped when channel is full
 #[tokio::test]
 async fn test_broadcast_channel_backpressure() {
-    // Create minimal AppState
-    let router = Arc::new(Router::new(vec![]));
-    let rate_limiter = Arc::new(RateLimiterManager::new());
-    let provider_registry = Arc::new(ProviderRegistry::new());
-    let config_manager = Arc::new(ConfigManager::for_testing());
-    let client_manager = Arc::new(ClientManager::new(config_manager.clone()));
-    let token_store = Arc::new(TokenStore::new());
-    let metrics_collector = Arc::new(MetricsCollector::new());
-
-    let state = AppState::new(
-        router,
-        rate_limiter,
-        provider_registry,
-        config_manager,
-        client_manager,
-        token_store,
-        metrics_collector,
-    );
+    // Create test AppState
+    let state = create_test_app_state();
 
     // Create subscriber but don't read from it (simulate slow client)
     let _rx = state.mcp_notification_broadcast.subscribe();
@@ -223,34 +213,19 @@ async fn test_broadcast_channel_backpressure() {
 /// Test gateway notification handler forwards to broadcast channel
 #[tokio::test]
 async fn test_gateway_forwards_notifications() {
-    // Create minimal dependencies
-    let router = Arc::new(Router::new(vec![]));
-    let rate_limiter = Arc::new(RateLimiterManager::new());
-    let provider_registry = Arc::new(ProviderRegistry::new());
-    let config_manager = Arc::new(ConfigManager::for_testing());
-    let client_manager = Arc::new(ClientManager::new(config_manager.clone()));
-    let token_store = Arc::new(TokenStore::new());
-    let metrics_collector = Arc::new(MetricsCollector::new());
-
-    // Create AppState with broadcast channel
-    let state = AppState::new(
-        router,
-        rate_limiter,
-        provider_registry,
-        config_manager,
-        client_manager,
-        token_store,
-        metrics_collector,
-    );
+    // Create test AppState with broadcast channel
+    let state = create_test_app_state();
 
     // Subscribe to broadcast (like a WebSocket client would)
     let mut rx = state.mcp_notification_broadcast.subscribe();
 
     // Create MCP manager and gateway with broadcast
     let mcp_manager = Arc::new(McpServerManager::new());
+    let router = create_test_router();
     let gateway = Arc::new(McpGateway::new_with_broadcast(
         mcp_manager.clone(),
         GatewayConfig::default(),
+        router,
         Some(state.mcp_notification_broadcast.clone()),
     ));
 
@@ -260,6 +235,7 @@ async fn test_gateway_forwards_notifications() {
             "test_client",
             vec!["test_server".to_string()],
             false,
+            vec![], // Empty roots for test
             JsonRpcRequest::new(
                 Some(serde_json::json!(1)),
                 "initialize".to_string(),

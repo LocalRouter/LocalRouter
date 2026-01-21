@@ -1940,7 +1940,8 @@ async fn test_connection_refused() {
     let manager = Arc::new(McpServerManager::new());
 
     let gateway_config = GatewayConfig::default();
-    let gateway = Arc::new(McpGateway::new(manager, gateway_config));
+    let router = create_test_router();
+    let gateway = Arc::new(McpGateway::new(manager, gateway_config, router));
 
     // Configure servers that don't exist (will get connection refused)
     let request = JsonRpcRequest::new(Some(json!(1)), "tools/list".to_string(), Some(json!({})));
@@ -2040,4 +2041,226 @@ async fn test_tools_list_partial_failure() {
 
     // Response metadata might indicate partial failure
     // (depending on implementation)
+}
+#[tokio::test]
+async fn test_deferred_loading_enabled_with_client_capability() {
+    let (gateway, _manager, server1_mock, server2_mock) = setup_gateway_with_two_servers().await;
+
+    // Mock initialize responses
+    server1_mock.mock_method("initialize", json!({
+        "protocolVersion": "2024-11-05",
+        "capabilities": { "tools": {} },
+        "serverInfo": { "name": "Server 1", "version": "1.0.0" }
+    })).await;
+
+    server2_mock.mock_method("initialize", json!({
+        "protocolVersion": "2024-11-05",
+        "capabilities": { "resources": {} },
+        "serverInfo": { "name": "Server 2", "version": "2.0.0" }
+    })).await;
+
+    // Mock tools/list for catalog fetch (deferred loading needs full catalog)
+    server1_mock.mock_method("tools/list", json!({
+        "tools": [
+            {"name": "read_file", "description": "Read file", "inputSchema": {"type": "object"}},
+            {"name": "write_file", "description": "Write file", "inputSchema": {"type": "object"}}
+        ]
+    })).await;
+
+    server2_mock.mock_method("tools/list", json!({
+        "tools": [
+            {"name": "github_issue", "description": "Create issue", "inputSchema": {"type": "object"}}
+        ]
+    })).await;
+
+    // Mock resources/list and prompts/list
+    server1_mock.mock_method("resources/list", json!({"resources": []})).await;
+    server2_mock.mock_method("resources/list", json!({"resources": []})).await;
+    server1_mock.mock_method("prompts/list", json!({"prompts": []})).await;
+    server2_mock.mock_method("prompts/list", json!({"prompts": []})).await;
+
+    // Client declares support for tools.listChanged
+    let initialize_request = JsonRpcRequest::new(
+        Some(json!(1)),
+        "initialize".to_string(),
+        Some(json!({
+            "protocolVersion": "2024-11-05",
+            "capabilities": {
+                "tools": { "listChanged": true }  // Client supports listChanged!
+            },
+            "clientInfo": {"name": "test-client", "version": "1.0"}
+        })),
+    );
+
+    let allowed_servers = vec!["server1".to_string(), "server2".to_string()];
+    
+    // Request with deferred_loading = true
+    let response = gateway
+        .handle_request("test-client-deferred", allowed_servers.clone(), true, vec![], initialize_request)
+        .await
+        .unwrap();
+
+    // Verify initialize succeeded
+    assert!(response.result.is_some());
+
+    // Now request tools/list - should return only the search tool initially
+    let tools_request = JsonRpcRequest::new(Some(json!(2)), "tools/list".to_string(), Some(json!({})));
+    
+    let tools_response = gateway
+        .handle_request("test-client-deferred", allowed_servers, false, vec![], tools_request)
+        .await
+        .unwrap();
+
+    let result = extract_result(&tools_response);
+    let tools = result["tools"].as_array().unwrap();
+
+    // With deferred loading enabled, should see only the search tool initially
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0]["name"], "search");
+    assert!(tools[0]["description"].as_str().unwrap().contains("Search for tools"));
+}
+
+#[tokio::test]
+async fn test_deferred_loading_falls_back_without_client_capability() {
+    let (gateway, _manager, server1_mock, server2_mock) = setup_gateway_with_two_servers().await;
+
+    // Mock initialize responses
+    server1_mock.mock_method("initialize", json!({
+        "protocolVersion": "2024-11-05",
+        "capabilities": { "tools": {} },
+        "serverInfo": { "name": "Server 1", "version": "1.0.0" }
+    })).await;
+
+    server2_mock.mock_method("initialize", json!({
+        "protocolVersion": "2024-11-05",
+        "capabilities": { "resources": {} },
+        "serverInfo": { "name": "Server 2", "version": "2.0.0" }
+    })).await;
+
+    // Mock tools/list for normal mode
+    server1_mock.mock_method("tools/list", json!({
+        "tools": [
+            {"name": "read_file", "description": "Read file", "inputSchema": {"type": "object"}},
+            {"name": "write_file", "description": "Write file", "inputSchema": {"type": "object"}}
+        ]
+    })).await;
+
+    server2_mock.mock_method("tools/list", json!({
+        "tools": [
+            {"name": "github_issue", "description": "Create issue", "inputSchema": {"type": "object"}}
+        ]
+    })).await;
+
+    // Client does NOT declare support for tools.listChanged
+    let initialize_request = JsonRpcRequest::new(
+        Some(json!(1)),
+        "initialize".to_string(),
+        Some(json!({
+            "protocolVersion": "2024-11-05",
+            "capabilities": {
+                // No tools.listChanged declared!
+            },
+            "clientInfo": {"name": "test-client", "version": "1.0"}
+        })),
+    );
+
+    let allowed_servers = vec!["server1".to_string(), "server2".to_string()];
+    
+    // Request with deferred_loading = true, but client doesn't support it
+    let response = gateway
+        .handle_request("test-client-no-cap", allowed_servers.clone(), true, vec![], initialize_request)
+        .await
+        .unwrap();
+
+    // Verify initialize succeeded
+    assert!(response.result.is_some());
+
+    // Now request tools/list - should return ALL tools (normal mode fallback)
+    let tools_request = JsonRpcRequest::new(Some(json!(2)), "tools/list".to_string(), Some(json!({})));
+    
+    let tools_response = gateway
+        .handle_request("test-client-no-cap", allowed_servers, false, vec![], tools_request)
+        .await
+        .unwrap();
+
+    let result = extract_result(&tools_response);
+    let tools = result["tools"].as_array().unwrap();
+
+    // Without client capability, should fall back to normal mode - all tools visible
+    assert!(tools.len() > 1); // Should have multiple tools, not just search
+    assert!(tools.iter().any(|t| t["name"] == "server1__read_file"));
+    assert!(tools.iter().any(|t| t["name"] == "server1__write_file"));
+    assert!(tools.iter().any(|t| t["name"] == "server2__github_issue"));
+    
+    // Should NOT have the search tool
+    assert!(!tools.iter().any(|t| t["name"] == "search"));
+}
+
+#[tokio::test]
+async fn test_deferred_loading_not_requested() {
+    let (gateway, _manager, server1_mock, server2_mock) = setup_gateway_with_two_servers().await;
+
+    // Mock initialize responses
+    server1_mock.mock_method("initialize", json!({
+        "protocolVersion": "2024-11-05",
+        "capabilities": { "tools": {} },
+        "serverInfo": { "name": "Server 1", "version": "1.0.0" }
+    })).await;
+
+    server2_mock.mock_method("initialize", json!({
+        "protocolVersion": "2024-11-05",
+        "capabilities": {},
+        "serverInfo": { "name": "Server 2", "version": "2.0.0" }
+    })).await;
+
+    // Mock tools/list
+    server1_mock.mock_method("tools/list", json!({
+        "tools": [{"name": "tool1", "description": "Test", "inputSchema": {"type": "object"}}]
+    })).await;
+
+    server2_mock.mock_method("tools/list", json!({
+        "tools": [{"name": "tool2", "description": "Test", "inputSchema": {"type": "object"}}]
+    })).await;
+
+    // Client declares support for tools.listChanged but we don't enable deferred loading
+    let initialize_request = JsonRpcRequest::new(
+        Some(json!(1)),
+        "initialize".to_string(),
+        Some(json!({
+            "protocolVersion": "2024-11-05",
+            "capabilities": {
+                "tools": { "listChanged": true }
+            },
+            "clientInfo": {"name": "test-client", "version": "1.0"}
+        })),
+    );
+
+    let allowed_servers = vec!["server1".to_string(), "server2".to_string()];
+    
+    // deferred_loading = false
+    let response = gateway
+        .handle_request("test-client-normal", allowed_servers.clone(), false, vec![], initialize_request)
+        .await
+        .unwrap();
+
+    assert!(response.result.is_some());
+
+    // Request tools/list - should return all tools (normal mode)
+    let tools_request = JsonRpcRequest::new(Some(json!(2)), "tools/list".to_string(), Some(json!({})));
+    
+    let tools_response = gateway
+        .handle_request("test-client-normal", allowed_servers, false, vec![], tools_request)
+        .await
+        .unwrap();
+
+    let result = extract_result(&tools_response);
+    let tools = result["tools"].as_array().unwrap();
+
+    // Normal mode - should see all tools from both servers
+    assert!(tools.len() >= 2);
+    assert!(tools.iter().any(|t| t["name"] == "server1__tool1"));
+    assert!(tools.iter().any(|t| t["name"] == "server2__tool2"));
+    
+    // Should NOT have the search tool
+    assert!(!tools.iter().any(|t| t["name"] == "search"));
 }
