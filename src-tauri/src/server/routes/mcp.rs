@@ -14,7 +14,8 @@ use axum::{
 use std::convert::Infallible;
 use std::time::Instant;
 
-use crate::mcp::protocol::JsonRpcRequest;
+use crate::config::RootConfig;
+use crate::mcp::protocol::{JsonRpcRequest, Root};
 use crate::monitoring::mcp_metrics::McpRequestMetrics;
 use crate::server::middleware::client_auth::ClientAuthContext;
 use crate::server::middleware::error::ApiErrorResponse;
@@ -90,6 +91,11 @@ pub async fn mcp_gateway_handler(
         client.mcp_deferred_loading
     );
 
+    // Merge global and per-client roots
+    let config = state.config.read();
+    let roots = merge_roots(&config.roots, client.roots.as_ref());
+    drop(config);
+
     // Handle request via gateway
     match state
         .mcp_gateway
@@ -97,6 +103,7 @@ pub async fn mcp_gateway_handler(
             &client_id,
             allowed_servers,
             client.mcp_deferred_loading,
+            roots,
             request,
         )
         .await
@@ -405,4 +412,28 @@ pub async fn mcp_server_streaming_handler(
     Sse::new(sse_stream)
         .keep_alive(KeepAlive::default())
         .into_response()
+}
+
+/// Merge global and per-client roots
+///
+/// If client has custom roots configured, use those exclusively.
+/// Otherwise, use global roots from AppConfig.
+fn merge_roots(global_roots: &[RootConfig], client_roots: Option<&Vec<RootConfig>>) -> Vec<Root> {
+    let roots_to_use = if let Some(client_roots) = client_roots {
+        // Client has custom roots - use them exclusively
+        client_roots
+    } else {
+        // Use global roots
+        global_roots
+    };
+
+    // Convert RootConfig to Root and filter enabled
+    roots_to_use
+        .iter()
+        .filter(|r| r.enabled)
+        .map(|r| Root {
+            uri: r.uri.clone(),
+            name: r.name.clone(),
+        })
+        .collect()
 }

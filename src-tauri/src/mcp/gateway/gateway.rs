@@ -63,11 +63,12 @@ impl McpGateway {
         client_id: &str,
         allowed_servers: Vec<String>,
         enable_deferred_loading: bool,
+        roots: Vec<crate::mcp::protocol::Root>,
         request: JsonRpcRequest,
     ) -> AppResult<JsonRpcResponse> {
         // Get or create session
         let session: Arc<RwLock<GatewaySession>> = self
-            .get_or_create_session(client_id, allowed_servers, enable_deferred_loading)
+            .get_or_create_session(client_id, allowed_servers, enable_deferred_loading, roots)
             .await?;
 
         // Update last activity
@@ -90,6 +91,7 @@ impl McpGateway {
         client_id: &str,
         allowed_servers: Vec<String>,
         enable_deferred_loading: bool,
+        roots: Vec<crate::mcp::protocol::Root>,
     ) -> AppResult<Arc<RwLock<GatewaySession>>> {
         // Check if session exists
         if let Some(session) = self.sessions.get(client_id) {
@@ -115,7 +117,7 @@ impl McpGateway {
             allowed_servers.clone(),
             ttl,
             self.config.cache_ttl_seconds,
-            Vec::new(), // TODO: Pass actual roots from config (global + per-client)
+            roots,
             enable_deferred_loading,
         );
 
@@ -298,15 +300,16 @@ impl McpGateway {
                 ))
             }
 
-            "sampling/create" => {
+            "sampling/createMessage" => {
+                // TODO: Full implementation requires provider manager and router integration
                 Ok(JsonRpcResponse::error(
                     request.id.unwrap_or(Value::Null),
                     JsonRpcError::custom(
                         -32601,
-                        "sampling/create is a client capability. Use your LLM client's sampling endpoint.".to_string(),
+                        "sampling/createMessage not yet fully implemented. Protocol types and conversion logic are ready.".to_string(),
                         Some(json!({
-                            "method_type": "client_capability",
-                            "hint": "This method should be implemented by your LLM client, not the MCP gateway"
+                            "status": "partial",
+                            "hint": "Sampling support infrastructure is in place but requires provider/router integration"
                         }))
                     )
                 ))

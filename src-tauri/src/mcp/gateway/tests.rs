@@ -270,6 +270,7 @@ mod tests {
             Duration::from_secs(3600),
             300,
             Vec::new(),
+            false,
         );
 
         assert_eq!(session.client_id, "client-123");
@@ -288,6 +289,7 @@ mod tests {
             Duration::from_millis(100),
             300,
             Vec::new(),
+            false,
         );
 
         assert!(!session.is_expired());

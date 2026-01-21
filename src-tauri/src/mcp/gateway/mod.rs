@@ -8,6 +8,7 @@ pub mod deferred;
 mod gateway;
 mod merger;
 pub mod router;
+pub mod sampling;
 pub mod session;
 pub mod types;
 

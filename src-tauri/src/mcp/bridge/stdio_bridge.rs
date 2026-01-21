@@ -379,6 +379,10 @@ mod tests {
                 strategy_id: "default".to_string(),
                 routing_config: None,
                 roots: None,
+                mcp_sampling_enabled: false,
+                mcp_sampling_requires_approval: true,
+                mcp_sampling_max_tokens: None,
+                mcp_sampling_rate_limit: None,
             },
             Client {
                 id: "disabled_client".to_string(),
@@ -392,6 +396,10 @@ mod tests {
                 strategy_id: "default".to_string(),
                 routing_config: None,
                 roots: None,
+                mcp_sampling_enabled: false,
+                mcp_sampling_requires_approval: true,
+                mcp_sampling_max_tokens: None,
+                mcp_sampling_rate_limit: None,
             },
             Client {
                 id: "no_mcp_client".to_string(),
@@ -405,6 +413,10 @@ mod tests {
                 strategy_id: "default".to_string(),
                 routing_config: None,
                 roots: None,
+                mcp_sampling_enabled: false,
+                mcp_sampling_requires_approval: true,
+                mcp_sampling_max_tokens: None,
+                mcp_sampling_rate_limit: None,
             },
         ];
         config

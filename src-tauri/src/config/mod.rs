@@ -1883,4 +1883,37 @@ mod tests {
             "file:///custom/path"
         );
     }
+
+    #[test]
+    fn test_client_sampling_config_defaults() {
+        let client = Client::new("Test Client".to_string());
+
+        // Sampling disabled by default
+        assert!(!client.mcp_sampling_enabled);
+
+        // But requires approval when enabled
+        assert!(client.mcp_sampling_requires_approval);
+
+        // No limits by default
+        assert!(client.mcp_sampling_max_tokens.is_none());
+        assert!(client.mcp_sampling_rate_limit.is_none());
+    }
+
+    #[test]
+    fn test_client_with_sampling_enabled() {
+        let mut client = Client::new("Test Client".to_string());
+        client.mcp_sampling_enabled = true;
+        client.mcp_sampling_requires_approval = false;
+        client.mcp_sampling_max_tokens = Some(2000);
+        client.mcp_sampling_rate_limit = Some(100);
+
+        // Verify serialization
+        let yaml = serde_yaml::to_string(&client).unwrap();
+        let deserialized: Client = serde_yaml::from_str(&yaml).unwrap();
+
+        assert!(deserialized.mcp_sampling_enabled);
+        assert!(!deserialized.mcp_sampling_requires_approval);
+        assert_eq!(deserialized.mcp_sampling_max_tokens, Some(2000));
+        assert_eq!(deserialized.mcp_sampling_rate_limit, Some(100));
+    }
 }
