@@ -620,6 +620,22 @@ struct GeminiRequest {
     contents: Vec<GeminiContent>,
     #[serde(rename = "generationConfig", skip_serializing_if = "Option::is_none")]
     generation_config: Option<GeminiGenerationConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Vec<GeminiTool>>,
+}
+
+/// Gemini tool definition
+#[derive(Debug, Serialize, Deserialize)]
+struct GeminiTool {
+    function_declarations: Vec<GeminiFunctionDeclaration>,
+}
+
+/// Gemini function declaration
+#[derive(Debug, Serialize, Deserialize)]
+struct GeminiFunctionDeclaration {
+    name: String,
+    description: String,
+    parameters: serde_json::Value,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -629,8 +645,33 @@ struct GeminiContent {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct GeminiPart {
-    text: String,
+#[serde(untagged)]
+enum GeminiPart {
+    Text {
+        text: String,
+    },
+    FunctionCall {
+        #[serde(rename = "functionCall")]
+        function_call: GeminiFunctionCall,
+    },
+    FunctionResponse {
+        #[serde(rename = "functionResponse")]
+        function_response: GeminiFunctionResponse,
+    },
+}
+
+/// Gemini function call (from model)
+#[derive(Debug, Serialize, Deserialize)]
+struct GeminiFunctionCall {
+    name: String,
+    args: serde_json::Value,
+}
+
+/// Gemini function response (from user)
+#[derive(Debug, Serialize, Deserialize)]
+struct GeminiFunctionResponse {
+    name: String,
+    response: serde_json::Value,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

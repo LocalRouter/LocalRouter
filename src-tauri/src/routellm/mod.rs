@@ -100,14 +100,16 @@ impl RouteLLMService {
         info!("Initializing RouteLLM Candle router");
 
         // Check if model files exist
+        // After first load, original model.safetensors is deleted and only patched version remains
         let model_file = self.model_path.join("model.safetensors");
+        let patched_model_file = self.model_path.join("model.patched.safetensors");
         let tokenizer_file = self.tokenizer_path.join("tokenizer.json");
 
-        if !model_file.exists() {
+        if !model_file.exists() && !patched_model_file.exists() {
             *self.is_initializing.write().await = false;
             return Err(RouteLLMError::ModelNotDownloaded(format!(
-                "Model not found at {:?}",
-                model_file
+                "Model not found at {:?} or {:?}",
+                model_file, patched_model_file
             )));
         }
 
@@ -208,14 +210,18 @@ impl RouteLLMService {
         let last_access = *self.last_access.read().await;
 
         // Check if model files exist (not just directories)
+        // After first load, original model.safetensors is deleted and only patched version remains
         let model_file = self.model_path.join("model.safetensors");
+        let patched_model_file = self.model_path.join("model.patched.safetensors");
         let tokenizer_file = self.tokenizer_path.join("tokenizer.json");
+
+        let model_exists = model_file.exists() || patched_model_file.exists();
 
         let state = if is_initializing {
             RouteLLMState::Initializing
         } else if is_loaded {
             RouteLLMState::Started
-        } else if model_file.exists() && tokenizer_file.exists() {
+        } else if model_exists && tokenizer_file.exists() {
             RouteLLMState::DownloadedNotRunning
         } else {
             RouteLLMState::NotDownloaded

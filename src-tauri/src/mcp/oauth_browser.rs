@@ -314,7 +314,7 @@ impl McpOAuthBrowserManager {
 
     /// Exchange authorization code for token (static method for background task)
     async fn exchange_code_for_token_static(
-        oauth_manager: &McpOAuthManager,
+        _oauth_manager: &McpOAuthManager,
         keychain: &CachedKeychain,
         server_id: &str,
         authorization_code: &str,

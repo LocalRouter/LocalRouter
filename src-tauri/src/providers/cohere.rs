@@ -350,7 +350,6 @@ impl ModelProvider for CohereProvider {
                     name: None,
                 },
                 finish_reason: Some(cohere_response.finish_reason),
-                    logprobs: None,
                 logprobs: None, // Cohere does not support logprobs
             }],
             usage: TokenUsage {
