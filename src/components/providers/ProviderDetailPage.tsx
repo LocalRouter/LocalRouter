@@ -112,13 +112,7 @@ export default function ProviderDetailPage({
 
   const handleRefreshModels = async () => {
     try {
-      // Try to refresh models from the provider (if supported)
-      try {
-        await invoke('refresh_provider_models', { instanceName })
-      } catch (refreshError) {
-        console.warn('refresh_provider_models not available, just reloading data')
-      }
-
+      // Reload provider data to refresh models list
       await loadProviderData()
       alert('Models refreshed successfully!')
     } catch (error) {

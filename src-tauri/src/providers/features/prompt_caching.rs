@@ -326,11 +326,11 @@ mod tests {
             messages: vec![
                 crate::providers::ChatMessage {
                     role: "system".to_string(),
-                    content: "You are a helpful assistant.".to_string(),
+                    content: ChatMessageContent::Text("You are a helpful assistant.".to_string()),
                 },
                 crate::providers::ChatMessage {
                     role: "user".to_string(),
-                    content: "Hello".to_string(),
+                    content: ChatMessageContent::Text("Hello".to_string()),
                 },
             ],
             temperature: None,
@@ -357,19 +357,19 @@ mod tests {
             messages: vec![
                 crate::providers::ChatMessage {
                     role: "system".to_string(),
-                    content: "System prompt".to_string(),
+                    content: ChatMessageContent::Text("System prompt".to_string()),
                 },
                 crate::providers::ChatMessage {
                     role: "user".to_string(),
-                    content: "Message 1".to_string(),
+                    content: ChatMessageContent::Text("Message 1".to_string()),
                 },
                 crate::providers::ChatMessage {
                     role: "assistant".to_string(),
-                    content: "Response 1".to_string(),
+                    content: ChatMessageContent::Text("Response 1".to_string()),
                 },
                 crate::providers::ChatMessage {
                     role: "user".to_string(),
-                    content: "Message 2".to_string(),
+                    content: ChatMessageContent::Text("Message 2".to_string()),
                 },
             ],
             temperature: None,
@@ -430,11 +430,11 @@ mod tests {
             messages: vec![
                 crate::providers::ChatMessage {
                     role: "system".to_string(),
-                    content: "System prompt".to_string(),
+                    content: ChatMessageContent::Text("System prompt".to_string()),
                 },
                 crate::providers::ChatMessage {
                     role: "user".to_string(),
-                    content: "User message".to_string(),
+                    content: ChatMessageContent::Text("User message".to_string()),
                 },
             ],
             temperature: None,
@@ -467,7 +467,7 @@ mod tests {
             model: "gpt-4".to_string(),
             messages: vec![crate::providers::ChatMessage {
                 role: "user".to_string(),
-                content: "Hello".to_string(),
+                content: ChatMessageContent::Text("Hello".to_string()),
             }],
             temperature: None,
             max_tokens: None,

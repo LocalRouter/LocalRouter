@@ -527,7 +527,7 @@ mod tests {
             model: "openai/gpt-3.5-turbo".to_string(),
             messages: vec![ChatMessage {
                 role: "user".to_string(),
-                content: "Say 'Hello, World!' and nothing else.".to_string(),
+                content: ChatMessageContent::Text("Say 'Hello, World!' and nothing else.".to_string()),
             }],
             temperature: Some(0.7),
             max_tokens: Some(50),

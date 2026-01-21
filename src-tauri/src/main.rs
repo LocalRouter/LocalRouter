@@ -533,6 +533,7 @@ async fn main() -> anyhow::Result<()> {
             ui::commands::list_all_models,
             ui::commands::list_all_models_detailed,
             ui::commands::get_catalog_stats,
+            ui::commands::get_catalog_metadata,
             // Server configuration commands
             ui::commands::get_server_config,
             ui::commands::update_server_config,
