@@ -160,7 +160,9 @@ fn validate_strategies(config: &AppConfig) -> AppResult<()> {
 
         // Validate name is not empty
         if strategy.name.is_empty() {
-            return Err(AppError::Config("Strategy name cannot be empty".to_string()));
+            return Err(AppError::Config(
+                "Strategy name cannot be empty".to_string(),
+            ));
         }
 
         // Check parent references point to existing clients
@@ -203,9 +205,7 @@ fn validate_strategies(config: &AppConfig) -> AppResult<()> {
 
     // Ensure "default" strategy exists
     if !config.strategies.iter().any(|s| s.id == "default") {
-        return Err(AppError::Config(
-            "Default strategy must exist".to_string()
-        ));
+        return Err(AppError::Config("Default strategy must exist".to_string()));
     }
 
     Ok(())

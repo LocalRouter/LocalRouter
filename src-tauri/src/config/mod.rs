@@ -51,6 +51,95 @@ pub struct StrategyRateLimit {
     pub time_window: RateLimitTimeWindow,
 }
 
+/// RouteLLM download state
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RouteLLMDownloadState {
+    NotDownloaded,
+    Downloading,
+    Downloaded,
+    Failed,
+}
+
+/// RouteLLM download status
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RouteLLMDownloadStatus {
+    pub state: RouteLLMDownloadState,
+    pub progress: f32,
+    pub current_file: Option<String>,
+    pub total_bytes: u64,
+    pub downloaded_bytes: u64,
+    pub error: Option<String>,
+}
+
+/// Global RouteLLM settings (stored in AppConfig)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RouteLLMGlobalSettings {
+    /// Path to model directory (contains model.safetensors)
+    /// Default: ~/.localrouter/routellm/model/
+    /// Note: Field name kept as 'onnx_model_path' for backward compatibility
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub onnx_model_path: Option<PathBuf>,
+
+    /// Path to tokenizer directory (contains tokenizer.json)
+    /// Default: ~/.localrouter/routellm/tokenizer/
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tokenizer_path: Option<PathBuf>,
+
+    /// Idle time before auto-unload (seconds)
+    /// Default: 600 (10 minutes)
+    #[serde(default = "default_idle_timeout")]
+    pub idle_timeout_secs: u64,
+
+    /// Download status (internal)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub download_status: Option<RouteLLMDownloadStatus>,
+}
+
+fn default_idle_timeout() -> u64 {
+    600 // 10 minutes
+}
+
+impl Default for RouteLLMGlobalSettings {
+    fn default() -> Self {
+        Self {
+            onnx_model_path: None,
+            tokenizer_path: None,
+            idle_timeout_secs: default_idle_timeout(),
+            download_status: None,
+        }
+    }
+}
+
+/// RouteLLM intelligent routing configuration
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RouteLLMConfig {
+    /// Whether RouteLLM routing is enabled
+    pub enabled: bool,
+
+    /// Win rate threshold (0.0-1.0)
+    /// If win_rate >= threshold, route to strong model
+    /// Recommended: 0.3 (balanced), 0.7 (cost-optimized), 0.2 (quality-prioritized)
+    pub threshold: f32,
+
+    /// Strong model selection (used when win_rate >= threshold)
+    pub strong_models: Vec<(String, String)>, // (provider, model)
+
+    /// Weak model selection (used when win_rate < threshold)
+    pub weak_models: Vec<(String, String)>,
+}
+
+impl Default for RouteLLMConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            threshold: 0.3, // Balanced profile
+            strong_models: Vec::new(),
+            weak_models: Vec::new(),
+        }
+    }
+}
+
 /// Auto model configuration for localrouter/auto virtual model
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AutoModelConfig {
@@ -61,6 +150,9 @@ pub struct AutoModelConfig {
     /// Available models (out of rotation)
     #[serde(default)]
     pub available_models: Vec<(String, String)>,
+    /// RouteLLM intelligent routing configuration
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub routellm_config: Option<RouteLLMConfig>,
 }
 
 /// Routing strategy configuration (separate from clients)
@@ -169,6 +261,18 @@ pub struct AppConfig {
     #[serde(default)]
     pub pricing_overrides:
         std::collections::HashMap<String, std::collections::HashMap<String, ModelPricingOverride>>,
+
+    /// UI configuration
+    #[serde(default)]
+    pub ui: UiConfig,
+
+    /// Global RouteLLM settings
+    #[serde(default)]
+    pub routellm_settings: RouteLLMGlobalSettings,
+
+    /// Update checking configuration
+    #[serde(default)]
+    pub update: UpdateConfig,
 }
 
 /// Pricing override for a specific model
@@ -178,6 +282,61 @@ pub struct ModelPricingOverride {
     pub input_per_million: f64,
     /// Output/completion price per million tokens
     pub output_per_million: f64,
+}
+
+/// UI configuration
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UiConfig {
+    /// Enable dynamic graph in system tray icon
+    #[serde(default)]
+    pub tray_graph_enabled: bool,
+
+    /// Graph refresh rate
+    /// - Fast (1): 1 second per bar, 30 second total (start fresh)
+    /// - Medium (10): 10 seconds per bar, 5 minute total (interpolated from minute data)
+    /// - Slow (60): 1 minute per bar, 30 minute total (direct mapping)
+    #[serde(default = "default_tray_graph_refresh_rate")]
+    pub tray_graph_refresh_rate_secs: u64,
+}
+
+/// Update checking mode
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdateMode {
+    /// User must manually click "Check Now" button
+    Manual,
+    /// Check for updates automatically on a schedule
+    #[default]
+    Automatic,
+}
+
+/// Update checking configuration
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct UpdateConfig {
+    /// Update checking mode (manual or automatic)
+    #[serde(default = "default_update_mode")]
+    pub mode: UpdateMode,
+
+    /// Interval between automatic update checks (in days)
+    /// Default: 7 days
+    #[serde(default = "default_check_interval")]
+    pub check_interval_days: u64,
+
+    /// Last time updates were checked
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_check: Option<DateTime<Utc>>,
+
+    /// Version that user explicitly skipped (won't notify about this version)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skipped_version: Option<String>,
+}
+
+fn default_update_mode() -> UpdateMode {
+    UpdateMode::Automatic
+}
+
+fn default_check_interval() -> u64 {
+    7 // Check weekly
 }
 
 /// Server configuration
@@ -376,6 +535,9 @@ pub enum McpTransportType {
     #[serde(alias = "sse")]
     HttpSse,
 
+    /// WebSocket transport (bidirectional real-time communication)
+    WebSocket,
+
     /// Server-Sent Events (HTTP + SSE) - DEPRECATED, use HttpSse
     #[deprecated(note = "Use HttpSse instead")]
     #[serde(skip_deserializing)]
@@ -404,6 +566,15 @@ pub enum McpTransportConfig {
         /// Server URL
         url: String,
         /// Base headers (auth headers go in McpAuthConfig::CustomHeaders or BearerToken)
+        #[serde(default)]
+        headers: std::collections::HashMap<String, String>,
+    },
+
+    /// WebSocket configuration
+    WebSocket {
+        /// WebSocket server URL (ws:// or wss://)
+        url: String,
+        /// HTTP headers to send during WebSocket handshake
         #[serde(default)]
         headers: std::collections::HashMap<String, String>,
     },
@@ -957,7 +1128,9 @@ impl ConfigManager {
     }
 
     /// Ensure default strategy exists and assign clients without strategy
-    pub fn ensure_default_strategy(&self) -> AppResult<()> {
+    pub async fn ensure_default_strategy(&self) -> AppResult<()> {
+        let mut modified = false;
+
         self.update(|cfg| {
             // Ensure default strategy exists
             if !cfg.strategies.iter().any(|s| s.id == "default") {
@@ -970,6 +1143,7 @@ impl ConfigManager {
                     rate_limits: vec![],
                 });
                 info!("Created default strategy");
+                modified = true;
             }
 
             // Assign clients without strategy to default
@@ -977,9 +1151,17 @@ impl ConfigManager {
                 if client.strategy_id.is_empty() {
                     client.strategy_id = "default".to_string();
                     info!("Assigned client '{}' to default strategy", client.name);
+                    modified = true;
                 }
             }
-        })
+        })?;
+
+        // Save to disk if we made changes
+        if modified {
+            self.save().await?;
+        }
+
+        Ok(())
     }
 
     /// Create a client with an auto-created strategy
@@ -1016,9 +1198,8 @@ impl ConfigManager {
             cfg.clients.retain(|c| c.id != client_id);
 
             // Cascade delete owned strategies
-            cfg.strategies.retain(|s| {
-                s.parent.as_ref() != Some(&client_id.to_string())
-            });
+            cfg.strategies
+                .retain(|s| s.parent.as_ref() != Some(&client_id.to_string()));
         })?;
 
         Ok(())
@@ -1026,49 +1207,60 @@ impl ConfigManager {
 
     /// Assign a client to a different strategy (clears parent if selecting non-owned strategy)
     pub fn assign_client_strategy(&self, client_id: &str, new_strategy_id: &str) -> AppResult<()> {
+        // First check if client exists
+        {
+            let cfg = self.config.read();
+            if !cfg.clients.iter().any(|c| c.id == client_id) {
+                return Err(AppError::Config("Client not found".into()));
+            }
+        }
+
         self.update(|cfg| {
-            let client = cfg.clients.iter_mut()
-                .find(|c| c.id == client_id)
-                .ok_or_else(|| AppError::Config("Client not found".into()))?;
+            if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
+                let old_strategy_id = client.strategy_id.clone();
 
-            let old_strategy_id = client.strategy_id.clone();
-
-            // If selecting a different strategy (not own), clear parent from that strategy
-            if old_strategy_id != new_strategy_id {
-                if let Some(new_strategy) = cfg.strategies.iter_mut()
-                    .find(|s| s.id == new_strategy_id) {
-                    // Clear parent if it's not the current client
-                    if new_strategy.parent.as_ref() != Some(&client_id.to_string()) {
-                        new_strategy.parent = None;
+                // If selecting a different strategy (not own), clear parent from that strategy
+                if old_strategy_id != new_strategy_id {
+                    if let Some(new_strategy) =
+                        cfg.strategies.iter_mut().find(|s| s.id == new_strategy_id)
+                    {
+                        // Clear parent if it's not the current client
+                        if new_strategy.parent.as_ref() != Some(&client_id.to_string()) {
+                            new_strategy.parent = None;
+                        }
                     }
                 }
-            }
 
-            client.strategy_id = new_strategy_id.to_string();
-            Ok(())
+                client.strategy_id = new_strategy_id.to_string();
+            }
         })
     }
 
     /// Rename a strategy (clears parent if changing from default name)
     pub fn rename_strategy(&self, strategy_id: &str, new_name: &str) -> AppResult<()> {
-        self.update(|cfg| {
-            let strategy = cfg.strategies.iter_mut()
-                .find(|s| s.id == strategy_id)
-                .ok_or_else(|| AppError::Config("Strategy not found".into()))?;
+        // First check if strategy exists
+        {
+            let cfg = self.config.read();
+            if !cfg.strategies.iter().any(|s| s.id == strategy_id) {
+                return Err(AppError::Config("Strategy not found".into()));
+            }
+        }
 
-            // Check if renaming from default pattern
-            if let Some(parent_id) = &strategy.parent {
-                if let Some(client) = cfg.clients.iter().find(|c| c.id == *parent_id) {
-                    let default_name = format!("{}'s strategy", client.name);
-                    if strategy.name == default_name && new_name != default_name {
-                        // Clear parent when customizing name
-                        strategy.parent = None;
+        self.update(|cfg| {
+            if let Some(strategy) = cfg.strategies.iter_mut().find(|s| s.id == strategy_id) {
+                // Check if renaming from default pattern
+                if let Some(parent_id) = &strategy.parent {
+                    if let Some(client) = cfg.clients.iter().find(|c| c.id == *parent_id) {
+                        let default_name = format!("{}'s strategy", client.name);
+                        if strategy.name == default_name && new_name != default_name {
+                            // Clear parent when customizing name
+                            strategy.parent = None;
+                        }
                     }
                 }
-            }
 
-            strategy.name = new_name.to_string();
-            Ok(())
+                strategy.name = new_name.to_string();
+            }
         })
     }
 }
@@ -1090,6 +1282,7 @@ fn default_strategy_id() -> String {
     "default".to_string()
 }
 
+
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
@@ -1104,17 +1297,18 @@ impl Default for AppConfig {
             oauth_clients: Vec::new(),
             mcp_servers: Vec::new(),
             clients: Vec::new(),
-            strategies: vec![
-                Strategy {
-                    id: "default".to_string(),
-                    name: "Default Strategy".to_string(),
-                    parent: None,
-                    allowed_models: AvailableModelsSelection::all(),
-                    auto_config: None,
-                    rate_limits: vec![],
-                }
-            ],
+            strategies: vec![Strategy {
+                id: "default".to_string(),
+                name: "Default Strategy".to_string(),
+                parent: None,
+                allowed_models: AvailableModelsSelection::all(),
+                auto_config: None,
+                rate_limits: vec![],
+            }],
             pricing_overrides: std::collections::HashMap::new(),
+            ui: UiConfig::default(),
+            routellm_settings: RouteLLMGlobalSettings::default(),
+            update: UpdateConfig::default(),
         }
     }
 }
@@ -1143,6 +1337,26 @@ impl Default for LoggingConfig {
             enable_access_log: true,
             log_dir: None,
             retention_days: 30,
+        }
+    }
+}
+
+impl Default for UiConfig {
+    fn default() -> Self {
+        Self {
+            tray_graph_enabled: false, // Disabled by default (opt-in)
+            tray_graph_refresh_rate_secs: default_tray_graph_refresh_rate(),
+        }
+    }
+}
+
+impl Default for UpdateConfig {
+    fn default() -> Self {
+        Self {
+            mode: default_update_mode(),
+            check_interval_days: default_check_interval(),
+            last_check: None,
+            skipped_version: None,
         }
     }
 }
@@ -1425,6 +1639,10 @@ impl McpServerConfig {
             created_at: Utc::now(),
         }
     }
+}
+
+fn default_tray_graph_refresh_rate() -> u64 {
+    60 // Slow: 1 minute per bar (default)
 }
 
 #[cfg(test)]

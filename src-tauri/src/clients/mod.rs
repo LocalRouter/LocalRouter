@@ -84,6 +84,32 @@ impl ClientManager {
         Ok((client.id.clone(), secret, client))
     }
 
+    /// Add an existing client and generate a secret for it
+    ///
+    /// # Arguments
+    /// * `client` - The client configuration to add
+    ///
+    /// # Returns
+    /// Returns the generated secret
+    /// The secret is also stored in the keychain automatically
+    pub fn add_client_with_secret(&self, client: Client) -> AppResult<String> {
+        // Generate secret (same format as API keys)
+        let secret = crypto::generate_api_key()
+            .map_err(|e| AppError::Config(format!("Failed to generate client secret: {}", e)))?;
+
+        // Store secret in keychain
+        self.keychain
+            .store(CLIENT_SERVICE, &client.id, &secret)
+            .map_err(|e| {
+                AppError::Config(format!("Failed to store client secret in keychain: {}", e))
+            })?;
+
+        // Add to in-memory storage
+        self.clients.write().push(client);
+
+        Ok(secret)
+    }
+
     /// Delete a client and remove its secret from keychain
     pub fn delete_client(&self, client_id: &str) -> AppResult<()> {
         let mut clients = self.clients.write();

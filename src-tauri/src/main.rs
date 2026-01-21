@@ -9,9 +9,11 @@ mod mcp;
 mod monitoring;
 mod oauth_clients;
 mod providers;
+mod routellm;
 mod router;
 mod server;
 mod ui;
+mod updater;
 mod utils;
 
 use std::sync::Arc;
@@ -61,6 +63,15 @@ async fn main() -> anyhow::Result<()> {
             config::paths::config_file().unwrap(),
         )
     });
+
+    // Ensure default strategy exists and all clients have strategy_id assigned
+    info!("Ensuring default strategy exists...");
+    config_manager
+        .ensure_default_strategy()
+        .await
+        .unwrap_or_else(|e| {
+            tracing::error!("Failed to ensure default strategy: {}", e);
+        });
 
     // Initialize unified client manager
     // Replaces both API key manager and OAuth client manager
@@ -211,14 +222,53 @@ async fn main() -> anyhow::Result<()> {
     info!("Initializing rate limiter...");
     let rate_limiter = Arc::new(router::RateLimiterManager::new(None));
 
+    // Initialize metrics collector
+    info!("Initializing metrics collector...");
+    let metrics_db_path = config::paths::config_dir()
+        .unwrap_or_else(|_| std::path::PathBuf::from("."))
+        .join("metrics.db");
+    let metrics_db = Arc::new(
+        monitoring::storage::MetricsDatabase::new(metrics_db_path).unwrap_or_else(|e| {
+            tracing::error!("Failed to initialize metrics database: {}", e);
+            panic!("Metrics database initialization failed");
+        }),
+    );
+    let metrics_collector = Arc::new(monitoring::metrics::MetricsCollector::new(metrics_db));
+
+    // Initialize RouteLLM intelligent routing service
+    info!("Initializing RouteLLM service...");
+    let routellm_service = {
+        let config = config_manager.get();
+        let idle_timeout = config.routellm_settings.idle_timeout_secs;
+
+        match routellm::RouteLLMService::new_with_defaults(idle_timeout) {
+            Ok(service) => {
+                let service_arc = Arc::new(service);
+                // Start auto-unload background task
+                let _ = service_arc.clone().start_auto_unload_task();
+                info!("RouteLLM service initialized with idle timeout: {}s", idle_timeout);
+                Some(service_arc)
+            }
+            Err(e) => {
+                info!("RouteLLM service not initialized: {}", e);
+                None
+            }
+        }
+    };
+
     // Initialize router
     info!("Initializing router...");
     let config_manager_arc = Arc::new(config_manager.clone());
-    let app_router = Arc::new(router::Router::new(
+    let mut app_router = router::Router::new(
         config_manager_arc.clone(),
         provider_registry.clone(),
         rate_limiter.clone(),
-    ));
+        metrics_collector.clone(),
+    );
+
+    // Add RouteLLM service to router
+    app_router = app_router.with_routellm(routellm_service);
+    let app_router = Arc::new(app_router);
 
     // Initialize server manager and start server
     info!("Initializing web server...");
@@ -234,7 +284,7 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    // Start the server
+    // Start the server (tray_graph_manager will be added later in setup())
     server_manager
         .start(
             server_config,
@@ -246,12 +296,14 @@ async fn main() -> anyhow::Result<()> {
                 config_manager: config_manager_arc.clone(),
                 client_manager: client_manager.clone(),
                 token_store: token_store.clone(),
+                metrics_collector: metrics_collector.clone(),
             },
         )
         .await?;
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(move |app| {
             info!("Tauri app initialized");
 
@@ -279,6 +331,19 @@ async fn main() -> anyhow::Result<()> {
             app.manage(app_router.clone());
             app.manage(rate_limiter.clone());
             app.manage(oauth_manager.clone());
+            app.manage(metrics_collector.clone());
+
+            // Get AppState from server manager and manage it for Tauri commands
+            if let Some(app_state) = server_manager.get_state() {
+                info!("Managing AppState for Tauri commands");
+
+                // Set app handle on AppState for event emission
+                app_state.set_app_handle(app.handle().clone());
+
+                app.manage(Arc::new(app_state));
+            } else {
+                error!("Failed to get AppState from server manager");
+            }
 
             // Set up server restart event listener
             let server_manager_clone = server_manager.clone();
@@ -288,6 +353,7 @@ async fn main() -> anyhow::Result<()> {
             let provider_registry_clone = provider_registry.clone();
             let client_manager_clone = client_manager.clone();
             let token_store_clone = token_store.clone();
+            let metrics_collector_clone = metrics_collector.clone();
             let config_manager_clone = config_manager.clone();
             let app_handle_for_restart = app.handle().clone();
 
@@ -313,6 +379,7 @@ async fn main() -> anyhow::Result<()> {
                 let config_manager_clone2 = Arc::new(config_manager_clone.clone());
                 let client_manager_clone2 = client_manager_clone.clone();
                 let token_store_clone2 = token_store_clone.clone();
+                let metrics_collector_clone2 = metrics_collector_clone.clone();
                 let app_handle = app_handle_for_restart.clone();
 
                 tokio::spawn(async move {
@@ -329,6 +396,7 @@ async fn main() -> anyhow::Result<()> {
                                 config_manager: config_manager_clone2,
                                 client_manager: client_manager_clone2,
                                 token_store: token_store_clone2,
+                                metrics_collector: metrics_collector_clone2,
                             },
                         )
                         .await
@@ -352,7 +420,7 @@ async fn main() -> anyhow::Result<()> {
                 // Spawn background aggregation task for metrics
                 let metrics_db = state.metrics_collector.db();
                 tokio::spawn(async move {
-                    monitoring::aggregation_task::spawn_aggregation_task(metrics_db).await;
+                    let _ = monitoring::aggregation_task::spawn_aggregation_task(metrics_db).await;
                 });
                 info!("Spawned metrics aggregation task");
             }
@@ -373,8 +441,35 @@ async fn main() -> anyhow::Result<()> {
                 }
             });
 
+            // Initialize update notification state
+            let update_notification_state = Arc::new(ui::tray::UpdateNotificationState::new());
+            app.manage(update_notification_state.clone());
+
             // Setup system tray
             ui::tray::setup_tray(app)?;
+
+            // Initialize tray graph manager
+            info!("Initializing tray graph manager...");
+            let ui_config = config_manager.get().ui.clone();
+            let tray_graph_manager = Arc::new(ui::tray::TrayGraphManager::new(
+                app.handle().clone(),
+                ui_config,
+            ));
+            app.manage(tray_graph_manager.clone());
+            info!("Tray graph manager initialized");
+
+            // Set tray graph manager on AppState for request handlers
+            if let Some(app_state) = server_manager.get_state() {
+                app_state.set_tray_graph_manager(tray_graph_manager.clone());
+                info!("Tray graph manager set on AppState");
+            }
+
+            // Set up metrics callback to notify graph manager after metrics are recorded
+            let tray_graph_manager_for_metrics = tray_graph_manager.clone();
+            metrics_collector.set_on_metrics_recorded(move || {
+                tray_graph_manager_for_metrics.notify_activity();
+            });
+            info!("Metrics callback registered with tray graph manager");
 
             // Listen for server status changes to update tray icon
             let app_handle = app.handle().clone();
@@ -386,13 +481,34 @@ async fn main() -> anyhow::Result<()> {
                 }
             });
 
-            // Listen for LLM request events to blink tray icon
+            // Listen for LLM request events to show "active" icon (when graph is disabled)
             let app_handle2 = app.handle().clone();
+            let tray_graph_manager_clone = tray_graph_manager.clone();
             app.listen("llm-request", move |_event| {
-                if let Err(e) = ui::tray::update_tray_icon(&app_handle2, "active") {
-                    error!("Failed to update tray icon for LLM request: {}", e);
+                // Show "active" icon immediately (only if graph is disabled)
+                // When graph is enabled, it will update via metrics callback
+                if !tray_graph_manager_clone.is_enabled() {
+                    if let Err(e) = ui::tray::update_tray_icon(&app_handle2, "active") {
+                        error!("Failed to update tray icon for LLM request: {}", e);
+                    }
+
+                    // Restore to "running" after 2 seconds
+                    let app_handle_restore = app_handle2.clone();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+                        let _ = ui::tray::update_tray_icon(&app_handle_restore, "running");
+                    });
                 }
             });
+
+            // Start background update checker
+            info!("Starting background update checker...");
+            let app_handle_for_updater = app.handle().clone();
+            let config_manager_for_updater = Arc::new(config_manager.clone());
+            tokio::spawn(async move {
+                updater::start_update_timer(app_handle_for_updater, config_manager_for_updater).await;
+            });
+            info!("Background update checker started");
 
             Ok(())
         })
@@ -416,6 +532,7 @@ async fn main() -> anyhow::Result<()> {
             ui::commands::list_provider_models,
             ui::commands::list_all_models,
             ui::commands::list_all_models_detailed,
+            ui::commands::get_catalog_stats,
             // Server configuration commands
             ui::commands::get_server_config,
             ui::commands::update_server_config,
@@ -433,6 +550,9 @@ async fn main() -> anyhow::Result<()> {
             ui::commands_metrics::compare_api_keys,
             ui::commands_metrics::compare_providers,
             ui::commands_metrics::compare_models,
+            ui::commands_metrics::get_strategy_metrics,
+            ui::commands_metrics::list_tracked_strategies,
+            ui::commands_metrics::compare_strategies,
             // MCP metrics commands
             ui::commands_mcp_metrics::get_global_mcp_metrics,
             ui::commands_mcp_metrics::get_client_mcp_metrics,
@@ -515,6 +635,24 @@ async fn main() -> anyhow::Result<()> {
             ui::commands::get_pricing_override,
             ui::commands::set_pricing_override,
             ui::commands::delete_pricing_override,
+            // Tray graph settings commands
+            ui::commands::get_tray_graph_settings,
+            ui::commands::update_tray_graph_settings,
+            // System commands
+            ui::commands::get_home_dir,
+            // Update checking commands
+            ui::commands::get_app_version,
+            ui::commands::get_update_config,
+            ui::commands::update_update_config,
+            ui::commands::mark_update_check_performed,
+            ui::commands::skip_update_version,
+            ui::commands::set_update_notification,
+            // RouteLLM intelligent routing commands
+            ui::commands_routellm::routellm_get_status,
+            ui::commands_routellm::routellm_test_prediction,
+            ui::commands_routellm::routellm_unload,
+            ui::commands_routellm::routellm_download_models,
+            ui::commands_routellm::routellm_update_settings,
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
