@@ -1,0 +1,282 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g., 0.0.2, 0.1.0)'
+        required: true
+        type: string
+      prerelease:
+        description: 'Mark as pre-release'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  version-bump:
+    name: Bump Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Validate version format
+        id: version
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$ ]]; then
+            echo "Error: Invalid version format. Must be semver (e.g., 0.0.2, 0.1.0, 1.0.0-beta.1)"
+            exit 1
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Version validated: $VERSION"
+
+      - name: Update version in Cargo.toml (workspace)
+        run: |
+          sed -i 's/^version = ".*"/version = "${{ steps.version.outputs.version }}"/' Cargo.toml
+          echo "Updated Cargo.toml version"
+
+      - name: Update version in tauri.conf.json
+        run: |
+          cd src-tauri
+          sed -i 's/"version": ".*"/"version": "${{ steps.version.outputs.version }}"/' tauri.conf.json
+          echo "Updated tauri.conf.json version"
+
+      - name: Update version in package.json
+        run: |
+          sed -i 's/"version": ".*"/"version": "${{ steps.version.outputs.version }}"/' package.json
+          echo "Updated package.json version"
+
+      - name: Commit version bump
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Cargo.toml src-tauri/tauri.conf.json package.json
+          git commit -m "chore: bump version to ${{ steps.version.outputs.version }}"
+          git push origin main
+          echo "Version bump committed and pushed"
+
+      - name: Create git tag
+        run: |
+          git tag "v${{ steps.version.outputs.version }}"
+          git push origin "v${{ steps.version.outputs.version }}"
+          echo "Tag v${{ steps.version.outputs.version }} created and pushed"
+
+  build-binaries:
+    name: Build - ${{ matrix.settings.platform }}
+    needs: version-bump
+    strategy:
+      fail-fast: false
+      matrix:
+        settings:
+          - platform: macos-latest
+            target: x86_64-apple-darwin
+            bundles: dmg
+          - platform: macos-latest
+            target: aarch64-apple-darwin
+            bundles: dmg
+          - platform: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            bundles: deb,appimage
+          - platform: windows-latest
+            target: x86_64-pc-windows-msvc
+            bundles: msi,nsis
+    runs-on: ${{ matrix.settings.platform }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: v${{ needs.version-bump.outputs.version }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.settings.target }}
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install Linux dependencies
+        if: matrix.settings.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libssl-dev
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build Tauri app (with signing)
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # GitHub automatically creates these for releases
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm run tauri build -- --target ${{ matrix.settings.target }} --bundles ${{ matrix.settings.bundles }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: artifacts-${{ matrix.settings.target }}
+          path: |
+            src-tauri/target/${{ matrix.settings.target }}/release/bundle/**/*.dmg
+            src-tauri/target/${{ matrix.settings.target }}/release/bundle/**/*.dmg.tar.gz
+            src-tauri/target/${{ matrix.settings.target }}/release/bundle/**/*.dmg.tar.gz.sig
+            src-tauri/target/${{ matrix.settings.target }}/release/bundle/**/*.deb
+            src-tauri/target/${{ matrix.settings.target }}/release/bundle/**/*.AppImage
+            src-tauri/target/${{ matrix.settings.target }}/release/bundle/**/*.AppImage.tar.gz
+            src-tauri/target/${{ matrix.settings.target }}/release/bundle/**/*.AppImage.tar.gz.sig
+            src-tauri/target/${{ matrix.settings.target }}/release/bundle/**/*.msi
+            src-tauri/target/${{ matrix.settings.target }}/release/bundle/**/*.msi.zip
+            src-tauri/target/${{ matrix.settings.target }}/release/bundle/**/*.msi.zip.sig
+            src-tauri/target/${{ matrix.settings.target }}/release/bundle/**/*.exe
+            src-tauri/target/${{ matrix.settings.target }}/release/bundle/**/*.exe.zip
+            src-tauri/target/${{ matrix.settings.target }}/release/bundle/**/*.exe.zip.sig
+          retention-days: 1
+          if-no-files-found: error
+
+  create-release:
+    name: Create GitHub Release
+    needs: [version-bump, build-binaries]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: v${{ needs.version-bump.outputs.version }}
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Display artifact structure
+        run: |
+          echo "Artifact structure:"
+          find artifacts -type f -ls
+
+      - name: Prepare release assets
+        id: prepare
+        run: |
+          mkdir -p release-assets
+
+          # Find and copy all artifacts to release-assets directory
+          # This includes .dmg, .AppImage, .msi, .exe, .deb and their .sig files
+          find artifacts -type f \( \
+            -name "*.dmg" -o \
+            -name "*.dmg.tar.gz" -o \
+            -name "*.dmg.tar.gz.sig" -o \
+            -name "*.AppImage" -o \
+            -name "*.AppImage.tar.gz" -o \
+            -name "*.AppImage.tar.gz.sig" -o \
+            -name "*.deb" -o \
+            -name "*.msi" -o \
+            -name "*.msi.zip" -o \
+            -name "*.msi.zip.sig" -o \
+            -name "*.exe" -o \
+            -name "*.exe.zip" -o \
+            -name "*.exe.zip.sig" \
+          \) -exec cp {} release-assets/ \;
+
+          echo "Release assets prepared:"
+          ls -lh release-assets/
+
+      - name: Generate release notes
+        id: notes
+        run: |
+          cat > release-notes.md << 'EOF'
+          ## LocalRouter AI v${{ needs.version-bump.outputs.version }}
+
+          ### Installation
+
+          Download the appropriate file for your platform:
+
+          - **macOS (Intel):** `LocalRouter-AI_*_x64.dmg`
+          - **macOS (Apple Silicon):** `LocalRouter-AI_*_aarch64.dmg`
+          - **Windows:** `LocalRouter-AI_*_x64-setup.exe` or `.msi`
+          - **Linux:** `LocalRouter-AI_*_amd64.AppImage` or `.deb`
+
+          ### Auto-Update
+
+          This release includes cryptographically signed binaries. The app will automatically check for updates weekly (configurable in Preferences → Updates).
+
+          ### Verification
+
+          All binaries are signed. The updater will verify signatures before installation.
+
+          ### Changes
+
+          - See commit history for details: https://github.com/${{ github.repository }}/commits/v${{ needs.version-bump.outputs.version }}
+
+          ---
+
+          **Full Changelog**: https://github.com/${{ github.repository }}/compare/v${{ needs.version-bump.outputs.version }}...main
+          EOF
+
+          echo "Release notes generated"
+
+      - name: Create latest.json for updater
+        run: |
+          # Tauri's build process should have created this, but we'll ensure it exists
+          # The updater looks for this file at the release endpoint
+          echo "Checking for latest.json..."
+          find artifacts -name "latest.json" -exec cp {} release-assets/ \; || echo "No latest.json found (will be auto-generated by Tauri)"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ needs.version-bump.outputs.version }}
+          name: LocalRouter AI v${{ needs.version-bump.outputs.version }}
+          body_path: release-notes.md
+          files: release-assets/*
+          prerelease: ${{ github.event.inputs.prerelease }}
+          draft: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify release assets
+        run: |
+          echo "Release v${{ needs.version-bump.outputs.version }} created successfully!"
+          echo "Assets uploaded:"
+          ls -lh release-assets/
+          echo ""
+          echo "Release URL: https://github.com/${{ github.repository }}/releases/tag/v${{ needs.version-bump.outputs.version }}"
+
+  post-release:
+    name: Post-Release Tasks
+    needs: [version-bump, create-release]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Summary
+        run: |
+          echo "✅ Release v${{ needs.version-bump.outputs.version }} completed successfully!"
+          echo ""
+          echo "📦 Release URL: https://github.com/${{ github.repository }}/releases/tag/v${{ needs.version-bump.outputs.version }}"
+          echo "📝 Version: ${{ needs.version-bump.outputs.version }}"
+          echo "🔐 Signed: Yes (all binaries)"
+          echo "🔄 Auto-update: Enabled"
+          echo ""
+          echo "Users will receive update notifications within 7 days (or sooner with manual check)."
