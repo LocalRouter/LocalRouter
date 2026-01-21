@@ -1,12 +1,98 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashSet;
+use std::sync::Arc;
 use std::time::Instant;
 
 // AppError not directly used in this file
 
 /// Namespace separator for MCP gateway (double underscore is MCP spec compliant)
 pub const NAMESPACE_SEPARATOR: &str = "__";
+
+/// Dynamic cache TTL manager
+///
+/// Tracks cache invalidation frequency and adjusts TTL accordingly:
+/// - Low invalidation rate (< 5 per hour) → Keep 5 minute TTL
+/// - Medium rate (5-20 per hour) → Reduce to 2 minute TTL
+/// - High rate (> 20 per hour) → Reduce to 1 minute TTL
+#[derive(Debug)]
+pub struct DynamicCacheTTL {
+    /// Base TTL in seconds (configured value)
+    base_ttl_seconds: u64,
+
+    /// Invalidation counter (atomic for thread safety)
+    invalidation_count: std::sync::atomic::AtomicU32,
+
+    /// Last reset time for invalidation counter
+    last_reset: Arc<parking_lot::RwLock<Instant>>,
+}
+
+impl DynamicCacheTTL {
+    pub fn new(base_ttl_seconds: u64) -> Self {
+        Self {
+            base_ttl_seconds,
+            invalidation_count: std::sync::atomic::AtomicU32::new(0),
+            last_reset: Arc::new(parking_lot::RwLock::new(Instant::now())),
+        }
+    }
+
+    /// Record a cache invalidation event
+    pub fn record_invalidation(&self) {
+        self.invalidation_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Get the current TTL based on invalidation frequency
+    pub fn get_ttl(&self) -> std::time::Duration {
+        // Reset counter every hour
+        let now = Instant::now();
+
+        // Check if reset is needed (read lock only)
+        let needs_reset = {
+            let last_reset = self.last_reset.read();
+            now.duration_since(*last_reset) >= std::time::Duration::from_secs(3600)
+        };
+
+        if needs_reset {
+            // Try to acquire write lock to reset
+            // Only one thread will successfully reset, others will skip
+            if let Some(mut last_reset) = self.last_reset.try_write() {
+                // Double-check elapsed time after acquiring write lock
+                if now.duration_since(*last_reset) >= std::time::Duration::from_secs(3600) {
+                    // Reset counter after an hour
+                    self.invalidation_count.store(0, std::sync::atomic::Ordering::Relaxed);
+                    *last_reset = now;
+                }
+            }
+            // If we couldn't get the lock, another thread is resetting - that's fine
+        }
+
+        // Calculate TTL based on invalidation frequency
+        let invalidations = self.invalidation_count.load(std::sync::atomic::Ordering::Relaxed);
+
+        if invalidations > 20 {
+            // High invalidation rate - use short TTL
+            std::time::Duration::from_secs(60) // 1 minute
+        } else if invalidations > 5 {
+            // Medium invalidation rate - use moderate TTL
+            std::time::Duration::from_secs(120) // 2 minutes
+        } else {
+            // Low invalidation rate - use base TTL
+            std::time::Duration::from_secs(self.base_ttl_seconds)
+        }
+    }
+}
+
+impl Clone for DynamicCacheTTL {
+    fn clone(&self) -> Self {
+        Self {
+            base_ttl_seconds: self.base_ttl_seconds,
+            invalidation_count: std::sync::atomic::AtomicU32::new(
+                self.invalidation_count.load(std::sync::atomic::Ordering::Relaxed)
+            ),
+            last_reset: self.last_reset.clone(),
+        }
+    }
+}
 
 /// Gateway configuration
 #[derive(Debug, Clone)]

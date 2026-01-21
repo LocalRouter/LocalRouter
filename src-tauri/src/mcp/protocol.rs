@@ -150,6 +150,12 @@ pub const METHOD_NOT_FOUND: i32 = -32601;
 pub const INVALID_PARAMS: i32 = -32602;
 pub const INTERNAL_ERROR: i32 = -32603;
 
+// Application-specific error codes (MCP Gateway)
+pub const TOOL_NOT_FOUND: i32 = -32001;
+pub const RESOURCE_NOT_FOUND: i32 = -32002;
+pub const PROMPT_NOT_FOUND: i32 = -32003;
+pub const SERVER_UNAVAILABLE: i32 = -32004;
+
 impl JsonRpcRequest {
     /// Create a new JSON-RPC request
     pub fn new(id: Option<Value>, method: String, params: Option<Value>) -> Self {
@@ -254,6 +260,38 @@ impl JsonRpcError {
     pub fn custom(code: i32, message: impl Into<String>, data: Option<Value>) -> Self {
         Self::new(code, message.into(), data)
     }
+
+    /// Create a tool not found error (-32001)
+    pub fn tool_not_found(name: impl Into<String>) -> Self {
+        Self::new(
+            TOOL_NOT_FOUND,
+            format!("Tool not found: {}", name.into()),
+            None,
+        )
+    }
+
+    /// Create a resource not found error (-32002)
+    pub fn resource_not_found(uri: impl Into<String>) -> Self {
+        Self::new(
+            RESOURCE_NOT_FOUND,
+            format!("Resource not found: {}", uri.into()),
+            None,
+        )
+    }
+
+    /// Create a prompt not found error (-32003)
+    pub fn prompt_not_found(name: impl Into<String>) -> Self {
+        Self::new(
+            PROMPT_NOT_FOUND,
+            format!("Prompt not found: {}", name.into()),
+            None,
+        )
+    }
+
+    /// Create a server unavailable error (-32004)
+    pub fn server_unavailable(message: impl Into<String>) -> Self {
+        Self::new(SERVER_UNAVAILABLE, message.into(), None)
+    }
 }
 
 impl JsonRpcNotification {
@@ -263,6 +301,55 @@ impl JsonRpcNotification {
             jsonrpc: "2.0".to_string(),
             method,
             params,
+        }
+    }
+}
+
+// ===== Streaming Support =====
+
+/// Streaming chunk for partial responses
+///
+/// Used when responses are too large to send at once or need to be sent progressively.
+/// Common for large file resources or long-running operations.
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct StreamingChunk {
+    /// Request ID this chunk belongs to
+    pub id: Value,
+
+    /// Chunk sequence number (0-indexed)
+    pub chunk_index: u32,
+
+    /// Whether this is the final chunk
+    pub is_final: bool,
+
+    /// Partial response data (base64-encoded if binary)
+    pub data: Value,
+
+    /// Optional metadata about the chunk
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Value>,
+}
+
+impl StreamingChunk {
+    /// Create a new streaming chunk
+    pub fn new(id: Value, chunk_index: u32, is_final: bool, data: Value) -> Self {
+        Self {
+            id,
+            chunk_index,
+            is_final,
+            data,
+            metadata: None,
+        }
+    }
+
+    /// Create a final chunk
+    pub fn final_chunk(id: Value, chunk_index: u32, data: Value) -> Self {
+        Self {
+            id,
+            chunk_index,
+            is_final: true,
+            data,
+            metadata: None,
         }
     }
 }
@@ -377,6 +464,22 @@ mod tests {
 
         let err = JsonRpcError::internal_error("Server error");
         assert_eq!(err.code, INTERNAL_ERROR);
+
+        // Application-specific error codes
+        let err = JsonRpcError::tool_not_found("test_tool");
+        assert_eq!(err.code, TOOL_NOT_FOUND);
+        assert!(err.message.contains("test_tool"));
+
+        let err = JsonRpcError::resource_not_found("file:///test.txt");
+        assert_eq!(err.code, RESOURCE_NOT_FOUND);
+        assert!(err.message.contains("file:///test.txt"));
+
+        let err = JsonRpcError::prompt_not_found("test_prompt");
+        assert_eq!(err.code, PROMPT_NOT_FOUND);
+        assert!(err.message.contains("test_prompt"));
+
+        let err = JsonRpcError::server_unavailable("Server offline");
+        assert_eq!(err.code, SERVER_UNAVAILABLE);
     }
 
     #[test]

@@ -5,8 +5,10 @@
 use crate::api_keys::keychain_trait::KeychainStorage;
 use crate::config::{McpServerConfig, McpTransportConfig, McpTransportType};
 use crate::mcp::oauth::McpOAuthManager;
-use crate::mcp::protocol::{JsonRpcNotification, JsonRpcRequest, JsonRpcResponse};
-use crate::mcp::transport::{SseTransport, StdioTransport, Transport};
+use crate::mcp::protocol::{JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, StreamingChunk};
+use crate::mcp::transport::{SseTransport, StdioTransport, Transport, WebSocketTransport};
+use futures_util::stream::Stream;
+use std::pin::Pin;
 use crate::utils::errors::{AppError, AppResult};
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
@@ -30,6 +32,9 @@ pub struct McpServerManager {
 
     /// Active SSE transports (server_id -> transport)
     sse_transports: Arc<DashMap<String, Arc<SseTransport>>>,
+
+    /// Active WebSocket transports (server_id -> transport)
+    websocket_transports: Arc<DashMap<String, Arc<WebSocketTransport>>>,
 
     /// Server configurations (server_id -> config)
     configs: Arc<DashMap<String, McpServerConfig>>,
@@ -76,6 +81,7 @@ impl McpServerManager {
         Self {
             stdio_transports: Arc::new(DashMap::new()),
             sse_transports: Arc::new(DashMap::new()),
+            websocket_transports: Arc::new(DashMap::new()),
             configs: Arc::new(DashMap::new()),
             oauth_manager: Arc::new(McpOAuthManager::new()),
             notification_handlers: Arc::new(DashMap::new()),
@@ -92,7 +98,7 @@ impl McpServerManager {
     pub fn on_notification(&self, server_id: &str, callback: NotificationCallback) {
         self.notification_handlers
             .entry(server_id.to_string())
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(callback);
     }
 
@@ -173,6 +179,9 @@ impl McpServerManager {
             }
             McpTransportType::Sse | McpTransportType::HttpSse => {
                 self.start_sse_server(server_id, &config).await?;
+            }
+            McpTransportType::WebSocket => {
+                self.start_websocket_server(server_id, &config).await?;
             }
         }
 
@@ -264,12 +273,86 @@ impl McpServerManager {
                     }
                     tracing::debug!("Applied custom headers auth for SSE server: {}", server_id);
                 }
-                crate::config::McpAuthConfig::OAuth { .. } => {
-                    // TODO: Implement OAuth token acquisition and refresh
-                    tracing::warn!(
-                        "OAuth auth not yet implemented for SSE server: {}",
-                        server_id
-                    );
+                crate::config::McpAuthConfig::OAuth {
+                    client_id,
+                    client_secret_ref,
+                    token_url,
+                    scopes,
+                    ..
+                } => {
+                    // Get keychain
+                    let keychain = crate::api_keys::CachedKeychain::auto()
+                        .unwrap_or_else(|_| crate::api_keys::CachedKeychain::system());
+
+                    // Get client secret from keychain
+                    let client_secret = match keychain.get("LocalRouter-McpServers", client_secret_ref) {
+                        Ok(Some(secret)) => secret,
+                        Ok(None) => {
+                            tracing::warn!(
+                                "OAuth client secret not found in keychain for server: {} (account: {})",
+                                server_id,
+                                client_secret_ref
+                            );
+                            return Err(AppError::Mcp(format!(
+                                "OAuth client secret not found for server: {}",
+                                server_id
+                            )));
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to retrieve OAuth client secret: {}", e);
+                            return Err(e);
+                        }
+                    };
+
+                    // Acquire OAuth token via Client Credentials flow
+                    tracing::debug!("Acquiring OAuth token for SSE server: {}", server_id);
+
+                    // Build token request
+                    let client = reqwest::Client::new();
+                    let mut form_params = vec![
+                        ("grant_type", "client_credentials"),
+                        ("client_id", client_id.as_str()),
+                        ("client_secret", client_secret.as_str()),
+                    ];
+
+                    // Add scopes if provided
+                    let scopes_str = scopes.join(" ");
+                    if !scopes.is_empty() {
+                        form_params.push(("scope", scopes_str.as_str()));
+                    }
+
+                    // Send token request
+                    let token_response = client
+                        .post(token_url)
+                        .form(&form_params)
+                        .send()
+                        .await
+                        .map_err(|e| AppError::Mcp(format!("OAuth token request failed: {}", e)))?;
+
+                    if !token_response.status().is_success() {
+                        let status = token_response.status();
+                        let body = token_response.text().await.unwrap_or_default();
+                        return Err(AppError::Mcp(format!(
+                            "OAuth token request failed with status {}: {}",
+                            status, body
+                        )));
+                    }
+
+                    // Parse token response
+                    let token_json: serde_json::Value = token_response
+                        .json()
+                        .await
+                        .map_err(|e| AppError::Mcp(format!("Failed to parse OAuth token response: {}", e)))?;
+
+                    let access_token = token_json
+                        .get("access_token")
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| AppError::Mcp("OAuth response missing access_token".to_string()))?;
+
+                    // Add Authorization header with token
+                    headers.insert("Authorization".to_string(), format!("Bearer {}", access_token));
+
+                    tracing::info!("Applied OAuth token for SSE server: {}", server_id);
                 }
                 _ => {
                     // None or EnvVars (not applicable for SSE)
@@ -290,6 +373,144 @@ impl McpServerManager {
 
         // Store the transport
         self.sse_transports
+            .insert(server_id.to_string(), Arc::new(transport));
+
+        Ok(())
+    }
+
+    /// Start a WebSocket MCP server
+    async fn start_websocket_server(&self, server_id: &str, config: &McpServerConfig) -> AppResult<()> {
+        // Extract WebSocket config
+        let (url, mut headers) = match &config.transport_config {
+            McpTransportConfig::WebSocket { url, headers } => (url.clone(), headers.clone()),
+            _ => {
+                return Err(AppError::Mcp(
+                    "Invalid transport config for WebSocket".to_string(),
+                ))
+            }
+        };
+
+        // Apply auth config (if specified)
+        if let Some(auth_config) = &config.auth_config {
+            match auth_config {
+                crate::config::McpAuthConfig::BearerToken { token_ref: _ } => {
+                    // Retrieve token from keychain
+                    let keychain = crate::api_keys::CachedKeychain::auto()
+                        .unwrap_or_else(|_| crate::api_keys::CachedKeychain::system());
+                    let account_name = format!("{}_bearer_token", config.id);
+                    if let Ok(Some(token)) = keychain.get("LocalRouter-McpServers", &account_name) {
+                        headers.insert("Authorization".to_string(), format!("Bearer {}", token));
+                        tracing::debug!("Applied bearer token auth for WebSocket server: {}", server_id);
+                    } else {
+                        tracing::warn!(
+                            "Bearer token not found in keychain for server: {} (tried account: {})",
+                            server_id,
+                            account_name
+                        );
+                    }
+                }
+                crate::config::McpAuthConfig::CustomHeaders {
+                    headers: auth_headers,
+                } => {
+                    for (key, value) in auth_headers {
+                        headers.insert(key.clone(), value.clone());
+                    }
+                    tracing::debug!("Applied custom headers auth for WebSocket server: {}", server_id);
+                }
+                crate::config::McpAuthConfig::OAuth {
+                    client_id,
+                    client_secret_ref,
+                    token_url,
+                    scopes,
+                    ..
+                } => {
+                    // Get keychain
+                    let keychain = crate::api_keys::CachedKeychain::auto()
+                        .unwrap_or_else(|_| crate::api_keys::CachedKeychain::system());
+
+                    // Get client secret from keychain
+                    let client_secret = match keychain.get("LocalRouter-McpServers", client_secret_ref) {
+                        Ok(Some(secret)) => secret,
+                        Ok(None) => {
+                            tracing::warn!(
+                                "OAuth client secret not found in keychain for server: {} (account: {})",
+                                server_id,
+                                client_secret_ref
+                            );
+                            return Err(AppError::Mcp(format!(
+                                "OAuth client secret not found for server: {}",
+                                server_id
+                            )));
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to retrieve OAuth client secret: {}", e);
+                            return Err(e);
+                        }
+                    };
+
+                    // Acquire OAuth token
+                    tracing::debug!("Acquiring OAuth token for WebSocket server: {}", server_id);
+
+                    let client = reqwest::Client::new();
+                    let mut form_params = vec![
+                        ("grant_type", "client_credentials"),
+                        ("client_id", client_id.as_str()),
+                        ("client_secret", client_secret.as_str()),
+                    ];
+
+                    let scopes_str = scopes.join(" ");
+                    if !scopes.is_empty() {
+                        form_params.push(("scope", scopes_str.as_str()));
+                    }
+
+                    let token_response = client
+                        .post(token_url)
+                        .form(&form_params)
+                        .send()
+                        .await
+                        .map_err(|e| AppError::Mcp(format!("OAuth token request failed: {}", e)))?;
+
+                    if !token_response.status().is_success() {
+                        let status = token_response.status();
+                        let body = token_response.text().await.unwrap_or_default();
+                        return Err(AppError::Mcp(format!(
+                            "OAuth token request failed with status {}: {}",
+                            status, body
+                        )));
+                    }
+
+                    let token_json: serde_json::Value = token_response
+                        .json()
+                        .await
+                        .map_err(|e| AppError::Mcp(format!("Failed to parse OAuth token response: {}", e)))?;
+
+                    let access_token = token_json
+                        .get("access_token")
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| AppError::Mcp("OAuth response missing access_token".to_string()))?;
+
+                    headers.insert("Authorization".to_string(), format!("Bearer {}", access_token));
+
+                    tracing::info!("Applied OAuth token for WebSocket server: {}", server_id);
+                }
+                _ => {
+                    tracing::debug!("No applicable auth config for WebSocket server: {}", server_id);
+                }
+            }
+        }
+
+        // Connect to the WebSocket server
+        let transport = WebSocketTransport::connect(url, headers).await?;
+
+        // Set up notification callback
+        let server_id_for_callback = server_id.to_string();
+        let manager_for_callback = self.clone();
+        transport.set_notification_callback(Arc::new(move |notification| {
+            manager_for_callback.dispatch_notification(&server_id_for_callback, notification);
+        }));
+
+        // Store the transport
+        self.websocket_transports
             .insert(server_id.to_string(), Arc::new(transport));
 
         Ok(())
@@ -320,6 +541,13 @@ impl McpServerManager {
             return Ok(());
         }
 
+        // Try to stop WebSocket transport
+        if let Some((_, transport)) = self.websocket_transports.remove(server_id) {
+            transport.close().await?;
+            tracing::info!("MCP WebSocket server stopped: {}", server_id);
+            return Ok(());
+        }
+
         // Server not running
         Err(AppError::Mcp(format!("Server not running: {}", server_id)))
     }
@@ -345,6 +573,68 @@ impl McpServerManager {
         // Check SSE transport
         if let Some(transport) = self.sse_transports.get(server_id) {
             return transport.send_request(request).await;
+        }
+
+        // Check WebSocket transport
+        if let Some(transport) = self.websocket_transports.get(server_id) {
+            return transport.send_request(request).await;
+        }
+
+        Err(AppError::Mcp(format!("Server not running: {}", server_id)))
+    }
+
+    /// Check if a server's transport supports streaming
+    ///
+    /// # Arguments
+    /// * `server_id` - The server ID to check
+    ///
+    /// # Returns
+    /// * `true` if the transport supports streaming, `false` otherwise
+    pub fn supports_streaming(&self, server_id: &str) -> bool {
+        // Check STDIO transport
+        if let Some(transport) = self.stdio_transports.get(server_id) {
+            return transport.supports_streaming();
+        }
+
+        // Check SSE transport
+        if let Some(transport) = self.sse_transports.get(server_id) {
+            return transport.supports_streaming();
+        }
+
+        // Check WebSocket transport
+        if let Some(transport) = self.websocket_transports.get(server_id) {
+            return transport.supports_streaming();
+        }
+
+        false
+    }
+
+    /// Send a streaming request to an MCP server
+    ///
+    /// # Arguments
+    /// * `server_id` - The server ID to send the request to
+    /// * `request` - The JSON-RPC request to send
+    ///
+    /// # Returns
+    /// * A stream of chunks representing the response
+    pub async fn stream_request(
+        &self,
+        server_id: &str,
+        request: JsonRpcRequest,
+    ) -> AppResult<Pin<Box<dyn Stream<Item = AppResult<StreamingChunk>> + Send>>> {
+        // Check STDIO transport
+        if let Some(transport) = self.stdio_transports.get(server_id) {
+            return transport.stream_request(request).await;
+        }
+
+        // Check SSE transport
+        if let Some(transport) = self.sse_transports.get(server_id) {
+            return transport.stream_request(request).await;
+        }
+
+        // Check WebSocket transport
+        if let Some(transport) = self.websocket_transports.get(server_id) {
+            return transport.stream_request(request).await;
         }
 
         Err(AppError::Mcp(format!("Server not running: {}", server_id)))
@@ -378,6 +668,15 @@ impl McpServerManager {
                     Some("SSE connection lost".to_string()),
                 )
             }
+        } else if let Some(transport) = self.websocket_transports.get(server_id) {
+            if transport.is_healthy() {
+                (HealthStatus::Healthy, None)
+            } else {
+                (
+                    HealthStatus::Unhealthy,
+                    Some("WebSocket connection lost".to_string()),
+                )
+            }
         } else {
             (HealthStatus::Unhealthy, Some("Not started".to_string()))
         };
@@ -408,16 +707,50 @@ impl McpServerManager {
 
     /// Check if a server is running
     pub fn is_running(&self, server_id: &str) -> bool {
-        self.stdio_transports.contains_key(server_id) || self.sse_transports.contains_key(server_id)
+        self.stdio_transports.contains_key(server_id)
+            || self.sse_transports.contains_key(server_id)
+            || self.websocket_transports.contains_key(server_id)
+    }
+
+    /// Get the transport type for a running server
+    ///
+    /// # Arguments
+    /// * `server_id` - The server ID to check
+    ///
+    /// # Returns
+    /// * The transport type as a string ("stdio", "http-sse", "websocket", or "unknown")
+    pub fn get_transport_type(&self, server_id: &str) -> &'static str {
+        if self.stdio_transports.contains_key(server_id) {
+            "stdio"
+        } else if self.sse_transports.contains_key(server_id) {
+            "http-sse"
+        } else if self.websocket_transports.contains_key(server_id) {
+            "websocket"
+        } else {
+            "unknown"
+        }
     }
 
     /// Shutdown all servers
     pub async fn shutdown_all(&self) {
         tracing::info!("Shutting down all MCP servers");
 
+        // Collect all server IDs from all transport types
+        let mut server_ids = Vec::new();
+
         for entry in self.stdio_transports.iter() {
-            let server_id = entry.key();
-            if let Err(e) = self.stop_server(server_id).await {
+            server_ids.push(entry.key().clone());
+        }
+        for entry in self.sse_transports.iter() {
+            server_ids.push(entry.key().clone());
+        }
+        for entry in self.websocket_transports.iter() {
+            server_ids.push(entry.key().clone());
+        }
+
+        // Stop all servers
+        for server_id in server_ids {
+            if let Err(e) = self.stop_server(&server_id).await {
                 tracing::error!("Failed to stop server {}: {}", server_id, e);
             }
         }

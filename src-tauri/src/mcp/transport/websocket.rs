@@ -2,7 +2,7 @@
 //!
 //! Communicates with MCP servers via WebSocket for bidirectional JSON-RPC messaging.
 
-use crate::mcp::protocol::{JsonRpcRequest, JsonRpcResponse};
+use crate::mcp::protocol::{JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse};
 use crate::mcp::transport::Transport;
 use crate::utils::errors::{AppError, AppResult};
 use async_trait::async_trait;
@@ -16,6 +16,9 @@ use tokio::sync::oneshot;
 use tokio_tungstenite::{
     connect_async, tungstenite::protocol::Message, MaybeTlsStream, WebSocketStream,
 };
+
+/// Notification callback type for WebSocket transport
+pub type WebSocketNotificationCallback = Arc<dyn Fn(JsonRpcNotification) + Send + Sync>;
 
 /// Type alias for the WebSocket write handle
 type WsSink = Arc<
@@ -33,6 +36,7 @@ type WsSink = Arc<
 ///
 /// Maintains a persistent WebSocket connection for bidirectional JSON-RPC communication.
 /// Supports concurrent requests with request/response correlation.
+/// Supports notification handling for server-initiated messages.
 pub struct WebSocketTransport {
     /// WebSocket URL
     #[allow(dead_code)]
@@ -54,6 +58,9 @@ pub struct WebSocketTransport {
 
     /// Whether the transport is closed
     closed: Arc<RwLock<bool>>,
+
+    /// Notification callback (optional)
+    notification_callback: Arc<RwLock<Option<WebSocketNotificationCallback>>>,
 }
 
 impl WebSocketTransport {
@@ -83,19 +90,21 @@ impl WebSocketTransport {
             pending: Arc::new(RwLock::new(HashMap::new())),
             next_id: Arc::new(RwLock::new(1)),
             closed: Arc::new(RwLock::new(false)),
+            notification_callback: Arc::new(RwLock::new(None)),
         };
 
         // Start background task to read messages
         let pending = transport.pending.clone();
         let closed = transport.closed.clone();
+        let notification_callback = transport.notification_callback.clone();
 
         tokio::spawn(async move {
             loop {
                 match read.next().await {
                     Some(Ok(Message::Text(text))) => {
-                        // Parse JSON-RPC response
-                        match serde_json::from_str::<JsonRpcResponse>(&text) {
-                            Ok(response) => {
+                        // Parse JSON-RPC message (response or notification)
+                        match serde_json::from_str::<JsonRpcMessage>(&text) {
+                            Ok(JsonRpcMessage::Response(response)) => {
                                 // Extract ID and find pending sender
                                 let id_str = response.id.to_string();
 
@@ -114,9 +123,23 @@ impl WebSocketTransport {
                                     );
                                 }
                             }
+                            Ok(JsonRpcMessage::Notification(notification)) => {
+                                // Handle notification
+                                tracing::debug!("Received notification: {}", notification.method);
+                                if let Some(callback) = notification_callback.read().as_ref() {
+                                    callback(notification);
+                                }
+                            }
+                            Ok(JsonRpcMessage::Request(_)) => {
+                                // Unexpected: server shouldn't send requests to client
+                                tracing::warn!(
+                                    "Received unexpected request from server (ignored): {}",
+                                    text
+                                );
+                            }
                             Err(e) => {
                                 tracing::error!(
-                                    "Failed to parse JSON-RPC response: {}\nMessage: {}",
+                                    "Failed to parse JSON-RPC message: {}\nMessage: {}",
                                     e,
                                     text
                                 );
@@ -163,6 +186,14 @@ impl WebSocketTransport {
         let id = *next_id;
         *next_id += 1;
         id
+    }
+
+    /// Set a notification callback
+    ///
+    /// # Arguments
+    /// * `callback` - The callback to invoke when notifications are received
+    pub fn set_notification_callback(&self, callback: WebSocketNotificationCallback) {
+        *self.notification_callback.write() = Some(callback);
     }
 
     /// Check if the transport is healthy
@@ -280,6 +311,7 @@ mod tests {
             pending: Arc::new(RwLock::new(HashMap::new())),
             next_id: Arc::new(RwLock::new(1)),
             closed: Arc::new(RwLock::new(false)),
+            notification_callback: Arc::new(RwLock::new(None)),
         };
 
         assert_eq!(transport.next_request_id(), 1);

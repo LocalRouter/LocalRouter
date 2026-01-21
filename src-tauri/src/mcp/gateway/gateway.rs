@@ -5,7 +5,7 @@ use std::time::Duration;
 use tokio::sync::RwLock;
 
 use crate::mcp::manager::McpServerManager;
-use crate::mcp::protocol::{JsonRpcRequest, JsonRpcResponse, McpPrompt, McpResource, McpTool};
+use crate::mcp::protocol::{JsonRpcError, JsonRpcRequest, JsonRpcResponse, McpPrompt, McpResource, McpTool};
 use crate::utils::errors::{AppError, AppResult};
 
 use super::deferred::{create_search_tool, search_prompts, search_resources, search_tools};
@@ -24,6 +24,9 @@ pub struct McpGateway {
 
     /// Gateway configuration
     config: GatewayConfig,
+
+    /// Track which servers have global notification handlers registered
+    notification_handlers_registered: Arc<DashMap<String, bool>>,
 }
 
 impl McpGateway {
@@ -33,6 +36,7 @@ impl McpGateway {
             sessions: Arc::new(DashMap::new()),
             server_manager,
             config,
+            notification_handlers_registered: Arc::new(DashMap::new()),
         }
     }
 
@@ -89,8 +93,12 @@ impl McpGateway {
 
         // Create new session
         let ttl = Duration::from_secs(self.config.session_ttl_seconds);
-        let mut session_data =
-            GatewaySession::new(client_id.to_string(), allowed_servers.clone(), ttl);
+        let mut session_data = GatewaySession::new(
+            client_id.to_string(),
+            allowed_servers.clone(),
+            ttl,
+            self.config.cache_ttl_seconds,
+        );
 
         // Initialize deferred loading if enabled
         if enable_deferred_loading {
@@ -102,7 +110,7 @@ impl McpGateway {
             }
 
             // Fetch full catalog from all servers
-            let tools = self
+            let (tools, _) = self
                 .fetch_and_merge_tools(
                     &allowed_servers,
                     JsonRpcRequest::new(Some(serde_json::json!(1)), "tools/list".to_string(), None),
@@ -110,7 +118,7 @@ impl McpGateway {
                 .await
                 .unwrap_or_default();
 
-            let resources = self
+            let (resources, _) = self
                 .fetch_and_merge_resources(
                     &allowed_servers,
                     JsonRpcRequest::new(
@@ -122,7 +130,7 @@ impl McpGateway {
                 .await
                 .unwrap_or_default();
 
-            let prompts = self
+            let (prompts, _) = self
                 .fetch_and_merge_prompts(
                     &allowed_servers,
                     JsonRpcRequest::new(
@@ -167,8 +175,8 @@ impl McpGateway {
 
         let session = Arc::new(RwLock::new(session_data));
 
-        // Register notification handlers for each server
-        self.register_notification_handlers(&session, &allowed_servers)
+        // Register GLOBAL notification handlers for each server (if not already registered)
+        self.register_notification_handlers(&allowed_servers)
             .await;
 
         self.sessions.insert(client_id.to_string(), session.clone());
@@ -176,64 +184,94 @@ impl McpGateway {
         Ok(session)
     }
 
-    /// Register notification handlers for a session
+    /// Register GLOBAL notification handlers for servers (one handler per server, shared across sessions)
+    /// This prevents memory leaks from per-session handlers
     async fn register_notification_handlers(
         &self,
-        session: &Arc<RwLock<GatewaySession>>,
         allowed_servers: &[String],
     ) {
         for server_id in allowed_servers {
-            let session_clone = session.clone();
+            // Check if handler already registered for this server
+            if self.notification_handlers_registered.contains_key(server_id) {
+                continue;
+            }
+
+            // Mark as registered (prevent duplicate registration)
+            self.notification_handlers_registered.insert(server_id.clone(), true);
+
+            let sessions_clone = self.sessions.clone();
             let server_id_clone = server_id.clone();
 
-            // Register notification handler
+            // Register GLOBAL notification handler (one per server, not per session)
             self.server_manager.on_notification(
                 server_id,
                 Arc::new(move |_, notification| {
-                    // Handle cache invalidation notifications
-                    match notification.method.as_str() {
-                        "notifications/tools/list_changed" => {
-                            tracing::info!(
-                                "Received tools/list_changed notification from server: {}",
-                                server_id_clone
-                            );
-                            // Invalidate tools cache
-                            if let Ok(mut session_write) = session_clone.try_write() {
-                                session_write.cached_tools = None;
-                                tracing::debug!("Invalidated tools cache for session");
+                    let sessions_inner = sessions_clone.clone();
+                    let server_id_inner = server_id_clone.clone();
+
+                    tokio::spawn(async move {
+                        match notification.method.as_str() {
+                            "notifications/tools/list_changed" => {
+                                tracing::info!(
+                                    "Received tools/list_changed notification from server: {}",
+                                    server_id_inner
+                                );
+                                // Invalidate tools cache for ALL sessions that include this server
+                                for entry in sessions_inner.iter() {
+                                    let session = entry.value();
+                                    if let Ok(mut session_write) = session.try_write() {
+                                        if session_write.allowed_servers.contains(&server_id_inner) {
+                                            session_write.cache_ttl_manager.record_invalidation();
+                                            session_write.cached_tools = None;
+                                        }
+                                    }
+                                }
+                                tracing::debug!("Invalidated tools cache for all sessions using server: {}", server_id_inner);
+                            }
+                            "notifications/resources/list_changed" => {
+                                tracing::info!(
+                                    "Received resources/list_changed notification from server: {}",
+                                    server_id_inner
+                                );
+                                // Invalidate resources cache for ALL sessions that include this server
+                                for entry in sessions_inner.iter() {
+                                    let session = entry.value();
+                                    if let Ok(mut session_write) = session.try_write() {
+                                        if session_write.allowed_servers.contains(&server_id_inner) {
+                                            session_write.cache_ttl_manager.record_invalidation();
+                                            session_write.cached_resources = None;
+                                        }
+                                    }
+                                }
+                                tracing::debug!("Invalidated resources cache for all sessions using server: {}", server_id_inner);
+                            }
+                            "notifications/prompts/list_changed" => {
+                                tracing::info!(
+                                    "Received prompts/list_changed notification from server: {}",
+                                    server_id_inner
+                                );
+                                // Invalidate prompts cache for ALL sessions that include this server
+                                for entry in sessions_inner.iter() {
+                                    let session = entry.value();
+                                    if let Ok(mut session_write) = session.try_write() {
+                                        if session_write.allowed_servers.contains(&server_id_inner) {
+                                            session_write.cache_ttl_manager.record_invalidation();
+                                            session_write.cached_prompts = None;
+                                        }
+                                    }
+                                }
+                                tracing::debug!("Invalidated prompts cache for all sessions using server: {}", server_id_inner);
+                            }
+                            other_method => {
+                                tracing::debug!(
+                                    "Received notification from server {}: {}",
+                                    server_id_inner,
+                                    other_method
+                                );
+                                // Other notifications are logged but not acted upon
                             }
                         }
-                        "notifications/resources/list_changed" => {
-                            tracing::info!(
-                                "Received resources/list_changed notification from server: {}",
-                                server_id_clone
-                            );
-                            // Invalidate resources cache
-                            if let Ok(mut session_write) = session_clone.try_write() {
-                                session_write.cached_resources = None;
-                                tracing::debug!("Invalidated resources cache for session");
-                            }
-                        }
-                        "notifications/prompts/list_changed" => {
-                            tracing::info!(
-                                "Received prompts/list_changed notification from server: {}",
-                                server_id_clone
-                            );
-                            // Invalidate prompts cache
-                            if let Ok(mut session_write) = session_clone.try_write() {
-                                session_write.cached_prompts = None;
-                                tracing::debug!("Invalidated prompts cache for session");
-                            }
-                        }
-                        other_method => {
-                            tracing::debug!(
-                                "Received notification from server {}: {}",
-                                server_id_clone,
-                                other_method
-                            );
-                            // Other notifications are logged but not acted upon
-                        }
-                    }
+                    });
                 }),
             );
         }
@@ -254,10 +292,13 @@ impl McpGateway {
                 // These are broadcast but we don't merge results
                 self.broadcast_and_return_first(session, request).await
             }
-            _ => Err(AppError::Mcp(format!(
-                "Unknown broadcast method: {}",
-                request.method
-            ))),
+            _ => {
+                // Return JSON-RPC error for unknown methods
+                Ok(JsonRpcResponse::error(
+                    request.id.unwrap_or(Value::Null),
+                    JsonRpcError::method_not_found(&request.method),
+                ))
+            }
         }
     }
 
@@ -271,12 +312,84 @@ impl McpGateway {
             "tools/call" => self.handle_tools_call(session, request).await,
             "resources/read" => self.handle_resources_read(session, request).await,
             "prompts/get" => self.handle_prompts_get(session, request).await,
+
+            // MCP client capabilities - return helpful errors
+            "completion/complete" => {
+                Ok(JsonRpcResponse::error(
+                    request.id.unwrap_or(Value::Null),
+                    JsonRpcError::custom(
+                        -32601,
+                        "completion/complete is a client capability. Servers request this from clients, not gateways.".to_string(),
+                        Some(json!({
+                            "method_type": "client_capability",
+                            "direction": "server_to_client",
+                            "hint": "This method should be implemented by your LLM client, not the MCP gateway"
+                        }))
+                    )
+                ))
+            }
+
+            "sampling/create" => {
+                Ok(JsonRpcResponse::error(
+                    request.id.unwrap_or(Value::Null),
+                    JsonRpcError::custom(
+                        -32601,
+                        "sampling/create is a client capability. Use your LLM client's sampling endpoint.".to_string(),
+                        Some(json!({
+                            "method_type": "client_capability",
+                            "hint": "This method should be implemented by your LLM client, not the MCP gateway"
+                        }))
+                    )
+                ))
+            }
+
+            "roots/list" => {
+                Ok(JsonRpcResponse::error(
+                    request.id.unwrap_or(Value::Null),
+                    JsonRpcError::custom(
+                        -32601,
+                        "roots/list is a client capability. Clients provide filesystem roots to servers, not gateways.".to_string(),
+                        Some(json!({
+                            "method_type": "client_capability",
+                            "direction": "client_to_server",
+                            "hint": "This method should be implemented by your MCP client, not the gateway"
+                        }))
+                    )
+                ))
+            }
+
+            // Future MCP features - return not implemented with workarounds
+            "resources/subscribe" => {
+                Ok(JsonRpcResponse::error(
+                    request.id.unwrap_or(Value::Null),
+                    JsonRpcError::custom(
+                        -32601,
+                        "resources/subscribe not yet implemented. Use resources/list with notifications/resources/list_changed for updates.".to_string(),
+                        Some(json!({
+                            "workaround": "poll_resources_list",
+                            "hint": "Call resources/list periodically, or rely on notifications/resources/list_changed"
+                        }))
+                    )
+                ))
+            }
+
+            "resources/unsubscribe" => {
+                Ok(JsonRpcResponse::error(
+                    request.id.unwrap_or(Value::Null),
+                    JsonRpcError::custom(
+                        -32601,
+                        "resources/unsubscribe not yet implemented.".to_string(),
+                        None
+                    )
+                ))
+            }
+
             _ => {
-                // Return 501 Not Implemented for unknown methods
-                Err(AppError::Mcp(format!(
-                    "Method not implemented: {}",
-                    request.method
-                )))
+                // Return JSON-RPC error for unknown methods
+                Ok(JsonRpcResponse::error(
+                    request.id.unwrap_or(Value::Null),
+                    JsonRpcError::method_not_found(&request.method),
+                ))
             }
         }
     }
@@ -406,22 +519,41 @@ impl McpGateway {
         drop(session_read);
 
         // Fetch from servers
-        let tools = self
+        let (tools, failures) = self
             .fetch_and_merge_tools(&allowed_servers, request.clone())
             .await?;
 
-        // Update session mappings and cache
+        // Update session mappings, cache, and failures
         {
             let mut session_write = session.write().await;
             session_write.update_tool_mappings(&tools);
+            session_write.last_broadcast_failures = failures;
 
-            let cache_ttl = Duration::from_secs(self.config.cache_ttl_seconds);
+            let cache_ttl = session_write.cache_ttl_manager.get_ttl();
             session_write.cached_tools = Some(CachedList::new(tools.clone(), cache_ttl));
+        }
+
+        // Check if there were any failures during fetch
+        let session_read = session.read().await;
+        let has_failures = !session_read.last_broadcast_failures.is_empty();
+        let failures = if has_failures {
+            Some(session_read.last_broadcast_failures.clone())
+        } else {
+            None
+        };
+        drop(session_read);
+
+        let mut result = json!({"tools": tools});
+        if let Some(failures) = failures {
+            result["_meta"] = json!({
+                "partial_failure": true,
+                "failures": failures
+            });
         }
 
         Ok(JsonRpcResponse::success(
             request.id.unwrap_or(Value::Null),
-            json!({"tools": tools}),
+            result,
         ))
     }
 
@@ -430,7 +562,7 @@ impl McpGateway {
         &self,
         server_ids: &[String],
         request: JsonRpcRequest,
-    ) -> AppResult<Vec<NamespacedTool>> {
+    ) -> AppResult<(Vec<NamespacedTool>, Vec<ServerFailure>)> {
         let timeout = Duration::from_secs(self.config.server_timeout_seconds);
         let max_retries = self.config.max_retry_attempts;
 
@@ -469,7 +601,7 @@ impl McpGateway {
             })
             .collect();
 
-        Ok(merge_tools(server_tools, &failures))
+        Ok((merge_tools(server_tools, &failures), failures))
     }
 
     /// Handle resources/list request
@@ -497,22 +629,32 @@ impl McpGateway {
         drop(session_read);
 
         // Fetch from servers
-        let resources = self
+        let (resources, failures) = self
             .fetch_and_merge_resources(&allowed_servers, request.clone())
             .await?;
 
-        // Update session mappings and cache
+        // Update session mappings, cache, failures, and mark as fetched
         {
             let mut session_write = session.write().await;
             session_write.update_resource_mappings(&resources);
+            session_write.last_broadcast_failures = failures.clone();
+            session_write.resources_list_fetched = true;
 
-            let cache_ttl = Duration::from_secs(self.config.cache_ttl_seconds);
+            let cache_ttl = session_write.cache_ttl_manager.get_ttl();
             session_write.cached_resources = Some(CachedList::new(resources.clone(), cache_ttl));
+        }
+
+        let mut result = json!({"resources": resources});
+        if !failures.is_empty() {
+            result["_meta"] = json!({
+                "partial_failure": true,
+                "failures": failures
+            });
         }
 
         Ok(JsonRpcResponse::success(
             request.id.unwrap_or(Value::Null),
-            json!({"resources": resources}),
+            result,
         ))
     }
 
@@ -521,7 +663,7 @@ impl McpGateway {
         &self,
         server_ids: &[String],
         request: JsonRpcRequest,
-    ) -> AppResult<Vec<NamespacedResource>> {
+    ) -> AppResult<(Vec<NamespacedResource>, Vec<ServerFailure>)> {
         let timeout = Duration::from_secs(self.config.server_timeout_seconds);
         let max_retries = self.config.max_retry_attempts;
 
@@ -560,7 +702,7 @@ impl McpGateway {
             })
             .collect();
 
-        Ok(merge_resources(server_resources, &failures))
+        Ok((merge_resources(server_resources, &failures), failures))
     }
 
     /// Handle prompts/list request
@@ -588,22 +730,31 @@ impl McpGateway {
         drop(session_read);
 
         // Fetch from servers
-        let prompts = self
+        let (prompts, failures) = self
             .fetch_and_merge_prompts(&allowed_servers, request.clone())
             .await?;
 
-        // Update session mappings and cache
+        // Update session mappings, cache, and failures
         {
             let mut session_write = session.write().await;
             session_write.update_prompt_mappings(&prompts);
+            session_write.last_broadcast_failures = failures.clone();
 
-            let cache_ttl = Duration::from_secs(self.config.cache_ttl_seconds);
+            let cache_ttl = session_write.cache_ttl_manager.get_ttl();
             session_write.cached_prompts = Some(CachedList::new(prompts.clone(), cache_ttl));
+        }
+
+        let mut result = json!({"prompts": prompts});
+        if !failures.is_empty() {
+            result["_meta"] = json!({
+                "partial_failure": true,
+                "failures": failures
+            });
         }
 
         Ok(JsonRpcResponse::success(
             request.id.unwrap_or(Value::Null),
-            json!({"prompts": prompts}),
+            result,
         ))
     }
 
@@ -612,7 +763,7 @@ impl McpGateway {
         &self,
         server_ids: &[String],
         request: JsonRpcRequest,
-    ) -> AppResult<Vec<NamespacedPrompt>> {
+    ) -> AppResult<(Vec<NamespacedPrompt>, Vec<ServerFailure>)> {
         let timeout = Duration::from_secs(self.config.server_timeout_seconds);
         let max_retries = self.config.max_retry_attempts;
 
@@ -651,7 +802,7 @@ impl McpGateway {
             })
             .collect();
 
-        Ok(merge_prompts(server_prompts, &failures))
+        Ok((merge_prompts(server_prompts, &failures), failures))
     }
 
     /// Handle tools/call request
@@ -661,12 +812,20 @@ impl McpGateway {
         request: JsonRpcRequest,
     ) -> AppResult<JsonRpcResponse> {
         // Extract tool name from params
-        let tool_name = request
+        let tool_name = match request
             .params
             .as_ref()
             .and_then(|p| p.get("name"))
             .and_then(|n| n.as_str())
-            .ok_or_else(|| AppError::Mcp("Missing tool name in params".to_string()))?;
+        {
+            Some(name) => name,
+            None => {
+                return Ok(JsonRpcResponse::error(
+                    request.id.unwrap_or(Value::Null),
+                    JsonRpcError::invalid_params("Missing tool name in params"),
+                ));
+            }
+        };
 
         // Check if it's the virtual search tool
         if tool_name == "search" {
@@ -674,14 +833,24 @@ impl McpGateway {
         }
 
         // Parse namespace
-        let (server_id, original_name) = parse_namespace(tool_name)
-            .ok_or_else(|| AppError::Mcp(format!("Invalid namespaced tool: {}", tool_name)))?;
+        let (server_id, original_name) = match parse_namespace(tool_name) {
+            Some((id, name)) => (id, name),
+            None => {
+                return Ok(JsonRpcResponse::error(
+                    request.id.unwrap_or(Value::Null),
+                    JsonRpcError::invalid_params(format!("Invalid namespaced tool: {}", tool_name)),
+                ));
+            }
+        };
 
         // Verify mapping exists in session
         let session_read = session.read().await;
         if !session_read.tool_mapping.contains_key(tool_name) {
             drop(session_read);
-            return Err(AppError::Mcp(format!("Unknown tool: {}", tool_name)));
+            return Ok(JsonRpcResponse::error(
+                request.id.unwrap_or(Value::Null),
+                JsonRpcError::tool_not_found(tool_name),
+            ));
         }
         drop(session_read);
 
@@ -707,26 +876,47 @@ impl McpGateway {
     ) -> AppResult<JsonRpcResponse> {
         let mut session_write = session.write().await;
 
-        let deferred = session_write
-            .deferred_loading
-            .as_mut()
-            .ok_or_else(|| AppError::Mcp("Deferred loading not enabled".to_string()))?;
+        let deferred = match session_write.deferred_loading.as_mut() {
+            Some(d) => d,
+            None => {
+                return Ok(JsonRpcResponse::error(
+                    request.id.unwrap_or(Value::Null),
+                    JsonRpcError::invalid_params("Deferred loading not enabled"),
+                ));
+            }
+        };
 
         // Extract arguments from params
         // MCP tools/call format: params.arguments contains the tool arguments
-        let params = request
-            .params
-            .as_ref()
-            .ok_or_else(|| AppError::Mcp("Missing params".to_string()))?;
+        let params = match request.params.as_ref() {
+            Some(p) => p,
+            None => {
+                return Ok(JsonRpcResponse::error(
+                    request.id.unwrap_or(Value::Null),
+                    JsonRpcError::invalid_params("Missing params"),
+                ));
+            }
+        };
 
-        let arguments = params
-            .get("arguments")
-            .ok_or_else(|| AppError::Mcp("Missing arguments in params".to_string()))?;
+        let arguments = match params.get("arguments") {
+            Some(a) => a,
+            None => {
+                return Ok(JsonRpcResponse::error(
+                    request.id.unwrap_or(Value::Null),
+                    JsonRpcError::invalid_params("Missing arguments in params"),
+                ));
+            }
+        };
 
-        let query = arguments
-            .get("query")
-            .and_then(|q| q.as_str())
-            .ok_or_else(|| AppError::Mcp("Missing query parameter".to_string()))?;
+        let query = match arguments.get("query").and_then(|q| q.as_str()) {
+            Some(q) => q,
+            None => {
+                return Ok(JsonRpcResponse::error(
+                    request.id.unwrap_or(Value::Null),
+                    JsonRpcError::invalid_params("Missing query parameter"),
+                ));
+            }
+        };
 
         let search_type = arguments.get("type").and_then(|t| t.as_str()).unwrap_or("all");
 
@@ -804,36 +994,101 @@ impl McpGateway {
         request: JsonRpcRequest,
     ) -> AppResult<JsonRpcResponse> {
         // Extract resource URI or name from params
-        let params = request
-            .params
-            .as_ref()
-            .ok_or_else(|| AppError::Mcp("Missing params".to_string()))?;
+        let params = match request.params.as_ref() {
+            Some(p) => p,
+            None => {
+                return Ok(JsonRpcResponse::error(
+                    request.id.unwrap_or(Value::Null),
+                    JsonRpcError::invalid_params("Missing params"),
+                ));
+            }
+        };
 
         // Try to get resource name first (preferred for namespaced routing)
         let resource_name = params.get("name").and_then(|n| n.as_str());
 
         let (server_id, original_name) = if let Some(name) = resource_name {
             // Prefer namespaced name routing
-            parse_namespace(name)
-                .ok_or_else(|| AppError::Mcp(format!("Invalid namespaced resource: {}", name)))?
+            match parse_namespace(name) {
+                Some((id, n)) => (id, n),
+                None => {
+                    return Ok(JsonRpcResponse::error(
+                        request.id.unwrap_or(Value::Null),
+                        JsonRpcError::invalid_params(format!("Invalid namespaced resource: {}", name)),
+                    ));
+                }
+            }
         } else {
             // Fallback: route by URI
-            let uri = params
-                .get("uri")
-                .and_then(|u| u.as_str())
-                .ok_or_else(|| AppError::Mcp("Missing resource name or URI".to_string()))?;
+            let uri = match params.get("uri").and_then(|u| u.as_str()) {
+                Some(u) => u,
+                None => {
+                    return Ok(JsonRpcResponse::error(
+                        request.id.unwrap_or(Value::Null),
+                        JsonRpcError::invalid_params("Missing resource name or URI"),
+                    ));
+                }
+            };
 
             // Look up URI in session mapping
             let session_read = session.read().await;
             let mapping = session_read.resource_uri_mapping.get(uri).cloned();
+            let resources_list_fetched = session_read.resources_list_fetched;
+            let allowed_servers = session_read.allowed_servers.clone();
             drop(session_read);
 
-            mapping.ok_or_else(|| {
-                AppError::Mcp(format!(
-                    "Resource URI not found: {}. Make sure to call resources/list first.",
-                    uri
-                ))
-            })?
+            // If URI not found and we haven't tried fetching resources/list yet, do so
+            if mapping.is_none() && !resources_list_fetched {
+                tracing::info!(
+                    "Resource URI not in mapping and resources/list not yet fetched, fetching now"
+                );
+
+                // Fetch resources/list to populate the URI mapping (only once per session)
+                let (resources, _failures) = self
+                    .fetch_and_merge_resources(
+                        &allowed_servers,
+                        JsonRpcRequest::new(
+                            Some(serde_json::json!("auto")),
+                            "resources/list".to_string(),
+                            None,
+                        ),
+                    )
+                    .await?;
+
+                // Update session mappings and mark as fetched
+                let mut session_write = session.write().await;
+                session_write.update_resource_mappings(&resources);
+                session_write.resources_list_fetched = true;
+                let new_mapping = session_write.resource_uri_mapping.get(uri).cloned();
+                drop(session_write);
+
+                // Try again with populated mapping
+                match new_mapping {
+                    Some(m) => m,
+                    None => {
+                        return Ok(JsonRpcResponse::error(
+                            request.id.unwrap_or(Value::Null),
+                            JsonRpcError::resource_not_found(format!(
+                                "Resource URI not found after fetching resources/list: {}",
+                                uri
+                            )),
+                        ));
+                    }
+                }
+            } else {
+                match mapping {
+                    Some(m) => m,
+                    None => {
+                        return Ok(JsonRpcResponse::error(
+                            request.id.unwrap_or(Value::Null),
+                            JsonRpcError::resource_not_found(format!(
+                                "Resource URI not found: {}",
+                                uri
+                            )),
+                        ));
+                    }
+                }
+            }
         };
 
         // Transform request based on routing method
@@ -861,22 +1116,40 @@ impl McpGateway {
         request: JsonRpcRequest,
     ) -> AppResult<JsonRpcResponse> {
         // Extract prompt name from params
-        let prompt_name = request
+        let prompt_name = match request
             .params
             .as_ref()
             .and_then(|p| p.get("name"))
             .and_then(|n| n.as_str())
-            .ok_or_else(|| AppError::Mcp("Missing prompt name in params".to_string()))?;
+        {
+            Some(name) => name,
+            None => {
+                return Ok(JsonRpcResponse::error(
+                    request.id.unwrap_or(Value::Null),
+                    JsonRpcError::invalid_params("Missing prompt name in params"),
+                ));
+            }
+        };
 
         // Parse namespace
-        let (server_id, original_name) = parse_namespace(prompt_name)
-            .ok_or_else(|| AppError::Mcp(format!("Invalid namespaced prompt: {}", prompt_name)))?;
+        let (server_id, original_name) = match parse_namespace(prompt_name) {
+            Some((id, name)) => (id, name),
+            None => {
+                return Ok(JsonRpcResponse::error(
+                    request.id.unwrap_or(Value::Null),
+                    JsonRpcError::invalid_params(format!("Invalid namespaced prompt: {}", prompt_name)),
+                ));
+            }
+        };
 
         // Verify mapping exists
         let session_read = session.read().await;
         if !session_read.prompt_mapping.contains_key(prompt_name) {
             drop(session_read);
-            return Err(AppError::Mcp(format!("Unknown prompt: {}", prompt_name)));
+            return Ok(JsonRpcResponse::error(
+                request.id.unwrap_or(Value::Null),
+                JsonRpcError::prompt_not_found(prompt_name),
+            ));
         }
         drop(session_read);
 

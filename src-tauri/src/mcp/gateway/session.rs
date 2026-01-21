@@ -51,11 +51,25 @@ pub struct GatewaySession {
 
     /// Session TTL
     pub ttl: std::time::Duration,
+
+    /// Dynamic cache TTL manager
+    pub cache_ttl_manager: DynamicCacheTTL,
+
+    /// Last broadcast failures (for exposing in responses)
+    pub last_broadcast_failures: Vec<ServerFailure>,
+
+    /// Track if resources/list was fetched (to avoid redundant auto-fetches in URI fallback)
+    pub resources_list_fetched: bool,
 }
 
 impl GatewaySession {
     /// Create a new session
-    pub fn new(client_id: String, allowed_servers: Vec<String>, ttl: std::time::Duration) -> Self {
+    pub fn new(
+        client_id: String,
+        allowed_servers: Vec<String>,
+        ttl: std::time::Duration,
+        base_cache_ttl_seconds: u64,
+    ) -> Self {
         let now = Instant::now();
         let mut server_init_status = HashMap::new();
 
@@ -80,6 +94,9 @@ impl GatewaySession {
             created_at: now,
             last_activity: now,
             ttl,
+            cache_ttl_manager: DynamicCacheTTL::new(base_cache_ttl_seconds),
+            last_broadcast_failures: Vec::new(),
+            resources_list_fetched: false,
         }
     }
 
@@ -203,6 +220,7 @@ mod tests {
             "client-123".to_string(),
             vec!["filesystem".to_string(), "github".to_string()],
             Duration::from_secs(3600),
+            300,
         );
 
         assert_eq!(session.client_id, "client-123");
@@ -217,6 +235,7 @@ mod tests {
             "client-123".to_string(),
             vec!["filesystem".to_string()],
             Duration::from_millis(100),
+            300,
         );
 
         assert!(!session.is_expired());
@@ -236,6 +255,7 @@ mod tests {
             "client-123".to_string(),
             vec!["filesystem".to_string()],
             Duration::from_secs(3600),
+            300,
         );
 
         let tools = vec![NamespacedTool {
@@ -261,6 +281,7 @@ mod tests {
             "client-123".to_string(),
             vec!["filesystem".to_string()],
             Duration::from_secs(3600),
+            300,
         );
 
         // Set caches

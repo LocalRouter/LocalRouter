@@ -217,6 +217,7 @@ pub fn merge_prompts(
 }
 
 /// Update server description with catalog counts (call after lists are populated)
+#[allow(dead_code)]
 pub fn update_server_description_with_catalog(
     _base_description: &str,
     tools: &[NamespacedTool],

@@ -1,4 +1,5 @@
 #[cfg(test)]
+#[allow(clippy::module_inception)]
 mod tests {
     use super::super::*;
     use crate::mcp::protocol::{McpPrompt, McpResource, McpTool};
@@ -267,6 +268,7 @@ mod tests {
             "client-123".to_string(),
             vec!["filesystem".to_string(), "github".to_string()],
             Duration::from_secs(3600),
+            300,
         );
 
         assert_eq!(session.client_id, "client-123");
@@ -283,6 +285,7 @@ mod tests {
             "client-123".to_string(),
             vec!["filesystem".to_string()],
             Duration::from_millis(100),
+            300,
         );
 
         assert!(!session.is_expired());

@@ -40,7 +40,9 @@ pub async fn broadcast_request(
                     // Request failed but we can retry
                     Ok(Err(e)) if retries < max_retries && is_retryable(&e) => {
                         retries += 1;
-                        let backoff = Duration::from_millis(100 * (1 << retries));
+                        // Exponential backoff with cap at 10 seconds
+                        let backoff_ms = (100 * (1 << retries)).min(10_000);
+                        let backoff = Duration::from_millis(backoff_ms);
                         tokio::time::sleep(backoff).await;
                         continue;
                     }
@@ -51,6 +53,10 @@ pub async fn broadcast_request(
                     // Timeout but we can retry
                     Err(_) if retries < max_retries => {
                         retries += 1;
+                        // Add exponential backoff for timeouts too (was missing!)
+                        let backoff_ms = (100 * (1 << retries)).min(10_000);
+                        let backoff = Duration::from_millis(backoff_ms);
+                        tokio::time::sleep(backoff).await;
                         continue;
                     }
 
