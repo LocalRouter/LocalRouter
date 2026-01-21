@@ -21,6 +21,7 @@ use tokio::sync::oneshot;
 use tracing::{error, info};
 
 /// Default redirect URI for OAuth callbacks
+#[allow(dead_code)]
 const DEFAULT_REDIRECT_URI: &str = "http://localhost:8080/callback";
 
 /// Default callback server port
@@ -32,6 +33,7 @@ const FLOW_TIMEOUT_SECS: i64 = 300;
 /// Manager for browser-based OAuth flows
 pub struct McpOAuthBrowserManager {
     /// HTTP client
+    #[allow(dead_code)]
     client: Client,
 
     /// Keychain storage
@@ -51,9 +53,11 @@ struct OAuthFlowState {
     code_verifier: String,
 
     /// CSRF state parameter
+    #[allow(dead_code)]
     state: String,
 
     /// Authorization URL to open in browser
+    #[allow(dead_code)]
     auth_url: String,
 
     /// Redirect URI used
@@ -64,6 +68,7 @@ struct OAuthFlowState {
     token_url: String,
 
     /// Result channel for callback
+    #[allow(dead_code)]
     result_tx: Option<oneshot::Sender<OAuthCallbackResult>>,
 
     /// When this flow started
@@ -86,6 +91,7 @@ enum FlowStatus {
     Error { message: String },
 
     /// Timed out
+    #[allow(dead_code)]
     Timeout,
 }
 
@@ -458,6 +464,7 @@ impl McpOAuthBrowserManager {
     ///
     /// # Returns
     /// * Valid access token
+    #[allow(dead_code)]
     pub async fn get_valid_token(&self, server_id: &str) -> AppResult<String> {
         // Try to get cached token from OAuth manager
         if let Some(token) = self.oauth_manager.get_cached_token(server_id).await {

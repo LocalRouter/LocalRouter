@@ -9,6 +9,7 @@ pub mod clients;
 pub mod config;
 pub mod mcp;
 pub mod monitoring;
+pub mod oauth_browser;
 pub mod oauth_clients;
 pub mod providers;
 pub mod routellm;
