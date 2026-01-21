@@ -47,8 +47,8 @@ pub struct RouteLLMService {
     model_path: PathBuf,
     tokenizer_path: PathBuf,
 
-    /// Idle timeout in seconds
-    idle_timeout_secs: u64,
+    /// Idle timeout in seconds (stored in Arc<RwLock> so it can be updated at runtime)
+    idle_timeout_secs: Arc<RwLock<u64>>,
 }
 
 impl RouteLLMService {
@@ -61,7 +61,7 @@ impl RouteLLMService {
             last_access: Arc::new(RwLock::new(None)),
             model_path,
             tokenizer_path,
-            idle_timeout_secs,
+            idle_timeout_secs: Arc::new(RwLock::new(idle_timeout_secs)),
         }
     }
 
@@ -239,9 +239,20 @@ impl RouteLLMService {
         (self.model_path.clone(), self.tokenizer_path.clone())
     }
 
+    /// Update idle timeout setting
+    pub async fn set_idle_timeout(&self, timeout_secs: u64) {
+        *self.idle_timeout_secs.write().await = timeout_secs;
+        info!("RouteLLM idle timeout updated to {} seconds", timeout_secs);
+    }
+
+    /// Get current idle timeout setting
+    pub async fn get_idle_timeout(&self) -> u64 {
+        *self.idle_timeout_secs.read().await
+    }
+
     /// Start auto-unload background task
     pub fn start_auto_unload_task(self: Arc<Self>) -> tokio::task::JoinHandle<()> {
-        memory::start_auto_unload_task(self.clone(), self.idle_timeout_secs)
+        memory::start_auto_unload_task(self.clone())
     }
 }
 

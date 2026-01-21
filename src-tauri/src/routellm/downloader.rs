@@ -7,13 +7,118 @@ use crate::routellm::errors::{RouteLLMError, RouteLLMResult};
 use hf_hub::api::tokio::Api;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 use tokio::sync::Mutex;
+use tokio::time::timeout;
 use tracing::{info, warn, debug};
 
 // Global download lock to prevent concurrent downloads
 static DOWNLOAD_LOCK: once_cell::sync::Lazy<Arc<Mutex<()>>> =
     once_cell::sync::Lazy::new(|| Arc::new(Mutex::new(())));
+
+// Download configuration constants
+const DOWNLOAD_TIMEOUT_SECS: u64 = 600; // 10 minutes
+const MAX_RETRIES: usize = 3;
+const RETRY_DELAY_MS: u64 = 2000; // 2 seconds between retries
+const MIN_DISK_SPACE_GB: u64 = 2; // Require 2 GB free space
+
+/// Check available disk space
+fn check_disk_space(path: &Path) -> RouteLLMResult<u64> {
+    #[cfg(target_os = "macos")]
+    {
+        use std::process::Command;
+
+        // Get the parent directory or the path itself
+        let check_path = if path.exists() {
+            path
+        } else {
+            path.parent().unwrap_or(path)
+        };
+
+        let output = Command::new("df")
+            .arg("-k") // Output in KB
+            .arg(check_path)
+            .output()
+            .map_err(|e| RouteLLMError::DownloadFailed(format!("Failed to check disk space: {}", e)))?;
+
+        if !output.status.success() {
+            return Err(RouteLLMError::DownloadFailed("Failed to check disk space".to_string()));
+        }
+
+        let output_str = String::from_utf8_lossy(&output.stdout);
+        let lines: Vec<&str> = output_str.lines().collect();
+
+        if lines.len() < 2 {
+            return Err(RouteLLMError::DownloadFailed("Unexpected df output".to_string()));
+        }
+
+        // Parse the second line (data line)
+        let parts: Vec<&str> = lines[1].split_whitespace().collect();
+        if parts.len() < 4 {
+            return Err(RouteLLMError::DownloadFailed("Failed to parse df output".to_string()));
+        }
+
+        // Column 3 is available space in KB
+        let available_kb: u64 = parts[3].parse()
+            .map_err(|e| RouteLLMError::DownloadFailed(format!("Failed to parse available space: {}", e)))?;
+
+        Ok(available_kb * 1024) // Convert to bytes
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        use std::process::Command;
+
+        let check_path = if path.exists() {
+            path
+        } else {
+            path.parent().unwrap_or(path)
+        };
+
+        let output = Command::new("df")
+            .arg("-B1") // Output in bytes
+            .arg(check_path)
+            .output()
+            .map_err(|e| RouteLLMError::DownloadFailed(format!("Failed to check disk space: {}", e)))?;
+
+        if !output.status.success() {
+            return Err(RouteLLMError::DownloadFailed("Failed to check disk space".to_string()));
+        }
+
+        let output_str = String::from_utf8_lossy(&output.stdout);
+        let lines: Vec<&str> = output_str.lines().collect();
+
+        if lines.len() < 2 {
+            return Err(RouteLLMError::DownloadFailed("Unexpected df output".to_string()));
+        }
+
+        let parts: Vec<&str> = lines[1].split_whitespace().collect();
+        if parts.len() < 4 {
+            return Err(RouteLLMError::DownloadFailed("Failed to parse df output".to_string()));
+        }
+
+        let available_bytes: u64 = parts[3].parse()
+            .map_err(|e| RouteLLMError::DownloadFailed(format!("Failed to parse available space: {}", e)))?;
+
+        Ok(available_bytes)
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        // TODO: Implement Windows disk space check using GetDiskFreeSpaceExW
+        // For now, skip check on Windows
+        warn!("Disk space check not implemented on Windows yet");
+        Ok(u64::MAX)
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    {
+        // Unsupported platform - skip check and return a large value
+        warn!("Disk space check not supported on this platform");
+        Ok(u64::MAX)
+    }
+}
 
 /// Download RouteLLM models from HuggingFace
 ///
@@ -41,6 +146,32 @@ pub async fn download_models(
     info!("Starting RouteLLM model download from HuggingFace");
     info!("  Model dir: {:?}", model_path);
     info!("  Tokenizer dir: {:?}", tokenizer_path);
+
+    // Check available disk space before downloading
+    let available_bytes = check_disk_space(model_path)?;
+    let available_gb = available_bytes as f64 / 1_073_741_824.0; // Convert to GB
+    let required_gb = MIN_DISK_SPACE_GB;
+
+    info!("Available disk space: {:.2} GB", available_gb);
+
+    if available_bytes < (required_gb * 1_073_741_824) {
+        let error_msg = format!(
+            "Insufficient disk space. Available: {:.2} GB, Required: {} GB",
+            available_gb, required_gb
+        );
+        warn!("{}", error_msg);
+
+        if let Some(ref handle) = app_handle {
+            let _ = handle.emit(
+                "routellm-download-failed",
+                DownloadError {
+                    error: error_msg.clone(),
+                },
+            );
+        }
+
+        return Err(RouteLLMError::DownloadFailed(error_msg));
+    }
 
     // Use temporary directories for atomic download
     let temp_model_path = model_path
@@ -93,24 +224,67 @@ pub async fn download_models(
 
     let repo = api.model("routellm/bert_gpt4_augmented".to_string());
 
-    // Download model.safetensors to temporary location
+    // Download model.safetensors to temporary location with retry logic
     info!("Downloading model.safetensors from HuggingFace...");
-    let downloaded_model = repo.get("model.safetensors").await.map_err(|e| {
-        let error_msg = format!("Model download failed: {}. Please check your internet connection.", e);
-        warn!("{}", error_msg);
 
-        // Emit failure event
-        if let Some(ref handle) = app_handle {
-            let _ = handle.emit(
-                "routellm-download-failed",
-                DownloadError {
-                    error: error_msg.clone(),
-                },
-            );
+    let downloaded_model = {
+        let mut last_error = None;
+        let mut success = None;
+
+        for attempt in 1..=MAX_RETRIES {
+            info!("Download attempt {}/{}", attempt, MAX_RETRIES);
+
+            // Wrap in timeout
+            let download_future = repo.get("model.safetensors");
+            let result = timeout(Duration::from_secs(DOWNLOAD_TIMEOUT_SECS), download_future).await;
+
+            match result {
+                Ok(Ok(path)) => {
+                    info!("Model download succeeded on attempt {}", attempt);
+                    success = Some(path);
+                    break;
+                }
+                Ok(Err(e)) => {
+                    warn!("Download attempt {} failed: {}", attempt, e);
+                    last_error = Some(format!("{}", e));
+                }
+                Err(_) => {
+                    warn!("Download attempt {} timed out after {} seconds", attempt, DOWNLOAD_TIMEOUT_SECS);
+                    last_error = Some(format!("Download timed out after {} seconds", DOWNLOAD_TIMEOUT_SECS));
+                }
+            }
+
+            // Wait before retrying (unless this was the last attempt)
+            if attempt < MAX_RETRIES {
+                info!("Waiting {} seconds before retry...", RETRY_DELAY_MS / 1000);
+                tokio::time::sleep(Duration::from_millis(RETRY_DELAY_MS)).await;
+            }
         }
 
-        RouteLLMError::DownloadFailed(error_msg)
-    })?;
+        match success {
+            Some(path) => path,
+            None => {
+                let error_msg = format!(
+                    "Model download failed after {} attempts. Last error: {}. Please check your internet connection.",
+                    MAX_RETRIES,
+                    last_error.unwrap_or_else(|| "Unknown error".to_string())
+                );
+                warn!("{}", error_msg);
+
+                // Emit failure event
+                if let Some(ref handle) = app_handle {
+                    let _ = handle.emit(
+                        "routellm-download-failed",
+                        DownloadError {
+                            error: error_msg.clone(),
+                        },
+                    );
+                }
+
+                return Err(RouteLLMError::DownloadFailed(error_msg));
+            }
+        }
+    };
 
     let temp_model_file = temp_model_path.join("model.safetensors");
     debug!("Copying model.safetensors to temp location: {:?}", temp_model_file);
@@ -148,21 +322,64 @@ pub async fn download_models(
     for (idx, file) in tokenizer_files.iter().enumerate() {
         debug!("Downloading {}", file);
 
-        let downloaded_file = repo.get(file).await.map_err(|e| {
-            let error_msg = format!("Failed to download {}: {}", file, e);
-            warn!("{}", error_msg);
+        // Download with retry logic
+        let downloaded_file = {
+            let mut last_error = None;
+            let mut success = None;
 
-            if let Some(ref handle) = app_handle {
-                let _ = handle.emit(
-                    "routellm-download-failed",
-                    DownloadError {
-                        error: error_msg.clone(),
-                    },
-                );
+            for attempt in 1..=MAX_RETRIES {
+                debug!("Downloading {} - attempt {}/{}", file, attempt, MAX_RETRIES);
+
+                // Wrap in timeout (shorter for tokenizer files since they're smaller)
+                let download_future = repo.get(file);
+                let result = timeout(Duration::from_secs(120), download_future).await;
+
+                match result {
+                    Ok(Ok(path)) => {
+                        debug!("Downloaded {} on attempt {}", file, attempt);
+                        success = Some(path);
+                        break;
+                    }
+                    Ok(Err(e)) => {
+                        warn!("Failed to download {} (attempt {}): {}", file, attempt, e);
+                        last_error = Some(format!("{}", e));
+                    }
+                    Err(_) => {
+                        warn!("Download of {} timed out (attempt {})", file, attempt);
+                        last_error = Some("Download timed out".to_string());
+                    }
+                }
+
+                // Wait before retrying
+                if attempt < MAX_RETRIES {
+                    tokio::time::sleep(Duration::from_millis(RETRY_DELAY_MS)).await;
+                }
             }
 
-            RouteLLMError::DownloadFailed(error_msg)
-        })?;
+            match success {
+                Some(path) => path,
+                None => {
+                    let error_msg = format!(
+                        "Failed to download {} after {} attempts: {}",
+                        file,
+                        MAX_RETRIES,
+                        last_error.unwrap_or_else(|| "Unknown error".to_string())
+                    );
+                    warn!("{}", error_msg);
+
+                    if let Some(ref handle) = app_handle {
+                        let _ = handle.emit(
+                            "routellm-download-failed",
+                            DownloadError {
+                                error: error_msg.clone(),
+                            },
+                        );
+                    }
+
+                    return Err(RouteLLMError::DownloadFailed(error_msg));
+                }
+            }
+        };
 
         let dest_file = temp_tokenizer_path.join(file);
         tokio::fs::copy(&downloaded_file, &dest_file)

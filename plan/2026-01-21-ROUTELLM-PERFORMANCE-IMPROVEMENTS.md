@@ -155,6 +155,8 @@ async fn test_performance_short_vs_long_text() {
 
 ### Run Performance Tests
 
+**Note**: Requires ~880 MB disk space (440 MB original + 440 MB patched model)
+
 ```bash
 # Run all RouteLLM tests including performance benchmarks
 cargo test --package localrouter-ai --lib routellm::tests -- --nocapture
@@ -210,10 +212,14 @@ For classification tasks (RouteLLM's use case):
 - Prompts usually have the question/task at the start
 - `TruncationDirection::Right` keeps the beginning, drops the end
 
-### Memory Usage
+### Memory and Disk Usage
 
-- **Model size**: ~440 MB (SafeTensors format)
-- **CPU memory**: ~500 MB total with model loaded
+- **Disk space**:
+  - **Required during setup**: ~880 MB (both original and patched model exist temporarily)
+  - **After first run**: ~440 MB (original is auto-deleted after patching)
+  - Note: The patched model is created to fix RoBERTa's token_type_embeddings for Candle compatibility
+  - The original model.safetensors is automatically deleted after successful patching to save space
+- **CPU memory**: ~500 MB with model loaded
 - **GPU memory**: ~600 MB (includes GPU tensor copies)
 
 ### Computational Complexity

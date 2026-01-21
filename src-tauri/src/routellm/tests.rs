@@ -334,8 +334,8 @@ mod auto_unload_tests {
     async fn test_auto_unload_on_idle() {
         let service = Arc::new(create_test_service());
 
-        // Start auto-unload task with 5 second idle timeout
-        start_auto_unload_task(Arc::clone(&service), 5);
+        // Start auto-unload task (uses service's configured 5 second idle timeout)
+        start_auto_unload_task(Arc::clone(&service));
 
         // Make a prediction to load the model
         service.predict("test").await.expect("Prediction failed");
@@ -352,8 +352,8 @@ mod auto_unload_tests {
     async fn test_auto_unload_prevented_by_activity() {
         let service = Arc::new(create_test_service());
 
-        // Start auto-unload task with 5 second idle timeout
-        start_auto_unload_task(Arc::clone(&service), 5);
+        // Start auto-unload task (uses service's configured 5 second idle timeout)
+        start_auto_unload_task(Arc::clone(&service));
 
         // Make initial prediction
         service.predict("test1").await.expect("First prediction failed");

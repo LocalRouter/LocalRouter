@@ -17,6 +17,11 @@ use std::collections::HashMap;
 ///
 /// RoBERTa only uses one token type (type 0), but Candle's BERT implementation expects
 /// at least 2 token types. We duplicate the embedding to satisfy this requirement.
+///
+/// **Disk Space Requirements**:
+/// - Requires ~880 MB free space during patching (both files exist temporarily)
+/// - After patching completes, original file is auto-deleted leaving only ~440 MB used
+/// - Patched file is created once on first load, then reused
 fn pad_token_type_embeddings(input_file: &Path, output_file: &Path) -> RouteLLMResult<()> {
     use std::fs;
 
@@ -181,22 +186,29 @@ impl CandleRouter {
             // Need to create the patched file from the original
             if !model_file.exists() {
                 return Err(RouteLLMError::ModelNotDownloaded(format!(
-                    "Model file not found at {:?}",
-                    model_file
+                    "Model files not found. Expected either:\n  - {:?} (original), or\n  - {:?} (patched)\n\nPlease download the model first.",
+                    model_file,
+                    patched_model_file
                 )));
             }
 
-            debug!("Creating patched model with padded token_type_embeddings");
+            info!("Creating patched model (first-time setup)");
+            info!("  Note: Requires ~880 MB free disk space during patching");
+            debug!("  Patching token_type_embeddings from [1, 768] to [2, 768]");
             pad_token_type_embeddings(&model_file, &patched_model_file)?;
 
             // Delete the original file to save disk space (we only need the patched version)
-            debug!("Deleting original model.safetensors to save disk space");
+            info!("Deleting original model to save disk space...");
             if let Err(e) = std::fs::remove_file(&model_file) {
                 // Log warning but don't fail - the patched file works fine
-                info!("Could not delete original model file (non-critical): {}", e);
+                info!("  Could not delete original model file (non-critical): {}", e);
+                info!("  Disk usage: ~880 MB (both original and patched)");
             } else {
-                info!("Deleted original model.safetensors (saved 1GB disk space)");
+                info!("  ✓ Original model deleted successfully");
+                info!("  Final disk usage: ~440 MB (patched model only)");
             }
+        } else {
+            debug!("Using existing patched model at {:?}", patched_model_file);
         }
 
         debug!("Loading model weights from {:?}", patched_model_file);

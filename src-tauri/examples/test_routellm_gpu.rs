@@ -20,8 +20,11 @@ fn main() {
     let model_path = routellm_dir.join("model");
     let tokenizer_path = routellm_dir.join("tokenizer");
 
-    // Check if models exist
-    if !model_path.join("model.safetensors").exists() {
+    // Check if models exist (either original or patched version)
+    let has_original = model_path.join("model.safetensors").exists();
+    let has_patched = model_path.join("model.patched.safetensors").exists();
+
+    if !has_original && !has_patched {
         eprintln!("❌ Model not found at {:?}", model_path);
         eprintln!("\nPlease download the model first:");
         eprintln!("cargo test --lib routellm::tests::downloader_tests::test_download_and_verify_models -- --ignored --nocapture");
@@ -43,11 +46,10 @@ fn main() {
         }
     };
 
-    // Test cases
-    let test_cases = vec![
-        ("Short text", "What is 2+2?"),
-        ("Medium text", &"a".repeat(500)),
-        ("Long text (user's case)", "2026-01-21T04:22:37.434492Z  INFO localrouter_ai: Initializing rate limiter...\n\
+    // Test cases - create owned strings to avoid lifetime issues
+    let medium_text = "a".repeat(500);
+    let very_long_text = "a".repeat(10_000);
+    let long_text = "2026-01-21T04:22:37.434492Z  INFO localrouter_ai: Initializing rate limiter...\n\
                      2026-01-21T04:22:37.434546Z  INFO localrouter_ai: Initializing metrics collector...\n\
                      2026-01-21T04:22:37.438532Z  INFO localrouter_ai: Initializing RouteLLM service...\n\
                      2026-01-21T04:22:37.438781Z  INFO localrouter_ai: RouteLLM service initialized with idle timeout: 600s\n\
@@ -61,8 +63,13 @@ fn main() {
                      2026-01-21T04:22:37.444840Z  INFO localrouter_ai::server: Web server listening on http://127.0.0.1:33625\n\
                      2026-01-21T04:22:37.444852Z  INFO localrouter_ai::server: OpenAI-compatible endpoints available at:\n\
                      2026-01-21T04:22:37.445062Z  INFO localrouter_ai::server::manager: Server started successfully on port 33625\n\
-                     2026-01-21T04:22:37.698310Z  INFO localrouter_ai: Tauri app initialized\n"),
-        ("Very long text", &"a".repeat(10_000)),
+                     2026-01-21T04:22:37.698310Z  INFO localrouter_ai: Tauri app initialized\n";
+
+    let test_cases = vec![
+        ("Short text", "What is 2+2?"),
+        ("Medium text", medium_text.as_str()),
+        ("Long text (user's case)", long_text),
+        ("Very long text", very_long_text.as_str()),
     ];
 
     println!("Running performance tests...\n");
