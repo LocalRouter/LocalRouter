@@ -472,6 +472,7 @@ impl MetricsCollector {
 
     /// Get recent usage for a strategy within a time window (for rate limiting)
     /// Returns (total_requests, total_tokens, total_cost)
+    /// Uses SQL aggregation for performance
     pub fn get_recent_usage_for_strategy(
         &self,
         strategy_id: &str,
@@ -481,24 +482,17 @@ impl MetricsCollector {
         let start = now - chrono::Duration::seconds(window_secs);
 
         let metric_type = format!("llm_strategy:{}", strategy_id);
-        let data_points = self
-            .db
-            .query_metrics(&metric_type, start, now)
-            .unwrap_or_default();
 
-        let total_requests: u64 = data_points.iter().map(|p| p.requests).sum();
-        let total_tokens: u64 = data_points
-            .iter()
-            .map(|p| p.input_tokens.unwrap_or(0) + p.output_tokens.unwrap_or(0))
-            .sum();
-        let total_cost: f64 = data_points.iter().map(|p| p.cost_usd.unwrap_or(0.0)).sum();
-
-        (total_requests, total_tokens, total_cost)
+        // Use SQL aggregation instead of Rust-side summing for performance
+        self.db
+            .get_aggregated_usage(&metric_type, start, now)
+            .unwrap_or((0, 0, 0.0))
     }
 
     /// Calculate pre-estimate for tokens/cost based on rolling average
     /// Returns (avg_tokens_per_request, avg_cost_per_request)
     /// Uses lookback_minutes of recent history to calculate average
+    /// Uses SQL aggregation for performance
     pub fn get_pre_estimate_for_strategy(
         &self,
         strategy_id: &str,
@@ -508,12 +502,13 @@ impl MetricsCollector {
         let start = now - chrono::Duration::minutes(lookback_minutes);
 
         let metric_type = format!("llm_strategy:{}", strategy_id);
-        let data_points = self
-            .db
-            .query_metrics(&metric_type, start, now)
-            .unwrap_or_default();
 
-        let total_requests: u64 = data_points.iter().map(|p| p.requests).sum();
+        // Use SQL aggregation instead of Rust-side summing for performance
+        let (total_requests, total_tokens, total_cost) = self
+            .db
+            .get_aggregated_usage(&metric_type, start, now)
+            .unwrap_or((0, 0, 0.0));
+
         if total_requests == 0 {
             // No recent data, use conservative estimates
             // 1k tokens (typical small request), $0.00 cost (assume free until proven otherwise)
@@ -523,12 +518,6 @@ impl MetricsCollector {
             // 3. After first request, actual cost will be recorded and used
             return (1000.0, 0.0);
         }
-
-        let total_tokens: u64 = data_points
-            .iter()
-            .map(|p| p.input_tokens.unwrap_or(0) + p.output_tokens.unwrap_or(0))
-            .sum();
-        let total_cost: f64 = data_points.iter().map(|p| p.cost_usd.unwrap_or(0.0)).sum();
 
         let avg_tokens = total_tokens as f64 / total_requests as f64;
         let avg_cost = total_cost / total_requests as f64;

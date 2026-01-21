@@ -54,6 +54,10 @@ pub struct AccessLogEntry {
 
     /// Unique request ID
     pub request_id: String,
+
+    /// RouteLLM win rate (0.0-1.0) if RouteLLM routing was used
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub routellm_win_rate: Option<f32>,
 }
 
 impl AccessLogEntry {
@@ -82,6 +86,7 @@ impl AccessLogEntry {
             cost_usd,
             latency_ms,
             request_id: request_id.into(),
+            routellm_win_rate: None,
         }
     }
 
@@ -107,6 +112,7 @@ impl AccessLogEntry {
             cost_usd: 0.0,
             latency_ms,
             request_id: request_id.into(),
+            routellm_win_rate: None,
         }
     }
 }

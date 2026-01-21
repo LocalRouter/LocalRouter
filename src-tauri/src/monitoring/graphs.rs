@@ -135,6 +135,28 @@ impl Dataset {
     }
 }
 
+/// Rate limit information for displaying reference lines on graphs
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RateLimitInfo {
+    /// Type of rate limit
+    pub limit_type: String,
+    /// Limit value (max allowed per time window)
+    pub value: f64,
+    /// Time window in seconds
+    pub time_window_seconds: i64,
+}
+
+impl RateLimitInfo {
+    /// Create a new rate limit info
+    pub fn new(limit_type: impl Into<String>, value: f64, time_window_seconds: i64) -> Self {
+        Self {
+            limit_type: limit_type.into(),
+            value,
+            time_window_seconds,
+        }
+    }
+}
+
 /// Chart.js compatible graph data
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GraphData {
@@ -143,12 +165,39 @@ pub struct GraphData {
 
     /// Datasets (y-values)
     pub datasets: Vec<Dataset>,
+
+    /// Rate limits to display as reference lines (optional)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rate_limits: Option<Vec<RateLimitInfo>>,
 }
 
 impl GraphData {
     /// Create a new graph data structure
     pub fn new(labels: Vec<String>, datasets: Vec<Dataset>) -> Self {
-        Self { labels, datasets }
+        Self {
+            labels,
+            datasets,
+            rate_limits: None,
+        }
+    }
+
+    /// Create graph data with rate limits
+    pub fn with_rate_limits(
+        labels: Vec<String>,
+        datasets: Vec<Dataset>,
+        rate_limits: Vec<RateLimitInfo>,
+    ) -> Self {
+        Self {
+            labels,
+            datasets,
+            rate_limits: Some(rate_limits),
+        }
+    }
+
+    /// Add rate limits to existing graph data
+    pub fn set_rate_limits(mut self, rate_limits: Vec<RateLimitInfo>) -> Self {
+        self.rate_limits = Some(rate_limits);
+        self
     }
 }
 

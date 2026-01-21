@@ -230,6 +230,47 @@ impl MetricsDatabase {
         Ok(result)
     }
 
+    /// Get aggregated usage for a metric type within a time window
+    /// Returns (total_requests, total_tokens, total_cost)
+    /// Uses SQL aggregation for performance (much faster than Rust-side summing)
+    pub fn get_aggregated_usage(
+        &self,
+        metric_type: &str,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> Result<(u64, u64, f64)> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT
+                COALESCE(SUM(requests), 0) as total_requests,
+                COALESCE(SUM(input_tokens), 0) as total_input_tokens,
+                COALESCE(SUM(output_tokens), 0) as total_output_tokens,
+                COALESCE(SUM(cost_usd), 0.0) as total_cost
+             FROM metrics
+             WHERE metric_type = ?
+               AND timestamp >= ?
+               AND timestamp <= ?",
+        )?;
+
+        let result = stmt.query_row(
+            params![metric_type, start.timestamp(), end.timestamp()],
+            |row| {
+                let total_requests: i64 = row.get(0)?;
+                let total_input_tokens: i64 = row.get(1)?;
+                let total_output_tokens: i64 = row.get(2)?;
+                let total_cost: f64 = row.get(3)?;
+
+                Ok((
+                    total_requests as u64,
+                    (total_input_tokens + total_output_tokens) as u64,
+                    total_cost,
+                ))
+            },
+        )?;
+
+        Ok(result)
+    }
+
     /// Cleanup old data based on retention policies
     /// - Minute data: older than 24 hours
     /// - Hour data: older than 7 days
