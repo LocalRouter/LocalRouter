@@ -114,6 +114,9 @@ impl From<AppError> for ApiErrorResponse {
             AppError::Crypto(err) => {
                 ApiErrorResponse::internal_error(format!("Crypto error: {}", err))
             }
+            AppError::OAuthBrowser(msg) => {
+                ApiErrorResponse::internal_error(format!("OAuth browser error: {}", msg))
+            }
         }
     }
 }
