@@ -14,7 +14,7 @@ use std::time::Instant;
 use crate::utils::errors::{AppError, AppResult};
 
 use super::{
-    Capability, ChatMessage, ChatMessageContent, ChunkChoice, ChunkDelta, CompletionChoice,
+    Capability, ChatMessage, ChunkChoice, ChunkDelta, CompletionChoice,
     CompletionChunk, CompletionRequest, CompletionResponse, HealthStatus, ModelInfo,
     ModelProvider, PricingInfo, ProviderHealth, TokenUsage,
 };
@@ -530,6 +530,18 @@ impl ModelProvider for AnthropicProvider {
     ) -> AppResult<Pin<Box<dyn Stream<Item = AppResult<CompletionChunk>> + Send>>> {
         let (system, messages) = Self::convert_messages(&request.messages)?;
 
+        // Convert tools from OpenAI format to Anthropic format
+        let tools = request.tools.as_ref().map(|openai_tools| {
+            openai_tools
+                .iter()
+                .map(|t| AnthropicTool {
+                    name: t.function.name.clone(),
+                    description: t.function.description.clone(),
+                    input_schema: t.function.parameters.clone(),
+                })
+                .collect()
+        });
+
         let anthropic_request = AnthropicRequest {
             model: request.model.clone(),
             messages,
@@ -539,6 +551,7 @@ impl ModelProvider for AnthropicProvider {
             top_p: request.top_p,
             stop_sequences: request.stop,
             stream: Some(true),
+            tools,
         };
 
         let response = self
@@ -815,6 +828,7 @@ struct AnthropicDelta {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::providers::ChatMessageContent;
 
     #[test]
     fn test_convert_messages_with_system() {
@@ -840,7 +854,10 @@ mod tests {
         assert_eq!(system, Some("You are a helpful assistant.".to_string()));
         assert_eq!(anthropic_messages.len(), 1);
         assert_eq!(anthropic_messages[0].role, "user");
-        assert_eq!(anthropic_messages[0].content, "Hello!");
+        match &anthropic_messages[0].content {
+            AnthropicMessageContent::Text(text) => assert_eq!(text, "Hello!"),
+            _ => panic!("Expected Text content"),
+        }
     }
 
     #[test]

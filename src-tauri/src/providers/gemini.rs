@@ -66,30 +66,95 @@ impl GeminiProvider {
         let mut gemini_contents = Vec::new();
 
         for msg in messages {
-            // Map OpenAI roles to Gemini roles
-            let role = match msg.role.as_str() {
+            match msg.role.as_str() {
                 "system" => {
-                    // Gemini doesn't have a system role, prepend to first user message
+                    // Gemini doesn't have a system role, will prepend to first user message
                     continue;
                 }
-                "user" => "user",
-                "assistant" => "model",
-                _ => "user", // Default to user for unknown roles
-            };
+                "tool" => {
+                    // Tool response message - convert to user role with FunctionResponse
+                    if let Some(tool_call_id) = &msg.tool_call_id {
+                        let tool_name = msg.name.clone().unwrap_or_else(|| "unknown".to_string());
+                        let response_data: serde_json::Value =
+                            serde_json::from_str(&msg.content.as_text())
+                                .unwrap_or_else(|_| serde_json::json!({"result": msg.content.as_text()}));
 
-            gemini_contents.push(GeminiContent {
-                role: role.to_string(),
-                parts: vec![GeminiPart {
-                    text: msg.content.as_text(),
-                }],
-            });
+                        gemini_contents.push(GeminiContent {
+                            role: "user".to_string(),
+                            parts: vec![GeminiPart::FunctionResponse {
+                                function_response: GeminiFunctionResponse {
+                                    name: tool_name,
+                                    response: response_data,
+                                },
+                            }],
+                        });
+                    }
+                }
+                "assistant" => {
+                    // Check if this assistant message has tool calls
+                    if let Some(tool_calls) = &msg.tool_calls {
+                        // Convert tool calls to FunctionCall parts
+                        let mut parts = Vec::new();
+
+                        // Add text content if present
+                        let text_content = msg.content.as_text();
+                        if !text_content.is_empty() {
+                            parts.push(GeminiPart::Text { text: text_content });
+                        }
+
+                        // Add function calls
+                        for tool_call in tool_calls {
+                            let args: serde_json::Value = serde_json::from_str(&tool_call.function.arguments)
+                                .unwrap_or(serde_json::json!({}));
+
+                            parts.push(GeminiPart::FunctionCall {
+                                function_call: GeminiFunctionCall {
+                                    name: tool_call.function.name.clone(),
+                                    args,
+                                },
+                            });
+                        }
+
+                        gemini_contents.push(GeminiContent {
+                            role: "model".to_string(),
+                            parts,
+                        });
+                    } else {
+                        // Regular assistant message
+                        gemini_contents.push(GeminiContent {
+                            role: "model".to_string(),
+                            parts: vec![GeminiPart::Text {
+                                text: msg.content.as_text(),
+                            }],
+                        });
+                    }
+                }
+                "user" => {
+                    gemini_contents.push(GeminiContent {
+                        role: "user".to_string(),
+                        parts: vec![GeminiPart::Text {
+                            text: msg.content.as_text(),
+                        }],
+                    });
+                }
+                _ => {
+                    // Default to user for unknown roles
+                    gemini_contents.push(GeminiContent {
+                        role: "user".to_string(),
+                        parts: vec![GeminiPart::Text {
+                            text: msg.content.as_text(),
+                        }],
+                    });
+                }
+            }
         }
 
         // Handle system message by prepending to first user message
         if let Some(system_msg) = messages.iter().find(|m| m.role == "system") {
             if let Some(first_user) = gemini_contents.iter_mut().find(|c| c.role == "user") {
-                first_user.parts[0].text =
-                    format!("{}\n\n{}", system_msg.content.as_str(), first_user.parts[0].text);
+                if let Some(GeminiPart::Text { text }) = first_user.parts.get_mut(0) {
+                    *text = format!("{}\n\n{}", system_msg.content.as_str(), text);
+                }
             }
         }
 
@@ -262,6 +327,20 @@ impl ModelProvider for GeminiProvider {
 
         let gemini_contents = self.convert_messages_to_gemini(&request.messages);
 
+        // Convert tools from OpenAI format to Gemini format
+        let tools = request.tools.as_ref().map(|openai_tools| {
+            vec![GeminiTool {
+                function_declarations: openai_tools
+                    .iter()
+                    .map(|t| GeminiFunctionDeclaration {
+                        name: t.function.name.clone(),
+                        description: t.function.description.clone().unwrap_or_default(),
+                        parameters: t.function.parameters.clone(),
+                    })
+                    .collect(),
+            }]
+        });
+
         let gemini_request = GeminiRequest {
             contents: gemini_contents,
             generation_config: Some(GeminiGenerationConfig {
@@ -270,6 +349,7 @@ impl ModelProvider for GeminiProvider {
                 top_p: request.top_p,
                 stop_sequences: request.stop.clone(),
             }),
+            tools,
         };
 
         let response = self
@@ -302,19 +382,44 @@ impl ModelProvider for GeminiProvider {
         }
 
         let candidate = &gemini_response.candidates[0];
+
+        // Extract text content
         let content = candidate
             .content
             .parts
             .iter()
-            .map(|p| p.text.clone())
+            .filter_map(|p| match p {
+                GeminiPart::Text { text } => Some(text.clone()),
+                _ => None,
+            })
             .collect::<Vec<_>>()
             .join("");
 
-        let finish_reason = match candidate.finish_reason.as_deref() {
-            Some("STOP") => "stop",
-            Some("MAX_TOKENS") => "length",
-            Some("SAFETY") => "content_filter",
-            _ => "stop",
+        // Extract function calls (tool calls)
+        let mut tool_calls = Vec::new();
+        for (idx, part) in candidate.content.parts.iter().enumerate() {
+            if let GeminiPart::FunctionCall { function_call } = part {
+                tool_calls.push(super::ToolCall {
+                    id: format!("call_gemini_{}", idx),
+                    tool_type: "function".to_string(),
+                    function: super::FunctionCall {
+                        name: function_call.name.clone(),
+                        arguments: serde_json::to_string(&function_call.args).unwrap_or_default(),
+                    },
+                });
+            }
+        }
+
+        // Determine finish reason
+        let finish_reason = if !tool_calls.is_empty() {
+            "tool_calls"
+        } else {
+            match candidate.finish_reason.as_deref() {
+                Some("STOP") => "stop",
+                Some("MAX_TOKENS") => "length",
+                Some("SAFETY") => "content_filter",
+                _ => "stop",
+            }
         };
 
         let usage = gemini_response.usage_metadata.as_ref();
@@ -330,7 +435,7 @@ impl ModelProvider for GeminiProvider {
                 message: ChatMessage {
                     role: "assistant".to_string(),
                     content: super::ChatMessageContent::Text(content),
-                    tool_calls: None,
+                    tool_calls: if tool_calls.is_empty() { None } else { Some(tool_calls) },
                     tool_call_id: None,
                     name: None,
                 },
@@ -373,6 +478,20 @@ impl ModelProvider for GeminiProvider {
 
         let gemini_contents = self.convert_messages_to_gemini(&request.messages);
 
+        // Convert tools from OpenAI format to Gemini format
+        let tools = request.tools.as_ref().map(|openai_tools| {
+            vec![GeminiTool {
+                function_declarations: openai_tools
+                    .iter()
+                    .map(|t| GeminiFunctionDeclaration {
+                        name: t.function.name.clone(),
+                        description: t.function.description.clone().unwrap_or_default(),
+                        parameters: t.function.parameters.clone(),
+                    })
+                    .collect(),
+            }]
+        });
+
         let gemini_request = GeminiRequest {
             contents: gemini_contents,
             generation_config: Some(GeminiGenerationConfig {
@@ -381,6 +500,7 @@ impl ModelProvider for GeminiProvider {
                 top_p: request.top_p,
                 stop_sequences: request.stop.clone(),
             }),
+            tools,
         };
 
         let response = self
@@ -422,20 +542,49 @@ impl ModelProvider for GeminiProvider {
                                         }
 
                                         let candidate = &gemini_chunk.candidates[0];
+
+                                        // Extract text content
                                         let content = candidate
                                             .content
                                             .parts
                                             .iter()
-                                            .map(|p| p.text.clone())
+                                            .filter_map(|p| match p {
+                                                GeminiPart::Text { text } => Some(text.clone()),
+                                                _ => None,
+                                            })
                                             .collect::<Vec<_>>()
                                             .join("");
 
-                                        let finish_reason = match candidate.finish_reason.as_deref()
-                                        {
-                                            Some("STOP") => Some("stop".to_string()),
-                                            Some("MAX_TOKENS") => Some("length".to_string()),
-                                            Some("SAFETY") => Some("content_filter".to_string()),
-                                            _ => None,
+                                        // Extract function calls (tool calls) as deltas
+                                        let mut tool_call_deltas = Vec::new();
+                                        for (idx, part) in candidate.content.parts.iter().enumerate() {
+                                            if let GeminiPart::FunctionCall { function_call } = part {
+                                                tool_call_deltas.push(super::ToolCallDelta {
+                                                    index: idx as u32,
+                                                    id: Some(format!("call_gemini_{}", idx)),
+                                                    tool_type: Some("function".to_string()),
+                                                    function: Some(super::FunctionCallDelta {
+                                                        name: Some(function_call.name.clone()),
+                                                        arguments: Some(
+                                                            serde_json::to_string(&function_call.args)
+                                                                .unwrap_or_default(),
+                                                        ),
+                                                    }),
+                                                });
+                                            }
+                                        }
+
+                                        // Determine finish reason
+                                        let has_tool_calls = !tool_call_deltas.is_empty();
+                                        let finish_reason = if has_tool_calls && candidate.finish_reason.is_some() {
+                                            Some("tool_calls".to_string())
+                                        } else {
+                                            match candidate.finish_reason.as_deref() {
+                                                Some("STOP") => Some("stop".to_string()),
+                                                Some("MAX_TOKENS") => Some("length".to_string()),
+                                                Some("SAFETY") => Some("content_filter".to_string()),
+                                                _ => None,
+                                            }
                                         };
 
                                         let chunk = CompletionChunk {
@@ -452,7 +601,11 @@ impl ModelProvider for GeminiProvider {
                                                     } else {
                                                         None
                                                     },
-                                                    tool_calls: None,
+                                                    tool_calls: if tool_call_deltas.is_empty() {
+                                                        None
+                                                    } else {
+                                                        Some(tool_call_deltas)
+                                                    },
                                                 },
                                                 finish_reason,
                                             }],
@@ -713,6 +866,7 @@ struct GeminiUsageMetadata {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::providers::ChatMessageContent;
 
     #[test]
     fn test_provider_name() {
@@ -765,7 +919,7 @@ mod tests {
             },
             ChatMessage {
                 role: "assistant".to_string(),
-                content: super::ChatMessageContent::Text("Hi there!".to_string()),
+                content: ChatMessageContent::Text("Hi there!".to_string()),
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,
@@ -777,8 +931,13 @@ mod tests {
         // System message should be prepended to first user message
         assert_eq!(gemini_contents.len(), 2);
         assert_eq!(gemini_contents[0].role, "user");
-        assert!(gemini_contents[0].parts[0].text.contains("You are helpful"));
-        assert!(gemini_contents[0].parts[0].text.contains("Hello"));
+        match &gemini_contents[0].parts[0] {
+            GeminiPart::Text { text } => {
+                assert!(text.contains("You are helpful"));
+                assert!(text.contains("Hello"));
+            }
+            _ => panic!("Expected Text part"),
+        }
         assert_eq!(gemini_contents[1].role, "model");
     }
 
@@ -817,7 +976,7 @@ mod tests {
             model: "gemini-1.5-flash".to_string(),
             messages: vec![ChatMessage {
                 role: "user".to_string(),
-                content: super::ChatMessageContent::Text("Say hello in one word".to_string()),
+                content: ChatMessageContent::Text("Say hello in one word".to_string()),
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,

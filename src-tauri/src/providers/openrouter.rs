@@ -559,6 +559,7 @@ struct OpenRouterPricing {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::providers::ChatMessageContent;
 
     #[test]
     fn test_provider_name() {
@@ -637,9 +638,11 @@ mod tests {
             seed: None,
             repetition_penalty: None,
             extensions: None,
-            response_format: None,
-            tool_choice: None,
             tools: None,
+            tool_choice: None,
+            response_format: None,
+            logprobs: None,
+            top_logprobs: None,
         };
 
         let response = provider.complete(request).await.unwrap();
