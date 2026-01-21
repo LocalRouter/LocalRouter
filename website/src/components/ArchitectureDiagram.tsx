@@ -60,7 +60,7 @@ const initialNodes: Node[] = [
       label: (
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
           <img
-            src="https://cdn.simpleicons.org/cursor"
+            src="/icons/cursor.svg"
             alt="Cursor"
             style={{
               width: '32px',
@@ -97,7 +97,7 @@ const initialNodes: Node[] = [
       label: (
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
           <img
-            src="https://raw.githubusercontent.com/open-webui/open-webui/main/static/favicon.png"
+            src="/icons/open-webui.png"
             alt="Open WebUI"
             style={{
               width: '32px',
@@ -134,7 +134,7 @@ const initialNodes: Node[] = [
       label: (
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
           <img
-            src="https://upload.wikimedia.org/wikipedia/commons/1/10/2023_Obsidian_logo.svg"
+            src="/icons/obsidian.svg"
             alt="Obsidian"
             style={{
               width: '32px',
@@ -172,7 +172,7 @@ const initialNodes: Node[] = [
       label: (
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
           <img
-            src="https://cdn.simpleicons.org/thunderbird"
+            src="/icons/thunderbird.svg"
             alt="Thunderbird"
             style={{
               width: '32px',
@@ -183,7 +183,7 @@ const initialNodes: Node[] = [
           />
           <div style={{ lineHeight: '1.3' }}>
             <div style={{ fontWeight: '600', fontSize: '13px' }}>Thunderbird</div>
-            <div style={{ fontSize: '11px', color: '#64748b' }}>(ThunderAI)</div>
+            <div style={{ fontSize: '11px', color: '#64748b' }}>(ThunderAI Add-on)</div>
           </div>
         </div>
       )
@@ -210,7 +210,7 @@ const initialNodes: Node[] = [
       label: (
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
           <img
-            src="https://cdn.simpleicons.org/libreoffice"
+            src="/icons/libreoffice.svg"
             alt="LibreOffice"
             style={{
               width: '32px',
@@ -242,7 +242,7 @@ const initialNodes: Node[] = [
     },
   },
 
-  // LocalRouter Box (center, parent for API keys and MCP servers)
+  // LocalRouter Box (center, parent for API keys)
   {
     id: 'localrouter',
     type: 'group',
@@ -261,7 +261,7 @@ const initialNodes: Node[] = [
       borderRadius: '16px',
       padding: '20px',
       width: 200,
-      height: 450,
+      height: 270,
       color: 'white',
       fontWeight: '700',
       fontSize: '16px',
@@ -387,94 +387,6 @@ const initialNodes: Node[] = [
     },
   },
 
-  // MCP Servers Section Label
-  {
-    id: 'mcp-label',
-    type: 'default',
-    data: {
-      label: (
-        <div style={{
-          textAlign: 'center',
-          fontSize: '11px',
-          fontWeight: '600',
-          color: 'rgba(255, 255, 255, 0.8)',
-          textTransform: 'uppercase',
-          letterSpacing: '1px'
-        }}>
-          MCP Servers
-        </div>
-      )
-    },
-    position: { x: 40, y: 240 },
-    parentNode: 'localrouter',
-    extent: 'parent' as const,
-    style: {
-      background: 'transparent',
-      border: 'none',
-      pointerEvents: 'none',
-      zIndex: 5,
-    },
-    draggable: false,
-    selectable: false,
-  },
-
-  // MCP Servers (inside LocalRouter)
-  {
-    id: 'mcp-github',
-    type: 'default',
-    data: {
-      label: (
-        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-          <span style={{ fontSize: '16px' }}>🔌</span>
-          <span>GitHub</span>
-        </div>
-      )
-    },
-    position: { x: 20, y: 265 },
-    parentNode: 'localrouter',
-    extent: 'parent' as const,
-    sourcePosition: Position.Right,
-    targetPosition: Position.Left,
-    style: {
-      background: 'rgba(255, 255, 255, 0.95)',
-      border: '2px solid #a78bfa',
-      borderRadius: '8px',
-      padding: '6px 10px',
-      fontSize: '12px',
-      fontWeight: '600',
-      minWidth: '120px',
-      boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)',
-      zIndex: 20,
-    },
-  },
-  {
-    id: 'mcp-serpapi',
-    type: 'default',
-    data: {
-      label: (
-        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-          <span style={{ fontSize: '16px' }}>🔌</span>
-          <span>SerpAPI</span>
-        </div>
-      )
-    },
-    position: { x: 20, y: 315 },
-    parentNode: 'localrouter',
-    extent: 'parent' as const,
-    sourcePosition: Position.Right,
-    targetPosition: Position.Left,
-    style: {
-      background: 'rgba(255, 255, 255, 0.95)',
-      border: '2px solid #a78bfa',
-      borderRadius: '8px',
-      padding: '6px 10px',
-      fontSize: '12px',
-      fontWeight: '600',
-      minWidth: '120px',
-      boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)',
-      zIndex: 20,
-    },
-  },
 
   // Providers (right column) - All standalone, no grouping
   {
@@ -484,7 +396,7 @@ const initialNodes: Node[] = [
       label: (
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           <img
-            src="https://cdn.simpleicons.org/anthropic/CA5A2C"
+            src="/icons/anthropic.svg"
             alt="Claude"
             style={{
               width: '24px',
@@ -541,12 +453,20 @@ const initialNodes: Node[] = [
     data: {
       label: (
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <span style={{ fontSize: '24px' }}>🔀</span>
+          <img
+            src="/icons/openrouter.png"
+            alt="OpenRouter"
+            style={{
+              width: '24px',
+              height: '24px',
+              objectFit: 'contain'
+            }}
+          />
           <span>OpenRouter</span>
         </div>
       )
     },
-    position: { x: 600, y: 160 },
+    position: { x: 600, y: 300 },
     sourcePosition: Position.Right,
     targetPosition: Position.Left,
     style: {
@@ -566,12 +486,20 @@ const initialNodes: Node[] = [
     data: {
       label: (
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <span style={{ fontSize: '24px' }}>🖥️</span>
+          <img
+            src="/icons/lmstudio.ico"
+            alt="LM Studio"
+            style={{
+              width: '24px',
+              height: '24px',
+              objectFit: 'contain'
+            }}
+          />
           <span>LM Studio</span>
         </div>
       )
     },
-    position: { x: 600, y: 240 },
+    position: { x: 600, y: 380 },
     sourcePosition: Position.Right,
     targetPosition: Position.Left,
     style: {
@@ -591,12 +519,20 @@ const initialNodes: Node[] = [
     data: {
       label: (
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <span style={{ fontSize: '24px' }}>🦙</span>
+          <img
+            src="/icons/ollama.svg"
+            alt="Ollama"
+            style={{
+              width: '24px',
+              height: '24px',
+              objectFit: 'contain'
+            }}
+          />
           <span>Ollama</span>
         </div>
       )
     },
-    position: { x: 600, y: 320 },
+    position: { x: 600, y: 460 },
     sourcePosition: Position.Right,
     targetPosition: Position.Left,
     style: {
@@ -611,7 +547,7 @@ const initialNodes: Node[] = [
     },
   },
 
-  // External Services (right column, below providers)
+  // MCP Servers (right column, between OpenAI and OpenRouter, slightly offset to the right)
   {
     id: 'service-github',
     type: 'default',
@@ -619,19 +555,19 @@ const initialNodes: Node[] = [
       label: (
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           <img
-            src="https://cdn.simpleicons.org/github"
-            alt="GitHub"
+            src="/icons/github.svg"
+            alt="GitHub MCP"
             style={{
               width: '24px',
               height: '24px',
               objectFit: 'contain'
             }}
           />
-          <span>GitHub</span>
+          <span>Github MCP</span>
         </div>
       )
     },
-    position: { x: 600, y: 410 },
+    position: { x: 630, y: 160 },
     sourcePosition: Position.Right,
     targetPosition: Position.Left,
     style: {
@@ -646,35 +582,35 @@ const initialNodes: Node[] = [
     },
   },
   {
-    id: 'service-serpapi',
+    id: 'service-jira',
     type: 'default',
     data: {
       label: (
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           <img
-            src="https://cdn.simpleicons.org/serpapi"
-            alt="SerpAPI"
+            src="/icons/jira.svg"
+            alt="Jira MCP"
             style={{
               width: '24px',
               height: '24px',
               objectFit: 'contain'
             }}
           />
-          <span>SerpAPI</span>
+          <span>Jira MCP</span>
         </div>
       )
     },
-    position: { x: 600, y: 490 },
+    position: { x: 630, y: 230 },
     sourcePosition: Position.Right,
     targetPosition: Position.Left,
     style: {
-      background: 'linear-gradient(145deg, #fef3c7 0%, #fde68a 100%)',
-      border: '2px solid #f59e0b',
+      background: 'linear-gradient(145deg, #deebff 0%, #b3d4ff 100%)',
+      border: '2px solid #0052CC',
       borderRadius: '10px',
       padding: '12px 16px',
       fontSize: '14px',
       fontWeight: '600',
-      boxShadow: '0 4px 12px rgba(245, 158, 11, 0.2)',
+      boxShadow: '0 4px 12px rgba(0, 82, 204, 0.2)',
       zIndex: 10,
     },
   },
@@ -689,7 +625,7 @@ const initialEdges: Edge[] = [
     target: 'apikey-coding',
     animated: true,
     style: { stroke: '#64748b', strokeWidth: 3 },
-    markerEnd: { type: MarkerType.ArrowClosed, color: '#64748b', width: 20, height: 20 },
+    markerEnd: { type: MarkerType.ArrowClosed, color: '#64748b', width: 10, height: 10 },
     zIndex: 100,
   },
   {
@@ -698,28 +634,7 @@ const initialEdges: Edge[] = [
     target: 'apikey-coding',
     animated: true,
     style: { stroke: '#64748b', strokeWidth: 3 },
-    markerEnd: { type: MarkerType.ArrowClosed, color: '#64748b', width: 20, height: 20 },
-    zIndex: 100,
-  },
-
-  // Apps to MCP Servers
-  // OpenCode and Cursor → GitHub MCP
-  {
-    id: 'e-app-1-github',
-    source: 'app-1',
-    target: 'mcp-github',
-    animated: true,
-    style: { stroke: '#64748b', strokeWidth: 3 },
-    markerEnd: { type: MarkerType.ArrowClosed, color: '#64748b', width: 20, height: 20 },
-    zIndex: 100,
-  },
-  {
-    id: 'e-app-2-github',
-    source: 'app-2',
-    target: 'mcp-github',
-    animated: true,
-    style: { stroke: '#64748b', strokeWidth: 3 },
-    markerEnd: { type: MarkerType.ArrowClosed, color: '#64748b', width: 20, height: 20 },
+    markerEnd: { type: MarkerType.ArrowClosed, color: '#64748b', width: 10, height: 10 },
     zIndex: 100,
   },
 
@@ -730,7 +645,7 @@ const initialEdges: Edge[] = [
     target: 'apikey-online',
     animated: true,
     style: { stroke: '#64748b', strokeWidth: 3 },
-    markerEnd: { type: MarkerType.ArrowClosed, color: '#64748b', width: 20, height: 20 },
+    markerEnd: { type: MarkerType.ArrowClosed, color: '#64748b', width: 10, height: 10 },
     zIndex: 100,
   },
 
@@ -741,7 +656,7 @@ const initialEdges: Edge[] = [
     target: 'apikey-privacy',
     animated: true,
     style: { stroke: '#64748b', strokeWidth: 3 },
-    markerEnd: { type: MarkerType.ArrowClosed, color: '#64748b', width: 20, height: 20 },
+    markerEnd: { type: MarkerType.ArrowClosed, color: '#64748b', width: 10, height: 10 },
     zIndex: 100,
   },
   {
@@ -750,7 +665,7 @@ const initialEdges: Edge[] = [
     target: 'apikey-privacy',
     animated: true,
     style: { stroke: '#64748b', strokeWidth: 3 },
-    markerEnd: { type: MarkerType.ArrowClosed, color: '#64748b', width: 20, height: 20 },
+    markerEnd: { type: MarkerType.ArrowClosed, color: '#64748b', width: 10, height: 10 },
     zIndex: 100,
   },
   {
@@ -759,7 +674,7 @@ const initialEdges: Edge[] = [
     target: 'apikey-privacy',
     animated: true,
     style: { stroke: '#64748b', strokeWidth: 3 },
-    markerEnd: { type: MarkerType.ArrowClosed, color: '#64748b', width: 20, height: 20 },
+    markerEnd: { type: MarkerType.ArrowClosed, color: '#64748b', width: 10, height: 10 },
     zIndex: 100,
   },
 
@@ -771,7 +686,7 @@ const initialEdges: Edge[] = [
     target: 'provider-claude',
     animated: true,
     style: { stroke: '#CA5A2C', strokeWidth: 3 },
-    markerEnd: { type: MarkerType.ArrowClosed, color: '#CA5A2C', width: 20, height: 20 },
+    markerEnd: { type: MarkerType.ArrowClosed, color: '#CA5A2C', width: 10, height: 10 },
     zIndex: 100,
   },
   {
@@ -780,7 +695,7 @@ const initialEdges: Edge[] = [
     target: 'provider-openai',
     animated: true,
     style: { stroke: '#3b82f6', strokeWidth: 3 },
-    markerEnd: { type: MarkerType.ArrowClosed, color: '#3b82f6', width: 20, height: 20 },
+    markerEnd: { type: MarkerType.ArrowClosed, color: '#3b82f6', width: 10, height: 10 },
     zIndex: 100,
   },
 
@@ -791,7 +706,7 @@ const initialEdges: Edge[] = [
     target: 'provider-openrouter',
     animated: true,
     style: { stroke: '#3b82f6', strokeWidth: 3 },
-    markerEnd: { type: MarkerType.ArrowClosed, color: '#3b82f6', width: 20, height: 20 },
+    markerEnd: { type: MarkerType.ArrowClosed, color: '#3b82f6', width: 10, height: 10 },
     zIndex: 100,
   },
   {
@@ -800,7 +715,7 @@ const initialEdges: Edge[] = [
     target: 'provider-lmstudio',
     animated: true,
     style: { stroke: '#0ea5e9', strokeWidth: 3 },
-    markerEnd: { type: MarkerType.ArrowClosed, color: '#0ea5e9', width: 20, height: 20 },
+    markerEnd: { type: MarkerType.ArrowClosed, color: '#0ea5e9', width: 10, height: 10 },
     zIndex: 100,
   },
 
@@ -811,27 +726,27 @@ const initialEdges: Edge[] = [
     target: 'provider-ollama',
     animated: true,
     style: { stroke: '#0ea5e9', strokeWidth: 3 },
-    markerEnd: { type: MarkerType.ArrowClosed, color: '#0ea5e9', width: 20, height: 20 },
+    markerEnd: { type: MarkerType.ArrowClosed, color: '#0ea5e9', width: 10, height: 10 },
     zIndex: 100,
   },
 
-  // MCP Servers to External Services
+  // Coding API Key to MCP Servers
   {
-    id: 'e-mcp-github-service',
-    source: 'mcp-github',
+    id: 'e-coding-github-mcp',
+    source: 'apikey-coding',
     target: 'service-github',
     animated: true,
     style: { stroke: '#1f2937', strokeWidth: 3 },
-    markerEnd: { type: MarkerType.ArrowClosed, color: '#1f2937', width: 20, height: 20 },
+    markerEnd: { type: MarkerType.ArrowClosed, color: '#1f2937', width: 10, height: 10 },
     zIndex: 100,
   },
   {
-    id: 'e-mcp-serpapi-service',
-    source: 'mcp-serpapi',
-    target: 'service-serpapi',
+    id: 'e-coding-jira-mcp',
+    source: 'apikey-coding',
+    target: 'service-jira',
     animated: true,
-    style: { stroke: '#f59e0b', strokeWidth: 3 },
-    markerEnd: { type: MarkerType.ArrowClosed, color: '#f59e0b', width: 20, height: 20 },
+    style: { stroke: '#0052CC', strokeWidth: 3 },
+    markerEnd: { type: MarkerType.ArrowClosed, color: '#0052CC', width: 10, height: 10 },
     zIndex: 100,
   },
 ]

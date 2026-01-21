@@ -9,14 +9,14 @@ export default function Home() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-24">
           <div className="text-center">
             <h1 className="text-5xl md:text-6xl font-bold text-gray-900 mb-6">
-              Local router for your
+              Desktop vault for your
               <br/>
               <span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-500 to-purple-600">
-                LLM, MCP, and more
+                LLMs & MCPs
               </span>
             </h1>
             <p className="text-xl text-gray-600 max-w-3xl mx-auto mb-10">
-              LocalRouter provides a local OpenAI-compatible API gateway that intelligently routes requests across multiple AI providers with smart routing, cost optimization, and comprehensive monitoring.
+              Our desktop app provides a local OpenAI-compatible API gateway and a unified MCP gateway that guards your api keys and services behind an intelligent router and cost-aware rate limiter.
             </p>
             <div className="flex justify-center space-x-4">
               <Link
