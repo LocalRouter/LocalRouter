@@ -53,6 +53,7 @@ arboard = { workspace = true }
 sha2 = { workspace = true }
 rand = { workspace = true }
 urlencoding = { workspace = true }
+clap = { workspace = true }
 
 # Additional dependencies
 futures = "0.3"

@@ -82,6 +82,9 @@ if-addrs = "0.13"
 # Clipboard
 arboard = "3.4"
 
+# CLI parsing
+clap = { version = "4.5", features = ["derive"] }
+
 [profile.release]
 opt-level = "z"
 lto = true
