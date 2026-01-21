@@ -3,7 +3,6 @@ import { listen } from '@tauri-apps/api/event'
 import Sidebar from './components/Sidebar'
 import HomeTab from './components/tabs/HomeTab'
 import ClientsTab from './components/tabs/ClientsTab'
-import ApiKeysTab from './components/tabs/ApiKeysTab'
 import ProvidersTab from './components/tabs/ProvidersTab'
 import ModelsTab from './components/tabs/ModelsTab'
 import OAuthClientsTab from './components/tabs/OAuthClientsTab'
@@ -14,14 +13,7 @@ import LogsTab from './components/tabs/LogsTab'
 import SettingsPage from './components/SettingsPage'
 import { invoke } from '@tauri-apps/api/core'
 
-type Tab = 'home' | 'clients' | 'api-keys' | 'providers' | 'models' | 'oauth-clients' | 'mcp-servers' | 'routing' | 'logs' | 'documentation' | 'settings'
-
-interface ApiKeyInfo {
-  id: string
-  name: string
-  enabled: boolean
-  created_at: string
-}
+type Tab = 'home' | 'clients' | 'providers' | 'models' | 'oauth-clients' | 'mcp-servers' | 'routing' | 'logs' | 'documentation' | 'settings'
 
 interface Client {
   id: string
@@ -51,32 +43,23 @@ function App() {
 
     // Subscribe to open-prioritized-list event from tray
     const unsubscribePrioritized = listen<string>('open-prioritized-list', async (event) => {
-      const apiKeyId = event.payload
-      console.log('Opening prioritized list for API key:', apiKeyId)
+      const clientId = event.payload
+      console.log('Opening prioritized list for client:', clientId)
 
       try {
-        // Try to find the client by ID (new unified client system)
+        // Find the client by ID
         const clients = await invoke<Client[]>('list_clients')
-        const client = clients.find((c) => c.id === apiKeyId || c.client_id === apiKeyId)
+        const client = clients.find((c) => c.id === clientId || c.client_id === clientId)
 
         if (client) {
           // Navigate to clients tab with this client ID, and append tab info
           setActiveTab('clients')
           setActiveSubTab(`${client.client_id}|models|prioritized`)
-          return
-        }
-
-        // Fallback: try API keys (legacy system)
-        const keys = await invoke<ApiKeyInfo[]>('list_api_keys')
-        const key = keys.find((k) => k.id === apiKeyId)
-
-        if (key) {
-          // Navigate to API keys tab with this key ID
-          setActiveTab('api-keys')
-          setActiveSubTab(key.id)
+        } else {
+          console.warn('Client not found:', clientId)
         }
       } catch (err) {
-        console.error('Failed to load client/API key:', err)
+        console.error('Failed to load client:', err)
       }
     })
 
@@ -106,9 +89,6 @@ function App() {
           {activeTab === 'home' && <HomeTab />}
           {activeTab === 'clients' && (
             <ClientsTab activeSubTab={activeSubTab} onTabChange={handleTabChange} />
-          )}
-          {activeTab === 'api-keys' && (
-            <ApiKeysTab activeSubTab={activeSubTab} onTabChange={handleTabChange} />
           )}
           {activeTab === 'providers' && (
             <ProvidersTab activeSubTab={activeSubTab} onTabChange={handleTabChange} />

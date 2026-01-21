@@ -362,6 +362,98 @@ export default function ServerTab() {
         </div>
       </div>
 
+      {/* MCP Client Connection Instructions */}
+      <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-6">
+        <h2 className="text-xl font-bold text-gray-900 dark:text-gray-100 mb-4">External MCP Client Connection</h2>
+        <p className="text-sm text-gray-600 dark:text-gray-400 mb-6">
+          Connect external MCP clients (Claude Desktop, Cursor, VS Code) to LocalRouter's unified MCP gateway.
+        </p>
+
+        <div className="space-y-6">
+          {/* HTTP/SSE Connection */}
+          <div className="p-4 bg-gray-50 dark:bg-gray-900/50 rounded-lg border border-gray-200 dark:border-gray-700">
+            <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-2">
+              HTTP/SSE Endpoint
+            </h3>
+            <p className="text-xs text-gray-600 dark:text-gray-400 mb-3">
+              For HTTP-based MCP clients that support SSE transport:
+            </p>
+            <code className="block text-xs font-mono bg-white dark:bg-gray-800 px-3 py-2 rounded border border-gray-200 dark:border-gray-700 text-gray-900 dark:text-gray-100 mb-2">
+              http://{config.host}:{config.actual_port ?? config.port}/mcp
+            </code>
+            <p className="text-xs text-gray-500 dark:text-gray-500">
+              Include <code className="bg-white dark:bg-gray-800 px-1 rounded">Authorization: Bearer &lt;client_secret&gt;</code> header
+            </p>
+          </div>
+
+          {/* STDIO Connection */}
+          <div className="p-4 bg-blue-50 dark:bg-blue-900/20 rounded-lg border border-blue-200 dark:border-blue-700">
+            <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-2">
+              STDIO Bridge (Recommended for Claude Desktop, Cursor)
+            </h3>
+            <p className="text-xs text-gray-600 dark:text-gray-400 mb-3">
+              Most MCP clients use STDIO transport. Use LocalRouter's bridge mode:
+            </p>
+
+            {/* macOS Example */}
+            <div className="mb-4">
+              <p className="text-xs font-semibold text-gray-700 dark:text-gray-300 mb-2">Example: Claude Desktop (macOS)</p>
+              <div className="bg-white dark:bg-gray-800 rounded border border-blue-200 dark:border-blue-700 p-3">
+                <p className="text-xs text-gray-500 dark:text-gray-500 mb-2">
+                  Edit <code className="bg-gray-100 dark:bg-gray-900 px-1 rounded">~/Library/Application Support/Claude/claude_desktop_config.json</code>:
+                </p>
+                <pre className="text-xs font-mono bg-gray-100 dark:bg-gray-900 px-3 py-2 rounded overflow-x-auto text-gray-900 dark:text-gray-100">
+{`{
+  "mcpServers": {
+    "localrouter": {
+      "command": "/Applications/LocalRouter AI.app/Contents/MacOS/localrouter-ai",
+      "args": ["--mcp-bridge", "--client-id", "claude_desktop"],
+      "env": {
+        "LOCALROUTER_CLIENT_SECRET": "lr_your_secret_here"
+      }
+    }
+  }
+}`}
+                </pre>
+              </div>
+            </div>
+
+            {/* Instructions */}
+            <div className="space-y-2 text-xs text-gray-600 dark:text-gray-400">
+              <p><strong className="text-gray-900 dark:text-gray-100">Steps:</strong></p>
+              <ol className="list-decimal list-inside space-y-1 ml-2">
+                <li>Create a Client in the Clients tab</li>
+                <li>Copy the client secret shown in the UI</li>
+                <li>Configure your MCP client using the example above</li>
+                <li>Adjust the <code className="bg-white dark:bg-gray-800 px-1 rounded">command</code> path for your OS</li>
+              </ol>
+              <p className="mt-3">
+                <strong className="text-gray-900 dark:text-gray-100">Command Paths:</strong>
+              </p>
+              <ul className="list-disc list-inside space-y-1 ml-2">
+                <li><strong>macOS:</strong> <code className="bg-white dark:bg-gray-800 px-1 rounded">/Applications/LocalRouter AI.app/Contents/MacOS/localrouter-ai</code></li>
+                <li><strong>Windows:</strong> <code className="bg-white dark:bg-gray-800 px-1 rounded">C:\Program Files\LocalRouter AI\localrouter-ai.exe</code></li>
+                <li><strong>Linux:</strong> <code className="bg-white dark:bg-gray-800 px-1 rounded">/usr/bin/localrouter-ai</code></li>
+              </ul>
+            </div>
+          </div>
+
+          {/* Documentation Link */}
+          <div className="flex items-center gap-2 text-xs text-gray-600 dark:text-gray-400">
+            <span>📚</span>
+            <span>
+              Full documentation:{' '}
+              <button
+                onClick={() => open('https://github.com/yourusername/localrouterai/blob/master/docs/MCP_BRIDGE.md')}
+                className="text-blue-600 dark:text-blue-400 hover:underline"
+              >
+                MCP Bridge Guide
+              </button>
+            </span>
+          </div>
+        </div>
+      </div>
+
       {/* Server Configuration */}
       <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-6">
         <h2 className="text-xl font-bold text-gray-900 dark:text-gray-100 mb-6">Server Configuration</h2>
