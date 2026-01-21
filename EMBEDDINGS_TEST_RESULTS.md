@@ -114,6 +114,11 @@ curl -X POST http://localhost:33625/v1/embeddings \
 - ✅ Auto-discovery of models across providers
 - ✅ Provider/model format support (e.g., "openai/text-embedding-ada-002")
 - ✅ Fallback to model-only format with provider search
+- ✅ **localrouter/auto support** with intelligent routing
+- ✅ Client/strategy validation and authorization
+- ✅ Rate limiting checks (client-level and strategy-level)
+- ✅ Prioritized model fallback on errors
+- ✅ Health checks before routing
 
 ## API Compatibility
 
@@ -151,6 +156,55 @@ curl -X POST http://localhost:33625/v1/embeddings \
 
 ### Bug Fixes
 13. Fixed duplicate `logprobs` field in groq.rs, mistral.rs, openrouter.rs, perplexity.rs
+
+## Auto-Routing Support (localrouter/auto)
+
+**NEW FEATURE**: Embeddings now support the `localrouter/auto` virtual model, providing the same intelligent routing as chat completions.
+
+### How It Works
+
+1. **Request with auto model**:
+   ```json
+   {"model": "localrouter/auto", "input": "Hello world"}
+   ```
+
+2. **Router behavior**:
+   - Validates client exists and is enabled
+   - Gets client's routing strategy
+   - Uses strategy's `auto_config.prioritized_models` list
+   - Tries each model in order with fallback on errors
+   - Returns first successful response
+
+3. **Fallback logic**:
+   - Retries on: rate limits, provider unavailable, context length exceeded
+   - Stops on: validation errors, authentication failures
+   - Checks strategy rate limits before each attempt
+   - Logs detailed error information for debugging
+
+4. **Example strategy configuration**:
+   ```yaml
+   strategies:
+     - id: default-strategy
+       auto_config:
+         enabled: true
+         prioritized_models:
+           - ["openai", "text-embedding-ada-002"]
+           - ["cohere", "embed-english-v3.0"]
+           - ["ollama", "nomic-embed-text"]
+   ```
+
+### Differences from Chat Completions
+
+- **No RouteLLM**: Embeddings don't benefit from strong/weak model selection based on query complexity
+- **Simpler usage**: No output tokens (embeddings are one-way transformations)
+- **Same fallback logic**: Rate limiting, error handling, and prioritized models work identically
+
+### Benefits
+
+- **Reliability**: Automatic fallback if primary embedding provider is down
+- **Cost optimization**: Try cheaper models first, fallback to premium if needed
+- **Flexibility**: Change embedding providers without updating client code
+- **Consistency**: Same routing behavior across chat and embeddings APIs
 
 ## Next Steps for Production
 
