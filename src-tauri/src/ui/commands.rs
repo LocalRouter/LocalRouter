@@ -1372,17 +1372,38 @@ pub struct McpServerInfo {
     pub enabled: bool,
     pub running: bool,
     pub created_at: String,
+    /// The individual proxy endpoint URL for this server (e.g., http://localhost:3625/mcp/{server_id})
+    pub proxy_url: String,
+    /// The unified MCP gateway URL (always available at http://localhost:3625/)
+    pub gateway_url: String,
+    /// Legacy field for backward compatibility (deprecated, use proxy_url instead)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
 }
 
 /// List all MCP servers
 #[tauri::command]
 pub async fn list_mcp_servers(
     mcp_manager: State<'_, Arc<McpServerManager>>,
+    server_manager: State<'_, Arc<ServerManager>>,
 ) -> Result<Vec<McpServerInfo>, String> {
     let configs = mcp_manager.list_configs();
     let mut servers = Vec::new();
 
+    // Get the actual server port
+    let port = server_manager.get_actual_port().unwrap_or(3625);
+    let base_url = format!("http://localhost:{}", port);
+
     for config in configs {
+        // All servers get a proxy URL at /mcp/{server_id}
+        let proxy_url = format!("{}/mcp/{}", base_url, config.id);
+
+        // Unified gateway URL is always at root
+        let gateway_url = base_url.clone();
+
+        // Legacy URL field for backward compatibility (deprecated)
+        let url = Some(proxy_url.clone());
+
         servers.push(McpServerInfo {
             id: config.id.clone(),
             name: config.name.clone(),
@@ -1392,6 +1413,9 @@ pub async fn list_mcp_servers(
             enabled: config.enabled,
             running: mcp_manager.is_running(&config.id),
             created_at: config.created_at.to_rfc3339(),
+            proxy_url,
+            gateway_url,
+            url,
         });
     }
 
@@ -1414,6 +1438,7 @@ pub async fn create_mcp_server(
     transport_config: serde_json::Value,
     auth_config: Option<serde_json::Value>,
     mcp_manager: State<'_, Arc<McpServerManager>>,
+    server_manager: State<'_, Arc<ServerManager>>,
     config_manager: State<'_, ConfigManager>,
     app: tauri::AppHandle,
 ) -> Result<McpServerInfo, String> {
@@ -1437,6 +1462,19 @@ pub async fn create_mcp_server(
     // Parse auth config (if provided) and store secrets in keychain
     config.auth_config = process_auth_config(&config.id, auth_config)?;
 
+    // Get the actual server port
+    let port = server_manager.get_actual_port().unwrap_or(3625);
+    let base_url = format!("http://localhost:{}", port);
+
+    // All servers get a proxy URL at /mcp/{server_id}
+    let proxy_url = format!("{}/mcp/{}", base_url, config.id);
+
+    // Unified gateway URL is always at root
+    let gateway_url = base_url.clone();
+
+    // Legacy URL field for backward compatibility (deprecated)
+    let url = Some(proxy_url.clone());
+
     let server_info = McpServerInfo {
         id: config.id.clone(),
         name: config.name.clone(),
@@ -1446,6 +1484,9 @@ pub async fn create_mcp_server(
         enabled: config.enabled,
         running: false,
         created_at: config.created_at.to_rfc3339(),
+        proxy_url,
+        gateway_url,
+        url,
     };
 
     // Add to manager
@@ -2334,8 +2375,10 @@ pub struct ClientInfo {
     pub name: String,
     pub client_id: String,
     pub enabled: bool,
+    pub strategy_id: String,
     pub allowed_llm_providers: Vec<String>,
     pub allowed_mcp_servers: Vec<String>,
+    pub mcp_deferred_loading: bool,
     pub created_at: String,
     pub last_used: Option<String>,
 }
@@ -2353,8 +2396,10 @@ pub async fn list_clients(
             name: c.name.clone(),
             client_id: c.id.clone(),
             enabled: c.enabled,
+            strategy_id: c.strategy_id.clone(),
             allowed_llm_providers: c.allowed_llm_providers.clone(),
             allowed_mcp_servers: c.allowed_mcp_servers.clone(),
+            mcp_deferred_loading: c.mcp_deferred_loading,
             created_at: c.created_at.to_rfc3339(),
             last_used: c.last_used.map(|t| t.to_rfc3339()),
         })
@@ -2371,17 +2416,16 @@ pub async fn create_client(
 ) -> Result<(String, ClientInfo), String> {
     tracing::info!("Creating new client with name: {}", name);
 
-    let (client_id, secret, client) = client_manager
-        .create_client(name)
+    // Create client with auto-created strategy
+    let (client, _strategy) = config_manager
+        .create_client_with_strategy(name.clone())
         .map_err(|e| e.to_string())?;
 
     tracing::info!("Client created: {} ({})", client.name, client.id);
 
-    // Save to config file
-    config_manager
-        .update(|cfg| {
-            cfg.clients.push(client.clone());
-        })
+    // Store client secret in keychain and add to client manager
+    let secret = client_manager
+        .add_client_with_secret(client.clone())
         .map_err(|e| e.to_string())?;
 
     // Persist to disk
@@ -2392,13 +2436,23 @@ pub async fn create_client(
         tracing::error!("Failed to rebuild tray menu: {}", e);
     }
 
+    // Emit events for UI updates
+    if let Err(e) = app.emit("clients-changed", ()) {
+        tracing::error!("Failed to emit clients-changed event: {}", e);
+    }
+    if let Err(e) = app.emit("strategies-changed", ()) {
+        tracing::error!("Failed to emit strategies-changed event: {}", e);
+    }
+
     let client_info = ClientInfo {
         id: client.id.clone(),
         name: client.name.clone(),
-        client_id: client_id.clone(),
+        client_id: client.id.clone(),
         enabled: client.enabled,
+        strategy_id: client.strategy_id.clone(),
         allowed_llm_providers: client.allowed_llm_providers.clone(),
         allowed_mcp_servers: client.allowed_mcp_servers.clone(),
+        mcp_deferred_loading: client.mcp_deferred_loading,
         created_at: client.created_at.to_rfc3339(),
         last_used: client.last_used.map(|t| t.to_rfc3339()),
     };
@@ -2416,16 +2470,14 @@ pub async fn delete_client(
 ) -> Result<(), String> {
     tracing::info!("Deleting client: {}", client_id);
 
-    // Delete from client manager (removes from keychain)
+    // Delete from client manager (removes from keychain and in-memory)
     client_manager
         .delete_client(&client_id)
         .map_err(|e| e.to_string())?;
 
-    // Remove from config
+    // Delete from config (cascade deletes owned strategies)
     config_manager
-        .update(|cfg| {
-            cfg.clients.retain(|c| c.id != client_id);
-        })
+        .delete_client(&client_id)
         .map_err(|e| e.to_string())?;
 
     // Persist to disk
@@ -2434,6 +2486,14 @@ pub async fn delete_client(
     // Rebuild tray menu
     if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
         tracing::error!("Failed to rebuild tray menu: {}", e);
+    }
+
+    // Emit events for UI updates
+    if let Err(e) = app.emit("clients-changed", ()) {
+        tracing::error!("Failed to emit clients-changed event: {}", e);
+    }
+    if let Err(e) = app.emit("strategies-changed", ()) {
+        tracing::error!("Failed to emit strategies-changed event: {}", e);
     }
 
     Ok(())
@@ -2753,6 +2813,7 @@ pub async fn get_client_value(
 // ============================================================================
 
 /// Set the routing strategy for a client
+#[allow(deprecated)]
 #[tauri::command]
 pub async fn set_client_routing_strategy(
     client_id: String,
@@ -2811,6 +2872,7 @@ pub async fn set_client_routing_strategy(
 }
 
 /// Set the forced model for a client (ForceModel strategy)
+#[allow(deprecated)]
 #[tauri::command]
 pub async fn set_client_forced_model(
     client_id: String,
@@ -2867,6 +2929,7 @@ pub async fn set_client_forced_model(
 }
 
 /// Update available models for a client (AvailableModels strategy)
+#[allow(deprecated)]
 #[tauri::command]
 pub async fn update_client_available_models(
     client_id: String,
@@ -2921,6 +2984,7 @@ pub async fn update_client_available_models(
 }
 
 /// Update prioritized models list for a client (PrioritizedList strategy)
+#[allow(deprecated)]
 #[tauri::command]
 pub async fn update_client_prioritized_models(
     client_id: String,
@@ -3039,6 +3103,11 @@ pub async fn create_strategy(
         tracing::error!("Failed to rebuild tray menu: {}", e);
     }
 
+    // Emit event for UI updates
+    if let Err(e) = app.emit("strategies-changed", ()) {
+        tracing::error!("Failed to emit strategies-changed event: {}", e);
+    }
+
     tracing::info!("Strategy created: {}", strategy_clone.id);
 
     Ok(strategy_clone)
@@ -3090,6 +3159,11 @@ pub async fn update_strategy(
         tracing::error!("Failed to rebuild tray menu: {}", e);
     }
 
+    // Emit event for UI updates
+    if let Err(e) = app.emit("strategies-changed", ()) {
+        tracing::error!("Failed to emit strategies-changed event: {}", e);
+    }
+
     tracing::info!("Strategy updated: {}", strategy_id);
 
     Ok(())
@@ -3139,6 +3213,11 @@ pub async fn delete_strategy(
         tracing::error!("Failed to rebuild tray menu: {}", e);
     }
 
+    // Emit event for UI updates
+    if let Err(e) = app.emit("strategies-changed", ()) {
+        tracing::error!("Failed to emit strategies-changed event: {}", e);
+    }
+
     tracing::info!("Strategy deleted: {}", strategy_id);
 
     Ok(())
@@ -3167,11 +3246,7 @@ pub async fn assign_client_strategy(
     config_manager: State<'_, ConfigManager>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    tracing::info!(
-        "Assigning client {} to strategy {}",
-        client_id,
-        strategy_id
-    );
+    tracing::info!("Assigning client {} to strategy {}", client_id, strategy_id);
 
     config_manager
         .assign_client_strategy(&client_id, &strategy_id)
@@ -3185,11 +3260,15 @@ pub async fn assign_client_strategy(
         tracing::error!("Failed to rebuild tray menu: {}", e);
     }
 
-    tracing::info!(
-        "Client {} assigned to strategy {}",
-        client_id,
-        strategy_id
-    );
+    // Emit events for UI updates
+    if let Err(e) = app.emit("strategies-changed", ()) {
+        tracing::error!("Failed to emit strategies-changed event: {}", e);
+    }
+    if let Err(e) = app.emit("clients-changed", ()) {
+        tracing::error!("Failed to emit clients-changed event: {}", e);
+    }
+
+    tracing::info!("Client {} assigned to strategy {}", client_id, strategy_id);
 
     Ok(())
 }
@@ -3250,6 +3329,9 @@ use std::io::{BufRead, BufReader};
 /// # Arguments
 /// * `limit` - Maximum number of entries to return (default: 100)
 /// * `offset` - Number of entries to skip (default: 0)
+/// * `client_name` - Optional filter by client name (API key name)
+/// * `provider` - Optional filter by provider
+/// * `model` - Optional filter by model
 ///
 /// # Returns
 /// * List of LLM access log entries (newest first)
@@ -3257,6 +3339,9 @@ use std::io::{BufRead, BufReader};
 pub async fn get_llm_logs(
     limit: Option<usize>,
     offset: Option<usize>,
+    client_name: Option<String>,
+    provider: Option<String>,
+    model: Option<String>,
 ) -> Result<Vec<crate::monitoring::logger::AccessLogEntry>, String> {
     use std::fs;
 
@@ -3288,7 +3373,7 @@ pub async fn get_llm_logs(
     // Sort by filename (date) in descending order
     log_files.sort_by(|a, b| b.cmp(a));
 
-    // Read and parse log entries
+    // Read and parse log entries with filtering
     let mut entries = Vec::new();
     for log_file in log_files {
         if let Ok(file) = fs::File::open(&log_file) {
@@ -3297,7 +3382,30 @@ pub async fn get_llm_logs(
                 if let Ok(entry) =
                     serde_json::from_str::<crate::monitoring::logger::AccessLogEntry>(&line)
                 {
-                    entries.push(entry);
+                    // Apply filters
+                    let mut matches = true;
+
+                    if let Some(ref filter_client) = client_name {
+                        if entry.api_key_name != *filter_client {
+                            matches = false;
+                        }
+                    }
+
+                    if let Some(ref filter_provider) = provider {
+                        if entry.provider != *filter_provider {
+                            matches = false;
+                        }
+                    }
+
+                    if let Some(ref filter_model) = model {
+                        if entry.model != *filter_model {
+                            matches = false;
+                        }
+                    }
+
+                    if matches {
+                        entries.push(entry);
+                    }
                 }
             }
         }
@@ -3319,6 +3427,8 @@ pub async fn get_llm_logs(
 /// # Arguments
 /// * `limit` - Maximum number of entries to return (default: 100)
 /// * `offset` - Number of entries to skip (default: 0)
+/// * `client_id` - Optional filter by client ID
+/// * `server_id` - Optional filter by server ID
 ///
 /// # Returns
 /// * List of MCP access log entries (newest first)
@@ -3326,6 +3436,8 @@ pub async fn get_llm_logs(
 pub async fn get_mcp_logs(
     limit: Option<usize>,
     offset: Option<usize>,
+    client_id: Option<String>,
+    server_id: Option<String>,
 ) -> Result<Vec<crate::monitoring::mcp_logger::McpAccessLogEntry>, String> {
     use std::fs;
 
@@ -3354,7 +3466,7 @@ pub async fn get_mcp_logs(
     // Sort by filename (date) in descending order
     log_files.sort_by(|a, b| b.cmp(a));
 
-    // Read and parse log entries
+    // Read and parse log entries with filtering
     let mut entries = Vec::new();
     for log_file in log_files {
         if let Ok(file) = fs::File::open(&log_file) {
@@ -3363,7 +3475,24 @@ pub async fn get_mcp_logs(
                 if let Ok(entry) =
                     serde_json::from_str::<crate::monitoring::mcp_logger::McpAccessLogEntry>(&line)
                 {
-                    entries.push(entry);
+                    // Apply filters
+                    let mut matches = true;
+
+                    if let Some(ref filter_client) = client_id {
+                        if entry.client_id != *filter_client {
+                            matches = false;
+                        }
+                    }
+
+                    if let Some(ref filter_server) = server_id {
+                        if entry.server_id != *filter_server {
+                            matches = false;
+                        }
+                    }
+
+                    if matches {
+                        entries.push(entry);
+                    }
                 }
             }
         }
@@ -3552,5 +3681,159 @@ pub fn delete_pricing_override(
                 }
             }
         })
+        .map_err(|e| e.to_string())
+}
+
+// ============================================================================
+// Tray Graph Settings Commands
+// ============================================================================
+
+/// Tray graph settings response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrayGraphSettings {
+    /// Whether dynamic tray graph is enabled
+    pub enabled: bool,
+    /// Refresh rate in seconds (1, 10, or 60)
+    pub refresh_rate_secs: u64,
+}
+
+/// Get current tray graph settings
+#[tauri::command]
+pub fn get_tray_graph_settings(
+    config_manager: State<'_, ConfigManager>,
+) -> Result<TrayGraphSettings, String> {
+    let config = config_manager.get();
+    Ok(TrayGraphSettings {
+        enabled: config.ui.tray_graph_enabled,
+        refresh_rate_secs: config.ui.tray_graph_refresh_rate_secs,
+    })
+}
+
+/// Update tray graph settings
+#[tauri::command]
+pub async fn update_tray_graph_settings(
+    enabled: bool,
+    refresh_rate_secs: u64,
+    config_manager: State<'_, ConfigManager>,
+    tray_graph_manager: State<'_, Arc<crate::ui::tray::TrayGraphManager>>,
+) -> Result<(), String> {
+    // Validate parameters - only allow 1, 10, or 60
+    if ![1, 10, 60].contains(&refresh_rate_secs) {
+        return Err("refresh_rate_secs must be 1 (Fast), 10 (Medium), or 60 (Slow)".to_string());
+    }
+
+    // Update configuration
+    config_manager
+        .update(|config| {
+            config.ui.tray_graph_enabled = enabled;
+            config.ui.tray_graph_refresh_rate_secs = refresh_rate_secs;
+        })
+        .map_err(|e| e.to_string())?;
+
+    // Save to disk
+    config_manager
+        .save()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Update tray graph manager (this triggers a refresh with new rate)
+    let new_config = config_manager.get().ui.clone();
+    tray_graph_manager.update_config(new_config);
+
+    Ok(())
+}
+
+/// Get user's home directory
+#[tauri::command]
+pub fn get_home_dir() -> Result<String, String> {
+    dirs::home_dir()
+        .ok_or_else(|| "Failed to get home directory".to_string())?
+        .to_str()
+        .ok_or_else(|| "Invalid home directory path".to_string())
+        .map(|s| s.to_string())
+}
+
+/// Get current app version
+#[tauri::command]
+pub fn get_app_version() -> String {
+    env!("CARGO_PKG_VERSION").to_string()
+}
+
+/// Get update configuration
+#[tauri::command]
+pub async fn get_update_config(config_manager: State<'_, ConfigManager>) -> Result<crate::config::UpdateConfig, String> {
+    Ok(config_manager.get().update.clone())
+}
+
+/// Update update configuration
+#[tauri::command]
+pub async fn update_update_config(
+    mode: crate::config::UpdateMode,
+    check_interval_days: u64,
+    config_manager: State<'_, ConfigManager>,
+) -> Result<(), String> {
+    // Validate parameters
+    if check_interval_days == 0 || check_interval_days > 365 {
+        return Err("check_interval_days must be between 1 and 365".to_string());
+    }
+
+    // Update configuration
+    config_manager
+        .update(|config| {
+            config.update.mode = mode;
+            config.update.check_interval_days = check_interval_days;
+        })
+        .map_err(|e| e.to_string())?;
+
+    // Save to disk
+    config_manager
+        .save()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+/// Mark that an update check was performed (save timestamp)
+/// This is called by the frontend after it performs an update check
+#[tauri::command]
+pub async fn mark_update_check_performed(
+    config_manager: State<'_, ConfigManager>,
+) -> Result<(), String> {
+    crate::updater::save_last_check_timestamp(&config_manager).await
+}
+
+/// Skip a specific version (don't notify about it again)
+#[tauri::command]
+pub async fn skip_update_version(
+    version: String,
+    config_manager: State<'_, ConfigManager>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    config_manager
+        .update(|config| {
+            config.update.skipped_version = Some(version.clone());
+        })
+        .map_err(|e| e.to_string())?;
+
+    config_manager
+        .save()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Clear update notification from tray
+    crate::ui::tray::set_update_available(&app, false)
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+/// Set update notification in tray menu
+#[tauri::command]
+pub fn set_update_notification(
+    app: tauri::AppHandle,
+    available: bool,
+) -> Result<(), String> {
+    crate::ui::tray::set_update_available(&app, available)
         .map_err(|e| e.to_string())
 }
