@@ -6,14 +6,24 @@ LocalRouter AI is a cross-platform desktop application (Rust + Tauri) providing 
 
 ## Privacy & Network Policy (CRITICAL)
 
-**LocalRouter AI is a privacy-focused, local-first application. The binary MUST NOT make requests to the open internet without explicit user consent.**
+**LocalRouter AI is a privacy-focused, local-first application.**
 
 ### Rules
 
-1. **User-Initiated Only**: External requests ONLY through user actions (adding providers, configuring MCP, making API requests)
-2. **No Telemetry**: No analytics, crash reporting, update checks, or phone-home behavior
+1. **User-Initiated & Update Checks Only**:
+   - External requests ONLY through user actions (adding providers, configuring MCP, making API requests)
+   - Automated update checks (weekly, configurable, can be disabled)
+   - No other automatic network requests
+2. **No Telemetry**: No analytics, crash reporting, or usage tracking
 3. **No External Assets**: No CDN usage - all assets bundled at build time
 4. **Local-Only By Default**: API server localhost-only, restrictive CSP in `tauri.conf.json`
+
+**Update Checking:**
+- Default: Check for updates weekly (configurable)
+- Users can disable in Preferences → Updates
+- Only checks version number and release notes
+- No user data transmitted
+- No usage analytics or tracking
 
 **Violations are critical bugs.**
 
