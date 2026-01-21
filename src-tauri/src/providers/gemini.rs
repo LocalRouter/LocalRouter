@@ -73,7 +73,7 @@ impl GeminiProvider {
                 }
                 "tool" => {
                     // Tool response message - convert to user role with FunctionResponse
-                    if let Some(tool_call_id) = &msg.tool_call_id {
+                    if let Some(_tool_call_id) = &msg.tool_call_id {
                         let tool_name = msg.name.clone().unwrap_or_else(|| "unknown".to_string());
                         let response_data: serde_json::Value =
                             serde_json::from_str(&msg.content.as_text())
