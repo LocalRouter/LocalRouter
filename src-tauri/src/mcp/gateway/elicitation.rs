@@ -4,14 +4,14 @@
 //! Supports WebSocket notifications (primary) and HTTP callbacks (fallback).
 
 use dashmap::DashMap;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-use crate::mcp::protocol::{ElicitationRequest, ElicitationResponse};
+use crate::mcp::protocol::{ElicitationRequest, ElicitationResponse, JsonRpcNotification};
 use crate::utils::errors::{AppError, AppResult};
 
 /// Pending elicitation session
@@ -53,6 +53,9 @@ pub struct ElicitationManager {
 
     /// Default timeout for elicitation requests (seconds)
     default_timeout_secs: u64,
+
+    /// Broadcast sender for WebSocket notifications (optional)
+    notification_broadcast: Option<Arc<tokio::sync::broadcast::Sender<(String, JsonRpcNotification)>>>,
 }
 
 impl ElicitationManager {
@@ -61,6 +64,19 @@ impl ElicitationManager {
         Self {
             pending: Arc::new(DashMap::new()),
             default_timeout_secs,
+            notification_broadcast: None,
+        }
+    }
+
+    /// Create a new elicitation manager with WebSocket notification support
+    pub fn new_with_broadcast(
+        default_timeout_secs: u64,
+        notification_broadcast: Arc<tokio::sync::broadcast::Sender<(String, JsonRpcNotification)>>,
+    ) -> Self {
+        Self {
+            pending: Arc::new(DashMap::new()),
+            default_timeout_secs,
+            notification_broadcast: Some(notification_broadcast),
         }
     }
 
@@ -104,8 +120,36 @@ impl ElicitationManager {
             request_id, server_id
         );
 
-        // TODO: Send WebSocket notification to external clients
-        // For now, this will wait for manual response submission
+        // Send WebSocket notification to external clients
+        if let Some(broadcast) = &self.notification_broadcast {
+            let notification = JsonRpcNotification {
+                jsonrpc: "2.0".to_string(),
+                method: "elicitation/requestInput".to_string(),
+                params: Some(json!({
+                    "request_id": request_id,
+                    "server_id": server_id,
+                    "message": request.message,
+                    "schema": request.schema,
+                    "timeout_seconds": timeout,
+                })),
+            };
+
+            // Broadcast with "_elicitation" as server_id to indicate system event
+            if let Err(e) = broadcast.send(("_elicitation".to_string(), notification)) {
+                error!("Failed to broadcast elicitation request: {}", e);
+                // Continue anyway - client might submit response via HTTP endpoint
+            } else {
+                debug!(
+                    "Broadcasted elicitation request {} via WebSocket",
+                    request_id
+                );
+            }
+        } else {
+            debug!(
+                "No WebSocket broadcast configured - elicitation request {} requires HTTP submission",
+                request_id
+            );
+        }
 
         // Wait for response with timeout
         match tokio::time::timeout(Duration::from_secs(timeout), rx).await {
@@ -213,7 +257,11 @@ impl ElicitationManager {
 
 impl Default for ElicitationManager {
     fn default() -> Self {
-        Self::new(120) // 2 minute default timeout
+        Self {
+            pending: Arc::new(DashMap::new()),
+            default_timeout_secs: 120,
+            notification_broadcast: None,
+        }
     }
 }
 
@@ -344,6 +392,49 @@ mod tests {
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("timed out"));
     }
+
+    #[tokio::test]
+    async fn test_websocket_notification_emission() {
+        // Create broadcast channel
+        let (tx, mut rx) = tokio::sync::broadcast::channel(10);
+
+        // Create manager with broadcast support
+        let manager = ElicitationManager::new_with_broadcast(120, Arc::new(tx));
+
+        // Start a request in the background
+        let manager_clone = manager.clone();
+        let handle = tokio::spawn(async move {
+            let request = ElicitationRequest {
+                message: "Confirm booking".to_string(),
+                schema: json!({"type": "boolean"}),
+            };
+
+            manager_clone
+                .request_input("server-1".to_string(), request, None)
+                .await
+        });
+
+        // Give it time to emit notification
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Should have received a notification
+        let (server_id, notification) = rx.try_recv().unwrap();
+        assert_eq!(server_id, "_elicitation");
+        assert_eq!(notification.method, "elicitation/requestInput");
+        assert!(notification.params.is_some());
+
+        let params = notification.params.unwrap();
+        assert!(params.get("request_id").is_some());
+        assert_eq!(params.get("server_id").unwrap(), "server-1");
+        assert_eq!(params.get("message").unwrap(), "Confirm booking");
+
+        // Cancel the request to clean up
+        let request_id = manager.list_pending()[0].clone();
+        manager.cancel_request(&request_id).unwrap();
+
+        // Wait for handle to finish
+        let _ = handle.await;
+    }
 }
 
 // Implement Clone for ElicitationManager to support test scenarios
@@ -352,6 +443,7 @@ impl Clone for ElicitationManager {
         Self {
             pending: self.pending.clone(),
             default_timeout_secs: self.default_timeout_secs,
+            notification_broadcast: self.notification_broadcast.clone(),
         }
     }
 }

@@ -43,6 +43,7 @@ use utoipa::OpenApi;
         crate::server::routes::mcp::mcp_gateway_handler,
         crate::server::routes::mcp::mcp_server_handler,
         crate::server::routes::mcp::mcp_server_streaming_handler,
+        crate::server::routes::mcp::elicitation_response_handler,
 
         // OAuth endpoints
         crate::server::routes::oauth::token_endpoint,
@@ -119,6 +120,8 @@ use utoipa::OpenApi;
             // MCP protocol types
             crate::mcp::protocol::JsonRpcRequest,
             crate::mcp::protocol::JsonRpcResponse,
+            crate::mcp::protocol::ElicitationResponse,
+            crate::server::types::MessageResponse,
 
             // OAuth types
             crate::server::routes::oauth::TokenRequest,

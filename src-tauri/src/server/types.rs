@@ -789,6 +789,13 @@ impl ErrorResponse {
     }
 }
 
+/// Simple success message response
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct MessageResponse {
+    #[schema(example = "Operation completed successfully")]
+    pub message: String,
+}
+
 // Helper functions for conversion
 impl From<&crate::providers::ModelInfo> for ModelData {
     fn from(info: &crate::providers::ModelInfo) -> Self {

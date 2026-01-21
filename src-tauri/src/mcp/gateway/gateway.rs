@@ -67,6 +67,12 @@ impl McpGateway {
             Arc<tokio::sync::broadcast::Sender<(String, JsonRpcNotification)>>,
         >,
     ) -> Self {
+        // Create elicitation manager with broadcast support if available
+        let elicitation_manager = match &notification_broadcast {
+            Some(broadcast) => Arc::new(ElicitationManager::new_with_broadcast(120, broadcast.clone())),
+            None => Arc::new(ElicitationManager::default()),
+        };
+
         Self {
             sessions: Arc::new(DashMap::new()),
             server_manager,
@@ -74,7 +80,7 @@ impl McpGateway {
             notification_handlers_registered: Arc::new(DashMap::new()),
             notification_broadcast,
             router,
-            elicitation_manager: Arc::new(ElicitationManager::default()),
+            elicitation_manager,
         }
     }
 
@@ -1451,5 +1457,10 @@ impl McpGateway {
                 session_write.invalidate_resources_cache();
             }
         }
+    }
+
+    /// Get the elicitation manager (for submitting responses from external clients)
+    pub fn get_elicitation_manager(&self) -> Arc<ElicitationManager> {
+        self.elicitation_manager.clone()
     }
 }

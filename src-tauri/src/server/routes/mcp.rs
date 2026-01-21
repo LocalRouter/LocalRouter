@@ -754,6 +754,52 @@ fn merge_roots(global_roots: &[RootConfig], client_roots: Option<&Vec<RootConfig
         .collect()
 }
 
+/// Submit a response to a pending elicitation request
+///
+/// External clients use this endpoint to submit user responses to elicitation requests
+/// they received via WebSocket notifications.
+#[utoipa::path(
+    post,
+    path = "/mcp/elicitation/respond/{request_id}",
+    tag = "mcp",
+    request_body = crate::mcp::protocol::ElicitationResponse,
+    responses(
+        (status = 200, description = "Response submitted successfully", body = crate::server::types::MessageResponse),
+        (status = 400, description = "Invalid request or request not found", body = crate::server::types::ErrorResponse),
+        (status = 401, description = "Unauthorized", body = crate::server::types::ErrorResponse),
+    ),
+    security(
+        ("bearer" = [])
+    )
+)]
+pub async fn elicitation_response_handler(
+    State(state): State<AppState>,
+    Path(request_id): Path<String>,
+    client_auth: Option<axum::Extension<ClientAuthContext>>,
+    Json(response): Json<crate::mcp::protocol::ElicitationResponse>,
+) -> Response {
+    // Verify authentication
+    if client_auth.is_none() {
+        return ApiErrorResponse::unauthorized("Missing authentication").into_response();
+    }
+
+    // Submit response to elicitation manager
+    match state.mcp_gateway.get_elicitation_manager().submit_response(&request_id, response) {
+        Ok(()) => {
+            tracing::info!("Elicitation response submitted for request {}", request_id);
+            Json(crate::server::types::MessageResponse {
+                message: "Response submitted successfully".to_string(),
+            })
+            .into_response()
+        }
+        Err(e) => {
+            tracing::warn!("Failed to submit elicitation response: {}", e);
+            ApiErrorResponse::bad_request(&format!("Failed to submit response: {}", e))
+                .into_response()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -164,6 +164,10 @@ fn build_app(state: AppState, enable_cors: bool) -> Router {
             post(routes::mcp_server_streaming_handler), // MCP streaming endpoint (SSE)
         )
         .route("/ws", get(routes::mcp_websocket_handler)) // WebSocket notifications
+        .route(
+            "/mcp/elicitation/respond/:request_id",
+            post(routes::elicitation_response_handler), // Submit elicitation responses
+        )
         .layer(axum::middleware::from_fn(
             middleware::client_auth::client_auth_middleware,
         ))
