@@ -3,6 +3,8 @@
 //! Implements the JSON-RPC 2.0 specification for Model Context Protocol communication.
 //! Reference: https://www.jsonrpc.org/specification
 
+#![allow(dead_code)]
+
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 

@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use dashmap::DashMap;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -5,7 +7,7 @@ use std::time::Duration;
 use tokio::sync::RwLock;
 
 use crate::mcp::manager::McpServerManager;
-use crate::mcp::protocol::{JsonRpcError, JsonRpcRequest, JsonRpcResponse, McpPrompt, McpResource, McpTool};
+use crate::mcp::protocol::{JsonRpcError, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, McpPrompt, McpResource, McpTool};
 use crate::utils::errors::{AppError, AppResult};
 
 use super::deferred::{create_search_tool, search_prompts, search_resources, search_tools};
@@ -27,16 +29,31 @@ pub struct McpGateway {
 
     /// Track which servers have global notification handlers registered
     notification_handlers_registered: Arc<DashMap<String, bool>>,
+
+    /// Broadcast sender for client notifications (optional)
+    /// Allows external clients to subscribe to real-time notifications from MCP servers
+    /// Format: (server_id, notification)
+    notification_broadcast: Option<Arc<tokio::sync::broadcast::Sender<(String, JsonRpcNotification)>>>,
 }
 
 impl McpGateway {
     /// Create a new MCP gateway
     pub fn new(server_manager: Arc<McpServerManager>, config: GatewayConfig) -> Self {
+        Self::new_with_broadcast(server_manager, config, None)
+    }
+
+    /// Create a new MCP gateway with optional broadcast channel for client notifications
+    pub fn new_with_broadcast(
+        server_manager: Arc<McpServerManager>,
+        config: GatewayConfig,
+        notification_broadcast: Option<Arc<tokio::sync::broadcast::Sender<(String, JsonRpcNotification)>>>,
+    ) -> Self {
         Self {
             sessions: Arc::new(DashMap::new()),
             server_manager,
             config,
             notification_handlers_registered: Arc::new(DashMap::new()),
+            notification_broadcast,
         }
     }
 
@@ -201,6 +218,7 @@ impl McpGateway {
 
             let sessions_clone = self.sessions.clone();
             let server_id_clone = server_id.clone();
+            let broadcast_clone = self.notification_broadcast.clone();
 
             // Register GLOBAL notification handler (one per server, not per session)
             self.server_manager.on_notification(
@@ -208,6 +226,7 @@ impl McpGateway {
                 Arc::new(move |_, notification| {
                     let sessions_inner = sessions_clone.clone();
                     let server_id_inner = server_id_clone.clone();
+                    let broadcast_inner = broadcast_clone.clone();
 
                     tokio::spawn(async move {
                         match notification.method.as_str() {
@@ -269,6 +288,27 @@ impl McpGateway {
                                     other_method
                                 );
                                 // Other notifications are logged but not acted upon
+                            }
+                        }
+
+                        // Forward notification to external clients (if broadcast channel exists)
+                        if let Some(broadcast) = broadcast_inner.as_ref() {
+                            let payload = (server_id_inner.clone(), notification.clone());
+                            match broadcast.send(payload) {
+                                Ok(receiver_count) => {
+                                    tracing::debug!(
+                                        "Forwarded notification from server {} to {} client(s)",
+                                        server_id_inner,
+                                        receiver_count
+                                    );
+                                }
+                                Err(_) => {
+                                    // No active receivers - this is normal when no clients are connected
+                                    tracing::trace!(
+                                        "No clients subscribed to notifications from server {}",
+                                        server_id_inner
+                                    );
+                                }
                             }
                         }
                     });

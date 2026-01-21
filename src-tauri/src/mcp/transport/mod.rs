@@ -3,6 +3,8 @@
 //! Supports three transport types:
 //! - STDIO: Subprocess with piped stdin/stdout
 //! - HTTP-SSE: Server-Sent Events over HTTP
+
+#![allow(dead_code)]
 //! - WebSocket: Bidirectional WebSocket connection
 
 pub mod sse;

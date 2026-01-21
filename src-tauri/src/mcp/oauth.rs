@@ -3,6 +3,8 @@
 //! Handles OAuth discovery, token acquisition, and token management for MCP servers
 //! that require OAuth authentication.
 
+#![allow(dead_code)]
+
 use crate::api_keys::{CachedKeychain, KeychainStorage};
 use crate::config::McpOAuthConfig;
 use crate::utils::errors::{AppError, AppResult};
