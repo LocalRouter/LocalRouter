@@ -8,6 +8,7 @@ import Input from '../ui/Input'
 import Select from '../ui/Select'
 import KeyValueInput from '../ui/KeyValueInput'
 import McpServerDetailPage from '../mcp/McpServerDetailPage'
+import { McpServerTemplates, McpServerTemplate } from '../mcp/McpServerTemplates'
 
 interface McpServer {
   id: string
@@ -35,6 +36,7 @@ export default function McpServersTab({ activeSubTab, onTabChange }: McpServersT
   const [healthStatus, setHealthStatus] = useState<Record<string, McpServerHealth>>({})
   const [loading, setLoading] = useState(true)
   const [showCreateModal, setShowCreateModal] = useState(false)
+  const [selectedTemplate, setSelectedTemplate] = useState<McpServerTemplate | null>(null)
 
   // Form state
   const [serverName, setServerName] = useState('')
@@ -85,6 +87,33 @@ export default function McpServersTab({ activeSubTab, onTabChange }: McpServersT
       setHealthStatus(healthMap)
     } catch (error) {
       console.error('Failed to load health status:', error)
+    }
+  }
+
+  const handleSelectTemplate = (template: McpServerTemplate) => {
+    setSelectedTemplate(template)
+
+    // Pre-populate form fields from template
+    setServerName(template.name)
+    setTransportType(template.transport)
+
+    if (template.transport === 'Stdio' && template.command) {
+      setCommand(template.command)
+      if (template.args) {
+        setArgs(template.args.join('\n'))
+      }
+    } else if (template.transport === 'Sse' && template.url) {
+      setUrl(template.url)
+    }
+
+    // Set auth method
+    if (template.authMethod === 'oauth_browser') {
+      setAuthMethod('oauth_browser')
+      if (template.defaultScopes) {
+        setOauthScopes(template.defaultScopes.join(' '))
+      }
+    } else {
+      setAuthMethod(template.authMethod)
     }
   }
 
@@ -290,10 +319,65 @@ export default function McpServersTab({ activeSubTab, onTabChange }: McpServersT
       {/* Create Server Modal */}
       <Modal
         isOpen={showCreateModal}
-        onClose={() => setShowCreateModal(false)}
+        onClose={() => {
+          setShowCreateModal(false)
+          setSelectedTemplate(null)
+          // Reset form fields
+          setServerName('')
+          setCommand('')
+          setArgs('')
+          setUrl('')
+          setAuthMethod('none')
+          setBearerToken('')
+          setOauthClientId('')
+          setOauthClientSecret('')
+          setOauthScopes('')
+        }}
         title="Create MCP Server"
       >
         <form onSubmit={handleCreateServer} className="space-y-4">
+          {/* Templates Section */}
+          {!selectedTemplate && (
+            <McpServerTemplates onSelectTemplate={handleSelectTemplate} />
+          )}
+
+          {/* Show selected template info if one was chosen */}
+          {selectedTemplate && (
+            <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded p-3 mb-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="text-2xl">{selectedTemplate.icon}</span>
+                  <div>
+                    <p className="text-sm font-medium text-blue-900 dark:text-blue-100">
+                      Using template: {selectedTemplate.name}
+                    </p>
+                    <p className="text-xs text-blue-700 dark:text-blue-300">
+                      You can customize the settings below
+                    </p>
+                  </div>
+                </div>
+                <Button
+                  variant="secondary"
+                  onClick={() => {
+                    setSelectedTemplate(null)
+                    setServerName('')
+                    setCommand('')
+                    setArgs('')
+                    setUrl('')
+                    setAuthMethod('none')
+                  }}
+                >
+                  Clear Template
+                </Button>
+              </div>
+              {selectedTemplate.setupInstructions && (
+                <p className="text-xs text-blue-700 dark:text-blue-300 mt-2">
+                  ℹ️ {selectedTemplate.setupInstructions}
+                </p>
+              )}
+            </div>
+          )}
+
           <div>
             <label className="block text-sm font-medium mb-2 text-gray-900 dark:text-gray-100">
               Server Name
@@ -485,9 +569,11 @@ export default function McpServersTab({ activeSubTab, onTabChange }: McpServersT
               {authMethod === 'oauth_browser' && (
                 <div className="mt-3">
                   <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-700 rounded p-3">
-                    <p className="text-blue-800 dark:text-blue-200 text-sm">
-                      OAuth browser flow will be initiated when connecting to the MCP server.
-                      You'll be redirected to authenticate in your browser.
+                    <p className="text-blue-800 dark:text-blue-200 text-sm font-medium mb-1">
+                      Browser-based OAuth Authentication
+                    </p>
+                    <p className="text-blue-700 dark:text-blue-300 text-xs">
+                      After creating the server, go to the Configuration tab to set up OAuth credentials (Client ID & Secret) and complete browser authentication.
                     </p>
                   </div>
                 </div>
