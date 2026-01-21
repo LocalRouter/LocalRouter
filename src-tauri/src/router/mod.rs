@@ -1256,7 +1256,188 @@ impl Router {
         .await)
     }
 
+    /// Execute an embedding request on a specific provider/model
+    async fn execute_embedding_request(
+        &self,
+        client_id: &str,
+        provider: &str,
+        model: &str,
+        request: EmbeddingRequest,
+    ) -> AppResult<EmbeddingResponse> {
+        // Get provider instance from registry
+        let provider_instance = self
+            .provider_registry
+            .get_provider(provider)
+            .ok_or_else(|| {
+                AppError::Router(format!(
+                    "Provider '{}' not found or disabled in registry",
+                    provider
+                ))
+            })?;
+
+        // Check provider health (log warning if unhealthy)
+        let health = provider_instance.health_check().await;
+        match health.status {
+            crate::providers::HealthStatus::Healthy => {
+                debug!(
+                    "Provider '{}' is healthy (latency: {:?}ms)",
+                    provider, health.latency_ms
+                );
+            }
+            crate::providers::HealthStatus::Degraded => {
+                warn!(
+                    "Provider '{}' is degraded: {}",
+                    provider,
+                    health.error_message.as_deref().unwrap_or("unknown")
+                );
+            }
+            crate::providers::HealthStatus::Unhealthy => {
+                warn!(
+                    "Provider '{}' is unhealthy: {}",
+                    provider,
+                    health.error_message.as_deref().unwrap_or("unknown")
+                );
+                // Continue anyway - let the request fail naturally
+            }
+        }
+
+        // Modify the request to use just the model name (without provider prefix)
+        let modified_request = EmbeddingRequest {
+            model: model.to_string(),
+            input: request.input,
+            encoding_format: request.encoding_format,
+            dimensions: request.dimensions,
+            user: request.user,
+        };
+
+        // Execute the embedding
+        let response = provider_instance.embed(modified_request).await?;
+
+        // Record usage for rate limiting (embeddings have simpler usage)
+        let usage = UsageInfo {
+            input_tokens: response.usage.prompt_tokens as u64,
+            output_tokens: 0, // Embeddings don't have output tokens
+            cost_usd: 0.0,    // TODO: Calculate cost from provider pricing
+        };
+
+        // Record usage for rate limiting
+        if let Err(e) = self
+            .rate_limiter
+            .record_api_key_usage(client_id, &usage)
+            .await
+        {
+            warn!("Failed to record usage for client '{}': {}", client_id, e);
+        }
+
+        Ok(response)
+    }
+
+    /// Embed with auto-routing (localrouter/auto virtual model)
+    /// Tries models in prioritized order with intelligent fallback
+    async fn embed_with_auto_routing(
+        &self,
+        client_id: &str,
+        strategy: &crate::config::Strategy,
+        request: EmbeddingRequest,
+    ) -> AppResult<EmbeddingResponse> {
+        let auto_config = strategy.auto_config.as_ref().ok_or_else(|| {
+            AppError::Router("localrouter/auto not configured for this strategy".into())
+        })?;
+
+        if !auto_config.enabled {
+            return Err(AppError::Router(
+                "localrouter/auto is disabled for this strategy".into(),
+            ));
+        }
+
+        if auto_config.prioritized_models.is_empty() {
+            return Err(AppError::Router(
+                "No prioritized models configured for auto-routing".into(),
+            ));
+        }
+
+        // Note: RouteLLM is not applicable to embeddings (no strong/weak model selection)
+        // We just use the prioritized_models list directly
+        let selected_models = &auto_config.prioritized_models;
+
+        info!(
+            "Auto-routing embeddings for client '{}' with {} prioritized models",
+            client_id,
+            selected_models.len()
+        );
+
+        let mut last_error = None;
+
+        for (idx, (provider, model)) in selected_models.iter().enumerate() {
+            debug!(
+                "Auto-routing embeddings attempt {}/{}: {}/{}",
+                idx + 1,
+                selected_models.len(),
+                provider,
+                model
+            );
+
+            // Check strategy rate limits before trying this model
+            if let Err(e) = self.check_strategy_rate_limits(strategy, provider, model) {
+                warn!(
+                    "Strategy rate limit exceeded for {}/{}, trying next model: {}",
+                    provider, model, e
+                );
+                last_error = Some(RouterError::RateLimited {
+                    provider: provider.clone(),
+                    model: model.clone(),
+                    retry_after_secs: 60,
+                });
+                continue;
+            }
+
+            match self
+                .execute_embedding_request(client_id, provider, model, request.clone())
+                .await
+            {
+                Ok(response) => {
+                    info!("Auto-routing embeddings succeeded with {}/{}", provider, model);
+                    return Ok(response);
+                }
+                Err(e) => {
+                    let router_error = RouterError::classify(&e, provider, model);
+                    warn!(
+                        "Auto-routing embeddings attempt failed: {}",
+                        router_error.to_log_string()
+                    );
+
+                    last_error = Some(router_error.clone());
+
+                    // Continue to next model on retryable errors
+                    if !router_error.should_retry() {
+                        error!(
+                            "Non-retryable error encountered: {}",
+                            router_error.to_log_string()
+                        );
+                        return Err(e);
+                    }
+                }
+            }
+        }
+
+        // All models failed
+        Err(AppError::Router(format!(
+            "All auto-routing embedding models failed. Last error: {}",
+            last_error
+                .map(|e| e.to_log_string())
+                .unwrap_or_else(|| "Unknown".to_string())
+        )))
+    }
+
     /// Route an embedding request to the appropriate provider
+    ///
+    /// This method:
+    /// 1. Validates the client exists and is enabled
+    /// 2. Gets the client's routing strategy
+    /// 3. Routes based on requested model (auto vs specific)
+    /// 4. Executes the request with appropriate fallback behavior
+    ///
+    /// Returns 403 (via AppError::Unauthorized) if client is invalid or disabled
     pub async fn embed(
         &self,
         client_id: &str,
@@ -1267,67 +1448,146 @@ impl Router {
             client_id, request.model
         );
 
-        // Parse provider and model from request
-        let (provider_str, model_str) = Self::parse_model_string(&request.model);
-
-        // If provider is specified in model string (e.g., "openai/text-embedding-ada-002"),
-        // use it directly
-        if !provider_str.is_empty() {
-            debug!(
-                "Using provider '{}' from model string for embeddings",
-                provider_str
-            );
-
-            let provider = self
-                .provider_registry
-                .get_provider(&provider_str)
-                .ok_or_else(|| {
-                    error!("Provider '{}' not found", provider_str);
-                    AppError::Provider(format!("Provider '{}' not configured", provider_str))
-                })?;
-
-            // Create modified request with just the model name (without provider prefix)
-            let modified_request = EmbeddingRequest {
-                model: model_str,
-                input: request.input,
-                encoding_format: request.encoding_format,
-                dimensions: request.dimensions,
-                user: request.user,
-            };
-
-            return provider.embed(modified_request).await;
+        // Special handling for internal test token (bypasses all routing config)
+        if client_id == "internal-test" {
+            debug!("Internal test token detected - bypassing routing config");
+            // For internal tests, parse the model string and execute directly
+            let (provider, model) = Self::parse_model_string(&request.model);
+            if provider.is_empty() {
+                return Err(AppError::Router(
+                    "Internal test requires provider/model format".into(),
+                ));
+            }
+            return self
+                .execute_embedding_request(client_id, &provider, &model, request)
+                .await;
         }
 
-        // Otherwise, try to find the provider by checking which provider has this model
-        debug!(
-            "No provider specified in model string, searching for model '{}'",
-            request.model
-        );
+        // 1. Get client and strategy configuration
+        let config = self.config_manager.get();
+        let client = config
+            .clients
+            .iter()
+            .find(|c| c.id == client_id)
+            .ok_or_else(|| {
+                warn!("Client '{}' not found", client_id);
+                AppError::Unauthorized
+            })?;
 
-        for provider in self.provider_registry.get_enabled_providers() {
-            match provider.list_models().await {
-                Ok(models) => {
-                    for model in models {
-                        if Self::normalize_model_id(&model.id) == Self::normalize_model_id(&request.model) {
-                            debug!(
-                                "Found model '{}' in provider '{}' for embeddings",
-                                request.model, provider.name()
-                            );
-                            return provider.embed(request).await;
+        // Check if client is enabled
+        if !client.enabled {
+            warn!("Client '{}' is disabled", client_id);
+            return Err(AppError::Unauthorized);
+        }
+
+        let strategy = config
+            .strategies
+            .iter()
+            .find(|s| s.id == client.strategy_id)
+            .ok_or_else(|| {
+                warn!(
+                    "Strategy '{}' not found for client '{}'",
+                    client.strategy_id, client_id
+                );
+                AppError::Router(format!("Strategy '{}' not found", client.strategy_id))
+            })?;
+
+        // 2. Check client-level rate limits
+        let usage_estimate = UsageInfo {
+            input_tokens: 0,
+            output_tokens: 0,
+            cost_usd: 0.0,
+        };
+
+        let rate_check = self
+            .rate_limiter
+            .check_api_key(client_id, &usage_estimate)
+            .await?;
+
+        if !rate_check.allowed {
+            warn!(
+                "Client '{}' rate limited. Retry after {} seconds",
+                client_id,
+                rate_check.retry_after_secs.unwrap_or(0)
+            );
+            return Err(AppError::RateLimitExceeded);
+        }
+
+        // 3. Route based on requested model
+        if request.model == "localrouter/auto" {
+            // Auto-routing with intelligent fallback
+            debug!("Using auto-routing for embeddings client '{}'", client_id);
+            return self
+                .embed_with_auto_routing(client_id, strategy, request)
+                .await;
+        }
+
+        // 4. For specific model requests, check strategy rate limits
+        self.check_strategy_rate_limits(strategy, "", "")?;
+
+        // 5. Specific model requested - validate and execute
+        let (provider, model) = Self::parse_model_string(&request.model);
+
+        // If no provider specified, try to find it from allowed models
+        let (final_provider, final_model) = if provider.is_empty() {
+            // Need to find which provider has this model from allowed list
+            let mut found_provider = None;
+            let normalized_requested = Self::normalize_model_id(&model);
+
+            // Check individual_models first
+            for (prov, mod_name) in &strategy.allowed_models.individual_models {
+                let normalized_allowed = Self::normalize_model_id(mod_name);
+                if normalized_allowed == normalized_requested {
+                    found_provider = Some(prov.clone());
+                    break;
+                }
+            }
+
+            // If not found, check providers in all_provider_models
+            if found_provider.is_none() {
+                for prov in &strategy.allowed_models.all_provider_models {
+                    if let Some(provider_instance) = self.provider_registry.get_provider(prov) {
+                        if let Ok(models) = provider_instance.list_models().await {
+                            // Use normalized comparison for consistent matching
+                            if models.iter().any(|m| {
+                                let normalized_provider_model = Self::normalize_model_id(&m.id);
+                                normalized_provider_model == normalized_requested
+                            }) {
+                                found_provider = Some(prov.clone());
+                                break;
+                            }
                         }
                     }
                 }
-                Err(e) => {
-                    warn!("Failed to list models from provider '{}': {}", provider.name(), e);
-                }
             }
-        }
 
-        error!("Model '{}' not found in any provider", request.model);
-        Err(AppError::Provider(format!(
-            "Model '{}' not found in any configured provider",
-            request.model
-        )))
+            if let Some(prov) = found_provider {
+                (prov, model)
+            } else {
+                return Err(AppError::Router(format!(
+                    "Model '{}' is not allowed by this strategy",
+                    request.model
+                )));
+            }
+        } else {
+            // Provider specified - validate it's allowed
+            if !strategy.is_model_allowed(&provider, &model) {
+                return Err(AppError::Router(format!(
+                    "Model '{}/{}' is not allowed by this strategy",
+                    provider, model
+                )));
+            }
+            (provider, model)
+        };
+
+        // 6. Execute the request
+        debug!(
+            "Executing embedding request for client '{}' on {}/{}",
+            client_id, final_provider, final_model
+        );
+
+        self.execute_embedding_request(client_id, &final_provider, &final_model, request)
+            .await
     }
 }
 
