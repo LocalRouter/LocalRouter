@@ -19,6 +19,9 @@ pub enum AppError {
     #[error("MCP error: {0}")]
     Mcp(String),
 
+    #[error("OAuth browser flow error: {0}")]
+    OAuthBrowser(String),
+
     #[error("Storage error: {0}")]
     Storage(String),
 
