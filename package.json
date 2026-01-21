@@ -1,7 +1,7 @@
 {
   "name": "localrouter-ai",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.0.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -11,12 +11,15 @@
   },
   "dependencies": {
     "@heroicons/react": "^2.2.0",
-    "rapidoc": "^9.3.4",
     "@tauri-apps/api": "^2.9.1",
+    "@tauri-apps/plugin-process": "^2.3.1",
+    "@tauri-apps/plugin-shell": "^2.3.4",
+    "@tauri-apps/plugin-updater": "^2.9.0",
     "@types/dagre": "^0.7.53",
     "ai": "^6.0.35",
     "dagre": "^0.8.5",
     "openai": "^6.16.0",
+    "rapidoc": "^9.3.4",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-markdown": "^10.1.0",
