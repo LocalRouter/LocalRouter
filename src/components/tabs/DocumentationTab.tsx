@@ -132,7 +132,7 @@ export default function DocumentationTab() {
       <div className="flex items-center justify-center h-full">
         <div className="text-center space-y-4">
           <div className="text-6xl animate-spin">⚙️</div>
-          <p className="text-gray-600">Loading OpenAPI specification...</p>
+          <p className="text-gray-600 dark:text-gray-400">Loading OpenAPI specification...</p>
         </div>
       </div>
     )
@@ -143,7 +143,7 @@ export default function DocumentationTab() {
       <div className="flex items-center justify-center h-full">
         <div className="text-center space-y-4 max-w-md">
           <div className="text-6xl">⚠️</div>
-          <p className="text-red-600 font-semibold">{error || 'Failed to load OpenAPI specification'}</p>
+          <p className="text-red-600 dark:text-red-400 font-semibold">{error || 'Failed to load OpenAPI specification'}</p>
         </div>
       </div>
     )
@@ -158,14 +158,14 @@ export default function DocumentationTab() {
   return (
     <div className="h-full flex flex-col relative">
       {/* Header */}
-      <div className="p-4 border-b bg-white flex-shrink-0 space-y-3">
+      <div className="p-4 border-b border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 flex-shrink-0 space-y-3">
         <div className="flex items-center justify-between">
-          <div className="text-sm text-gray-600">
-            Server: <span className="font-mono font-semibold text-blue-600">{baseUrl}</span>
+          <div className="text-sm text-gray-600 dark:text-gray-400">
+            Server: <span className="font-mono font-semibold text-blue-600 dark:text-blue-400">{baseUrl}</span>
           </div>
           <button
             onClick={() => { loadServerConfig(); loadClients(); }}
-            className="px-3 py-1 text-sm bg-gray-100 hover:bg-gray-200 rounded-md"
+            className="px-3 py-1 text-sm bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-md"
           >
             Refresh
           </button>
@@ -173,11 +173,11 @@ export default function DocumentationTab() {
         {clients.length > 0 ? (
           <div className="flex items-center gap-4">
             <div className="flex items-center gap-2">
-              <label className="text-sm font-medium text-gray-700">Client:</label>
+              <label className="text-sm font-medium text-gray-700 dark:text-gray-300">Client:</label>
               <select
                 value={selectedClientId}
                 onChange={handleClientChange}
-                className="px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
               >
                 {clients.map((client) => (
                   <option key={client.id} value={client.id}>
@@ -187,14 +187,14 @@ export default function DocumentationTab() {
               </select>
             </div>
             {accessToken && (
-              <div className="flex items-center gap-2 text-sm text-green-600">
-                <span className="w-2 h-2 bg-green-500 rounded-full"></span>
+              <div className="flex items-center gap-2 text-sm text-green-600 dark:text-green-400">
+                <span className="w-2 h-2 bg-green-500 dark:bg-green-400 rounded-full"></span>
                 <span>Authenticated</span>
               </div>
             )}
           </div>
         ) : (
-          <div className="text-sm text-gray-500">No clients available. Create a client to test the API.</div>
+          <div className="text-sm text-gray-500 dark:text-gray-400">No clients available. Create a client to test the API.</div>
         )}
       </div>
 

@@ -97,9 +97,9 @@ export function ChatInterface({
   return (
     <div className="flex flex-col h-full">
       {/* Messages Area */}
-      <div className="flex-1 overflow-y-auto mb-4 space-y-4 min-h-[300px] max-h-[400px] bg-gray-50 rounded-lg p-4">
+      <div className="flex-1 overflow-y-auto mb-4 space-y-4 min-h-[300px] max-h-[400px] bg-gray-50 dark:bg-gray-900 rounded-lg p-4">
         {messages.length === 0 ? (
-          <div className="flex items-center justify-center h-full text-gray-500 text-sm">
+          <div className="flex items-center justify-center h-full text-gray-500 dark:text-gray-400 text-sm">
             No messages yet. Start a conversation!
           </div>
         ) : (
@@ -112,11 +112,11 @@ export function ChatInterface({
                 className={`max-w-[80%] rounded-lg px-4 py-2 ${
                   message.role === 'user'
                     ? 'bg-blue-600 text-white'
-                    : 'bg-white border border-gray-200'
+                    : 'bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-900 dark:text-gray-100'
                 }`}
               >
                 {message.role === 'assistant' ? (
-                  <div className="prose prose-sm max-w-none">
+                  <div className="prose prose-sm max-w-none dark:prose-invert">
                     <ReactMarkdown remarkPlugins={[remarkGfm]}>
                       {message.content}
                     </ReactMarkdown>
@@ -133,7 +133,7 @@ export function ChatInterface({
 
       {/* Error Display */}
       {error && (
-        <div className="mb-2 p-2 bg-red-50 border border-red-200 rounded text-red-600 text-sm">
+        <div className="mb-2 p-2 bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-700 rounded text-red-600 dark:text-red-400 text-sm">
           {error}
         </div>
       )}
@@ -147,13 +147,13 @@ export function ChatInterface({
           onKeyPress={handleKeyPress}
           placeholder={placeholder}
           disabled={isLoading || disabled}
-          className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
+          className="flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
         />
         <button
           type="button"
           onClick={handleSend}
           disabled={isLoading || disabled || !input.trim()}
-          className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 dark:bg-blue-600 dark:hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {isLoading ? 'Sending...' : 'Send'}
         </button>

@@ -174,9 +174,9 @@ export default function OAuthClientDetailPage({ clientId, onBack }: OAuthClientD
   }
 
   const tabs = [
-    { id: 'credentials', label: 'Credentials' },
-    { id: 'linked-servers', label: 'Linked Servers' },
-    { id: 'settings', label: 'Settings' },
+    { id: 'credentials', label: 'Credentials', content: <></> },
+    { id: 'linked-servers', label: 'Linked Servers', content: <></> },
+    { id: 'settings', label: 'Settings', content: <></> },
   ]
 
   if (loading) {

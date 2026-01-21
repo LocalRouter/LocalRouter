@@ -6,7 +6,8 @@ import Button from '../ui/Button'
 import ProviderIcon from '../ProviderIcon'
 import { ContextualChat } from '../chat/ContextualChat'
 import DetailPageLayout from '../layouts/DetailPageLayout'
-import { MetricsChart } from '../charts/MetricsChart'
+import FilteredAccessLogs from '../logs/FilteredAccessLogs'
+import MetricsPanel from '../MetricsPanel'
 import { useMetricsSubscription } from '../../hooks/useMetricsSubscription'
 
 interface ProviderDetailPageProps {
@@ -166,7 +167,7 @@ export default function ProviderDetailPage({
     return `${tokens} tokens`
   }
 
-  const healthVariant =
+  const healthVariant: 'success' | 'warning' | 'error' =
     health?.status === 'Healthy' ? 'success' :
     health?.status === 'Degraded' ? 'warning' : 'error'
 
@@ -185,45 +186,22 @@ export default function ProviderDetailPage({
       id: 'metrics',
       label: 'Metrics',
       content: (
-        <div className="space-y-6">
-          <div className="grid grid-cols-2 gap-6">
-            <MetricsChart
-              scope="provider"
-              scopeId={instanceName}
-              timeRange="day"
-              metricType="requests"
-              title="Requests"
-              refreshTrigger={refreshKey}
-            />
-
-            <MetricsChart
-              scope="provider"
-              scopeId={instanceName}
-              timeRange="day"
-              metricType="tokens"
-              title="Tokens"
-              refreshTrigger={refreshKey}
-            />
-
-            <MetricsChart
-              scope="provider"
-              scopeId={instanceName}
-              timeRange="day"
-              metricType="cost"
-              title="Cost"
-              refreshTrigger={refreshKey}
-            />
-
-            <MetricsChart
-              scope="provider"
-              scopeId={instanceName}
-              timeRange="day"
-              metricType="latency"
-              title="Latency"
-              refreshTrigger={refreshKey}
-            />
-          </div>
-        </div>
+        <MetricsPanel
+          title="Provider Metrics"
+          chartType="llm"
+          metricOptions={[
+            { id: 'requests', label: 'Requests' },
+            { id: 'tokens', label: 'Tokens' },
+            { id: 'cost', label: 'Cost' },
+            { id: 'latency', label: 'Latency' },
+            { id: 'successrate', label: 'Success' },
+          ]}
+          scope="provider"
+          scopeId={instanceName}
+          defaultMetric="requests"
+          defaultTimeRange="day"
+          refreshTrigger={refreshKey}
+        />
       ),
     },
     {
@@ -231,23 +209,23 @@ export default function ProviderDetailPage({
       label: 'Configuration',
       content: (
         <Card>
-          <h3 className="text-lg font-semibold text-gray-900 mb-4">Configuration</h3>
+          <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-4">Configuration</h3>
           {health?.error_message && (
-            <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
+            <div className="mb-4 p-3 bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-700 rounded-lg text-sm text-red-700 dark:text-red-400">
               <strong>Error:</strong> {health.error_message}
             </div>
           )}
           <div className="space-y-4">
             {Object.entries(config).map(([key, value]) => (
               <div key={key}>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                   {key}
                 </label>
                 <input
                   type={key.toLowerCase().includes('key') || key.toLowerCase().includes('secret') ? 'password' : 'text'}
                   value={value}
                   onChange={(e) => handleConfigChange(key, e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
               </div>
             ))}
@@ -267,13 +245,13 @@ export default function ProviderDetailPage({
       content: (
         <Card>
           <div className="flex justify-between items-center mb-4">
-            <h3 className="text-lg font-semibold text-gray-900">Available Models</h3>
+            <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Available Models</h3>
             <Button variant="secondary" onClick={handleRefreshModels}>
               Refresh Models
             </Button>
           </div>
           {models.length === 0 ? (
-            <div className="text-center py-8 text-gray-500">
+            <div className="text-center py-8 text-gray-500 dark:text-gray-400">
               No models found for this provider.
             </div>
           ) : (
@@ -282,12 +260,12 @@ export default function ProviderDetailPage({
                 <div
                   key={model.model_id}
                   onClick={() => onTabChange?.('models', `${model.provider_instance}/${model.model_id}`)}
-                  className="bg-gray-50 border border-gray-200 rounded-lg p-4 hover:bg-gray-100 transition-colors cursor-pointer"
+                  className="bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-4 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors cursor-pointer"
                 >
                   <div className="flex items-start justify-between">
                     <div>
-                      <h4 className="text-base font-semibold text-gray-900">{model.model_id}</h4>
-                      <div className="flex flex-wrap gap-3 text-sm text-gray-600 mt-2">
+                      <h4 className="text-base font-semibold text-gray-900 dark:text-gray-100">{model.model_id}</h4>
+                      <div className="flex flex-wrap gap-3 text-sm text-gray-600 dark:text-gray-400 mt-2">
                         {model.context_window > 0 && (
                           <span>Context: {formatContextWindow(model.context_window)}</span>
                         )}
@@ -317,9 +295,9 @@ export default function ProviderDetailPage({
       count: apiKeys.length,
       content: (
         <Card>
-          <h3 className="text-lg font-semibold text-gray-900 mb-4">API Keys Using This Provider</h3>
+          <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-4">API Keys Using This Provider</h3>
           {apiKeys.length === 0 ? (
-            <div className="text-center py-8 text-gray-500">
+            <div className="text-center py-8 text-gray-500 dark:text-gray-400">
               No API keys are configured to use this provider.
             </div>
           ) : (
@@ -328,11 +306,11 @@ export default function ProviderDetailPage({
                 <div
                   key={key.id}
                   onClick={() => onTabChange?.('api-keys', key.id)}
-                  className="bg-gray-50 border border-gray-200 rounded-lg p-4 hover:bg-gray-100 transition-colors cursor-pointer"
+                  className="bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-4 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors cursor-pointer"
                 >
                   <div className="flex justify-between items-center">
                     <div>
-                      <h4 className="text-base font-semibold text-gray-900">{key.name}</h4>
+                      <h4 className="text-base font-semibold text-gray-900 dark:text-gray-100">{key.name}</h4>
                     </div>
                     <Badge variant={key.enabled ? 'success' : 'warning'}>
                       {key.enabled ? 'Enabled' : 'Disabled'}
@@ -350,12 +328,23 @@ export default function ProviderDetailPage({
       label: 'Chat',
       content: (
         <Card>
-          <h3 className="text-lg font-semibold text-gray-900 mb-4">Chat with Provider</h3>
+          <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-4">Chat with Provider</h3>
           <ContextualChat
             context={chatContext}
             disabled={!enabled}
           />
         </Card>
+      ),
+    },
+    {
+      id: 'logs',
+      label: 'Logs',
+      content: (
+        <FilteredAccessLogs
+          type="llm"
+          provider={instanceName}
+          active={activeTab === 'logs'}
+        />
       ),
     },
   ]

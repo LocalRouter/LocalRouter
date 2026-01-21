@@ -5,7 +5,7 @@ import Button from '../ui/Button'
 import DetailPageLayout from '../layouts/DetailPageLayout'
 import { ContextualChat } from '../chat/ContextualChat'
 import ModelSelectionTable, { ModelSelectionValue } from '../ModelSelectionTable'
-import { MetricsChart } from '../charts/MetricsChart'
+import MetricsPanel from '../MetricsPanel'
 import { useMetricsSubscription } from '../../hooks/useMetricsSubscription'
 
 interface ApiKeyDetailPageProps {
@@ -152,8 +152,8 @@ export default function ApiKeyDetailPage({ keyId }: ApiKeyDetailPageProps) {
 
   if (loading || !apiKey) {
     return (
-      <div className="bg-white rounded-lg shadow-sm p-6">
-        <div className="text-center py-8 text-gray-500">Loading API key details...</div>
+      <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm p-6">
+        <div className="text-center py-8 text-gray-500 dark:text-gray-400">Loading API key details...</div>
       </div>
     )
   }
@@ -171,45 +171,22 @@ export default function ApiKeyDetailPage({ keyId }: ApiKeyDetailPageProps) {
       id: 'metrics',
       label: 'Metrics',
       content: (
-        <div className="space-y-6">
-          <div className="grid grid-cols-2 gap-6">
-            <MetricsChart
-              scope="api_key"
-              scopeId={keyId}
-              timeRange="day"
-              metricType="requests"
-              title="Requests"
-              refreshTrigger={refreshKey}
-            />
-
-            <MetricsChart
-              scope="api_key"
-              scopeId={keyId}
-              timeRange="day"
-              metricType="tokens"
-              title="Tokens"
-              refreshTrigger={refreshKey}
-            />
-
-            <MetricsChart
-              scope="api_key"
-              scopeId={keyId}
-              timeRange="day"
-              metricType="cost"
-              title="Cost"
-              refreshTrigger={refreshKey}
-            />
-
-            <MetricsChart
-              scope="api_key"
-              scopeId={keyId}
-              timeRange="day"
-              metricType="latency"
-              title="Latency"
-              refreshTrigger={refreshKey}
-            />
-          </div>
-        </div>
+        <MetricsPanel
+          title="API Key Metrics"
+          chartType="llm"
+          metricOptions={[
+            { id: 'requests', label: 'Requests' },
+            { id: 'tokens', label: 'Tokens' },
+            { id: 'cost', label: 'Cost' },
+            { id: 'latency', label: 'Latency' },
+            { id: 'successrate', label: 'Success' },
+          ]}
+          scope="api_key"
+          scopeId={keyId}
+          defaultMetric="requests"
+          defaultTimeRange="day"
+          refreshTrigger={refreshKey}
+        />
       ),
     },
     {
@@ -218,10 +195,10 @@ export default function ApiKeyDetailPage({ keyId }: ApiKeyDetailPageProps) {
       content: (
         <div className="space-y-6">
           <Card>
-            <h3 className="text-lg font-semibold text-gray-900 mb-4">API Key Value</h3>
+            <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-4">API Key Value</h3>
             <div className="space-y-3">
               {keyLoadError && (
-                <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
+                <div className="p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg text-sm text-red-700 dark:text-red-400">
                   {keyLoadError}
                 </div>
               )}
@@ -230,35 +207,35 @@ export default function ApiKeyDetailPage({ keyId }: ApiKeyDetailPageProps) {
                   <Button onClick={loadKeyValue}>
                     Load API Key from Keychain
                   </Button>
-                  <p className="text-xs text-gray-500 mt-2">
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">
                     This will prompt for your system password to access the secure keychain.
                   </p>
                 </div>
               ) : (
                 <>
-                  <div className="flex items-center gap-2 px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg">
+                  <div className="flex items-center gap-2 px-3 py-2 bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg">
                     <input
                       type={showKey ? 'text' : 'password'}
                       value={keyValue}
                       readOnly
-                      className="flex-1 font-mono text-sm bg-transparent outline-none"
+                      className="flex-1 font-mono text-sm bg-transparent outline-none text-gray-900 dark:text-gray-100"
                     />
                     <button
                       onClick={() => setShowKey(!showKey)}
-                      className="px-2 py-1 hover:bg-gray-200 rounded text-xl"
+                      className="px-2 py-1 hover:bg-gray-200 dark:hover:bg-gray-600 rounded text-xl"
                       title={showKey ? 'Hide' : 'Show'}
                     >
                       {showKey ? '🙈' : '👁️'}
                     </button>
                     <button
                       onClick={handleCopyKey}
-                      className="px-2 py-1 hover:bg-gray-200 rounded text-xl"
+                      className="px-2 py-1 hover:bg-gray-200 dark:hover:bg-gray-600 rounded text-xl"
                       title="Copy"
                     >
                       📋
                     </button>
                   </div>
-                  <p className="text-xs text-gray-500">
+                  <p className="text-xs text-gray-500 dark:text-gray-400">
                     Keep this key secret and secure. Anyone with access to this key can use your API access.
                   </p>
                 </>
@@ -267,17 +244,17 @@ export default function ApiKeyDetailPage({ keyId }: ApiKeyDetailPageProps) {
           </Card>
 
           <Card>
-            <h3 className="text-lg font-semibold text-gray-900 mb-4">Configuration</h3>
+            <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-4">Configuration</h3>
             <div className="space-y-4">
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                   Name
                 </label>
                 <input
                   type="text"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
                 />
               </div>
 
@@ -287,11 +264,11 @@ export default function ApiKeyDetailPage({ keyId }: ApiKeyDetailPageProps) {
                     type="checkbox"
                     checked={enabled}
                     onChange={(e) => setEnabled(e.target.checked)}
-                    className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500"
+                    className="w-4 h-4 text-blue-600 dark:text-blue-400 rounded focus:ring-blue-500 dark:focus:ring-blue-400"
                   />
-                  <span className="text-sm font-medium text-gray-700">Enabled</span>
+                  <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Enabled</span>
                 </label>
-                <p className="text-xs text-gray-500 mt-1 ml-6">
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 ml-6">
                   Disabled API keys cannot be used to authenticate requests.
                 </p>
               </div>
@@ -311,8 +288,8 @@ export default function ApiKeyDetailPage({ keyId }: ApiKeyDetailPageProps) {
       label: 'Model Selection',
       content: (
         <Card>
-          <h3 className="text-lg font-semibold text-gray-900 mb-4">Model Selection</h3>
-          <p className="text-sm text-gray-500 mb-4">
+          <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-4">Model Selection</h3>
+          <p className="text-sm text-gray-500 dark:text-gray-400 mb-4">
             Configure which models this API key can access. Select "All" to allow all providers and models,
             select individual providers to allow all their models, or select specific models for fine-grained control.
           </p>
@@ -334,7 +311,7 @@ export default function ApiKeyDetailPage({ keyId }: ApiKeyDetailPageProps) {
       label: 'Chat',
       content: (
         <Card>
-          <h3 className="text-lg font-semibold text-gray-900 mb-4">Chat</h3>
+          <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-4">Chat</h3>
           <ContextualChat
             context={chatContext}
             disabled={!apiKey.enabled}

@@ -1,20 +1,20 @@
 import { useState, useEffect } from 'react'
 import { listen } from '@tauri-apps/api/event'
-import Header from './components/Header'
 import Sidebar from './components/Sidebar'
 import HomeTab from './components/tabs/HomeTab'
 import ClientsTab from './components/tabs/ClientsTab'
 import ApiKeysTab from './components/tabs/ApiKeysTab'
 import ProvidersTab from './components/tabs/ProvidersTab'
-import ServerTab from './components/tabs/ServerTab'
 import ModelsTab from './components/tabs/ModelsTab'
 import OAuthClientsTab from './components/tabs/OAuthClientsTab'
 import McpServersTab from './components/tabs/McpServersTab'
+import RoutingTab from './components/tabs/RoutingTab'
 import DocumentationTab from './components/tabs/DocumentationTab'
 import LogsTab from './components/tabs/LogsTab'
+import SettingsPage from './components/SettingsPage'
 import { invoke } from '@tauri-apps/api/core'
 
-type Tab = 'home' | 'server' | 'clients' | 'api-keys' | 'providers' | 'models' | 'oauth-clients' | 'mcp-servers' | 'logs' | 'documentation'
+type Tab = 'home' | 'clients' | 'api-keys' | 'providers' | 'models' | 'oauth-clients' | 'mcp-servers' | 'routing' | 'logs' | 'documentation' | 'settings'
 
 interface ApiKeyInfo {
   id: string
@@ -38,9 +38,9 @@ function App() {
   const [activeTab, setActiveTab] = useState<Tab>('home')
   const [activeSubTab, setActiveSubTab] = useState<string | null>(null)
 
-  const handleTabChange = (tab: Tab, subTab?: string) => {
-    setActiveTab(tab)
-    setActiveSubTab(subTab || null)
+  const handleTabChange = (tab: string, subTab: string | null = null) => {
+    setActiveTab(tab as Tab)
+    setActiveSubTab(subTab)
   }
 
   useEffect(() => {
@@ -80,26 +80,30 @@ function App() {
       }
     })
 
+    // Subscribe to open-updates-tab event from tray menu
+    const unsubscribeUpdatesTab = listen('open-updates-tab', () => {
+      console.log('Opening Updates tab from tray menu')
+      setActiveTab('settings')
+      setActiveSubTab('updates')
+    })
+
     return () => {
       unsubscribeConfig.then((fn: any) => fn())
       unsubscribePrioritized.then((fn: any) => fn())
+      unsubscribeUpdatesTab.then((fn: any) => fn())
     }
   }, [])
 
   return (
-    <div className="flex flex-col h-screen bg-gray-50 dark:bg-gray-900">
-      <Header />
+    <div className="flex h-screen bg-gray-50 dark:bg-gray-900">
+      <Sidebar
+        activeTab={activeTab}
+        activeSubTab={activeSubTab}
+        onTabChange={handleTabChange}
+      />
 
-      <div className="flex flex-1 overflow-hidden">
-        <Sidebar
-          activeTab={activeTab}
-          activeSubTab={activeSubTab}
-          onTabChange={handleTabChange}
-        />
-
-        <main className="flex-1 p-8 overflow-y-auto">
+      <main className="flex-1 p-8 overflow-y-auto">
           {activeTab === 'home' && <HomeTab />}
-          {activeTab === 'server' && <ServerTab />}
           {activeTab === 'clients' && (
             <ClientsTab activeSubTab={activeSubTab} onTabChange={handleTabChange} />
           )}
@@ -118,10 +122,15 @@ function App() {
           {activeTab === 'mcp-servers' && (
             <McpServersTab activeSubTab={activeSubTab} onTabChange={handleTabChange} />
           )}
+          {activeTab === 'routing' && (
+            <RoutingTab activeSubTab={activeSubTab} onTabChange={handleTabChange} />
+          )}
           {activeTab === 'logs' && <LogsTab />}
           {activeTab === 'documentation' && <DocumentationTab />}
+          {activeTab === 'settings' && (
+            <SettingsPage initialSubtab={(activeSubTab || undefined) as any} />
+          )}
         </main>
-      </div>
     </div>
   )
 }

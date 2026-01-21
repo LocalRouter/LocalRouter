@@ -117,42 +117,42 @@ export const OAuthModal: React.FC<OAuthModalProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
-      <div className="bg-white rounded-lg shadow-xl max-w-md w-full p-6">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 dark:bg-opacity-70">
+      <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl max-w-md w-full p-6">
         <div className="flex justify-between items-center mb-4">
-          <h2 className="text-xl font-semibold">
+          <h2 className="text-xl font-semibold text-gray-900 dark:text-gray-100">
             Authenticate with {providerName}
           </h2>
           <button
             onClick={handleClose}
-            className="text-gray-500 hover:text-gray-700"
+            className="text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
           >
             ✕
           </button>
         </div>
 
         {error && (
-          <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded mb-4">
+          <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-400 px-4 py-3 rounded mb-4">
             {error}
           </div>
         )}
 
         {flowResult?.type === 'pending' && (
           <div className="space-y-4">
-            <p className="text-gray-700">{flowResult.instructions}</p>
+            <p className="text-gray-700 dark:text-gray-300">{flowResult.instructions}</p>
 
             {flowResult.user_code && (
-              <div className="bg-gray-50 border border-gray-200 rounded p-4">
-                <div className="text-sm text-gray-600 mb-2">
+              <div className="bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded p-4">
+                <div className="text-sm text-gray-600 dark:text-gray-400 mb-2">
                   Verification Code:
                 </div>
                 <div className="flex items-center justify-between">
-                  <code className="text-2xl font-mono font-bold">
+                  <code className="text-2xl font-mono font-bold text-gray-900 dark:text-gray-100">
                     {flowResult.user_code}
                   </code>
                   <button
                     onClick={handleCopyCode}
-                    className="px-3 py-1 bg-blue-500 text-white rounded hover:bg-blue-600"
+                    className="px-3 py-1 bg-blue-500 dark:bg-blue-600 text-white rounded hover:bg-blue-600 dark:hover:bg-blue-700"
                   >
                     Copy
                   </button>
@@ -163,14 +163,14 @@ export const OAuthModal: React.FC<OAuthModalProps> = ({
             {flowResult.verification_url && (
               <button
                 onClick={handleOpenUrl}
-                className="w-full px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600"
+                className="w-full px-4 py-2 bg-blue-500 dark:bg-blue-600 text-white rounded hover:bg-blue-600 dark:hover:bg-blue-700"
               >
                 Open Authentication Page
               </button>
             )}
 
-            <div className="flex items-center justify-center space-x-2 text-gray-500">
-              <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-blue-500"></div>
+            <div className="flex items-center justify-center space-x-2 text-gray-500 dark:text-gray-400">
+              <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-blue-500 dark:border-blue-400"></div>
               <span>Waiting for authorization...</span>
             </div>
           </div>
@@ -178,11 +178,11 @@ export const OAuthModal: React.FC<OAuthModalProps> = ({
 
         {flowResult?.type === 'success' && (
           <div className="text-center space-y-4">
-            <div className="text-green-500 text-5xl">✓</div>
-            <p className="text-lg font-semibold text-gray-700">
+            <div className="text-green-500 dark:text-green-400 text-5xl">✓</div>
+            <p className="text-lg font-semibold text-gray-700 dark:text-gray-300">
               Authentication Successful!
             </p>
-            <p className="text-gray-600">
+            <p className="text-gray-600 dark:text-gray-400">
               Your {providerName} account has been connected.
             </p>
           </div>
@@ -190,7 +190,7 @@ export const OAuthModal: React.FC<OAuthModalProps> = ({
 
         {!flowResult && !error && (
           <div className="flex items-center justify-center py-8">
-            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500 dark:border-blue-400"></div>
           </div>
         )}
       </div>

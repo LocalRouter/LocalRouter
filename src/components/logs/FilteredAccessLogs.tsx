@@ -1,6 +1,5 @@
 import { useState, useEffect } from 'react'
 import { invoke } from '@tauri-apps/api/core'
-import { listen } from '@tauri-apps/api/event'
 import Card from '../ui/Card'
 import Button from '../ui/Button'
 import Badge from '../ui/Badge'
@@ -18,6 +17,7 @@ interface LLMLogEntry {
   cost_usd: number
   latency_ms: number
   request_id: string
+  routellm_win_rate?: number
 }
 
 interface MCPLogEntry {
@@ -33,63 +33,58 @@ interface MCPLogEntry {
   request_id: string
 }
 
-export default function LogsTab() {
+interface FilteredAccessLogsProps {
+  type: 'llm' | 'mcp'
+  clientName?: string
+  clientId?: string
+  provider?: string
+  model?: string
+  serverId?: string
+  active: boolean // Only load logs when this tab is active
+}
+
+export default function FilteredAccessLogs({
+  type,
+  clientName,
+  clientId,
+  provider,
+  model,
+  serverId,
+  active,
+}: FilteredAccessLogsProps) {
   const [llmLogs, setLlmLogs] = useState<LLMLogEntry[]>([])
   const [mcpLogs, setMcpLogs] = useState<MCPLogEntry[]>([])
-  const [activeTab, setActiveTab] = useState<'llm' | 'mcp'>('llm')
-  const [loading, setLoading] = useState(true)
-  const [liveUpdates, setLiveUpdates] = useState(true)
+  const [loading, setLoading] = useState(false)
   const [limit, setLimit] = useState(100)
 
   useEffect(() => {
-    loadLogs()
-  }, [limit])
-
-  // Subscribe to real-time log events
-  useEffect(() => {
-    if (!liveUpdates) return
-
-    let llmUnlisten: (() => void) | undefined
-    let mcpUnlisten: (() => void) | undefined
-
-    // Subscribe to LLM log events
-    listen<LLMLogEntry>('llm-log-entry', (event) => {
-      setLlmLogs((prev) => {
-        // Add new entry at the beginning (newest first) and respect limit
-        const newLogs = [event.payload, ...prev].slice(0, limit)
-        return newLogs
-      })
-    }).then((unlisten) => {
-      llmUnlisten = unlisten
-    })
-
-    // Subscribe to MCP log events
-    listen<MCPLogEntry>('mcp-log-entry', (event) => {
-      setMcpLogs((prev) => {
-        // Add new entry at the beginning (newest first) and respect limit
-        const newLogs = [event.payload, ...prev].slice(0, limit)
-        return newLogs
-      })
-    }).then((unlisten) => {
-      mcpUnlisten = unlisten
-    })
-
-    // Cleanup subscriptions on unmount or when liveUpdates changes
-    return () => {
-      if (llmUnlisten) llmUnlisten()
-      if (mcpUnlisten) mcpUnlisten()
+    // Only load logs when the tab is active
+    if (active) {
+      loadLogs()
     }
-  }, [liveUpdates, limit])
+  }, [active, limit, clientName, clientId, provider, model, serverId])
 
   const loadLogs = async () => {
     setLoading(true)
     try {
-      const [llm, mcp] = await Promise.all([
-        invoke<LLMLogEntry[]>('get_llm_logs', { limit, offset: 0 }),
-        invoke<MCPLogEntry[]>('get_mcp_logs', { limit, offset: 0 })
-      ])
-      setLlmLogs(llm)
-      setMcpLogs(mcp)
+      if (type === 'llm') {
+        const logs = await invoke<LLMLogEntry[]>('get_llm_logs', {
+          limit,
+          offset: 0,
+          clientName,
+          provider,
+          model,
+        })
+        setLlmLogs(logs)
+      } else if (type === 'mcp') {
+        const logs = await invoke<MCPLogEntry[]>('get_mcp_logs', {
+          limit,
+          offset: 0,
+          clientId,
+          serverId,
+        })
+        setMcpLogs(logs)
+      }
     } catch (error) {
       console.error('Failed to load logs:', error)
     } finally {
@@ -113,24 +108,28 @@ export default function LogsTab() {
     return `${(latencyMs / 1000).toFixed(2)}s`
   }
 
+  if (!active) {
+    return (
+      <Card>
+        <div className="text-center py-8 text-gray-500 dark:text-gray-400">
+          Logs will load when you view this tab
+        </div>
+      </Card>
+    )
+  }
+
   return (
-    <div className="space-y-6">
-      {/* Header */}
+    <div className="space-y-4">
       <div className="flex justify-between items-center">
         <div>
-          <h2 className="text-2xl font-bold text-gray-800 dark:text-gray-100">Access Logs</h2>
-          <p className="text-gray-600 dark:text-gray-400 mt-1">View LLM and MCP request logs</p>
+          <h3 className="text-lg font-semibold text-gray-800 dark:text-gray-100">
+            {type === 'llm' ? 'LLM Request' : 'MCP Request'} Logs
+          </h3>
+          <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
+            Filtered access logs for this resource
+          </p>
         </div>
         <div className="flex gap-2 items-center">
-          <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
-            <input
-              type="checkbox"
-              checked={liveUpdates}
-              onChange={(e) => setLiveUpdates(e.target.checked)}
-              className="rounded border-gray-300 dark:border-gray-600"
-            />
-            Live updates
-          </label>
           <select
             value={limit}
             onChange={(e) => setLimit(Number(e.target.value))}
@@ -147,40 +146,7 @@ export default function LogsTab() {
         </div>
       </div>
 
-      {/* Tab Selector */}
-      <div className="border-b border-gray-200 dark:border-gray-700">
-        <nav className="-mb-px flex space-x-8">
-          <button
-            onClick={() => setActiveTab('llm')}
-            className={`${
-              activeTab === 'llm'
-                ? 'border-blue-500 text-blue-600'
-                : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 hover:border-gray-300 dark:hover:border-gray-600'
-            } whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm`}
-          >
-            LLM Requests
-            <Badge variant="secondary" className="ml-2">
-              {llmLogs.length}
-            </Badge>
-          </button>
-          <button
-            onClick={() => setActiveTab('mcp')}
-            className={`${
-              activeTab === 'mcp'
-                ? 'border-blue-500 text-blue-600'
-                : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 hover:border-gray-300 dark:hover:border-gray-600'
-            } whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm`}
-          >
-            MCP Requests
-            <Badge variant="secondary" className="ml-2">
-              {mcpLogs.length}
-            </Badge>
-          </button>
-        </nav>
-      </div>
-
-      {/* LLM Logs Table */}
-      {activeTab === 'llm' && (
+      {type === 'llm' && (
         <Card>
           <div className="overflow-x-auto">
             <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
@@ -189,15 +155,21 @@ export default function LogsTab() {
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
                     Timestamp
                   </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-                    API Key
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-                    Provider
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-                    Model
-                  </th>
+                  {!clientName && (
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                      Client
+                    </th>
+                  )}
+                  {!provider && (
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                      Provider
+                    </th>
+                  )}
+                  {!model && (
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                      Model
+                    </th>
+                  )}
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
                     Status
                   </th>
@@ -210,13 +182,16 @@ export default function LogsTab() {
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
                     Latency
                   </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                    RouteLLM
+                  </th>
                 </tr>
               </thead>
               <tbody className="bg-white dark:bg-gray-900 divide-y divide-gray-200 dark:divide-gray-800">
                 {llmLogs.length === 0 && !loading && (
                   <tr>
-                    <td colSpan={8} className="px-6 py-12 text-center text-gray-500 dark:text-gray-400">
-                      No LLM request logs found
+                    <td colSpan={9} className="px-6 py-12 text-center text-gray-500 dark:text-gray-400">
+                      No logs found for this filter
                     </td>
                   </tr>
                 )}
@@ -225,15 +200,21 @@ export default function LogsTab() {
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-gray-100">
                       {formatTimestamp(log.timestamp)}
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-gray-100">
-                      {log.api_key_name}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-gray-100">
-                      {log.provider}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
-                      {log.model}
-                    </td>
+                    {!clientName && (
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-gray-100">
+                        {log.api_key_name}
+                      </td>
+                    )}
+                    {!provider && (
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-gray-100">
+                        {log.provider}
+                      </td>
+                    )}
+                    {!model && (
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
+                        {log.model}
+                      </td>
+                    )}
                     <td className="px-6 py-4 whitespace-nowrap">
                       <Badge variant={log.status === 'success' ? 'success' : 'error'}>
                         {log.status}
@@ -251,6 +232,17 @@ export default function LogsTab() {
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-gray-100">
                       {formatLatency(log.latency_ms)}
                     </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm">
+                      {log.routellm_win_rate !== undefined && log.routellm_win_rate !== null ? (
+                        <Badge
+                          variant={log.routellm_win_rate >= 0.5 ? 'warning' : 'success'}
+                        >
+                          {(log.routellm_win_rate * 100).toFixed(1)}%
+                        </Badge>
+                      ) : (
+                        <span className="text-gray-400 dark:text-gray-500">-</span>
+                      )}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -259,8 +251,7 @@ export default function LogsTab() {
         </Card>
       )}
 
-      {/* MCP Logs Table */}
-      {activeTab === 'mcp' && (
+      {type === 'mcp' && (
         <Card>
           <div className="overflow-x-auto">
             <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
@@ -269,12 +260,16 @@ export default function LogsTab() {
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
                     Timestamp
                   </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-                    Client
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-                    Server
-                  </th>
+                  {!clientId && (
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                      Client
+                    </th>
+                  )}
+                  {!serverId && (
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                      Server
+                    </th>
+                  )}
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
                     Method
                   </th>
@@ -293,7 +288,7 @@ export default function LogsTab() {
                 {mcpLogs.length === 0 && !loading && (
                   <tr>
                     <td colSpan={7} className="px-6 py-12 text-center text-gray-500 dark:text-gray-400">
-                      No MCP request logs found
+                      No logs found for this filter
                     </td>
                   </tr>
                 )}
@@ -302,12 +297,16 @@ export default function LogsTab() {
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-gray-100">
                       {formatTimestamp(log.timestamp)}
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-gray-100">
-                      {log.client_id}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-gray-100">
-                      {log.server_id}
-                    </td>
+                    {!clientId && (
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-gray-100">
+                        {log.client_id}
+                      </td>
+                    )}
+                    {!serverId && (
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-gray-100">
+                        {log.server_id}
+                      </td>
+                    )}
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
                       {log.method}
                     </td>

@@ -5,7 +5,7 @@ import Badge from '../ui/Badge'
 import Button from '../ui/Button'
 import ProviderIcon from '../ProviderIcon'
 import ModelDetailPage from '../models/ModelDetailPage'
-import { StackedAreaChart } from '../charts/StackedAreaChart'
+import ComparisonPanel from '../ComparisonPanel'
 import { useMetricsSubscription } from '../../hooks/useMetricsSubscription'
 
 interface Model {
@@ -25,7 +25,7 @@ type SortDirection = 'asc' | 'desc'
 
 interface ModelsTabProps {
   activeSubTab: string | null
-  onTabChange?: (tab: 'models', subTab: string) => void
+  onTabChange?: (tab: string, subTab: string | null) => void
 }
 
 export default function ModelsTab({ activeSubTab, onTabChange }: ModelsTabProps) {
@@ -37,7 +37,6 @@ export default function ModelsTab({ activeSubTab, onTabChange }: ModelsTabProps)
   const [sortField, setSortField] = useState<SortField>('name')
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc')
   const [filterCapability, setFilterCapability] = useState<string>('all')
-  const [timeRange, setTimeRange] = useState<'hour' | 'day' | 'week' | 'month'>('day')
 
   useEffect(() => {
     loadModels()
@@ -167,8 +166,8 @@ export default function ModelsTab({ activeSubTab, onTabChange }: ModelsTabProps)
   const SortButton = ({ field, label }: { field: SortField; label: string }) => (
     <button
       onClick={() => handleSort(field)}
-      className={`flex items-center gap-1 px-2 py-1 rounded hover:bg-gray-100 transition-colors ${
-        sortField === field ? 'text-blue-600 font-semibold' : 'text-gray-700'
+      className={`flex items-center gap-1 px-2 py-1 rounded hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors ${
+        sortField === field ? 'text-blue-600 dark:text-blue-400 font-semibold' : 'text-gray-700 dark:text-gray-300'
       }`}
     >
       {label}
@@ -187,56 +186,25 @@ export default function ModelsTab({ activeSubTab, onTabChange }: ModelsTabProps)
     <div className="space-y-6">
       {/* Metrics Overview */}
       {!loading && trackedModels.length > 0 && (
-        <Card>
-          <div className="flex justify-between items-center mb-4">
-            <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Model Usage Overview</h3>
-            <select
-              value={timeRange}
-              onChange={(e) => setTimeRange(e.target.value as any)}
-              className="px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 hover:bg-gray-50 dark:hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
-            >
-              <option value="hour">Last Hour</option>
-              <option value="day">Last 24 Hours</option>
-              <option value="week">Last 7 Days</option>
-              <option value="month">Last 30 Days</option>
-            </select>
-          </div>
-
-          <div className="space-y-6">
-            <StackedAreaChart
-              compareType="models"
-              ids={trackedModels}
-              timeRange={timeRange}
-              metricType="requests"
-              title="Request Volume by Model"
-              refreshTrigger={refreshKey}
-            />
-
-            <StackedAreaChart
-              compareType="models"
-              ids={trackedModels}
-              timeRange={timeRange}
-              metricType="cost"
-              title="Cost by Model"
-              refreshTrigger={refreshKey}
-            />
-
-            <StackedAreaChart
-              compareType="models"
-              ids={trackedModels}
-              timeRange={timeRange}
-              metricType="tokens"
-              title="Token Usage by Model"
-              refreshTrigger={refreshKey}
-            />
-          </div>
-        </Card>
+        <ComparisonPanel
+          title="Model Usage Overview"
+          compareType="models"
+          ids={trackedModels}
+          metricOptions={[
+            { id: 'requests', label: 'Requests' },
+            { id: 'cost', label: 'Cost' },
+            { id: 'tokens', label: 'Tokens' },
+          ]}
+          defaultMetric="requests"
+          defaultTimeRange="day"
+          refreshTrigger={refreshKey}
+        />
       )}
 
       <Card>
         <div className="mb-6">
-          <h2 className="text-2xl font-bold text-gray-900 mb-2">Models</h2>
-          <p className="text-sm text-gray-500">
+          <h2 className="text-2xl font-bold text-gray-900 dark:text-gray-100 mb-2">Models</h2>
+          <p className="text-sm text-gray-500 dark:text-gray-400">
             Browse all available models across all providers
           </p>
         </div>
@@ -249,16 +217,16 @@ export default function ModelsTab({ activeSubTab, onTabChange }: ModelsTabProps)
               placeholder="Search models or providers..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
           </div>
 
           <div className="flex items-center gap-2">
-            <label className="text-sm font-medium text-gray-700">Capability:</label>
+            <label className="text-sm font-medium text-gray-700 dark:text-gray-300">Capability:</label>
             <select
               value={filterCapability}
               onChange={(e) => setFilterCapability(e.target.value)}
-              className="px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
             >
               <option value="all">All</option>
               {allCapabilities.map((cap) => (
@@ -275,8 +243,8 @@ export default function ModelsTab({ activeSubTab, onTabChange }: ModelsTabProps)
         </div>
 
         {/* Sort Controls */}
-        <div className="flex gap-2 mb-4 pb-2 border-b border-gray-200">
-          <span className="text-sm text-gray-600 mr-2">Sort by:</span>
+        <div className="flex gap-2 mb-4 pb-2 border-b border-gray-200 dark:border-gray-700">
+          <span className="text-sm text-gray-600 dark:text-gray-400 mr-2">Sort by:</span>
           <SortButton field="name" label="Name" />
           <SortButton field="provider" label="Provider" />
           <SortButton field="price" label="Price" />
@@ -285,9 +253,9 @@ export default function ModelsTab({ activeSubTab, onTabChange }: ModelsTabProps)
         </div>
 
         {loading ? (
-          <div className="text-center py-12 text-gray-500">Loading models...</div>
+          <div className="text-center py-12 text-gray-500 dark:text-gray-400">Loading models...</div>
         ) : filteredAndSortedModels.length === 0 ? (
-          <div className="text-center py-12 text-gray-500">
+          <div className="text-center py-12 text-gray-500 dark:text-gray-400">
             <p>No models found matching your criteria.</p>
           </div>
         ) : (
@@ -296,21 +264,21 @@ export default function ModelsTab({ activeSubTab, onTabChange }: ModelsTabProps)
               <div
                 key={`${model.provider_instance}-${model.model_id}`}
                 onClick={() => onTabChange?.('models', `${model.provider_instance}/${model.model_id}`)}
-                className="bg-gray-50 border border-gray-200 rounded-lg p-4 hover:bg-gray-100 transition-colors cursor-pointer"
+                className="bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-4 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors cursor-pointer"
               >
                 <div className="flex items-start">
                   <div className="flex-1">
                     <div className="flex items-center gap-3 mb-2">
                       <ProviderIcon providerId={model.provider_type} size={24} />
                       <div>
-                        <h3 className="text-base font-semibold text-gray-900">
+                        <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">
                           {model.model_id}
                         </h3>
-                        <p className="text-sm text-gray-500">{model.provider_instance}</p>
+                        <p className="text-sm text-gray-500 dark:text-gray-400">{model.provider_instance}</p>
                       </div>
                     </div>
 
-                    <div className="flex flex-wrap gap-3 text-sm text-gray-600 mt-2">
+                    <div className="flex flex-wrap gap-3 text-sm text-gray-600 dark:text-gray-400 mt-2">
                       {model.context_window > 0 && (
                         <div className="flex items-center gap-1">
                           <span className="font-medium">Context:</span>
@@ -352,7 +320,7 @@ export default function ModelsTab({ activeSubTab, onTabChange }: ModelsTabProps)
           </div>
         )}
 
-        <div className="mt-4 text-sm text-gray-500 text-center">
+        <div className="mt-4 text-sm text-gray-500 dark:text-gray-400 text-center">
           Showing {filteredAndSortedModels.length} of {models.length} models
         </div>
       </Card>

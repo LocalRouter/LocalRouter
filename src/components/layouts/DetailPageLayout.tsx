@@ -1,7 +1,6 @@
 import { ReactNode } from 'react'
 import Card from '../ui/Card'
 import Badge from '../ui/Badge'
-import Button from '../ui/Button'
 
 export interface TabConfig {
   id: string
@@ -14,12 +13,13 @@ export interface DetailPageLayoutProps {
   icon?: ReactNode
   title: string
   subtitle?: string
-  badges?: Array<{ label: string; variant: 'success' | 'warning' | 'error' | 'default' }>
+  badges?: Array<{ label: string; variant: 'success' | 'warning' | 'error' | 'secondary' | 'info' }>
   actions?: ReactNode
   tabs: TabConfig[]
   activeTab: string
   onTabChange: (tabId: string) => void
   loading?: boolean
+  children?: ReactNode
 }
 
 export default function DetailPageLayout({
@@ -32,6 +32,7 @@ export default function DetailPageLayout({
   activeTab,
   onTabChange,
   loading = false,
+  children,
 }: DetailPageLayoutProps) {
   if (loading) {
     return (
@@ -83,11 +84,15 @@ export default function DetailPageLayout({
       </div>
 
       {/* Tab Content */}
-      {tabs.map((tab) => (
-        <div key={tab.id} className={activeTab === tab.id ? 'block' : 'hidden'}>
-          {tab.content}
-        </div>
-      ))}
+      {children ? (
+        children
+      ) : (
+        tabs.map((tab) => (
+          <div key={tab.id} className={activeTab === tab.id ? 'block' : 'hidden'}>
+            {tab.content}
+          </div>
+        ))
+      )}
     </div>
   )
 }

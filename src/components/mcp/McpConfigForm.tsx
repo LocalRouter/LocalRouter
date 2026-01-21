@@ -105,7 +105,7 @@ export default function McpConfigForm({ formData, onChange, disabled = false, sh
             <option value="Sse">SSE (Server-Sent Events)</option>
           </Select>
           {disableTransportTypeChange && !disabled && (
-            <p className="text-xs text-gray-500 mt-1">
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
               Changing transport type will require restarting the server
             </p>
           )}
@@ -136,7 +136,7 @@ export default function McpConfigForm({ formData, onChange, disabled = false, sh
               value={formData.args}
               onChange={(e) => onChange('args', e.target.value)}
               placeholder="-y&#10;@modelcontextprotocol/server-everything"
-              className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-md"
+              className="w-full px-3 py-2 bg-gray-800 dark:bg-gray-900 border border-gray-700 dark:border-gray-600 rounded-md text-gray-900 dark:text-gray-100"
               rows={3}
               disabled={disabled}
             />
@@ -187,9 +187,9 @@ export default function McpConfigForm({ formData, onChange, disabled = false, sh
       )}
 
       {/* Authentication Configuration */}
-      <div className="border-t border-gray-700 pt-4 mt-4">
+      <div className="border-t border-gray-700 dark:border-gray-600 pt-4 mt-4">
         <h3 className="text-md font-semibold mb-3">Authentication (Optional)</h3>
-        <p className="text-sm text-gray-400 mb-3">
+        <p className="text-sm text-gray-400 dark:text-gray-500 mb-3">
           Configure how LocalRouter authenticates to this MCP server
         </p>
 
@@ -224,7 +224,7 @@ export default function McpConfigForm({ formData, onChange, disabled = false, sh
               disabled={disabled}
               required
             />
-            <p className="text-xs text-gray-500 mt-1">
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
               Token will be stored securely in system keychain
             </p>
           </div>
@@ -242,7 +242,7 @@ export default function McpConfigForm({ formData, onChange, disabled = false, sh
               keyPlaceholder="Header Name"
               valuePlaceholder="Header Value"
             />
-            <p className="text-xs text-gray-500 mt-1">
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
               These headers will be sent with every request
             </p>
           </div>
@@ -276,7 +276,7 @@ export default function McpConfigForm({ formData, onChange, disabled = false, sh
                 disabled={disabled}
                 required
               />
-              <p className="text-xs text-gray-500 mt-1">
+              <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
                 Secret will be stored securely in system keychain
               </p>
             </div>
@@ -289,14 +289,14 @@ export default function McpConfigForm({ formData, onChange, disabled = false, sh
                 value={formData.oauthScopes}
                 onChange={(e) => onChange('oauthScopes', e.target.value)}
                 placeholder="read&#10;write"
-                className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-md"
+                className="w-full px-3 py-2 bg-gray-800 dark:bg-gray-900 border border-gray-700 dark:border-gray-600 rounded-md text-gray-900 dark:text-gray-100"
                 rows={2}
                 disabled={disabled}
               />
             </div>
 
-            <div className="bg-yellow-900/20 border border-yellow-700 rounded p-3">
-              <p className="text-yellow-200 text-sm">
+            <div className="bg-yellow-900/20 dark:bg-yellow-900/30 border border-yellow-700 dark:border-yellow-600 rounded p-3">
+              <p className="text-yellow-200 dark:text-yellow-300 text-sm">
                 <strong>Note:</strong> OAuth URLs are auto-discovered from the MCP server.
               </p>
             </div>
@@ -315,7 +315,7 @@ export default function McpConfigForm({ formData, onChange, disabled = false, sh
               keyPlaceholder="KEY"
               valuePlaceholder="VALUE"
             />
-            <p className="text-xs text-gray-500 mt-1">
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
               These will be merged with base environment variables
             </p>
           </div>

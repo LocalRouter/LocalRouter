@@ -257,7 +257,7 @@ export const ContextualChat: React.FC<ContextualChatProps> = ({ context, disable
         </div>
         <button
           onClick={retryInitialization}
-          className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+          className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 dark:bg-blue-600 dark:hover:bg-blue-700 transition-colors"
         >
           Retry
         </button>
@@ -299,7 +299,7 @@ export const ContextualChat: React.FC<ContextualChatProps> = ({ context, disable
     if (context.type === 'api_key') {
       return (
         <div className="mb-3 p-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg">
-          <div className="flex items-center gap-2 text-sm text-blue-700 dark:text-blue-300">
+          <div className="flex items-center gap-2 text-sm text-blue-800 dark:text-blue-300">
             <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
               <path
                 fillRule="evenodd"
@@ -340,11 +340,11 @@ export const ContextualChat: React.FC<ContextualChatProps> = ({ context, disable
       {context.type === 'api_key' && (
         <div className="space-y-2">
           <div className="flex items-center justify-between">
-            <label className="block text-sm font-medium">Select Model</label>
+            <label className="block text-sm font-medium text-gray-900 dark:text-gray-100">Select Model</label>
             <button
               onClick={fetchModels}
               disabled={loadingModels || disabled}
-              className="px-3 py-1 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              className="px-3 py-1 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 dark:bg-blue-600 dark:hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
               {loadingModels ? 'Refreshing...' : 'Refresh Models'}
             </button>
@@ -359,7 +359,7 @@ export const ContextualChat: React.FC<ContextualChatProps> = ({ context, disable
             />
           ) : (
             <div className="p-3 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg">
-              <p className="text-sm text-yellow-700 dark:text-yellow-400">
+              <p className="text-sm text-yellow-800 dark:text-yellow-400">
                 Loading models...
               </p>
             </div>

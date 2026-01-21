@@ -171,7 +171,6 @@ export default function OAuthClientsTab({ activeSubTab, onTabChange }: OAuthClie
                       </td>
                       <td className="p-3">
                         <Button
-                          size="sm"
                           variant="secondary"
                           onClick={(e) => {
                             e.stopPropagation()

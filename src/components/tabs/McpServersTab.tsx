@@ -212,8 +212,8 @@ export default function McpServersTab({ activeSubTab, onTabChange }: McpServersT
       {/* Header */}
       <div className="flex justify-between items-center">
         <div>
-          <h1 className="text-3xl font-bold">MCP Servers</h1>
-          <p className="text-gray-400 mt-1">
+          <h1 className="text-3xl font-bold text-gray-900 dark:text-gray-100">MCP Servers</h1>
+          <p className="text-gray-600 dark:text-gray-400 mt-1">
             Manage Model Context Protocol servers for tool integration
           </p>
         </div>
@@ -225,13 +225,13 @@ export default function McpServersTab({ activeSubTab, onTabChange }: McpServersT
       {/* Servers List */}
       <Card>
         <div className="p-6">
-          <h2 className="text-xl font-semibold mb-4">MCP Servers</h2>
+          <h2 className="text-xl font-semibold mb-4 text-gray-900 dark:text-gray-100">MCP Servers</h2>
 
           {loading ? (
-            <div className="text-center py-8 text-gray-400">Loading...</div>
+            <div className="text-center py-8 text-gray-600 dark:text-gray-400">Loading...</div>
           ) : servers.length === 0 ? (
             <div className="text-center py-8">
-              <p className="text-gray-400 mb-4">No MCP servers configured yet</p>
+              <p className="text-gray-600 dark:text-gray-400 mb-4">No MCP servers configured yet</p>
               <Button onClick={() => setShowCreateModal(true)}>
                 Create Your First Server
               </Button>
@@ -240,23 +240,23 @@ export default function McpServersTab({ activeSubTab, onTabChange }: McpServersT
             <div className="overflow-x-auto">
               <table className="w-full">
                 <thead>
-                  <tr className="border-b border-gray-700">
-                    <th className="text-left p-3 font-medium text-gray-400">Name</th>
-                    <th className="text-left p-3 font-medium text-gray-400">Transport</th>
-                    <th className="text-left p-3 font-medium text-gray-400">Health</th>
-                    <th className="text-left p-3 font-medium text-gray-400">Status</th>
-                    <th className="text-left p-3 font-medium text-gray-400">Created</th>
-                    <th className="text-left p-3 font-medium text-gray-400">Actions</th>
+                  <tr className="border-b border-gray-200 dark:border-gray-700">
+                    <th className="text-left p-3 font-medium text-gray-700 dark:text-gray-400">Name</th>
+                    <th className="text-left p-3 font-medium text-gray-700 dark:text-gray-400">Transport</th>
+                    <th className="text-left p-3 font-medium text-gray-700 dark:text-gray-400">Health</th>
+                    <th className="text-left p-3 font-medium text-gray-700 dark:text-gray-400">Status</th>
+                    <th className="text-left p-3 font-medium text-gray-700 dark:text-gray-400">Created</th>
+                    <th className="text-left p-3 font-medium text-gray-700 dark:text-gray-400">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
                   {servers.map((server) => (
                     <tr
                       key={server.id}
-                      className="border-b border-gray-800 hover:bg-gray-800/50 cursor-pointer"
+                      className="border-b border-gray-200 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/50 cursor-pointer"
                       onClick={() => onTabChange?.('mcp-servers', server.id)}
                     >
-                      <td className="p-3 font-medium">{server.name}</td>
+                      <td className="p-3 font-medium text-gray-900 dark:text-gray-100">{server.name}</td>
                       <td className="p-3">{getTransportBadge(server.transport)}</td>
                       <td className="p-3">{getHealthBadge(server.id)}</td>
                       <td className="p-3">
@@ -264,12 +264,11 @@ export default function McpServersTab({ activeSubTab, onTabChange }: McpServersT
                           {server.enabled ? 'Enabled' : 'Disabled'}
                         </Badge>
                       </td>
-                      <td className="p-3 text-sm text-gray-400">
+                      <td className="p-3 text-sm text-gray-600 dark:text-gray-400">
                         {formatDate(server.created_at)}
                       </td>
                       <td className="p-3">
                         <Button
-                          size="sm"
                           variant="secondary"
                           onClick={(e) => {
                             e.stopPropagation()
@@ -296,7 +295,7 @@ export default function McpServersTab({ activeSubTab, onTabChange }: McpServersT
       >
         <form onSubmit={handleCreateServer} className="space-y-4">
           <div>
-            <label className="block text-sm font-medium mb-2">
+            <label className="block text-sm font-medium mb-2 text-gray-900 dark:text-gray-100">
               Server Name
             </label>
             <Input
@@ -308,7 +307,7 @@ export default function McpServersTab({ activeSubTab, onTabChange }: McpServersT
           </div>
 
           <div>
-            <label className="block text-sm font-medium mb-2">
+            <label className="block text-sm font-medium mb-2 text-gray-900 dark:text-gray-100">
               Transport Type
             </label>
             <Select
@@ -324,7 +323,7 @@ export default function McpServersTab({ activeSubTab, onTabChange }: McpServersT
           {transportType === 'Stdio' && (
             <>
               <div>
-                <label className="block text-sm font-medium mb-2">
+                <label className="block text-sm font-medium mb-2 text-gray-900 dark:text-gray-100">
                   Command
                 </label>
                 <Input
@@ -333,26 +332,26 @@ export default function McpServersTab({ activeSubTab, onTabChange }: McpServersT
                   placeholder="npx -y @modelcontextprotocol/server-everything"
                   required
                 />
-                <p className="text-xs text-gray-500 mt-1">
+                <p className="text-xs text-gray-600 dark:text-gray-500 mt-1">
                   Example: npx -y &lt;command&gt;
                 </p>
               </div>
 
               <div>
-                <label className="block text-sm font-medium mb-2">
+                <label className="block text-sm font-medium mb-2 text-gray-900 dark:text-gray-100">
                   Arguments (one per line)
                 </label>
                 <textarea
                   value={args}
                   onChange={(e) => setArgs(e.target.value)}
                   placeholder="-y&#10;@modelcontextprotocol/server-everything"
-                  className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-md text-gray-100"
+                  className="w-full px-3 py-2 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-md text-gray-900 dark:text-gray-100"
                   rows={3}
                 />
               </div>
 
               <div>
-                <label className="block text-sm font-medium mb-2">
+                <label className="block text-sm font-medium mb-2 text-gray-900 dark:text-gray-100">
                   Environment Variables
                 </label>
                 <KeyValueInput
@@ -369,7 +368,7 @@ export default function McpServersTab({ activeSubTab, onTabChange }: McpServersT
           {transportType === 'Sse' && (
             <>
               <div>
-                <label className="block text-sm font-medium mb-2">
+                <label className="block text-sm font-medium mb-2 text-gray-900 dark:text-gray-100">
                   URL
                 </label>
                 <Input
@@ -381,7 +380,7 @@ export default function McpServersTab({ activeSubTab, onTabChange }: McpServersT
               </div>
 
               <div>
-                <label className="block text-sm font-medium mb-2">
+                <label className="block text-sm font-medium mb-2 text-gray-900 dark:text-gray-100">
                   Headers
                 </label>
                 <KeyValueInput
@@ -396,14 +395,14 @@ export default function McpServersTab({ activeSubTab, onTabChange }: McpServersT
 
           {/* Authentication Configuration */}
           {transportType === 'Sse' && (
-            <div className="border-t border-gray-700 pt-4 mt-4">
+            <div className="border-t border-gray-200 dark:border-gray-700 pt-4 mt-4">
               <h3 className="text-md font-semibold mb-3">Authentication (Optional)</h3>
-              <p className="text-sm text-gray-400 mb-3">
+              <p className="text-sm text-gray-500 dark:text-gray-400 mb-3">
                 Configure how LocalRouter authenticates to this MCP server
               </p>
 
               <div>
-                <label className="block text-sm font-medium mb-2">
+                <label className="block text-sm font-medium mb-2 text-gray-900 dark:text-gray-100">
                   Authentication
                 </label>
                 <Select
@@ -420,7 +419,7 @@ export default function McpServersTab({ activeSubTab, onTabChange }: McpServersT
               {/* Bearer Token Auth */}
               {authMethod === 'bearer' && (
                 <div className="mt-3">
-                  <label className="block text-sm font-medium mb-2">
+                  <label className="block text-sm font-medium mb-2 text-gray-900 dark:text-gray-100">
                     Bearer Token
                   </label>
                   <Input
@@ -430,7 +429,7 @@ export default function McpServersTab({ activeSubTab, onTabChange }: McpServersT
                     placeholder="your-bearer-token"
                     required
                   />
-                  <p className="text-xs text-gray-500 mt-1">
+                  <p className="text-xs text-gray-600 dark:text-gray-500 mt-1">
                     Token will be stored securely in system keychain
                   </p>
                 </div>
@@ -440,7 +439,7 @@ export default function McpServersTab({ activeSubTab, onTabChange }: McpServersT
               {authMethod === 'oauth_preregistered' && (
                 <div className="mt-3 space-y-3">
                   <div>
-                    <label className="block text-sm font-medium mb-2">
+                    <label className="block text-sm font-medium mb-2 text-gray-900 dark:text-gray-100">
                       Client ID
                     </label>
                     <Input
@@ -452,7 +451,7 @@ export default function McpServersTab({ activeSubTab, onTabChange }: McpServersT
                   </div>
 
                   <div>
-                    <label className="block text-sm font-medium mb-2">
+                    <label className="block text-sm font-medium mb-2 text-gray-900 dark:text-gray-100">
                       Client Secret
                     </label>
                     <Input
@@ -461,13 +460,13 @@ export default function McpServersTab({ activeSubTab, onTabChange }: McpServersT
                       placeholder="your-client-secret"
                       required
                     />
-                    <p className="text-xs text-gray-500 mt-1">
+                    <p className="text-xs text-gray-600 dark:text-gray-500 mt-1">
                       Secret will be stored securely in system keychain
                     </p>
                   </div>
 
                   <div>
-                    <label className="block text-sm font-medium mb-2">
+                    <label className="block text-sm font-medium mb-2 text-gray-900 dark:text-gray-100">
                       Scope
                     </label>
                     <Input
@@ -475,7 +474,7 @@ export default function McpServersTab({ activeSubTab, onTabChange }: McpServersT
                       onChange={(e) => setOauthScopes(e.target.value)}
                       placeholder="tools:read tools:execute"
                     />
-                    <p className="text-xs text-gray-500 mt-1">
+                    <p className="text-xs text-gray-600 dark:text-gray-500 mt-1">
                       Space or comma separated. The remaining OAuth details will be discovered from the MCP server.
                     </p>
                   </div>
@@ -485,8 +484,8 @@ export default function McpServersTab({ activeSubTab, onTabChange }: McpServersT
               {/* OAuth Browser Flow */}
               {authMethod === 'oauth_browser' && (
                 <div className="mt-3">
-                  <div className="bg-blue-900/20 border border-blue-700 rounded p-3">
-                    <p className="text-blue-200 text-sm">
+                  <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-700 rounded p-3">
+                    <p className="text-blue-800 dark:text-blue-200 text-sm">
                       OAuth browser flow will be initiated when connecting to the MCP server.
                       You'll be redirected to authenticate in your browser.
                     </p>

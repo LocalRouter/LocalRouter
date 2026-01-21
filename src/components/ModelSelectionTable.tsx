@@ -108,16 +108,16 @@ export default function ModelSelectionTable({ models, value, onChange }: ModelSe
   }
 
   return (
-    <div className="border border-gray-300 rounded-lg overflow-hidden">
+    <div className="border border-gray-300 dark:border-gray-600 rounded-lg overflow-hidden">
       <table className="w-full">
-        <thead className="bg-gray-100 border-b border-gray-300">
+        <thead className="bg-gray-100 dark:bg-gray-800 border-b border-gray-300 dark:border-gray-600">
           <tr>
-            <th className="text-left px-4 py-3 font-semibold text-gray-900">Model Selection</th>
+            <th className="text-left px-4 py-3 font-semibold text-gray-900 dark:text-gray-100">Model Selection</th>
           </tr>
         </thead>
         <tbody>
           {/* All row */}
-          <tr className="border-b border-gray-200 hover:bg-gray-50">
+          <tr className="border-b border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800">
             <td className="px-4 py-2">
               <label className="flex items-center cursor-pointer">
                 <input
@@ -126,7 +126,7 @@ export default function ModelSelectionTable({ models, value, onChange }: ModelSe
                   onChange={handleAllToggle}
                   className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500 cursor-pointer"
                 />
-                <span className="ml-3 font-semibold text-gray-900">All Providers & Models</span>
+                <span className="ml-3 font-semibold text-gray-900 dark:text-gray-100">All Providers & Models</span>
               </label>
             </td>
           </tr>
@@ -139,7 +139,7 @@ export default function ModelSelectionTable({ models, value, onChange }: ModelSe
             return (
               <>
                 {/* Provider row */}
-                <tr key={provider} className={`border-b border-gray-200 ${isAllSelected ? 'bg-gray-100' : 'hover:bg-gray-50'}`}>
+                <tr key={provider} className={`border-b border-gray-200 dark:border-gray-700 ${isAllSelected ? 'bg-gray-100 dark:bg-gray-800' : 'hover:bg-gray-50 dark:hover:bg-gray-800'}`}>
                   <td className="px-4 py-2 pl-8">
                     <label className={`flex items-center ${isAllSelected ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}>
                       <input
@@ -149,7 +149,7 @@ export default function ModelSelectionTable({ models, value, onChange }: ModelSe
                         disabled={isAllSelected}
                         className={`w-4 h-4 text-blue-600 rounded focus:ring-blue-500 ${isAllSelected ? 'cursor-not-allowed' : 'cursor-pointer'}`}
                       />
-                      <span className="ml-3 font-medium text-gray-800">{provider}</span>
+                      <span className="ml-3 font-medium text-gray-800 dark:text-gray-200">{provider}</span>
                     </label>
                   </td>
                 </tr>
@@ -162,7 +162,7 @@ export default function ModelSelectionTable({ models, value, onChange }: ModelSe
                   return (
                     <tr
                       key={`${provider}/${model.id}`}
-                      className={`border-b border-gray-100 ${disabled ? 'bg-gray-50' : 'hover:bg-gray-50'}`}
+                      className={`border-b border-gray-100 dark:border-gray-700 ${disabled ? 'bg-gray-50 dark:bg-gray-800/50' : 'hover:bg-gray-50 dark:hover:bg-gray-800'}`}
                     >
                       <td className="px-4 py-2 pl-16">
                         <label className={`flex items-center ${disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}>
@@ -173,7 +173,7 @@ export default function ModelSelectionTable({ models, value, onChange }: ModelSe
                             disabled={disabled}
                             className={`w-4 h-4 text-blue-600 rounded focus:ring-blue-500 ${disabled ? 'cursor-not-allowed' : 'cursor-pointer'}`}
                           />
-                          <span className="ml-3 text-gray-700 text-sm">{model.id}</span>
+                          <span className="ml-3 text-gray-700 dark:text-gray-300 text-sm">{model.id}</span>
                         </label>
                       </td>
                     </tr>

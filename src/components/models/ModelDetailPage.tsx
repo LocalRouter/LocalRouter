@@ -5,7 +5,8 @@ import Badge from '../ui/Badge'
 import ProviderIcon from '../ProviderIcon'
 import { ContextualChat } from '../chat/ContextualChat'
 import DetailPageLayout from '../layouts/DetailPageLayout'
-import { MetricsChart } from '../charts/MetricsChart'
+import FilteredAccessLogs from '../logs/FilteredAccessLogs'
+import MetricsPanel from '../MetricsPanel'
 import { useMetricsSubscription } from '../../hooks/useMetricsSubscription'
 import { CatalogMetadata } from '../../lib/catalog-types'
 
@@ -137,8 +138,8 @@ export default function ModelDetailPage({ modelKey, onTabChange }: ModelDetailPa
 
   if (loading || !model) {
     return (
-      <div className="bg-white rounded-lg shadow-sm p-6">
-        <div className="text-center py-8 text-gray-500">Loading model details...</div>
+      <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm p-6">
+        <div className="text-center py-8 text-gray-500 dark:text-gray-400">Loading model details...</div>
       </div>
     )
   }
@@ -148,45 +149,22 @@ export default function ModelDetailPage({ modelKey, onTabChange }: ModelDetailPa
       id: 'metrics',
       label: 'Metrics',
       content: (
-        <div className="space-y-6">
-          <div className="grid grid-cols-2 gap-6">
-            <MetricsChart
-              scope="model"
-              scopeId={modelKey}
-              timeRange="day"
-              metricType="requests"
-              title="Requests"
-              refreshTrigger={refreshKey}
-            />
-
-            <MetricsChart
-              scope="model"
-              scopeId={modelKey}
-              timeRange="day"
-              metricType="tokens"
-              title="Tokens"
-              refreshTrigger={refreshKey}
-            />
-
-            <MetricsChart
-              scope="model"
-              scopeId={modelKey}
-              timeRange="day"
-              metricType="cost"
-              title="Cost"
-              refreshTrigger={refreshKey}
-            />
-
-            <MetricsChart
-              scope="model"
-              scopeId={modelKey}
-              timeRange="day"
-              metricType="latency"
-              title="Latency"
-              refreshTrigger={refreshKey}
-            />
-          </div>
-        </div>
+        <MetricsPanel
+          title="Model Metrics"
+          chartType="llm"
+          metricOptions={[
+            { id: 'requests', label: 'Requests' },
+            { id: 'tokens', label: 'Tokens' },
+            { id: 'cost', label: 'Cost' },
+            { id: 'latency', label: 'Latency' },
+            { id: 'successrate', label: 'Success' },
+          ]}
+          scope="model"
+          scopeId={modelKey}
+          defaultMetric="requests"
+          defaultTimeRange="day"
+          refreshTrigger={refreshKey}
+        />
       ),
     },
     {
@@ -195,44 +173,44 @@ export default function ModelDetailPage({ modelKey, onTabChange }: ModelDetailPa
       content: (
         <div className="space-y-6">
           <Card>
-            <h3 className="text-lg font-semibold text-gray-900 mb-4">Specifications</h3>
+            <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-4">Specifications</h3>
             <div className="space-y-2 text-sm">
               <div className="flex justify-between">
-                <span className="text-gray-600">Provider:</span>
+                <span className="text-gray-600 dark:text-gray-400">Provider:</span>
                 <button
                   onClick={() => onTabChange?.('providers', model.provider_instance)}
-                  className="font-medium text-blue-600 hover:text-blue-700 hover:underline"
+                  className="font-medium text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 hover:underline"
                 >
                   {model.provider_instance}
                 </button>
               </div>
               <div className="flex justify-between">
-                <span className="text-gray-600">Model ID:</span>
-                <span className="font-medium text-gray-900">{model.model_id}</span>
+                <span className="text-gray-600 dark:text-gray-400">Model ID:</span>
+                <span className="font-medium text-gray-900 dark:text-gray-100">{model.model_id}</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-gray-600">Context Window:</span>
-                <span className="font-medium text-gray-900">
+                <span className="text-gray-600 dark:text-gray-400">Context Window:</span>
+                <span className="font-medium text-gray-900 dark:text-gray-100">
                   {formatContextWindow(model.context_window)}
                 </span>
               </div>
               <div className="flex justify-between">
-                <span className="text-gray-600">Streaming:</span>
-                <span className="font-medium text-gray-900">
+                <span className="text-gray-600 dark:text-gray-400">Streaming:</span>
+                <span className="font-medium text-gray-900 dark:text-gray-100">
                   {model.supports_streaming ? 'Yes' : 'No'}
                 </span>
               </div>
               {(model.input_price_per_million || model.output_price_per_million || isEditingPricing) && (
                 <div className="space-y-2">
                   <div className="flex justify-between items-start">
-                    <span className="text-gray-600">Pricing:</span>
+                    <span className="text-gray-600 dark:text-gray-400">Pricing:</span>
                     {!isEditingPricing ? (
                       <div className="text-right">
-                        <span className="font-medium text-gray-900 block">
+                        <span className="font-medium text-gray-900 dark:text-gray-100 block">
                           {formatPrice(model)}
                         </span>
                         {model.pricing_source && (
-                          <span className={`text-xs ${model.pricing_source === 'override' ? 'text-purple-600' : 'text-green-600'}`}>
+                          <span className={`text-xs ${model.pricing_source === 'override' ? 'text-purple-600 dark:text-purple-400' : 'text-green-600 dark:text-green-400'}`}>
                             {model.pricing_source === 'override' ? '(Custom Override)' : '(OpenRouter Catalog)'}
                           </span>
                         )}
@@ -240,24 +218,24 @@ export default function ModelDetailPage({ modelKey, onTabChange }: ModelDetailPa
                     ) : (
                       <div className="space-y-2 flex-1 ml-4">
                         <div>
-                          <label className="text-xs text-gray-600">Input ($/1M tokens):</label>
+                          <label className="text-xs text-gray-600 dark:text-gray-400">Input ($/1M tokens):</label>
                           <input
                             type="number"
                             step="0.01"
                             value={editInputPrice}
                             onChange={(e) => setEditInputPrice(e.target.value)}
-                            className="w-full px-2 py-1 border border-gray-300 rounded text-sm"
+                            className="w-full px-2 py-1 border border-gray-300 dark:border-gray-600 rounded text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
                             placeholder="0.00"
                           />
                         </div>
                         <div>
-                          <label className="text-xs text-gray-600">Output ($/1M tokens):</label>
+                          <label className="text-xs text-gray-600 dark:text-gray-400">Output ($/1M tokens):</label>
                           <input
                             type="number"
                             step="0.01"
                             value={editOutputPrice}
                             onChange={(e) => setEditOutputPrice(e.target.value)}
-                            className="w-full px-2 py-1 border border-gray-300 rounded text-sm"
+                            className="w-full px-2 py-1 border border-gray-300 dark:border-gray-600 rounded text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
                             placeholder="0.00"
                           />
                         </div>
@@ -272,7 +250,7 @@ export default function ModelDetailPage({ modelKey, onTabChange }: ModelDetailPa
                           setEditOutputPrice(model.output_price_per_million?.toString() || '')
                           setIsEditingPricing(true)
                         }}
-                        className="text-xs text-blue-600 hover:text-blue-700 hover:underline"
+                        className="text-xs text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 hover:underline"
                       >
                         {model.pricing_source === 'override' ? 'Edit Override' : 'Override Pricing'}
                       </button>
@@ -296,13 +274,13 @@ export default function ModelDetailPage({ modelKey, onTabChange }: ModelDetailPa
                               console.error('Failed to set pricing override:', err)
                             }
                           }}
-                          className="text-xs px-3 py-1 bg-blue-600 text-white rounded hover:bg-blue-700"
+                          className="text-xs px-3 py-1 bg-blue-600 dark:bg-blue-500 text-white rounded hover:bg-blue-700 dark:hover:bg-blue-600"
                         >
                           Save
                         </button>
                         <button
                           onClick={() => setIsEditingPricing(false)}
-                          className="text-xs px-3 py-1 bg-gray-200 text-gray-700 rounded hover:bg-gray-300"
+                          className="text-xs px-3 py-1 bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded hover:bg-gray-300 dark:hover:bg-gray-600"
                         >
                           Cancel
                         </button>
@@ -321,7 +299,7 @@ export default function ModelDetailPage({ modelKey, onTabChange }: ModelDetailPa
                                 console.error('Failed to delete pricing override:', err)
                               }
                             }}
-                            className="text-xs px-3 py-1 bg-red-600 text-white rounded hover:bg-red-700"
+                            className="text-xs px-3 py-1 bg-red-600 dark:bg-red-500 text-white rounded hover:bg-red-700 dark:hover:bg-red-600"
                           >
                             Delete Override
                           </button>
@@ -333,15 +311,15 @@ export default function ModelDetailPage({ modelKey, onTabChange }: ModelDetailPa
               )}
               {model.parameter_count && (
                 <div className="flex justify-between">
-                  <span className="text-gray-600">Parameters:</span>
-                  <span className="font-medium text-gray-900">{model.parameter_count}</span>
+                  <span className="text-gray-600 dark:text-gray-400">Parameters:</span>
+                  <span className="font-medium text-gray-900 dark:text-gray-100">{model.parameter_count}</span>
                 </div>
               )}
             </div>
 
             {model.capabilities.length > 0 && (
-              <div className="mt-4 pt-4 border-t border-gray-200">
-                <h4 className="text-sm font-semibold text-gray-900 mb-2">Capabilities</h4>
+              <div className="mt-4 pt-4 border-t border-gray-200 dark:border-gray-700">
+                <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-2">Capabilities</h4>
                 <div className="flex flex-wrap gap-2">
                   {model.capabilities.map((cap) => (
                     <Badge key={cap} variant="warning">
@@ -353,7 +331,7 @@ export default function ModelDetailPage({ modelKey, onTabChange }: ModelDetailPa
             )}
 
             {catalogMetadata && model.pricing_source === 'catalog' && (
-              <div className="mt-4 pt-4 border-t border-gray-200">
+              <div className="mt-4 pt-4 border-t border-gray-200 dark:border-gray-700">
                 <div className="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg p-3">
                   <p className="text-xs text-green-900 dark:text-green-100">
                     <strong>Pricing Source:</strong> OpenRouter model catalog embedded at build time •
@@ -364,7 +342,7 @@ export default function ModelDetailPage({ modelKey, onTabChange }: ModelDetailPa
               </div>
             )}
             {model.pricing_source === 'override' && (
-              <div className="mt-4 pt-4 border-t border-gray-200">
+              <div className="mt-4 pt-4 border-t border-gray-200 dark:border-gray-700">
                 <div className="bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-800 rounded-lg p-3">
                   <p className="text-xs text-purple-900 dark:text-purple-100">
                     <strong>Pricing Source:</strong> Custom override set by you •
@@ -374,11 +352,11 @@ export default function ModelDetailPage({ modelKey, onTabChange }: ModelDetailPa
               </div>
             )}
 
-            <div className="mt-4 pt-4 border-t border-gray-200">
-              <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
-                <p className="text-xs text-blue-900">
+            <div className="mt-4 pt-4 border-t border-gray-200 dark:border-gray-700">
+              <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-3">
+                <p className="text-xs text-blue-900 dark:text-blue-100">
                   <strong>Note:</strong> This model can be accessed via the OpenAI-compatible API
-                  using the model identifier: <code className="bg-blue-100 px-1 rounded">{model.provider_instance}/{model.model_id}</code>
+                  using the model identifier: <code className="bg-blue-100 dark:bg-blue-800 px-1 rounded">{model.provider_instance}/{model.model_id}</code>
                 </p>
               </div>
             </div>
@@ -386,7 +364,7 @@ export default function ModelDetailPage({ modelKey, onTabChange }: ModelDetailPa
 
           {apiKeys.length > 0 && (
             <Card>
-              <h3 className="text-lg font-semibold text-gray-900 mb-4">
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-4">
                 API Keys Using This Model ({apiKeys.length})
               </h3>
               <div className="space-y-2">
@@ -394,11 +372,11 @@ export default function ModelDetailPage({ modelKey, onTabChange }: ModelDetailPa
                   <div
                     key={key.id}
                     onClick={() => onTabChange?.('api-keys', key.id)}
-                    className="bg-gray-50 border border-gray-200 rounded-lg p-3 hover:bg-gray-100 transition-colors cursor-pointer"
+                    className="bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-3 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors cursor-pointer"
                   >
                     <div className="flex justify-between items-center">
                       <div>
-                        <h4 className="text-sm font-semibold text-gray-900">{key.name}</h4>
+                        <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">{key.name}</h4>
                       </div>
                       <Badge variant={key.enabled ? 'success' : 'warning'}>
                         {key.enabled ? 'Enabled' : 'Disabled'}
@@ -417,9 +395,21 @@ export default function ModelDetailPage({ modelKey, onTabChange }: ModelDetailPa
       label: 'Chat',
       content: (
         <Card>
-          <h3 className="text-lg font-semibold text-gray-900 mb-4">Chat with Model</h3>
+          <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-4">Chat with Model</h3>
           <ContextualChat context={chatContext} />
         </Card>
+      ),
+    },
+    {
+      id: 'logs',
+      label: 'Logs',
+      content: (
+        <FilteredAccessLogs
+          type="llm"
+          provider={providerInstance}
+          model={modelId}
+          active={activeTab === 'logs'}
+        />
       ),
     },
   ]

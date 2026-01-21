@@ -131,7 +131,7 @@ export default function ProviderForm({
                 onChange={(e) => handleConfigChange(param.key, e.target.checked.toString())}
                 className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500"
               />
-              <label htmlFor={param.key} className="text-sm font-medium text-gray-700">
+              <label htmlFor={param.key} className="text-sm font-medium text-gray-700 dark:text-gray-300">
                 {param.description}
               </label>
             </div>
@@ -153,7 +153,7 @@ export default function ProviderForm({
               <button
                 type="button"
                 onClick={() => toggleFieldVisibility(param.key)}
-                className="absolute right-3 top-9 text-gray-500 hover:text-gray-700 focus:outline-none"
+                className="absolute right-3 top-9 text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 focus:outline-none"
                 title={isFieldVisible ? 'Hide' : 'Show'}
               >
                 {isFieldVisible ? (

@@ -5,8 +5,8 @@ import Button from '../ui/Button'
 import Badge from '../ui/Badge'
 import DetailPageLayout from '../layouts/DetailPageLayout'
 import McpConfigForm, { McpConfigFormData } from './McpConfigForm'
-import { McpMetricsChart } from '../charts/McpMetricsChart'
-import { McpMethodBreakdown } from '../charts/McpMethodBreakdown'
+import MetricsPanel from '../MetricsPanel'
+import FilteredAccessLogs from '../logs/FilteredAccessLogs'
 import { useMetricsSubscription } from '../../hooks/useMetricsSubscription'
 
 interface McpServerDetailPageProps {
@@ -402,7 +402,7 @@ export default function McpServerDetailPage({ serverId, onBack }: McpServerDetai
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
-        <div className="text-gray-400">Loading...</div>
+        <div className="text-gray-400 dark:text-gray-500">Loading...</div>
       </div>
     )
   }
@@ -410,7 +410,7 @@ export default function McpServerDetailPage({ serverId, onBack }: McpServerDetai
   if (!server) {
     return (
       <div className="flex flex-col items-center justify-center h-64">
-        <div className="text-gray-400 mb-4">MCP server not found</div>
+        <div className="text-gray-400 dark:text-gray-500 mb-4">MCP server not found</div>
         <Button onClick={onBack}>Go Back</Button>
       </div>
     )
@@ -421,51 +421,21 @@ export default function McpServerDetailPage({ serverId, onBack }: McpServerDetai
       id: 'metrics',
       label: 'Metrics',
       content: (
-        <div className="space-y-6">
-          <Card>
-            <h3 className="text-lg font-semibold mb-4">MCP Method Breakdown</h3>
-            <McpMethodBreakdown
-              scope={`server:${serverId}`}
-              timeRange="day"
-              title="Methods Requested (Last 24h)"
-              refreshTrigger={refreshKey}
-            />
-          </Card>
-
-          <Card>
-            <h3 className="text-lg font-semibold mb-4">MCP Request Metrics</h3>
-            <div className="grid grid-cols-2 gap-4">
-              <McpMetricsChart
-                scope="server"
-                scopeId={serverId}
-                timeRange="day"
-                metricType="requests"
-                title="Request Volume (Last 24h)"
-                refreshTrigger={refreshKey}
-              />
-              <McpMetricsChart
-                scope="server"
-                scopeId={serverId}
-                timeRange="day"
-                metricType="latency"
-                title="Average Latency (Last 24h)"
-                refreshTrigger={refreshKey}
-              />
-            </div>
-          </Card>
-
-          <Card>
-            <h3 className="text-lg font-semibold mb-4">MCP Success Rate</h3>
-            <McpMetricsChart
-              scope="server"
-              scopeId={serverId}
-              timeRange="day"
-              metricType="successrate"
-              title="Success Rate (Last 24h)"
-              refreshTrigger={refreshKey}
-            />
-          </Card>
-        </div>
+        <MetricsPanel
+          title="MCP Server Metrics"
+          chartType="mcp-methods"
+          metricOptions={[
+            { id: 'requests', label: 'Requests' },
+            { id: 'latency', label: 'Latency' },
+            { id: 'successrate', label: 'Success' },
+          ]}
+          scope="server"
+          scopeId={serverId}
+          defaultMetric="requests"
+          defaultTimeRange="day"
+          refreshTrigger={refreshKey}
+          showMethodBreakdown={true}
+        />
       ),
     },
     {
@@ -511,22 +481,22 @@ export default function McpServerDetailPage({ serverId, onBack }: McpServerDetai
               </div>
 
               {!server.enabled && (
-                <div className="bg-yellow-50 border border-yellow-200 rounded p-4 mb-4">
-                  <p className="text-sm text-yellow-800">
+                <div className="bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded p-4 mb-4">
+                  <p className="text-sm text-yellow-800 dark:text-yellow-200">
                     This server is disabled. Enable it to test tools.
                   </p>
                 </div>
               )}
 
               {toolsError && (
-                <div className="bg-red-900/20 border border-red-500/50 rounded p-4 mb-4">
+                <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-500/50 rounded p-4 mb-4">
                   <div className="flex items-start gap-3">
-                    <svg className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
+                    <svg className="w-5 h-5 text-red-500 dark:text-red-400 flex-shrink-0 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
                       <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
                     </svg>
                     <div className="flex-1">
-                      <h4 className="text-sm font-semibold text-red-400 mb-1">Failed to load tools</h4>
-                      <p className="text-sm text-red-300">{toolsError}</p>
+                      <h4 className="text-sm font-semibold text-red-600 dark:text-red-400 mb-1">Failed to load tools</h4>
+                      <p className="text-sm text-red-700 dark:text-red-300">{toolsError}</p>
                     </div>
                   </div>
                 </div>
@@ -536,14 +506,14 @@ export default function McpServerDetailPage({ serverId, onBack }: McpServerDetai
                 <>
                   {tools.length === 0 && !loadingTools ? (
                     <div className="text-center py-8">
-                      <p className="text-gray-400">No tools available. Click "Refresh Tools" to load them.</p>
+                      <p className="text-gray-400 dark:text-gray-500">No tools available. Click "Refresh Tools" to load them.</p>
                     </div>
                   ) : (
                     <div className="space-y-4">
                       <div>
-                        <label className="block text-sm font-medium text-gray-400 mb-2">Select Tool</label>
+                        <label className="block text-sm font-medium text-gray-300 dark:text-gray-400 mb-2">Select Tool</label>
                         <select
-                          className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2"
+                          className="w-full bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded px-3 py-2 text-gray-900 dark:text-gray-100"
                           value={selectedTool?.name || ''}
                           onChange={(e) => {
                             const tool = tools.find((t) => t.name === e.target.value)
@@ -563,15 +533,15 @@ export default function McpServerDetailPage({ serverId, onBack }: McpServerDetai
                       {selectedTool && (
                         <>
                           {selectedTool.description && (
-                            <div className="bg-gray-800 rounded p-4">
-                              <p className="text-sm text-gray-300">{selectedTool.description}</p>
+                            <div className="bg-gray-100 dark:bg-gray-800 rounded p-4">
+                              <p className="text-sm text-gray-700 dark:text-gray-300">{selectedTool.description}</p>
                             </div>
                           )}
 
                           <div>
-                            <label className="block text-sm font-medium text-gray-400 mb-2">Arguments (JSON)</label>
+                            <label className="block text-sm font-medium text-gray-300 dark:text-gray-400 mb-2">Arguments (JSON)</label>
                             <textarea
-                              className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 font-mono text-sm"
+                              className="w-full bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded px-3 py-2 font-mono text-sm text-gray-900 dark:text-gray-100"
                               rows={6}
                               value={toolArguments}
                               onChange={(e) => setToolArguments(e.target.value)}
@@ -584,9 +554,9 @@ export default function McpServerDetailPage({ serverId, onBack }: McpServerDetai
                           </Button>
 
                           {toolResult && (
-                            <div className="bg-gray-800 rounded p-4">
-                              <h4 className="text-sm font-semibold mb-2">Result:</h4>
-                              <pre className="text-xs overflow-auto">{JSON.stringify(toolResult, null, 2)}</pre>
+                            <div className="bg-gray-100 dark:bg-gray-800 rounded p-4">
+                              <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-2">Result:</h4>
+                              <pre className="text-xs overflow-auto text-gray-900 dark:text-gray-100">{JSON.stringify(toolResult, null, 2)}</pre>
                             </div>
                           )}
                         </>
@@ -598,6 +568,17 @@ export default function McpServerDetailPage({ serverId, onBack }: McpServerDetai
             </div>
           </Card>
         </div>
+      ),
+    },
+    {
+      id: 'logs',
+      label: 'Logs',
+      content: (
+        <FilteredAccessLogs
+          type="mcp"
+          serverId={serverId}
+          active={activeTab === 'logs'}
+        />
       ),
     },
   ]

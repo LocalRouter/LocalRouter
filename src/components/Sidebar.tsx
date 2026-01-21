@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import ProviderIcon from './ProviderIcon'
 
-type MainTab = 'home' | 'server' | 'clients' | 'api-keys' | 'providers' | 'models' | 'oauth-clients' | 'mcp-servers' | 'logs' | 'documentation'
+type MainTab = 'home' | 'clients' | 'api-keys' | 'providers' | 'models' | 'oauth-clients' | 'mcp-servers' | 'routing' | 'logs' | 'documentation' | 'settings'
 
 interface SidebarProps {
   activeTab: MainTab
@@ -43,12 +43,19 @@ interface McpServer {
   enabled: boolean
 }
 
+interface Strategy {
+  id: string
+  name: string
+  parent: string | null
+}
+
 export default function Sidebar({ activeTab, activeSubTab, onTabChange }: SidebarProps) {
   const [providers, setProviders] = useState<ProviderInstance[]>([])
   const [clients, setClients] = useState<Client[]>([])
   const [models, setModels] = useState<Model[]>([])
   const [oauthClients, setOauthClients] = useState<OAuthClient[]>([])
   const [mcpServers, setMcpServers] = useState<McpServer[]>([])
+  const [strategies, setStrategies] = useState<Strategy[]>([])
   const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set())
 
   useEffect(() => {
@@ -58,6 +65,7 @@ export default function Sidebar({ activeTab, activeSubTab, onTabChange }: Sideba
     loadModels()
     loadOAuthClients()
     loadMcpServers()
+    loadStrategies()
 
     // Subscribe to data change events (no polling needed)
     const unsubscribeProviders = listen('providers-changed', () => {
@@ -80,12 +88,17 @@ export default function Sidebar({ activeTab, activeSubTab, onTabChange }: Sideba
       loadMcpServers()
     })
 
+    const unsubscribeStrategies = listen('strategies-changed', () => {
+      loadStrategies()
+    })
+
     return () => {
       unsubscribeProviders.then((fn: any) => fn())
       unsubscribeClients.then((fn: any) => fn())
       unsubscribeModels.then((fn: any) => fn())
       unsubscribeOAuthClients.then((fn: any) => fn())
       unsubscribeMcpServers.then((fn: any) => fn())
+      unsubscribeStrategies.then((fn: any) => fn())
     }
   }, [])
 
@@ -135,6 +148,15 @@ export default function Sidebar({ activeTab, activeSubTab, onTabChange }: Sideba
     }
   }
 
+  const loadStrategies = async () => {
+    try {
+      const strategyList = await invoke<Strategy[]>('list_strategies')
+      setStrategies(strategyList)
+    } catch (err) {
+      console.error('Failed to load strategies:', err)
+    }
+  }
+
   const toggleSection = (section: string) => {
     const newExpanded = new Set(expandedSections)
     if (newExpanded.has(section)) {
@@ -147,18 +169,27 @@ export default function Sidebar({ activeTab, activeSubTab, onTabChange }: Sideba
 
   const mainTabs = [
     { id: 'home' as MainTab, label: 'Home' },
-    { id: 'server' as MainTab, label: 'Preferences' },
     { id: 'clients' as MainTab, label: 'Clients', hasSubTabs: true },
     { id: 'providers' as MainTab, label: 'Providers', hasSubTabs: true },
     { id: 'models' as MainTab, label: 'Models', hasSubTabs: true },
     { id: 'mcp-servers' as MainTab, label: 'MCP Servers', hasSubTabs: true },
+    { id: 'routing' as MainTab, label: 'Routing', hasSubTabs: true },
     { id: 'logs' as MainTab, label: 'Logs' },
+    { id: 'settings' as MainTab, label: 'Settings' },
     { id: 'documentation' as MainTab, label: 'Documentation' },
   ]
 
   return (
-    <nav className="w-[240px] bg-white dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700 shadow-sm py-4 overflow-y-auto">
-      {mainTabs.map((tab) => (
+    <nav className="w-[240px] bg-white dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700 shadow-sm flex flex-col overflow-hidden">
+      {/* Header Section */}
+      <div className="bg-gradient-to-r from-indigo-500 to-purple-600 dark:from-indigo-700 dark:to-purple-800 text-white px-6 py-4">
+        <h1 className="text-xl font-bold mb-1">LocalRouter AI</h1>
+        <p className="text-xs opacity-90">Intelligent AI Model Routing</p>
+      </div>
+
+      {/* Navigation Tabs */}
+      <div className="flex-1 py-4 overflow-y-auto">
+        {mainTabs.map((tab) => (
         <div key={tab.id}>
           {/* Main Tab */}
           <div
@@ -204,7 +235,7 @@ export default function Sidebar({ activeTab, activeSubTab, onTabChange }: Sideba
                   <ProviderIcon providerId={provider.provider_type} size={20} />
                   <span className="truncate flex-1">{provider.instance_name}</span>
                   {!provider.enabled && (
-                    <span className="w-2 h-2 bg-red-500 rounded-full" title="Disabled" />
+                    <span className="w-2 h-2 bg-red-500 dark:bg-red-400 rounded-full" title="Disabled" />
                   )}
                 </div>
               ))}
@@ -229,7 +260,7 @@ export default function Sidebar({ activeTab, activeSubTab, onTabChange }: Sideba
                 >
                   <span className="truncate flex-1">{client.name}</span>
                   {!client.enabled && (
-                    <span className="w-2 h-2 bg-red-500 rounded-full" title="Disabled" />
+                    <span className="w-2 h-2 bg-red-500 dark:bg-red-400 rounded-full" title="Disabled" />
                   )}
                 </div>
               ))}
@@ -276,7 +307,7 @@ export default function Sidebar({ activeTab, activeSubTab, onTabChange }: Sideba
                 >
                   <span className="truncate flex-1">{client.name}</span>
                   {!client.enabled && (
-                    <span className="w-2 h-2 bg-red-500 rounded-full" title="Disabled" />
+                    <span className="w-2 h-2 bg-red-500 dark:bg-red-400 rounded-full" title="Disabled" />
                   )}
                 </div>
               ))}
@@ -301,14 +332,41 @@ export default function Sidebar({ activeTab, activeSubTab, onTabChange }: Sideba
                 >
                   <span className="truncate flex-1">{server.name}</span>
                   {!server.enabled && (
-                    <span className="w-2 h-2 bg-red-500 rounded-full" title="Disabled" />
+                    <span className="w-2 h-2 bg-red-500 dark:bg-red-400 rounded-full" title="Disabled" />
                   )}
                 </div>
               ))}
             </div>
           )}
+
+          {/* Sub Tabs for Routing Strategies */}
+          {tab.id === 'routing' && expandedSections.has('routing') && (
+            <div className="bg-gray-50 dark:bg-gray-900/50">
+              {strategies.map((strategy) => (
+                <div
+                  key={strategy.id}
+                  onClick={() => onTabChange('routing', strategy.id)}
+                  className={`
+                    px-4 py-2 cursor-pointer transition-all text-sm border-l-4 flex items-center gap-2
+                    ${
+                      activeTab === 'routing' && activeSubTab === strategy.id
+                        ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 border-blue-600 dark:border-blue-400'
+                        : 'text-gray-600 dark:text-gray-300 border-transparent hover:bg-gray-100 dark:hover:bg-gray-800'
+                    }
+                  `}
+                >
+                  <span className="truncate flex-1">{strategy.name}</span>
+                  {strategy.parent && (
+                    <span className="text-xs text-gray-400 dark:text-gray-500" title="Owned by client">●</span>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
         </div>
       ))}
+      </div>
     </nav>
   )
 }

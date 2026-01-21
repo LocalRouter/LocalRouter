@@ -6,14 +6,14 @@ import Badge from '../ui/Badge'
 import Input from '../ui/Input'
 import Select from '../ui/Select'
 import DetailPageLayout from '../layouts/DetailPageLayout'
-import { MetricsChart } from '../charts/MetricsChart'
-import { McpMetricsChart } from '../charts/McpMetricsChart'
-import { McpMethodBreakdown } from '../charts/McpMethodBreakdown'
+import MetricsPanel from '../MetricsPanel'
 import { useMetricsSubscription } from '../../hooks/useMetricsSubscription'
 import ModelSelectionTable, { Model, ModelSelectionValue } from '../ModelSelectionTable'
 import PrioritizedModelList from '../PrioritizedModelList'
 import ForcedModelSelector from '../ForcedModelSelector'
 import { ContextualChat } from '../chat/ContextualChat'
+import FilteredAccessLogs from '../logs/FilteredAccessLogs'
+import StrategyConfigEditor, { Strategy } from '../strategies/StrategyConfigEditor'
 
 // Simple icon components
 const EyeIcon = () => (
@@ -53,6 +53,7 @@ interface Client {
   name: string
   client_id: string
   enabled: boolean
+  strategy_id: string
   allowed_llm_providers: string[]
   allowed_mcp_servers: string[]
   mcp_deferred_loading: boolean
@@ -64,7 +65,9 @@ interface McpServer {
   id: string
   name: string
   enabled: boolean
-  url?: string
+  url?: string // Legacy field (deprecated)
+  proxy_url: string // Individual proxy endpoint: /mcp/{server_id}
+  gateway_url: string // Unified gateway: /
 }
 
 interface ServerTokenStats {
@@ -88,6 +91,7 @@ export default function ClientDetailPage({ clientId, initialTab, initialRoutingM
   const [client, setClient] = useState<Client | null>(null)
   const [mcpServers, setMcpServers] = useState<McpServer[]>([])
   const [models, setModels] = useState<Model[]>([])
+  const [strategies, setStrategies] = useState<Strategy[]>([])
   const [loading, setLoading] = useState(true)
   const [activeTab, setActiveTab] = useState<string>(initialTab || 'metrics')
   const [isSaving, setIsSaving] = useState(false)
@@ -116,6 +120,7 @@ export default function ClientDetailPage({ clientId, initialTab, initialRoutingM
     loadClientData()
     loadMcpServers()
     loadModels()
+    loadStrategies()
   }, [clientId])
 
   // Load token stats when MCP tab is active
@@ -182,6 +187,15 @@ export default function ClientDetailPage({ clientId, initialTab, initialRoutingM
       setModels(modelList)
     } catch (error) {
       console.error('Failed to load models:', error)
+    }
+  }
+
+  const loadStrategies = async () => {
+    try {
+      const strategyList = await invoke<Strategy[]>('list_strategies')
+      setStrategies(strategyList)
+    } catch (error) {
+      console.error('Failed to load strategies:', error)
     }
   }
 
@@ -312,8 +326,8 @@ export default function ClientDetailPage({ clientId, initialTab, initialRoutingM
     try {
       await invoke('update_client_available_models', {
         clientId: client?.client_id,
-        allProviderModels: selection?.allProviders || [],
-        individualModels: selection?.individualModels || [],
+        allProviderModels: selection?.all_provider_models || [],
+        individualModels: selection?.individual_models || [],
       })
       console.log('Model selection changed:', selection)
     } catch (error) {
@@ -336,6 +350,22 @@ export default function ClientDetailPage({ clientId, initialTab, initialRoutingM
     }
   }
 
+  const handleStrategyChange = async (strategyId: string) => {
+    if (!client) return
+
+    try {
+      await invoke('assign_client_strategy', {
+        client_id: client.id,
+        strategy_id: strategyId,
+      })
+      await loadClientData()
+      console.log('Strategy assigned:', strategyId)
+    } catch (error) {
+      console.error('Failed to assign strategy:', error)
+      alert(`Error assigning strategy: ${error}`)
+    }
+  }
+
   const formatDate = (dateStr: string | null) => {
     if (!dateStr) return 'Never'
     return new Date(dateStr).toLocaleString()
@@ -353,7 +383,7 @@ export default function ClientDetailPage({ clientId, initialTab, initialRoutingM
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
-        <div className="text-gray-400">Loading...</div>
+        <div className="text-gray-400 dark:text-gray-500">Loading...</div>
       </div>
     )
   }
@@ -361,7 +391,7 @@ export default function ClientDetailPage({ clientId, initialTab, initialRoutingM
   if (!client) {
     return (
       <div className="flex flex-col items-center justify-center h-64">
-        <div className="text-gray-400 mb-4">Client not found</div>
+        <div className="text-gray-400 dark:text-gray-500 mb-4">Client not found</div>
         <Button onClick={onBack}>Go Back</Button>
       </div>
     )
@@ -374,105 +404,38 @@ export default function ClientDetailPage({ clientId, initialTab, initialRoutingM
       label: 'Metrics',
       content: (
         <div className="space-y-6">
-          <Card>
-            <h3 className="text-lg font-semibold mb-4">LLM Request Metrics</h3>
-            <div className="grid grid-cols-2 gap-4">
-              <MetricsChart
-                scope="api_key"
-                scopeId={client.client_id}
-                timeRange="day"
-                metricType="requests"
-                title="Requests (Last 24h)"
-                refreshTrigger={refreshKey}
-              />
-              <MetricsChart
-                scope="api_key"
-                scopeId={client.client_id}
-                timeRange="day"
-                metricType="tokens"
-                title="Tokens (Last 24h)"
-                refreshTrigger={refreshKey}
-              />
-            </div>
-          </Card>
+          <MetricsPanel
+            title="LLM Metrics"
+            chartType="llm"
+            metricOptions={[
+              { id: 'requests', label: 'Requests' },
+              { id: 'tokens', label: 'Tokens' },
+              { id: 'cost', label: 'Cost' },
+              { id: 'latency', label: 'Latency' },
+              { id: 'successrate', label: 'Success' },
+            ]}
+            scope="api_key"
+            scopeId={client.client_id}
+            defaultMetric="requests"
+            defaultTimeRange="day"
+            refreshTrigger={refreshKey}
+          />
 
-          <Card>
-            <h3 className="text-lg font-semibold mb-4">LLM Cost & Performance</h3>
-            <div className="grid grid-cols-2 gap-4">
-              <MetricsChart
-                scope="api_key"
-                scopeId={client.client_id}
-                timeRange="day"
-                metricType="cost"
-                title="Cost (Last 24h)"
-                refreshTrigger={refreshKey}
-              />
-              <MetricsChart
-                scope="api_key"
-                scopeId={client.client_id}
-                timeRange="day"
-                metricType="latency"
-                title="Latency (Last 24h)"
-                refreshTrigger={refreshKey}
-              />
-            </div>
-          </Card>
-
-          <Card>
-            <h3 className="text-lg font-semibold mb-4">LLM Success Rate</h3>
-            <MetricsChart
-              scope="api_key"
-              scopeId={client.client_id}
-              timeRange="day"
-              metricType="successrate"
-              title="Success Rate (Last 24h)"
-              refreshTrigger={refreshKey}
-            />
-          </Card>
-
-          <Card>
-            <h3 className="text-lg font-semibold mb-4">MCP Method Breakdown</h3>
-            <McpMethodBreakdown
-              scope={`client:${client.client_id}`}
-              timeRange="day"
-              title="MCP Methods Used (Last 24h)"
-              refreshTrigger={refreshKey}
-            />
-          </Card>
-
-          <Card>
-            <h3 className="text-lg font-semibold mb-4">MCP Request Metrics</h3>
-            <div className="grid grid-cols-2 gap-4">
-              <McpMetricsChart
-                scope="client"
-                scopeId={client.client_id}
-                timeRange="day"
-                metricType="requests"
-                title="MCP Requests (Last 24h)"
-                refreshTrigger={refreshKey}
-              />
-              <McpMetricsChart
-                scope="client"
-                scopeId={client.client_id}
-                timeRange="day"
-                metricType="latency"
-                title="MCP Latency (Last 24h)"
-                refreshTrigger={refreshKey}
-              />
-            </div>
-          </Card>
-
-          <Card>
-            <h3 className="text-lg font-semibold mb-4">MCP Success Rate</h3>
-            <McpMetricsChart
-              scope="client"
-              scopeId={client.client_id}
-              timeRange="day"
-              metricType="successrate"
-              title="MCP Success Rate (Last 24h)"
-              refreshTrigger={refreshKey}
-            />
-          </Card>
+          <MetricsPanel
+            title="MCP Metrics"
+            chartType="mcp-methods"
+            metricOptions={[
+              { id: 'requests', label: 'Requests' },
+              { id: 'latency', label: 'Latency' },
+              { id: 'successrate', label: 'Success' },
+            ]}
+            scope="client"
+            scopeId={client.client_id}
+            defaultMetric="requests"
+            defaultTimeRange="day"
+            refreshTrigger={refreshKey}
+            showMethodBreakdown={true}
+          />
         </div>
       ),
     },
@@ -481,6 +444,133 @@ export default function ClientDetailPage({ clientId, initialTab, initialRoutingM
       label: 'Configuration',
       content: (
         <div className="space-y-6">
+          {/* API Endpoints Summary */}
+          <Card>
+            <div className="p-6 space-y-4">
+              <h3 className="text-lg font-semibold">API Endpoints</h3>
+
+              {/* Bearer Token */}
+              <div>
+                <label className="block text-sm font-medium mb-2">Bearer Token</label>
+                <div className="flex gap-2">
+                  <div className="relative flex-1">
+                    <Input
+                      type={showClientSecret ? 'text' : 'password'}
+                      value={showClientSecret ? client.client_id : maskSecret(client.client_id)}
+                      readOnly
+                      className="font-mono pr-10"
+                    />
+                    <button
+                      onClick={() => setShowClientSecret(!showClientSecret)}
+                      className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-400"
+                    >
+                      {showClientSecret ? <EyeOffIcon /> : <EyeIcon />}
+                    </button>
+                  </div>
+                  <Button
+                    variant="secondary"
+                    onClick={() => copyToClipboard(client.client_id, 'config_bearer')}
+                  >
+                    {copiedField === 'config_bearer' ? <CheckIcon /> : <CopyIcon />}
+                  </Button>
+                </div>
+                <p className="text-sm text-gray-400 dark:text-gray-500 mt-1">
+                  Use this in the Authorization header: <code className="bg-gray-800 dark:bg-gray-800 px-1">Authorization: Bearer {maskSecret(client.client_id)}</code>
+                </p>
+              </div>
+
+              {/* LLM Endpoints */}
+              {client.allowed_llm_providers.length > 0 && (
+                <div>
+                  <label className="block text-sm font-medium mb-2">LLM API Endpoints (OpenAI-Compatible)</label>
+                  <div className="bg-gray-800 dark:bg-gray-800 rounded p-3 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <code className="text-xs text-gray-300 dark:text-gray-400 font-mono">{getApiUrl()}/v1/chat/completions</code>
+                      <Button
+                        variant="secondary"
+                        onClick={() => copyToClipboard(`${getApiUrl()}/v1/chat/completions`, 'llm_chat')}
+                      >
+                        {copiedField === 'llm_chat' ? <CheckIcon /> : <CopyIcon />}
+                      </Button>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <code className="text-xs text-gray-300 dark:text-gray-400 font-mono">{getApiUrl()}/v1/completions</code>
+                      <Button
+                        variant="secondary"
+                        onClick={() => copyToClipboard(`${getApiUrl()}/v1/completions`, 'llm_completions')}
+                      >
+                        {copiedField === 'llm_completions' ? <CheckIcon /> : <CopyIcon />}
+                      </Button>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <code className="text-xs text-gray-300 dark:text-gray-400 font-mono">{getApiUrl()}/v1/models</code>
+                      <Button
+                        variant="secondary"
+                        onClick={() => copyToClipboard(`${getApiUrl()}/v1/models`, 'llm_models')}
+                      >
+                        {copiedField === 'llm_models' ? <CheckIcon /> : <CopyIcon />}
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* MCP Endpoints */}
+              {client.allowed_mcp_servers.length > 0 && mcpServers.length > 0 && (
+                <div>
+                  <label className="block text-sm font-medium mb-2">MCP Endpoints</label>
+                  <div className="space-y-2">
+                    {/* Unified Gateway */}
+                    {mcpServers[0].gateway_url && (
+                      <div className="bg-blue-900/20 dark:bg-blue-900/30 border border-blue-700 dark:border-blue-600 rounded p-3">
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="text-xs font-medium text-blue-300 dark:text-blue-400">Unified Gateway (All MCP Servers)</span>
+                          <Button
+                            variant="secondary"
+                            onClick={() => copyToClipboard(mcpServers[0].gateway_url, 'config_mcp_gateway')}
+                          >
+                            {copiedField === 'config_mcp_gateway' ? <CheckIcon /> : <CopyIcon />}
+                          </Button>
+                        </div>
+                        <code className="text-xs text-blue-200 dark:text-blue-300 font-mono">{mcpServers[0].gateway_url}</code>
+                      </div>
+                    )}
+
+                    {/* Individual Proxies */}
+                    <details className="bg-gray-800 dark:bg-gray-800 rounded p-3">
+                      <summary className="text-xs font-medium text-gray-400 dark:text-gray-500 cursor-pointer">
+                        Individual Server Proxies ({client.allowed_mcp_servers.length} servers)
+                      </summary>
+                      <div className="mt-2 space-y-2">
+                        {mcpServers
+                          .filter(server => client.allowed_mcp_servers.includes(server.id))
+                          .map(server => (
+                            <div key={server.id} className="flex items-center justify-between pl-2">
+                              <code className="text-xs text-gray-300 dark:text-gray-400 font-mono">{server.proxy_url}</code>
+                              <Button
+                                variant="secondary"
+                                onClick={() => copyToClipboard(server.proxy_url, `config_mcp_${server.id}`)}
+                              >
+                                {copiedField === `config_mcp_${server.id}` ? <CheckIcon /> : <CopyIcon />}
+                              </Button>
+                            </div>
+                          ))}
+                      </div>
+                    </details>
+                  </div>
+                </div>
+              )}
+
+              {client.allowed_llm_providers.length === 0 && client.allowed_mcp_servers.length === 0 && (
+                <div className="p-4 bg-yellow-900/20 dark:bg-yellow-900/30 border border-yellow-700 dark:border-yellow-600 rounded">
+                  <p className="text-sm text-yellow-300 dark:text-yellow-400">
+                    No LLM providers or MCP servers configured for this client. Configure access in the Models or MCP tabs.
+                  </p>
+                </div>
+              )}
+            </div>
+          </Card>
+
           <Card>
             <div className="p-6 space-y-4">
               <h3 className="text-lg font-semibold">Client Settings</h3>
@@ -504,7 +594,7 @@ export default function ClientDetailPage({ clientId, initialTab, initialRoutingM
                   />
                   <span className="font-medium">Enabled</span>
                 </label>
-                <p className="text-sm text-gray-400 mt-1">
+                <p className="text-sm text-gray-400 dark:text-gray-500 mt-1">
                   Disabled clients cannot authenticate or make API requests
                 </p>
               </div>
@@ -522,19 +612,19 @@ export default function ClientDetailPage({ clientId, initialTab, initialRoutingM
               <h3 className="text-lg font-semibold mb-4">Client Information</h3>
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <p className="text-sm text-gray-400">Client ID</p>
+                  <p className="text-sm text-gray-400 dark:text-gray-500">Client ID</p>
                   <p className="font-mono text-sm">{client.client_id}</p>
                 </div>
                 <div>
-                  <p className="text-sm text-gray-400">Created</p>
+                  <p className="text-sm text-gray-400 dark:text-gray-500">Created</p>
                   <p className="font-medium">{formatDate(client.created_at)}</p>
                 </div>
                 <div>
-                  <p className="text-sm text-gray-400">Last Used</p>
+                  <p className="text-sm text-gray-400 dark:text-gray-500">Last Used</p>
                   <p className="font-medium">{formatDate(client.last_used)}</p>
                 </div>
                 <div>
-                  <p className="text-sm text-gray-400">Status</p>
+                  <p className="text-sm text-gray-400 dark:text-gray-500">Status</p>
                   <Badge variant={client.enabled ? 'success' : 'error'}>
                     {client.enabled ? 'Enabled' : 'Disabled'}
                   </Badge>
@@ -584,7 +674,7 @@ export default function ClientDetailPage({ clientId, initialTab, initialRoutingM
                     />
                     <button
                       onClick={() => setShowClientSecret(!showClientSecret)}
-                      className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                      className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-400"
                     >
                       {showClientSecret ? <EyeOffIcon /> : <EyeIcon />}
                     </button>
@@ -596,8 +686,8 @@ export default function ClientDetailPage({ clientId, initialTab, initialRoutingM
                     {copiedField === 'bearer_token' ? <CheckIcon /> : <CopyIcon />}
                   </Button>
                 </div>
-                <p className="text-sm text-gray-400 mt-1">
-                  Use this in the Authorization header: <code className="bg-gray-800 px-1">Authorization: Bearer {maskSecret(client.client_id)}</code>
+                <p className="text-sm text-gray-400 dark:text-gray-500 mt-1">
+                  Use this in the Authorization header: <code className="bg-gray-800 dark:bg-gray-800 px-1">Authorization: Bearer {maskSecret(client.client_id)}</code>
                 </p>
               </div>
             </div>
@@ -628,7 +718,7 @@ export default function ClientDetailPage({ clientId, initialTab, initialRoutingM
                     selectedModel={forcedModel}
                     onChange={handleForcedModelChange}
                   />
-                  <p className="text-sm text-gray-400 mt-1">
+                  <p className="text-sm text-gray-400 dark:text-gray-500 mt-1">
                     All requests will be routed to the selected model regardless of the requested model. Select only one model.
                   </p>
                 </div>
@@ -642,7 +732,7 @@ export default function ClientDetailPage({ clientId, initialTab, initialRoutingM
                     value={modelSelection}
                     onChange={handleMultiModelChange}
                   />
-                  <p className="text-sm text-gray-400 mt-1">
+                  <p className="text-sm text-gray-400 dark:text-gray-500 mt-1">
                     Select which models are available to this client
                   </p>
                 </div>
@@ -660,6 +750,64 @@ export default function ClientDetailPage({ clientId, initialTab, initialRoutingM
               )}
             </div>
           </Card>
+        </div>
+      ),
+    },
+    {
+      id: 'strategy',
+      label: 'Strategy',
+      content: (
+        <div className="space-y-6">
+          <Card>
+            <div className="p-6 space-y-4">
+              <h3 className="text-lg font-semibold">Routing Strategy</h3>
+              <p className="text-sm text-gray-400 dark:text-gray-500">
+                Select a routing strategy to control which models this client can access, configure auto-routing with intelligent fallback, and set rate limits.
+              </p>
+
+              <div>
+                <label className="block text-sm font-medium mb-2">Strategy</label>
+                <Select
+                  value={client?.strategy_id || 'default'}
+                  onChange={(e) => handleStrategyChange(e.target.value)}
+                  className="w-full"
+                >
+                  {strategies.map((strategy) => (
+                    <option key={strategy.id} value={strategy.id}>
+                      {strategy.name} {strategy.parent ? '(Owned)' : '(Shared)'}
+                    </option>
+                  ))}
+                </Select>
+              </div>
+
+              {/* Show warning if using shared strategy */}
+              {client && client.strategy_id && (() => {
+                const selectedStrategy = strategies.find(s => s.id === client.strategy_id)
+                if (selectedStrategy && selectedStrategy.parent !== client.id) {
+                  return (
+                    <div className="p-3 bg-yellow-900/20 dark:bg-yellow-900/30 border border-yellow-700 dark:border-yellow-600 rounded">
+                      <p className="text-sm text-yellow-300 dark:text-yellow-400">
+                        <strong>Shared Strategy:</strong> Changes to this strategy will affect all clients using it. Create a new strategy or duplicate this one for client-specific configuration.
+                      </p>
+                    </div>
+                  )
+                }
+                return null
+              })()}
+            </div>
+          </Card>
+
+          {/* Embedded StrategyConfigEditor */}
+          {client && client.strategy_id && (
+            <StrategyConfigEditor
+              strategyId={client.strategy_id}
+              readOnly={false}
+              onSave={() => {
+                loadClientData()
+                loadStrategies()
+              }}
+            />
+          )}
         </div>
       ),
     },
@@ -684,16 +832,16 @@ export default function ClientDetailPage({ clientId, initialTab, initialRoutingM
                 </div>
 
                 {loadingTokenStats && (
-                  <div className="text-center py-8 text-gray-400">
+                  <div className="text-center py-8 text-gray-400 dark:text-gray-500">
                     Analyzing MCP servers...
                   </div>
                 )}
 
                 {!loadingTokenStats && tokenStats && (
                   <>
-                    <div className="bg-gray-800 rounded-lg overflow-hidden">
+                    <div className="bg-gray-800 dark:bg-gray-800 rounded-lg overflow-hidden">
                       <table className="w-full">
-                        <thead className="bg-gray-700">
+                        <thead className="bg-gray-700 dark:bg-gray-700">
                           <tr>
                             <th className="px-4 py-3 text-left text-sm font-medium">Server</th>
                             <th className="px-4 py-3 text-right text-sm font-medium">Tools</th>
@@ -702,14 +850,14 @@ export default function ClientDetailPage({ clientId, initialTab, initialRoutingM
                             <th className="px-4 py-3 text-right text-sm font-medium">Est. Tokens</th>
                           </tr>
                         </thead>
-                        <tbody className="divide-y divide-gray-700">
+                        <tbody className="divide-y divide-gray-700 dark:divide-gray-700">
                           {tokenStats.server_stats.map((stat) => (
-                            <tr key={stat.server_id} className="hover:bg-gray-750">
+                            <tr key={stat.server_id} className="hover:bg-gray-750 dark:hover:bg-gray-750">
                               <td className="px-4 py-3 text-sm font-medium">{stat.server_id}</td>
-                              <td className="px-4 py-3 text-sm text-right text-gray-300">{stat.tool_count}</td>
-                              <td className="px-4 py-3 text-sm text-right text-gray-300">{stat.resource_count}</td>
-                              <td className="px-4 py-3 text-sm text-right text-gray-300">{stat.prompt_count}</td>
-                              <td className="px-4 py-3 text-sm text-right font-mono text-gray-300">
+                              <td className="px-4 py-3 text-sm text-right text-gray-300 dark:text-gray-400">{stat.tool_count}</td>
+                              <td className="px-4 py-3 text-sm text-right text-gray-300 dark:text-gray-400">{stat.resource_count}</td>
+                              <td className="px-4 py-3 text-sm text-right text-gray-300 dark:text-gray-400">{stat.prompt_count}</td>
+                              <td className="px-4 py-3 text-sm text-right font-mono text-gray-300 dark:text-gray-400">
                                 {stat.estimated_tokens.toLocaleString()}
                               </td>
                             </tr>
@@ -718,33 +866,33 @@ export default function ClientDetailPage({ clientId, initialTab, initialRoutingM
                       </table>
                     </div>
 
-                    <div className="bg-blue-900/20 border border-blue-700 rounded-lg p-4">
-                      <h4 className="font-medium text-blue-300 mb-3">Token Consumption Summary</h4>
+                    <div className="bg-blue-900/20 dark:bg-blue-900/30 border border-blue-700 dark:border-blue-600 rounded-lg p-4">
+                      <h4 className="font-medium text-blue-300 dark:text-blue-400 mb-3">Token Consumption Summary</h4>
                       <div className="grid grid-cols-2 gap-4 text-sm">
                         <div>
-                          <p className="text-gray-400">Without Deferred Loading</p>
-                          <p className="text-2xl font-mono font-bold text-gray-100">
+                          <p className="text-gray-400 dark:text-gray-500">Without Deferred Loading</p>
+                          <p className="text-2xl font-mono font-bold text-gray-100 dark:text-gray-200">
                             {tokenStats.total_tokens.toLocaleString()}
                           </p>
-                          <p className="text-xs text-gray-500">tokens per request</p>
+                          <p className="text-xs text-gray-500 dark:text-gray-600">tokens per request</p>
                         </div>
                         <div>
-                          <p className="text-gray-400">With Deferred Loading</p>
-                          <p className="text-2xl font-mono font-bold text-green-400">
+                          <p className="text-gray-400 dark:text-gray-500">With Deferred Loading</p>
+                          <p className="text-2xl font-mono font-bold text-green-400 dark:text-green-400">
                             {tokenStats.deferred_tokens.toLocaleString()}
                           </p>
-                          <p className="text-xs text-gray-500">tokens per request (search tool only)</p>
+                          <p className="text-xs text-gray-500 dark:text-gray-600">tokens per request (search tool only)</p>
                         </div>
                         <div className="col-span-2">
-                          <p className="text-gray-400">Potential Savings</p>
-                          <p className="text-3xl font-mono font-bold text-green-400">
+                          <p className="text-gray-400 dark:text-gray-500">Potential Savings</p>
+                          <p className="text-3xl font-mono font-bold text-green-400 dark:text-green-400">
                             {tokenStats.savings_tokens.toLocaleString()} tokens ({tokenStats.savings_percent.toFixed(1)}%)
                           </p>
                         </div>
                       </div>
                     </div>
 
-                    <div className="bg-gray-800 rounded-lg p-4">
+                    <div className="bg-gray-800 dark:bg-gray-800 rounded-lg p-4">
                       <div className="flex items-start justify-between">
                         <div className="flex-1">
                           <label className="flex items-center gap-3 cursor-pointer">
@@ -756,7 +904,7 @@ export default function ClientDetailPage({ clientId, initialTab, initialRoutingM
                             />
                             <div>
                               <span className="font-medium text-lg">Enable Deferred Loading</span>
-                              <p className="text-sm text-gray-400 mt-1">
+                              <p className="text-sm text-gray-400 dark:text-gray-500 mt-1">
                                 Only load tools on demand using a search interface. Reduces initial token consumption by {tokenStats.savings_percent.toFixed(0)}%,
                                 saving ~{tokenStats.savings_tokens.toLocaleString()} tokens per request.
                               </p>
@@ -766,8 +914,8 @@ export default function ClientDetailPage({ clientId, initialTab, initialRoutingM
                       </div>
 
                       {deferredLoading && (
-                        <div className="mt-3 p-3 bg-green-900/20 border border-green-700 rounded">
-                          <p className="text-sm text-green-300">
+                        <div className="mt-3 p-3 bg-green-900/20 dark:bg-green-900/30 border border-green-700 dark:border-green-600 rounded">
+                          <p className="text-sm text-green-300 dark:text-green-400">
                             ✓ Deferred loading is enabled. Tools will be loaded on demand via search.
                           </p>
                         </div>
@@ -777,7 +925,7 @@ export default function ClientDetailPage({ clientId, initialTab, initialRoutingM
                 )}
 
                 {!loadingTokenStats && !tokenStats && (
-                  <div className="text-center py-8 text-gray-400">
+                  <div className="text-center py-8 text-gray-400 dark:text-gray-500">
                     <p className="mb-2">No statistics available</p>
                     <p className="text-sm">Click "Refresh Stats" to analyze your MCP servers</p>
                   </div>
@@ -818,7 +966,7 @@ export default function ClientDetailPage({ clientId, initialTab, initialRoutingM
                         />
                         <button
                           onClick={() => setShowClientSecret(!showClientSecret)}
-                          className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                          className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-400"
                         >
                           {showClientSecret ? <EyeOffIcon /> : <EyeIcon />}
                         </button>
@@ -835,31 +983,48 @@ export default function ClientDetailPage({ clientId, initialTab, initialRoutingM
                   <div>
                     <label className="block text-sm font-medium mb-2">Accessible MCP Server URLs</label>
                     {client.allowed_mcp_servers.length === 0 ? (
-                      <p className="text-sm text-gray-400">No MCP servers granted access yet. Add servers below.</p>
+                      <p className="text-sm text-gray-400 dark:text-gray-500">No MCP servers granted access yet. Add servers below.</p>
                     ) : (
-                      <div className="space-y-2">
-                        {mcpServers
-                          .filter(server => client.allowed_mcp_servers.includes(server.id))
-                          .map(server => (
-                            <div key={server.id} className="bg-gray-800 rounded p-3">
-                              <div className="flex items-center justify-between mb-1">
-                                <span className="font-medium text-sm">{server.name}</span>
-                                {server.url && (
+                      <div className="space-y-3">
+                        {/* Unified Gateway URL */}
+                        {mcpServers.length > 0 && mcpServers[0].gateway_url && (
+                          <div className="bg-blue-900/20 dark:bg-blue-900/30 border border-blue-700 dark:border-blue-600 rounded p-3">
+                            <div className="flex items-center justify-between mb-2">
+                              <span className="font-medium text-sm text-blue-300 dark:text-blue-400">Unified Gateway (All Servers)</span>
+                              <Button
+                                variant="secondary"
+                                onClick={() => copyToClipboard(mcpServers[0].gateway_url, 'gateway_url')}
+                              >
+                                {copiedField === 'gateway_url' ? <CheckIcon /> : <CopyIcon />}
+                              </Button>
+                            </div>
+                            <code className="text-xs text-blue-200 dark:text-blue-300 font-mono">{mcpServers[0].gateway_url}</code>
+                            <p className="text-xs text-blue-300 dark:text-blue-400 mt-1">
+                              Access all granted servers through a single endpoint with automatic routing
+                            </p>
+                          </div>
+                        )}
+
+                        {/* Individual Server URLs */}
+                        <div className="space-y-2">
+                          <p className="text-xs font-medium text-gray-400 dark:text-gray-500">Individual Server Proxies</p>
+                          {mcpServers
+                            .filter(server => client.allowed_mcp_servers.includes(server.id))
+                            .map(server => (
+                              <div key={server.id} className="bg-gray-800 dark:bg-gray-800 rounded p-3">
+                                <div className="flex items-center justify-between mb-1">
+                                  <span className="font-medium text-sm">{server.name}</span>
                                   <Button
                                     variant="secondary"
-                                    onClick={() => copyToClipboard(server.url!, `mcp_url_${server.id}`)}
+                                    onClick={() => copyToClipboard(server.proxy_url, `proxy_url_${server.id}`)}
                                   >
-                                    {copiedField === `mcp_url_${server.id}` ? <CheckIcon /> : <CopyIcon />}
+                                    {copiedField === `proxy_url_${server.id}` ? <CheckIcon /> : <CopyIcon />}
                                   </Button>
-                                )}
+                                </div>
+                                <code className="text-xs text-gray-300 dark:text-gray-400 font-mono">{server.proxy_url}</code>
                               </div>
-                              {server.url ? (
-                                <code className="text-xs text-gray-300 font-mono">{server.url}</code>
-                              ) : (
-                                <span className="text-xs text-gray-500">No URL configured</span>
-                              )}
-                            </div>
-                          ))}
+                            ))}
+                        </div>
                       </div>
                     )}
                   </div>
@@ -869,15 +1034,15 @@ export default function ClientDetailPage({ clientId, initialTab, initialRoutingM
               {/* STDIO Auth (Supergateway) */}
               {selectedMcpAuthType === 'stdio' && (
                 <div className="space-y-4">
-                  <div className="bg-gray-800 border border-gray-600 rounded p-4">
-                    <h4 className="font-medium text-gray-100 mb-2">Supergateway Configuration</h4>
-                    <p className="text-sm text-gray-300 mb-3">
+                  <div className="bg-gray-800 dark:bg-gray-800 border border-gray-600 dark:border-gray-700 rounded p-4">
+                    <h4 className="font-medium text-gray-100 dark:text-gray-200 mb-2">Supergateway Configuration</h4>
+                    <p className="text-sm text-gray-300 dark:text-gray-400 mb-3">
                       Use the Anthropic Supergateway to connect MCP servers via STDIO transport.
                       Set the bearer token as an environment variable:
                     </p>
-                    <div className="bg-gray-900 rounded p-3 font-mono text-sm">
+                    <div className="bg-gray-900 dark:bg-gray-900 rounded p-3 font-mono text-sm">
                       <div className="flex gap-2 items-center">
-                        <code className="flex-1 text-gray-100">
+                        <code className="flex-1 text-gray-100 dark:text-gray-200">
                           LOCALROUTER_BEARER_TOKEN={showClientSecret ? client.client_id : maskSecret(client.client_id)}
                         </code>
                         <Button
@@ -902,7 +1067,7 @@ export default function ClientDetailPage({ clientId, initialTab, initialRoutingM
                         />
                         <button
                           onClick={() => setShowClientSecret(!showClientSecret)}
-                          className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                          className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-400"
                         >
                           {showClientSecret ? <EyeOffIcon /> : <EyeIcon />}
                         </button>
@@ -967,7 +1132,7 @@ export default function ClientDetailPage({ clientId, initialTab, initialRoutingM
                         />
                         <button
                           onClick={() => setShowClientSecret(!showClientSecret)}
-                          className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                          className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-400"
                         >
                           {showClientSecret ? <EyeOffIcon /> : <EyeIcon />}
                         </button>
@@ -984,31 +1149,48 @@ export default function ClientDetailPage({ clientId, initialTab, initialRoutingM
                   <div>
                     <label className="block text-sm font-medium mb-2">Accessible MCP Server URLs</label>
                     {client.allowed_mcp_servers.length === 0 ? (
-                      <p className="text-sm text-gray-400">No MCP servers granted access yet. Add servers below.</p>
+                      <p className="text-sm text-gray-400 dark:text-gray-500">No MCP servers granted access yet. Add servers below.</p>
                     ) : (
-                      <div className="space-y-2">
-                        {mcpServers
-                          .filter(server => client.allowed_mcp_servers.includes(server.id))
-                          .map(server => (
-                            <div key={server.id} className="bg-gray-800 rounded p-3">
-                              <div className="flex items-center justify-between mb-1">
-                                <span className="font-medium text-sm">{server.name}</span>
-                                {server.url && (
+                      <div className="space-y-3">
+                        {/* Unified Gateway URL */}
+                        {mcpServers.length > 0 && mcpServers[0].gateway_url && (
+                          <div className="bg-blue-900/20 dark:bg-blue-900/30 border border-blue-700 dark:border-blue-600 rounded p-3">
+                            <div className="flex items-center justify-between mb-2">
+                              <span className="font-medium text-sm text-blue-300 dark:text-blue-400">Unified Gateway (All Servers)</span>
+                              <Button
+                                variant="secondary"
+                                onClick={() => copyToClipboard(mcpServers[0].gateway_url, 'oauth_gateway_url')}
+                              >
+                                {copiedField === 'oauth_gateway_url' ? <CheckIcon /> : <CopyIcon />}
+                              </Button>
+                            </div>
+                            <code className="text-xs text-blue-200 dark:text-blue-300 font-mono">{mcpServers[0].gateway_url}</code>
+                            <p className="text-xs text-blue-300 dark:text-blue-400 mt-1">
+                              Access all granted servers through a single endpoint with automatic routing
+                            </p>
+                          </div>
+                        )}
+
+                        {/* Individual Server URLs */}
+                        <div className="space-y-2">
+                          <p className="text-xs font-medium text-gray-400 dark:text-gray-500">Individual Server Proxies</p>
+                          {mcpServers
+                            .filter(server => client.allowed_mcp_servers.includes(server.id))
+                            .map(server => (
+                              <div key={server.id} className="bg-gray-800 dark:bg-gray-800 rounded p-3">
+                                <div className="flex items-center justify-between mb-1">
+                                  <span className="font-medium text-sm">{server.name}</span>
                                   <Button
                                     variant="secondary"
-                                    onClick={() => copyToClipboard(server.url!, `oauth_mcp_url_${server.id}`)}
+                                    onClick={() => copyToClipboard(server.proxy_url, `oauth_proxy_url_${server.id}`)}
                                   >
-                                    {copiedField === `oauth_mcp_url_${server.id}` ? <CheckIcon /> : <CopyIcon />}
+                                    {copiedField === `oauth_proxy_url_${server.id}` ? <CheckIcon /> : <CopyIcon />}
                                   </Button>
-                                )}
+                                </div>
+                                <code className="text-xs text-gray-300 dark:text-gray-400 font-mono">{server.proxy_url}</code>
                               </div>
-                              {server.url ? (
-                                <code className="text-xs text-gray-300 font-mono">{server.url}</code>
-                              ) : (
-                                <span className="text-xs text-gray-500">No URL configured</span>
-                              )}
-                            </div>
-                          ))}
+                            ))}
+                        </div>
                       </div>
                     )}
                   </div>
@@ -1021,13 +1203,13 @@ export default function ClientDetailPage({ clientId, initialTab, initialRoutingM
           <Card>
             <div className="p-6">
               <h3 className="text-lg font-semibold mb-4">MCP Server Access</h3>
-              <p className="text-sm text-gray-400 mb-4">
+              <p className="text-sm text-gray-400 dark:text-gray-500 mb-4">
                 Select which MCP servers this client can access.
               </p>
 
               {mcpServers.length === 0 ? (
-                <div className="p-4 bg-gray-800 rounded text-center">
-                  <p className="text-gray-400 text-sm">No MCP servers configured</p>
+                <div className="p-4 bg-gray-800 dark:bg-gray-800 rounded text-center">
+                  <p className="text-gray-400 dark:text-gray-500 text-sm">No MCP servers configured</p>
                 </div>
               ) : (
                 <div className="space-y-2">
@@ -1036,7 +1218,7 @@ export default function ClientDetailPage({ clientId, initialTab, initialRoutingM
                     return (
                       <div
                         key={server.id}
-                        className="flex items-center justify-between p-3 bg-gray-800 rounded"
+                        className="flex items-center justify-between p-3 bg-gray-800 dark:bg-gray-800 rounded"
                       >
                         <div className="flex items-center gap-3">
                           <span className="font-medium">{server.name}</span>
@@ -1074,6 +1256,26 @@ export default function ClientDetailPage({ clientId, initialTab, initialRoutingM
             />
           </div>
         </Card>
+      ),
+    },
+    {
+      id: 'logs',
+      label: 'Logs',
+      content: (
+        <>
+          <FilteredAccessLogs
+            type="llm"
+            clientName={client.name}
+            active={activeTab === 'logs'}
+          />
+          <div className="mt-6">
+            <FilteredAccessLogs
+              type="mcp"
+              clientId={client.client_id}
+              active={activeTab === 'logs'}
+            />
+          </div>
+        </>
       ),
     },
   ]
