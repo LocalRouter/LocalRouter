@@ -173,8 +173,8 @@ impl CatalogCodeGenerator {
                 }
                 ("meta-llama", name) => {
                     // meta-llama/llama-3.3-70b-instruct → llama-3.3, llama3
-                    if name.starts_with("llama-") {
-                        if let Some((ver, _)) = name[6..].split_once('-') {
+                    if let Some(stripped) = name.strip_prefix("llama-") {
+                        if let Some((ver, _)) = stripped.split_once('-') {
                             aliases.push(format!("llama-{}", ver));
                             aliases.push(format!("llama{}", ver.replace(".", "")));
                         }

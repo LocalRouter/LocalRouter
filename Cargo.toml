@@ -3,7 +3,7 @@ members = ["src-tauri"]
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.0.1"
 edition = "2021"
 authors = ["LocalRouter AI Team"]
 license = "AGPL-3.0-or-later"
@@ -53,6 +53,7 @@ chrono = { version = "0.4", features = ["serde"] }
 
 # Async traits
 async-trait = "0.1"
+async-stream = "0.3"
 
 # Configuration
 config = "0.14"

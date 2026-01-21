@@ -1,6 +1,6 @@
 {
   "productName": "LocalRouter AI",
-  "version": "0.1.0",
+  "version": "0.0.1",
   "identifier": "ai.localrouter.app",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -11,6 +11,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -37,6 +38,18 @@
       }
     }
   },
+  "plugins": {
+    "updater": {
+      "active": true,
+      "endpoints": [
+        "https://github.com/LocalRouter/LocalRouter/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDZDQTVGODU2NDZGNzI4NkIKUldScktQZEdWdmlsYk45bEJ4ZlVBYW1VSHBtTHRMV3ZaU1JUZnNsNGI3Y3kxMHVtb2kvREV4MkMK",
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  },
   "app": {
     "windows": [
       {
@@ -53,7 +66,7 @@
     ],
     "withGlobalTauri": true,
     "security": {
-      "csp": "default-src 'self' 'unsafe-inline' 'unsafe-eval'; connect-src 'self' http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:*; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'"
+      "csp": "default-src 'self' 'unsafe-inline' 'unsafe-eval'; connect-src 'self' http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:* https://github.com https://api.github.com https://objects.githubusercontent.com; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'"
     }
   }
 }

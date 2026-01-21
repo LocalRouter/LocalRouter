@@ -39,12 +39,14 @@ base64 = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 async-trait = { workspace = true }
+async-stream = { workspace = true }
 config = { workspace = true }
 dirs = { workspace = true }
 keyring = { workspace = true }
 oauth2 = { workspace = true }
 tauri = { workspace = true }
 tauri-plugin-shell = { workspace = true }
+tauri-plugin-updater = "2.9"
 notify = { workspace = true }
 if-addrs = { workspace = true }
 arboard = { workspace = true }
@@ -64,11 +66,30 @@ ollama-rs = { workspace = true }
 jsonschema = "0.18"  # JSON Schema validation for structured outputs
 rusqlite = { version = "0.32", features = ["bundled"] }  # SQLite for metrics storage
 once_cell = "1.20"  # Lazy static initialization for catalog
+image = { version = "0.25", default-features = false, features = ["png"] }  # PNG generation for tray icon graphs
 
 # OpenAPI documentation
 utoipa = { version = "5", features = ["axum_extras", "chrono", "uuid"] }
 utoipa-axum = "0.2"
 utoipa-scalar = { version = "0.2", features = ["axum"] }
+
+# RouteLLM intelligent routing - Candle-based (pure Rust)
+tokenizers = "0.22"
+hf-hub = { version = "0.3", features = ["tokio"] }
+safetensors = "0.4"
+
+# Platform-specific GPU acceleration:
+# - macOS: Metal (Apple Silicon GPU)
+# - Linux/Windows: CPU by default, CUDA optional (requires CUDA installation)
+[target.'cfg(target_os = "macos")'.dependencies]
+candle-core = { version = "0.8", features = ["metal"] }
+candle-nn = { version = "0.8", features = ["metal"] }
+candle-transformers = { version = "0.8", features = ["metal"] }
+
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+candle-core = "0.8"
+candle-nn = "0.8"
+candle-transformers = "0.8"
 
 [dev-dependencies]
 tempfile = "3.8"
