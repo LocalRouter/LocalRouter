@@ -3,6 +3,7 @@
 
 mod api_keys;
 mod catalog;
+mod cli;
 mod clients;
 mod config;
 mod mcp;
@@ -35,15 +36,87 @@ use server::ServerManager;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Initialize logging
+    // Parse CLI arguments
+    let args = cli::Cli::parse_args();
+
+    // Initialize logging (always to stderr for bridge mode)
+    init_logging();
+
+    // Branch based on mode
+    if args.mcp_bridge {
+        run_bridge_mode(args.client_id).await
+    } else {
+        run_gui_mode().await
+    }
+}
+
+/// Initialize logging to stderr
+///
+/// In bridge mode, stdout is reserved for JSON-RPC responses,
+/// so all logging must go to stderr.
+fn init_logging() {
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "localrouter_ai=info".into()),
         )
-        .with(tracing_subscriber::fmt::layer())
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(std::io::stderr), // Always to stderr
+        )
         .init();
+}
 
+/// Run in MCP bridge mode (STDIO ↔ HTTP proxy)
+///
+/// This is a lightweight mode that reads JSON-RPC requests from stdin,
+/// forwards them to the running LocalRouter HTTP server, and writes
+/// responses back to stdout.
+///
+/// # Arguments
+/// * `client_id` - Optional client ID (auto-detects if None)
+///
+/// # Returns
+/// Ok on clean shutdown, Err on fatal errors
+async fn run_bridge_mode(client_id: Option<String>) -> anyhow::Result<()> {
+    eprintln!("==========================================================");
+    eprintln!("LocalRouter AI - MCP Bridge Mode");
+    eprintln!("==========================================================");
+    eprintln!();
+    eprintln!("Connecting to LocalRouter server at http://localhost:3625");
+    eprintln!("Make sure the LocalRouter GUI is running!");
+    eprintln!();
+
+    // Create and run bridge (loads config for client secret only)
+    let bridge = mcp::StdioBridge::new(client_id, None)
+        .await
+        .map_err(|e| {
+            eprintln!("ERROR: Failed to initialize bridge: {}", e);
+            eprintln!();
+            eprintln!("Common issues:");
+            eprintln!("  - LocalRouter GUI not running (start it first)");
+            eprintln!("  - Client not configured in config.yaml");
+            eprintln!("  - Client secret not found (run GUI once)");
+            eprintln!("  - LOCALROUTER_CLIENT_SECRET not set (if using env var)");
+            eprintln!();
+            e
+        })?;
+
+    eprintln!("Bridge ready! Forwarding JSON-RPC requests...");
+    eprintln!("==========================================================");
+    eprintln!();
+
+    bridge.run().await.map_err(|e| {
+        eprintln!("ERROR: Bridge stopped: {}", e);
+        e.into()
+    })
+}
+
+/// Run in GUI mode (full desktop application)
+///
+/// This is the default mode that starts the HTTP server, managers,
+/// and Tauri desktop window.
+async fn run_gui_mode() -> anyhow::Result<()> {
     info!("Starting LocalRouter AI...");
 
     // Log configuration directory
@@ -93,6 +166,13 @@ async fn main() -> anyhow::Result<()> {
         ))
     };
 
+    // Initialize keychain for secure storage
+    let keychain = api_keys::keychain_trait::CachedKeychain::auto()
+        .unwrap_or_else(|e| {
+            error!("Failed to initialize keychain: {}", e);
+            api_keys::keychain_trait::CachedKeychain::system()
+        });
+
     // Initialize MCP server manager
     let mcp_server_manager = {
         let config = config_manager.get();
@@ -100,6 +180,13 @@ async fn main() -> anyhow::Result<()> {
         manager.load_configs(config.mcp_servers.clone());
         manager
     };
+
+    // Initialize MCP OAuth managers
+    let mcp_oauth_manager = Arc::new(mcp::oauth::McpOAuthManager::new());
+    let mcp_oauth_browser_manager = Arc::new(mcp::oauth_browser::McpOAuthBrowserManager::new(
+        keychain.clone(),
+        mcp_oauth_manager.clone(),
+    ));
 
     // Initialize provider registry
     info!("Initializing provider registry...");
@@ -325,6 +412,8 @@ async fn main() -> anyhow::Result<()> {
             app.manage(token_store.clone());
             app.manage(oauth_client_manager.clone());
             app.manage(mcp_server_manager.clone());
+            app.manage(mcp_oauth_manager.clone());
+            app.manage(mcp_oauth_browser_manager.clone());
             app.manage(provider_registry.clone());
             app.manage(health_manager.clone());
             app.manage(server_manager.clone());
@@ -600,6 +689,13 @@ async fn main() -> anyhow::Result<()> {
             ui::commands::list_mcp_tools,
             ui::commands::call_mcp_tool,
             ui::commands::get_mcp_token_stats,
+            // MCP OAuth browser flow commands
+            ui::commands::start_mcp_oauth_browser_flow,
+            ui::commands::poll_mcp_oauth_browser_status,
+            ui::commands::cancel_mcp_oauth_browser_flow,
+            ui::commands::discover_mcp_oauth_endpoints,
+            ui::commands::test_mcp_oauth_connection,
+            ui::commands::revoke_mcp_oauth_tokens,
             // Unified client management commands
             ui::commands::list_clients,
             ui::commands::create_client,

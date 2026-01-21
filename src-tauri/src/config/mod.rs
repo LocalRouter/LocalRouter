@@ -3,6 +3,8 @@
 //! Handles loading, saving, and managing application configuration.
 //! Supports file watching and event emission for real-time config updates.
 
+#![allow(dead_code)]
+
 use crate::utils::errors::{AppError, AppResult};
 use chrono::{DateTime, Utc};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
@@ -273,6 +275,10 @@ pub struct AppConfig {
     /// Update checking configuration
     #[serde(default)]
     pub update: UpdateConfig,
+
+    /// Model cache configuration
+    #[serde(default)]
+    pub model_cache: ModelCacheConfig,
 }
 
 /// Pricing override for a specific model
@@ -337,6 +343,36 @@ fn default_update_mode() -> UpdateMode {
 
 fn default_check_interval() -> u64 {
     7 // Check weekly
+}
+
+/// Model cache configuration
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ModelCacheConfig {
+    /// Default TTL for model cache (seconds)
+    #[serde(default = "default_model_cache_ttl")]
+    pub default_ttl_seconds: u64,
+
+    /// Per-provider TTL overrides
+    #[serde(default)]
+    pub provider_ttl_overrides: std::collections::HashMap<String, u64>,
+
+    /// Whether to use OpenRouter catalog as fallback
+    #[serde(default = "default_true")]
+    pub use_catalog_fallback: bool,
+}
+
+fn default_model_cache_ttl() -> u64 {
+    3600 // 1 hour
+}
+
+impl Default for ModelCacheConfig {
+    fn default() -> Self {
+        Self {
+            default_ttl_seconds: 3600,
+            provider_ttl_overrides: std::collections::HashMap::new(),
+            use_catalog_fallback: true,
+        }
+    }
 }
 
 /// Server configuration
@@ -641,7 +677,7 @@ pub enum McpAuthConfig {
         headers: std::collections::HashMap<String, String>,
     },
 
-    /// Pre-registered OAuth credentials
+    /// Pre-registered OAuth credentials (client credentials flow)
     OAuth {
         /// OAuth client ID
         client_id: String,
@@ -657,6 +693,30 @@ pub enum McpAuthConfig {
 
         /// OAuth scopes to request
         scopes: Vec<String>,
+    },
+
+    /// OAuth with browser-based authorization code flow (PKCE)
+    /// For user-interactive authentication (GitHub, GitLab, etc.)
+    OAuthBrowser {
+        /// OAuth client ID (public)
+        client_id: String,
+
+        /// Reference to client secret in keychain
+        /// Stored in keyring: service="LocalRouter-McpServers", account="{server_id}_client_secret"
+        client_secret_ref: String,
+
+        /// Authorization endpoint URL
+        auth_url: String,
+
+        /// Token endpoint URL
+        token_url: String,
+
+        /// OAuth scopes to request
+        scopes: Vec<String>,
+
+        /// Redirect URI (usually http://localhost:8080/callback)
+        /// Must match OAuth app registration
+        redirect_uri: String,
     },
 
     /// Environment variables (for STDIO only)
@@ -1309,6 +1369,7 @@ impl Default for AppConfig {
             ui: UiConfig::default(),
             routellm_settings: RouteLLMGlobalSettings::default(),
             update: UpdateConfig::default(),
+            model_cache: ModelCacheConfig::default(),
         }
     }
 }

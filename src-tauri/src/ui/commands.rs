@@ -3837,3 +3837,132 @@ pub fn set_update_notification(
     crate::ui::tray::set_update_available(&app, available)
         .map_err(|e| e.to_string())
 }
+
+// ============================================================================
+// MCP OAuth Browser Flow Commands
+// ============================================================================
+
+/// Start a browser-based OAuth flow for an MCP server
+///
+/// # Arguments
+/// * `server_id` - MCP server ID
+///
+/// # Returns
+/// * OAuth flow result with authorization URL to open in browser
+#[tauri::command]
+pub async fn start_mcp_oauth_browser_flow(
+    server_id: String,
+    oauth_browser_manager: State<'_, Arc<crate::mcp::oauth_browser::McpOAuthBrowserManager>>,
+    config_manager: State<'_, ConfigManager>,
+) -> Result<crate::mcp::oauth_browser::OAuthBrowserFlowResult, String> {
+    // Get server config
+    let config = config_manager.get();
+    let server = config
+        .mcp_servers
+        .iter()
+        .find(|s| s.id == server_id)
+        .ok_or_else(|| format!("MCP server not found: {}", server_id))?;
+
+    // Get auth config
+    let auth_config = server
+        .auth_config
+        .as_ref()
+        .ok_or_else(|| format!("No auth config for server: {}", server_id))?;
+
+    // Start browser flow
+    oauth_browser_manager
+        .start_browser_flow(&server_id, auth_config)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Poll the status of an OAuth browser flow
+///
+/// # Arguments
+/// * `server_id` - MCP server ID
+///
+/// # Returns
+/// * Current flow status (Pending, Success, Error, or Timeout)
+#[tauri::command]
+pub fn poll_mcp_oauth_browser_status(
+    server_id: String,
+    oauth_browser_manager: State<'_, Arc<crate::mcp::oauth_browser::McpOAuthBrowserManager>>,
+) -> Result<crate::mcp::oauth_browser::OAuthBrowserFlowStatus, String> {
+    oauth_browser_manager
+        .poll_flow_status(&server_id)
+        .map_err(|e| e.to_string())
+}
+
+/// Cancel an active OAuth browser flow
+///
+/// # Arguments
+/// * `server_id` - MCP server ID
+#[tauri::command]
+pub fn cancel_mcp_oauth_browser_flow(
+    server_id: String,
+    oauth_browser_manager: State<'_, Arc<crate::mcp::oauth_browser::McpOAuthBrowserManager>>,
+) -> Result<(), String> {
+    oauth_browser_manager
+        .cancel_flow(&server_id)
+        .map_err(|e| e.to_string())
+}
+
+/// Discover OAuth endpoints for an MCP server
+///
+/// This uses the existing McpOAuthManager's discover_oauth function to find
+/// OAuth configuration via .well-known/oauth-protected-resource endpoint.
+///
+/// # Arguments
+/// * `base_url` - Base URL of the MCP server (e.g., "https://api.github.com")
+///
+/// # Returns
+/// * OAuth discovery information (auth_url, token_url, scopes)
+#[tauri::command]
+pub async fn discover_mcp_oauth_endpoints(
+    base_url: String,
+    oauth_manager: State<'_, Arc<crate::mcp::oauth::McpOAuthManager>>,
+) -> Result<Option<crate::config::McpOAuthDiscovery>, String> {
+    match oauth_manager.discover_oauth(&base_url).await {
+        Ok(Some(discovery)) => Ok(Some(crate::config::McpOAuthDiscovery {
+            auth_url: discovery.auth_url,
+            token_url: discovery.token_endpoint,
+            scopes_supported: discovery.scopes_supported,
+            discovered_at: chrono::Utc::now(),
+        })),
+        Ok(None) => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Test OAuth connection for an MCP server
+///
+/// Checks if the server has a valid OAuth token
+///
+/// # Arguments
+/// * `server_id` - MCP server ID
+///
+/// # Returns
+/// * `true` if server has valid authentication, `false` otherwise
+#[tauri::command]
+pub async fn test_mcp_oauth_connection(
+    server_id: String,
+    oauth_browser_manager: State<'_, Arc<crate::mcp::oauth_browser::McpOAuthBrowserManager>>,
+) -> Result<bool, String> {
+    Ok(oauth_browser_manager.has_valid_auth(&server_id).await)
+}
+
+/// Revoke OAuth tokens for an MCP server
+///
+/// Clears all stored tokens (access, refresh, and client secret) from keychain
+///
+/// # Arguments
+/// * `server_id` - MCP server ID
+#[tauri::command]
+pub fn revoke_mcp_oauth_tokens(
+    server_id: String,
+    oauth_browser_manager: State<'_, Arc<crate::mcp::oauth_browser::McpOAuthBrowserManager>>,
+) -> Result<(), String> {
+    oauth_browser_manager
+        .revoke_tokens(&server_id)
+        .map_err(|e| e.to_string())
+}

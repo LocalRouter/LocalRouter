@@ -2,6 +2,8 @@
 //!
 //! Manages MCP server instances, their lifecycle, and health checks.
 
+#![allow(dead_code)]
+
 use crate::api_keys::keychain_trait::KeychainStorage;
 use crate::config::{McpServerConfig, McpTransportConfig, McpTransportType};
 use crate::mcp::oauth::McpOAuthManager;
@@ -353,6 +355,35 @@ impl McpServerManager {
                     headers.insert("Authorization".to_string(), format!("Bearer {}", access_token));
 
                     tracing::info!("Applied OAuth token for SSE server: {}", server_id);
+                }
+                crate::config::McpAuthConfig::OAuthBrowser { .. } => {
+                    // OAuth browser flow - token should already be stored in keychain
+                    // by the McpOAuthBrowserManager after successful authentication
+                    let keychain = crate::api_keys::CachedKeychain::auto()
+                        .unwrap_or_else(|_| crate::api_keys::CachedKeychain::system());
+
+                    // Try to get access token from keychain
+                    let account_name = format!("{}_access_token", config.id);
+                    match keychain.get("LocalRouter-McpServerTokens", &account_name) {
+                        Ok(Some(token)) => {
+                            headers.insert("Authorization".to_string(), format!("Bearer {}", token));
+                            tracing::debug!("Applied OAuth browser token for SSE server: {}", server_id);
+                        }
+                        Ok(None) => {
+                            tracing::warn!(
+                                "OAuth browser token not found in keychain for server: {}. User must authenticate via browser first.",
+                                server_id
+                            );
+                            return Err(AppError::Mcp(format!(
+                                "OAuth browser authentication required for server: {}. Please complete browser authentication first.",
+                                server_id
+                            )));
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to retrieve OAuth browser token: {}", e);
+                            return Err(e);
+                        }
+                    }
                 }
                 _ => {
                     // None or EnvVars (not applicable for SSE)
