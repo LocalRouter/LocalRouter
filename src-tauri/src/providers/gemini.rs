@@ -80,7 +80,7 @@ impl GeminiProvider {
             gemini_contents.push(GeminiContent {
                 role: role.to_string(),
                 parts: vec![GeminiPart {
-                    text: msg.content.clone(),
+                    text: msg.content.as_text(),
                 }],
             });
         }
@@ -89,7 +89,7 @@ impl GeminiProvider {
         if let Some(system_msg) = messages.iter().find(|m| m.role == "system") {
             if let Some(first_user) = gemini_contents.iter_mut().find(|c| c.role == "user") {
                 first_user.parts[0].text =
-                    format!("{}\n\n{}", system_msg.content, first_user.parts[0].text);
+                    format!("{}\n\n{}", system_msg.content.as_str(), first_user.parts[0].text);
             }
         }
 
@@ -329,7 +329,10 @@ impl ModelProvider for GeminiProvider {
                 index: 0,
                 message: ChatMessage {
                     role: "assistant".to_string(),
-                    content,
+                    content: super::ChatMessageContent::Text(content),
+                    tool_calls: None,
+                    tool_call_id: None,
+                    name: None,
                 },
                 finish_reason: Some(finish_reason.to_string()),
             }],
@@ -341,6 +344,7 @@ impl ModelProvider for GeminiProvider {
                 completion_tokens_details: None,
             },
             extensions: None,
+            routellm_win_rate: None,
         };
 
         debug!(
@@ -447,6 +451,7 @@ impl ModelProvider for GeminiProvider {
                                                     } else {
                                                         None
                                                     },
+                                                    tool_calls: None,
                                                 },
                                                 finish_reason,
                                             }],
@@ -616,15 +621,24 @@ mod tests {
         let messages = vec![
             ChatMessage {
                 role: "system".to_string(),
-                content: "You are helpful".to_string(),
+                content: super::ChatMessageContent::Text("You are helpful".to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
             },
             ChatMessage {
                 role: "user".to_string(),
-                content: "Hello".to_string(),
+                content: super::ChatMessageContent::Text("Hello".to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
             },
             ChatMessage {
                 role: "assistant".to_string(),
-                content: "Hi there!".to_string(),
+                content: super::ChatMessageContent::Text("Hi there!".to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
             },
         ];
 
@@ -673,7 +687,10 @@ mod tests {
             model: "gemini-1.5-flash".to_string(),
             messages: vec![ChatMessage {
                 role: "user".to_string(),
-                content: "Say hello in one word".to_string(),
+                content: super::ChatMessageContent::Text("Say hello in one word".to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
             }],
             temperature: Some(0.7),
             max_tokens: Some(10),
@@ -690,6 +707,6 @@ mod tests {
 
         let response = provider.complete(request).await.unwrap();
         assert_eq!(response.choices.len(), 1);
-        assert!(!response.choices[0].message.content.is_empty());
+        assert!(!response.choices[0].message.content.as_text().is_empty());
     }
 }

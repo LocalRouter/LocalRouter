@@ -224,6 +224,7 @@ impl ModelProvider for XAIProvider {
                 .collect(),
             usage: xai_response.usage,
             extensions: None,
+            routellm_win_rate: None,
         })
     }
 

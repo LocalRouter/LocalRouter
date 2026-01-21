@@ -205,6 +205,7 @@ impl ModelProvider for CerebrasProvider {
                 .collect(),
             usage: cerebras_response.usage,
             extensions: None,
+            routellm_win_rate: None,
         })
     }
 

@@ -245,6 +245,7 @@ impl ModelProvider for TogetherAIProvider {
                 .collect(),
             usage: together_response.usage,
             extensions: None,
+            routellm_win_rate: None,
         })
     }
 

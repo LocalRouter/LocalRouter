@@ -187,6 +187,28 @@ struct OllamaModelDetails {
     parameter_size: Option<String>,
 }
 
+// Ollama Embeddings API types
+#[derive(Debug, Serialize)]
+struct OllamaEmbedRequest {
+    model: String,
+    input: OllamaEmbedInput,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+enum OllamaEmbedInput {
+    Single(String),
+    Multiple(Vec<String>),
+}
+
+#[derive(Debug, Deserialize)]
+struct OllamaEmbedResponse {
+    #[serde(default)]
+    embedding: Option<Vec<f32>>,
+    #[serde(default)]
+    embeddings: Option<Vec<Vec<f32>>>,
+}
+
 #[async_trait]
 #[allow(dead_code)]
 impl ModelProvider for OllamaProvider {
@@ -353,6 +375,7 @@ impl ModelProvider for OllamaProvider {
                 completion_tokens_details: None,
             },
             extensions: None,
+            routellm_win_rate: None,
         })
     }
 
@@ -438,7 +461,7 @@ impl ModelProvider for OllamaProvider {
                         match serde_json::from_str::<OllamaStreamResponse>(&line) {
                             Ok(ollama_chunk) => {
                                 // Ollama sends incremental/delta content directly, not cumulative
-                                let delta_content = ollama_chunk.message.content;
+                                let delta_content = ollama_chunk.message.content.as_text();
                                 let mut first = is_first_chunk.lock().unwrap();
                                 let is_first = *first;
 
@@ -464,6 +487,7 @@ impl ModelProvider for OllamaProvider {
                                             } else {
                                                 None
                                             },
+                                            tool_calls: None,
                                         },
                                         finish_reason: if ollama_chunk.done {
                                             Some("stop".to_string())
@@ -493,6 +517,81 @@ impl ModelProvider for OllamaProvider {
         });
 
         Ok(Box::pin(converted_stream))
+    }
+
+    async fn embed(&self, request: super::EmbeddingRequest) -> AppResult<super::EmbeddingResponse> {
+        // Convert input to Ollama format
+        let (input, is_multiple) = match request.input {
+            super::EmbeddingInput::Single(text) => (OllamaEmbedInput::Single(text), false),
+            super::EmbeddingInput::Multiple(texts) => (OllamaEmbedInput::Multiple(texts), true),
+            super::EmbeddingInput::Tokens(_) => {
+                return Err(AppError::Provider(
+                    "Ollama embeddings do not support pre-tokenized input".to_string(),
+                ));
+            }
+        };
+
+        let ollama_request = OllamaEmbedRequest {
+            model: request.model.clone(),
+            input,
+        };
+
+        let url = format!("{}/api/embed", self.base_url);
+
+        let response = self
+            .http_client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .json(&ollama_request)
+            .send()
+            .await
+            .map_err(|e| AppError::Provider(format!("Ollama embed request failed: {}", e)))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(AppError::Provider(format!(
+                "Ollama embed API error {}: {}",
+                status, error_text
+            )));
+        }
+
+        let ollama_response: OllamaEmbedResponse = response
+            .json()
+            .await
+            .map_err(|e| AppError::Provider(format!("Failed to parse Ollama embed response: {}", e)))?;
+
+        // Convert Ollama response to our generic format
+        let embeddings = if is_multiple {
+            ollama_response
+                .embeddings
+                .ok_or_else(|| AppError::Provider("No embeddings in response".to_string()))?
+        } else {
+            vec![ollama_response
+                .embedding
+                .ok_or_else(|| AppError::Provider("No embedding in response".to_string()))?]
+        };
+
+        // Ollama doesn't return token usage, estimate it
+        let estimated_tokens = 10u32; // Rough estimate
+
+        Ok(super::EmbeddingResponse {
+            object: "list".to_string(),
+            data: embeddings
+                .into_iter()
+                .enumerate()
+                .map(|(index, embedding)| super::Embedding {
+                    object: "embedding".to_string(),
+                    embedding: Some(embedding),
+                    index,
+                })
+                .collect(),
+            model: request.model,
+            usage: super::EmbeddingUsage {
+                prompt_tokens: estimated_tokens,
+                total_tokens: estimated_tokens,
+            },
+        })
     }
 }
 

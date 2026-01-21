@@ -535,6 +535,7 @@ mod tests {
                 completion_tokens_details: None,
             },
             extensions: Some(extensions),
+            routellm_win_rate: None,
         };
 
         let result = adapter.adapt_response(&mut response);
@@ -573,6 +574,7 @@ mod tests {
                 completion_tokens_details: None,
             },
             extensions: None,
+            routellm_win_rate: None,
         };
 
         let result = adapter.adapt_response(&mut response);

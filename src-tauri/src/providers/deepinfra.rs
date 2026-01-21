@@ -245,6 +245,7 @@ impl ModelProvider for DeepInfraProvider {
                 .collect(),
             usage: deepinfra_response.usage,
             extensions: None,
+            routellm_win_rate: None,
         })
     }
 

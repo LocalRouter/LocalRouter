@@ -337,6 +337,7 @@ impl ModelProvider for LMStudioProvider {
                 completion_tokens_details: None,
             },
             extensions: None,
+            routellm_win_rate: None,
         })
     }
 
@@ -415,6 +416,7 @@ impl ModelProvider for LMStudioProvider {
                                                 delta: ChunkDelta {
                                                     role: choice.delta.role,
                                                     content: choice.delta.content,
+                                                    tool_calls: None,
                                                 },
                                                 finish_reason: choice.finish_reason,
                                             })

@@ -83,6 +83,12 @@ struct OpenAIChatRequest {
     stop: Option<Vec<String>>,
     #[serde(default)]
     stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Vec<super::Tool>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_choice: Option<super::ToolChoice>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    response_format: Option<super::ResponseFormat>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -131,6 +137,49 @@ struct OpenAIDelta {
     role: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_calls: Option<Vec<super::ToolCallDelta>>,
+}
+
+// OpenAI Embeddings API types
+#[derive(Debug, Serialize)]
+struct OpenAIEmbeddingRequest {
+    model: String,
+    input: OpenAIEmbeddingInput,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    encoding_format: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dimensions: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    user: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+enum OpenAIEmbeddingInput {
+    Single(String),
+    Multiple(Vec<String>),
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAIEmbeddingResponse {
+    object: String,
+    data: Vec<OpenAIEmbedding>,
+    model: String,
+    usage: OpenAIEmbeddingUsage,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAIEmbedding {
+    object: String,
+    embedding: Vec<f32>,
+    index: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAIEmbeddingUsage {
+    prompt_tokens: u32,
+    total_tokens: u32,
 }
 
 #[async_trait]
@@ -242,6 +291,9 @@ impl ModelProvider for OpenAICompatibleProvider {
             presence_penalty: request.presence_penalty,
             stop: request.stop,
             stream: false,
+            tools: request.tools,
+            tool_choice: request.tool_choice,
+            response_format: request.response_format,
         };
 
         let mut req = self
@@ -310,6 +362,7 @@ impl ModelProvider for OpenAICompatibleProvider {
                 completion_tokens_details: None,
             },
             extensions: None,
+            routellm_win_rate: None,
         })
     }
 
@@ -327,6 +380,9 @@ impl ModelProvider for OpenAICompatibleProvider {
             presence_penalty: request.presence_penalty,
             stop: request.stop,
             stream: true,
+            tools: request.tools,
+            tool_choice: request.tool_choice,
+            response_format: request.response_format,
         };
 
         let mut req = self
@@ -408,6 +464,7 @@ impl ModelProvider for OpenAICompatibleProvider {
                                                 delta: ChunkDelta {
                                                     role: choice.delta.role,
                                                     content: choice.delta.content,
+                                                    tool_calls: choice.delta.tool_calls,
                                                 },
                                                 finish_reason: choice.finish_reason,
                                             })
@@ -434,6 +491,85 @@ impl ModelProvider for OpenAICompatibleProvider {
         });
 
         Ok(Box::pin(stream))
+    }
+
+    async fn embed(&self, request: super::EmbeddingRequest) -> AppResult<super::EmbeddingResponse> {
+        // Convert our generic EmbeddingRequest to OpenAI-specific format
+        let input = match request.input {
+            super::EmbeddingInput::Single(text) => OpenAIEmbeddingInput::Single(text),
+            super::EmbeddingInput::Multiple(texts) => OpenAIEmbeddingInput::Multiple(texts),
+            super::EmbeddingInput::Tokens(_) => {
+                return Err(AppError::Provider(
+                    "OpenAI-compatible embeddings do not support pre-tokenized input".to_string(),
+                ));
+            }
+        };
+
+        let encoding_format = request.encoding_format.map(|format| match format {
+            super::EncodingFormat::Float => "float".to_string(),
+            super::EncodingFormat::Base64 => "base64".to_string(),
+        });
+
+        let openai_request = OpenAIEmbeddingRequest {
+            model: request.model.clone(),
+            input,
+            encoding_format,
+            dimensions: request.dimensions,
+            user: request.user,
+        };
+
+        let mut http_request = self
+            .client
+            .post(format!("{}/embeddings", self.base_url))
+            .header("Content-Type", "application/json")
+            .json(&openai_request);
+
+        if let Some(auth) = self.auth_header() {
+            http_request = http_request.header("Authorization", auth);
+        }
+
+        let response = http_request
+            .send()
+            .await
+            .map_err(|e| AppError::Provider(format!("Request failed: {}", e)))?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let error_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
+
+            return Err(match status {
+                StatusCode::UNAUTHORIZED => AppError::Unauthorized,
+                StatusCode::TOO_MANY_REQUESTS => AppError::RateLimitExceeded,
+                _ => AppError::Provider(format!("API error ({}): {}", status, error_text)),
+            });
+        }
+
+        let openai_response: OpenAIEmbeddingResponse = response
+            .json()
+            .await
+            .map_err(|e| AppError::Provider(format!("Failed to parse response: {}", e)))?;
+
+        // Convert OpenAI response to our generic format
+        Ok(super::EmbeddingResponse {
+            object: openai_response.object,
+            data: openai_response
+                .data
+                .into_iter()
+                .map(|emb| super::Embedding {
+                    object: emb.object,
+                    embedding: Some(emb.embedding),
+                    index: emb.index,
+                })
+                .collect(),
+            model: openai_response.model,
+            usage: super::EmbeddingUsage {
+                prompt_tokens: openai_response.usage.prompt_tokens,
+                total_tokens: openai_response.usage.total_tokens,
+            },
+        })
     }
 }
 

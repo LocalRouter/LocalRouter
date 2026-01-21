@@ -278,6 +278,7 @@ impl ModelProvider for GroqProvider {
                 .collect(),
             usage: groq_response.usage,
             extensions: None,
+            routellm_win_rate: None,
         })
     }
 

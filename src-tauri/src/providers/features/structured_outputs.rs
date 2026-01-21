@@ -180,7 +180,10 @@ impl FeatureAdapter for StructuredOutputsAdapter {
                 // Add to beginning of messages as a system message
                 let system_message = crate::providers::ChatMessage {
                     role: "system".to_string(),
-                    content: schema_prompt,
+                    content: crate::providers::ChatMessageContent::Text(schema_prompt),
+                    tool_calls: None,
+                    tool_call_id: None,
+                    name: None,
                 };
                 request.messages.insert(0, system_message);
 
@@ -213,7 +216,8 @@ impl FeatureAdapter for StructuredOutputsAdapter {
 
         // Validate each choice against schema
         for choice in &response.choices {
-            Self::validate_response(&choice.message.content, schema)?;
+            let content_text = choice.message.content.as_text();
+            Self::validate_response(&content_text, schema)?;
         }
 
         // Return validation success metadata
@@ -378,7 +382,7 @@ mod tests {
         // Check that system message was added
         assert_eq!(request.messages.len(), 1);
         assert_eq!(request.messages[0].role, "system");
-        assert!(request.messages[0].content.contains("schema"));
+        assert!(request.messages[0].content.as_str().contains("schema"));
 
         // Check that schema was stored in extensions
         assert!(request.extensions.is_some());
@@ -480,7 +484,10 @@ mod tests {
                 index: 0,
                 message: crate::providers::ChatMessage {
                     role: "assistant".to_string(),
-                    content: r#"{"result": "success"}"#.to_string(),
+                    content: crate::providers::ChatMessageContent::Text(r#"{"result": "success"}"#.to_string()),
+                    tool_calls: None,
+                    tool_call_id: None,
+                    name: None,
                 },
                 finish_reason: Some("stop".to_string()),
             }],
@@ -492,6 +499,7 @@ mod tests {
                 completion_tokens_details: None,
             },
             extensions: Some(extensions),
+            routellm_win_rate: None,
         };
 
         let result = adapter.adapt_response(&mut response);
@@ -530,7 +538,10 @@ mod tests {
                 index: 0,
                 message: crate::providers::ChatMessage {
                     role: "assistant".to_string(),
-                    content: r#"{"wrong_field": "value"}"#.to_string(),
+                    content: crate::providers::ChatMessageContent::Text(r#"{"wrong_field": "value"}"#.to_string()),
+                    tool_calls: None,
+                    tool_call_id: None,
+                    name: None,
                 },
                 finish_reason: Some("stop".to_string()),
             }],
@@ -542,6 +553,7 @@ mod tests {
                 completion_tokens_details: None,
             },
             extensions: Some(extensions),
+            routellm_win_rate: None,
         };
 
         let result = adapter.adapt_response(&mut response);

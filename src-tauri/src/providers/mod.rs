@@ -432,15 +432,183 @@ pub struct CompletionRequest {
     /// Provider-specific extensions (Phase 3)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub extensions: Option<std::collections::HashMap<String, serde_json::Value>>,
+
+    // Tool calling (Bug #4 fix)
+    /// Tool definitions for function calling
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<Tool>>,
+    /// Tool choice mode (auto, none, or specific function)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_choice: Option<ToolChoice>,
+
+    // Response format (Bug #7 fix)
+    /// Response format specification for structured outputs
+    /// Note: Providers should enforce this using their native JSON mode or structured output features
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_format: Option<ResponseFormat>,
+}
+
+/// Tool definition for function calling
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct Tool {
+    #[serde(rename = "type")]
+    pub tool_type: String,
+    pub function: FunctionDefinition,
+}
+
+/// Function definition for tools
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct FunctionDefinition {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub parameters: serde_json::Value,
+}
+
+/// Function name for tool choice
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct FunctionName {
+    pub name: String,
+}
+
+/// Tool choice mode
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(untagged)]
+pub enum ToolChoice {
+    /// Auto mode - let the model decide
+    Auto(String),
+    /// Specific tool selection
+    Specific {
+        #[serde(rename = "type")]
+        tool_type: String,
+        function: FunctionName,
+    },
+}
+
+/// Tool call in the assistant's response
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ToolCall {
+    /// Unique ID for this tool call
+    pub id: String,
+    /// Type of tool (always "function" for now)
+    #[serde(rename = "type")]
+    pub tool_type: String,
+    /// Function call details
+    pub function: FunctionCall,
+}
+
+/// Function call details
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct FunctionCall {
+    /// Function name
+    pub name: String,
+    /// Function arguments (JSON string)
+    pub arguments: String,
+}
+
+/// Response format specification for structured outputs
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(untagged)]
+pub enum ResponseFormat {
+    /// JSON object mode - response will be valid JSON
+    JsonObject {
+        #[serde(rename = "type")]
+        format_type: String,
+    },
+    /// JSON schema mode - response will conform to schema
+    JsonSchema {
+        #[serde(rename = "type")]
+        format_type: String,
+        /// JSON schema definition
+        schema: serde_json::Value,
+    },
+}
+
+/// Image URL for multimodal messages
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ImageUrl {
+    pub url: String,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+/// Content part for multimodal messages
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ContentPart {
+    Text { text: String },
+    ImageUrl { image_url: ImageUrl },
+}
+
+/// Message content - either simple text or multimodal parts
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(untagged)]
+pub enum ChatMessageContent {
+    Text(String),
+    Parts(Vec<ContentPart>),
+}
+
+impl ChatMessageContent {
+    /// Extract text content from the message, ignoring images
+    pub fn as_text(&self) -> String {
+        match self {
+            ChatMessageContent::Text(text) => text.clone(),
+            ChatMessageContent::Parts(parts) => {
+                parts
+                    .iter()
+                    .filter_map(|part| match part {
+                        ContentPart::Text { text } => Some(text.clone()),
+                        ContentPart::ImageUrl { .. } => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            }
+        }
+    }
+
+    /// Check if this message contains any images
+    pub fn has_images(&self) -> bool {
+        match self {
+            ChatMessageContent::Text(_) => false,
+            ChatMessageContent::Parts(parts) => parts.iter().any(|part| matches!(part, ContentPart::ImageUrl { .. })),
+        }
+    }
+
+    /// Get a reference to text content as a string slice
+    /// For multimodal content, extracts and concatenates text parts
+    pub fn as_str(&self) -> std::borrow::Cow<'_, str> {
+        match self {
+            ChatMessageContent::Text(text) => std::borrow::Cow::Borrowed(text.as_str()),
+            ChatMessageContent::Parts(_) => std::borrow::Cow::Owned(self.as_text()),
+        }
+    }
+
+    /// Check if the content is empty (no text or images)
+    pub fn is_empty(&self) -> bool {
+        match self {
+            ChatMessageContent::Text(text) => text.is_empty(),
+            ChatMessageContent::Parts(parts) => parts.is_empty(),
+        }
+    }
 }
 
 /// Chat message
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ChatMessage {
-    /// Role (system, user, assistant)
+    /// Role (system, user, assistant, tool)
     pub role: String,
-    /// Message content
-    pub content: String,
+    /// Message content (text or multimodal)
+    pub content: ChatMessageContent,
+    /// Tool calls made by the assistant (only for assistant role)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<ToolCall>>,
+    /// Tool call ID (only for tool role)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    /// Function name (deprecated, use tool_calls instead)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 /// Chat completion response
@@ -463,6 +631,9 @@ pub struct CompletionResponse {
     /// Provider-specific extensions (Phase 3)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub extensions: Option<std::collections::HashMap<String, serde_json::Value>>,
+    /// RouteLLM win rate (0.0-1.0) if RouteLLM routing was used
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub routellm_win_rate: Option<f32>,
 }
 
 /// Completion choice
@@ -472,7 +643,7 @@ pub struct CompletionChoice {
     pub index: u32,
     /// Message content
     pub message: ChatMessage,
-    /// Finish reason ("stop", "length", "content_filter")
+    /// Finish reason ("stop", "length", "content_filter", "tool_calls")
     pub finish_reason: Option<String>,
 }
 
@@ -565,6 +736,30 @@ pub struct ChunkDelta {
     /// Content delta
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
+    /// Tool calls delta (for streaming tool calls)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<ToolCallDelta>>,
+}
+
+/// Tool call delta for streaming
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ToolCallDelta {
+    pub index: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub tool_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub function: Option<FunctionCallDelta>,
+}
+
+/// Function call delta for streaming
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct FunctionCallDelta {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arguments: Option<String>,
 }
 
 // ==================== EMBEDDING TYPES ====================

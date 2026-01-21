@@ -127,7 +127,10 @@ impl FeatureAdapter for JsonModeAdapter {
                 let instruction = Self::create_json_instruction();
                 let system_message = crate::providers::ChatMessage {
                     role: "system".to_string(),
-                    content: instruction,
+                    content: crate::providers::ChatMessageContent::Text(instruction),
+                    tool_calls: None,
+                    tool_call_id: None,
+                    name: None,
                 };
                 request.messages.insert(0, system_message);
             }
@@ -162,7 +165,8 @@ impl FeatureAdapter for JsonModeAdapter {
 
         // Validate each choice contains valid JSON
         for (idx, choice) in response.choices.iter().enumerate() {
-            let parsed = Self::validate_json(&choice.message.content).map_err(|e| {
+            let content_text = choice.message.content.as_text();
+            let parsed = Self::validate_json(&content_text).map_err(|e| {
                 AppError::Provider(format!("Choice {} failed JSON validation: {}", idx, e))
             })?;
 
@@ -318,7 +322,7 @@ mod tests {
         // Check system message was added
         assert_eq!(request.messages.len(), 1);
         assert_eq!(request.messages[0].role, "system");
-        assert!(request.messages[0].content.contains("valid JSON"));
+        assert!(request.messages[0].content.as_str().contains("valid JSON"));
 
         // Check validation flag was set
         assert!(request.extensions.is_some());
@@ -374,7 +378,10 @@ mod tests {
                 index: 0,
                 message: crate::providers::ChatMessage {
                     role: "assistant".to_string(),
-                    content: r#"{"result": "success", "count": 42}"#.to_string(),
+                    content: crate::providers::ChatMessageContent::Text(r#"{"result": "success", "count": 42}"#.to_string()),
+                    tool_calls: None,
+                    tool_call_id: None,
+                    name: None,
                 },
                 finish_reason: Some("stop".to_string()),
             }],
@@ -386,6 +393,7 @@ mod tests {
                 completion_tokens_details: None,
             },
             extensions: Some(extensions),
+            routellm_win_rate: None,
         };
 
         let result = adapter.adapt_response(&mut response);
@@ -417,7 +425,10 @@ mod tests {
                 index: 0,
                 message: crate::providers::ChatMessage {
                     role: "assistant".to_string(),
-                    content: "This is not valid JSON".to_string(),
+                    content: crate::providers::ChatMessageContent::Text("This is not valid JSON".to_string()),
+                    tool_calls: None,
+                    tool_call_id: None,
+                    name: None,
                 },
                 finish_reason: Some("stop".to_string()),
             }],
@@ -429,6 +440,7 @@ mod tests {
                 completion_tokens_details: None,
             },
             extensions: Some(extensions),
+            routellm_win_rate: None,
         };
 
         let result = adapter.adapt_response(&mut response);
@@ -458,6 +470,7 @@ mod tests {
                 completion_tokens_details: None,
             },
             extensions: None,
+            routellm_win_rate: None,
         };
 
         let result = adapter.adapt_response(&mut response);

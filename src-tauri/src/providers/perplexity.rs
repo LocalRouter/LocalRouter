@@ -251,6 +251,7 @@ impl ModelProvider for PerplexityProvider {
                 .collect(),
             usage: perplexity_response.usage,
             extensions: None,
+            routellm_win_rate: None,
         })
     }
 

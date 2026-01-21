@@ -112,11 +112,11 @@ impl CohereProvider {
 
         for msg in &request.messages {
             match msg.role.as_str() {
-                "system" => system_message = Some(msg.content.clone()),
-                "user" => user_message = msg.content.clone(),
+                "system" => system_message = Some(msg.content.as_text()),
+                "user" => user_message = msg.content.as_text(),
                 "assistant" => chat_history.push(CohereMessage {
                     role: "CHATBOT".to_string(),
-                    content: msg.content.clone(),
+                    content: msg.content.as_text(),
                 }),
                 _ => {}
             }
@@ -189,6 +189,32 @@ struct CohereUsage {
 struct CohereTokens {
     input_tokens: u32,
     output_tokens: u32,
+}
+
+// Cohere Embeddings API types
+#[derive(Debug, Serialize)]
+struct CohereEmbedRequest {
+    model: String,
+    texts: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    input_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    embedding_types: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CohereEmbedResponse {
+    id: String,
+    embeddings: CohereEmbeddings,
+    texts: Vec<String>,
+    #[allow(dead_code)]
+    meta: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CohereEmbeddings {
+    #[serde(default)]
+    float: Option<Vec<Vec<f32>>>,
 }
 
 #[async_trait]
@@ -318,7 +344,10 @@ impl ModelProvider for CohereProvider {
                 index: 0,
                 message: ChatMessage {
                     role: "assistant".to_string(),
-                    content,
+                    content: super::ChatMessageContent::Text(content),
+                    tool_calls: None,
+                    tool_call_id: None,
+                    name: None,
                 },
                 finish_reason: Some(cohere_response.finish_reason),
             }],
@@ -331,6 +360,7 @@ impl ModelProvider for CohereProvider {
                 completion_tokens_details: None,
             },
             extensions: None,
+            routellm_win_rate: None,
         })
     }
 
@@ -342,6 +372,82 @@ impl ModelProvider for CohereProvider {
         Err(AppError::Provider(
             "Streaming not yet implemented for Cohere".to_string(),
         ))
+    }
+
+    async fn embed(&self, request: super::EmbeddingRequest) -> AppResult<super::EmbeddingResponse> {
+        // Convert input to Cohere format (only supports multiple texts)
+        let texts = match request.input {
+            super::EmbeddingInput::Single(text) => vec![text],
+            super::EmbeddingInput::Multiple(texts) => texts,
+            super::EmbeddingInput::Tokens(_) => {
+                return Err(AppError::Provider(
+                    "Cohere embeddings do not support pre-tokenized input".to_string(),
+                ));
+            }
+        };
+
+        // Cohere requires input_type for v3 models
+        // Default to "search_document" for general purpose embeddings
+        let cohere_request = CohereEmbedRequest {
+            model: request.model.clone(),
+            texts,
+            input_type: Some("search_document".to_string()),
+            embedding_types: Some(vec!["float".to_string()]),
+        };
+
+        let url = format!("{}/embed", self.base_url);
+
+        let response = self
+            .client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("Content-Type", "application/json")
+            .json(&cohere_request)
+            .send()
+            .await
+            .map_err(|e| AppError::Provider(format!("Cohere embed request failed: {}", e)))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(AppError::Provider(format!(
+                "Cohere embed API error {}: {}",
+                status, error_text
+            )));
+        }
+
+        let cohere_response: CohereEmbedResponse = response
+            .json()
+            .await
+            .map_err(|e| AppError::Provider(format!("Failed to parse Cohere embed response: {}", e)))?;
+
+        // Convert Cohere response to our generic format
+        let embeddings = cohere_response
+            .embeddings
+            .float
+            .ok_or_else(|| AppError::Provider("No float embeddings in response".to_string()))?;
+
+        // Estimate token usage (Cohere doesn't return this for embeddings)
+        let total_chars: usize = cohere_response.texts.iter().map(|t| t.len()).sum();
+        let estimated_tokens = (total_chars / 4).max(1) as u32; // Rough estimate: 4 chars per token
+
+        Ok(super::EmbeddingResponse {
+            object: "list".to_string(),
+            data: embeddings
+                .into_iter()
+                .enumerate()
+                .map(|(index, embedding)| super::Embedding {
+                    object: "embedding".to_string(),
+                    embedding: Some(embedding),
+                    index,
+                })
+                .collect(),
+            model: request.model,
+            usage: super::EmbeddingUsage {
+                prompt_tokens: estimated_tokens,
+                total_tokens: estimated_tokens,
+            },
+        })
     }
 }
 

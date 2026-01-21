@@ -82,12 +82,12 @@ impl AnthropicProvider {
                             "Multiple system messages not supported".to_string(),
                         ));
                     }
-                    system_prompt = Some(msg.content.clone());
+                    system_prompt = Some(msg.content.as_text());
                 }
                 "user" | "assistant" => {
                     anthropic_messages.push(AnthropicMessage {
                         role: msg.role.clone(),
-                        content: msg.content.clone(),
+                        content: msg.content.as_text(),
                     });
                 }
                 _ => {
@@ -384,7 +384,10 @@ impl ModelProvider for AnthropicProvider {
                 index: 0,
                 message: ChatMessage {
                     role: "assistant".to_string(),
-                    content,
+                    content: super::ChatMessageContent::Text(content),
+                    tool_calls: None,
+                    tool_call_id: None,
+                    name: None,
                 },
                 finish_reason: Some(
                     anthropic_response
@@ -401,6 +404,7 @@ impl ModelProvider for AnthropicProvider {
                 completion_tokens_details: None,
             },
             extensions: None,
+            routellm_win_rate: None,
         })
     }
 
@@ -499,6 +503,7 @@ impl ModelProvider for AnthropicProvider {
                                                             delta: ChunkDelta {
                                                                 role: None,
                                                                 content: Some(text),
+                                                                tool_calls: None,
                                                             },
                                                             finish_reason: None,
                                                         }],
@@ -519,6 +524,7 @@ impl ModelProvider for AnthropicProvider {
                                                     delta: ChunkDelta {
                                                         role: None,
                                                         content: None,
+                                                        tool_calls: None,
                                                     },
                                                     finish_reason: Some("stop".to_string()),
                                                 }],
@@ -650,11 +656,17 @@ mod tests {
         let messages = vec![
             ChatMessage {
                 role: "system".to_string(),
-                content: "You are a helpful assistant.".to_string(),
+                content: super::ChatMessageContent::Text("You are a helpful assistant.".to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
             },
             ChatMessage {
                 role: "user".to_string(),
-                content: "Hello!".to_string(),
+                content: super::ChatMessageContent::Text("Hello!".to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
             },
         ];
 
@@ -671,11 +683,17 @@ mod tests {
         let messages = vec![
             ChatMessage {
                 role: "user".to_string(),
-                content: "Hello!".to_string(),
+                content: super::ChatMessageContent::Text("Hello!".to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
             },
             ChatMessage {
                 role: "assistant".to_string(),
-                content: "Hi there!".to_string(),
+                content: super::ChatMessageContent::Text("Hi there!".to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
             },
         ];
 
