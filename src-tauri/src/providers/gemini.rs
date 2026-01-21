@@ -12,7 +12,7 @@ use std::time::Instant;
 use tracing::{debug, error, warn};
 
 use super::{
-    Capability, ChatMessage, ChatMessageContent, ChunkChoice, ChunkDelta, CompletionChoice,
+    Capability, ChatMessage, ChunkChoice, ChunkDelta, CompletionChoice,
     CompletionChunk, CompletionRequest, CompletionResponse, HealthStatus, ModelInfo,
     ModelProvider, PricingInfo, ProviderHealth, TokenUsage,
 };
@@ -504,6 +504,94 @@ impl ModelProvider for GeminiProvider {
             )),
             _ => None,
         }
+    }
+
+    async fn embed(&self, request: super::EmbeddingRequest) -> AppResult<super::EmbeddingResponse> {
+        // Gemini only supports single text input for embeddings
+        let text = match request.input {
+            super::EmbeddingInput::Single(text) => text,
+            super::EmbeddingInput::Multiple(_texts) => {
+                // For multiple inputs, we need to make separate requests
+                // For now, return error - we can implement batch later
+                return Err(AppError::Provider(
+                    "Gemini embeddings currently only support single text input. Use multiple requests for batch processing.".to_string(),
+                ));
+            }
+            super::EmbeddingInput::Tokens(_) => {
+                return Err(AppError::Provider(
+                    "Gemini embeddings do not support pre-tokenized input".to_string(),
+                ));
+            }
+        };
+
+        // Gemini embeddings use the embedContent endpoint
+        let url = format!(
+            "{}/models/{}:embedContent?key={}",
+            self.base_url, request.model, self.api_key
+        );
+
+        let gemini_request = serde_json::json!({
+            "content": {
+                "parts": [
+                    {
+                        "text": text
+                    }
+                ]
+            }
+        });
+
+        let response = self
+            .client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .json(&gemini_request)
+            .send()
+            .await
+            .map_err(|e| AppError::Provider(format!("Gemini request failed: {}", e)))?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let error_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
+
+            return Err(AppError::Provider(format!(
+                "Gemini API error ({}): {}",
+                status, error_text
+            )));
+        }
+
+        let gemini_response: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| AppError::Provider(format!("Failed to parse response: {}", e)))?;
+
+        // Extract embedding values from Gemini response
+        let embedding_values = gemini_response["embedding"]["values"]
+            .as_array()
+            .ok_or_else(|| AppError::Provider("No embedding values in response".to_string()))?
+            .iter()
+            .map(|v| v.as_f64().unwrap_or(0.0) as f32)
+            .collect::<Vec<f32>>();
+
+        // Gemini doesn't return token usage for embeddings, estimate it
+        let estimated_tokens = (text.len() / 4).max(1) as u32;
+
+        // Convert to our generic format
+        Ok(super::EmbeddingResponse {
+            object: "list".to_string(),
+            data: vec![super::Embedding {
+                object: "embedding".to_string(),
+                embedding: Some(embedding_values),
+                index: 0,
+            }],
+            model: request.model,
+            usage: super::EmbeddingUsage {
+                prompt_tokens: estimated_tokens,
+                total_tokens: estimated_tokens,
+            },
+        })
     }
 }
 

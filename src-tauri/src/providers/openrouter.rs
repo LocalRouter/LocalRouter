@@ -296,7 +296,6 @@ impl ModelProvider for OpenRouterProvider {
                     index: choice.index,
                     message: choice.message,
                     finish_reason: choice.finish_reason,
-                    logprobs: None,
                     logprobs: None, // OpenRouter does not support logprobs
                 })
                 .collect(),
@@ -390,6 +389,99 @@ impl ModelProvider for OpenRouterProvider {
         });
 
         Ok(Box::pin(stream))
+    }
+
+    async fn embed(&self, request: super::EmbeddingRequest) -> AppResult<super::EmbeddingResponse> {
+        // OpenRouter uses OpenAI-compatible embeddings API
+        let input = match request.input {
+            super::EmbeddingInput::Single(text) => serde_json::json!(text),
+            super::EmbeddingInput::Multiple(texts) => serde_json::json!(texts),
+            super::EmbeddingInput::Tokens(_) => {
+                return Err(AppError::Provider(
+                    "OpenRouter embeddings do not support pre-tokenized input".to_string(),
+                ));
+            }
+        };
+
+        let mut embed_request = serde_json::json!({
+            "model": request.model,
+            "input": input,
+        });
+
+        if let Some(fmt) = request.encoding_format {
+            let format_str = match fmt {
+                super::EncodingFormat::Float => "float",
+                super::EncodingFormat::Base64 => "base64",
+            };
+            embed_request["encoding_format"] = serde_json::json!(format_str);
+        }
+
+        if let Some(dims) = request.dimensions {
+            embed_request["dimensions"] = serde_json::json!(dims);
+        }
+
+        let response = self
+            .client
+            .post(format!("{}/embeddings", OPENROUTER_API_BASE))
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("Content-Type", "application/json")
+            .json(&embed_request)
+            .send()
+            .await
+            .map_err(|e| AppError::Provider(format!("Request failed: {}", e)))?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let error_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
+
+            return Err(AppError::Provider(format!(
+                "OpenRouter API error ({}): {}",
+                status, error_text
+            )));
+        }
+
+        let api_response: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| AppError::Provider(format!("Failed to parse response: {}", e)))?;
+
+        // Parse OpenAI-compatible response
+        let data = api_response["data"]
+            .as_array()
+            .ok_or_else(|| AppError::Provider("No data array in response".to_string()))?;
+
+        let embeddings: Vec<super::Embedding> = data
+            .iter()
+            .map(|item| {
+                let embedding_array = item["embedding"].as_array()
+                    .ok_or_else(|| AppError::Provider("No embedding array in data item".to_string()))?;
+                let embedding: Vec<f32> = embedding_array
+                    .iter()
+                    .map(|v| v.as_f64().unwrap_or(0.0) as f32)
+                    .collect();
+                Ok(super::Embedding {
+                    object: item["object"].as_str().unwrap_or("embedding").to_string(),
+                    embedding: Some(embedding),
+                    index: item["index"].as_u64().unwrap_or(0) as usize,
+                })
+            })
+            .collect::<AppResult<Vec<_>>>()?;
+
+        let usage = api_response["usage"].as_object()
+            .ok_or_else(|| AppError::Provider("No usage in response".to_string()))?;
+
+        Ok(super::EmbeddingResponse {
+            object: api_response["object"].as_str().unwrap_or("list").to_string(),
+            data: embeddings,
+            model: api_response["model"].as_str().unwrap_or(&request.model).to_string(),
+            usage: super::EmbeddingUsage {
+                prompt_tokens: usage["prompt_tokens"].as_u64().unwrap_or(0) as u32,
+                total_tokens: usage["total_tokens"].as_u64().unwrap_or(0) as u32,
+            },
+        })
     }
 }
 
@@ -545,8 +637,6 @@ mod tests {
             seed: None,
             repetition_penalty: None,
             extensions: None,
-            logprobs: None,
-            top_logprobs: None,
             response_format: None,
             tool_choice: None,
             tools: None,
