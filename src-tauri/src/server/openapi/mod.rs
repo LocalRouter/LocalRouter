@@ -39,9 +39,10 @@ use utoipa::OpenApi;
         // Generation tracking
         crate::server::routes::generation::get_generation,
 
-        // MCP proxy
-        crate::server::routes::mcp::mcp_proxy_handler,
-        crate::server::routes::mcp::mcp_health_handler,
+        // MCP endpoints
+        crate::server::routes::mcp::mcp_gateway_handler,
+        crate::server::routes::mcp::mcp_server_handler,
+        crate::server::routes::mcp::mcp_server_streaming_handler,
 
         // OAuth endpoints
         crate::server::routes::oauth::token_endpoint,
@@ -225,10 +226,8 @@ mod tests {
             .paths
             .contains_key("/v1/models/{provider}/{model}/pricing"));
         assert!(spec.paths.paths.contains_key("/v1/generation"));
-        assert!(spec
-            .paths
-            .paths
-            .contains_key("/mcp/{client_id}/{server_id}"));
+        assert!(spec.paths.paths.contains_key("/mcp/{server_id}"));
+        assert!(spec.paths.paths.contains_key("/mcp/{server_id}/stream"));
         assert!(spec.paths.paths.contains_key("/health"));
         assert!(spec.paths.paths.contains_key("/"));
 

@@ -37,6 +37,22 @@ pub async fn list_models<B>(
         .get::<AuthContext>()
         .ok_or_else(|| ApiErrorResponse::unauthorized("Authentication required"))?;
 
+    // Get client and strategy from config
+    let config = state.config_manager.get();
+    let client = config
+        .clients
+        .iter()
+        .find(|c| c.id == auth_context.api_key_id)
+        .ok_or_else(|| ApiErrorResponse::unauthorized("Client not found"))?;
+
+    let strategy = config
+        .strategies
+        .iter()
+        .find(|s| s.id == client.strategy_id)
+        .ok_or_else(|| {
+            ApiErrorResponse::internal_error(format!("Strategy '{}' not found", client.strategy_id))
+        })?;
+
     // Get all models from provider registry
     let all_models = state
         .provider_registry
@@ -44,68 +60,42 @@ pub async fn list_models<B>(
         .await
         .map_err(|e| ApiErrorResponse::internal_error(format!("Failed to list models: {}", e)))?;
 
-    // Filter models based on API key's routing configuration
-    let filtered_models = if let Some(routing_config) = &auth_context.routing_config {
-        // Use new routing config system
-        use crate::config::ActiveRoutingStrategy;
-
-        match routing_config.active_strategy {
-            ActiveRoutingStrategy::AvailableModels => {
-                // Filter to only available models
-                all_models
-                    .into_iter()
-                    .filter(|m| routing_config.is_model_allowed(&m.provider, &m.id))
-                    .collect()
-            }
-            ActiveRoutingStrategy::ForceModel => {
-                // Return only the forced model
-                if let Some((forced_provider, forced_model)) = &routing_config.forced_model {
-                    all_models
-                        .into_iter()
-                        .filter(|m| {
-                            m.provider.eq_ignore_ascii_case(forced_provider)
-                                && m.id.eq_ignore_ascii_case(forced_model)
-                        })
-                        .collect()
-                } else {
-                    // No forced model configured - return empty
-                    vec![]
-                }
-            }
-            ActiveRoutingStrategy::PrioritizedList => {
-                // Return models in the prioritized list order
-                let mut prioritized = Vec::new();
-                for (provider, model) in &routing_config.prioritized_models {
-                    if let Some(model_info) = all_models.iter().find(|m| {
-                        m.provider.eq_ignore_ascii_case(provider)
-                            && m.id.eq_ignore_ascii_case(model)
-                    }) {
-                        prioritized.push(model_info.clone());
-                    }
-                }
-                prioritized
-            }
-        }
-    } else {
-        // Fallback to old model_selection for backward compatibility
-        match &auth_context.model_selection {
-            Some(selection) => {
-                // Use the is_model_allowed method to filter models
-                all_models
-                    .into_iter()
-                    .filter(|m| selection.is_model_allowed(&m.provider, &m.id))
-                    .collect()
-            }
-            None => {
-                // No model selection configured - allow all models
-                all_models
-            }
-        }
-    };
+    // Filter models by strategy's allowed models
+    let filtered_models: Vec<_> = all_models
+        .into_iter()
+        .filter(|model| {
+            // Check if model is allowed by strategy
+            strategy.is_model_allowed(&model.provider, &model.id)
+        })
+        .collect();
 
     // Convert to API response format
     let mut model_data_vec = Vec::new();
 
+    // Add localrouter/auto virtual model ONLY if auto_config is enabled
+    if let Some(auto_config) = &strategy.auto_config {
+        if auto_config.enabled {
+            model_data_vec.push(ModelData {
+                id: "localrouter/auto".to_string(),
+                object: "model".to_string(),
+                owned_by: "localrouter".to_string(),
+                created: Some(0),
+                provider: "localrouter".to_string(),
+                parameter_count: None,
+                context_window: 0, // Virtual model, delegates to actual models
+                supports_streaming: false, // Auto-routing not supported for streaming
+                capabilities: vec!["chat".to_string(), "completion".to_string()],
+                pricing: None,
+                detailed_capabilities: None,
+                features: None,
+                supported_parameters: None,
+                performance: None,
+                catalog_info: None,
+            });
+        }
+    }
+
+    // Add real models with pricing information
     for model_info in filtered_models {
         let mut model_data: ModelData = (&model_info).into();
 
@@ -160,6 +150,50 @@ pub async fn get_model<B>(
         .get::<AuthContext>()
         .ok_or_else(|| ApiErrorResponse::unauthorized("Authentication required"))?;
 
+    // Get client and strategy from config
+    let config = state.config_manager.get();
+    let client = config
+        .clients
+        .iter()
+        .find(|c| c.id == auth_context.api_key_id)
+        .ok_or_else(|| ApiErrorResponse::unauthorized("Client not found"))?;
+
+    let strategy = config
+        .strategies
+        .iter()
+        .find(|s| s.id == client.strategy_id)
+        .ok_or_else(|| {
+            ApiErrorResponse::internal_error(format!("Strategy '{}' not found", client.strategy_id))
+        })?;
+
+    // Special handling for localrouter/auto virtual model
+    if model_id == "localrouter/auto" {
+        if let Some(auto_config) = &strategy.auto_config {
+            if auto_config.enabled {
+                return Ok(Json(ModelData {
+                    id: "localrouter/auto".to_string(),
+                    object: "model".to_string(),
+                    owned_by: "localrouter".to_string(),
+                    created: Some(0),
+                    provider: "localrouter".to_string(),
+                    parameter_count: None,
+                    context_window: 0, // Virtual model, delegates to actual models
+                    supports_streaming: false, // Auto-routing not supported for streaming
+                    capabilities: vec!["chat".to_string(), "completion".to_string()],
+                    pricing: None,
+                    detailed_capabilities: None,
+                    features: None,
+                    supported_parameters: None,
+                    performance: None,
+                    catalog_info: None,
+                }));
+            }
+        }
+        return Err(ApiErrorResponse::not_found(
+            "localrouter/auto is not enabled for this client".to_string(),
+        ));
+    }
+
     // Get all models from provider registry
     let all_models = state
         .provider_registry
@@ -173,21 +207,12 @@ pub async fn get_model<B>(
         .find(|m| m.id == model_id)
         .ok_or_else(|| ApiErrorResponse::not_found(format!("Model '{}' not found", model_id)))?;
 
-    // Check if API key has access to this model
-    if let Some(routing_config) = &auth_context.routing_config {
-        if !routing_config.is_model_allowed(&model_info.provider, &model_info.id) {
-            return Err(ApiErrorResponse::forbidden(format!(
-                "API key does not have access to model '{}'",
-                model_id
-            )));
-        }
-    } else if let Some(selection) = &auth_context.model_selection {
-        if !selection.is_model_allowed(&model_info.provider, &model_info.id) {
-            return Err(ApiErrorResponse::forbidden(format!(
-                "API key does not have access to model '{}'",
-                model_id
-            )));
-        }
+    // Check if strategy allows access to this model
+    if !strategy.is_model_allowed(&model_info.provider, &model_info.id) {
+        return Err(ApiErrorResponse::forbidden(format!(
+            "API key does not have access to model '{}'",
+            model_id
+        )));
     }
 
     // Convert to API response format with enhanced details
@@ -239,21 +264,28 @@ pub async fn get_model_pricing<B>(
         .get::<AuthContext>()
         .ok_or_else(|| ApiErrorResponse::unauthorized("Authentication required"))?;
 
-    // Check if API key has access to this model
-    if let Some(routing_config) = &auth_context.routing_config {
-        if !routing_config.is_model_allowed(&provider, &model) {
-            return Err(ApiErrorResponse::forbidden(format!(
-                "API key does not have access to model '{}/{}'",
-                provider, model
-            )));
-        }
-    } else if let Some(selection) = &auth_context.model_selection {
-        if !selection.is_model_allowed(&provider, &model) {
-            return Err(ApiErrorResponse::forbidden(format!(
-                "API key does not have access to model '{}/{}'",
-                provider, model
-            )));
-        }
+    // Get client and strategy from config
+    let config = state.config_manager.get();
+    let client = config
+        .clients
+        .iter()
+        .find(|c| c.id == auth_context.api_key_id)
+        .ok_or_else(|| ApiErrorResponse::unauthorized("Client not found"))?;
+
+    let strategy = config
+        .strategies
+        .iter()
+        .find(|s| s.id == client.strategy_id)
+        .ok_or_else(|| {
+            ApiErrorResponse::internal_error(format!("Strategy '{}' not found", client.strategy_id))
+        })?;
+
+    // Check if strategy allows access to this model
+    if !strategy.is_model_allowed(&provider, &model) {
+        return Err(ApiErrorResponse::forbidden(format!(
+            "API key does not have access to model '{}/{}'",
+            provider, model
+        )));
     }
 
     // Get provider instance

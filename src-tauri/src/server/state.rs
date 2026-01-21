@@ -13,14 +13,14 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::clients::{ClientManager, TokenStore};
-use crate::config::{self, ConfigManager};
+use crate::config::ConfigManager;
 use crate::mcp::{McpGateway, McpServerManager};
 use crate::monitoring::logger::AccessLogger;
 use crate::monitoring::mcp_logger::McpAccessLogger;
 use crate::monitoring::metrics::MetricsCollector;
-use crate::monitoring::storage::MetricsDatabase;
 use crate::providers::registry::ProviderRegistry;
 use crate::router::{RateLimiterManager, Router};
+use crate::ui::tray::TrayGraphManager;
 
 use super::types::{CostDetails, GenerationDetailsResponse, ProviderHealthSnapshot, TokenUsage};
 
@@ -69,6 +69,13 @@ pub struct AppState {
     /// Transient secret for internal UI testing (never persisted, regenerated on startup)
     /// Used to allow the Tauri frontend to bypass API key restrictions when testing models
     pub internal_test_secret: Arc<String>,
+
+    /// RouteLLM intelligent routing service
+    pub routellm_service: Option<Arc<crate::routellm::RouteLLMService>>,
+
+    /// Tray graph manager for real-time token visualization (optional, only in UI mode)
+    /// Behind RwLock to allow setting it after AppState creation during Tauri setup
+    pub tray_graph_manager: Arc<RwLock<Option<Arc<TrayGraphManager>>>>,
 }
 
 impl AppState {
@@ -79,6 +86,7 @@ impl AppState {
         config_manager: Arc<ConfigManager>,
         client_manager: Arc<ClientManager>,
         token_store: Arc<TokenStore>,
+        metrics_collector: Arc<MetricsCollector>,
     ) -> Self {
         // Generate a random bearer token for internal UI testing
         // Format: lr-internal-<uuid> to match standard API key format
@@ -98,18 +106,6 @@ impl AppState {
             panic!("MCP access logger initialization failed");
         });
 
-        // Initialize metrics database with 90-day retention
-        let metrics_db_path = config::paths::config_dir()
-            .unwrap_or_else(|_| std::path::PathBuf::from("."))
-            .join("metrics.db");
-
-        let metrics_db = Arc::new(MetricsDatabase::new(metrics_db_path).unwrap_or_else(|e| {
-            tracing::error!("Failed to initialize metrics database: {}", e);
-            panic!("Metrics database initialization failed");
-        }));
-
-        let metrics_collector = MetricsCollector::new(metrics_db);
-
         // Create placeholder MCP manager and gateway (will be replaced by with_mcp)
         let mcp_server_manager = Arc::new(McpServerManager::new());
         let mcp_gateway = Arc::new(McpGateway::new(
@@ -127,11 +123,13 @@ impl AppState {
             provider_registry,
             config_manager,
             generation_tracker: Arc::new(GenerationTracker::new()),
-            metrics_collector: Arc::new(metrics_collector),
+            metrics_collector,
             access_logger: Arc::new(access_logger),
             mcp_access_logger: Arc::new(mcp_access_logger),
             app_handle: Arc::new(RwLock::new(None)),
             internal_test_secret: Arc::new(internal_test_secret),
+            routellm_service: None,
+            tray_graph_manager: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -163,6 +161,20 @@ impl AppState {
         // Also set app handle on loggers for event emission
         self.access_logger.set_app_handle(handle.clone());
         self.mcp_access_logger.set_app_handle(handle);
+    }
+
+    /// Set the tray graph manager (called after Tauri initialization when it's created)
+    pub fn set_tray_graph_manager(&self, manager: Arc<TrayGraphManager>) {
+        *self.tray_graph_manager.write() = Some(manager);
+    }
+
+    /// Initialize RouteLLM service with settings from config
+    pub fn with_routellm(
+        mut self,
+        routellm_service: Option<Arc<crate::routellm::RouteLLMService>>,
+    ) -> Self {
+        self.routellm_service = routellm_service;
+        self
     }
 
     /// Emit an event if the app handle is available

@@ -54,6 +54,7 @@ where
         self.inner.poll_ready(cx)
     }
 
+    #[allow(deprecated)]
     fn call(&mut self, mut req: Request<Body>) -> Self::Future {
         let state = self.state.clone();
         let mut inner = self.inner.clone();

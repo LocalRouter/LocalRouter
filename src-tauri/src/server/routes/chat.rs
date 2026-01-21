@@ -17,7 +17,9 @@ use futures::stream::StreamExt;
 use uuid::Uuid;
 
 use crate::providers::{
-    ChatMessage as ProviderChatMessage, CompletionRequest as ProviderCompletionRequest,
+    ChatMessage as ProviderChatMessage, ChatMessageContent as ProviderMessageContent,
+    CompletionRequest as ProviderCompletionRequest, ContentPart as ProviderContentPart,
+    ImageUrl as ProviderImageUrl,
 };
 use crate::router::UsageInfo;
 use crate::server::middleware::client_auth::ClientAuthContext;
@@ -111,7 +113,7 @@ fn validate_request(request: &ChatCompletionRequest) -> ApiResult<()> {
         }
     }
 
-    // Validate top_k (extended parameter)
+    // Validate top_k (LocalRouter extension, not in OpenAI API)
     if let Some(top_k) = request.top_k {
         if top_k == 0 {
             return Err(
@@ -120,7 +122,8 @@ fn validate_request(request: &ChatCompletionRequest) -> ApiResult<()> {
         }
     }
 
-    // Validate repetition_penalty (extended parameter)
+    // Validate repetition_penalty (LocalRouter extension, not in OpenAI API)
+    // Range: 0.0-2.0 (LocalRouter-specific constraint)
     if let Some(rep_penalty) = request.repetition_penalty {
         if !(0.0..=2.0).contains(&rep_penalty) {
             return Err(ApiErrorResponse::bad_request(
@@ -128,6 +131,61 @@ fn validate_request(request: &ChatCompletionRequest) -> ApiResult<()> {
             )
             .with_param("repetition_penalty"));
         }
+    }
+
+    // Validate n parameter
+    if let Some(n) = request.n {
+        if n == 0 {
+            return Err(
+                ApiErrorResponse::bad_request("n must be at least 1").with_param("n")
+            );
+        }
+        if n > 128 {
+            return Err(
+                ApiErrorResponse::bad_request("n must be at most 128").with_param("n")
+            );
+        }
+        if n > 1 && request.stream {
+            return Err(ApiErrorResponse::bad_request(
+                "n > 1 is not supported with streaming",
+            )
+            .with_param("n"));
+        }
+        if n > 1 {
+            // Note: Currently n > 1 is accepted but only the first completion will be generated
+            // This is a limitation that will be fixed in a future update
+            tracing::warn!("n > 1 requested but only first completion will be generated (not yet fully supported)");
+        }
+    }
+
+    // Validate logprobs
+    if request.logprobs == Some(true) {
+        // Note: logprobs is accepted but not yet fully implemented
+        // The field will be null in responses until provider support is added
+        tracing::warn!("logprobs requested but not yet fully supported - will return null");
+    }
+
+    // Validate top_logprobs (requires logprobs to be true)
+    if let Some(top_logprobs) = request.top_logprobs {
+        if request.logprobs != Some(true) {
+            return Err(ApiErrorResponse::bad_request(
+                "top_logprobs requires logprobs to be true",
+            )
+            .with_param("top_logprobs"));
+        }
+        if top_logprobs > 20 {
+            return Err(ApiErrorResponse::bad_request(
+                "top_logprobs must be between 0 and 20",
+            )
+            .with_param("top_logprobs"));
+        }
+    }
+
+    // Validate max_tokens and max_completion_tokens are not both set
+    if request.max_tokens.is_some() && request.max_completion_tokens.is_some() {
+        return Err(ApiErrorResponse::bad_request(
+            "Cannot specify both max_tokens and max_completion_tokens",
+        ));
     }
 
     // Validate response_format if present
@@ -297,9 +355,12 @@ async fn check_rate_limits(
 ) -> ApiResult<()> {
     // Estimate usage for rate limit check (rough estimate)
     let estimated_tokens = estimate_token_count(&request.messages);
+    let max_output_tokens = request.max_completion_tokens
+        .or(request.max_tokens)
+        .unwrap_or(100);
     let usage_estimate = UsageInfo {
         input_tokens: estimated_tokens,
-        output_tokens: request.max_tokens.unwrap_or(100) as u64,
+        output_tokens: max_output_tokens as u64,
         cost_usd: 0.0, // Can't estimate cost without knowing provider
     };
 
@@ -336,29 +397,96 @@ fn convert_to_provider_request(
         .iter()
         .map(|msg| {
             let content = match &msg.content {
-                Some(MessageContent::Text(text)) => text.clone(),
-                Some(MessageContent::Parts(_)) => {
-                    // For now, extract text from parts
-                    // Full multimodal support would require more complex handling
-                    return Err(ApiErrorResponse::bad_request(
-                        "Multimodal content not yet fully supported",
-                    ));
+                Some(MessageContent::Text(text)) => ProviderMessageContent::Text(text.clone()),
+                Some(MessageContent::Parts(parts)) => {
+                    // Convert server content parts to provider content parts
+                    let provider_parts: Vec<ProviderContentPart> = parts
+                        .iter()
+                        .map(|part| match part {
+                            crate::server::types::ContentPart::Text { text } => {
+                                ProviderContentPart::Text {
+                                    text: text.clone(),
+                                }
+                            }
+                            crate::server::types::ContentPart::ImageUrl { image_url } => {
+                                ProviderContentPart::ImageUrl {
+                                    image_url: ProviderImageUrl {
+                                        url: image_url.url.clone(),
+                                        detail: image_url.detail.clone(),
+                                    },
+                                }
+                            }
+                        })
+                        .collect();
+                    ProviderMessageContent::Parts(provider_parts)
                 }
-                None => String::new(),
+                None => ProviderMessageContent::Text(String::new()),
             };
 
             Ok(ProviderChatMessage {
                 role: msg.role.clone(),
                 content,
+                tool_calls: None,      // Input messages don't have tool_calls initially
+                tool_call_id: None,    // Only for tool role messages
+                name: msg.name.clone(),
             })
         })
         .collect::<ApiResult<Vec<_>>>()?;
+
+    // Prefer max_completion_tokens over max_tokens (for o-series models)
+    let max_tokens = request.max_completion_tokens.or(request.max_tokens);
+
+    // Convert tools from server types to provider types
+    let tools = request.tools.as_ref().map(|server_tools| {
+        server_tools
+            .iter()
+            .map(|tool| crate::providers::Tool {
+                tool_type: tool.tool_type.clone(),
+                function: crate::providers::FunctionDefinition {
+                    name: tool.function.name.clone(),
+                    description: tool.function.description.clone(),
+                    parameters: tool.function.parameters.clone(),
+                },
+            })
+            .collect()
+    });
+
+    // Convert tool_choice from server types to provider types
+    let tool_choice = request.tool_choice.as_ref().map(|choice| match choice {
+        crate::server::types::ToolChoice::Auto(s) => crate::providers::ToolChoice::Auto(s.clone()),
+        crate::server::types::ToolChoice::Specific {
+            tool_type,
+            function,
+        } => crate::providers::ToolChoice::Specific {
+            tool_type: tool_type.clone(),
+            function: crate::providers::FunctionName {
+                name: function.name.clone(),
+            },
+        },
+    });
+
+    // Convert response_format from server types to provider types (Bug #7 fix)
+    let response_format = request.response_format.as_ref().map(|format| {
+        match format {
+            crate::server::types::ResponseFormat::JsonObject { r#type } => {
+                crate::providers::ResponseFormat::JsonObject {
+                    format_type: r#type.clone(),
+                }
+            }
+            crate::server::types::ResponseFormat::JsonSchema { r#type, schema } => {
+                crate::providers::ResponseFormat::JsonSchema {
+                    format_type: r#type.clone(),
+                    schema: schema.clone(),
+                }
+            }
+        }
+    });
 
     Ok(ProviderCompletionRequest {
         model: request.model.clone(),
         messages,
         temperature: request.temperature,
-        max_tokens: request.max_tokens,
+        max_tokens,
         stream: request.stream,
         top_p: request.top_p,
         frequency_penalty: request.frequency_penalty,
@@ -372,6 +500,11 @@ fn convert_to_provider_request(
         seed: request.seed,
         repetition_penalty: request.repetition_penalty,
         extensions: request.extensions.clone(),
+        // Tool calling (Bug #4 fix)
+        tools,
+        tool_choice,
+        // Response format (Bug #7 fix)
+        response_format,
     })
 }
 
@@ -396,9 +529,18 @@ async fn handle_non_streaming(
         Err(e) => {
             // Record failure metrics
             let latency = Instant::now().duration_since(started_at).as_millis() as u64;
-            state
-                .metrics_collector
-                .record_failure(&auth.api_key_id, "unknown", "unknown", latency);
+            let strategy_id = state
+                .client_manager
+                .get_client(&auth.api_key_id)
+                .map(|c| c.strategy_id.clone())
+                .unwrap_or_else(|| "default".to_string());
+            state.metrics_collector.record_failure(
+                &auth.api_key_id,
+                "unknown",
+                "unknown",
+                &strategy_id,
+                latency,
+            );
 
             // Log to access log (persistent storage)
             if let Err(log_err) = state.access_logger.log_failure(
@@ -435,7 +577,14 @@ async fn handle_non_streaming(
         input_cost + output_cost
     };
 
-    // Record success metrics for all four tiers
+    // Get client's strategy_id for metrics
+    let strategy_id = state
+        .client_manager
+        .get_client(&auth.api_key_id)
+        .map(|c| c.strategy_id.clone())
+        .unwrap_or_else(|| "default".to_string());
+
+    // Record success metrics for all five tiers
     let latency_ms = completed_at.duration_since(started_at).as_millis() as u64;
     state
         .metrics_collector
@@ -443,11 +592,17 @@ async fn handle_non_streaming(
             api_key_name: &auth.api_key_id,
             provider: &response.provider,
             model: &response.model,
+            strategy_id: &strategy_id,
             input_tokens: response.usage.prompt_tokens as u64,
             output_tokens: response.usage.completion_tokens as u64,
             cost_usd: cost,
             latency_ms,
         });
+
+    // Record tokens for tray graph (real-time tracking for Fast/Medium modes)
+    if let Some(ref tray_graph) = *state.tray_graph_manager.read() {
+        tray_graph.record_tokens((response.usage.prompt_tokens + response.usage.completion_tokens) as u64);
+    }
 
     // Log to access log (persistent storage)
     if let Err(e) = state.access_logger.log_success(
@@ -483,14 +638,66 @@ async fn handle_non_streaming(
         choices: response
             .choices
             .into_iter()
-            .map(|choice| ChatCompletionChoice {
-                index: choice.index,
-                message: ChatMessage {
-                    role: choice.message.role,
-                    content: Some(MessageContent::Text(choice.message.content)),
-                    name: None,
-                },
-                finish_reason: choice.finish_reason,
+            .map(|choice| {
+                // Convert provider message content to server message content
+                let content = match choice.message.content {
+                    crate::providers::ChatMessageContent::Text(text) => {
+                        if text.is_empty() && choice.message.tool_calls.is_some() {
+                            // If content is empty and we have tool calls, content can be None
+                            None
+                        } else {
+                            Some(MessageContent::Text(text))
+                        }
+                    }
+                    crate::providers::ChatMessageContent::Parts(parts) => {
+                        // Convert provider parts to server parts
+                        let server_parts: Vec<crate::server::types::ContentPart> = parts
+                            .into_iter()
+                            .map(|part| match part {
+                                crate::providers::ContentPart::Text { text } => {
+                                    crate::server::types::ContentPart::Text { text }
+                                }
+                                crate::providers::ContentPart::ImageUrl { image_url } => {
+                                    crate::server::types::ContentPart::ImageUrl {
+                                        image_url: crate::server::types::ImageUrl {
+                                            url: image_url.url,
+                                            detail: image_url.detail,
+                                        },
+                                    }
+                                }
+                            })
+                            .collect();
+                        Some(MessageContent::Parts(server_parts))
+                    }
+                };
+
+                // Convert provider tool_calls to server tool_calls
+                let tool_calls = choice.message.tool_calls.map(|provider_tools| {
+                    provider_tools
+                        .into_iter()
+                        .map(|tool_call| crate::server::types::ToolCall {
+                            id: tool_call.id,
+                            tool_type: tool_call.tool_type,
+                            function: crate::server::types::FunctionCall {
+                                name: tool_call.function.name,
+                                arguments: tool_call.function.arguments,
+                            },
+                        })
+                        .collect()
+                });
+
+                ChatCompletionChoice {
+                    index: choice.index,
+                    message: ChatMessage {
+                        role: choice.message.role,
+                        content,
+                        name: choice.message.name,
+                        tool_calls,
+                        tool_call_id: choice.message.tool_call_id,
+                    },
+                    finish_reason: choice.finish_reason,
+                    logprobs: None, // TODO: Implement logprobs support (Bug #6)
+                }
             })
             .collect(),
         usage: TokenUsage {
@@ -561,9 +768,18 @@ async fn handle_streaming(
         Err(e) => {
             // Record failure metrics
             let latency = Instant::now().duration_since(started_at).as_millis() as u64;
-            state
-                .metrics_collector
-                .record_failure(&auth.api_key_id, "unknown", &model, latency);
+            let strategy_id = state
+                .client_manager
+                .get_client(&auth.api_key_id)
+                .map(|c| c.strategy_id.clone())
+                .unwrap_or_else(|| "default".to_string());
+            state.metrics_collector.record_failure(
+                &auth.api_key_id,
+                "unknown",
+                &model,
+                &strategy_id,
+                latency,
+            );
 
             // Log to access log (persistent storage)
             if let Err(log_err) = state.access_logger.log_failure(
@@ -631,13 +847,34 @@ async fn handle_streaming(
                         choices: provider_chunk
                             .choices
                             .into_iter()
-                            .map(|choice| ChatCompletionChunkChoice {
-                                index: choice.index,
-                                delta: ChunkDelta {
-                                    role: choice.delta.role,
-                                    content: choice.delta.content,
-                                },
-                                finish_reason: choice.finish_reason,
+                            .map(|choice| {
+                                // Convert provider tool_calls delta to server tool_calls delta
+                                let tool_calls = choice.delta.tool_calls.map(|provider_deltas| {
+                                    provider_deltas
+                                        .into_iter()
+                                        .map(|delta| crate::server::types::ToolCallDelta {
+                                            index: delta.index,
+                                            id: delta.id,
+                                            tool_type: delta.tool_type,
+                                            function: delta.function.map(|f| {
+                                                crate::server::types::FunctionCallDelta {
+                                                    name: f.name,
+                                                    arguments: f.arguments,
+                                                }
+                                            }),
+                                        })
+                                        .collect()
+                                });
+
+                                ChatCompletionChunkChoice {
+                                    index: choice.index,
+                                    delta: ChunkDelta {
+                                        role: choice.delta.role,
+                                        content: choice.delta.content,
+                                        tool_calls,
+                                    },
+                                    finish_reason: choice.finish_reason,
+                                }
                             })
                             .collect(),
                         usage: None, // Not available in streaming chunks
@@ -688,6 +925,13 @@ async fn handle_streaming(
             input_cost + output_cost
         };
 
+        // Get client's strategy_id for metrics
+        let strategy_id = state_clone
+            .client_manager
+            .get_client(&auth_clone.api_key_id)
+            .map(|c| c.strategy_id.clone())
+            .unwrap_or_else(|| "default".to_string());
+
         // Record success metrics for streaming (with estimated tokens)
         let latency_ms = completed_at.duration_since(started_at).as_millis() as u64;
         state_clone
@@ -696,11 +940,17 @@ async fn handle_streaming(
                 api_key_name: &auth_clone.api_key_id,
                 provider: &provider,
                 model: &model_clone,
+                strategy_id: &strategy_id,
                 input_tokens: prompt_tokens as u64,
                 output_tokens: completion_tokens as u64,
                 cost_usd: cost,
                 latency_ms,
             });
+
+        // Record tokens for tray graph
+        if let Some(ref tray_graph) = *state_clone.tray_graph_manager.read() {
+            tray_graph.record_tokens((prompt_tokens + completion_tokens) as u64);
+        }
 
         // Log to access log (persistent storage)
         if let Err(e) = state_clone.access_logger.log_success(

@@ -38,9 +38,20 @@ pub struct ChatCompletionRequest {
     pub top_p: Option<f32>,
 
     // Output control
+    /// Maximum number of tokens to generate (deprecated, use max_completion_tokens for o-series models)
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(minimum = 1)]
     pub max_tokens: Option<u32>,
+
+    /// Maximum number of tokens to generate (replaces max_tokens for o-series models)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(minimum = 1)]
+    pub max_completion_tokens: Option<u32>,
+
+    /// Number of chat completion choices to generate (default: 1)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(minimum = 1, maximum = 128, default = 1)]
+    pub n: Option<u32>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stop: Option<StopSequence>,
@@ -49,6 +60,16 @@ pub struct ChatCompletionRequest {
     #[serde(default)]
     #[schema(default = false)]
     pub stream: bool,
+
+    // Log probabilities
+    /// Whether to return log probabilities of the output tokens
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logprobs: Option<bool>,
+
+    /// Number of most likely tokens to return at each position (0-20)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(minimum = 0, maximum = 20)]
+    pub top_logprobs: Option<u32>,
 
     // Advanced parameters
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -60,15 +81,21 @@ pub struct ChatCompletionRequest {
     pub presence_penalty: Option<f32>,
 
     // Extended sampling parameters (Layer 2 - Extended OpenAI Compatibility)
+    // Note: These are LocalRouter extensions not present in the standard OpenAI API
+
+    /// Top-K sampling (LocalRouter extension, not in OpenAI API)
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(minimum = 1)]
     pub top_k: Option<u32>,
 
+    /// Seed for deterministic generation (supported by some OpenAI models)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub seed: Option<i64>,
 
+    /// Repetition penalty (LocalRouter extension, not in OpenAI API)
+    /// Range: 0.0-2.0, where 1.0 is no penalty, <1.0 encourages repetition, >1.0 discourages it
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[schema(minimum = 0.0)]
+    #[schema(minimum = 0.0, maximum = 2.0)]
     pub repetition_penalty: Option<f32>,
 
     // Response format for structured outputs
@@ -115,6 +142,30 @@ pub struct ChatMessage {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+
+    /// Tool calls made by the assistant (only for assistant role)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<ToolCall>>,
+
+    /// Tool call ID (only for tool role messages)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+}
+
+/// Tool call in assistant's response
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ToolCall {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub tool_type: String,
+    pub function: FunctionCall,
+}
+
+/// Function call details in tool call
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct FunctionCall {
+    pub name: String,
+    pub arguments: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -221,6 +272,47 @@ pub struct ChatCompletionChoice {
 
     #[schema(example = "stop")]
     pub finish_reason: Option<String>,
+
+    /// Log probability information for the choice
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logprobs: Option<ChatCompletionLogprobs>,
+}
+
+/// Log probability information for tokens
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ChatCompletionLogprobs {
+    /// List of message content tokens with log probability information
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<Vec<ChatCompletionTokenLogprob>>,
+}
+
+/// Log probability information for a single token
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ChatCompletionTokenLogprob {
+    /// The token
+    pub token: String,
+
+    /// The log probability of this token
+    pub logprob: f64,
+
+    /// A list of integers representing the UTF-8 bytes of the token
+    pub bytes: Option<Vec<u8>>,
+
+    /// List of the most likely tokens and their log probabilities
+    pub top_logprobs: Vec<TopLogprob>,
+}
+
+/// Top alternative token with log probability
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct TopLogprob {
+    /// The token
+    pub token: String,
+
+    /// The log probability of this token
+    pub logprob: f64,
+
+    /// A list of integers representing the UTF-8 bytes of the token
+    pub bytes: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -276,6 +368,31 @@ pub struct ChunkDelta {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
+
+    /// Tool calls delta (for streaming tool calls)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<ToolCallDelta>>,
+}
+
+/// Tool call delta for streaming
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ToolCallDelta {
+    pub index: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub tool_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub function: Option<FunctionCallDelta>,
+}
+
+/// Function call delta for streaming
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct FunctionCallDelta {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arguments: Option<String>,
 }
 
 // ==================== Completions (Legacy) ====================
@@ -301,6 +418,11 @@ pub struct CompletionRequest {
     #[schema(minimum = 1)]
     pub max_tokens: Option<u32>,
 
+    /// Number of completion choices to generate (default: 1)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(minimum = 1, maximum = 128, default = 1)]
+    pub n: Option<u32>,
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stop: Option<StopSequence>,
 
@@ -317,6 +439,11 @@ pub struct CompletionRequest {
     #[serde(default)]
     #[schema(default = false)]
     pub stream: bool,
+
+    // Log probabilities
+    /// Whether to return log probabilities of the output tokens
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logprobs: Option<u32>,
 
     // Misc
     #[serde(skip_serializing_if = "Option::is_none")]

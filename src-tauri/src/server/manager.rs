@@ -19,6 +19,7 @@ pub struct ServerDependencies {
     pub config_manager: Arc<crate::config::ConfigManager>,
     pub client_manager: Arc<crate::clients::ClientManager>,
     pub token_store: Arc<crate::clients::TokenStore>,
+    pub metrics_collector: Arc<crate::monitoring::metrics::MetricsCollector>,
 }
 
 /// Server status
@@ -76,6 +77,7 @@ impl ServerManager {
             deps.config_manager,
             deps.client_manager,
             deps.token_store,
+            deps.metrics_collector,
         )
         .await?;
 

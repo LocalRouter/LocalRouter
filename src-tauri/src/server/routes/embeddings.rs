@@ -2,11 +2,12 @@
 //!
 //! Convert text to vector embeddings.
 
-use axum::{extract::State, response::Response, Extension, Json};
+use axum::{extract::State, response::{IntoResponse, Response}, Extension, Json};
+use uuid::Uuid;
 
 use crate::server::middleware::error::{ApiErrorResponse, ApiResult};
 use crate::server::state::{AppState, AuthContext};
-use crate::server::types::EmbeddingRequest;
+use crate::server::types::{EmbeddingRequest, EmbeddingResponse, EmbeddingData, EmbeddingVector};
 
 /// POST /v1/embeddings
 /// Generate embeddings for input text(s)
@@ -28,7 +29,7 @@ use crate::server::types::EmbeddingRequest;
 )]
 pub async fn embeddings(
     State(state): State<AppState>,
-    Extension(_auth): Extension<AuthContext>,
+    Extension(auth): Extension<AuthContext>,
     Json(request): Json<EmbeddingRequest>,
 ) -> ApiResult<Response> {
     // Emit LLM request event to trigger tray icon indicator
@@ -37,19 +38,76 @@ pub async fn embeddings(
     // Validate request
     validate_request(&request)?;
 
-    // TODO: Implement embeddings support
-    // This requires:
-    // 1. Adding an embeddings method to the ModelProvider trait
-    // 2. Implementing embeddings for each provider
-    // 3. Router support for embedding models
-    //
-    // For now, return a not implemented error
+    // Generate a unique ID for this request
+    let request_id = format!("emb-{}", Uuid::new_v4());
 
-    Err(ApiErrorResponse::new(
-        axum::http::StatusCode::NOT_IMPLEMENTED,
-        "not_implemented",
-        "Embeddings endpoint not yet implemented. This is planned for a future release.",
-    ))
+    // Convert encoding_format from String to EncodingFormat
+    let encoding_format = request.encoding_format.as_ref().and_then(|fmt| match fmt.as_str() {
+        "float" => Some(crate::providers::EncodingFormat::Float),
+        "base64" => Some(crate::providers::EncodingFormat::Base64),
+        _ => None,
+    });
+
+    // Convert server EmbeddingInput to provider EmbeddingInput
+    let provider_input = match request.input.clone() {
+        crate::server::types::EmbeddingInput::Single(s) => crate::providers::EmbeddingInput::Single(s),
+        crate::server::types::EmbeddingInput::Multiple(v) => crate::providers::EmbeddingInput::Multiple(v),
+    };
+
+    // Convert to provider format
+    let provider_request = crate::providers::EmbeddingRequest {
+        model: request.model.clone(),
+        input: provider_input,
+        encoding_format,
+        dimensions: request.dimensions,
+        user: request.user.clone(),
+    };
+
+    // Call router to get embeddings
+    let response = match state.router.embed(&auth.api_key_id, provider_request).await {
+        Ok(resp) => resp,
+        Err(e) => {
+            tracing::error!("Embedding request failed: {}", e);
+            return Err(ApiErrorResponse::bad_gateway(format!(
+                "Provider error: {}",
+                e
+            )));
+        }
+    };
+
+    // Convert provider response to API response
+    let api_response = EmbeddingResponse {
+        object: response.object,
+        data: response
+            .data
+            .into_iter()
+            .map(|emb| EmbeddingData {
+                object: emb.object,
+                embedding: if let Some(vec) = emb.embedding {
+                    EmbeddingVector::Float(vec)
+                } else {
+                    EmbeddingVector::Float(vec![])  // Default to empty if none
+                },
+                index: emb.index as u32,
+            })
+            .collect(),
+        model: response.model,
+        usage: crate::server::types::EmbeddingUsage {
+            prompt_tokens: response.usage.prompt_tokens,
+            total_tokens: response.usage.total_tokens,
+        },
+    };
+
+    // Log success
+    tracing::info!(
+        "Embedding request completed: id={}, model={}, tokens={}",
+        request_id,
+        api_response.model,
+        api_response.usage.total_tokens
+    );
+
+    // Return JSON response
+    Ok(Json(api_response).into_response())
 }
 
 /// Validate embedding request

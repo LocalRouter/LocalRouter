@@ -54,13 +54,14 @@ impl Default for ServerConfig {
 
 /// Start the web server
 ///
-/// This creates an Axum server with all OpenAI-compatible endpoints:
-/// - POST /v1/chat/completions
-/// - POST /v1/completions
-/// - POST /v1/embeddings
-/// - GET /v1/models
-/// - GET /v1/generation
-/// - POST /mcp/{client_id}/{server_id} (MCP proxy)
+/// This creates an Axum server with unified OpenAI-compatible and MCP endpoints:
+/// - POST /v1/chat/completions (OpenAI)
+/// - POST /v1/completions (OpenAI)
+/// - POST /v1/embeddings (OpenAI)
+/// - GET /v1/models (OpenAI)
+/// - GET /v1/generation (OpenAI)
+/// - POST / (MCP unified gateway)
+/// - POST /servers/:server_id (MCP individual server)
 ///
 /// Returns the AppState, JoinHandle, and the actual port used
 #[allow(clippy::too_many_arguments)]
@@ -73,6 +74,7 @@ pub async fn start_server(
     config_manager: Arc<crate::config::ConfigManager>,
     client_manager: Arc<crate::clients::ClientManager>,
     token_store: Arc<crate::clients::TokenStore>,
+    metrics_collector: Arc<crate::monitoring::metrics::MetricsCollector>,
 ) -> anyhow::Result<(AppState, tokio::task::JoinHandle<()>, u16)> {
     info!("Starting web server on {}:{}", config.host, config.port);
 
@@ -84,6 +86,7 @@ pub async fn start_server(
         config_manager,
         client_manager,
         token_store,
+        metrics_collector,
     )
     .with_mcp(mcp_server_manager);
 
@@ -152,13 +155,13 @@ pub async fn start_server(
 /// Build the Axum app with all routes and middleware
 fn build_app(state: AppState, enable_cors: bool) -> Router {
     // Build MCP routes with client auth middleware
+    // MCP routes: unified gateway at root (/), individual servers under /mcp
     let mcp_routes = Router::new()
-        .route("/mcp/health", get(routes::mcp_health_handler))
-        .route("/mcp", post(routes::mcp_gateway_handler)) // Unified gateway (no client_id in URL)
-        .route("/mcp/servers/:server_id", post(routes::mcp_server_handler)) // Individual server (auth-based)
+        .route("/", post(routes::mcp_gateway_handler)) // Unified MCP gateway at root (POST /)
+        .route("/mcp/:server_id", post(routes::mcp_server_handler)) // Individual MCP server proxy
         .route(
-            "/mcp/:client_id/:server_id",
-            post(routes::mcp_proxy_handler), // LEGACY: Direct proxy with client_id in URL (deprecated)
+            "/mcp/:server_id/stream",
+            post(routes::mcp_server_streaming_handler), // MCP streaming endpoint (SSE)
         )
         .layer(axum::middleware::from_fn(
             middleware::client_auth::client_auth_middleware,
@@ -266,9 +269,9 @@ async fn health_check() -> StatusCode {
     )
 )]
 async fn root_handler() -> &'static str {
-    "LocalRouter AI - OpenAI-compatible API Gateway\n\
+    "LocalRouter AI - Unified OpenAI & MCP API Gateway\n\
      \n\
-     Endpoints (both /v1 prefix and without are supported):\n\
+     OpenAI Endpoints (both /v1 prefix and without are supported):\n\
        POST /v1/chat/completions or /chat/completions\n\
        POST /v1/completions or /completions\n\
        POST /v1/embeddings or /embeddings\n\
@@ -277,11 +280,16 @@ async fn root_handler() -> &'static str {
        GET  /v1/models/{provider}/{model}/pricing or /models/{provider}/{model}/pricing\n\
        GET  /v1/generation?id={id} or /generation?id={id}\n\
      \n\
+     MCP Endpoints:\n\
+       POST /                       - Unified MCP gateway (all servers)\n\
+       POST /mcp/{server_id}        - Individual MCP server proxy\n\
+       POST /mcp/{server_id}/stream - Streaming MCP endpoint (SSE)\n\
+     \n\
      Documentation:\n\
        GET  /openapi.json - OpenAPI specification (JSON)\n\
        GET  /openapi.yaml - OpenAPI specification (YAML)\n\
      \n\
-     Authentication: Include 'Authorization: Bearer <your-api-key>' header\n"
+     Authentication: Include 'Authorization: Bearer <your-token>' header\n"
 }
 
 /// Serve OpenAPI specification as JSON
