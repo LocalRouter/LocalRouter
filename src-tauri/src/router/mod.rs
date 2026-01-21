@@ -10,7 +10,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::config::ConfigManager;
 use crate::providers::registry::ProviderRegistry;
-use crate::providers::{CompletionChunk, CompletionRequest, CompletionResponse};
+use crate::providers::{CompletionChunk, CompletionRequest, CompletionResponse, EmbeddingRequest, EmbeddingResponse};
 use crate::utils::errors::{AppError, AppResult};
 
 pub mod rate_limit;
@@ -247,6 +247,7 @@ pub struct Router {
     provider_registry: Arc<ProviderRegistry>,
     rate_limiter: Arc<RateLimiterManager>,
     metrics_collector: Arc<crate::monitoring::metrics::MetricsCollector>,
+    routellm_service: Option<Arc<crate::routellm::RouteLLMService>>,
 }
 
 impl Router {
@@ -262,7 +263,22 @@ impl Router {
             provider_registry,
             rate_limiter,
             metrics_collector,
+            routellm_service: None,
         }
+    }
+
+    /// Set the RouteLLM service
+    pub fn with_routellm(
+        mut self,
+        routellm_service: Option<Arc<crate::routellm::RouteLLMService>>,
+    ) -> Self {
+        self.routellm_service = routellm_service;
+        self
+    }
+
+    /// Get the RouteLLM service
+    pub fn get_routellm_service(&self) -> Option<&Arc<crate::routellm::RouteLLMService>> {
+        self.routellm_service.as_ref()
     }
 
     /// Parse model string into (provider, model) tuple
@@ -547,15 +563,77 @@ impl Router {
             ));
         }
 
+        // ============ RouteLLM PREDICTION ============
+        let (selected_models, routellm_win_rate) =
+            if let Some(routellm_config) = &auto_config.routellm_config {
+                if routellm_config.enabled {
+                    // Extract prompt from request messages
+                    let prompt = request
+                        .messages
+                        .iter()
+                        .map(|m| m.content.as_str())
+                        .collect::<Vec<_>>()
+                        .join("\n");
+
+                    // Get RouteLLM service
+                    if let Some(service) = &self.routellm_service {
+                        // Predict with threshold
+                        match service
+                            .predict_with_threshold(&prompt, routellm_config.threshold)
+                            .await
+                        {
+                            Ok((is_strong, win_rate)) => {
+                                // Select models based on prediction
+                                let models = if is_strong {
+                                    &routellm_config.strong_models
+                                } else {
+                                    &routellm_config.weak_models
+                                };
+
+                                info!(
+                                    "RouteLLM: win_rate={:.3}, threshold={:.3}, selected={}",
+                                    win_rate,
+                                    routellm_config.threshold,
+                                    if is_strong { "strong" } else { "weak" }
+                                );
+
+                                (models.clone(), Some(win_rate))
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "RouteLLM prediction failed: {}, fallback to prioritized models",
+                                    e
+                                );
+                                (auto_config.prioritized_models.clone(), None)
+                            }
+                        }
+                    } else {
+                        warn!("RouteLLM enabled but service not available, using prioritized models");
+                        (auto_config.prioritized_models.clone(), None)
+                    }
+                } else {
+                    (auto_config.prioritized_models.clone(), None)
+                }
+            } else {
+                (auto_config.prioritized_models.clone(), None)
+            };
+        // ============ END RouteLLM ============
+
+        if selected_models.is_empty() {
+            return Err(AppError::Router(
+                "No models available for auto-routing (RouteLLM returned empty list)".into(),
+            ));
+        }
+
         info!(
-            "Auto-routing for client '{}' with {} prioritized models",
+            "Auto-routing for client '{}' with {} selected models",
             client_id,
-            auto_config.prioritized_models.len()
+            selected_models.len()
         );
 
         let mut last_error = None;
 
-        for (idx, (provider, model)) in auto_config.prioritized_models.iter().enumerate() {
+        for (idx, (provider, model)) in selected_models.iter().enumerate() {
             debug!(
                 "Auto-routing attempt {}/{}: {}/{}",
                 idx + 1,
@@ -578,12 +656,22 @@ impl Router {
                 continue;
             }
 
+            // PERFORMANCE NOTE: request.clone() is called here for each model attempt,
+            // and execute_request clones it again internally. This double-cloning could
+            // be optimized by restructuring to use Arc<CompletionRequest> or by passing
+            // a mutable reference. However, this requires careful ownership management.
+            // With large message histories and multiple fallback models, this could
+            // become a bottleneck.
             match self
                 .execute_request(client_id, provider, model, request.clone())
                 .await
             {
-                Ok(response) => {
+                Ok(mut response) => {
                     info!("Auto-routing succeeded with {}/{}", provider, model);
+                    // Attach RouteLLM win rate to response for logging
+                    if let Some(win_rate) = routellm_win_rate {
+                        response.routellm_win_rate = Some(win_rate);
+                    }
                     return Ok(response);
                 }
                 Err(e) => {
@@ -734,6 +822,7 @@ impl Router {
     /// Retries on specific errors like provider unavailable, rate limit, or model not found.
     /// Records usage for rate limiting on success.
     #[deprecated(note = "Use complete_with_auto_routing instead")]
+    #[allow(dead_code)]
     async fn complete_with_prioritized_list(
         &self,
         client_id: &str,
@@ -1146,7 +1235,11 @@ impl Router {
             (provider, model)
         };
 
-        // 5. Execute streaming request
+        // 5. Check strategy rate limits for specific model requests
+        // (Auto-routing checks these per-model in stream_complete_with_auto_routing)
+        self.check_strategy_rate_limits(strategy, &final_provider, &final_model)?;
+
+        // 6. Execute streaming request
         let provider_instance = self
             .provider_registry
             .get_provider(&final_provider)
@@ -1161,6 +1254,80 @@ impl Router {
             self.rate_limiter.clone(),
         )
         .await)
+    }
+
+    /// Route an embedding request to the appropriate provider
+    pub async fn embed(
+        &self,
+        client_id: &str,
+        request: EmbeddingRequest,
+    ) -> AppResult<EmbeddingResponse> {
+        debug!(
+            "Routing embedding request for client '{}', model '{}'",
+            client_id, request.model
+        );
+
+        // Parse provider and model from request
+        let (provider_str, model_str) = Self::parse_model_string(&request.model);
+
+        // If provider is specified in model string (e.g., "openai/text-embedding-ada-002"),
+        // use it directly
+        if !provider_str.is_empty() {
+            debug!(
+                "Using provider '{}' from model string for embeddings",
+                provider_str
+            );
+
+            let provider = self
+                .provider_registry
+                .get_provider(&provider_str)
+                .ok_or_else(|| {
+                    error!("Provider '{}' not found", provider_str);
+                    AppError::Provider(format!("Provider '{}' not configured", provider_str))
+                })?;
+
+            // Create modified request with just the model name (without provider prefix)
+            let modified_request = EmbeddingRequest {
+                model: model_str,
+                input: request.input,
+                encoding_format: request.encoding_format,
+                dimensions: request.dimensions,
+                user: request.user,
+            };
+
+            return provider.embed(modified_request).await;
+        }
+
+        // Otherwise, try to find the provider by checking which provider has this model
+        debug!(
+            "No provider specified in model string, searching for model '{}'",
+            request.model
+        );
+
+        for provider in self.provider_registry.get_enabled_providers() {
+            match provider.list_models().await {
+                Ok(models) => {
+                    for model in models {
+                        if Self::normalize_model_id(&model.id) == Self::normalize_model_id(&request.model) {
+                            debug!(
+                                "Found model '{}' in provider '{}' for embeddings",
+                                request.model, provider.name()
+                            );
+                            return provider.embed(request).await;
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!("Failed to list models from provider '{}': {}", provider.name(), e);
+                }
+            }
+        }
+
+        error!("Model '{}' not found in any provider", request.model);
+        Err(AppError::Provider(format!(
+            "Model '{}' not found in any configured provider",
+            request.model
+        )))
     }
 }
 
