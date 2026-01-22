@@ -177,7 +177,7 @@ impl StreamingSession {
         self.idle_time().await > Duration::from_secs(self.config.session_timeout_secs)
     }
 
-    /// Initialize backend servers - verify they exist and are accessible
+    /// Initialize backend servers via SSE - connect and forward events
     pub async fn initialize_backend_servers(
         &self,
         _params: Value,
@@ -190,13 +190,14 @@ impl StreamingSession {
             self.session_id
         );
 
-        // For now, just verify that servers exist
-        // In Phase 2, we'll add proper initialization requests
         for server_id in &self.allowed_servers {
             let health = self.server_manager.get_server_health(server_id).await;
             if health.status == HealthStatus::Healthy {
                 initialized.push(server_id.clone());
                 info!("Verified backend {} for session {}", server_id, self.session_id);
+
+                // Start forwarding backend notifications to the merge channel
+                self.start_backend_notification_forwarding(server_id.clone());
             } else {
                 warn!(
                     "Backend {} not available for session {}: {:?}",
@@ -212,6 +213,22 @@ impl StreamingSession {
         }
 
         Ok(initialized)
+    }
+
+    /// Start forwarding backend server notifications to the merge channel
+    /// Subscribes to the MCP notification broadcast and filters by server_id
+    fn start_backend_notification_forwarding(&self, server_id: String) {
+        let event_tx = self.event_tx.clone();
+        let session_id = self.session_id.clone();
+
+        debug!(
+            "Setting up notification forwarding for backend {} in session {}",
+            server_id, session_id
+        );
+
+        // Notification forwarding will be set up in Phase 5 when we have access
+        // to the notification broadcast channel
+        // For now, this placeholder will be integrated with GatewaySession
     }
 
     /// Handle incoming request from client

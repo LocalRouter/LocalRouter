@@ -1,0 +1,590 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MCP Streaming Client - Browser Demo</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+
+        .panel {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+        }
+
+        h1 {
+            grid-column: 1 / -1;
+            color: white;
+            margin-bottom: 20px;
+            text-align: center;
+        }
+
+        h2 {
+            color: #333;
+            margin-bottom: 15px;
+            border-bottom: 2px solid #667eea;
+            padding-bottom: 10px;
+        }
+
+        label {
+            display: block;
+            margin-top: 12px;
+            margin-bottom: 5px;
+            color: #555;
+            font-weight: 500;
+        }
+
+        input, textarea, select {
+            width: 100%;
+            padding: 8px 12px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+        }
+
+        input:focus, textarea:focus, select:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+
+        button {
+            background: #667eea;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: 600;
+            margin-top: 10px;
+            margin-right: 10px;
+            transition: background 0.2s;
+        }
+
+        button:hover {
+            background: #5568d3;
+        }
+
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+
+        button.secondary {
+            background: #999;
+        }
+
+        button.secondary:hover {
+            background: #777;
+        }
+
+        button.danger {
+            background: #e74c3c;
+        }
+
+        button.danger:hover {
+            background: #c0392b;
+        }
+
+        .status {
+            padding: 10px;
+            border-radius: 4px;
+            margin-top: 10px;
+            font-weight: 600;
+            text-align: center;
+        }
+
+        .status.connected {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .status.disconnected {
+            background: #f8d7da;
+            color: #721c24;
+        }
+
+        .status.loading {
+            background: #d1ecf1;
+            color: #0c5460;
+        }
+
+        .log {
+            background: #f5f5f5;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 12px;
+            height: 300px;
+            overflow-y: auto;
+            font-family: 'Courier New', monospace;
+            font-size: 11px;
+            margin-top: 10px;
+        }
+
+        .log-entry {
+            padding: 4px 0;
+            border-bottom: 1px solid #eee;
+        }
+
+        .log-entry.info {
+            color: #0066cc;
+        }
+
+        .log-entry.success {
+            color: #00aa00;
+        }
+
+        .log-entry.error {
+            color: #cc0000;
+        }
+
+        .log-entry.warning {
+            color: #ff8800;
+        }
+
+        .form-group {
+            margin-bottom: 15px;
+        }
+
+        .server-list {
+            display: flex;
+            gap: 5px;
+            flex-wrap: wrap;
+            margin-top: 10px;
+        }
+
+        .server-tag {
+            background: #667eea;
+            color: white;
+            padding: 4px 8px;
+            border-radius: 3px;
+            font-size: 12px;
+        }
+
+        .grid-2 {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+    </style>
+</head>
+<body>
+    <h1>🚀 MCP Streaming Client - Browser Demo</h1>
+
+    <div class="container">
+        <!-- Left Panel: Configuration & Control -->
+        <div class="panel">
+            <h2>Configuration</h2>
+
+            <div class="form-group">
+                <label for="baseUrl">Base URL:</label>
+                <input
+                    type="text"
+                    id="baseUrl"
+                    value="http://localhost:3625"
+                    placeholder="http://localhost:3625"
+                />
+            </div>
+
+            <div class="form-group">
+                <label for="bearerToken">Bearer Token:</label>
+                <input
+                    type="password"
+                    id="bearerToken"
+                    placeholder="your-bearer-token"
+                />
+            </div>
+
+            <div class="form-group">
+                <label for="servers">Allowed Servers (comma-separated):</label>
+                <input
+                    type="text"
+                    id="servers"
+                    value="filesystem,github"
+                    placeholder="filesystem, github"
+                />
+            </div>
+
+            <div class="form-group">
+                <button id="initBtn">Initialize Session</button>
+                <button id="closeBtn" disabled class="danger">Close Session</button>
+            </div>
+
+            <div id="status" class="status disconnected">Disconnected</div>
+
+            <div id="sessionInfo" style="display: none; margin-top: 15px;">
+                <h3>Session Info</h3>
+                <p><strong>Session ID:</strong> <code id="sessionId"></code></p>
+                <p><strong>Initialized Servers:</strong></p>
+                <div id="initializedServers" class="server-list"></div>
+                <p><strong>Failed Servers:</strong></p>
+                <div id="failedServers" class="server-list"></div>
+            </div>
+
+            <h2 style="margin-top: 30px;">Send Request</h2>
+
+            <div class="form-group">
+                <label for="requestServer">Server:</label>
+                <select id="requestServer">
+                    <option value="filesystem">filesystem</option>
+                    <option value="github">github</option>
+                    <option value="database">database</option>
+                </select>
+            </div>
+
+            <div class="form-group">
+                <label for="requestMethod">Method:</label>
+                <select id="requestMethod">
+                    <option value="tools/call">tools/call</option>
+                    <option value="tools/list">tools/list (broadcast)</option>
+                    <option value="resources/list">resources/list (broadcast)</option>
+                    <option value="resources/read">resources/read</option>
+                </select>
+            </div>
+
+            <div class="form-group">
+                <label for="requestParams">Parameters (JSON):</label>
+                <textarea
+                    id="requestParams"
+                    rows="4"
+                    placeholder='{"name":"read_file","arguments":{"path":"/etc/hosts"}}'
+                >{"name":"read_file","arguments":{"path":"/etc/hosts"}}</textarea>
+            </div>
+
+            <button id="sendBtn" disabled>Send Request</button>
+        </div>
+
+        <!-- Right Panel: Event Log -->
+        <div class="panel">
+            <h2>Event Log</h2>
+
+            <button id="clearLogBtn" class="secondary" style="margin-bottom: 10px;">Clear Log</button>
+
+            <div id="eventLog" class="log"></div>
+
+            <h2 style="margin-top: 30px;">Statistics</h2>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px;">
+                <div>
+                    <strong>Requests Sent:</strong><br/>
+                    <span id="statRequests" style="font-size: 18px; color: #667eea;">0</span>
+                </div>
+                <div>
+                    <strong>Responses Received:</strong><br/>
+                    <span id="statResponses" style="font-size: 18px; color: #00aa00;">0</span>
+                </div>
+                <div>
+                    <strong>Errors:</strong><br/>
+                    <span id="statErrors" style="font-size: 18px; color: #cc0000;">0</span>
+                </div>
+                <div>
+                    <strong>Notifications:</strong><br/>
+                    <span id="statNotifications" style="font-size: 18px; color: #ff8800;">0</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Simple implementation of the streaming client
+        class MCPStreamingClient {
+            constructor(baseUrl, bearerToken) {
+                this.baseUrl = baseUrl.replace(/\/$/, '');
+                this.bearerToken = bearerToken;
+            }
+
+            async initialize(servers) {
+                const response = await fetch(`${this.baseUrl}/gateway/stream`, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${this.bearerToken}`,
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        protocolVersion: '2024-11-05',
+                        capabilities: {},
+                        clientInfo: {
+                            name: 'browser-client',
+                            version: '1.0.0',
+                        },
+                    }),
+                });
+
+                if (!response.ok) {
+                    throw new Error(`Failed to initialize: ${response.status}`);
+                }
+
+                return await response.json();
+            }
+
+            async createSession(sessionId, streamUrl, requestUrl) {
+                return new MCPStreamingSession(
+                    sessionId,
+                    streamUrl,
+                    requestUrl,
+                    this.baseUrl,
+                    this.bearerToken
+                );
+            }
+        }
+
+        class MCPStreamingSession extends EventTarget {
+            constructor(sessionId, streamUrl, requestUrl, baseUrl, bearerToken) {
+                super();
+                this.sessionId = sessionId;
+                this.streamUrl = streamUrl;
+                this.requestUrl = requestUrl;
+                this.baseUrl = baseUrl;
+                this.bearerToken = bearerToken;
+                this.eventSource = null;
+            }
+
+            async connect() {
+                return new Promise((resolve, reject) => {
+                    try {
+                        const url = `${this.baseUrl}${this.streamUrl}`;
+                        this.eventSource = new EventSource(url, {
+                            headers: {
+                                'Authorization': `Bearer ${this.bearerToken}`,
+                            },
+                        });
+
+                        ['response', 'notification', 'chunk', 'error', 'heartbeat'].forEach(
+                            (eventType) => {
+                                this.eventSource.addEventListener(eventType, (event) => {
+                                    try {
+                                        const data = JSON.parse(event.data);
+                                        this.dispatchEvent(
+                                            new CustomEvent(eventType, { detail: data })
+                                        );
+                                    } catch (e) {
+                                        console.error(`Failed to parse ${eventType}:`, e);
+                                    }
+                                });
+                            }
+                        );
+
+                        this.eventSource.addEventListener('open', () => resolve());
+                        this.eventSource.addEventListener('error', (e) =>
+                            reject(new Error('SSE connection failed'))
+                        );
+                    } catch (e) {
+                        reject(e);
+                    }
+                });
+            }
+
+            async sendRequest(request) {
+                const response = await fetch(`${this.baseUrl}${this.requestUrl}`, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${this.bearerToken}`,
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(request),
+                });
+
+                if (!response.ok) {
+                    throw new Error(`Failed to send request: ${response.status}`);
+                }
+
+                return await response.json();
+            }
+
+            async close() {
+                if (this.eventSource) {
+                    this.eventSource.close();
+                }
+                await fetch(`${this.baseUrl}/gateway/stream/${this.sessionId}`, {
+                    method: 'DELETE',
+                    headers: {
+                        'Authorization': `Bearer ${this.bearerToken}`,
+                    },
+                });
+            }
+        }
+
+        // UI Controller
+        class UIController {
+            constructor() {
+                this.session = null;
+                this.stats = {
+                    requests: 0,
+                    responses: 0,
+                    errors: 0,
+                    notifications: 0,
+                };
+                this.setupEventListeners();
+            }
+
+            setupEventListeners() {
+                document.getElementById('initBtn').addEventListener('click', () => this.init());
+                document.getElementById('closeBtn').addEventListener('click', () => this.close());
+                document.getElementById('sendBtn').addEventListener('click', () => this.sendRequest());
+                document.getElementById('clearLogBtn').addEventListener('click', () => this.clearLog());
+            }
+
+            async init() {
+                try {
+                    this.setStatus('loading', 'Initializing...');
+                    const baseUrl = document.getElementById('baseUrl').value;
+                    const token = document.getElementById('bearerToken').value;
+                    const servers = document.getElementById('servers').value
+                        .split(',')
+                        .map((s) => s.trim());
+
+                    const client = new MCPStreamingClient(baseUrl, token);
+                    const sessionInfo = await client.initialize(servers);
+
+                    this.session = await client.createSession(
+                        sessionInfo.session_id,
+                        sessionInfo.stream_url,
+                        sessionInfo.request_url
+                    );
+
+                    await this.session.connect();
+
+                    this.setupSessionListeners();
+                    this.setStatus('connected', `Connected (${sessionInfo.initialized_servers.length} servers)`);
+
+                    document.getElementById('sessionInfo').style.display = 'block';
+                    document.getElementById('sessionId').textContent = sessionInfo.session_id;
+                    document.getElementById('initializedServers').innerHTML = sessionInfo.initialized_servers
+                        .map((s) => `<div class="server-tag">${s}</div>`)
+                        .join('');
+                    document.getElementById('failedServers').innerHTML = sessionInfo.failed_servers
+                        .map((s) => `<div class="server-tag" style="background:#e74c3c">${s}</div>`)
+                        .join('');
+
+                    document.getElementById('initBtn').disabled = true;
+                    document.getElementById('closeBtn').disabled = false;
+                    document.getElementById('sendBtn').disabled = false;
+
+                    this.log('✓ Session initialized', 'success');
+                } catch (e) {
+                    this.setStatus('disconnected', 'Error: ' + e.message);
+                    this.log('✗ ' + e.message, 'error');
+                }
+            }
+
+            async close() {
+                try {
+                    await this.session.close();
+                    this.session = null;
+                    this.setStatus('disconnected', 'Disconnected');
+                    document.getElementById('initBtn').disabled = false;
+                    document.getElementById('closeBtn').disabled = true;
+                    document.getElementById('sendBtn').disabled = true;
+                    document.getElementById('sessionInfo').style.display = 'none';
+                    this.log('✓ Session closed', 'success');
+                } catch (e) {
+                    this.log('✗ ' + e.message, 'error');
+                }
+            }
+
+            async sendRequest() {
+                if (!this.session) return;
+
+                try {
+                    const server = document.getElementById('requestServer').value;
+                    const method = document.getElementById('requestMethod').value;
+                    const params = JSON.parse(document.getElementById('requestParams').value);
+
+                    const fullMethod = method.includes('/list') ? method : `${server}__${method}`;
+
+                    const result = await this.session.sendRequest({
+                        jsonrpc: '2.0',
+                        id: `req-${Date.now()}`,
+                        method: fullMethod,
+                        params,
+                    });
+
+                    this.stats.requests++;
+                    this.updateStats();
+                    this.log(`✓ Request sent: ${result.request_id}`, 'success');
+                } catch (e) {
+                    this.log('✗ ' + e.message, 'error');
+                }
+            }
+
+            setupSessionListeners() {
+                this.session.addEventListener('response', (e) => {
+                    this.stats.responses++;
+                    this.updateStats();
+                    this.log(`📥 Response from ${e.detail.server_id}`, 'info');
+                });
+
+                this.session.addEventListener('notification', (e) => {
+                    this.stats.notifications++;
+                    this.updateStats();
+                    this.log(`📬 Notification: ${e.detail.notification.method}`, 'warning');
+                });
+
+                this.session.addEventListener('error', (e) => {
+                    this.stats.errors++;
+                    this.updateStats();
+                    this.log(`⚠ Error: ${e.detail.error}`, 'error');
+                });
+
+                this.session.addEventListener('heartbeat', () => {
+                    this.log('♥ Heartbeat', 'info');
+                });
+            }
+
+            setStatus(className, text) {
+                const status = document.getElementById('status');
+                status.className = `status ${className}`;
+                status.textContent = text;
+            }
+
+            log(message, level = 'info') {
+                const log = document.getElementById('eventLog');
+                const entry = document.createElement('div');
+                entry.className = `log-entry ${level}`;
+                entry.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+                log.insertBefore(entry, log.firstChild);
+
+                // Keep only last 100 entries
+                while (log.children.length > 100) {
+                    log.removeChild(log.lastChild);
+                }
+            }
+
+            clearLog() {
+                document.getElementById('eventLog').innerHTML = '';
+            }
+
+            updateStats() {
+                document.getElementById('statRequests').textContent = this.stats.requests;
+                document.getElementById('statResponses').textContent = this.stats.responses;
+                document.getElementById('statErrors').textContent = this.stats.errors;
+                document.getElementById('statNotifications').textContent = this.stats.notifications;
+            }
+        }
+
+        // Initialize UI
+        new UIController();
+    </script>
+</body>
+</html>
