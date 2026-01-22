@@ -305,6 +305,10 @@ pub struct AppConfig {
     /// Global MCP filesystem roots (advisory boundaries)
     #[serde(default)]
     pub roots: Vec<RootConfig>,
+
+    /// Streaming session configuration
+    #[serde(default)]
+    pub streaming: StreamingConfig,
 }
 
 /// Pricing override for a specific model
@@ -397,6 +401,62 @@ impl Default for ModelCacheConfig {
             default_ttl_seconds: 3600,
             provider_ttl_overrides: std::collections::HashMap::new(),
             use_catalog_fallback: true,
+        }
+    }
+}
+
+/// Streaming session configuration
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StreamingConfig {
+    /// Maximum concurrent streaming sessions per client
+    #[serde(default = "default_max_sessions_per_client")]
+    pub max_sessions_per_client: usize,
+
+    /// Session timeout in seconds (default: 1 hour)
+    #[serde(default = "default_session_timeout")]
+    pub session_timeout_secs: u64,
+
+    /// Heartbeat interval in seconds (default: 30s)
+    #[serde(default = "default_heartbeat_interval")]
+    pub heartbeat_interval_secs: u64,
+
+    /// Maximum pending events in merge channel
+    #[serde(default = "default_max_pending_events")]
+    pub max_pending_events: usize,
+
+    /// Request timeout in seconds (default: 60s)
+    #[serde(default = "default_request_timeout")]
+    pub request_timeout_secs: u64,
+}
+
+fn default_max_sessions_per_client() -> usize {
+    5
+}
+
+fn default_session_timeout() -> u64 {
+    3600
+}
+
+fn default_heartbeat_interval() -> u64 {
+    30
+}
+
+fn default_max_pending_events() -> usize {
+    1000
+}
+
+fn default_request_timeout() -> u64 {
+    60
+}
+
+impl Default for StreamingConfig {
+    fn default() -> Self {
+        Self {
+            max_sessions_per_client: default_max_sessions_per_client(),
+            session_timeout_secs: default_session_timeout(),
+            heartbeat_interval_secs: default_heartbeat_interval(),
+            max_pending_events: default_max_pending_events(),
+            request_timeout_secs: default_request_timeout(),
         }
     }
 }
@@ -1436,6 +1496,7 @@ impl Default for AppConfig {
             update: UpdateConfig::default(),
             model_cache: ModelCacheConfig::default(),
             roots: Vec::new(),
+            streaming: StreamingConfig::default(),
         }
     }
 }

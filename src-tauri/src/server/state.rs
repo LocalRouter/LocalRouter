@@ -85,6 +85,9 @@ pub struct AppState {
     /// Format: (server_id, notification)
     pub mcp_notification_broadcast:
         Arc<tokio::sync::broadcast::Sender<(String, JsonRpcNotification)>>,
+
+    /// Streaming session manager for SSE multiplexing
+    pub streaming_session_manager: Arc<crate::mcp::gateway::streaming::StreamingSessionManager>,
 }
 
 impl AppState {
@@ -127,6 +130,16 @@ impl AppState {
             router.clone(),
         ));
 
+        // Create placeholder streaming session manager (will be replaced by with_mcp)
+        let streaming_config = config_manager.get().streaming.clone();
+        let streaming_session_manager = Arc::new(
+            crate::mcp::gateway::streaming::StreamingSessionManager::new(
+                mcp_gateway.clone(),
+                mcp_server_manager.clone(),
+                streaming_config,
+            ),
+        );
+
         Self {
             router,
             client_manager,
@@ -145,6 +158,7 @@ impl AppState {
             routellm_service: None,
             tray_graph_manager: Arc::new(RwLock::new(None)),
             mcp_notification_broadcast: Arc::new(notification_tx),
+            streaming_session_manager,
         }
     }
 
@@ -157,9 +171,20 @@ impl AppState {
             self.router.clone(),
         ));
 
+        // Create streaming session manager with the actual components
+        let streaming_config = self.config_manager.get().streaming.clone();
+        let streaming_session_manager = Arc::new(
+            crate::mcp::gateway::streaming::StreamingSessionManager::new(
+                mcp_gateway.clone(),
+                mcp_server_manager.clone(),
+                streaming_config,
+            ),
+        );
+
         Self {
             mcp_server_manager,
             mcp_gateway,
+            streaming_session_manager,
             ..self
         }
     }
