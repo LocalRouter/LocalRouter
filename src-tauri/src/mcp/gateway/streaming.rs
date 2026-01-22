@@ -218,7 +218,7 @@ impl StreamingSession {
     /// Start forwarding backend server notifications to the merge channel
     /// Subscribes to the MCP notification broadcast and filters by server_id
     fn start_backend_notification_forwarding(&self, server_id: String) {
-        let event_tx = self.event_tx.clone();
+        let _event_tx = self.event_tx.clone();
         let session_id = self.session_id.clone();
 
         debug!(
