@@ -28,12 +28,20 @@ pub struct ClientAuthContext {
 /// Extract Bearer token from Authorization header
 ///
 /// Expected format: "Bearer <token>"
+/// Returns None if token is missing, empty/whitespace-only, or format is invalid
 fn extract_bearer_token(auth_header: &str) -> Option<String> {
     if !auth_header.starts_with("Bearer ") {
         return None;
     }
 
-    auth_header.strip_prefix("Bearer ").map(|s| s.to_string())
+    // Extract token and reject empty/whitespace-only tokens
+    auth_header.strip_prefix("Bearer ").and_then(|s| {
+        if s.trim().is_empty() {
+            None // Reject empty or whitespace-only bearer tokens
+        } else {
+            Some(s.to_string()) // Preserve original token (don't trim internal whitespace)
+        }
+    })
 }
 
 /// Client authentication middleware for MCP proxy routes
@@ -130,10 +138,15 @@ mod tests {
         let result = extract_bearer_token(auth);
         assert_eq!(result, None);
 
-        // Empty token
+        // Empty token - should be rejected
         let auth = "Bearer ";
         let result = extract_bearer_token(auth);
-        assert_eq!(result, Some("".to_string()));
+        assert_eq!(result, None);
+
+        // Whitespace-only token - should also be rejected
+        let auth = "Bearer    ";
+        let result = extract_bearer_token(auth);
+        assert_eq!(result, None);
 
         // Token with spaces (should include everything after "Bearer ")
         let auth = "Bearer token with spaces";
