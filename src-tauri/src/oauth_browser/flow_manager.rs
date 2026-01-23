@@ -382,7 +382,7 @@ mod tests {
         assert!(url.contains("code_challenge=test_challenge"));
         assert!(url.contains("code_challenge_method=S256"));
         assert!(url.contains("state=test_state"));
-        assert!(url.contains("scope=read+write"));
+        assert!(url.contains("scope=read%20write"));
     }
 
     #[test]

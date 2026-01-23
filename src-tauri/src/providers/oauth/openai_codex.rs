@@ -67,7 +67,7 @@ impl OpenAICodexOAuthProvider {
         }
 
         let payload_b64 = parts[1];
-        let payload_bytes = general_purpose::STANDARD
+        let payload_bytes = general_purpose::URL_SAFE_NO_PAD
             .decode(payload_b64)
             .map_err(|e| AppError::Provider(format!("Failed to decode JWT payload: {}", e)))?;
 

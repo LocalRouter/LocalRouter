@@ -397,14 +397,14 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             // Set app handle on config manager for event emission
             config_manager.set_app_handle(app.handle().clone());
 
-            // Start watching config file for changes
-            let watcher = config_manager.start_watching().map_err(|e| {
-                tracing::error!("Failed to start config file watcher: {}", e);
-                e
-            })?;
-
-            // Store watcher to keep it alive (if it's dropped, watching stops)
-            app.manage(watcher);
+            // File watcher disabled - it was causing duplicate config-changed events
+            // when saving from the app. The update() method already emits events.
+            // TODO: Re-enable with proper suppression if external file editing is needed
+            // let watcher = config_manager.start_watching().map_err(|e| {
+            //     tracing::error!("Failed to start config file watcher: {}", e);
+            //     e
+            // })?;
+            // app.manage(watcher);
 
             // Store managers
             app.manage(config_manager.clone());
@@ -474,6 +474,9 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                 tokio::spawn(async move {
                     use tauri::Emitter;
 
+                    // Emit stopped status before restart
+                    let _ = app_handle.emit("server-status-changed", "stopped");
+
                     match server_manager_clone2
                         .start(
                             server_config,
@@ -492,10 +495,12 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                     {
                         Ok(_) => {
                             info!("Server restarted successfully");
+                            let _ = app_handle.emit("server-status-changed", "running");
                             let _ = app_handle.emit("server-restart-completed", ());
                         }
                         Err(e) => {
                             error!("Failed to restart server: {}", e);
+                            let _ = app_handle.emit("server-status-changed", "stopped");
                             let _ = app_handle.emit("server-restart-failed", e.to_string());
                         }
                     }
@@ -703,11 +708,13 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::delete_client,
             ui::commands::update_client_name,
             ui::commands::toggle_client_enabled,
+            ui::commands::rotate_client_secret,
             ui::commands::toggle_client_deferred_loading,
             ui::commands::add_client_llm_provider,
             ui::commands::remove_client_llm_provider,
             ui::commands::add_client_mcp_server,
             ui::commands::remove_client_mcp_server,
+            ui::commands::set_client_mcp_access,
             // Client routing configuration commands
             ui::commands::set_client_routing_strategy,
             ui::commands::set_client_forced_model,

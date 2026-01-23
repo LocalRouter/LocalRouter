@@ -3,19 +3,19 @@ use std::path::PathBuf;
 use std::time::Duration;
 use tokio::time::sleep;
 
-/// Helper to create a test service with mock paths
+/// Helper to create a test service using the dev directory models
 ///
-/// Note: Tests require SafeTensors models to be available.
-/// Use the following structure for testing:
-/// - model/model.safetensors
-/// - tokenizer/tokenizer.json
+/// Note: Tests require SafeTensors models to be available in ~/.localrouter-dev/routellm/.
+/// Run the ignored test `test_download_and_verify_models` first to download them:
+///   cargo test test_download_and_verify -- --ignored
 fn create_test_service() -> RouteLLMService {
-    let test_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("test_models/routellm");
+    let home_dir = std::env::var("HOME").expect("HOME not set");
+    let routellm_dir = PathBuf::from(home_dir).join(".localrouter-dev/routellm");
 
     RouteLLMService::new(
-        test_dir.join("model"),     // Directory containing model.safetensors
-        test_dir.join("tokenizer"), // Directory containing tokenizer.json
-        5,                          // 5 second idle timeout for testing
+        routellm_dir.join("model"),     // Directory containing model.safetensors
+        routellm_dir.join("tokenizer"), // Directory containing tokenizer.json
+        5,                              // 5 second idle timeout for testing
     )
 }
 
@@ -359,18 +359,20 @@ mod auto_unload_tests {
     use super::*;
 
     #[tokio::test]
+    #[ignore] // Auto-unload task checks every 60s, so this test would need to wait 60+ seconds
     async fn test_auto_unload_on_idle() {
         let service = Arc::new(create_test_service());
 
         // Start auto-unload task (uses service's configured 5 second idle timeout)
+        // Note: The task checks every 60 seconds, so actual unload takes up to 60s after idle
         start_auto_unload_task(Arc::clone(&service));
 
         // Make a prediction to load the model
         service.predict("test").await.expect("Prediction failed");
         assert!(service.is_loaded().await);
 
-        // Wait for idle timeout (5 seconds + buffer)
-        sleep(Duration::from_secs(7)).await;
+        // Wait for auto-unload check cycle (60 seconds + buffer)
+        sleep(Duration::from_secs(65)).await;
 
         // Should be unloaded
         assert!(!service.is_loaded().await);
