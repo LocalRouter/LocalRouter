@@ -59,9 +59,10 @@ pub struct TopProvider {
 }
 
 impl OpenRouterModel {
-    /// Parse pricing string to f64
+    /// Parse pricing string to f64, treating negative values as 0.0
+    /// (OpenRouter uses -1 to indicate "pricing not available" or "dynamic pricing")
     pub fn parse_price(price_str: &str) -> f64 {
-        price_str.parse::<f64>().unwrap_or(0.0)
+        price_str.parse::<f64>().unwrap_or(0.0).max(0.0)
     }
 
     /// Get prompt cost per token (not per 1K)

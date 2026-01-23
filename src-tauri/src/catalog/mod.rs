@@ -53,7 +53,8 @@ mod integration_tests {
     fn test_catalog_metadata_valid() {
         let meta = metadata();
         assert_eq!(meta.api_version, "v1");
-        assert_eq!(meta.total_models, 339);
+        // Model count varies as OpenRouter updates their catalog
+        assert!(meta.total_models > 300, "Expected at least 300 models, got {}", meta.total_models);
         assert!(meta.fetch_timestamp > 0);
 
         // Fetch date should be recent (within last 365 days)

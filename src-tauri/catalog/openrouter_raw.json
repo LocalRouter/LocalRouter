@@ -1,6 +1,217 @@
 {
   "data": [
     {
+      "id": "writer/palmyra-x5",
+      "name": "Writer: Palmyra X5",
+      "created": 1769003823,
+      "context_length": 1040000,
+      "architecture": {
+        "modality": "text->text",
+        "tokenizer": "Other",
+        "instruct_type": null
+      },
+      "pricing": {
+        "prompt": "0.0000006",
+        "completion": "0.000006",
+        "image": "0",
+        "request": "0"
+      },
+      "supported_parameters": [
+        "max_tokens",
+        "stop",
+        "temperature",
+        "top_k",
+        "top_p"
+      ],
+      "top_provider": {
+        "context_length": 1040000,
+        "max_completion_tokens": 8192,
+        "is_moderated": true
+      }
+    },
+    {
+      "id": "liquid/lfm-2.5-1.2b-thinking:free",
+      "name": "LiquidAI: LFM2.5-1.2B-Thinking (free)",
+      "created": 1768927527,
+      "context_length": 32768,
+      "architecture": {
+        "modality": "text->text",
+        "tokenizer": "Other",
+        "instruct_type": null
+      },
+      "pricing": {
+        "prompt": "0",
+        "completion": "0",
+        "image": "0",
+        "request": "0"
+      },
+      "supported_parameters": [
+        "frequency_penalty",
+        "include_reasoning",
+        "max_tokens",
+        "min_p",
+        "presence_penalty",
+        "reasoning",
+        "repetition_penalty",
+        "seed",
+        "stop",
+        "temperature",
+        "top_k",
+        "top_p"
+      ],
+      "top_provider": {
+        "context_length": 32768,
+        "max_completion_tokens": null,
+        "is_moderated": false
+      }
+    },
+    {
+      "id": "liquid/lfm-2.5-1.2b-instruct:free",
+      "name": "LiquidAI: LFM2.5-1.2B-Instruct (free)",
+      "created": 1768927521,
+      "context_length": 32768,
+      "architecture": {
+        "modality": "text->text",
+        "tokenizer": "Other",
+        "instruct_type": null
+      },
+      "pricing": {
+        "prompt": "0",
+        "completion": "0",
+        "image": "0",
+        "request": "0"
+      },
+      "supported_parameters": [
+        "frequency_penalty",
+        "max_tokens",
+        "min_p",
+        "presence_penalty",
+        "repetition_penalty",
+        "seed",
+        "stop",
+        "temperature",
+        "top_k",
+        "top_p"
+      ],
+      "top_provider": {
+        "context_length": 32768,
+        "max_completion_tokens": null,
+        "is_moderated": false
+      }
+    },
+    {
+      "id": "openai/gpt-audio",
+      "name": "OpenAI: GPT Audio",
+      "created": 1768862569,
+      "context_length": 128000,
+      "architecture": {
+        "modality": "text+audio->text+audio",
+        "tokenizer": "GPT",
+        "instruct_type": null
+      },
+      "pricing": {
+        "prompt": "0.0000025",
+        "completion": "0.00001",
+        "image": null,
+        "request": null
+      },
+      "supported_parameters": [
+        "frequency_penalty",
+        "logit_bias",
+        "logprobs",
+        "max_tokens",
+        "presence_penalty",
+        "response_format",
+        "seed",
+        "stop",
+        "structured_outputs",
+        "temperature",
+        "top_logprobs",
+        "top_p"
+      ],
+      "top_provider": {
+        "context_length": 128000,
+        "max_completion_tokens": 16384,
+        "is_moderated": true
+      }
+    },
+    {
+      "id": "openai/gpt-audio-mini",
+      "name": "OpenAI: GPT Audio Mini",
+      "created": 1768859419,
+      "context_length": 128000,
+      "architecture": {
+        "modality": "text+audio->text+audio",
+        "tokenizer": "GPT",
+        "instruct_type": null
+      },
+      "pricing": {
+        "prompt": "0.0000006",
+        "completion": "0.0000024",
+        "image": null,
+        "request": null
+      },
+      "supported_parameters": [
+        "frequency_penalty",
+        "logit_bias",
+        "logprobs",
+        "max_tokens",
+        "presence_penalty",
+        "response_format",
+        "seed",
+        "stop",
+        "structured_outputs",
+        "temperature",
+        "top_logprobs",
+        "top_p"
+      ],
+      "top_provider": {
+        "context_length": 128000,
+        "max_completion_tokens": 16384,
+        "is_moderated": true
+      }
+    },
+    {
+      "id": "z-ai/glm-4.7-flash",
+      "name": "Z.AI: GLM 4.7 Flash",
+      "created": 1768833913,
+      "context_length": 200000,
+      "architecture": {
+        "modality": "text->text",
+        "tokenizer": "Other",
+        "instruct_type": null
+      },
+      "pricing": {
+        "prompt": "0.00000007",
+        "completion": "0.0000004",
+        "image": "0",
+        "request": "0"
+      },
+      "supported_parameters": [
+        "frequency_penalty",
+        "include_reasoning",
+        "max_tokens",
+        "min_p",
+        "presence_penalty",
+        "reasoning",
+        "repetition_penalty",
+        "response_format",
+        "seed",
+        "stop",
+        "structured_outputs",
+        "temperature",
+        "tool_choice",
+        "tools",
+        "top_k",
+        "top_p"
+      ],
+      "top_provider": {
+        "context_length": 200000,
+        "max_completion_tokens": 131072,
+        "is_moderated": false
+      }
+    },
+    {
       "id": "openai/gpt-5.2-codex",
       "name": "OpenAI: GPT-5.2-Codex",
       "created": 1768409315,
@@ -44,7 +255,7 @@
       "created": 1767996672,
       "context_length": 36864,
       "architecture": {
-        "modality": "text+image->text",
+        "modality": "text+image+video->text",
         "tokenizer": "Other",
         "instruct_type": null
       },
@@ -117,7 +328,7 @@
       "created": 1766505011,
       "context_length": 262144,
       "architecture": {
-        "modality": "text+image->text",
+        "modality": "text+image+video->text",
         "tokenizer": "Other",
         "instruct_type": null
       },
@@ -133,6 +344,7 @@
         "max_tokens",
         "reasoning",
         "response_format",
+        "stop",
         "structured_outputs",
         "temperature",
         "tool_choice",
@@ -141,7 +353,7 @@
       ],
       "top_provider": {
         "context_length": 262144,
-        "max_completion_tokens": 16384,
+        "max_completion_tokens": 32768,
         "is_moderated": false
       }
     },
@@ -151,7 +363,7 @@
       "created": 1766504997,
       "context_length": 262144,
       "architecture": {
-        "modality": "text+image->text",
+        "modality": "text+image+video->text",
         "tokenizer": "Other",
         "instruct_type": null
       },
@@ -167,6 +379,7 @@
         "max_tokens",
         "reasoning",
         "response_format",
+        "stop",
         "structured_outputs",
         "temperature",
         "tool_choice",
@@ -272,15 +485,15 @@
       "created": 1765987078,
       "context_length": 1048576,
       "architecture": {
-        "modality": "text+image->text",
+        "modality": "text+image+file+audio+video->text",
         "tokenizer": "Gemini",
         "instruct_type": null
       },
       "pricing": {
         "prompt": "0.0000005",
         "completion": "0.000003",
-        "image": "0",
-        "request": "0"
+        "image": "0.0000005",
+        "request": null
       },
       "supported_parameters": [
         "include_reasoning",
@@ -517,7 +730,7 @@
       "created": 1765389783,
       "context_length": 128000,
       "architecture": {
-        "modality": "text+image->text",
+        "modality": "text+image+file->text",
         "tokenizer": "GPT",
         "instruct_type": null
       },
@@ -547,7 +760,7 @@
       "created": 1765389780,
       "context_length": 400000,
       "architecture": {
-        "modality": "text+image->text",
+        "modality": "text+image+file->text",
         "tokenizer": "GPT",
         "instruct_type": null
       },
@@ -579,7 +792,7 @@
       "created": 1765389775,
       "context_length": 400000,
       "architecture": {
-        "modality": "text+image->text",
+        "modality": "text+image+file->text",
         "tokenizer": "GPT",
         "instruct_type": null
       },
@@ -714,7 +927,7 @@
       "created": 1765207462,
       "context_length": 131072,
       "architecture": {
-        "modality": "text+image->text",
+        "modality": "text+image+video->text",
         "tokenizer": "Other",
         "instruct_type": null
       },
@@ -878,7 +1091,7 @@
       "created": 1764696672,
       "context_length": 1000000,
       "architecture": {
-        "modality": "text+image->text",
+        "modality": "text+image+file+video->text",
         "tokenizer": "Nova",
         "instruct_type": null
       },
@@ -1328,15 +1541,15 @@
       "created": 1764010580,
       "context_length": 200000,
       "architecture": {
-        "modality": "text+image->text",
+        "modality": "text+image+file->text",
         "tokenizer": "Claude",
         "instruct_type": null
       },
       "pricing": {
         "prompt": "0.000005",
         "completion": "0.000025",
-        "image": "0",
-        "request": "0"
+        "image": null,
+        "request": null
       },
       "supported_parameters": [
         "include_reasoning",
@@ -1482,8 +1695,8 @@
       "pricing": {
         "prompt": "0.000002",
         "completion": "0.000012",
-        "image": "0.067",
-        "request": "0"
+        "image": "0.000002",
+        "request": null
       },
       "supported_parameters": [
         "include_reasoning",
@@ -1544,15 +1757,15 @@
       "created": 1763474668,
       "context_length": 1048576,
       "architecture": {
-        "modality": "text+image->text",
+        "modality": "text+image+file+audio+video->text",
         "tokenizer": "Gemini",
         "instruct_type": null
       },
       "pricing": {
         "prompt": "0.000002",
         "completion": "0.000012",
-        "image": "0.008256",
-        "request": "0"
+        "image": "0.000002",
+        "request": null
       },
       "supported_parameters": [
         "include_reasoning",
@@ -1617,7 +1830,7 @@
       "created": 1763060305,
       "context_length": 400000,
       "architecture": {
-        "modality": "text+image->text",
+        "modality": "text+image+file->text",
         "tokenizer": "GPT",
         "instruct_type": null
       },
@@ -1649,7 +1862,7 @@
       "created": 1763060302,
       "context_length": 128000,
       "architecture": {
-        "modality": "text+image->text",
+        "modality": "text+image+file->text",
         "tokenizer": "GPT",
         "instruct_type": null
       },
@@ -1887,7 +2100,7 @@
       "created": 1761835144,
       "context_length": 32000,
       "architecture": {
-        "modality": "text->text",
+        "modality": "text+audio->text",
         "tokenizer": "Mistral",
         "instruct_type": null
       },
@@ -1956,7 +2169,7 @@
       "created": 1761675565,
       "context_length": 128000,
       "architecture": {
-        "modality": "text+image->text",
+        "modality": "text+image+video->text",
         "tokenizer": "Other",
         "instruct_type": null
       },
@@ -1988,7 +2201,7 @@
       "created": 1761675565,
       "context_length": 131072,
       "architecture": {
-        "modality": "text+image->text",
+        "modality": "text+image+video->text",
         "tokenizer": "Other",
         "instruct_type": null
       },
@@ -2097,7 +2310,7 @@
     },
     {
       "id": "liquid/lfm2-8b-a1b",
-      "name": "LiquidAI/LFM2-8B-A1B",
+      "name": "LiquidAI: LFM2-8B-A1B",
       "created": 1760970984,
       "context_length": 32768,
       "architecture": {
@@ -2131,7 +2344,7 @@
     },
     {
       "id": "liquid/lfm-2.2-6b",
-      "name": "LiquidAI/LFM2-2.6B",
+      "name": "LiquidAI: LFM2-2.6B",
       "created": 1760970889,
       "context_length": 32768,
       "architecture": {
@@ -2241,7 +2454,7 @@
       "created": 1760624583,
       "context_length": 400000,
       "architecture": {
-        "modality": "text+image->text+image",
+        "modality": "text+image+file->text+image",
         "tokenizer": "GPT",
         "instruct_type": null
       },
@@ -2288,8 +2501,8 @@
       "pricing": {
         "prompt": "0.000001",
         "completion": "0.000005",
-        "image": "0",
-        "request": "0"
+        "image": null,
+        "request": null
       },
       "supported_parameters": [
         "include_reasoning",
@@ -2388,7 +2601,7 @@
       "created": 1760447986,
       "context_length": 400000,
       "architecture": {
-        "modality": "text+image->text+image",
+        "modality": "text+image+file->text+image",
         "tokenizer": "GPT",
         "instruct_type": null
       },
@@ -2428,7 +2641,7 @@
       "created": 1760129661,
       "context_length": 200000,
       "architecture": {
-        "modality": "text+image->text",
+        "modality": "text+image+file->text",
         "tokenizer": "GPT",
         "instruct_type": null
       },
@@ -2468,7 +2681,7 @@
       "created": 1760129642,
       "context_length": 200000,
       "architecture": {
-        "modality": "text+image->text",
+        "modality": "text+image+file->text",
         "tokenizer": "GPT",
         "instruct_type": null
       },
@@ -2589,8 +2802,8 @@
       "pricing": {
         "prompt": "0.0000003",
         "completion": "0.0000025",
-        "image": "0.001238",
-        "request": "0"
+        "image": "0.0000003",
+        "request": null
       },
       "supported_parameters": [
         "max_tokens",
@@ -2692,7 +2905,7 @@
       "created": 1759776663,
       "context_length": 400000,
       "architecture": {
-        "modality": "text+image->text",
+        "modality": "text+image+file->text",
         "tokenizer": "GPT",
         "instruct_type": null
       },
@@ -2807,15 +3020,15 @@
       "created": 1759161676,
       "context_length": 1000000,
       "architecture": {
-        "modality": "text+image->text",
+        "modality": "text+image+file->text",
         "tokenizer": "Claude",
         "instruct_type": null
       },
       "pricing": {
         "prompt": "0.000003",
         "completion": "0.000015",
-        "image": "0.0048",
-        "request": "0"
+        "image": null,
+        "request": null
       },
       "supported_parameters": [
         "include_reasoning",
@@ -2944,15 +3157,15 @@
       "created": 1758820178,
       "context_length": 1048576,
       "architecture": {
-        "modality": "text+image->text",
+        "modality": "text+image+file+audio+video->text",
         "tokenizer": "Gemini",
         "instruct_type": null
       },
       "pricing": {
         "prompt": "0.0000003",
         "completion": "0.0000025",
-        "image": "0.001238",
-        "request": "0"
+        "image": "0.0000003",
+        "request": null
       },
       "supported_parameters": [
         "include_reasoning",
@@ -2979,15 +3192,15 @@
       "created": 1758819686,
       "context_length": 1048576,
       "architecture": {
-        "modality": "text+image->text",
+        "modality": "text+image+file+audio+video->text",
         "tokenizer": "Gemini",
         "instruct_type": null
       },
       "pricing": {
         "prompt": "0.0000001",
         "completion": "0.0000004",
-        "image": "0",
-        "request": "0"
+        "image": "0.0000001",
+        "request": null
       },
       "supported_parameters": [
         "include_reasoning",
@@ -3004,7 +3217,7 @@
       ],
       "top_provider": {
         "context_length": 1048576,
-        "max_completion_tokens": 65536,
+        "max_completion_tokens": 65535,
         "is_moderated": false
       }
     },
@@ -3012,15 +3225,15 @@
       "id": "qwen/qwen3-vl-235b-a22b-thinking",
       "name": "Qwen: Qwen3 VL 235B A22B Thinking",
       "created": 1758668690,
-      "context_length": 131072,
+      "context_length": 262144,
       "architecture": {
         "modality": "text+image->text",
         "tokenizer": "Qwen3",
         "instruct_type": null
       },
       "pricing": {
-        "prompt": "0.00000098",
-        "completion": "0.00000395",
+        "prompt": "0.00000045",
+        "completion": "0.0000035",
         "image": "0",
         "request": "0"
       },
@@ -3031,15 +3244,19 @@
         "presence_penalty",
         "reasoning",
         "repetition_penalty",
+        "response_format",
         "seed",
         "stop",
+        "structured_outputs",
         "temperature",
+        "tool_choice",
+        "tools",
         "top_k",
         "top_p"
       ],
       "top_provider": {
-        "context_length": 131072,
-        "max_completion_tokens": 32768,
+        "context_length": 262144,
+        "max_completion_tokens": 262144,
         "is_moderated": false
       }
     },
@@ -3309,26 +3526,19 @@
       },
       "pricing": {
         "prompt": "0.00000009",
-        "completion": "0.0000004",
+        "completion": "0.00000045",
         "image": "0",
         "request": "0"
       },
       "supported_parameters": [
-        "frequency_penalty",
         "include_reasoning",
         "max_tokens",
-        "min_p",
-        "presence_penalty",
         "reasoning",
-        "repetition_penalty",
         "response_format",
-        "seed",
-        "stop",
         "structured_outputs",
         "temperature",
         "tool_choice",
         "tools",
-        "top_k",
         "top_p"
       ],
       "top_provider": {
@@ -4073,7 +4283,7 @@
       "created": 1755233061,
       "context_length": 128000,
       "architecture": {
-        "modality": "text->text",
+        "modality": "text+audio->text+audio",
         "tokenizer": "GPT",
         "instruct_type": null
       },
@@ -4319,7 +4529,7 @@
       "created": 1754587837,
       "context_length": 128000,
       "architecture": {
-        "modality": "text+image->text",
+        "modality": "text+image+file->text",
         "tokenizer": "GPT",
         "instruct_type": null
       },
@@ -4347,7 +4557,7 @@
       "created": 1754587413,
       "context_length": 400000,
       "architecture": {
-        "modality": "text+image->text",
+        "modality": "text+image+file->text",
         "tokenizer": "GPT",
         "instruct_type": null
       },
@@ -4379,7 +4589,7 @@
       "created": 1754587407,
       "context_length": 400000,
       "architecture": {
-        "modality": "text+image->text",
+        "modality": "text+image+file->text",
         "tokenizer": "GPT",
         "instruct_type": null
       },
@@ -4411,7 +4621,7 @@
       "created": 1754587402,
       "context_length": 400000,
       "architecture": {
-        "modality": "text+image->text",
+        "modality": "text+image+file->text",
         "tokenizer": "GPT",
         "instruct_type": null
       },
@@ -4633,7 +4843,7 @@
       "created": 1754411591,
       "context_length": 200000,
       "architecture": {
-        "modality": "text+image->text",
+        "modality": "text+image+file->text",
         "tokenizer": "Claude",
         "instruct_type": null
       },
@@ -5104,15 +5314,15 @@
       "created": 1753200276,
       "context_length": 1048576,
       "architecture": {
-        "modality": "text+image->text",
+        "modality": "text+image+file+audio+video->text",
         "tokenizer": "Gemini",
         "instruct_type": null
       },
       "pricing": {
         "prompt": "0.0000001",
         "completion": "0.0000004",
-        "image": "0",
-        "request": "0"
+        "image": "0.0000001",
+        "request": null
       },
       "supported_parameters": [
         "include_reasoning",
@@ -5430,7 +5640,7 @@
         "prompt": "0",
         "completion": "0",
         "image": "0",
-        "request": "0"
+        "request": null
       },
       "supported_parameters": [
         "frequency_penalty",
@@ -5795,15 +6005,15 @@
       "created": 1750172488,
       "context_length": 1048576,
       "architecture": {
-        "modality": "text+image->text",
+        "modality": "text+image+file+audio+video->text",
         "tokenizer": "Gemini",
         "instruct_type": null
       },
       "pricing": {
         "prompt": "0.0000003",
         "completion": "0.0000025",
-        "image": "0.001238",
-        "request": "0"
+        "image": "0.0000003",
+        "request": null
       },
       "supported_parameters": [
         "include_reasoning",
@@ -5830,15 +6040,15 @@
       "created": 1750169544,
       "context_length": 1048576,
       "architecture": {
-        "modality": "text+image->text",
+        "modality": "text+image+file+audio+video->text",
         "tokenizer": "Gemini",
         "instruct_type": null
       },
       "pricing": {
         "prompt": "0.00000125",
         "completion": "0.00001",
-        "image": "0.00516",
-        "request": "0"
+        "image": "0.00000125",
+        "request": null
       },
       "supported_parameters": [
         "include_reasoning",
@@ -5897,7 +6107,7 @@
       "created": 1749598352,
       "context_length": 200000,
       "architecture": {
-        "modality": "text+image->text",
+        "modality": "text+image+file->text",
         "tokenizer": "GPT",
         "instruct_type": null
       },
@@ -6003,15 +6213,15 @@
       "created": 1749137257,
       "context_length": 1048576,
       "architecture": {
-        "modality": "text+image->text",
+        "modality": "text+image+file+audio->text",
         "tokenizer": "Gemini",
         "instruct_type": null
       },
       "pricing": {
         "prompt": "0.00000125",
         "completion": "0.00001",
-        "image": "0.00516",
-        "request": "0"
+        "image": "0.00000125",
+        "request": null
       },
       "supported_parameters": [
         "include_reasoning",
@@ -6112,7 +6322,7 @@
       "created": 1747931245,
       "context_length": 200000,
       "architecture": {
-        "modality": "text+image->text",
+        "modality": "text+image+file->text",
         "tokenizer": "Claude",
         "instruct_type": null
       },
@@ -6145,7 +6355,7 @@
       "created": 1747930371,
       "context_length": 1000000,
       "architecture": {
-        "modality": "text+image->text",
+        "modality": "text+image+file->text",
         "tokenizer": "Claude",
         "instruct_type": null
       },
@@ -6186,7 +6396,7 @@
         "prompt": "0",
         "completion": "0",
         "image": "0",
-        "request": "0"
+        "request": null
       },
       "supported_parameters": [
         "frequency_penalty",
@@ -6318,15 +6528,15 @@
       "created": 1746578513,
       "context_length": 1048576,
       "architecture": {
-        "modality": "text+image->text",
+        "modality": "text+image+file+audio+video->text",
         "tokenizer": "Gemini",
         "instruct_type": null
       },
       "pricing": {
         "prompt": "0.00000125",
         "completion": "0.00001",
-        "image": "0.00516",
-        "request": "0"
+        "image": "0.00000125",
+        "request": null
       },
       "supported_parameters": [
         "include_reasoning",
@@ -6612,8 +6822,6 @@
       "supported_parameters": [
         "frequency_penalty",
         "include_reasoning",
-        "logit_bias",
-        "logprobs",
         "max_tokens",
         "min_p",
         "presence_penalty",
@@ -6627,7 +6835,6 @@
         "tool_choice",
         "tools",
         "top_k",
-        "top_logprobs",
         "top_p"
       ],
       "top_provider": {
@@ -6880,7 +7087,7 @@
       "created": 1744824212,
       "context_length": 200000,
       "architecture": {
-        "modality": "text+image->text",
+        "modality": "text+image+file->text",
         "tokenizer": "GPT",
         "instruct_type": null
       },
@@ -6912,7 +7119,7 @@
       "created": 1744823457,
       "context_length": 200000,
       "architecture": {
-        "modality": "text+image->text",
+        "modality": "text+image+file->text",
         "tokenizer": "GPT",
         "instruct_type": null
       },
@@ -6944,7 +7151,7 @@
       "created": 1744820942,
       "context_length": 200000,
       "architecture": {
-        "modality": "text+image->text",
+        "modality": "text+image+file->text",
         "tokenizer": "GPT",
         "instruct_type": null
       },
@@ -7009,7 +7216,7 @@
       "created": 1744651385,
       "context_length": 1047576,
       "architecture": {
-        "modality": "text+image->text",
+        "modality": "text+image+file->text",
         "tokenizer": "GPT",
         "instruct_type": null
       },
@@ -7041,7 +7248,7 @@
       "created": 1744651381,
       "context_length": 1047576,
       "architecture": {
-        "modality": "text+image->text",
+        "modality": "text+image+file->text",
         "tokenizer": "GPT",
         "instruct_type": null
       },
@@ -7073,7 +7280,7 @@
       "created": 1744651369,
       "context_length": 1047576,
       "architecture": {
-        "modality": "text+image->text",
+        "modality": "text+image+file->text",
         "tokenizer": "GPT",
         "instruct_type": null
       },
@@ -7293,7 +7500,6 @@
       "supported_parameters": [
         "frequency_penalty",
         "logit_bias",
-        "logprobs",
         "max_tokens",
         "min_p",
         "presence_penalty",
@@ -7306,7 +7512,6 @@
         "tool_choice",
         "tools",
         "top_k",
-        "top_logprobs",
         "top_p"
       ],
       "top_provider": {
@@ -7441,7 +7646,7 @@
       "created": 1742423211,
       "context_length": 200000,
       "architecture": {
-        "modality": "text+image->text",
+        "modality": "text+image+file->text",
         "tokenizer": "GPT",
         "instruct_type": null
       },
@@ -7574,7 +7779,7 @@
         "prompt": "0",
         "completion": "0",
         "image": "0",
-        "request": "0"
+        "request": null
       },
       "supported_parameters": [
         "max_tokens",
@@ -7639,7 +7844,7 @@
         "prompt": "0",
         "completion": "0",
         "image": "0",
-        "request": "0"
+        "request": null
       },
       "supported_parameters": [
         "max_tokens",
@@ -8033,15 +8238,15 @@
       "created": 1740506212,
       "context_length": 1048576,
       "architecture": {
-        "modality": "text+image->text",
+        "modality": "text+image+file+audio+video->text",
         "tokenizer": "Gemini",
         "instruct_type": null
       },
       "pricing": {
         "prompt": "0.000000075",
         "completion": "0.0000003",
-        "image": "0",
-        "request": "0"
+        "image": "0.000000075",
+        "request": null
       },
       "supported_parameters": [
         "max_tokens",
@@ -8066,7 +8271,7 @@
       "created": 1740422110,
       "context_length": 200000,
       "architecture": {
-        "modality": "text+image->text",
+        "modality": "text+image+file->text",
         "tokenizer": "Claude",
         "instruct_type": null
       },
@@ -8098,7 +8303,7 @@
       "created": 1740422110,
       "context_length": 200000,
       "architecture": {
-        "modality": "text+image->text",
+        "modality": "text+image+file->text",
         "tokenizer": "Claude",
         "instruct_type": null
       },
@@ -8198,7 +8403,7 @@
       "created": 1739372611,
       "context_length": 200000,
       "architecture": {
-        "modality": "text->text",
+        "modality": "text+file->text",
         "tokenizer": "GPT",
         "instruct_type": null
       },
@@ -8228,15 +8433,15 @@
       "created": 1738769413,
       "context_length": 1048576,
       "architecture": {
-        "modality": "text+image->text",
+        "modality": "text+image+file+audio+video->text",
         "tokenizer": "Gemini",
         "instruct_type": null
       },
       "pricing": {
         "prompt": "0.0000001",
         "completion": "0.0000004",
-        "image": "0.0000258",
-        "request": "0"
+        "image": "0.0000001",
+        "request": null
       },
       "supported_parameters": [
         "max_tokens",
@@ -8541,7 +8746,7 @@
       "created": 1738351721,
       "context_length": 200000,
       "architecture": {
-        "modality": "text->text",
+        "modality": "text+file->text",
         "tokenizer": "GPT",
         "instruct_type": null
       },
@@ -8928,7 +9133,7 @@
       "created": 1734459999,
       "context_length": 200000,
       "architecture": {
-        "modality": "text+image->text",
+        "modality": "text+image+file->text",
         "tokenizer": "GPT",
         "instruct_type": null
       },
@@ -8997,10 +9202,10 @@
         "instruct_type": null
       },
       "pricing": {
-        "prompt": "0",
-        "completion": "0",
-        "image": "0",
-        "request": "0"
+        "prompt": "0.0000001",
+        "completion": "0.0000004",
+        "image": "0.0000001",
+        "request": null
       },
       "supported_parameters": [
         "max_tokens",
@@ -9190,7 +9395,7 @@
       "created": 1732127594,
       "context_length": 128000,
       "architecture": {
-        "modality": "text+image->text",
+        "modality": "text+image+file->text",
         "tokenizer": "GPT",
         "instruct_type": null
       },
@@ -9466,37 +9671,6 @@
       }
     },
     {
-      "id": "anthropic/claude-3.5-sonnet",
-      "name": "Anthropic: Claude 3.5 Sonnet",
-      "created": 1729555200,
-      "context_length": 200000,
-      "architecture": {
-        "modality": "text+image->text",
-        "tokenizer": "Claude",
-        "instruct_type": null
-      },
-      "pricing": {
-        "prompt": "0.000006",
-        "completion": "0.00003",
-        "image": "0",
-        "request": "0"
-      },
-      "supported_parameters": [
-        "max_tokens",
-        "stop",
-        "temperature",
-        "tool_choice",
-        "tools",
-        "top_k",
-        "top_p"
-      ],
-      "top_provider": {
-        "context_length": 200000,
-        "max_completion_tokens": 8192,
-        "is_moderated": true
-      }
-    },
-    {
       "id": "anthracite-org/magnum-v4-72b",
       "name": "Magnum v4 72B",
       "created": 1729555200,
@@ -9536,8 +9710,39 @@
       }
     },
     {
-      "id": "mistralai/ministral-3b",
-      "name": "Mistral: Ministral 3B",
+      "id": "anthropic/claude-3.5-sonnet",
+      "name": "Anthropic: Claude 3.5 Sonnet",
+      "created": 1729555200,
+      "context_length": 200000,
+      "architecture": {
+        "modality": "text+image+file->text",
+        "tokenizer": "Claude",
+        "instruct_type": null
+      },
+      "pricing": {
+        "prompt": "0.000006",
+        "completion": "0.00003",
+        "image": "0",
+        "request": "0"
+      },
+      "supported_parameters": [
+        "max_tokens",
+        "stop",
+        "temperature",
+        "tool_choice",
+        "tools",
+        "top_k",
+        "top_p"
+      ],
+      "top_provider": {
+        "context_length": 200000,
+        "max_completion_tokens": 8192,
+        "is_moderated": true
+      }
+    },
+    {
+      "id": "mistralai/ministral-8b",
+      "name": "Mistral: Ministral 8B",
       "created": 1729123200,
       "context_length": 131072,
       "architecture": {
@@ -9546,8 +9751,8 @@
         "instruct_type": null
       },
       "pricing": {
-        "prompt": "0.00000004",
-        "completion": "0.00000004",
+        "prompt": "0.0000001",
+        "completion": "0.0000001",
         "image": null,
         "request": null
       },
@@ -9571,8 +9776,8 @@
       }
     },
     {
-      "id": "mistralai/ministral-8b",
-      "name": "Mistral: Ministral 8B",
+      "id": "mistralai/ministral-3b",
+      "name": "Mistral: Ministral 3B",
       "created": 1729123200,
       "context_length": 131072,
       "architecture": {
@@ -9581,8 +9786,8 @@
         "instruct_type": null
       },
       "pricing": {
-        "prompt": "0.0000001",
-        "completion": "0.0000001",
+        "prompt": "0.00000004",
+        "completion": "0.00000004",
         "image": null,
         "request": null
       },
@@ -9680,8 +9885,8 @@
       }
     },
     {
-      "id": "inflection/inflection-3-productivity",
-      "name": "Inflection: Inflection 3 Productivity",
+      "id": "inflection/inflection-3-pi",
+      "name": "Inflection: Inflection 3 Pi",
       "created": 1728604800,
       "context_length": 8000,
       "architecture": {
@@ -9708,8 +9913,8 @@
       }
     },
     {
-      "id": "inflection/inflection-3-pi",
-      "name": "Inflection: Inflection 3 Pi",
+      "id": "inflection/inflection-3-productivity",
+      "name": "Inflection: Inflection 3 Productivity",
       "created": 1728604800,
       "context_length": 8000,
       "architecture": {
@@ -9770,38 +9975,6 @@
       ],
       "top_provider": {
         "context_length": 32768,
-        "max_completion_tokens": null,
-        "is_moderated": false
-      }
-    },
-    {
-      "id": "meta-llama/llama-3.2-1b-instruct",
-      "name": "Meta: Llama 3.2 1B Instruct",
-      "created": 1727222400,
-      "context_length": 60000,
-      "architecture": {
-        "modality": "text->text",
-        "tokenizer": "Llama3",
-        "instruct_type": "llama3"
-      },
-      "pricing": {
-        "prompt": "0.000000027",
-        "completion": "0.0000002",
-        "image": "0",
-        "request": "0"
-      },
-      "supported_parameters": [
-        "frequency_penalty",
-        "max_tokens",
-        "presence_penalty",
-        "repetition_penalty",
-        "seed",
-        "temperature",
-        "top_k",
-        "top_p"
-      ],
-      "top_provider": {
-        "context_length": 60000,
         "max_completion_tokens": null,
         "is_moderated": false
       }
@@ -9870,6 +10043,38 @@
       "top_provider": {
         "context_length": 131072,
         "max_completion_tokens": 16384,
+        "is_moderated": false
+      }
+    },
+    {
+      "id": "meta-llama/llama-3.2-1b-instruct",
+      "name": "Meta: Llama 3.2 1B Instruct",
+      "created": 1727222400,
+      "context_length": 60000,
+      "architecture": {
+        "modality": "text->text",
+        "tokenizer": "Llama3",
+        "instruct_type": "llama3"
+      },
+      "pricing": {
+        "prompt": "0.000000027",
+        "completion": "0.0000002",
+        "image": "0",
+        "request": "0"
+      },
+      "supported_parameters": [
+        "frequency_penalty",
+        "max_tokens",
+        "presence_penalty",
+        "repetition_penalty",
+        "seed",
+        "temperature",
+        "top_k",
+        "top_p"
+      ],
+      "top_provider": {
+        "context_length": 60000,
+        "max_completion_tokens": null,
         "is_moderated": false
       }
     },
@@ -10092,6 +10297,44 @@
       }
     },
     {
+      "id": "sao10k/l3.1-euryale-70b",
+      "name": "Sao10K: Llama 3.1 Euryale 70B v2.2",
+      "created": 1724803200,
+      "context_length": 32768,
+      "architecture": {
+        "modality": "text->text",
+        "tokenizer": "Llama3",
+        "instruct_type": "llama3"
+      },
+      "pricing": {
+        "prompt": "0.00000065",
+        "completion": "0.00000075",
+        "image": "0",
+        "request": "0"
+      },
+      "supported_parameters": [
+        "frequency_penalty",
+        "max_tokens",
+        "min_p",
+        "presence_penalty",
+        "repetition_penalty",
+        "response_format",
+        "seed",
+        "stop",
+        "structured_outputs",
+        "temperature",
+        "tool_choice",
+        "tools",
+        "top_k",
+        "top_p"
+      ],
+      "top_provider": {
+        "context_length": 32768,
+        "max_completion_tokens": null,
+        "is_moderated": false
+      }
+    },
+    {
       "id": "qwen/qwen-2.5-vl-7b-instruct:free",
       "name": "Qwen: Qwen2.5-VL 7B Instruct (free)",
       "created": 1724803200,
@@ -10146,44 +10389,6 @@
         "seed",
         "stop",
         "temperature",
-        "top_k",
-        "top_p"
-      ],
-      "top_provider": {
-        "context_length": 32768,
-        "max_completion_tokens": null,
-        "is_moderated": false
-      }
-    },
-    {
-      "id": "sao10k/l3.1-euryale-70b",
-      "name": "Sao10K: Llama 3.1 Euryale 70B v2.2",
-      "created": 1724803200,
-      "context_length": 32768,
-      "architecture": {
-        "modality": "text->text",
-        "tokenizer": "Llama3",
-        "instruct_type": "llama3"
-      },
-      "pricing": {
-        "prompt": "0.00000065",
-        "completion": "0.00000075",
-        "image": "0",
-        "request": "0"
-      },
-      "supported_parameters": [
-        "frequency_penalty",
-        "max_tokens",
-        "min_p",
-        "presence_penalty",
-        "repetition_penalty",
-        "response_format",
-        "seed",
-        "stop",
-        "structured_outputs",
-        "temperature",
-        "tool_choice",
-        "tools",
         "top_k",
         "top_p"
       ],
@@ -10373,7 +10578,7 @@
       "created": 1722902400,
       "context_length": 128000,
       "architecture": {
-        "modality": "text+image->text",
+        "modality": "text+image+file->text",
         "tokenizer": "GPT",
         "instruct_type": null
       },
@@ -10438,44 +10643,6 @@
       "top_provider": {
         "context_length": 32768,
         "max_completion_tokens": 32768,
-        "is_moderated": false
-      }
-    },
-    {
-      "id": "meta-llama/llama-3.1-70b-instruct",
-      "name": "Meta: Llama 3.1 70B Instruct",
-      "created": 1721692800,
-      "context_length": 131072,
-      "architecture": {
-        "modality": "text->text",
-        "tokenizer": "Llama3",
-        "instruct_type": "llama3"
-      },
-      "pricing": {
-        "prompt": "0.0000004",
-        "completion": "0.0000004",
-        "image": "0",
-        "request": "0"
-      },
-      "supported_parameters": [
-        "frequency_penalty",
-        "logit_bias",
-        "max_tokens",
-        "min_p",
-        "presence_penalty",
-        "repetition_penalty",
-        "response_format",
-        "seed",
-        "stop",
-        "temperature",
-        "tool_choice",
-        "tools",
-        "top_k",
-        "top_p"
-      ],
-      "top_provider": {
-        "context_length": 131072,
-        "max_completion_tokens": null,
         "is_moderated": false
       }
     },
@@ -10589,6 +10756,44 @@
       }
     },
     {
+      "id": "meta-llama/llama-3.1-70b-instruct",
+      "name": "Meta: Llama 3.1 70B Instruct",
+      "created": 1721692800,
+      "context_length": 131072,
+      "architecture": {
+        "modality": "text->text",
+        "tokenizer": "Llama3",
+        "instruct_type": "llama3"
+      },
+      "pricing": {
+        "prompt": "0.0000004",
+        "completion": "0.0000004",
+        "image": "0",
+        "request": "0"
+      },
+      "supported_parameters": [
+        "frequency_penalty",
+        "logit_bias",
+        "max_tokens",
+        "min_p",
+        "presence_penalty",
+        "repetition_penalty",
+        "response_format",
+        "seed",
+        "stop",
+        "temperature",
+        "tool_choice",
+        "tools",
+        "top_k",
+        "top_p"
+      ],
+      "top_provider": {
+        "context_length": 131072,
+        "max_completion_tokens": null,
+        "is_moderated": false
+      }
+    },
+    {
       "id": "mistralai/mistral-nemo",
       "name": "Mistral: Mistral Nemo",
       "created": 1721347200,
@@ -10607,6 +10812,7 @@
       "supported_parameters": [
         "frequency_penalty",
         "max_tokens",
+        "min_p",
         "presence_penalty",
         "repetition_penalty",
         "response_format",
@@ -10621,17 +10827,17 @@
       ],
       "top_provider": {
         "context_length": 131072,
-        "max_completion_tokens": 131072,
+        "max_completion_tokens": 16384,
         "is_moderated": false
       }
     },
     {
-      "id": "openai/gpt-4o-mini",
-      "name": "OpenAI: GPT-4o-mini",
+      "id": "openai/gpt-4o-mini-2024-07-18",
+      "name": "OpenAI: GPT-4o-mini (2024-07-18)",
       "created": 1721260800,
       "context_length": 128000,
       "architecture": {
-        "modality": "text+image->text",
+        "modality": "text+image+file->text",
         "tokenizer": "GPT",
         "instruct_type": null
       },
@@ -10665,12 +10871,12 @@
       }
     },
     {
-      "id": "openai/gpt-4o-mini-2024-07-18",
-      "name": "OpenAI: GPT-4o-mini (2024-07-18)",
+      "id": "openai/gpt-4o-mini",
+      "name": "OpenAI: GPT-4o-mini",
       "created": 1721260800,
       "context_length": 128000,
       "architecture": {
-        "modality": "text+image->text",
+        "modality": "text+image+file->text",
         "tokenizer": "GPT",
         "instruct_type": null
       },
@@ -10802,36 +11008,37 @@
       }
     },
     {
-      "id": "mistralai/mistral-7b-instruct-v0.3",
-      "name": "Mistral: Mistral 7B Instruct v0.3",
+      "id": "nousresearch/hermes-2-pro-llama-3-8b",
+      "name": "NousResearch: Hermes 2 Pro - Llama-3 8B",
       "created": 1716768000,
-      "context_length": 32768,
+      "context_length": 8192,
       "architecture": {
         "modality": "text->text",
-        "tokenizer": "Mistral",
-        "instruct_type": "mistral"
+        "tokenizer": "Llama3",
+        "instruct_type": "chatml"
       },
       "pricing": {
-        "prompt": "0.0000002",
-        "completion": "0.0000002",
+        "prompt": "0.00000014",
+        "completion": "0.00000014",
         "image": "0",
         "request": "0"
       },
       "supported_parameters": [
         "frequency_penalty",
-        "logit_bias",
         "max_tokens",
-        "min_p",
         "presence_penalty",
         "repetition_penalty",
+        "response_format",
+        "seed",
         "stop",
+        "structured_outputs",
         "temperature",
         "top_k",
         "top_p"
       ],
       "top_provider": {
-        "context_length": 32768,
-        "max_completion_tokens": 4096,
+        "context_length": 8192,
+        "max_completion_tokens": 8192,
         "is_moderated": false
       }
     },
@@ -10870,77 +11077,37 @@
       }
     },
     {
-      "id": "nousresearch/hermes-2-pro-llama-3-8b",
-      "name": "NousResearch: Hermes 2 Pro - Llama-3 8B",
+      "id": "mistralai/mistral-7b-instruct-v0.3",
+      "name": "Mistral: Mistral 7B Instruct v0.3",
       "created": 1716768000,
-      "context_length": 8192,
+      "context_length": 32768,
       "architecture": {
         "modality": "text->text",
-        "tokenizer": "Llama3",
-        "instruct_type": "chatml"
+        "tokenizer": "Mistral",
+        "instruct_type": "mistral"
       },
       "pricing": {
-        "prompt": "0.000000025",
-        "completion": "0.00000008",
+        "prompt": "0.0000002",
+        "completion": "0.0000002",
         "image": "0",
         "request": "0"
       },
       "supported_parameters": [
         "frequency_penalty",
+        "logit_bias",
         "max_tokens",
+        "min_p",
         "presence_penalty",
         "repetition_penalty",
-        "response_format",
-        "seed",
         "stop",
-        "structured_outputs",
         "temperature",
         "top_k",
         "top_p"
       ],
       "top_provider": {
-        "context_length": 8192,
-        "max_completion_tokens": 2048,
-        "is_moderated": false
-      }
-    },
-    {
-      "id": "openai/gpt-4o-2024-05-13",
-      "name": "OpenAI: GPT-4o (2024-05-13)",
-      "created": 1715558400,
-      "context_length": 128000,
-      "architecture": {
-        "modality": "text+image->text",
-        "tokenizer": "GPT",
-        "instruct_type": null
-      },
-      "pricing": {
-        "prompt": "0.000005",
-        "completion": "0.000015",
-        "image": null,
-        "request": null
-      },
-      "supported_parameters": [
-        "frequency_penalty",
-        "logit_bias",
-        "logprobs",
-        "max_tokens",
-        "presence_penalty",
-        "response_format",
-        "seed",
-        "stop",
-        "structured_outputs",
-        "temperature",
-        "tool_choice",
-        "tools",
-        "top_logprobs",
-        "top_p",
-        "web_search_options"
-      ],
-      "top_provider": {
-        "context_length": 128000,
+        "context_length": 32768,
         "max_completion_tokens": 4096,
-        "is_moderated": true
+        "is_moderated": false
       }
     },
     {
@@ -10978,12 +11145,51 @@
       }
     },
     {
+      "id": "openai/gpt-4o-2024-05-13",
+      "name": "OpenAI: GPT-4o (2024-05-13)",
+      "created": 1715558400,
+      "context_length": 128000,
+      "architecture": {
+        "modality": "text+image+file->text",
+        "tokenizer": "GPT",
+        "instruct_type": null
+      },
+      "pricing": {
+        "prompt": "0.000005",
+        "completion": "0.000015",
+        "image": null,
+        "request": null
+      },
+      "supported_parameters": [
+        "frequency_penalty",
+        "logit_bias",
+        "logprobs",
+        "max_tokens",
+        "presence_penalty",
+        "response_format",
+        "seed",
+        "stop",
+        "structured_outputs",
+        "temperature",
+        "tool_choice",
+        "tools",
+        "top_logprobs",
+        "top_p",
+        "web_search_options"
+      ],
+      "top_provider": {
+        "context_length": 128000,
+        "max_completion_tokens": 4096,
+        "is_moderated": true
+      }
+    },
+    {
       "id": "openai/gpt-4o",
       "name": "OpenAI: GPT-4o",
       "created": 1715558400,
       "context_length": 128000,
       "architecture": {
-        "modality": "text+image->text",
+        "modality": "text+image+file->text",
         "tokenizer": "GPT",
         "instruct_type": null
       },
@@ -11022,7 +11228,7 @@
       "created": 1715558400,
       "context_length": 128000,
       "architecture": {
-        "modality": "text+image->text",
+        "modality": "text+image+file->text",
         "tokenizer": "GPT",
         "instruct_type": null
       },
@@ -11251,8 +11457,8 @@
       "pricing": {
         "prompt": "0.00000025",
         "completion": "0.00000125",
-        "image": "0.0004",
-        "request": "0"
+        "image": null,
+        "request": null
       },
       "supported_parameters": [
         "max_tokens",
@@ -11305,44 +11511,6 @@
       }
     },
     {
-      "id": "openai/gpt-4-turbo-preview",
-      "name": "OpenAI: GPT-4 Turbo Preview",
-      "created": 1706140800,
-      "context_length": 128000,
-      "architecture": {
-        "modality": "text->text",
-        "tokenizer": "GPT",
-        "instruct_type": null
-      },
-      "pricing": {
-        "prompt": "0.00001",
-        "completion": "0.00003",
-        "image": null,
-        "request": null
-      },
-      "supported_parameters": [
-        "frequency_penalty",
-        "logit_bias",
-        "logprobs",
-        "max_tokens",
-        "presence_penalty",
-        "response_format",
-        "seed",
-        "stop",
-        "structured_outputs",
-        "temperature",
-        "tool_choice",
-        "tools",
-        "top_logprobs",
-        "top_p"
-      ],
-      "top_provider": {
-        "context_length": 128000,
-        "max_completion_tokens": 4096,
-        "is_moderated": true
-      }
-    },
-    {
       "id": "openai/gpt-3.5-turbo-0613",
       "name": "OpenAI: GPT-3.5 Turbo (older v0613)",
       "created": 1706140800,
@@ -11378,6 +11546,44 @@
         "context_length": 4095,
         "max_completion_tokens": 4096,
         "is_moderated": false
+      }
+    },
+    {
+      "id": "openai/gpt-4-turbo-preview",
+      "name": "OpenAI: GPT-4 Turbo Preview",
+      "created": 1706140800,
+      "context_length": 128000,
+      "architecture": {
+        "modality": "text->text",
+        "tokenizer": "GPT",
+        "instruct_type": null
+      },
+      "pricing": {
+        "prompt": "0.00001",
+        "completion": "0.00003",
+        "image": null,
+        "request": null
+      },
+      "supported_parameters": [
+        "frequency_penalty",
+        "logit_bias",
+        "logprobs",
+        "max_tokens",
+        "presence_penalty",
+        "response_format",
+        "seed",
+        "stop",
+        "structured_outputs",
+        "temperature",
+        "tool_choice",
+        "tools",
+        "top_logprobs",
+        "top_p"
+      ],
+      "top_provider": {
+        "context_length": 128000,
+        "max_completion_tokens": 4096,
+        "is_moderated": true
       }
     },
     {
@@ -11853,44 +12059,6 @@
       }
     },
     {
-      "id": "openai/gpt-3.5-turbo",
-      "name": "OpenAI: GPT-3.5 Turbo",
-      "created": 1685232000,
-      "context_length": 16385,
-      "architecture": {
-        "modality": "text->text",
-        "tokenizer": "GPT",
-        "instruct_type": null
-      },
-      "pricing": {
-        "prompt": "0.0000005",
-        "completion": "0.0000015",
-        "image": null,
-        "request": null
-      },
-      "supported_parameters": [
-        "frequency_penalty",
-        "logit_bias",
-        "logprobs",
-        "max_tokens",
-        "presence_penalty",
-        "response_format",
-        "seed",
-        "stop",
-        "structured_outputs",
-        "temperature",
-        "tool_choice",
-        "tools",
-        "top_logprobs",
-        "top_p"
-      ],
-      "top_provider": {
-        "context_length": 16385,
-        "max_completion_tokens": 4096,
-        "is_moderated": true
-      }
-    },
-    {
       "id": "openai/gpt-4-0314",
       "name": "OpenAI: GPT-4 (older v0314)",
       "created": 1685232000,
@@ -11962,6 +12130,44 @@
       ],
       "top_provider": {
         "context_length": 8191,
+        "max_completion_tokens": 4096,
+        "is_moderated": true
+      }
+    },
+    {
+      "id": "openai/gpt-3.5-turbo",
+      "name": "OpenAI: GPT-3.5 Turbo",
+      "created": 1685232000,
+      "context_length": 16385,
+      "architecture": {
+        "modality": "text->text",
+        "tokenizer": "GPT",
+        "instruct_type": null
+      },
+      "pricing": {
+        "prompt": "0.0000005",
+        "completion": "0.0000015",
+        "image": null,
+        "request": null
+      },
+      "supported_parameters": [
+        "frequency_penalty",
+        "logit_bias",
+        "logprobs",
+        "max_tokens",
+        "presence_penalty",
+        "response_format",
+        "seed",
+        "stop",
+        "structured_outputs",
+        "temperature",
+        "tool_choice",
+        "tools",
+        "top_logprobs",
+        "top_p"
+      ],
+      "top_provider": {
+        "context_length": 16385,
         "max_completion_tokens": 4096,
         "is_moderated": true
       }
