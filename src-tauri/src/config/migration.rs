@@ -109,8 +109,12 @@ fn migrate_oauth_client_to_client(
         );
     }
 
-    // Copy linked server IDs to allowed_mcp_servers
-    client.allowed_mcp_servers = oauth_client.linked_server_ids.clone();
+    // Copy linked server IDs to mcp_server_access
+    client.mcp_server_access = if oauth_client.linked_server_ids.is_empty() {
+        crate::config::McpServerAccess::None
+    } else {
+        crate::config::McpServerAccess::Specific(oauth_client.linked_server_ids.clone())
+    };
 
     // OAuth clients don't have LLM provider access by default
     client.allowed_llm_providers = vec![];

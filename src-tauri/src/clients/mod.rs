@@ -15,7 +15,7 @@ pub mod token_store;
 
 use crate::api_keys::keychain_trait::KeychainStorage;
 use crate::api_keys::CachedKeychain;
-use crate::config::Client;
+use crate::config::{Client, McpServerAccess};
 use crate::utils::crypto;
 use crate::utils::errors::{AppError, AppResult};
 use parking_lot::RwLock;
@@ -275,10 +275,7 @@ impl ClientManager {
         clients
             .iter()
             .find(|c| c.id == client_id && c.enabled)
-            .map(|c| {
-                c.allowed_mcp_servers.is_empty()
-                    || c.allowed_mcp_servers.contains(&server_id.to_string())
-            })
+            .map(|c| c.mcp_server_access.can_access(server_id))
             .unwrap_or(false)
     }
 
@@ -316,6 +313,9 @@ impl ClientManager {
     }
 
     /// Add an MCP server to a client's allowed list
+    /// If access mode is None, converts to Specific with this server
+    /// If access mode is All, no change needed (already has access)
+    /// If access mode is Specific, adds to the list
     pub fn add_mcp_server(&self, client_id: &str, server_id: &str) -> AppResult<()> {
         let mut clients = self.clients.write();
 
@@ -324,14 +324,13 @@ impl ClientManager {
             .find(|c| c.id == client_id)
             .ok_or_else(|| AppError::Config(format!("Client not found: {}", client_id)))?;
 
-        if !client.allowed_mcp_servers.contains(&server_id.to_string()) {
-            client.allowed_mcp_servers.push(server_id.to_string());
-        }
+        client.add_mcp_server(server_id.to_string());
 
         Ok(())
     }
 
     /// Remove an MCP server from a client's allowed list
+    /// Note: Cannot remove individual servers when access mode is All
     pub fn remove_mcp_server(&self, client_id: &str, server_id: &str) -> AppResult<()> {
         let mut clients = self.clients.write();
 
@@ -340,9 +339,32 @@ impl ClientManager {
             .find(|c| c.id == client_id)
             .ok_or_else(|| AppError::Config(format!("Client not found: {}", client_id)))?;
 
-        client.allowed_mcp_servers.retain(|s| s != server_id);
+        client.remove_mcp_server(server_id);
 
         Ok(())
+    }
+
+    /// Set MCP server access mode for a client
+    pub fn set_mcp_server_access(&self, client_id: &str, access: McpServerAccess) -> AppResult<()> {
+        let mut clients = self.clients.write();
+
+        let client = clients
+            .iter_mut()
+            .find(|c| c.id == client_id)
+            .ok_or_else(|| AppError::Config(format!("Client not found: {}", client_id)))?;
+
+        client.set_mcp_server_access(access);
+
+        Ok(())
+    }
+
+    /// Get MCP server access mode for a client
+    pub fn get_mcp_server_access(&self, client_id: &str) -> Option<McpServerAccess> {
+        let clients = self.clients.read();
+        clients
+            .iter()
+            .find(|c| c.id == client_id)
+            .map(|c| c.mcp_server_access.clone())
     }
 
     /// Enable a client
@@ -424,6 +446,40 @@ impl ClientManager {
     /// Get the current client configs for saving to disk
     pub fn get_configs(&self) -> Vec<Client> {
         self.clients.read().clone()
+    }
+
+    /// Rotate the secret for a client
+    ///
+    /// # Arguments
+    /// * `client_id` - The client ID whose secret should be rotated
+    ///
+    /// # Returns
+    /// The new secret string
+    pub fn rotate_secret(&self, client_id: &str) -> AppResult<String> {
+        // Verify the client exists
+        {
+            let clients = self.clients.read();
+            if !clients.iter().any(|c| c.id == client_id) {
+                return Err(AppError::Config(format!("Client not found: {}", client_id)));
+            }
+        }
+
+        tracing::info!("Rotating client secret: {}", client_id);
+
+        // Generate a new secret
+        let new_secret = crypto::generate_api_key()
+            .map_err(|e| AppError::Config(format!("Failed to generate client secret: {}", e)))?;
+
+        // Update keychain with new secret (same ID)
+        self.keychain
+            .store(CLIENT_SERVICE, client_id, &new_secret)
+            .map_err(|e| {
+                AppError::Config(format!("Failed to store rotated secret in keychain: {}", e))
+            })?;
+
+        tracing::info!("Successfully rotated client secret in keychain");
+
+        Ok(new_secret)
     }
 }
 
@@ -651,9 +707,9 @@ mod tests {
             .create_client("Test Client".to_string())
             .expect("Failed to create client");
 
-        // Empty allowed list means access to all
-        assert!(manager.can_access_mcp_server(&client_id, "server1"));
-        assert!(manager.can_access_mcp_server(&client_id, "server2"));
+        // Default is McpServerAccess::None - no access to any MCP servers
+        assert!(!manager.can_access_mcp_server(&client_id, "server1"));
+        assert!(!manager.can_access_mcp_server(&client_id, "server2"));
 
         // Add specific server
         manager
@@ -669,9 +725,9 @@ mod tests {
             .remove_mcp_server(&client_id, "server1")
             .expect("Failed to remove server");
 
-        // Empty list again means all allowed
-        assert!(manager.can_access_mcp_server(&client_id, "server1"));
-        assert!(manager.can_access_mcp_server(&client_id, "server2"));
+        // Empty list returns to None - no access
+        assert!(!manager.can_access_mcp_server(&client_id, "server1"));
+        assert!(!manager.can_access_mcp_server(&client_id, "server2"));
     }
 
     #[test]

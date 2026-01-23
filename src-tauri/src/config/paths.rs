@@ -7,11 +7,18 @@ use std::path::PathBuf;
 
 /// Get the configuration directory
 ///
-/// Development mode: `~/.localrouter-dev/`
-/// Production mode: `~/.localrouter/`
+/// Priority:
+/// 1. Runtime override via `LOCALROUTER_ENV` environment variable: `~/.localrouter-{env}/`
+/// 2. Development mode (debug builds): `~/.localrouter-dev/`
+/// 3. Production mode (release builds): `~/.localrouter/`
 pub fn config_dir() -> AppResult<PathBuf> {
     let home = dirs::home_dir()
         .ok_or_else(|| AppError::Config("Could not determine home directory".to_string()))?;
+
+    // Runtime override via environment variable (for testing)
+    if let Ok(env_suffix) = std::env::var("LOCALROUTER_ENV") {
+        return Ok(home.join(format!(".localrouter-{}", env_suffix)));
+    }
 
     // Use separate directory for development/debug builds
     #[cfg(debug_assertions)]
@@ -81,9 +88,13 @@ pub fn ensure_dir_exists(path: &PathBuf) -> AppResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::env;
 
     #[test]
     fn test_config_dir() {
+        // Clear env var to test default behavior
+        env::remove_var("LOCALROUTER_ENV");
+
         let dir = config_dir().unwrap();
         assert!(!dir.as_os_str().is_empty());
 
@@ -93,6 +104,38 @@ mod tests {
 
         #[cfg(not(debug_assertions))]
         assert!(dir.to_string_lossy().ends_with(".localrouter"));
+    }
+
+    #[test]
+    fn test_config_dir_with_env_override() {
+        // Set the LOCALROUTER_ENV to test the override
+        env::set_var("LOCALROUTER_ENV", "test");
+
+        let dir = config_dir().unwrap();
+        assert!(
+            dir.to_string_lossy().ends_with(".localrouter-test"),
+            "Expected path to end with .localrouter-test, got: {}",
+            dir.display()
+        );
+
+        // Clean up
+        env::remove_var("LOCALROUTER_ENV");
+    }
+
+    #[test]
+    fn test_config_dir_env_override_custom_suffix() {
+        // Test with a custom suffix
+        env::set_var("LOCALROUTER_ENV", "e2e-testing");
+
+        let dir = config_dir().unwrap();
+        assert!(
+            dir.to_string_lossy().ends_with(".localrouter-e2e-testing"),
+            "Expected path to end with .localrouter-e2e-testing, got: {}",
+            dir.display()
+        );
+
+        // Clean up
+        env::remove_var("LOCALROUTER_ENV");
     }
 
     #[test]

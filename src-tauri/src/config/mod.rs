@@ -26,6 +26,14 @@ pub use storage::{load_config, save_config};
 
 const CONFIG_VERSION: u32 = 2;
 
+/// Suffix for auto-generated client strategy names
+pub const CLIENT_STRATEGY_NAME_SUFFIX: &str = "'s strategy";
+
+/// Generate a strategy name for a client
+pub fn client_strategy_name(client_name: &str) -> String {
+    format!("{}{}", client_name, CLIENT_STRATEGY_NAME_SUFFIX)
+}
+
 /// Time window for rate limits
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -142,12 +150,9 @@ pub struct RouteLLMConfig {
     pub enabled: bool,
 
     /// Win rate threshold (0.0-1.0)
-    /// If win_rate >= threshold, route to strong model
+    /// If win_rate >= threshold, route to strong model (uses prioritized_models from AutoModelConfig)
     /// Recommended: 0.3 (balanced), 0.7 (cost-optimized), 0.2 (quality-prioritized)
     pub threshold: f32,
-
-    /// Strong model selection (used when win_rate >= threshold)
-    pub strong_models: Vec<(String, String)>, // (provider, model)
 
     /// Weak model selection (used when win_rate < threshold)
     pub weak_models: Vec<(String, String)>,
@@ -158,7 +163,6 @@ impl Default for RouteLLMConfig {
         Self {
             enabled: false,
             threshold: 0.3, // Balanced profile
-            strong_models: Vec::new(),
             weak_models: Vec::new(),
         }
     }
@@ -217,7 +221,7 @@ impl Strategy {
     pub fn new_for_client(client_id: String, client_name: String) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
-            name: format!("{}'s strategy", client_name),
+            name: client_strategy_name(&client_name),
             parent: Some(client_id),
             allowed_models: AvailableModelsSelection::all(),
             auto_config: None,
@@ -235,8 +239,18 @@ impl AvailableModelsSelection {
     /// Create a selection that allows all models
     pub fn all() -> Self {
         Self {
-            all_provider_models: vec![],
-            individual_models: vec![],
+            selected_all: true,
+            selected_providers: vec![],
+            selected_models: vec![],
+        }
+    }
+
+    /// Create a selection that allows no models (empty selection)
+    pub fn none() -> Self {
+        Self {
+            selected_all: false,
+            selected_providers: vec![],
+            selected_models: vec![],
         }
     }
 }
@@ -514,14 +528,32 @@ pub enum ActiveRoutingStrategy {
 }
 
 /// Available models selection configuration
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+///
+/// Determines which models are allowed for a strategy. The selection is evaluated in order:
+/// 1. If `selected_all` is true, all models are allowed (including future ones)
+/// 2. Otherwise, check if provider is in `selected_providers`
+/// 3. Otherwise, check if specific model is in `selected_models`
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AvailableModelsSelection {
-    /// Providers where ALL models are selected (including future models)
+    /// If true, all models are allowed (including future models from new providers)
+    #[serde(default = "default_selected_all")]
+    pub selected_all: bool,
+    /// Providers where ALL models are selected (including future models from that provider)
     #[serde(default)]
-    pub all_provider_models: Vec<String>,
+    pub selected_providers: Vec<String>,
     /// Individual models selected as (provider, model) pairs
     #[serde(default)]
-    pub individual_models: Vec<(String, String)>,
+    pub selected_models: Vec<(String, String)>,
+}
+
+fn default_selected_all() -> bool {
+    true
+}
+
+impl Default for AvailableModelsSelection {
+    fn default() -> Self {
+        Self::all()
+    }
 }
 
 /// OAuth client configuration for MCP
@@ -555,6 +587,48 @@ pub struct OAuthClientConfig {
     pub last_used: Option<DateTime<Utc>>,
 }
 
+/// MCP server access control configuration
+///
+/// Defines which MCP servers a client can access:
+/// - `None`: No MCP access at all
+/// - `All`: Access to all configured MCP servers
+/// - `Specific`: Access only to listed server IDs
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum McpServerAccess {
+    /// No MCP access (default for new clients)
+    #[default]
+    None,
+    /// Access to all configured MCP servers
+    All,
+    /// Access only to specific servers by ID
+    Specific(Vec<String>),
+}
+
+impl McpServerAccess {
+    /// Check if a specific server is accessible
+    pub fn can_access(&self, server_id: &str) -> bool {
+        match self {
+            McpServerAccess::None => false,
+            McpServerAccess::All => true,
+            McpServerAccess::Specific(servers) => servers.contains(&server_id.to_string()),
+        }
+    }
+
+    /// Check if any MCP access is granted
+    pub fn has_any_access(&self) -> bool {
+        !matches!(self, McpServerAccess::None)
+    }
+
+    /// Get the list of specific servers if in Specific mode
+    pub fn specific_servers(&self) -> Option<&Vec<String>> {
+        match self {
+            McpServerAccess::Specific(servers) => Some(servers),
+            _ => None,
+        }
+    }
+}
+
 /// Unified client configuration (replaces ApiKeyConfig and OAuthClientConfig)
 ///
 /// A client can access both LLM routing and MCP servers using a single secret.
@@ -578,10 +652,12 @@ pub struct Client {
     #[serde(default)]
     pub allowed_llm_providers: Vec<String>,
 
-    /// MCP servers this client can access (by server ID)
-    /// Empty = no MCP access
-    #[serde(default)]
-    pub allowed_mcp_servers: Vec<String>,
+    /// MCP server access control
+    /// - None: No MCP access (default)
+    /// - All: Access to all configured MCP servers
+    /// - Specific: Access only to listed server IDs
+    #[serde(default, deserialize_with = "deserialize_mcp_server_access")]
+    pub mcp_server_access: McpServerAccess,
 
     /// Enable deferred loading for MCP tools (default: false)
     /// When enabled, only a search tool is initially visible. Tools are activated on-demand
@@ -809,6 +885,7 @@ pub enum McpAuthConfig {
 
     /// OAuth with browser-based authorization code flow (PKCE)
     /// For user-interactive authentication (GitHub, GitLab, etc.)
+    #[serde(rename = "oauth_browser")]
     OAuthBrowser {
         /// OAuth client ID (public)
         client_id: String,
@@ -1356,7 +1433,7 @@ impl ConfigManager {
             enabled: true,
             strategy_id: strategy.id.clone(),
             allowed_llm_providers: Vec::new(),
-            allowed_mcp_servers: Vec::new(),
+            mcp_server_access: McpServerAccess::None,
             mcp_deferred_loading: false,
             created_at: Utc::now(),
             last_used: None,
@@ -1466,6 +1543,72 @@ fn default_log_retention() -> u32 {
 
 fn default_strategy_id() -> String {
     "default".to_string()
+}
+
+/// Deserializer for McpServerAccess that supports backward compatibility
+/// with the old `allowed_mcp_servers: Vec<String>` format
+fn deserialize_mcp_server_access<'de, D>(deserializer: D) -> Result<McpServerAccess, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::{self, Visitor};
+
+    struct McpServerAccessVisitor;
+
+    impl<'de> Visitor<'de> for McpServerAccessVisitor {
+        type Value = McpServerAccess;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("'none', 'all', or an object with 'specific' key containing server IDs, or legacy array of server IDs")
+        }
+
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+            match v {
+                "none" => Ok(McpServerAccess::None),
+                "all" => Ok(McpServerAccess::All),
+                _ => Err(E::custom(format!("unknown variant: {}", v))),
+            }
+        }
+
+        fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+            // Legacy format: array of server IDs
+            let mut servers = Vec::new();
+            while let Some(server) = seq.next_element::<String>()? {
+                servers.push(server);
+            }
+            if servers.is_empty() {
+                // Empty array in old format meant "no access"
+                Ok(McpServerAccess::None)
+            } else {
+                Ok(McpServerAccess::Specific(servers))
+            }
+        }
+
+        fn visit_map<A: de::MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+            // New format: { "specific": [...] }
+            let mut specific: Option<Vec<String>> = None;
+            while let Some(key) = map.next_key::<String>()? {
+                match key.as_str() {
+                    "specific" | "Specific" => {
+                        specific = Some(map.next_value()?);
+                    }
+                    _ => {
+                        let _: serde::de::IgnoredAny = map.next_value()?;
+                    }
+                }
+            }
+            match specific {
+                Some(servers) => Ok(McpServerAccess::Specific(servers)),
+                None => Err(de::Error::custom("expected 'specific' key in map")),
+            }
+        }
+
+        fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(McpServerAccess::None)
+        }
+    }
+
+    deserializer.deserialize_any(McpServerAccessVisitor)
 }
 
 impl Default for AppConfig {
@@ -1675,13 +1818,15 @@ impl ModelRoutingConfig {
         match selection {
             crate::server::state::ModelSelection::All => Self::new_available_models(),
             crate::server::state::ModelSelection::Custom {
-                all_provider_models,
-                individual_models,
+                selected_all,
+                selected_providers,
+                selected_models,
             } => Self {
                 active_strategy: ActiveRoutingStrategy::AvailableModels,
                 available_models: AvailableModelsSelection {
-                    all_provider_models,
-                    individual_models,
+                    selected_all,
+                    selected_providers,
+                    selected_models,
                 },
                 forced_model: None,
                 prioritized_models: Vec::new(),
@@ -1699,18 +1844,28 @@ impl ModelRoutingConfig {
 
 impl AvailableModelsSelection {
     /// Check if a model is allowed by this selection
+    ///
+    /// Returns true if:
+    /// 1. `selected_all` is true, OR
+    /// 2. The provider is in `selected_providers`, OR
+    /// 3. The specific (provider, model) pair is in `selected_models`
     pub fn is_model_allowed(&self, provider_name: &str, model_id: &str) -> bool {
-        // Check if the provider is in the all_provider_models list
+        // If all models are selected, everything is allowed
+        if self.selected_all {
+            return true;
+        }
+
+        // Check if the provider is in the selected_providers list
         if self
-            .all_provider_models
+            .selected_providers
             .iter()
             .any(|p| p.eq_ignore_ascii_case(provider_name))
         {
             return true;
         }
 
-        // Check if the specific (provider, model) pair is in individual_models
-        self.individual_models
+        // Check if the specific (provider, model) pair is in selected_models
+        self.selected_models
             .iter()
             .any(|(p, m)| p.eq_ignore_ascii_case(provider_name) && m.eq_ignore_ascii_case(model_id))
     }
@@ -1741,7 +1896,7 @@ impl Client {
             name,
             enabled: true,
             allowed_llm_providers: Vec::new(),
-            allowed_mcp_servers: Vec::new(),
+            mcp_server_access: McpServerAccess::None,
             mcp_deferred_loading: false,
             created_at: Utc::now(),
             last_used: None,
@@ -1771,7 +1926,7 @@ impl Client {
 
     /// Check if this client can access a specific MCP server
     pub fn can_access_mcp_server(&self, server_id: &str) -> bool {
-        self.enabled && self.allowed_mcp_servers.contains(&server_id.to_string())
+        self.enabled && self.mcp_server_access.can_access(server_id)
     }
 
     /// Add LLM provider access
@@ -1796,20 +1951,55 @@ impl Client {
     }
 
     /// Add MCP server access
+    /// If mode is None, converts to Specific with this server
+    /// If mode is All, no change needed
+    /// If mode is Specific, adds to the list if not present
     pub fn add_mcp_server(&mut self, server_id: String) {
-        if !self.allowed_mcp_servers.contains(&server_id) {
-            self.allowed_mcp_servers.push(server_id);
+        match &mut self.mcp_server_access {
+            McpServerAccess::None => {
+                self.mcp_server_access = McpServerAccess::Specific(vec![server_id]);
+            }
+            McpServerAccess::All => {
+                // Already has access to all, no change needed
+            }
+            McpServerAccess::Specific(servers) => {
+                if !servers.contains(&server_id) {
+                    servers.push(server_id);
+                }
+            }
         }
     }
 
     /// Remove MCP server access
+    /// If mode is None, no change
+    /// If mode is All, cannot remove individual servers (caller should set to Specific first)
+    /// If mode is Specific, removes from the list and converts to None if empty
     pub fn remove_mcp_server(&mut self, server_id: &str) -> bool {
-        if let Some(pos) = self.allowed_mcp_servers.iter().position(|s| s == server_id) {
-            self.allowed_mcp_servers.remove(pos);
-            true
-        } else {
-            false
+        match &mut self.mcp_server_access {
+            McpServerAccess::None => false,
+            McpServerAccess::All => false, // Can't remove from "All" mode
+            McpServerAccess::Specific(servers) => {
+                if let Some(pos) = servers.iter().position(|s| s == server_id) {
+                    servers.remove(pos);
+                    if servers.is_empty() {
+                        self.mcp_server_access = McpServerAccess::None;
+                    }
+                    true
+                } else {
+                    false
+                }
+            }
         }
+    }
+
+    /// Set MCP server access mode
+    pub fn set_mcp_server_access(&mut self, access: McpServerAccess) {
+        self.mcp_server_access = access;
+    }
+
+    /// Get MCP server access mode
+    pub fn mcp_server_access(&self) -> &McpServerAccess {
+        &self.mcp_server_access
     }
 }
 
