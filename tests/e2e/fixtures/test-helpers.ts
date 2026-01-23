@@ -6,6 +6,7 @@ import { Page } from '@playwright/test';
 
 const TEST_CONFIG_DIR = join(homedir(), '.localrouter-test');
 const CONFIG_FILE = join(TEST_CONFIG_DIR, 'settings.yaml');
+const PORT_FILE = join(TEST_CONFIG_DIR, '.test-port');
 
 export interface Client {
   client_id: string;
@@ -42,19 +43,48 @@ export async function writeConfig(config: AppConfig): Promise<void> {
 }
 
 /**
- * Reset config to default empty state
+ * Reset config to default empty state (preserves the test port)
  */
 export async function resetConfig(): Promise<void> {
-  const defaultConfig: AppConfig = {
+  const port = await getTestPort();
+  const defaultConfig = {
+    version: 2, // Current config version
     server: {
       host: '127.0.0.1',
-      port: 3625,
+      port,
+      enable_cors: true,
     },
-    providers: [],
+    // At least one provider is required - Ollama doesn't need an API key
+    providers: [
+      {
+        name: 'Ollama',
+        provider_type: 'ollama',
+        enabled: true,
+      },
+    ],
     clients: [],
     mcp_servers: [],
+    strategies: [],
+    // At least one router is required with at least one strategy
+    routers: [
+      {
+        name: 'Default',
+        model_selection: {
+          type: 'automatic',
+          providers: [],
+        },
+        strategies: ['lowest_cost'],
+        fallback_enabled: true,
+        rate_limiters: [],
+      },
+    ],
+    logging: {
+      level: 'info',
+      enable_access_log: true,
+    },
+    oauth_clients: [],
   };
-  await writeConfig(defaultConfig);
+  await writeConfig(defaultConfig as AppConfig);
 }
 
 /**
@@ -95,6 +125,22 @@ export function getTestConfigDir(): string {
  */
 export function getConfigFilePath(): string {
   return CONFIG_FILE;
+}
+
+/**
+ * Get the test port assigned during setup
+ */
+export async function getTestPort(): Promise<number> {
+  const portStr = await fs.readFile(PORT_FILE, 'utf-8');
+  return parseInt(portStr.trim(), 10);
+}
+
+/**
+ * Get the API base URL for tests
+ */
+export async function getApiBaseUrl(): Promise<string> {
+  const port = await getTestPort();
+  return `http://127.0.0.1:${port}`;
 }
 
 /**
