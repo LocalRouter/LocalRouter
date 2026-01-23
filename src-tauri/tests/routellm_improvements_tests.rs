@@ -14,9 +14,9 @@ async fn test_disk_space_check() {
     // Test that disk space check works and doesn't panic
     use localrouter_ai::routellm::downloader::get_download_status;
 
-    let home = std::env::var("HOME").unwrap();
-    let model_path = PathBuf::from(&home).join(".localrouter-dev/routellm/model");
-    let tokenizer_path = PathBuf::from(&home).join(".localrouter-dev/routellm/tokenizer");
+    let home = dirs::home_dir().expect("Could not determine home directory");
+    let model_path = home.join(".localrouter-dev/routellm/model");
+    let tokenizer_path = home.join(".localrouter-dev/routellm/tokenizer");
 
     // Should not panic even if path doesn't exist
     let status = get_download_status(&model_path, &tokenizer_path);
@@ -33,10 +33,10 @@ async fn test_auto_unload_timeout_update() {
     use localrouter_ai::routellm::RouteLLMService;
     use std::sync::Arc;
 
-    let home = std::env::var("HOME").unwrap();
+    let home = dirs::home_dir().expect("Could not determine home directory");
     let service = Arc::new(RouteLLMService::new(
-        PathBuf::from(&home).join(".localrouter-dev/routellm/model"),
-        PathBuf::from(&home).join(".localrouter-dev/routellm/tokenizer"),
+        home.join(".localrouter-dev/routellm/model"),
+        home.join(".localrouter-dev/routellm/tokenizer"),
         600, // Initial timeout
     ));
 
@@ -60,10 +60,10 @@ async fn test_auto_unload_zero_timeout() {
     use localrouter_ai::routellm::RouteLLMService;
     use std::sync::Arc;
 
-    let home = std::env::var("HOME").unwrap();
+    let home = dirs::home_dir().expect("Could not determine home directory");
     let service = Arc::new(RouteLLMService::new(
-        PathBuf::from(&home).join(".localrouter-dev/routellm/model"),
-        PathBuf::from(&home).join(".localrouter-dev/routellm/tokenizer"),
+        home.join(".localrouter-dev/routellm/model"),
+        home.join(".localrouter-dev/routellm/tokenizer"),
         0, // Disabled
     ));
 
@@ -135,10 +135,10 @@ async fn test_concurrent_timeout_updates() {
     use localrouter_ai::routellm::RouteLLMService;
     use std::sync::Arc;
 
-    let home = std::env::var("HOME").unwrap();
+    let home = dirs::home_dir().expect("Could not determine home directory");
     let service = Arc::new(RouteLLMService::new(
-        PathBuf::from(&home).join(".localrouter-dev/routellm/model"),
-        PathBuf::from(&home).join(".localrouter-dev/routellm/tokenizer"),
+        home.join(".localrouter-dev/routellm/model"),
+        home.join(".localrouter-dev/routellm/tokenizer"),
         600,
     ));
 

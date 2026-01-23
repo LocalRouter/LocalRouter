@@ -350,9 +350,9 @@ mod edge_case_tests {
     // Helper to create a test service with actual model paths
     async fn create_test_service() -> RouteLLMService {
         // Uses actual dev model paths - requires models to be downloaded
-        let home = std::env::var("HOME").unwrap();
-        let model_path = PathBuf::from(home.clone()).join(".localrouter-dev/routellm/model");
-        let tokenizer_path = PathBuf::from(home).join(".localrouter-dev/routellm/tokenizer");
+        let home = dirs::home_dir().expect("Could not determine home directory");
+        let model_path = home.join(".localrouter-dev/routellm/model");
+        let tokenizer_path = home.join(".localrouter-dev/routellm/tokenizer");
 
         RouteLLMService::new(model_path, tokenizer_path, 600)
     }
