@@ -62,10 +62,26 @@ pub async fn mcp_gateway_handler(
         }
     };
 
-    // Get enabled client
-    let client = match get_enabled_client_from_manager(&state, &client_id) {
-        Ok(client) => client,
-        Err(e) => return e.into_response(),
+    // Handle internal-test client specially (for UI MCP testing)
+    // Internal test client has access to all MCP servers
+    let client = if client_id == "internal-test" {
+        tracing::debug!("Internal test client using MCP gateway - granting full access");
+        // Create a synthetic client with full MCP access
+        crate::config::Client {
+            id: "internal-test".to_string(),
+            name: "Internal Test".to_string(),
+            enabled: true,
+            mcp_server_access: McpServerAccess::All,
+            mcp_deferred_loading: false,
+            mcp_sampling_enabled: true,
+            ..Default::default()
+        }
+    } else {
+        // Get enabled client for regular clients
+        match get_enabled_client_from_manager(&state, &client_id) {
+            Ok(client) => client,
+            Err(e) => return e.into_response(),
+        }
     };
 
     // Check MCP access mode
@@ -295,10 +311,29 @@ pub async fn mcp_server_handler(
         }
     };
 
-    // Get enabled client
-    let client = match get_enabled_client_from_manager(&state, &client_id) {
-        Ok(client) => client,
-        Err(e) => return e.into_response(),
+    // Handle internal-test client specially (for UI MCP testing)
+    // Internal test client has access to all MCP servers
+    let client = if client_id == "internal-test" {
+        tracing::debug!(
+            "Internal test client accessing MCP server {} - granting full access",
+            server_id
+        );
+        // Create a synthetic client with full MCP access
+        crate::config::Client {
+            id: "internal-test".to_string(),
+            name: "Internal Test".to_string(),
+            enabled: true,
+            mcp_server_access: McpServerAccess::All,
+            mcp_deferred_loading: false,
+            mcp_sampling_enabled: true,
+            ..Default::default()
+        }
+    } else {
+        // Get enabled client for regular clients
+        match get_enabled_client_from_manager(&state, &client_id) {
+            Ok(client) => client,
+            Err(e) => return e.into_response(),
+        }
     };
 
     // Check if client has access to this MCP server
@@ -629,10 +664,26 @@ pub async fn mcp_server_streaming_handler(
         }
     };
 
-    // Get enabled client
-    let client = match get_enabled_client_from_manager(&state, &client_id) {
-        Ok(client) => client,
-        Err(e) => return e.into_response(),
+    // Handle internal-test client specially (for UI MCP testing)
+    let client = if client_id == "internal-test" {
+        tracing::debug!(
+            "Internal test client streaming from MCP server {} - granting full access",
+            server_id
+        );
+        crate::config::Client {
+            id: "internal-test".to_string(),
+            name: "Internal Test".to_string(),
+            enabled: true,
+            mcp_server_access: McpServerAccess::All,
+            mcp_deferred_loading: false,
+            mcp_sampling_enabled: true,
+            ..Default::default()
+        }
+    } else {
+        match get_enabled_client_from_manager(&state, &client_id) {
+            Ok(client) => client,
+            Err(e) => return e.into_response(),
+        }
     };
 
     // Check if client has access to this MCP server

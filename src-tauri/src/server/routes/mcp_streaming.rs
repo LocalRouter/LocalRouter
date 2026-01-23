@@ -107,8 +107,21 @@ pub async fn initialize_streaming_session(
         .ok_or_else(|| ApiErrorResponse::unauthorized("Missing authentication"))?
         .0;
 
-    // Get enabled client
-    let client = get_enabled_client(&state, &auth_ctx.client_id)?;
+    // Handle internal-test client specially (for UI MCP testing)
+    let client = if auth_ctx.client_id == "internal-test" {
+        tracing::debug!("Internal test client initializing streaming session - granting full access");
+        crate::config::Client {
+            id: "internal-test".to_string(),
+            name: "Internal Test".to_string(),
+            enabled: true,
+            mcp_server_access: McpServerAccess::All,
+            mcp_deferred_loading: false,
+            mcp_sampling_enabled: true,
+            ..Default::default()
+        }
+    } else {
+        get_enabled_client(&state, &auth_ctx.client_id)?
+    };
 
     // Get config for MCP server list
     let config = state.config_manager.get();
