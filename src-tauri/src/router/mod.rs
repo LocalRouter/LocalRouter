@@ -365,17 +365,18 @@ impl Router {
         strategy: &crate::config::Strategy,
     ) -> AppResult<(String, String)> {
         let normalized_requested = Self::normalize_model_id(model);
+        let allowed = &strategy.allowed_models;
 
-        // Check individual_models first
-        for (prov, mod_name) in &strategy.allowed_models.individual_models {
+        // Check selected_models first (individual model selections)
+        for (prov, mod_name) in &allowed.selected_models {
             let normalized_allowed = Self::normalize_model_id(mod_name);
             if normalized_allowed == normalized_requested {
                 return Ok((prov.clone(), model.to_string()));
             }
         }
 
-        // If not found, check providers in all_provider_models
-        for prov in &strategy.allowed_models.all_provider_models {
+        // Check providers in selected_providers
+        for prov in &allowed.selected_providers {
             if let Some(provider_instance) = self.provider_registry.get_provider(prov) {
                 if let Ok(models) = provider_instance.list_models().await {
                     if models.iter().any(|m| {
@@ -383,6 +384,22 @@ impl Router {
                         normalized_provider_model == normalized_requested
                     }) {
                         return Ok((prov.clone(), model.to_string()));
+                    }
+                }
+            }
+        }
+
+        // If selected_all is true, search all providers
+        if allowed.selected_all {
+            for instance_info in self.provider_registry.list_providers() {
+                if let Some(provider_instance) = self.provider_registry.get_provider(&instance_info.instance_name) {
+                    if let Ok(models) = provider_instance.list_models().await {
+                        if models.iter().any(|m| {
+                            let normalized_provider_model = Self::normalize_model_id(&m.id);
+                            normalized_provider_model == normalized_requested
+                        }) {
+                            return Ok((instance_info.instance_name.clone(), model.to_string()));
+                        }
                     }
                 }
             }
@@ -688,8 +705,9 @@ impl Router {
                     {
                         Ok((is_strong, win_rate)) => {
                             // Select models based on prediction
+                            // Strong models use prioritized_models from auto_config
                             let models = if is_strong {
-                                &routellm_config.strong_models
+                                &auto_config.prioritized_models
                             } else {
                                 &routellm_config.weak_models
                             };
@@ -832,19 +850,80 @@ impl Router {
             ));
         }
 
+        // ============ RouteLLM PREDICTION (same logic as non-streaming) ============
+        let selected_models = if let Some(routellm_config) = &auto_config.routellm_config {
+            if routellm_config.enabled {
+                // Extract prompt from request messages
+                let prompt = request
+                    .messages
+                    .iter()
+                    .map(|m| m.content.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+
+                // Get RouteLLM service
+                if let Some(service) = &self.routellm_service {
+                    // Predict with threshold
+                    match service
+                        .predict_with_threshold(&prompt, routellm_config.threshold)
+                        .await
+                    {
+                        Ok((is_strong, win_rate)) => {
+                            // Select models based on prediction
+                            let models = if is_strong {
+                                &auto_config.prioritized_models
+                            } else {
+                                &routellm_config.weak_models
+                            };
+
+                            info!(
+                                "RouteLLM (streaming): win_rate={:.3}, threshold={:.3}, selected={}",
+                                win_rate,
+                                routellm_config.threshold,
+                                if is_strong { "strong" } else { "weak" }
+                            );
+
+                            models.clone()
+                        }
+                        Err(e) => {
+                            warn!(
+                                "RouteLLM prediction failed: {}, fallback to prioritized models",
+                                e
+                            );
+                            auto_config.prioritized_models.clone()
+                        }
+                    }
+                } else {
+                    warn!("RouteLLM enabled but service not available, using prioritized models");
+                    auto_config.prioritized_models.clone()
+                }
+            } else {
+                auto_config.prioritized_models.clone()
+            }
+        } else {
+            auto_config.prioritized_models.clone()
+        };
+        // ============ END RouteLLM ============
+
+        if selected_models.is_empty() {
+            return Err(AppError::Router(
+                "No models available for auto-routing (RouteLLM returned empty list)".into(),
+            ));
+        }
+
         info!(
-            "Auto-routing streaming for client '{}' with {} prioritized models",
+            "Auto-routing streaming for client '{}' with {} selected models",
             client_id,
-            auto_config.prioritized_models.len()
+            selected_models.len()
         );
 
         let mut last_error = None;
 
-        for (idx, (provider, model)) in auto_config.prioritized_models.iter().enumerate() {
+        for (idx, (provider, model)) in selected_models.iter().enumerate() {
             debug!(
                 "Auto-routing streaming attempt {}/{}: {}/{}",
                 idx + 1,
-                auto_config.prioritized_models.len(),
+                selected_models.len(),
                 provider,
                 model
             );
@@ -1068,8 +1147,10 @@ impl Router {
         );
 
         // Special handling for internal test token (bypasses all routing config)
+        // SECURITY: Only enabled in test builds to prevent production bypass
+        #[cfg(test)]
         if client_id == "internal-test" {
-            debug!("Internal test token detected - bypassing routing config");
+            debug!("Internal test token detected - bypassing routing config (test mode only)");
             let (provider, model) = Self::parse_model_string(&request.model);
             if provider.is_empty() {
                 return Err(AppError::Router(
@@ -1079,6 +1160,13 @@ impl Router {
             return self
                 .execute_request(client_id, &provider, &model, request)
                 .await;
+        }
+
+        // In non-test builds, reject internal-test token to prevent security bypass
+        #[cfg(not(test))]
+        if client_id == "internal-test" {
+            warn!("Attempted to use internal-test bypass in production - rejected");
+            return Err(AppError::Unauthorized);
         }
 
         // 1. Validate client and get strategy
@@ -1136,8 +1224,10 @@ impl Router {
         );
 
         // Special handling for internal test token
+        // SECURITY: Only enabled in test builds to prevent production bypass
+        #[cfg(test)]
         if client_id == "internal-test" {
-            debug!("Internal test token detected - bypassing routing config for streaming");
+            debug!("Internal test token detected - bypassing routing config for streaming (test mode only)");
             let (provider, model) = Self::parse_model_string(&request.model);
             if provider.is_empty() {
                 return Err(AppError::Router(
@@ -1157,6 +1247,13 @@ impl Router {
                 self.rate_limiter.clone(),
             )
             .await);
+        }
+
+        // In non-test builds, reject internal-test token to prevent security bypass
+        #[cfg(not(test))]
+        if client_id == "internal-test" {
+            warn!("Attempted to use internal-test bypass in production (streaming) - rejected");
+            return Err(AppError::Unauthorized);
         }
 
         // 1. Validate client and get strategy
@@ -1404,8 +1501,10 @@ impl Router {
         );
 
         // Special handling for internal test token (bypasses all routing config)
+        // SECURITY: Only enabled in test builds to prevent production bypass
+        #[cfg(test)]
         if client_id == "internal-test" {
-            debug!("Internal test token detected - bypassing routing config");
+            debug!("Internal test token detected - bypassing routing config for embeddings (test mode only)");
             let (provider, model) = Self::parse_model_string(&request.model);
             if provider.is_empty() {
                 return Err(AppError::Router(
@@ -1415,6 +1514,13 @@ impl Router {
             return self
                 .execute_embedding_request(client_id, &provider, &model, request)
                 .await;
+        }
+
+        // In non-test builds, reject internal-test token to prevent security bypass
+        #[cfg(not(test))]
+        if client_id == "internal-test" {
+            warn!("Attempted to use internal-test bypass in production (embeddings) - rejected");
+            return Err(AppError::Unauthorized);
         }
 
         // 1. Validate client and get strategy
