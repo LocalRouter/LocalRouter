@@ -169,10 +169,22 @@ fn build_app(state: AppState, enable_cors: bool) -> Router {
             post(routes::elicitation_response_handler), // Submit elicitation responses
         )
         // SSE streaming gateway endpoints
-        .route("/gateway/stream", post(routes::initialize_streaming_session)) // Initialize SSE session
-        .route("/gateway/stream/:session_id", get(routes::streaming_event_handler)) // SSE event stream
-        .route("/gateway/stream/:session_id/request", post(routes::send_streaming_request)) // Send request
-        .route("/gateway/stream/:session_id", delete(routes::close_streaming_session)) // Close session
+        .route(
+            "/gateway/stream",
+            post(routes::initialize_streaming_session),
+        ) // Initialize SSE session
+        .route(
+            "/gateway/stream/:session_id",
+            get(routes::streaming_event_handler),
+        ) // SSE event stream
+        .route(
+            "/gateway/stream/:session_id/request",
+            post(routes::send_streaming_request),
+        ) // Send request
+        .route(
+            "/gateway/stream/:session_id",
+            delete(routes::close_streaming_session),
+        ) // Close session
         .layer(axum::middleware::from_fn(
             middleware::client_auth::client_auth_middleware,
         ))

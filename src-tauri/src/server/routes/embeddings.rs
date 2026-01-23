@@ -15,7 +15,9 @@ use crate::router::UsageInfo;
 use crate::server::middleware::client_auth::ClientAuthContext;
 use crate::server::middleware::error::{ApiErrorResponse, ApiResult};
 use crate::server::state::{AppState, AuthContext};
-use crate::server::types::{EmbeddingData, EmbeddingInput, EmbeddingRequest, EmbeddingResponse, EmbeddingVector};
+use crate::server::types::{
+    EmbeddingData, EmbeddingInput, EmbeddingRequest, EmbeddingResponse, EmbeddingVector,
+};
 
 /// POST /v1/embeddings
 /// Generate embeddings for input text(s)
@@ -132,7 +134,12 @@ pub async fn embeddings(
     let latency_ms = completed_at.duration_since(started_at).as_millis() as u64;
 
     // Get pricing info for cost calculation
-    let provider = response.model.split('/').next().unwrap_or("unknown").to_string();
+    let provider = response
+        .model
+        .split('/')
+        .next()
+        .unwrap_or("unknown")
+        .to_string();
     let pricing = match state.provider_registry.get_provider(&provider) {
         Some(p) => p.get_pricing(&response.model).await.ok(),
         None => None,
@@ -227,16 +234,22 @@ fn validate_request(request: &EmbeddingRequest) -> ApiResult<()> {
     match &request.input {
         EmbeddingInput::Single(s) => {
             if s.is_empty() {
-                return Err(ApiErrorResponse::bad_request("input cannot be empty").with_param("input"));
+                return Err(
+                    ApiErrorResponse::bad_request("input cannot be empty").with_param("input")
+                );
             }
         }
         EmbeddingInput::Multiple(v) => {
             if v.is_empty() {
-                return Err(ApiErrorResponse::bad_request("input array cannot be empty").with_param("input"));
+                return Err(ApiErrorResponse::bad_request("input array cannot be empty")
+                    .with_param("input"));
             }
             // Also check that individual strings in the array are not empty
             if v.iter().any(|s| s.is_empty()) {
-                return Err(ApiErrorResponse::bad_request("input array contains empty strings").with_param("input"));
+                return Err(
+                    ApiErrorResponse::bad_request("input array contains empty strings")
+                        .with_param("input"),
+                );
             }
         }
     }
@@ -254,7 +267,10 @@ fn validate_request(request: &EmbeddingRequest) -> ApiResult<()> {
     // Validate dimensions if provided
     if let Some(dimensions) = request.dimensions {
         if dimensions == 0 {
-            return Err(ApiErrorResponse::bad_request("dimensions must be greater than 0").with_param("dimensions"));
+            return Err(
+                ApiErrorResponse::bad_request("dimensions must be greater than 0")
+                    .with_param("dimensions"),
+            );
         }
     }
 

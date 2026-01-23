@@ -15,7 +15,10 @@ pub use chat::chat_completions;
 pub use completions::completions;
 pub use embeddings::embeddings;
 pub use generation::get_generation;
-pub use mcp::{elicitation_response_handler, mcp_gateway_handler, mcp_server_handler, mcp_server_streaming_handler};
+pub use mcp::{
+    elicitation_response_handler, mcp_gateway_handler, mcp_server_handler,
+    mcp_server_streaming_handler,
+};
 pub use mcp_streaming::{
     close_streaming_session, initialize_streaming_session, send_streaming_request,
     streaming_event_handler,

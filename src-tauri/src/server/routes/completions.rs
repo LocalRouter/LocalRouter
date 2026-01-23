@@ -15,13 +15,13 @@ use futures::stream::StreamExt;
 use std::time::Instant;
 use uuid::Uuid;
 
+use super::helpers::get_enabled_client_from_manager;
 use crate::providers::{
     ChatMessage as ProviderChatMessage, ChatMessageContent,
     CompletionRequest as ProviderCompletionRequest,
 };
 use crate::router::UsageInfo;
 use crate::server::middleware::client_auth::ClientAuthContext;
-use super::helpers::get_enabled_client_from_manager;
 use crate::server::middleware::error::{ApiErrorResponse, ApiResult};
 use crate::server::state::{AppState, AuthContext, GenerationDetails};
 use crate::server::types::{
@@ -150,10 +150,10 @@ fn validate_request(request: &CompletionRequest) -> ApiResult<()> {
     // Validate frequency_penalty (OpenAI range: -2.0 to 2.0)
     if let Some(freq_penalty) = request.frequency_penalty {
         if !(-2.0..=2.0).contains(&freq_penalty) {
-            return Err(
-                ApiErrorResponse::bad_request("frequency_penalty must be between -2 and 2")
-                    .with_param("frequency_penalty"),
-            );
+            return Err(ApiErrorResponse::bad_request(
+                "frequency_penalty must be between -2 and 2",
+            )
+            .with_param("frequency_penalty"));
         }
     }
 
@@ -628,7 +628,10 @@ async fn handle_streaming(
                             "code": "streaming_error"
                         }
                     });
-                    Ok(Event::default().data(serde_json::to_string(&error_response).unwrap_or_else(|_| "[ERROR]".to_string())))
+                    Ok(Event::default().data(
+                        serde_json::to_string(&error_response)
+                            .unwrap_or_else(|_| "[ERROR]".to_string()),
+                    ))
                 }
             }
         },
@@ -639,8 +642,9 @@ async fn handle_streaming(
         // Wait for stream completion signal with a timeout fallback
         let _ = tokio::time::timeout(
             tokio::time::Duration::from_secs(300), // 5 minute timeout for long completions
-            completion_rx
-        ).await;
+            completion_rx,
+        )
+        .await;
 
         let completed_at = Instant::now();
         let completion_content = content_accumulator.lock().clone();

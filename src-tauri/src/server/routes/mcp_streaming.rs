@@ -2,24 +2,24 @@
 //!
 //! SSE streaming endpoints for multiplexing multiple MCP servers into a single stream.
 
+use axum::response::sse::KeepAlive;
 use axum::{
     extract::{Path, State},
     http::StatusCode,
     response::{IntoResponse, Response, Sse},
     Extension, Json,
 };
-use axum::response::sse::KeepAlive;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::error;
 use utoipa::ToSchema;
 
+use super::helpers::get_enabled_client;
 use crate::config::McpServerAccess;
 use crate::mcp::protocol::{JsonRpcRequest, Root};
 use crate::server::middleware::client_auth::ClientAuthContext;
 use crate::server::middleware::error::ApiErrorResponse;
 use crate::server::state::AppState;
-use super::helpers::get_enabled_client;
 
 /// Request to initialize a streaming session
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -142,7 +142,7 @@ pub async fn initialize_streaming_session(
             auth_ctx.client_id.clone(),
             allowed_servers.clone(),
             std::time::Duration::from_secs(3600), // 1 hour TTL
-            3600, // base cache TTL
+            3600,                                 // base cache TTL
             roots,
             client.mcp_deferred_loading,
         ),

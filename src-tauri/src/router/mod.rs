@@ -392,7 +392,10 @@ impl Router {
         // If selected_all is true, search all providers
         if allowed.selected_all {
             for instance_info in self.provider_registry.list_providers() {
-                if let Some(provider_instance) = self.provider_registry.get_provider(&instance_info.instance_name) {
+                if let Some(provider_instance) = self
+                    .provider_registry
+                    .get_provider(&instance_info.instance_name)
+                {
                     if let Ok(models) = provider_instance.list_models().await {
                         if models.iter().any(|m| {
                             let normalized_provider_model = Self::normalize_model_id(&m.id);

@@ -14,12 +14,12 @@ use axum::{
 use std::convert::Infallible;
 use std::time::Instant;
 
+use super::helpers::get_enabled_client_from_manager;
 use crate::config::{McpServerAccess, RootConfig};
 use crate::mcp::protocol::{JsonRpcRequest, Root};
 use crate::monitoring::mcp_metrics::McpRequestMetrics;
 use crate::server::middleware::client_auth::ClientAuthContext;
 use crate::server::middleware::error::ApiErrorResponse;
-use super::helpers::get_enabled_client_from_manager;
 use crate::server::state::AppState;
 
 /// MCP unified gateway handler
@@ -780,7 +780,11 @@ pub async fn elicitation_response_handler(
     }
 
     // Submit response to elicitation manager
-    match state.mcp_gateway.get_elicitation_manager().submit_response(&request_id, response) {
+    match state
+        .mcp_gateway
+        .get_elicitation_manager()
+        .submit_response(&request_id, response)
+    {
         Ok(()) => {
             tracing::info!("Elicitation response submitted for request {}", request_id);
             Json(crate::server::types::MessageResponse {

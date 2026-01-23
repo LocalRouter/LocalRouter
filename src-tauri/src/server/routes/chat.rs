@@ -16,6 +16,7 @@ use chrono::Utc;
 use futures::stream::StreamExt;
 use uuid::Uuid;
 
+use super::helpers::get_enabled_client_from_manager;
 use crate::providers::{
     ChatMessage as ProviderChatMessage, ChatMessageContent as ProviderMessageContent,
     CompletionRequest as ProviderCompletionRequest, ContentPart as ProviderContentPart,
@@ -23,7 +24,6 @@ use crate::providers::{
 };
 use crate::router::UsageInfo;
 use crate::server::middleware::client_auth::ClientAuthContext;
-use super::helpers::get_enabled_client_from_manager;
 use crate::server::middleware::error::{ApiErrorResponse, ApiResult};
 use crate::server::state::{AppState, AuthContext, GenerationDetails};
 use crate::server::types::{
@@ -159,10 +159,10 @@ fn validate_request(request: &ChatCompletionRequest) -> ApiResult<()> {
     // Validate frequency_penalty (OpenAI range: -2.0 to 2.0)
     if let Some(freq_penalty) = request.frequency_penalty {
         if !(-2.0..=2.0).contains(&freq_penalty) {
-            return Err(
-                ApiErrorResponse::bad_request("frequency_penalty must be between -2 and 2")
-                    .with_param("frequency_penalty"),
-            );
+            return Err(ApiErrorResponse::bad_request(
+                "frequency_penalty must be between -2 and 2",
+            )
+            .with_param("frequency_penalty"));
         }
     }
 
@@ -627,9 +627,8 @@ async fn handle_non_streaming(
 
     // Record tokens for tray graph (real-time tracking for Fast/Medium modes)
     if let Some(ref tray_graph) = *state.tray_graph_manager.read() {
-        tray_graph.record_tokens(
-            (incremental_prompt_tokens + response.usage.completion_tokens) as u64,
-        );
+        tray_graph
+            .record_tokens((incremental_prompt_tokens + response.usage.completion_tokens) as u64);
     }
 
     // Log to access log (persistent storage)
@@ -964,7 +963,10 @@ async fn handle_streaming(
                             "code": "streaming_error"
                         }
                     });
-                    Ok(Event::default().data(serde_json::to_string(&error_response).unwrap_or_else(|_| "[ERROR]".to_string())))
+                    Ok(Event::default().data(
+                        serde_json::to_string(&error_response)
+                            .unwrap_or_else(|_| "[ERROR]".to_string()),
+                    ))
                 }
             }
         },
@@ -975,8 +977,9 @@ async fn handle_streaming(
         // Wait for stream completion signal with a timeout fallback
         let _ = tokio::time::timeout(
             tokio::time::Duration::from_secs(300), // 5 minute timeout for long completions
-            completion_rx
-        ).await;
+            completion_rx,
+        )
+        .await;
 
         let completed_at = Instant::now();
         let completion_content = content_accumulator.lock().clone();

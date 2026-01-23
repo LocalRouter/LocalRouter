@@ -106,14 +106,17 @@ impl AppState {
         let internal_test_secret = format!("lr-internal-{}", Uuid::new_v4().simple());
         tracing::info!("Generated transient internal test bearer token for UI model testing");
 
-        // Initialize access logger with 30-day retention
-        let access_logger = AccessLogger::new(30).unwrap_or_else(|e| {
+        // Get log retention from config (default: 31 days)
+        let retention_days = config_manager.get().logging.retention_days;
+
+        // Initialize access logger with configured retention
+        let access_logger = AccessLogger::new(retention_days).unwrap_or_else(|e| {
             tracing::error!("Failed to initialize access logger: {}", e);
             panic!("Access logger initialization failed");
         });
 
-        // Initialize MCP access logger with 30-day retention
-        let mcp_access_logger = McpAccessLogger::new(30).unwrap_or_else(|e| {
+        // Initialize MCP access logger with configured retention
+        let mcp_access_logger = McpAccessLogger::new(retention_days).unwrap_or_else(|e| {
             tracing::error!("Failed to initialize MCP access logger: {}", e);
             panic!("MCP access logger initialization failed");
         });
