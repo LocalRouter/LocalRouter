@@ -59,3 +59,9 @@ find-dark-mode-issues.sh
 fix-dark-mode-bulk.sh
 run-debug-*.sh
 test-routellm-performance.sh
+
+# Playwright E2E tests
+tests/e2e/playwright-report/
+tests/e2e/test-results/
+playwright-report/
+test-results/
