@@ -1,300 +1,284 @@
+import { Link } from 'react-router-dom'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Apple, Monitor, Terminal, Check, ArrowRight, ExternalLink } from 'lucide-react'
+
+const platforms = [
+  {
+    name: 'macOS',
+    icon: Apple,
+    requirements: ['macOS 11+ (Big Sur)', 'Intel or Apple Silicon', '200MB disk space'],
+    downloadUrl: 'https://github.com/LocalRouter/LocalRouter/releases/latest/download/LocalRouter_macOS.dmg',
+    downloadLabel: 'Download .dmg',
+  },
+  {
+    name: 'Windows',
+    icon: Monitor,
+    requirements: ['Windows 10+ (64-bit)', '200MB disk space'],
+    downloadUrl: 'https://github.com/LocalRouter/LocalRouter/releases/latest/download/LocalRouter_Windows.msi',
+    downloadLabel: 'Download .msi',
+  },
+  {
+    name: 'Linux',
+    icon: Terminal,
+    requirements: ['Modern Linux (glibc 2.31+)', 'DEB, RPM, AppImage'],
+    downloadUrl: 'https://github.com/LocalRouter/LocalRouter/releases/latest/download/LocalRouter_Linux.deb',
+    downloadLabel: 'Download .deb',
+    altDownloads: [
+      { label: '.rpm', url: 'https://github.com/LocalRouter/LocalRouter/releases/latest/download/LocalRouter_Linux.rpm' },
+    ],
+  },
+]
+
+const steps = [
+  {
+    number: '1',
+    title: 'Download & Install',
+    description: 'Download the installer for your platform and run it. LocalRouter installs like any other app.',
+  },
+  {
+    number: '2',
+    title: 'Add Providers',
+    description: 'Open LocalRouter and add your AI providers. Enter API keys for OpenAI, Anthropic, or configure local Ollama.',
+  },
+  {
+    number: '3',
+    title: 'Create an API Key',
+    description: 'Create an API key in LocalRouter. Configure routing rules for cost, privacy, or performance.',
+  },
+  {
+    number: '4',
+    title: 'Start Using',
+    description: 'Point your apps to localhost:3625. Use your LocalRouter API key instead of provider keys.',
+  },
+]
+
 export default function Download() {
   return (
-    <div className="bg-white">
-      {/* Hero Section */}
-      <div className="bg-gradient-to-b from-gray-50 to-white py-16">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="text-center">
-            <h1 className="text-5xl font-bold text-gray-900 mb-6">
+    <div className="flex flex-col">
+      {/* Hero */}
+      <section className="border-b bg-gradient-to-b from-muted/50 to-background py-16 sm:py-24">
+        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+          <div className="mx-auto max-w-3xl text-center">
+            <h1 className="text-4xl font-bold tracking-tight sm:text-5xl">
               Download LocalRouter
             </h1>
-            <p className="text-xl text-gray-600 max-w-3xl mx-auto">
-              Get started with LocalRouter on your platform. Available for macOS, Windows, and Linux.
+            <p className="mt-6 text-lg text-muted-foreground">
+              Available for macOS, Windows, and Linux. Free and open source.
             </p>
           </div>
         </div>
-      </div>
+      </section>
 
-      {/* Download Options */}
-      <div className="py-16">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-            {/* macOS */}
-            <div className="bg-white border-2 border-gray-200 rounded-xl p-8 hover:border-blue-500 hover:shadow-lg transition">
-              <div className="flex justify-center mb-6">
-                <svg className="w-20 h-20 text-gray-700" fill="currentColor" viewBox="0 0 24 24">
-                  <path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.81-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z"/>
-                </svg>
-              </div>
-              <h3 className="text-2xl font-bold text-gray-900 mb-4 text-center">macOS</h3>
-              <ul className="space-y-2 mb-8 text-gray-600">
-                <li className="flex items-center">
-                  <svg className="w-5 h-5 text-green-500 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                  </svg>
-                  macOS 11+ (Big Sur and later)
-                </li>
-                <li className="flex items-center">
-                  <svg className="w-5 h-5 text-green-500 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                  </svg>
-                  Intel and Apple Silicon
-                </li>
-                <li className="flex items-center">
-                  <svg className="w-5 h-5 text-green-500 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                  </svg>
-                  DMG installer
-                </li>
-              </ul>
-              <a
-                href="https://github.com/LocalRouter/LocalRouter/releases/latest/download/LocalRouter_macOS.dmg"
-                className="block w-full bg-gradient-to-r from-blue-500 to-purple-600 text-white text-center px-6 py-3 rounded-lg font-semibold hover:from-blue-600 hover:to-purple-700 transition"
-              >
-                Download for macOS
-              </a>
-              <div className="mt-4 text-center">
-                <a
-                  href="https://github.com/LocalRouter/LocalRouter/releases/latest"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-sm text-blue-600 hover:text-blue-700"
-                >
-                  View all releases
-                </a>
-              </div>
-            </div>
+      {/* Platform Downloads */}
+      <section className="py-16 sm:py-24">
+        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+          <div className="grid gap-6 md:grid-cols-3">
+            {platforms.map((platform) => (
+              <Card key={platform.name} className="relative overflow-hidden">
+                <CardHeader className="text-center pb-4">
+                  <platform.icon className="mx-auto h-12 w-12 text-muted-foreground" />
+                  <CardTitle className="mt-4">{platform.name}</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <ul className="space-y-2">
+                    {platform.requirements.map((req) => (
+                      <li key={req} className="flex items-start gap-2 text-sm text-muted-foreground">
+                        <Check className="h-4 w-4 shrink-0 text-primary mt-0.5" />
+                        {req}
+                      </li>
+                    ))}
+                  </ul>
 
-            {/* Windows */}
-            <div className="bg-white border-2 border-gray-200 rounded-xl p-8 hover:border-blue-500 hover:shadow-lg transition">
-              <div className="flex justify-center mb-6">
-                <svg className="w-20 h-20 text-gray-700" fill="currentColor" viewBox="0 0 24 24">
-                  <path d="M0 3.449L9.75 2.1v9.451H0m10.949-9.602L24 0v11.4H10.949M0 12.6h9.75v9.451L0 20.699M10.949 12.6H24V24l-12.9-1.801"/>
-                </svg>
-              </div>
-              <h3 className="text-2xl font-bold text-gray-900 mb-4 text-center">Windows</h3>
-              <ul className="space-y-2 mb-8 text-gray-600">
-                <li className="flex items-center">
-                  <svg className="w-5 h-5 text-green-500 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                  </svg>
-                  Windows 10+ (64-bit)
-                </li>
-                <li className="flex items-center">
-                  <svg className="w-5 h-5 text-green-500 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                  </svg>
-                  MSI installer
-                </li>
-                <li className="flex items-center">
-                  <svg className="w-5 h-5 text-green-500 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                  </svg>
-                  Portable EXE available
-                </li>
-              </ul>
-              <a
-                href="https://github.com/LocalRouter/LocalRouter/releases/latest/download/LocalRouter_Windows.msi"
-                className="block w-full bg-gradient-to-r from-blue-500 to-purple-600 text-white text-center px-6 py-3 rounded-lg font-semibold hover:from-blue-600 hover:to-purple-700 transition"
-              >
-                Download for Windows
-              </a>
-              <div className="mt-4 text-center">
-                <a
-                  href="https://github.com/LocalRouter/LocalRouter/releases/latest"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-sm text-blue-600 hover:text-blue-700"
-                >
-                  View all releases
-                </a>
-              </div>
-            </div>
+                  <div className="pt-4 space-y-2">
+                    <Button asChild className="w-full">
+                      <a href={platform.downloadUrl}>
+                        {platform.downloadLabel}
+                      </a>
+                    </Button>
+                    {platform.altDownloads?.map((alt) => (
+                      <Button key={alt.label} asChild variant="outline" className="w-full">
+                        <a href={alt.url}>
+                          Download {alt.label}
+                        </a>
+                      </Button>
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
 
-            {/* Linux */}
-            <div className="bg-white border-2 border-gray-200 rounded-xl p-8 hover:border-blue-500 hover:shadow-lg transition">
-              <div className="flex justify-center mb-6">
-                <svg className="w-20 h-20 text-gray-700" fill="currentColor" viewBox="0 0 24 24">
-                  <path d="M12.504 0c-.155 0-.315.008-.48.021-4.226.333-3.105 4.807-3.17 6.298-.076 1.092-.3 1.816-1.049 3.08-.232.392-.41.858-.552 1.402-.276 1.06-.43 2.569-.43 4.298 0 1.729.154 3.238.43 4.298.142.544.32 1.01.552 1.402.748 1.264.973 1.988 1.049 3.08.065 1.491-.944 5.965 3.17 6.298.165.013.325.021.48.021s.315-.008.48-.021c4.114-.333 3.105-4.807 3.17-6.298.076-1.092.3-1.816 1.049-3.08.232-.392.41-.858.552-1.402.276-1.06.43-2.569.43-4.298 0-1.729-.154-3.238-.43-4.298-.142-.544-.32-1.01-.552-1.402-.749-1.264-.973-1.988-1.049-3.08-.065-1.491.944-5.965-3.17-6.298-.165-.013-.325-.021-.48-.021zm-.002 2.583c.085 0 .167.005.248.014 1.017.113.904 1.535.904 2.083 0 1.168-.271 2.245-.679 3.067-.204.411-.44.793-.705 1.147-.53.708-.674 1.002-.674 2.106 0 1.104.144 1.398.674 2.106.265.354.501.736.705 1.147.408.822.679 1.899.679 3.067 0 .548.113 1.97-.904 2.083-.081.009-.163.014-.248.014s-.167-.005-.248-.014c-1.017-.113-.904-1.535-.904-2.083 0-1.168.271-2.245.679-3.067.204-.411.44-.793.705-1.147.53-.708.674-1.002.674-2.106 0-1.104-.144-1.398-.674-2.106-.265-.354-.501-.736-.705-1.147-.408-.822-.679-1.899-.679-3.067 0-.548-.113-1.97.904-2.083.081-.009.163-.014.248-.014z"/>
-                </svg>
-              </div>
-              <h3 className="text-2xl font-bold text-gray-900 mb-4 text-center">Linux</h3>
-              <ul className="space-y-2 mb-8 text-gray-600">
-                <li className="flex items-center">
-                  <svg className="w-5 h-5 text-green-500 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                  </svg>
-                  Ubuntu, Debian (DEB)
-                </li>
-                <li className="flex items-center">
-                  <svg className="w-5 h-5 text-green-500 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                  </svg>
-                  Fedora, RHEL (RPM)
-                </li>
-                <li className="flex items-center">
-                  <svg className="w-5 h-5 text-green-500 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                  </svg>
-                  AppImage (Universal)
-                </li>
-              </ul>
-              <div className="space-y-3">
-                <a
-                  href="https://github.com/LocalRouter/LocalRouter/releases/latest/download/LocalRouter_Linux.deb"
-                  className="block w-full bg-gradient-to-r from-blue-500 to-purple-600 text-white text-center px-6 py-3 rounded-lg font-semibold hover:from-blue-600 hover:to-purple-700 transition"
-                >
-                  Download DEB
-                </a>
-                <a
-                  href="https://github.com/LocalRouter/LocalRouter/releases/latest/download/LocalRouter_Linux.rpm"
-                  className="block w-full bg-gray-700 text-white text-center px-6 py-3 rounded-lg font-semibold hover:bg-gray-800 transition"
-                >
-                  Download RPM
-                </a>
-              </div>
-              <div className="mt-4 text-center">
-                <a
-                  href="https://github.com/LocalRouter/LocalRouter/releases/latest"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-sm text-blue-600 hover:text-blue-700"
-                >
-                  View all releases
-                </a>
-              </div>
-            </div>
+          <div className="mt-8 text-center">
+            <a
+              href="https://github.com/LocalRouter/LocalRouter/releases/latest"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition-colors"
+            >
+              View all releases on GitHub
+              <ExternalLink className="h-4 w-4" />
+            </a>
           </div>
         </div>
-      </div>
+      </section>
 
-      {/* Installation Instructions */}
-      <div className="bg-gray-50 py-16">
-        <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
-          <h2 className="text-3xl font-bold text-gray-900 mb-8 text-center">
-            Installation & Setup
-          </h2>
+      {/* Quick Start */}
+      <section className="border-t bg-muted/30 py-16 sm:py-24">
+        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+          <div className="mx-auto max-w-3xl text-center">
+            <h2 className="text-2xl font-bold sm:text-3xl">Quick Start</h2>
+            <p className="mt-4 text-muted-foreground">
+              Get up and running in under 5 minutes.
+            </p>
+          </div>
 
-          <div className="space-y-6">
-            <div className="bg-white rounded-lg p-6 shadow-sm">
-              <h3 className="text-xl font-semibold text-gray-900 mb-3 flex items-center">
-                <span className="bg-blue-500 text-white w-8 h-8 rounded-full flex items-center justify-center mr-3">1</span>
-                Download the installer
-              </h3>
-              <p className="text-gray-600 ml-11">
-                Choose the appropriate installer for your operating system from the options above.
-              </p>
-            </div>
+          <div className="mt-12 grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
+            {steps.map((step) => (
+              <div key={step.number} className="relative">
+                <div className="flex items-center gap-4">
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground font-bold">
+                    {step.number}
+                  </div>
+                  <h3 className="font-semibold">{step.title}</h3>
+                </div>
+                <p className="mt-4 text-sm text-muted-foreground pl-14">
+                  {step.description}
+                </p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
 
-            <div className="bg-white rounded-lg p-6 shadow-sm">
-              <h3 className="text-xl font-semibold text-gray-900 mb-3 flex items-center">
-                <span className="bg-blue-500 text-white w-8 h-8 rounded-full flex items-center justify-center mr-3">2</span>
-                Install LocalRouter
-              </h3>
-              <p className="text-gray-600 ml-11">
-                Run the installer and follow the on-screen instructions. LocalRouter will be installed and ready to use.
-              </p>
-            </div>
+      {/* Code Example */}
+      <section className="border-t py-16 sm:py-24">
+        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+          <div className="mx-auto max-w-3xl text-center">
+            <h2 className="text-2xl font-bold sm:text-3xl">Test Your Setup</h2>
+            <p className="mt-4 text-muted-foreground">
+              After installation, test with a simple curl command.
+            </p>
+          </div>
 
-            <div className="bg-white rounded-lg p-6 shadow-sm">
-              <h3 className="text-xl font-semibold text-gray-900 mb-3 flex items-center">
-                <span className="bg-blue-500 text-white w-8 h-8 rounded-full flex items-center justify-center mr-3">3</span>
-                Configure providers
-              </h3>
-              <p className="text-gray-600 ml-11">
-                Open LocalRouter and configure your AI providers. Add API keys for OpenAI, Anthropic, or connect to local Ollama.
-              </p>
-            </div>
-
-            <div className="bg-white rounded-lg p-6 shadow-sm">
-              <h3 className="text-xl font-semibold text-gray-900 mb-3 flex items-center">
-                <span className="bg-blue-500 text-white w-8 h-8 rounded-full flex items-center justify-center mr-3">4</span>
-                Start using the API
-              </h3>
-              <p className="text-gray-600 ml-11 mb-4">
-                LocalRouter starts a local server at <code className="bg-gray-100 px-2 py-1 rounded">http://localhost:3000</code>.
-                Use it as a drop-in replacement for the OpenAI API.
-              </p>
-              <div className="ml-11 bg-gray-900 text-gray-100 p-4 rounded-lg font-mono text-sm overflow-x-auto">
-                <pre>{`curl http://localhost:3000/v1/chat/completions \\
+          <div className="mt-12 mx-auto max-w-2xl">
+            <div className="rounded-lg border bg-zinc-950 p-4 text-sm">
+              <pre className="overflow-x-auto text-zinc-100 font-mono">
+                <code>{`curl http://localhost:3625/v1/chat/completions \\
   -H "Content-Type: application/json" \\
   -H "Authorization: Bearer lr-your-api-key" \\
   -d '{
     "model": "gpt-4",
     "messages": [{"role": "user", "content": "Hello!"}]
-  }'`}</pre>
-              </div>
+  }'`}</code>
+              </pre>
             </div>
           </div>
         </div>
-      </div>
+      </section>
 
       {/* System Requirements */}
-      <div className="py-16">
-        <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
-          <h2 className="text-3xl font-bold text-gray-900 mb-8 text-center">
-            System Requirements
-          </h2>
-          <div className="bg-white rounded-lg shadow-sm p-8">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-              <div>
-                <h3 className="font-semibold text-gray-900 mb-3">macOS</h3>
-                <ul className="text-gray-600 space-y-2 text-sm">
-                  <li>• macOS 11 (Big Sur) or later</li>
-                  <li>• 4GB RAM minimum</li>
-                  <li>• 200MB disk space</li>
+      <section className="border-t bg-muted/30 py-16 sm:py-24">
+        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+          <div className="mx-auto max-w-3xl text-center">
+            <h2 className="text-2xl font-bold sm:text-3xl">System Requirements</h2>
+          </div>
+
+          <div className="mt-12 grid gap-6 md:grid-cols-3">
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Apple className="h-5 w-5" />
+                  macOS
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <ul className="space-y-2 text-sm text-muted-foreground">
+                  <li>macOS 11 (Big Sur) or later</li>
+                  <li>Intel or Apple Silicon</li>
+                  <li>4GB RAM minimum</li>
+                  <li>200MB disk space</li>
                 </ul>
-              </div>
-              <div>
-                <h3 className="font-semibold text-gray-900 mb-3">Windows</h3>
-                <ul className="text-gray-600 space-y-2 text-sm">
-                  <li>• Windows 10 or later (64-bit)</li>
-                  <li>• 4GB RAM minimum</li>
-                  <li>• 200MB disk space</li>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Monitor className="h-5 w-5" />
+                  Windows
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <ul className="space-y-2 text-sm text-muted-foreground">
+                  <li>Windows 10 or later (64-bit)</li>
+                  <li>4GB RAM minimum</li>
+                  <li>200MB disk space</li>
                 </ul>
-              </div>
-              <div>
-                <h3 className="font-semibold text-gray-900 mb-3">Linux</h3>
-                <ul className="text-gray-600 space-y-2 text-sm">
-                  <li>• Modern Linux distribution</li>
-                  <li>• 4GB RAM minimum</li>
-                  <li>• 200MB disk space</li>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Terminal className="h-5 w-5" />
+                  Linux
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <ul className="space-y-2 text-sm text-muted-foreground">
+                  <li>Ubuntu 20.04+, Fedora 35+, or equivalent</li>
+                  <li>glibc 2.31 or later</li>
+                  <li>4GB RAM minimum</li>
+                  <li>200MB disk space</li>
                 </ul>
-              </div>
+              </CardContent>
+            </Card>
+          </div>
+        </div>
+      </section>
+
+      {/* Help */}
+      <section className="border-t py-16 sm:py-24">
+        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+          <div className="mx-auto max-w-3xl text-center">
+            <h2 className="text-2xl font-bold sm:text-3xl">Need Help?</h2>
+            <p className="mt-4 text-muted-foreground">
+              Check out the documentation or open an issue on GitHub.
+            </p>
+            <div className="mt-8 flex flex-col items-center justify-center gap-4 sm:flex-row">
+              <Button asChild variant="outline">
+                <a
+                  href="https://github.com/LocalRouter/LocalRouter/blob/master/README.md"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  View Documentation
+                </a>
+              </Button>
+              <Button asChild variant="outline">
+                <a
+                  href="https://github.com/LocalRouter/LocalRouter/issues"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  Report an Issue
+                </a>
+              </Button>
             </div>
           </div>
         </div>
-      </div>
+      </section>
 
-      {/* Help Section */}
-      <div className="bg-gradient-to-b from-white to-gray-50 py-16">
-        <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
-          <h2 className="text-3xl font-bold text-gray-900 mb-6">
-            Need Help?
-          </h2>
-          <p className="text-xl text-gray-600 mb-8">
-            Check out our documentation or join the community for support.
-          </p>
-          <div className="flex justify-center space-x-4">
-            <a
-              href="https://github.com/LocalRouter/LocalRouter/blob/master/README.md"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="bg-gray-100 text-gray-900 px-6 py-3 rounded-lg font-semibold hover:bg-gray-200 transition"
-            >
-              View Documentation
-            </a>
-            <a
-              href="https://github.com/LocalRouter/LocalRouter/issues"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="bg-gray-100 text-gray-900 px-6 py-3 rounded-lg font-semibold hover:bg-gray-200 transition"
-            >
-              Report an Issue
-            </a>
-          </div>
+      {/* Back to Home */}
+      <section className="border-t bg-muted/30 py-12">
+        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 text-center">
+          <Link to="/" className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition-colors">
+            <ArrowRight className="h-4 w-4 rotate-180" />
+            Back to Home
+          </Link>
         </div>
-      </div>
+      </section>
     </div>
   )
 }
