@@ -496,11 +496,17 @@ export function LlmTab() {
         </TabsContent>
 
         <TabsContent value="images" className="flex-1 min-h-0 mt-4">
-          <ImagesPanel openaiClient={openaiClient} isReady={isReady()} />
+          <ImagesPanel
+            openaiClient={openaiClient}
+            isReady={isReady()}
+            mode={mode}
+            selectedProvider={selectedProvider}
+            models={models}
+          />
         </TabsContent>
 
         <TabsContent value="embeddings" className="flex-1 min-h-0 mt-4">
-          <EmbeddingsPanel openaiClient={openaiClient} isReady={isReady()} />
+          <EmbeddingsPanel openaiClient={openaiClient} isReady={isReady()} selectedModel={getEffectiveModel()} />
         </TabsContent>
       </Tabs>
     </div>

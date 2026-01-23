@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react"
+import { useState, useCallback, useMemo } from "react"
 import { ImagePlus, Download, RefreshCw, Sparkles } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card"
 import { Button } from "@/components/ui/Button"
@@ -23,27 +23,84 @@ interface GeneratedImage {
   b64Json?: string
   model: string
   size: string
-  quality: string
-  style: string
+  quality?: string
+  style?: string
   timestamp: Date
+}
+
+interface Model {
+  id: string
+  object: string
+  owned_by: string
 }
 
 interface ImagesPanelProps {
   openaiClient: OpenAI | null
   isReady: boolean
+  mode: "client" | "strategy" | "direct"
+  selectedProvider?: string
+  models: Model[]
 }
 
-type ImageModel = "dall-e-2" | "dall-e-3"
 type ImageSize = "256x256" | "512x512" | "1024x1024" | "1024x1792" | "1792x1024"
 type ImageQuality = "standard" | "hd"
 type ImageStyle = "vivid" | "natural"
 
-const DALLE2_SIZES: ImageSize[] = ["256x256", "512x512", "1024x1024"]
-const DALLE3_SIZES: ImageSize[] = ["1024x1024", "1024x1792", "1792x1024"]
+// Known image generation model patterns by provider
+const IMAGE_MODEL_PATTERNS: Record<string, RegExp[]> = {
+  openai: [/^dall-e-/i],
+  togetherai: [/flux/i, /sdxl/i, /stable-diffusion/i],
+  deepinfra: [/sdxl/i, /stable-diffusion/i],
+  gemini: [/imagen/i],
+}
 
-export function ImagesPanel({ openaiClient, isReady }: ImagesPanelProps) {
+// Size options by provider/model type
+const SIZE_OPTIONS: Record<string, ImageSize[]> = {
+  "dall-e-2": ["256x256", "512x512", "1024x1024"],
+  "dall-e-3": ["1024x1024", "1024x1792", "1792x1024"],
+  default: ["512x512", "1024x1024"],
+}
+
+// Check if a model is likely an image generation model
+function isImageModel(modelId: string, provider?: string): boolean {
+  const lowerModelId = modelId.toLowerCase()
+
+  // Check against known patterns
+  for (const [providerKey, patterns] of Object.entries(IMAGE_MODEL_PATTERNS)) {
+    if (provider && providerKey !== provider.toLowerCase()) continue
+    for (const pattern of patterns) {
+      if (pattern.test(lowerModelId)) return true
+    }
+  }
+
+  // If no provider specified, check all patterns
+  if (!provider) {
+    for (const patterns of Object.values(IMAGE_MODEL_PATTERNS)) {
+      for (const pattern of patterns) {
+        if (pattern.test(lowerModelId)) return true
+      }
+    }
+  }
+
+  return false
+}
+
+// Get available sizes for a model
+function getSizesForModel(modelId: string): ImageSize[] {
+  const lowerModel = modelId.toLowerCase()
+  if (lowerModel.includes("dall-e-2")) return SIZE_OPTIONS["dall-e-2"]
+  if (lowerModel.includes("dall-e-3")) return SIZE_OPTIONS["dall-e-3"]
+  return SIZE_OPTIONS["default"]
+}
+
+// Check if model supports quality/style options (DALL-E 3 specific)
+function supportsQualityAndStyle(modelId: string): boolean {
+  return modelId.toLowerCase().includes("dall-e-3")
+}
+
+export function ImagesPanel({ openaiClient, isReady, mode, selectedProvider, models }: ImagesPanelProps) {
   const [prompt, setPrompt] = useState("")
-  const [model, setModel] = useState<ImageModel>("dall-e-3")
+  const [selectedModel, setSelectedModel] = useState<string>("")
   const [size, setSize] = useState<ImageSize>("1024x1024")
   const [quality, setQuality] = useState<ImageQuality>("standard")
   const [style, setStyle] = useState<ImageStyle>("vivid")
@@ -51,31 +108,52 @@ export function ImagesPanel({ openaiClient, isReady }: ImagesPanelProps) {
   const [images, setImages] = useState<GeneratedImage[]>([])
   const [error, setError] = useState<string | null>(null)
 
+  // Filter to image-capable models
+  const imageModels = useMemo(() => {
+    return models.filter(m => isImageModel(m.id, mode === "direct" ? selectedProvider : undefined))
+  }, [models, mode, selectedProvider])
+
+  // Auto-select first image model when available
+  useMemo(() => {
+    if (!selectedModel && imageModels.length > 0) {
+      setSelectedModel(imageModels[0].id)
+    }
+  }, [imageModels, selectedModel])
+
+  // Get effective model string (with provider prefix for direct mode)
+  const getEffectiveModel = useCallback(() => {
+    if (mode === "direct" && selectedProvider && selectedModel) {
+      return `${selectedProvider}/${selectedModel}`
+    }
+    return selectedModel
+  }, [mode, selectedProvider, selectedModel])
+
   // Update size when model changes
-  const handleModelChange = (newModel: ImageModel) => {
-    setModel(newModel)
-    // Reset size to valid option for the new model
-    if (newModel === "dall-e-2" && !DALLE2_SIZES.includes(size)) {
-      setSize("1024x1024")
-    } else if (newModel === "dall-e-3" && !DALLE3_SIZES.includes(size)) {
-      setSize("1024x1024")
+  const handleModelChange = (newModel: string) => {
+    setSelectedModel(newModel)
+    const availableSizes = getSizesForModel(newModel)
+    if (!availableSizes.includes(size)) {
+      setSize(availableSizes[0])
     }
   }
 
   const handleGenerate = useCallback(async () => {
-    if (!openaiClient || !prompt.trim()) return
+    if (!openaiClient || !prompt.trim() || !selectedModel) return
 
     setIsGenerating(true)
     setError(null)
 
     try {
+      const effectiveModel = getEffectiveModel()
+      const hasQualityStyle = supportsQualityAndStyle(selectedModel)
+
       const response = await openaiClient.images.generate({
-        model,
+        model: effectiveModel,
         prompt: prompt.trim(),
         n: 1,
         size,
-        quality: model === "dall-e-3" ? quality : undefined,
-        style: model === "dall-e-3" ? style : undefined,
+        quality: hasQualityStyle ? quality : undefined,
+        style: hasQualityStyle ? style : undefined,
         response_format: "b64_json",
       })
 
@@ -89,10 +167,10 @@ export function ImagesPanel({ openaiClient, isReady }: ImagesPanelProps) {
         revisedPrompt: imageData.revised_prompt,
         b64Json: imageData.b64_json,
         url: imageData.url,
-        model,
+        model: selectedModel,
         size,
-        quality,
-        style,
+        quality: hasQualityStyle ? quality : undefined,
+        style: hasQualityStyle ? style : undefined,
         timestamp: new Date(),
       }
 
@@ -102,18 +180,19 @@ export function ImagesPanel({ openaiClient, isReady }: ImagesPanelProps) {
     } finally {
       setIsGenerating(false)
     }
-  }, [openaiClient, prompt, model, size, quality, style])
+  }, [openaiClient, prompt, selectedModel, size, quality, style, getEffectiveModel])
 
   const handleDownload = (image: GeneratedImage) => {
     if (!image.b64Json) return
 
     const link = document.createElement("a")
     link.href = `data:image/png;base64,${image.b64Json}`
-    link.download = `dalle-${image.id.slice(0, 8)}.png`
+    link.download = `image-${image.id.slice(0, 8)}.png`
     link.click()
   }
 
-  const availableSizes = model === "dall-e-2" ? DALLE2_SIZES : DALLE3_SIZES
+  const availableSizes = getSizesForModel(selectedModel)
+  const showQualityStyle = supportsQualityAndStyle(selectedModel)
 
   return (
     <div className="flex flex-col h-full gap-4">
@@ -142,15 +221,23 @@ export function ImagesPanel({ openaiClient, isReady }: ImagesPanelProps) {
           <div className="grid grid-cols-4 gap-4">
             <div className="space-y-2">
               <Label>Model</Label>
-              <Select value={model} onValueChange={(v: string) => handleModelChange(v as ImageModel)}>
+              <Select value={selectedModel} onValueChange={handleModelChange}>
                 <SelectTrigger>
-                  <SelectValue />
+                  <SelectValue placeholder={imageModels.length === 0 ? "No image models" : "Select model"} />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="dall-e-3">DALL-E 3</SelectItem>
-                  <SelectItem value="dall-e-2">DALL-E 2</SelectItem>
+                  {imageModels.map((m) => (
+                    <SelectItem key={m.id} value={m.id}>
+                      {m.id}
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
+              {imageModels.length === 0 && (
+                <p className="text-xs text-muted-foreground">
+                  No image models found for current provider
+                </p>
+              )}
             </div>
 
             <div className="space-y-2">
@@ -169,7 +256,7 @@ export function ImagesPanel({ openaiClient, isReady }: ImagesPanelProps) {
               </Select>
             </div>
 
-            {model === "dall-e-3" && (
+            {showQualityStyle && (
               <>
                 <div className="space-y-2">
                   <Label>Quality</Label>
@@ -208,7 +295,7 @@ export function ImagesPanel({ openaiClient, isReady }: ImagesPanelProps) {
 
           <Button
             onClick={handleGenerate}
-            disabled={!isReady || !prompt.trim() || isGenerating}
+            disabled={!isReady || !prompt.trim() || !selectedModel || isGenerating}
             className="w-full"
           >
             {isGenerating ? (
