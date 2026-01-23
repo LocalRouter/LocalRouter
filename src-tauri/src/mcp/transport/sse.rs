@@ -410,7 +410,7 @@ impl Transport for SseTransport {
             req_builder = req_builder.header(key, value);
         }
 
-        // Send POST request (don't wait for response - it arrives via SSE stream)
+        // Send POST request
         let post_response = req_builder.send().await.map_err(|e| {
             // Remove from pending on error
             self.pending.write().remove(&request_id);
@@ -426,7 +426,33 @@ impl Transport for SseTransport {
             )));
         }
 
-        // Wait for response from SSE stream (with timeout)
+        // Check if the response contains an inline response
+        // Some servers return the response directly in the POST body (as SSE-formatted text
+        // or plain JSON) rather than sending it via the persistent SSE stream
+        //
+        // Try to read and parse the response body - if it contains valid JSON-RPC, use it
+        if let Ok(body_text) = post_response.text().await {
+            if !body_text.trim().is_empty() {
+                // Try SSE format first (data: {...}\n\n)
+                if let Ok(json_str) = Self::parse_sse_response(&body_text) {
+                    if let Ok(response) = serde_json::from_str::<JsonRpcResponse>(&json_str) {
+                        // Got inline response - remove from pending and return
+                        self.pending.write().remove(&request_id);
+                        tracing::debug!("Returning inline SSE response");
+                        return Ok(response);
+                    }
+                }
+                // Try plain JSON format
+                if let Ok(response) = serde_json::from_str::<JsonRpcResponse>(&body_text) {
+                    // Got inline JSON response - remove from pending and return
+                    self.pending.write().remove(&request_id);
+                    tracing::debug!("Returning inline JSON response");
+                    return Ok(response);
+                }
+            }
+        }
+
+        // No inline response - wait for response from SSE stream (with timeout)
         let response = tokio::time::timeout(Duration::from_secs(30), rx)
             .await
             .map_err(|_| {

@@ -7,7 +7,7 @@
 //! LocalRouter's unified MCP gateway via standard input/output.
 
 use crate::api_keys::keychain_trait::{CachedKeychain, KeychainStorage};
-use crate::config::{AppConfig, Client, ConfigManager};
+use crate::config::{AppConfig, Client, ConfigManager, McpServerAccess};
 use crate::mcp::protocol::{JsonRpcError, JsonRpcRequest, JsonRpcResponse};
 use crate::utils::errors::{AppError, AppResult};
 use serde_json::Value;
@@ -67,17 +67,25 @@ impl StdioBridge {
 
         // Validate client has MCP servers configured
         let client = find_client_by_id(&client_id, &config)?;
-        if client.allowed_mcp_servers.is_empty() {
+        if !client.mcp_server_access.has_any_access() {
             return Err(AppError::Config(format!(
-                "Client '{}' has no MCP servers configured. Add servers to 'allowed_mcp_servers' in config.yaml",
+                "Client '{}' has no MCP servers configured. Set 'mcp_server_access' in config.yaml",
                 client_id
             )));
         }
 
+        // Get server count for logging
+        let server_count = match &client.mcp_server_access {
+            McpServerAccess::None => 0,
+            McpServerAccess::All => config.mcp_servers.len(),
+            McpServerAccess::Specific(servers) => servers.len(),
+        };
+
         info!(
-            "Bridge initialized for client '{}' with {} MCP servers",
+            "Bridge initialized for client '{}' with {} MCP servers (mode: {:?})",
             client_id,
-            client.allowed_mcp_servers.len()
+            server_count,
+            client.mcp_server_access
         );
 
         Ok(Self {
@@ -236,7 +244,7 @@ impl StdioBridge {
                     "Invalid client credentials. Check LOCALROUTER_CLIENT_SECRET or run GUI once to store credentials."
                 )),
                 403 => AppError::Mcp(format!(
-                    "Client '{}' is not allowed to access MCP servers. Check 'allowed_mcp_servers' in config.yaml",
+                    "Client '{}' is not allowed to access MCP servers. Check 'mcp_server_access' in config.yaml",
                     self.client_id
                 )),
                 404 => AppError::Mcp(
@@ -348,7 +356,7 @@ fn find_first_enabled_client(config: &AppConfig) -> AppResult<&Client> {
     config
         .clients
         .iter()
-        .find(|c| c.enabled && !c.allowed_mcp_servers.is_empty())
+        .find(|c| c.enabled && c.mcp_server_access.has_any_access())
         .ok_or_else(|| {
             AppError::Config(
                 "No enabled clients with MCP servers found. Configure a client in config.yaml"
@@ -370,7 +378,7 @@ mod tests {
                 name: "Test Client".to_string(),
                 enabled: true,
                 allowed_llm_providers: vec![],
-                allowed_mcp_servers: vec!["filesystem".to_string()],
+                mcp_server_access: McpServerAccess::Specific(vec!["filesystem".to_string()]),
                 mcp_deferred_loading: false,
                 created_at: Utc::now(),
                 last_used: None,
@@ -387,7 +395,7 @@ mod tests {
                 name: "Disabled Client".to_string(),
                 enabled: false,
                 allowed_llm_providers: vec![],
-                allowed_mcp_servers: vec!["web".to_string()],
+                mcp_server_access: McpServerAccess::Specific(vec!["web".to_string()]),
                 mcp_deferred_loading: false,
                 created_at: Utc::now(),
                 last_used: None,
@@ -404,7 +412,7 @@ mod tests {
                 name: "No MCP Client".to_string(),
                 enabled: true,
                 allowed_llm_providers: vec![],
-                allowed_mcp_servers: vec![],
+                mcp_server_access: McpServerAccess::None,
                 mcp_deferred_loading: false,
                 created_at: Utc::now(),
                 last_used: None,

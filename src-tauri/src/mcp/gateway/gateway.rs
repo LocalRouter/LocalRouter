@@ -435,7 +435,7 @@ impl McpGateway {
     /// Handle elicitation/requestInput
     async fn handle_elicitation_request(
         &self,
-        session: Arc<RwLock<GatewaySession>>,
+        _session: Arc<RwLock<GatewaySession>>,
         request: JsonRpcRequest,
     ) -> AppResult<JsonRpcResponse> {
         // Parse elicitation request from params
@@ -455,9 +455,20 @@ impl McpGateway {
             };
 
         // Get the server ID that initiated this request
-        let session_read = session.read().await;
-        let server_id = session_read.client_id.clone(); // Use client_id as fallback
-        drop(session_read);
+        // Note: In the MCP spec, elicitation/requestInput is sent BY servers TO clients,
+        // not the other way around. This handler exists for cases where a client explicitly
+        // sends this request to the gateway (uncommon). For proper backend→client elicitation,
+        // the notification callback mechanism should be used instead.
+        //
+        // Try to get server_id from params, fall back to "_gateway" to indicate
+        // the request came through the unified gateway rather than a specific backend.
+        let server_id = request
+            .params
+            .as_ref()
+            .and_then(|p| p.get("server_id"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "_gateway".to_string());
 
         // Request input from user via elicitation manager
         match self

@@ -218,7 +218,7 @@ impl StreamingSession {
     /// Start forwarding backend server notifications to the merge channel
     /// Subscribes to the MCP notification broadcast and filters by server_id
     fn start_backend_notification_forwarding(&self, server_id: String) {
-        let _event_tx = self.event_tx.clone();
+        let event_tx = self.event_tx.clone();
         let session_id = self.session_id.clone();
 
         debug!(
@@ -226,9 +226,25 @@ impl StreamingSession {
             server_id, session_id
         );
 
-        // Notification forwarding will be set up in Phase 5 when we have access
-        // to the notification broadcast channel
-        // For now, this placeholder will be integrated with GatewaySession
+        // Register a notification handler for this server
+        // Note: Currently handlers cannot be removed when session closes.
+        // This is a known limitation - consider adding handler removal to McpServerManager.
+        let handler_session_id = session_id.clone();
+        let handler_server_id = server_id.clone();
+        self.server_manager.on_notification(
+            &server_id,
+            Arc::new(move |srv_id: String, notification| {
+                debug!(
+                    "Forwarding notification from {} to streaming session {}",
+                    srv_id, handler_session_id
+                );
+                // Forward notification through the streaming session's event channel
+                let _ = event_tx.send(StreamingEvent::Notification {
+                    server_id: handler_server_id.clone(),
+                    notification,
+                });
+            }),
+        );
     }
 
     /// Handle incoming request from client
@@ -331,7 +347,12 @@ impl StreamingSession {
         // Check for broadcast methods
         if matches!(
             method,
-            "tools/list" | "resources/list" | "prompts/list"
+            "initialize"
+                | "tools/list"
+                | "resources/list"
+                | "prompts/list"
+                | "logging/setLevel"
+                | "ping"
         ) {
             return Ok(Routing {
                 mode: RoutingMode::Broadcast,
