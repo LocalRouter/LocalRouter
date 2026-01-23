@@ -18,7 +18,10 @@ fn test_config() -> AppConfig {
             name: "Test Client".to_string(),
             enabled: true,
             allowed_llm_providers: vec![],
-            mcp_server_access: McpServerAccess::Specific(vec!["filesystem".to_string(), "web".to_string()]),
+            mcp_server_access: McpServerAccess::Specific(vec![
+                "filesystem".to_string(),
+                "web".to_string(),
+            ]),
             mcp_deferred_loading: false,
             created_at: Utc::now(),
             last_used: None,

@@ -79,8 +79,9 @@ async fn test_download_retry_simulation() {
     // This test simulates retry logic by attempting download with timeout
     use localrouter_ai::routellm::downloader;
 
-    let model_path = PathBuf::from("/tmp/test_retry_model");
-    let tokenizer_path = PathBuf::from("/tmp/test_retry_tokenizer");
+    let temp_dir = std::env::temp_dir();
+    let model_path = temp_dir.join("test_retry_model");
+    let tokenizer_path = temp_dir.join("test_retry_tokenizer");
 
     // Clean up
     let _ = tokio::fs::remove_dir_all(&model_path).await;

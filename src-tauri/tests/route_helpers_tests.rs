@@ -159,7 +159,12 @@ fn test_get_enabled_client_disabled() {
 #[test]
 fn test_get_client_with_strategy_success() {
     let strategy = create_test_strategy("test-strategy", "Test Strategy");
-    let client = create_test_client("client-with-strategy", "Client With Strategy", true, "test-strategy");
+    let client = create_test_client(
+        "client-with-strategy",
+        "Client With Strategy",
+        true,
+        "test-strategy",
+    );
 
     let config = create_test_config(vec![client.clone()], vec![strategy]);
     let client_manager = Arc::new(ClientManager::new(vec![client]));
@@ -206,7 +211,12 @@ fn test_get_client_with_strategy_client_disabled() {
 #[test]
 fn test_get_client_with_strategy_strategy_not_found() {
     // Create client with a strategy that doesn't exist
-    let client = create_test_client("orphan-client", "Orphan Client", true, "non-existent-strategy");
+    let client = create_test_client(
+        "orphan-client",
+        "Orphan Client",
+        true,
+        "non-existent-strategy",
+    );
 
     let config = create_test_config(vec![client.clone()], vec![]);
     let client_manager = Arc::new(ClientManager::new(vec![client]));
@@ -348,10 +358,8 @@ fn test_get_client_with_strategy_multiple_strategies() {
 fn test_client_with_mcp_access() {
     // Test that MCP access settings are preserved through the helper
     let mut client = create_test_client("mcp-client", "MCP Client", true, "default");
-    client.mcp_server_access = McpServerAccess::Specific(vec![
-        "server-1".to_string(),
-        "server-2".to_string(),
-    ]);
+    client.mcp_server_access =
+        McpServerAccess::Specific(vec!["server-1".to_string(), "server-2".to_string()]);
 
     let config = create_test_config(vec![client.clone()], vec![]);
     let client_manager = Arc::new(ClientManager::new(vec![client]));
@@ -381,6 +389,10 @@ fn test_client_with_llm_providers() {
 
     let retrieved = result.unwrap();
     assert_eq!(retrieved.allowed_llm_providers.len(), 2);
-    assert!(retrieved.allowed_llm_providers.contains(&"openai".to_string()));
-    assert!(retrieved.allowed_llm_providers.contains(&"anthropic".to_string()));
+    assert!(retrieved
+        .allowed_llm_providers
+        .contains(&"openai".to_string()));
+    assert!(retrieved
+        .allowed_llm_providers
+        .contains(&"anthropic".to_string()));
 }

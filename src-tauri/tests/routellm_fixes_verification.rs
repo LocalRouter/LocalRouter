@@ -32,17 +32,16 @@ async fn test_fix_2_initialization_race_condition() {
     use localrouter_ai::routellm::RouteLLMService;
     use std::sync::Arc;
 
-    let home = std::env::var("HOME").unwrap();
+    let home = dirs::home_dir().expect("Could not determine home directory");
     let service = Arc::new(RouteLLMService::new(
-        PathBuf::from(&home).join(".localrouter-dev/routellm/model"),
-        PathBuf::from(&home).join(".localrouter-dev/routellm/tokenizer"),
+        home.join(".localrouter-dev/routellm/model"),
+        home.join(".localrouter-dev/routellm/tokenizer"),
         600,
     ));
 
     // Check if models exist before attempting
-    let model_file = PathBuf::from(&home).join(".localrouter-dev/routellm/model/model.safetensors");
-    let patched_file =
-        PathBuf::from(&home).join(".localrouter-dev/routellm/model/model.patched.safetensors");
+    let model_file = home.join(".localrouter-dev/routellm/model/model.safetensors");
+    let patched_file = home.join(".localrouter-dev/routellm/model/model.patched.safetensors");
 
     if !model_file.exists() && !patched_file.exists() {
         println!("⏩ Skipping test: models not downloaded");
@@ -80,8 +79,9 @@ async fn test_fix_3_download_concurrency_protection() {
     // Bug #3: Concurrent downloads should be prevented
     use localrouter_ai::routellm::downloader;
 
-    let model_path = PathBuf::from("/tmp/test_concurrent_dl_model");
-    let tokenizer_path = PathBuf::from("/tmp/test_concurrent_dl_tokenizer");
+    let temp_dir = std::env::temp_dir();
+    let model_path = temp_dir.join("test_concurrent_dl_model");
+    let tokenizer_path = temp_dir.join("test_concurrent_dl_tokenizer");
 
     // Clean up
     let _ = tokio::fs::remove_dir_all(&model_path).await;
@@ -129,17 +129,16 @@ async fn test_fix_6_initializing_state() {
     // Bug #6: Should show Initializing state during model loading
     use localrouter_ai::routellm::{RouteLLMService, RouteLLMState};
 
-    let home = std::env::var("HOME").unwrap();
+    let home = dirs::home_dir().expect("Could not determine home directory");
     let service = std::sync::Arc::new(RouteLLMService::new(
-        PathBuf::from(&home).join(".localrouter-dev/routellm/model"),
-        PathBuf::from(&home).join(".localrouter-dev/routellm/tokenizer"),
+        home.join(".localrouter-dev/routellm/model"),
+        home.join(".localrouter-dev/routellm/tokenizer"),
         600,
     ));
 
     // Check if models exist
-    let model_file = PathBuf::from(&home).join(".localrouter-dev/routellm/model/model.safetensors");
-    let patched_file =
-        PathBuf::from(&home).join(".localrouter-dev/routellm/model/model.patched.safetensors");
+    let model_file = home.join(".localrouter-dev/routellm/model/model.safetensors");
+    let patched_file = home.join(".localrouter-dev/routellm/model/model.patched.safetensors");
 
     if !model_file.exists() && !patched_file.exists() {
         println!("⏩ Skipping test: models not downloaded");
@@ -186,9 +185,9 @@ fn test_patched_model_detection() {
     // Verify the fix for detecting patched model files
     use localrouter_ai::routellm::downloader::get_download_status;
 
-    let home = std::env::var("HOME").unwrap();
-    let model_path = PathBuf::from(&home).join(".localrouter-dev/routellm/model");
-    let tokenizer_path = PathBuf::from(&home).join(".localrouter-dev/routellm/tokenizer");
+    let home = dirs::home_dir().expect("Could not determine home directory");
+    let model_path = home.join(".localrouter-dev/routellm/model");
+    let tokenizer_path = home.join(".localrouter-dev/routellm/tokenizer");
 
     let status = get_download_status(&model_path, &tokenizer_path);
 

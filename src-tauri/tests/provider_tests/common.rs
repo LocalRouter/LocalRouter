@@ -45,12 +45,12 @@ pub fn standard_completion_request() -> CompletionRequest {
         seed: None,
         repetition_penalty: None,
         extensions: None,
-            logprobs: None,
-            top_logprobs: None,
-            response_format: None,
-            tool_choice: None,
-            tools: None,
-        }
+        logprobs: None,
+        top_logprobs: None,
+        response_format: None,
+        tool_choice: None,
+        tools: None,
+    }
 }
 
 /// Standard streaming test request
@@ -75,12 +75,12 @@ pub fn standard_streaming_request() -> CompletionRequest {
         seed: None,
         repetition_penalty: None,
         extensions: None,
-            logprobs: None,
-            top_logprobs: None,
-            response_format: None,
-            tool_choice: None,
-            tools: None,
-        }
+        logprobs: None,
+        top_logprobs: None,
+        response_format: None,
+        tool_choice: None,
+        tools: None,
+    }
 }
 
 /// Test cases to run for all providers
