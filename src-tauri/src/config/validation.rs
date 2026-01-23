@@ -203,11 +203,6 @@ fn validate_strategies(config: &AppConfig) -> AppResult<()> {
         }
     }
 
-    // Ensure "default" strategy exists
-    if !config.strategies.iter().any(|s| s.id == "default") {
-        return Err(AppError::Config("Default strategy must exist".to_string()));
-    }
-
     Ok(())
 }
 

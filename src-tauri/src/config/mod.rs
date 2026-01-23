@@ -672,8 +672,7 @@ pub struct Client {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_used: Option<DateTime<Utc>>,
 
-    /// Reference to the routing strategy this client uses
-    #[serde(default = "default_strategy_id")]
+    /// Reference to the routing strategy this client uses (required)
     pub strategy_id: String,
 
     /// Model routing configuration (deprecated, use strategy_id instead)
@@ -1385,43 +1384,6 @@ impl ConfigManager {
         config.roots.clone()
     }
 
-    /// Ensure default strategy exists and assign clients without strategy
-    pub async fn ensure_default_strategy(&self) -> AppResult<()> {
-        let mut modified = false;
-
-        self.update(|cfg| {
-            // Ensure default strategy exists
-            if !cfg.strategies.iter().any(|s| s.id == "default") {
-                cfg.strategies.push(Strategy {
-                    id: "default".to_string(),
-                    name: "Default Strategy".to_string(),
-                    parent: None,
-                    allowed_models: AvailableModelsSelection::all(),
-                    auto_config: None,
-                    rate_limits: vec![],
-                });
-                info!("Created default strategy");
-                modified = true;
-            }
-
-            // Assign clients without strategy to default
-            for client in &mut cfg.clients {
-                if client.strategy_id.is_empty() {
-                    client.strategy_id = "default".to_string();
-                    info!("Assigned client '{}' to default strategy", client.name);
-                    modified = true;
-                }
-            }
-        })?;
-
-        // Save to disk if we made changes
-        if modified {
-            self.save().await?;
-        }
-
-        Ok(())
-    }
-
     /// Create a client with an auto-created strategy
     pub fn create_client_with_strategy(&self, name: String) -> AppResult<(Client, Strategy)> {
         let client_id = Uuid::new_v4().to_string();
@@ -1538,11 +1500,7 @@ fn default_true() -> bool {
 }
 
 fn default_log_retention() -> u32 {
-    30
-}
-
-fn default_strategy_id() -> String {
-    "default".to_string()
+    31
 }
 
 /// Deserializer for McpServerAccess that supports backward compatibility
@@ -1625,14 +1583,7 @@ impl Default for AppConfig {
             oauth_clients: Vec::new(),
             mcp_servers: Vec::new(),
             clients: Vec::new(),
-            strategies: vec![Strategy {
-                id: "default".to_string(),
-                name: "Default Strategy".to_string(),
-                parent: None,
-                allowed_models: AvailableModelsSelection::all(),
-                auto_config: None,
-                rate_limits: vec![],
-            }],
+            strategies: Vec::new(),
             pricing_overrides: std::collections::HashMap::new(),
             ui: UiConfig::default(),
             routellm_settings: RouteLLMGlobalSettings::default(),
@@ -1667,7 +1618,7 @@ impl Default for LoggingConfig {
             level: LogLevel::Info,
             enable_access_log: true,
             log_dir: None,
-            retention_days: 30,
+            retention_days: 31,
         }
     }
 }
@@ -2061,7 +2012,7 @@ mod tests {
         let logging = LoggingConfig::default();
         assert_eq!(logging.level, LogLevel::Info);
         assert!(logging.enable_access_log);
-        assert_eq!(logging.retention_days, 30);
+        assert_eq!(logging.retention_days, 31);
     }
 
     #[test]
