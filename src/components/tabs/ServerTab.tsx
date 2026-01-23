@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { open } from '@tauri-apps/plugin-shell'
+import { getVersion } from '@tauri-apps/api/app'
 import Button from '../ui/Button'
 import Select from '../ui/Select'
 import Input from '../ui/Input'
@@ -46,6 +47,8 @@ export default function ServerTab() {
   const [routellmIdleTimeout, setRouteLLMIdleTimeout] = useState(600)
   const [isDownloadingRouteLLM, setIsDownloadingRouteLLM] = useState(false)
   const [downloadProgress, setDownloadProgress] = useState(0)
+  const [appVersion, setAppVersion] = useState<string>('')
+  const [licensesExpanded, setLicensesExpanded] = useState(false)
 
   // Auto-dismiss feedback after 5 seconds
   useEffect(() => {
@@ -60,6 +63,7 @@ export default function ServerTab() {
     loadNetworkInterfaces()
     loadTrayGraphSettings()
     loadRouteLLMStatus()
+    loadAppVersion()
 
     // Listen for download progress events
     const unlistenProgress = listen('routellm-download-progress', (event: any) => {
@@ -212,6 +216,15 @@ export default function ServerTab() {
       setRouteLLMStatus(status)
     } catch (error) {
       console.error('Failed to load RouteLLM status:', error)
+    }
+  }
+
+  const loadAppVersion = async () => {
+    try {
+      const version = await getVersion()
+      setAppVersion(version)
+    } catch (error) {
+      console.error('Failed to load app version:', error)
     }
   }
 

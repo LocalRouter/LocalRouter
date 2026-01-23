@@ -857,73 +857,37 @@ mcp_servers:
 
 ## 12. Known Bugs & Issues
 
-### 12.1 BUG: Elicitation Server ID Wrong
+### 12.1 ~~BUG: Elicitation Server ID Wrong~~ (FIXED)
 
-**File**: `src/mcp/gateway/gateway.rs:459`
+**File**: `src/mcp/gateway/gateway.rs`
 
-**Issue**: In `handle_elicitation_request()`, the code uses `session_read.client_id.clone()` as the `server_id`:
+**Issue**: In `handle_elicitation_request()`, the code incorrectly used `session_read.client_id.clone()` as the `server_id`.
 
-```rust
-let session_read = session.read().await;
-let server_id = session_read.client_id.clone();  // ← BUG: Should be the backend server ID
-```
+**Status**: FIXED - Now extracts `server_id` from request params, falling back to `"_gateway"` to indicate the request came through the unified gateway. Added documentation explaining the architectural considerations.
 
-**Impact**: Elicitation notifications show the client ID instead of the backend MCP server that requested the input.
+### 12.2 ~~BUG: Streaming Session Notification Forwarding Not Implemented~~ (FIXED)
 
-**Fix**: The server_id should be passed through the request chain, or parsed from the request context.
+**File**: `src/mcp/gateway/streaming.rs`
 
-### 12.2 BUG: Streaming Session Notification Forwarding Not Implemented
+**Issue**: The `start_backend_notification_forwarding()` method was a placeholder.
 
-**File**: `src/mcp/gateway/streaming.rs:220-232`
+**Status**: FIXED - Now registers notification handlers with the `McpServerManager` to forward notifications to the streaming session's event channel.
 
-**Issue**: The `start_backend_notification_forwarding()` method is a placeholder:
+**Remaining Limitation**: Handlers cannot be removed when sessions close, which could lead to memory accumulation over time. Consider adding handler removal API to `McpServerManager`.
 
-```rust
-fn start_backend_notification_forwarding(&self, server_id: String) {
-    // Notification forwarding will be set up in Phase 5 when we have access
-    // to the notification broadcast channel
-    // For now, this placeholder will be integrated with GatewaySession
-}
-```
-
-**Impact**: Streaming sessions via `/gateway/stream` endpoints do not receive backend server notifications.
-
-**Fix**: Implement notification forwarding by subscribing to the broadcast channel and forwarding to the session's event_tx.
-
-### 12.3 BUG: Streaming Broadcast Request ID Mismatch
+### 12.3 RESOLVED: Streaming Broadcast Request ID (Not a Bug)
 
 **File**: `src/mcp/gateway/streaming.rs:289-290`
 
-**Issue**: For broadcast requests, the code modifies the request ID:
+**Analysis**: The modified request ID is only used for the outgoing POST request to backend servers. Since `server_manager.send_request()` is synchronous (awaits response), the response is correlated directly without needing ID matching. The `StreamingEvent::Response` correctly uses the original `request_id`. Not a bug.
 
-```rust
-req_clone.id = Some(json!(format!("{}_{}", request_id, server_id)));
-```
+### 12.4 ~~ISSUE: Missing Initialize/Ping in Streaming Routing~~ (FIXED)
 
-But responses are tracked by the original `request_id`, causing potential correlation issues.
+**File**: `src/mcp/gateway/streaming.rs`
 
-**Impact**: Response correlation may fail for broadcast requests in streaming sessions.
+**Issue**: The `parse_routing()` method only handled list methods for broadcast.
 
-**Fix**: Either use consistent IDs or implement proper ID mapping.
-
-### 12.4 ISSUE: Missing Initialize/Ping in Streaming Routing
-
-**File**: `src/mcp/gateway/streaming.rs:319-345`
-
-**Issue**: The `parse_routing()` method only handles list methods for broadcast:
-
-```rust
-if matches!(method, "tools/list" | "resources/list" | "prompts/list") {
-    return Ok(Routing::mode: RoutingMode::Broadcast, ...);
-}
-// Else: requires namespace
-```
-
-But `initialize` and `ping` are also broadcast methods but would fail here.
-
-**Impact**: Streaming sessions may not properly handle `initialize` or `ping` methods.
-
-**Fix**: Add `initialize`, `ping`, and `logging/setLevel` to the broadcast check.
+**Status**: FIXED - Added `initialize`, `ping`, and `logging/setLevel` to the broadcast method check.
 
 ### 12.5 ISSUE: SSE Transport Validation Conflates Connect with Initialize
 
@@ -936,6 +900,16 @@ But `initialize` and `ping` are also broadcast methods but would fail here.
 **Impact**: Backend servers may miss client capability negotiation.
 
 **Recommendation**: Consider separating transport connection validation from MCP initialization.
+
+### 12.6 LIMITATION: Notification Handler Cleanup
+
+**File**: `src/mcp/manager.rs`
+
+**Issue**: The `on_notification()` method allows registering handlers but there's no way to remove them. When streaming sessions close, their notification handlers remain registered.
+
+**Impact**: Memory accumulation over time with many short-lived sessions.
+
+**Recommendation**: Add `remove_notification_handler()` method or use weak references.
 
 ---
 
