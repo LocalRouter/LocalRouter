@@ -446,6 +446,78 @@ impl ModelProvider for TogetherAIProvider {
             },
         })
     }
+
+    async fn generate_image(
+        &self,
+        request: super::ImageGenerationRequest,
+    ) -> AppResult<super::ImageGenerationResponse> {
+        // Together AI uses OpenAI-compatible image generation API
+        // Supported models include FLUX.1 schnell, FLUX.1 pro, SDXL
+        let mut body = serde_json::json!({
+            "model": request.model,
+            "prompt": request.prompt,
+            "n": request.n.unwrap_or(1),
+        });
+
+        // Together AI specific parameters
+        if let Some(size) = &request.size {
+            // Parse size like "1024x1024" into width/height
+            if let Some((w, h)) = size.split_once('x') {
+                if let (Ok(width), Ok(height)) = (w.parse::<u32>(), h.parse::<u32>()) {
+                    body["width"] = serde_json::json!(width);
+                    body["height"] = serde_json::json!(height);
+                }
+            }
+        }
+
+        if let Some(response_format) = &request.response_format {
+            body["response_format"] = serde_json::json!(response_format);
+        }
+
+        let response = self
+            .client
+            .post(format!("{}/images/generations", TOGETHER_API_BASE))
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| AppError::Provider(format!("Request failed: {}", e)))?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let error_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
+            return Err(AppError::Provider(format!(
+                "API error ({}): {}",
+                status, error_text
+            )));
+        }
+
+        let api_response: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| AppError::Provider(format!("Failed to parse response: {}", e)))?;
+
+        let created = api_response["created"]
+            .as_i64()
+            .unwrap_or_else(|| chrono::Utc::now().timestamp());
+
+        let data: Vec<super::GeneratedImage> = api_response["data"]
+            .as_array()
+            .unwrap_or(&vec![])
+            .iter()
+            .map(|item| super::GeneratedImage {
+                url: item["url"].as_str().map(|s| s.to_string()),
+                b64_json: item["b64_json"].as_str().map(|s| s.to_string()),
+                revised_prompt: item["revised_prompt"].as_str().map(|s| s.to_string()),
+            })
+            .collect();
+
+        Ok(super::ImageGenerationResponse { created, data })
+    }
 }
 
 #[cfg(test)]

@@ -761,6 +761,122 @@ impl ModelProvider for GeminiProvider {
             },
         })
     }
+
+    async fn generate_image(
+        &self,
+        request: super::ImageGenerationRequest,
+    ) -> AppResult<super::ImageGenerationResponse> {
+        // Gemini uses Imagen models for image generation
+        // API endpoint: models/{model}:predict
+        let model = if request.model.starts_with("models/") {
+            request.model.clone()
+        } else {
+            format!("models/{}", request.model)
+        };
+
+        let url = format!(
+            "{}/{}:predict?key={}",
+            self.base_url, model, self.api_key
+        );
+
+        // Imagen request format
+        let instances = vec![serde_json::json!({
+            "prompt": request.prompt
+        })];
+
+        // Build parameters
+        let mut parameters = serde_json::json!({
+            "sampleCount": request.n.unwrap_or(1)
+        });
+
+        if let Some(size) = &request.size {
+            // Parse size to get aspect ratio
+            if let Some((w, h)) = size.split_once('x') {
+                if let (Ok(width), Ok(height)) = (w.parse::<u32>(), h.parse::<u32>()) {
+                    // Imagen uses aspectRatio instead of exact dimensions
+                    let ratio = if width > height {
+                        "16:9"
+                    } else if height > width {
+                        "9:16"
+                    } else {
+                        "1:1"
+                    };
+                    parameters["aspectRatio"] = serde_json::json!(ratio);
+                }
+            }
+        }
+
+        // Response format
+        if request.response_format.as_deref() == Some("b64_json") {
+            parameters["outputOptions"] = serde_json::json!({
+                "mimeType": "image/png"
+            });
+        }
+
+        let gemini_request = serde_json::json!({
+            "instances": instances,
+            "parameters": parameters
+        });
+
+        debug!("Gemini image generation request to {}: {:?}", url, gemini_request);
+
+        let response = self
+            .client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .json(&gemini_request)
+            .send()
+            .await
+            .map_err(|e| AppError::Provider(format!("Request failed: {}", e)))?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let error_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
+            error!("Gemini image generation failed: {} - {}", status, error_text);
+            return Err(AppError::Provider(format!(
+                "API error ({}): {}",
+                status, error_text
+            )));
+        }
+
+        let api_response: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| AppError::Provider(format!("Failed to parse response: {}", e)))?;
+
+        debug!("Gemini image response: {:?}", api_response);
+
+        // Parse Imagen response format
+        let empty_vec = vec![];
+        let predictions = api_response["predictions"]
+            .as_array()
+            .unwrap_or(&empty_vec);
+
+        let data: Vec<super::GeneratedImage> = predictions
+            .iter()
+            .map(|pred| {
+                // Imagen returns base64 encoded images in "bytesBase64Encoded" field
+                let b64 = pred["bytesBase64Encoded"]
+                    .as_str()
+                    .or_else(|| pred["image"]["bytesBase64Encoded"].as_str())
+                    .map(|s| s.to_string());
+
+                super::GeneratedImage {
+                    url: None,
+                    b64_json: b64,
+                    revised_prompt: None,
+                }
+            })
+            .collect();
+
+        Ok(super::ImageGenerationResponse {
+            created: chrono::Utc::now().timestamp(),
+            data,
+        })
+    }
 }
 
 // Gemini API types
