@@ -4,6 +4,26 @@ LocalRouter AI is a cross-platform desktop application (Rust + Tauri) providing 
 
 **Tech Stack**: Rust (backend), Tauri 2.x (desktop), Axum (web server), React (frontend)
 
+## Tauri Conventions (IMPORTANT)
+
+**Parameter naming between frontend and backend:**
+- Rust backend uses **snake_case** for parameter names (e.g., `client_id: String`)
+- React frontend must use **camelCase** when calling `invoke()` (e.g., `{ clientId: "..." }`)
+- Tauri automatically converts camelCase → snake_case via serde
+
+**Example:**
+```rust
+// Rust backend
+#[tauri::command]
+pub async fn delete_client(client_id: String) -> Result<(), String>
+```
+```typescript
+// React frontend - use camelCase!
+await invoke("delete_client", { clientId: client.client_id })
+```
+
+**Also note:** Native browser dialogs (`window.confirm()`, `window.alert()`) do not work in Tauri's WebView. Use Radix UI's `AlertDialog` component instead.
+
 ## Privacy & Network Policy (CRITICAL)
 
 **LocalRouter AI is a privacy-focused, local-first application.**
