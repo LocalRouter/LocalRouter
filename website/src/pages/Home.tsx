@@ -1,179 +1,384 @@
 import { Link } from 'react-router-dom'
-import ArchitectureDiagram from '../components/ArchitectureDiagram'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent } from '@/components/ui/card'
+import { Badge } from '@/components/ui/badge'
+import {
+  ArrowRight,
+  Shield,
+  Zap,
+  DollarSign,
+  Eye,
+  Lock,
+  Server,
+  Layers,
+  GitBranch,
+  Check,
+} from 'lucide-react'
+
+const providers = [
+  { name: 'Ollama', type: 'local' },
+  { name: 'LM Studio', type: 'local' },
+  { name: 'OpenAI', type: 'cloud' },
+  { name: 'Anthropic', type: 'cloud' },
+  { name: 'Google Gemini', type: 'cloud' },
+  { name: 'Mistral', type: 'cloud' },
+  { name: 'OpenRouter', type: 'aggregator' },
+  { name: 'Together AI', type: 'aggregator' },
+  { name: 'Groq', type: 'cloud' },
+  { name: 'Perplexity', type: 'cloud' },
+]
+
+const features = [
+  {
+    icon: Zap,
+    title: 'OpenAI-Compatible API',
+    description: 'Drop-in replacement. Change one URL, access all providers. Works with any tool expecting OpenAI API.',
+  },
+  {
+    icon: DollarSign,
+    title: 'Cost-Aware Routing',
+    description: 'Route requests to cheapest viable model. Set cost limits per API key. Track spending in real-time.',
+  },
+  {
+    icon: Lock,
+    title: 'Keep Data Local',
+    description: 'Sensitive work stays on Ollama. Simple tasks go to cloud. You control the routing policy.',
+  },
+  {
+    icon: Eye,
+    title: 'Unified Monitoring',
+    description: 'One dashboard for all providers. Track requests, tokens, latency, and costs across everything.',
+  },
+  {
+    icon: Shield,
+    title: 'Per-Client Access Control',
+    description: 'Create API keys with different routing rules. Limit which providers each app can access.',
+  },
+  {
+    icon: Server,
+    title: 'MCP Gateway',
+    description: 'Unified access to MCP servers. STDIO, SSE, WebSocket transports. OAuth and custom auth support.',
+  },
+]
+
+const useCases = [
+  {
+    title: 'For Developers',
+    items: [
+      'Write code once, swap providers without changes',
+      'Experiment with new models instantly',
+      'Local development with Ollama, production with cloud',
+    ],
+  },
+  {
+    title: 'For Teams',
+    items: [
+      'Centralized AI spending visibility',
+      'Per-project API keys with cost limits',
+      'Audit trail for every request',
+    ],
+  },
+  {
+    title: 'For Privacy',
+    items: [
+      'Sensitive code never leaves your machine',
+      'Route by data sensitivity automatically',
+      'No telemetry, no tracking, fully local',
+    ],
+  },
+]
 
 export default function Home() {
   return (
-    <div className="bg-white">
-      {/* Hero Section */}
-      <div className="relative overflow-hidden">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-24">
-          <div className="text-center">
-            <h1 className="text-5xl md:text-6xl font-bold text-gray-900 mb-6">
-              Desktop vault for your
-              <br/>
-              <span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-500 to-purple-600">
-                LLMs & MCPs
-              </span>
+    <div className="flex flex-col">
+      {/* Hero */}
+      <section className="relative overflow-hidden border-b bg-gradient-to-b from-muted/50 to-background">
+        <div className="mx-auto max-w-7xl px-4 py-24 sm:px-6 sm:py-32 lg:px-8">
+          <div className="mx-auto max-w-3xl text-center">
+            <Badge variant="secondary" className="mb-4">
+              Open Source Desktop App
+            </Badge>
+            <h1 className="text-4xl font-bold tracking-tight sm:text-5xl lg:text-6xl">
+              One Local API.
+              <br />
+              <span className="text-primary">All AI Providers.</span>
             </h1>
-            <p className="text-xl text-gray-600 max-w-3xl mx-auto mb-10">
-              Our desktop app provides a local OpenAI-compatible API gateway and a unified MCP gateway that guards your api keys and services behind an intelligent router and cost-aware rate limiter.
+            <p className="mt-6 text-lg text-muted-foreground sm:text-xl">
+              LocalRouter is a desktop gateway that unifies OpenAI, Anthropic, Ollama, and 10+ other providers behind a single OpenAI-compatible API. Route by cost, keep data local, monitor everything.
             </p>
-            <div className="flex justify-center space-x-4">
-              <Link
-                to="/download"
-                className="bg-gradient-to-r from-blue-500 to-purple-600 text-white px-8 py-4 rounded-lg text-lg font-semibold hover:from-blue-600 hover:to-purple-700 transition shadow-lg"
-              >
-                Download Now
-              </Link>
-              <a
-                href="https://github.com/LocalRouter/LocalRouter"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="bg-gray-100 text-gray-900 px-8 py-4 rounded-lg text-lg font-semibold hover:bg-gray-200 transition"
-              >
-                View on GitHub
-              </a>
+            <div className="mt-10 flex flex-col items-center justify-center gap-4 sm:flex-row">
+              <Button asChild size="xl">
+                <Link to="/download">
+                  Download for Free
+                  <ArrowRight className="ml-2 h-4 w-4" />
+                </Link>
+              </Button>
+              <Button asChild variant="outline" size="xl">
+                <a
+                  href="https://github.com/LocalRouter/LocalRouter"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  View on GitHub
+                </a>
+              </Button>
             </div>
           </div>
 
-          {/* Architecture Diagram */}
-          <div className="mt-16 max-w-6xl mx-auto">
-            <div className="bg-white rounded-xl shadow-lg p-8">
-              <ArchitectureDiagram />
+          {/* Architecture Visual */}
+          <div className="mx-auto mt-16 max-w-4xl">
+            <div className="rounded-xl border bg-card p-6 shadow-sm">
+              <div className="flex flex-col items-center gap-4 md:flex-row md:justify-between">
+                {/* Apps */}
+                <div className="flex flex-col gap-2 text-sm">
+                  <div className="font-medium text-muted-foreground mb-1">Your Apps</div>
+                  {['Cursor', 'Open WebUI', 'Your Code', 'Any Tool'].map((app) => (
+                    <div key={app} className="rounded-md border bg-background px-3 py-1.5 text-center">
+                      {app}
+                    </div>
+                  ))}
+                </div>
+
+                {/* Arrow */}
+                <div className="flex items-center text-muted-foreground">
+                  <div className="hidden md:block h-px w-8 bg-border" />
+                  <ArrowRight className="h-5 w-5 mx-2" />
+                  <div className="hidden md:block h-px w-8 bg-border" />
+                </div>
+
+                {/* LocalRouter */}
+                <div className="rounded-xl bg-primary px-6 py-8 text-primary-foreground text-center">
+                  <div className="font-bold text-lg">LocalRouter</div>
+                  <div className="text-sm opacity-90 mt-1">localhost:3625</div>
+                  <div className="mt-3 flex flex-wrap justify-center gap-1">
+                    <Badge variant="secondary" className="text-xs">Route</Badge>
+                    <Badge variant="secondary" className="text-xs">Monitor</Badge>
+                    <Badge variant="secondary" className="text-xs">Limit</Badge>
+                  </div>
+                </div>
+
+                {/* Arrow */}
+                <div className="flex items-center text-muted-foreground">
+                  <div className="hidden md:block h-px w-8 bg-border" />
+                  <ArrowRight className="h-5 w-5 mx-2" />
+                  <div className="hidden md:block h-px w-8 bg-border" />
+                </div>
+
+                {/* Providers */}
+                <div className="flex flex-col gap-2 text-sm">
+                  <div className="font-medium text-muted-foreground mb-1">Providers</div>
+                  {['Ollama (Local)', 'OpenAI', 'Anthropic', '10+ more...'].map((provider) => (
+                    <div key={provider} className="rounded-md border bg-background px-3 py-1.5 text-center">
+                      {provider}
+                    </div>
+                  ))}
+                </div>
+              </div>
             </div>
           </div>
         </div>
+      </section>
 
-        {/* Background decoration */}
-        <div className="absolute inset-0 -z-10 overflow-hidden">
-          <div className="absolute -top-40 -right-40 w-80 h-80 bg-purple-200 rounded-full mix-blend-multiply filter blur-3xl opacity-30 animate-blob"></div>
-          <div className="absolute -bottom-40 -left-40 w-80 h-80 bg-blue-200 rounded-full mix-blend-multiply filter blur-3xl opacity-30 animate-blob animation-delay-2000"></div>
-        </div>
-      </div>
-
-      {/* Features Section */}
-      <div className="py-24 bg-gray-50">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="text-center mb-16">
-            <h2 className="text-4xl font-bold text-gray-900 mb-4">
-              Everything You Need
-            </h2>
-            <p className="text-xl text-gray-600">
-              Powerful features for seamless AI model management
+      {/* Problem Statement */}
+      <section className="border-b py-16 sm:py-24">
+        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+          <div className="mx-auto max-w-3xl text-center">
+            <h2 className="text-2xl font-bold sm:text-3xl">The Problem</h2>
+            <p className="mt-4 text-muted-foreground">
+              AI APIs are fragmented. You&apos;re locked into one provider, costs are invisible, and every tool needs separate configuration.
             </p>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
-            {/* Feature 1 */}
-            <div className="bg-white p-8 rounded-xl shadow-sm hover:shadow-md transition">
-              <div className="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center mb-4">
-                <svg className="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-                </svg>
-              </div>
-              <h3 className="text-xl font-semibold text-gray-900 mb-2">
-                OpenAI-Compatible API
-              </h3>
-              <p className="text-gray-600">
-                Drop-in replacement for OpenAI API. Use your existing code without changes.
-              </p>
-            </div>
+          <div className="mt-12 grid gap-6 md:grid-cols-3">
+            <Card>
+              <CardContent className="pt-6">
+                <Layers className="h-8 w-8 text-muted-foreground" />
+                <h3 className="mt-4 font-semibold">Provider Lock-in</h3>
+                <p className="mt-2 text-sm text-muted-foreground">
+                  Your apps are tied to one provider. Switching means rewriting integrations and changing configs everywhere.
+                </p>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="pt-6">
+                <DollarSign className="h-8 w-8 text-muted-foreground" />
+                <h3 className="mt-4 font-semibold">Hidden Costs</h3>
+                <p className="mt-2 text-sm text-muted-foreground">
+                  No unified view of spending. Different dashboards for each provider. Surprise bills at month end.
+                </p>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="pt-6">
+                <GitBranch className="h-8 w-8 text-muted-foreground" />
+                <h3 className="mt-4 font-semibold">No Routing Control</h3>
+                <p className="mt-2 text-sm text-muted-foreground">
+                  Can&apos;t route by cost or privacy. Sensitive work goes to cloud. Simple tasks use expensive models.
+                </p>
+              </CardContent>
+            </Card>
+          </div>
+        </div>
+      </section>
 
-            {/* Feature 2 */}
-            <div className="bg-white p-8 rounded-xl shadow-sm hover:shadow-md transition">
-              <div className="w-12 h-12 bg-purple-100 rounded-lg flex items-center justify-center mb-4">
-                <svg className="w-6 h-6 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
-                </svg>
-              </div>
-              <h3 className="text-xl font-semibold text-gray-900 mb-2">
-                Multi-Provider Support
-              </h3>
-              <p className="text-gray-600">
-                Connect to Ollama, OpenAI, Anthropic, Google Gemini, OpenRouter, and more.
-              </p>
-            </div>
+      {/* Features */}
+      <section className="border-b py-16 sm:py-24">
+        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+          <div className="mx-auto max-w-3xl text-center">
+            <h2 className="text-2xl font-bold sm:text-3xl">How LocalRouter Solves This</h2>
+            <p className="mt-4 text-muted-foreground">
+              A single local gateway that gives you control over routing, costs, and privacy.
+            </p>
+          </div>
 
-            {/* Feature 3 */}
-            <div className="bg-white p-8 rounded-xl shadow-sm hover:shadow-md transition">
-              <div className="w-12 h-12 bg-green-100 rounded-lg flex items-center justify-center mb-4">
-                <svg className="w-6 h-6 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
-                </svg>
-              </div>
-              <h3 className="text-xl font-semibold text-gray-900 mb-2">
-                Smart Routing
-              </h3>
-              <p className="text-gray-600">
-                Automatic model selection based on cost, performance, and availability.
-              </p>
-            </div>
+          <div className="mt-12 grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+            {features.map((feature) => (
+              <Card key={feature.title}>
+                <CardContent className="pt-6">
+                  <feature.icon className="h-8 w-8 text-primary" />
+                  <h3 className="mt-4 font-semibold">{feature.title}</h3>
+                  <p className="mt-2 text-sm text-muted-foreground">{feature.description}</p>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        </div>
+      </section>
 
-            {/* Feature 4 */}
-            <div className="bg-white p-8 rounded-xl shadow-sm hover:shadow-md transition">
-              <div className="w-12 h-12 bg-yellow-100 rounded-lg flex items-center justify-center mb-4">
-                <svg className="w-6 h-6 text-yellow-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" />
-                </svg>
-              </div>
-              <h3 className="text-xl font-semibold text-gray-900 mb-2">
-                API Key Management
-              </h3>
-              <p className="text-gray-600">
-                Create and manage multiple API keys with different routing configurations.
-              </p>
-            </div>
+      {/* Use Cases */}
+      <section className="border-b py-16 sm:py-24 bg-muted/30">
+        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+          <div className="mx-auto max-w-3xl text-center">
+            <h2 className="text-2xl font-bold sm:text-3xl">Who It&apos;s For</h2>
+          </div>
 
-            {/* Feature 5 */}
-            <div className="bg-white p-8 rounded-xl shadow-sm hover:shadow-md transition">
-              <div className="w-12 h-12 bg-red-100 rounded-lg flex items-center justify-center mb-4">
-                <svg className="w-6 h-6 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
+          <div className="mt-12 grid gap-8 md:grid-cols-3">
+            {useCases.map((useCase) => (
+              <div key={useCase.title} className="rounded-lg border bg-card p-6">
+                <h3 className="font-semibold text-lg">{useCase.title}</h3>
+                <ul className="mt-4 space-y-3">
+                  {useCase.items.map((item) => (
+                    <li key={item} className="flex gap-3 text-sm text-muted-foreground">
+                      <Check className="h-5 w-5 shrink-0 text-primary" />
+                      {item}
+                    </li>
+                  ))}
+                </ul>
               </div>
-              <h3 className="text-xl font-semibold text-gray-900 mb-2">
-                Rate Limiting
-              </h3>
-              <p className="text-gray-600">
-                Flexible rate limits on requests, tokens, and costs to control usage.
-              </p>
-            </div>
+            ))}
+          </div>
+        </div>
+      </section>
 
-            {/* Feature 6 */}
-            <div className="bg-white p-8 rounded-xl shadow-sm hover:shadow-md transition">
-              <div className="w-12 h-12 bg-indigo-100 rounded-lg flex items-center justify-center mb-4">
-                <svg className="w-6 h-6 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
-                </svg>
-              </div>
-              <h3 className="text-xl font-semibold text-gray-900 mb-2">
-                Real-Time Monitoring
-              </h3>
-              <p className="text-gray-600">
-                Comprehensive metrics and historical analytics with beautiful visualizations.
-              </p>
+      {/* Providers */}
+      <section className="border-b py-16 sm:py-24">
+        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+          <div className="mx-auto max-w-3xl text-center">
+            <h2 className="text-2xl font-bold sm:text-3xl">Supported Providers</h2>
+            <p className="mt-4 text-muted-foreground">
+              Mix local models with cloud providers. Use them all through one API.
+            </p>
+          </div>
+
+          <div className="mt-12 flex flex-wrap justify-center gap-3">
+            {providers.map((provider) => (
+              <Badge
+                key={provider.name}
+                variant={provider.type === 'local' ? 'default' : 'secondary'}
+                className="text-sm py-1.5 px-3"
+              >
+                {provider.name}
+                {provider.type === 'local' && (
+                  <Lock className="ml-1.5 h-3 w-3" />
+                )}
+              </Badge>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* Code Example */}
+      <section className="border-b py-16 sm:py-24 bg-muted/30">
+        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+          <div className="mx-auto max-w-3xl text-center">
+            <h2 className="text-2xl font-bold sm:text-3xl">Works With Your Existing Code</h2>
+            <p className="mt-4 text-muted-foreground">
+              Just change the base URL. Your OpenAI SDK code works unchanged.
+            </p>
+          </div>
+
+          <div className="mt-12 mx-auto max-w-2xl">
+            <div className="rounded-lg border bg-zinc-950 p-4 text-sm">
+              <pre className="overflow-x-auto text-zinc-100 font-mono">
+                <code>{`from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://localhost:3625/v1",
+    api_key="lr-your-key"
+)
+
+# Routes to cheapest model matching your rules
+response = client.chat.completions.create(
+    model="gpt-4",  # or "claude-3", "llama3", etc.
+    messages=[{"role": "user", "content": "Hello!"}]
+)`}</code>
+              </pre>
             </div>
           </div>
         </div>
-      </div>
+      </section>
 
-      {/* CTA Section */}
-      <div className="py-24">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
-          <h2 className="text-4xl font-bold text-gray-900 mb-6">
-            Ready to Get Started?
-          </h2>
-          <p className="text-xl text-gray-600 mb-10 max-w-2xl mx-auto">
-            Download LocalRouter for your platform and start routing AI requests intelligently in minutes.
-          </p>
-          <Link
-            to="/download"
-            className="inline-block bg-gradient-to-r from-blue-500 to-purple-600 text-white px-8 py-4 rounded-lg text-lg font-semibold hover:from-blue-600 hover:to-purple-700 transition shadow-lg"
-          >
-            Download Now
-          </Link>
+      {/* Privacy */}
+      <section className="border-b py-16 sm:py-24">
+        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+          <div className="mx-auto max-w-3xl text-center">
+            <Shield className="mx-auto h-12 w-12 text-primary" />
+            <h2 className="mt-4 text-2xl font-bold sm:text-3xl">Privacy First</h2>
+            <p className="mt-4 text-muted-foreground">
+              LocalRouter runs entirely on your machine. No telemetry, no analytics, no cloud sync.
+              Your API keys and request data never leave your computer.
+            </p>
+            <div className="mt-8 flex flex-wrap justify-center gap-4 text-sm text-muted-foreground">
+              <div className="flex items-center gap-2">
+                <Check className="h-4 w-4 text-primary" />
+                No telemetry
+              </div>
+              <div className="flex items-center gap-2">
+                <Check className="h-4 w-4 text-primary" />
+                No cloud sync
+              </div>
+              <div className="flex items-center gap-2">
+                <Check className="h-4 w-4 text-primary" />
+                Open source
+              </div>
+              <div className="flex items-center gap-2">
+                <Check className="h-4 w-4 text-primary" />
+                Runs offline
+              </div>
+            </div>
+          </div>
         </div>
-      </div>
+      </section>
+
+      {/* CTA */}
+      <section className="py-16 sm:py-24">
+        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+          <div className="mx-auto max-w-3xl text-center">
+            <h2 className="text-2xl font-bold sm:text-3xl">Get Started in Minutes</h2>
+            <p className="mt-4 text-muted-foreground">
+              Download LocalRouter, add your provider keys, and start routing.
+            </p>
+            <div className="mt-8">
+              <Button asChild size="xl">
+                <Link to="/download">
+                  Download for Free
+                  <ArrowRight className="ml-2 h-4 w-4" />
+                </Link>
+              </Button>
+            </div>
+          </div>
+        </div>
+      </section>
     </div>
   )
 }
