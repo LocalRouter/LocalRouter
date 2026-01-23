@@ -7,7 +7,7 @@
 
 use localrouter_ai::providers::{
     ChatMessage, ChatMessageContent, CompletionRequest, CompletionResponse, TokenUsage,
-};;
+};
 use serde_json::json;
 use wiremock::{
     matchers::{header, method, path, path_regex},

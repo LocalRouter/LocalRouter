@@ -13,13 +13,11 @@ mod config_tests {
         let config = RouteLLMConfig {
             enabled: true,
             threshold: 0.5,
-            strong_models: vec![("openai".to_string(), "gpt-4".to_string())],
             weak_models: vec![("openai".to_string(), "gpt-3.5-turbo".to_string())],
         };
 
         assert!(config.enabled);
         assert_eq!(config.threshold, 0.5);
-        assert_eq!(config.strong_models.len(), 1);
         assert_eq!(config.weak_models.len(), 1);
     }
 
@@ -29,7 +27,6 @@ mod config_tests {
 
         assert!(!config.enabled);
         assert_eq!(config.threshold, 0.3); // Balanced profile
-        assert!(config.strong_models.is_empty());
         assert!(config.weak_models.is_empty());
     }
 
@@ -52,7 +49,6 @@ mod config_tests {
             let config = RouteLLMConfig {
                 enabled: true,
                 threshold,
-                strong_models: vec![],
                 weak_models: vec![],
             };
 
@@ -66,6 +62,7 @@ mod config_tests {
 
     #[test]
     fn test_auto_model_config_with_routellm() {
+        // Strong models come from prioritized_models in AutoModelConfig
         let auto_config = AutoModelConfig {
             enabled: true,
             prioritized_models: vec![("ollama".to_string(), "llama3.2".to_string())],
@@ -73,17 +70,19 @@ mod config_tests {
             routellm_config: Some(RouteLLMConfig {
                 enabled: true,
                 threshold: 0.5,
-                strong_models: vec![("ollama".to_string(), "llama3.2".to_string())],
                 weak_models: vec![("ollama".to_string(), "qwen2.5".to_string())],
             }),
         };
 
         assert!(auto_config.enabled);
         assert!(auto_config.routellm_config.is_some());
+        // Strong models are prioritized_models
+        assert_eq!(auto_config.prioritized_models.len(), 1);
 
         let routellm_config = auto_config.routellm_config.unwrap();
         assert!(routellm_config.enabled);
         assert_eq!(routellm_config.threshold, 0.5);
+        assert_eq!(routellm_config.weak_models.len(), 1);
     }
 }
 
@@ -139,36 +138,38 @@ mod routing_logic_tests {
 
     #[test]
     fn test_model_list_selection() {
-        let config = RouteLLMConfig {
+        // Strong models come from prioritized_models in AutoModelConfig
+        let prioritized_models = vec![
+            ("openai".to_string(), "gpt-4".to_string()),
+            ("anthropic".to_string(), "claude-3-opus".to_string()),
+        ];
+
+        let routellm_config = RouteLLMConfig {
             enabled: true,
             threshold: 0.5,
-            strong_models: vec![
-                ("openai".to_string(), "gpt-4".to_string()),
-                ("anthropic".to_string(), "claude-3-opus".to_string()),
-            ],
             weak_models: vec![
                 ("openai".to_string(), "gpt-3.5-turbo".to_string()),
                 ("ollama".to_string(), "llama3.2".to_string()),
             ],
         };
 
-        // Simulate selection logic
+        // Simulate selection logic (as used in router)
         let win_rate_high = 0.8;
         let win_rate_low = 0.2;
 
-        let selected_strong = if win_rate_high >= config.threshold {
-            &config.strong_models
+        let selected_strong = if win_rate_high >= routellm_config.threshold {
+            &prioritized_models // Strong models come from AutoModelConfig
         } else {
-            &config.weak_models
+            &routellm_config.weak_models
         };
 
-        let selected_weak = if win_rate_low >= config.threshold {
-            &config.strong_models
+        let selected_weak = if win_rate_low >= routellm_config.threshold {
+            &prioritized_models
         } else {
-            &config.weak_models
+            &routellm_config.weak_models
         };
 
-        // High win rate should select strong models
+        // High win rate should select strong models (prioritized_models)
         assert_eq!(selected_strong.len(), 2);
         assert_eq!(selected_strong[0].1, "gpt-4");
 

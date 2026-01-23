@@ -10,8 +10,8 @@
 
 use localrouter_ai::config::ConfigManager;
 use localrouter_ai::config::{
-    AppConfig, AutoModelConfig, AvailableModelsSelection, Client, RateLimitTimeWindow,
-    RateLimitType, Strategy, StrategyRateLimit,
+    AppConfig, AutoModelConfig, AvailableModelsSelection, Client, McpServerAccess,
+    RateLimitTimeWindow, RateLimitType, Strategy, StrategyRateLimit,
 };
 use localrouter_ai::monitoring::metrics::MetricsCollector;
 use localrouter_ai::monitoring::storage::MetricsDatabase;
@@ -44,7 +44,12 @@ fn create_test_config(
         enabled: true,
         strategy_id: strategy_id.to_string(),
         allowed_llm_providers: vec![],
-        allowed_mcp_servers: vec![],
+        mcp_server_access: McpServerAccess::None,
+        roots: None,
+        mcp_sampling_enabled: false,
+        mcp_sampling_requires_approval: true,
+        mcp_sampling_max_tokens: None,
+        mcp_sampling_rate_limit: None,
         mcp_deferred_loading: false,
         created_at: chrono::Utc::now(),
         last_used: None,
@@ -449,7 +454,12 @@ async fn test_disabled_client_returns_unauthorized() {
         enabled: false, // Disabled
         strategy_id: "test-strategy".to_string(),
         allowed_llm_providers: vec![],
-        allowed_mcp_servers: vec![],
+        mcp_server_access: McpServerAccess::None,
+        roots: None,
+        mcp_sampling_enabled: false,
+        mcp_sampling_requires_approval: true,
+        mcp_sampling_max_tokens: None,
+        mcp_sampling_rate_limit: None,
         mcp_deferred_loading: false,
         created_at: chrono::Utc::now(),
         last_used: None,
@@ -483,7 +493,12 @@ async fn test_client_with_missing_strategy() {
         enabled: true,
         strategy_id: "non-existent-strategy".to_string(), // References non-existent strategy
         allowed_llm_providers: vec![],
-        allowed_mcp_servers: vec![],
+        mcp_server_access: McpServerAccess::None,
+        roots: None,
+        mcp_sampling_enabled: false,
+        mcp_sampling_requires_approval: true,
+        mcp_sampling_max_tokens: None,
+        mcp_sampling_rate_limit: None,
         mcp_deferred_loading: false,
         created_at: chrono::Utc::now(),
         last_used: None,

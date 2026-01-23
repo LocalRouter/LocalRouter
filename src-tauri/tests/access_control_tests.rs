@@ -97,36 +97,39 @@ fn test_client_mcp_server_access_control() -> AppResult<()> {
     let (_client_id, _secret, client) = client_manager.create_client("Test Client".to_string())?;
 
     // Initially, client has no MCP server access
-    assert!(client.allowed_mcp_servers.is_empty());
+    assert!(!client.mcp_server_access.has_any_access());
 
     // Grant access to server1
     client_manager.add_mcp_server(&client.id, &server1_id)?;
 
     // Verify client has access to server1
     let updated_client = client_manager.get_client(&client.id).unwrap();
-    assert_eq!(updated_client.allowed_mcp_servers.len(), 1);
-    assert!(updated_client.allowed_mcp_servers.contains(&server1_id));
+    let servers = updated_client.mcp_server_access.specific_servers().unwrap();
+    assert_eq!(servers.len(), 1);
+    assert!(servers.contains(&server1_id));
 
     // Verify client does NOT have access to server2
-    assert!(!updated_client.allowed_mcp_servers.contains(&server2_id));
+    assert!(!servers.contains(&server2_id));
 
     // Grant access to server2
     client_manager.add_mcp_server(&client.id, &server2_id)?;
 
     // Verify client has access to both servers
     let updated_client = client_manager.get_client(&client.id).unwrap();
-    assert_eq!(updated_client.allowed_mcp_servers.len(), 2);
-    assert!(updated_client.allowed_mcp_servers.contains(&server1_id));
-    assert!(updated_client.allowed_mcp_servers.contains(&server2_id));
+    let servers = updated_client.mcp_server_access.specific_servers().unwrap();
+    assert_eq!(servers.len(), 2);
+    assert!(servers.contains(&server1_id));
+    assert!(servers.contains(&server2_id));
 
     // Revoke access to server1
     client_manager.remove_mcp_server(&client.id, &server1_id)?;
 
     // Verify client only has server2 access now
     let updated_client = client_manager.get_client(&client.id).unwrap();
-    assert_eq!(updated_client.allowed_mcp_servers.len(), 1);
-    assert!(!updated_client.allowed_mcp_servers.contains(&server1_id));
-    assert!(updated_client.allowed_mcp_servers.contains(&server2_id));
+    let servers = updated_client.mcp_server_access.specific_servers().unwrap();
+    assert_eq!(servers.len(), 1);
+    assert!(!servers.contains(&server1_id));
+    assert!(servers.contains(&server2_id));
 
     Ok(())
 }
@@ -228,19 +231,16 @@ fn test_access_control_persists_across_updates() -> AppResult<()> {
     let updated_client = manager.get_client(&client.id).unwrap();
     assert_eq!(updated_client.name, "New Name");
     assert_eq!(updated_client.allowed_llm_providers.len(), 2);
-    assert_eq!(updated_client.allowed_mcp_servers.len(), 2);
+    let servers = updated_client.mcp_server_access.specific_servers().unwrap();
+    assert_eq!(servers.len(), 2);
     assert!(updated_client
         .allowed_llm_providers
         .contains(&"openai".to_string()));
     assert!(updated_client
         .allowed_llm_providers
         .contains(&"anthropic".to_string()));
-    assert!(updated_client
-        .allowed_mcp_servers
-        .contains(&"server-1".to_string()));
-    assert!(updated_client
-        .allowed_mcp_servers
-        .contains(&"server-2".to_string()));
+    assert!(servers.contains(&"server-1".to_string()));
+    assert!(servers.contains(&"server-2".to_string()));
 
     // Disable and re-enable client
     manager.update_client(&client.id, None, Some(false))?;
@@ -250,7 +250,8 @@ fn test_access_control_persists_across_updates() -> AppResult<()> {
     let updated_client = manager.get_client(&client.id).unwrap();
     assert!(updated_client.enabled);
     assert_eq!(updated_client.allowed_llm_providers.len(), 2);
-    assert_eq!(updated_client.allowed_mcp_servers.len(), 2);
+    let servers = updated_client.mcp_server_access.specific_servers().unwrap();
+    assert_eq!(servers.len(), 2);
 
     Ok(())
 }
@@ -280,10 +281,9 @@ fn test_duplicate_access_grants_are_idempotent() -> AppResult<()> {
 
     // Verify only one entry exists
     let updated_client = manager.get_client(&client.id).unwrap();
-    assert_eq!(updated_client.allowed_mcp_servers.len(), 1);
-    assert!(updated_client
-        .allowed_mcp_servers
-        .contains(&"server-1".to_string()));
+    let servers = updated_client.mcp_server_access.specific_servers().unwrap();
+    assert_eq!(servers.len(), 1);
+    assert!(servers.contains(&"server-1".to_string()));
 
     Ok(())
 }
@@ -305,7 +305,7 @@ fn test_removing_nonexistent_access_is_safe() -> AppResult<()> {
     // Verify lists are still empty
     let updated_client = manager.get_client(&client.id).unwrap();
     assert!(updated_client.allowed_llm_providers.is_empty());
-    assert!(updated_client.allowed_mcp_servers.is_empty());
+    assert!(!updated_client.mcp_server_access.has_any_access());
 
     Ok(())
 }
@@ -324,7 +324,8 @@ fn test_client_deletion_removes_all_access() -> AppResult<()> {
     // Verify access was granted
     let client_before = manager.get_client(&client.id).unwrap();
     assert_eq!(client_before.allowed_llm_providers.len(), 2);
-    assert_eq!(client_before.allowed_mcp_servers.len(), 2);
+    let servers = client_before.mcp_server_access.specific_servers().unwrap();
+    assert_eq!(servers.len(), 2);
 
     // Delete the client
     manager.delete_client(&client.id)?;

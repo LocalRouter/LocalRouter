@@ -17,7 +17,7 @@ fn test_client_creation() -> AppResult<()> {
     assert_eq!(client.id, client_id);
     assert!(client.enabled);
     assert!(client.allowed_llm_providers.is_empty());
-    assert!(client.allowed_mcp_servers.is_empty());
+    assert!(!client.mcp_server_access.has_any_access());
     assert!(!client.id.is_empty());
     assert!(!secret.is_empty());
 
@@ -223,43 +223,36 @@ fn test_client_mcp_server_access() -> AppResult<()> {
     let (_client_id, _secret, client) = manager.create_client("MCP Access Test".to_string())?;
 
     // Initially no servers allowed
-    assert!(client.allowed_mcp_servers.is_empty());
+    assert!(!client.mcp_server_access.has_any_access());
 
     // Add a server
     manager.add_mcp_server(&client.id, "server-1")?;
 
     // Verify server was added
     let updated_client = manager.get_client(&client.id).unwrap();
-    assert_eq!(updated_client.allowed_mcp_servers.len(), 1);
-    assert!(updated_client
-        .allowed_mcp_servers
-        .contains(&"server-1".to_string()));
+    let servers = updated_client.mcp_server_access.specific_servers().unwrap();
+    assert_eq!(servers.len(), 1);
+    assert!(servers.contains(&"server-1".to_string()));
 
     // Add another server
     manager.add_mcp_server(&client.id, "server-2")?;
 
     // Verify both servers
     let updated_client = manager.get_client(&client.id).unwrap();
-    assert_eq!(updated_client.allowed_mcp_servers.len(), 2);
-    assert!(updated_client
-        .allowed_mcp_servers
-        .contains(&"server-1".to_string()));
-    assert!(updated_client
-        .allowed_mcp_servers
-        .contains(&"server-2".to_string()));
+    let servers = updated_client.mcp_server_access.specific_servers().unwrap();
+    assert_eq!(servers.len(), 2);
+    assert!(servers.contains(&"server-1".to_string()));
+    assert!(servers.contains(&"server-2".to_string()));
 
     // Remove a server
     manager.remove_mcp_server(&client.id, "server-1")?;
 
     // Verify only server-2 remains
     let updated_client = manager.get_client(&client.id).unwrap();
-    assert_eq!(updated_client.allowed_mcp_servers.len(), 1);
-    assert!(updated_client
-        .allowed_mcp_servers
-        .contains(&"server-2".to_string()));
-    assert!(!updated_client
-        .allowed_mcp_servers
-        .contains(&"server-1".to_string()));
+    let servers = updated_client.mcp_server_access.specific_servers().unwrap();
+    assert_eq!(servers.len(), 1);
+    assert!(servers.contains(&"server-2".to_string()));
+    assert!(!servers.contains(&"server-1".to_string()));
 
     Ok(())
 }

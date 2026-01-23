@@ -376,6 +376,7 @@ fn test_granularity_selection() {
         output_tokens: 200,
         cost_usd: 0.05,
         latency_ms: 1000,
+        strategy_id: "default",
     };
 
     collector.record_success(&metrics);

@@ -661,6 +661,9 @@ fn test_fill_gaps_rejects_zero_interval() {
         successful_requests: 10,
         failed_requests: 0,
         latency_samples: vec![100],
+        p50_latency_ms: Some(100.0),
+        p95_latency_ms: Some(100.0),
+        p99_latency_ms: Some(100.0),
     }];
 
     // This should panic!
@@ -684,6 +687,9 @@ fn test_fill_gaps_rejects_negative_interval() {
         successful_requests: 10,
         failed_requests: 0,
         latency_samples: vec![100],
+        p50_latency_ms: Some(100.0),
+        p95_latency_ms: Some(100.0),
+        p99_latency_ms: Some(100.0),
     }];
 
     // This should panic!

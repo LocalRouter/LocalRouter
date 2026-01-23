@@ -4,7 +4,7 @@
 //! to the LocalRouter HTTP server and returns responses.
 
 use chrono::Utc;
-use localrouter_ai::config::{AppConfig, Client};
+use localrouter_ai::config::{AppConfig, Client, McpServerAccess};
 use localrouter_ai::mcp::bridge::StdioBridge;
 use localrouter_ai::mcp::protocol::{JsonRpcRequest, JsonRpcResponse};
 use serde_json::{json, Value};
@@ -18,36 +18,51 @@ fn test_config() -> AppConfig {
             name: "Test Client".to_string(),
             enabled: true,
             allowed_llm_providers: vec![],
-            allowed_mcp_servers: vec!["filesystem".to_string(), "web".to_string()],
+            mcp_server_access: McpServerAccess::Specific(vec!["filesystem".to_string(), "web".to_string()]),
             mcp_deferred_loading: false,
             created_at: Utc::now(),
             last_used: None,
             strategy_id: "default".to_string(),
             routing_config: None,
+            roots: None,
+            mcp_sampling_enabled: false,
+            mcp_sampling_requires_approval: true,
+            mcp_sampling_max_tokens: None,
+            mcp_sampling_rate_limit: None,
         },
         Client {
             id: "disabled_client".to_string(),
             name: "Disabled Client".to_string(),
             enabled: false,
             allowed_llm_providers: vec![],
-            allowed_mcp_servers: vec!["github".to_string()],
+            mcp_server_access: McpServerAccess::Specific(vec!["github".to_string()]),
             mcp_deferred_loading: false,
             created_at: Utc::now(),
             last_used: None,
             strategy_id: "default".to_string(),
             routing_config: None,
+            roots: None,
+            mcp_sampling_enabled: false,
+            mcp_sampling_requires_approval: true,
+            mcp_sampling_max_tokens: None,
+            mcp_sampling_rate_limit: None,
         },
         Client {
             id: "no_mcp_client".to_string(),
             name: "No MCP Client".to_string(),
             enabled: true,
             allowed_llm_providers: vec!["openai".to_string()],
-            allowed_mcp_servers: vec![],
+            mcp_server_access: McpServerAccess::None,
             mcp_deferred_loading: false,
             created_at: Utc::now(),
             last_used: None,
             strategy_id: "default".to_string(),
             routing_config: None,
+            roots: None,
+            mcp_sampling_enabled: false,
+            mcp_sampling_requires_approval: true,
+            mcp_sampling_max_tokens: None,
+            mcp_sampling_rate_limit: None,
         },
     ];
     config
@@ -95,7 +110,7 @@ fn test_client_resolution_explicit() {
 
     assert_eq!(client.id, "test_client");
     assert!(client.enabled);
-    assert!(!client.allowed_mcp_servers.is_empty());
+    assert!(client.mcp_server_access.has_any_access());
 }
 
 /// Test client resolution with disabled client
@@ -126,7 +141,7 @@ fn test_client_resolution_no_mcp() {
         .unwrap();
 
     assert!(client.enabled);
-    assert!(client.allowed_mcp_servers.is_empty());
+    assert!(!client.mcp_server_access.has_any_access());
 }
 
 /// Test auto-detection of first enabled client with MCP servers
@@ -138,7 +153,7 @@ fn test_client_auto_detection() {
     let client = config
         .clients
         .iter()
-        .find(|c| c.enabled && !c.allowed_mcp_servers.is_empty())
+        .find(|c| c.enabled && c.mcp_server_access.has_any_access())
         .unwrap();
 
     assert_eq!(client.id, "test_client");
@@ -174,7 +189,7 @@ fn test_malformed_json() {
     assert!(result.is_err());
 }
 
-/// Test empty allowed_mcp_servers validation
+/// Test empty mcp_server_access validation
 #[test]
 fn test_empty_mcp_servers_validation() {
     let config = test_config();
@@ -186,7 +201,7 @@ fn test_empty_mcp_servers_validation() {
         .find(|c| c.id == "no_mcp_client")
         .unwrap();
 
-    assert!(no_mcp_client.allowed_mcp_servers.is_empty());
+    assert!(!no_mcp_client.mcp_server_access.has_any_access());
 }
 
 /// Test deferred loading flag
@@ -214,7 +229,7 @@ fn test_multiple_clients() {
     let mcp_count = config
         .clients
         .iter()
-        .filter(|c| !c.allowed_mcp_servers.is_empty())
+        .filter(|c| c.mcp_server_access.has_any_access())
         .count();
     assert_eq!(mcp_count, 2);
 }

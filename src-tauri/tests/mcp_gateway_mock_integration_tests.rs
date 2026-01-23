@@ -8,12 +8,12 @@ mod mcp_tests;
 
 use chrono::Utc;
 use localrouter_ai::config::{
-    AppConfig, ConfigManager, McpAuthConfig, McpServerConfig, McpTransportConfig, McpTransportType,
+    AppConfig, ConfigManager, McpServerConfig, McpTransportConfig, McpTransportType,
 };
 use localrouter_ai::mcp::gateway::{GatewayConfig, McpGateway};
 use localrouter_ai::mcp::protocol::{JsonRpcRequest, JsonRpcResponse};
 use localrouter_ai::mcp::McpServerManager;
-use localrouter_ai::monitoring::database::MetricsDatabase;
+use localrouter_ai::monitoring::storage::MetricsDatabase;
 use localrouter_ai::monitoring::metrics::MetricsCollector;
 use localrouter_ai::providers::health::HealthCheckManager;
 use localrouter_ai::providers::registry::ProviderRegistry;
@@ -22,7 +22,7 @@ use mcp_tests::common::request_with_params;
 use serde_json::json;
 use std::sync::Arc;
 use wiremock::{
-    matchers::{method as http_method, path},
+    matchers::method as http_method,
     Match, Mock, MockServer, Request, ResponseTemplate,
 };
 
@@ -337,7 +337,7 @@ async fn test_gateway_initialize_merges_capabilities() {
 
     let allowed_servers = vec!["server1".to_string(), "server2".to_string()];
     let response = gateway
-        .handle_request("test-client", allowed_servers, false, request)
+        .handle_request("test-client", allowed_servers, false, vec![], request)
         .await
         .unwrap();
 
@@ -401,7 +401,7 @@ async fn test_gateway_initialize_handles_partial_failure() {
 
     let allowed_servers = vec!["server1".to_string(), "server2".to_string()];
     let response = gateway
-        .handle_request("test-client", allowed_servers, false, request)
+        .handle_request("test-client", allowed_servers, false, vec![], request)
         .await
         .unwrap();
 
@@ -460,7 +460,7 @@ async fn test_gateway_tools_list_merges_and_namespaces() {
 
     let allowed_servers = vec!["server1".to_string(), "server2".to_string()];
     let response = gateway
-        .handle_request("test-client", allowed_servers, false, request)
+        .handle_request("test-client", allowed_servers, false, vec![], request)
         .await
         .unwrap();
 
@@ -529,7 +529,7 @@ async fn test_gateway_tools_list_with_empty_server() {
 
     let allowed_servers = vec!["server1".to_string(), "server2".to_string()];
     let response = gateway
-        .handle_request("test-client", allowed_servers, false, request)
+        .handle_request("test-client", allowed_servers, false, vec![], request)
         .await
         .unwrap();
 
@@ -585,7 +585,7 @@ async fn test_gateway_resources_list_merges_and_namespaces() {
 
     let allowed_servers = vec!["server1".to_string(), "server2".to_string()];
     let response = gateway
-        .handle_request("test-client", allowed_servers, false, request)
+        .handle_request("test-client", allowed_servers, false, vec![], request)
         .await
         .unwrap();
 
@@ -639,7 +639,7 @@ async fn test_gateway_prompts_list_merges_and_namespaces() {
 
     let allowed_servers = vec!["server1".to_string(), "server2".to_string()];
     let response = gateway
-        .handle_request("test-client", allowed_servers, false, request)
+        .handle_request("test-client", allowed_servers, false, vec![], request)
         .await
         .unwrap();
 
@@ -702,6 +702,7 @@ async fn test_gateway_tools_call_routes_to_correct_server() {
             "test-client-call",
             allowed_servers.clone(),
             false,
+            vec![],
             list_request,
         )
         .await
@@ -724,7 +725,7 @@ async fn test_gateway_tools_call_routes_to_correct_server() {
     );
 
     let response = gateway
-        .handle_request("test-client-call", allowed_servers, false, call_request)
+        .handle_request("test-client-call", allowed_servers, false, vec![], call_request)
         .await
         .unwrap();
 
@@ -758,6 +759,7 @@ async fn test_gateway_tools_call_unknown_tool() {
             "test-client-unknown",
             allowed_servers.clone(),
             false,
+            vec![],
             list_request,
         )
         .await
@@ -773,7 +775,7 @@ async fn test_gateway_tools_call_unknown_tool() {
     );
 
     let result = gateway
-        .handle_request("test-client-unknown", allowed_servers, false, call_request)
+        .handle_request("test-client-unknown", allowed_servers, false, vec![], call_request)
         .await;
 
     // Should fail
@@ -788,7 +790,20 @@ async fn test_gateway_tools_call_unknown_tool() {
 async fn test_gateway_deferred_loading_search_tool() {
     let (gateway, _manager, server1_mock, server2_mock) = setup_gateway_with_two_servers().await;
 
-    // Mock tools/list for initial catalog fetch
+    // Mock initialize responses with tools capability
+    server1_mock.mock_method("initialize", json!({
+        "protocolVersion": "2024-11-05",
+        "capabilities": { "tools": { "listChanged": true } },
+        "serverInfo": { "name": "Server 1", "version": "1.0.0" }
+    })).await;
+
+    server2_mock.mock_method("initialize", json!({
+        "protocolVersion": "2024-11-05",
+        "capabilities": { "tools": { "listChanged": true } },
+        "serverInfo": { "name": "Server 2", "version": "1.0.0" }
+    })).await;
+
+    // Mock tools/list for initial catalog fetch during initialization
     server1_mock.mock_method("tools/list", json!({
         "tools": [
             {"name": "read_file", "description": "Read files", "inputSchema": {"type": "object"}},
@@ -803,14 +818,32 @@ async fn test_gateway_deferred_loading_search_tool() {
         ]
     })).await;
 
-    // Enable deferred loading
     let allowed_servers = vec!["server1".to_string(), "server2".to_string()];
 
-    // Request tools/list with deferred loading enabled
-    let request = JsonRpcRequest::new(Some(json!(1)), "tools/list".to_string(), Some(json!({})));
+    // First, initialize the gateway with client capabilities supporting listChanged
+    let init_request = JsonRpcRequest::new(
+        Some(json!(1)),
+        "initialize".to_string(),
+        Some(json!({
+            "protocolVersion": "2024-11-05",
+            "capabilities": { "tools": { "listChanged": true } },
+            "clientInfo": { "name": "test-client", "version": "1.0.0" }
+        })),
+    );
+
+    let init_response = gateway
+        .handle_request("test-client-deferred", allowed_servers.clone(), true, vec![], init_request)
+        .await
+        .unwrap();
+
+    // Verify initialization succeeded
+    assert!(init_response.result.is_some(), "Initialize should succeed");
+
+    // Now request tools/list - with deferred loading enabled, should only see search tool
+    let request = JsonRpcRequest::new(Some(json!(2)), "tools/list".to_string(), Some(json!({})));
 
     let response = gateway
-        .handle_request("test-client-deferred", allowed_servers, true, request)
+        .handle_request("test-client-deferred", allowed_servers, true, vec![], request)
         .await
         .unwrap();
 
@@ -827,7 +860,20 @@ async fn test_gateway_deferred_loading_search_tool() {
 async fn test_gateway_deferred_loading_activates_tools() {
     let (gateway, _manager, server1_mock, server2_mock) = setup_gateway_with_two_servers().await;
 
-    // Mock tools/list
+    // Mock initialize responses with tools capability
+    server1_mock.mock_method("initialize", json!({
+        "protocolVersion": "2024-11-05",
+        "capabilities": { "tools": { "listChanged": true } },
+        "serverInfo": { "name": "Server 1", "version": "1.0.0" }
+    })).await;
+
+    server2_mock.mock_method("initialize", json!({
+        "protocolVersion": "2024-11-05",
+        "capabilities": { "tools": { "listChanged": true } },
+        "serverInfo": { "name": "Server 2", "version": "1.0.0" }
+    })).await;
+
+    // Mock tools/list for catalog fetch during initialization
     server1_mock.mock_method("tools/list", json!({
         "tools": [
             {"name": "read_file", "description": "Read files from disk", "inputSchema": {"type": "object"}},
@@ -843,6 +889,25 @@ async fn test_gateway_deferred_loading_activates_tools() {
 
     let allowed_servers = vec!["server1".to_string(), "server2".to_string()];
 
+    // First, initialize the gateway with client capabilities supporting listChanged
+    let init_request = JsonRpcRequest::new(
+        Some(json!(1)),
+        "initialize".to_string(),
+        Some(json!({
+            "protocolVersion": "2024-11-05",
+            "capabilities": { "tools": { "listChanged": true } },
+            "clientInfo": { "name": "test-client", "version": "1.0.0" }
+        })),
+    );
+
+    let init_response = gateway
+        .handle_request("test-client-search", allowed_servers.clone(), true, vec![], init_request)
+        .await
+        .unwrap();
+
+    // Verify initialization succeeded
+    assert!(init_response.result.is_some(), "Initialize should succeed");
+
     // Call search tool to activate tools
     let search_request = request_with_params(
         "tools/call",
@@ -857,6 +922,7 @@ async fn test_gateway_deferred_loading_activates_tools() {
             "test-client-search",
             allowed_servers.clone(),
             true,
+            vec![],
             search_request,
         )
         .await
@@ -872,10 +938,10 @@ async fn test_gateway_deferred_loading_activates_tools() {
 
     // Now tools/list should return search tool + activated tools
     let list_request =
-        JsonRpcRequest::new(Some(json!(2)), "tools/list".to_string(), Some(json!({})));
+        JsonRpcRequest::new(Some(json!(3)), "tools/list".to_string(), Some(json!({})));
 
     let list_response = gateway
-        .handle_request("test-client-search", allowed_servers, true, list_request)
+        .handle_request("test-client-search", allowed_servers, true, vec![], list_request)
         .await
         .unwrap();
 
@@ -904,7 +970,7 @@ async fn test_gateway_handles_all_servers_failing() {
 
     let allowed_servers = vec!["server1".to_string(), "server2".to_string()];
     let result = gateway
-        .handle_request("test-client-fail", allowed_servers, false, request)
+        .handle_request("test-client-fail", allowed_servers, false, vec![], request)
         .await;
 
     // Should return error or empty result
@@ -930,7 +996,7 @@ async fn test_gateway_handles_json_rpc_error() {
 
     let allowed_servers = vec!["server1".to_string()];
     let result = gateway
-        .handle_request("test-client-error", allowed_servers, false, request)
+        .handle_request("test-client-error", allowed_servers, false, vec![], request)
         .await;
 
     // Should return error for unknown method (either as Err or Ok with error field)
@@ -985,6 +1051,7 @@ async fn test_resources_read_routes_by_uri() {
             "test-client-res",
             allowed_servers.clone(),
             false,
+            vec![],
             list_request,
         )
         .await
@@ -1008,7 +1075,7 @@ async fn test_resources_read_routes_by_uri() {
     let read_request = request_with_params("resources/read", json!({"uri": "file:///config.json"}));
 
     let response = gateway
-        .handle_request("test-client-res", allowed_servers, false, read_request)
+        .handle_request("test-client-res", allowed_servers, false, vec![], read_request)
         .await
         .unwrap();
 
@@ -1051,6 +1118,7 @@ async fn test_resources_read_by_name() {
             "test-client-res2",
             allowed_servers.clone(),
             false,
+            vec![],
             list_request,
         )
         .await
@@ -1074,7 +1142,7 @@ async fn test_resources_read_by_name() {
     let read_request = request_with_params("resources/read", json!({"name": "server1__logs"}));
 
     let response = gateway
-        .handle_request("test-client-res2", allowed_servers, false, read_request)
+        .handle_request("test-client-res2", allowed_servers, false, vec![], read_request)
         .await
         .unwrap();
 
@@ -1103,6 +1171,7 @@ async fn test_resources_read_not_found() {
             "test-client-res3",
             allowed_servers.clone(),
             false,
+            vec![],
             list_request,
         )
         .await
@@ -1113,7 +1182,7 @@ async fn test_resources_read_not_found() {
         request_with_params("resources/read", json!({"name": "server1__nonexistent"}));
 
     let result = gateway
-        .handle_request("test-client-res3", allowed_servers, false, read_request)
+        .handle_request("test-client-res3", allowed_servers, false, vec![], read_request)
         .await;
 
     // Should return error or error response
@@ -1150,6 +1219,7 @@ async fn test_resources_read_binary_content() {
             "test-client-res4",
             allowed_servers.clone(),
             false,
+            vec![],
             list_request,
         )
         .await
@@ -1167,7 +1237,7 @@ async fn test_resources_read_binary_content() {
     let read_request = request_with_params("resources/read", json!({"uri": "file:///image.png"}));
 
     let response = gateway
-        .handle_request("test-client-res4", allowed_servers, false, read_request)
+        .handle_request("test-client-res4", allowed_servers, false, vec![], read_request)
         .await
         .unwrap();
 
@@ -1217,7 +1287,7 @@ async fn test_resources_list_with_templates() {
 
     let allowed_servers = vec!["server1".to_string(), "server2".to_string()];
     let response = gateway
-        .handle_request("test-client-templates", allowed_servers, false, request)
+        .handle_request("test-client-templates", allowed_servers, false, vec![], request)
         .await
         .unwrap();
 
@@ -1268,6 +1338,7 @@ async fn test_prompts_get_routes_by_namespace() {
             "test-client-prompt",
             allowed_servers.clone(),
             false,
+            vec![],
             list_request,
         )
         .await
@@ -1290,7 +1361,7 @@ async fn test_prompts_get_routes_by_namespace() {
     let get_request = request_with_params("prompts/get", json!({"name": "server1__review"}));
 
     let response = gateway
-        .handle_request("test-client-prompt", allowed_servers, false, get_request)
+        .handle_request("test-client-prompt", allowed_servers, false, vec![], get_request)
         .await
         .unwrap();
 
@@ -1328,6 +1399,7 @@ async fn test_prompts_get_with_arguments() {
             "test-client-prompt2",
             allowed_servers.clone(),
             false,
+            vec![],
             list_request,
         )
         .await
@@ -1352,7 +1424,7 @@ async fn test_prompts_get_with_arguments() {
     );
 
     let response = gateway
-        .handle_request("test-client-prompt2", allowed_servers, false, get_request)
+        .handle_request("test-client-prompt2", allowed_servers, false, vec![], get_request)
         .await
         .unwrap();
 
@@ -1378,6 +1450,7 @@ async fn test_prompts_get_not_found() {
             "test-client-prompt3",
             allowed_servers.clone(),
             false,
+            vec![],
             list_request,
         )
         .await
@@ -1387,7 +1460,7 @@ async fn test_prompts_get_not_found() {
     let get_request = request_with_params("prompts/get", json!({"name": "server1__nonexistent"}));
 
     let result = gateway
-        .handle_request("test-client-prompt3", allowed_servers, false, get_request)
+        .handle_request("test-client-prompt3", allowed_servers, false, vec![], get_request)
         .await;
 
     // Should return error
@@ -1430,7 +1503,7 @@ async fn test_prompts_list_with_arguments() {
 
     let allowed_servers = vec!["server1".to_string(), "server2".to_string()];
     let response = gateway
-        .handle_request("test-client-args", allowed_servers, false, request)
+        .handle_request("test-client-args", allowed_servers, false, vec![], request)
         .await
         .unwrap();
 
@@ -1472,7 +1545,7 @@ async fn test_tools_list_handles_duplicates() {
 
     let allowed_servers = vec!["server1".to_string(), "server2".to_string()];
     let response = gateway
-        .handle_request("test-client-dup", allowed_servers, false, request)
+        .handle_request("test-client-dup", allowed_servers, false, vec![], request)
         .await
         .unwrap();
 
@@ -1507,6 +1580,7 @@ async fn test_tools_call_strips_namespace() {
             "test-client-strip",
             allowed_servers.clone(),
             false,
+            vec![],
             list_request,
         )
         .await
@@ -1528,7 +1602,7 @@ async fn test_tools_call_strips_namespace() {
     );
 
     let response = gateway
-        .handle_request("test-client-strip", allowed_servers, false, call_request)
+        .handle_request("test-client-strip", allowed_servers, false, vec![], call_request)
         .await
         .unwrap();
 
@@ -1554,6 +1628,7 @@ async fn test_tools_call_passes_arguments() {
             "test-client-args2",
             allowed_servers.clone(),
             false,
+            vec![],
             list_request,
         )
         .await
@@ -1583,7 +1658,7 @@ async fn test_tools_call_passes_arguments() {
     );
 
     let response = gateway
-        .handle_request("test-client-args2", allowed_servers, false, call_request)
+        .handle_request("test-client-args2", allowed_servers, false, vec![], call_request)
         .await
         .unwrap();
 
@@ -1609,6 +1684,7 @@ async fn test_tools_call_handles_error_response() {
             "test-client-err",
             allowed_servers.clone(),
             false,
+            vec![],
             list_request,
         )
         .await
@@ -1625,7 +1701,7 @@ async fn test_tools_call_handles_error_response() {
     );
 
     let response = gateway
-        .handle_request("test-client-err", allowed_servers, false, call_request)
+        .handle_request("test-client-err", allowed_servers, false, vec![], call_request)
         .await
         .unwrap();
 
@@ -1652,14 +1728,14 @@ async fn test_session_reuse() {
     // First request creates session
     let request1 = JsonRpcRequest::new(Some(json!(1)), "tools/list".to_string(), Some(json!({})));
     let _ = gateway
-        .handle_request(client_id, allowed_servers.clone(), false, request1)
+        .handle_request(client_id, allowed_servers.clone(), false, vec![], request1)
         .await
         .unwrap();
 
     // Second request should reuse session (cached)
     let request2 = JsonRpcRequest::new(Some(json!(2)), "tools/list".to_string(), Some(json!({})));
     let response2 = gateway
-        .handle_request(client_id, allowed_servers, false, request2)
+        .handle_request(client_id, allowed_servers, false, vec![], request2)
         .await
         .unwrap();
 
@@ -1690,6 +1766,7 @@ async fn test_concurrent_clients() {
             "client1",
             vec!["server1".to_string()],
             false,
+            vec![],
             request.clone(),
         )
         .await
@@ -1697,7 +1774,7 @@ async fn test_concurrent_clients() {
 
     // Client 2 request
     let response2 = gateway
-        .handle_request("client2", vec!["server2".to_string()], false, request)
+        .handle_request("client2", vec!["server2".to_string()], false, vec![], request)
         .await
         .unwrap();
 
@@ -1736,6 +1813,7 @@ async fn test_notification_invalidates_tools_cache() {
             "test-client-notif",
             allowed_servers.clone(),
             false,
+            vec![],
             request.clone(),
         )
         .await
@@ -1750,7 +1828,7 @@ async fn test_notification_invalidates_tools_cache() {
 
     // Second request should use cache (same result)
     let response2 = gateway
-        .handle_request("test-client-notif", allowed_servers, false, request)
+        .handle_request("test-client-notif", allowed_servers, false, vec![], request)
         .await
         .unwrap();
 
@@ -1779,6 +1857,7 @@ async fn test_notification_invalidates_resources_cache() {
             "test-client-notif2",
             allowed_servers.clone(),
             false,
+            vec![],
             request.clone(),
         )
         .await
@@ -1812,6 +1891,7 @@ async fn test_notification_invalidates_prompts_cache() {
             "test-client-notif3",
             allowed_servers.clone(),
             false,
+            vec![],
             request.clone(),
         )
         .await
@@ -1844,6 +1924,7 @@ async fn test_notification_forwarded_to_client() {
             "test-client-notif4",
             vec!["server1".to_string()],
             false,
+            vec![],
             JsonRpcRequest::new(Some(json!(1)), "ping".to_string(), Some(json!({})))
         )
         .await
@@ -1897,7 +1978,7 @@ async fn test_initialize_latency() {
 
     let start = Instant::now();
     let _ = gateway
-        .handle_request("test-client-perf", allowed_servers, false, request)
+        .handle_request("test-client-perf", allowed_servers, false, vec![], request)
         .await
         .unwrap();
     let elapsed = start.elapsed();
@@ -1929,6 +2010,7 @@ async fn test_tools_list_cached_latency() {
             "test-client-perf2",
             allowed_servers.clone(),
             false,
+            vec![],
             request.clone(),
         )
         .await
@@ -1937,7 +2019,7 @@ async fn test_tools_list_cached_latency() {
     // Second request - cached
     let start = Instant::now();
     let _ = gateway
-        .handle_request("test-client-perf2", allowed_servers, false, request)
+        .handle_request("test-client-perf2", allowed_servers, false, vec![], request)
         .await
         .unwrap();
     let elapsed = start.elapsed();
@@ -1970,7 +2052,7 @@ async fn test_tools_list_uncached_latency() {
 
     let start = Instant::now();
     let _ = gateway
-        .handle_request("test-client-perf3", allowed_servers, false, request)
+        .handle_request("test-client-perf3", allowed_servers, false, vec![], request)
         .await
         .unwrap();
     let elapsed = start.elapsed();
@@ -2003,6 +2085,7 @@ async fn test_tools_call_overhead() {
             "test-client-perf4",
             allowed_servers.clone(),
             false,
+            vec![],
             list_request,
         )
         .await
@@ -2025,7 +2108,7 @@ async fn test_tools_call_overhead() {
 
     let start = Instant::now();
     let _ = gateway
-        .handle_request("test-client-perf4", allowed_servers, false, call_request)
+        .handle_request("test-client-perf4", allowed_servers, false, vec![], call_request)
         .await
         .unwrap();
     let elapsed = start.elapsed();
@@ -2061,7 +2144,7 @@ async fn test_concurrent_sessions_memory() {
 
         let handle = tokio::spawn(async move {
             gateway_clone
-                .handle_request(&client_id, allowed_clone, false, request_clone)
+                .handle_request(&client_id, allowed_clone, false, vec![], request_clone)
                 .await
         });
 
@@ -2093,7 +2176,7 @@ async fn test_all_servers_timeout() {
 
     // This should timeout and handle gracefully
     let result = gateway
-        .handle_request("test-client-timeout", allowed_servers, false, request)
+        .handle_request("test-client-timeout", allowed_servers, false, vec![], request)
         .await;
 
     // Should return error or empty result after timeout
@@ -2121,7 +2204,7 @@ async fn test_malformed_json_response() {
 
     let allowed_servers = vec!["server1".to_string()];
     let result = gateway
-        .handle_request("test-client-malformed", allowed_servers, false, request)
+        .handle_request("test-client-malformed", allowed_servers, false, vec![], request)
         .await;
 
     // Should handle gracefully without crashing
@@ -2148,7 +2231,7 @@ async fn test_http_500_error() {
 
     let allowed_servers = vec!["server1".to_string(), "server2".to_string()];
     let response = gateway
-        .handle_request("test-client-500", allowed_servers, false, request)
+        .handle_request("test-client-500", allowed_servers, false, vec![], request)
         .await;
 
     // Should get partial results from server2 (if partial failures allowed)
@@ -2170,7 +2253,7 @@ async fn test_connection_refused() {
 
     let allowed_servers = vec!["nonexistent_server".to_string()];
     let result = gateway
-        .handle_request("test-client-refused", allowed_servers, false, request)
+        .handle_request("test-client-refused", allowed_servers, false, vec![], request)
         .await;
 
     // Should handle connection refused gracefully
@@ -2195,6 +2278,7 @@ async fn test_invalid_namespace_format() {
             "test-client-invalid",
             allowed_servers.clone(),
             false,
+            vec![],
             list_request,
         )
         .await
@@ -2207,7 +2291,7 @@ async fn test_invalid_namespace_format() {
     );
 
     let result = gateway
-        .handle_request("test-client-invalid", allowed_servers, false, call_request)
+        .handle_request("test-client-invalid", allowed_servers, false, vec![], call_request)
         .await;
 
     // Should return error about invalid namespace
@@ -2234,7 +2318,7 @@ async fn test_initialize_all_servers_fail() {
 
     let allowed_servers = vec!["server1".to_string(), "server2".to_string()];
     let result = gateway
-        .handle_request("test-client-init-fail", allowed_servers, false, request)
+        .handle_request("test-client-init-fail", allowed_servers, false, vec![], request)
         .await;
 
     // Should return error when all servers fail
@@ -2257,7 +2341,7 @@ async fn test_tools_list_partial_failure() {
 
     let allowed_servers = vec!["server1".to_string(), "server2".to_string()];
     let response = gateway
-        .handle_request("test-client-partial", allowed_servers, false, request)
+        .handle_request("test-client-partial", allowed_servers, false, vec![], request)
         .await
         .unwrap();
 
