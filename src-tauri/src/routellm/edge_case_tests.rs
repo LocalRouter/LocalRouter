@@ -108,8 +108,9 @@ mod edge_case_tests {
     async fn test_concurrent_downloads() {
         use crate::routellm::downloader;
 
-        let model_path = PathBuf::from("/tmp/test_concurrent_model");
-        let tokenizer_path = PathBuf::from("/tmp/test_concurrent_tokenizer");
+        let temp_dir = std::env::temp_dir();
+        let model_path = temp_dir.join("test_concurrent_model");
+        let tokenizer_path = temp_dir.join("test_concurrent_tokenizer");
 
         // Clean up from previous runs
         let _ = tokio::fs::remove_dir_all(&model_path).await;
@@ -290,8 +291,9 @@ mod edge_case_tests {
     async fn test_corrupted_model_files() {
         use std::fs;
 
-        let model_dir = PathBuf::from("/tmp/test_corrupted_model");
-        let tokenizer_dir = PathBuf::from("/tmp/test_corrupted_tokenizer");
+        let temp_dir = std::env::temp_dir();
+        let model_dir = temp_dir.join("test_corrupted_model");
+        let tokenizer_dir = temp_dir.join("test_corrupted_tokenizer");
 
         // Create directories
         fs::create_dir_all(&model_dir).unwrap();
@@ -334,8 +336,9 @@ mod edge_case_tests {
     async fn test_download_timeout() {
         use crate::routellm::downloader;
 
-        let model_path = PathBuf::from("/tmp/test_timeout_model");
-        let tokenizer_path = PathBuf::from("/tmp/test_timeout_tokenizer");
+        let temp_dir = std::env::temp_dir();
+        let model_path = temp_dir.join("test_timeout_model");
+        let tokenizer_path = temp_dir.join("test_timeout_tokenizer");
 
         // Set a 1-second timeout (download takes much longer)
         let result = timeout(

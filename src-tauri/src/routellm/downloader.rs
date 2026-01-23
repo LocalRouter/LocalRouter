@@ -124,10 +124,55 @@ fn check_disk_space(path: &Path) -> RouteLLMResult<u64> {
 
     #[cfg(target_os = "windows")]
     {
-        // TODO: Implement Windows disk space check using GetDiskFreeSpaceExW
-        // For now, skip check on Windows
-        warn!("Disk space check not implemented on Windows yet");
-        Ok(u64::MAX)
+        use std::ffi::OsStr;
+        use std::os::windows::ffi::OsStrExt;
+        use std::process::Command;
+
+        // Get the parent directory or the path itself
+        let check_path = if path.exists() {
+            path
+        } else {
+            path.parent().unwrap_or(path)
+        };
+
+        // Get the drive letter from the path (e.g., "C:" from "C:\Users\...")
+        let path_str = check_path.to_string_lossy();
+        let drive = if path_str.len() >= 2 && path_str.chars().nth(1) == Some(':') {
+            &path_str[0..2]
+        } else {
+            // Default to C: if no drive letter found
+            "C:"
+        };
+
+        // Use wmic to get free space (works on all Windows versions)
+        let output = Command::new("wmic")
+            .args([
+                "logicaldisk",
+                "where",
+                &format!("DeviceID='{}'", drive),
+                "get",
+                "FreeSpace",
+            ])
+            .output()
+            .map_err(|e| {
+                RouteLLMError::DownloadFailed(format!("Failed to check disk space: {}", e))
+            })?;
+
+        if !output.status.success() {
+            warn!("Failed to check disk space on Windows, proceeding anyway");
+            return Ok(u64::MAX);
+        }
+
+        let output_str = String::from_utf8_lossy(&output.stdout);
+        // Parse output: "FreeSpace\r\n12345678\r\n"
+        let available_bytes: u64 = output_str
+            .lines()
+            .skip(1) // Skip header
+            .next()
+            .and_then(|s| s.trim().parse().ok())
+            .unwrap_or(u64::MAX);
+
+        Ok(available_bytes)
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
