@@ -83,9 +83,7 @@ impl StdioBridge {
 
         info!(
             "Bridge initialized for client '{}' with {} MCP servers (mode: {:?})",
-            client_id,
-            server_count,
-            client.mcp_server_access
+            client_id, server_count, client.mcp_server_access
         );
 
         Ok(Self {

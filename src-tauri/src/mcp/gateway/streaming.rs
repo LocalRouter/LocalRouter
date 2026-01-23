@@ -1,10 +1,10 @@
 use crate::config::StreamingConfig;
-use crate::utils::errors::{AppError, AppResult};
 use crate::mcp::gateway::session::GatewaySession;
 use crate::mcp::gateway::McpGateway;
 use crate::mcp::manager::HealthStatus;
-use crate::mcp::McpServerManager;
 use crate::mcp::protocol::{JsonRpcNotification, JsonRpcRequest, JsonRpcResponse};
+use crate::mcp::McpServerManager;
+use crate::utils::errors::{AppError, AppResult};
 use axum::response::sse::Event;
 use dashmap::DashMap;
 use futures::stream::Stream;
@@ -178,10 +178,7 @@ impl StreamingSession {
     }
 
     /// Initialize backend servers via SSE - connect and forward events
-    pub async fn initialize_backend_servers(
-        &self,
-        _params: Value,
-    ) -> AppResult<Vec<String>> {
+    pub async fn initialize_backend_servers(&self, _params: Value) -> AppResult<Vec<String>> {
         let mut initialized = Vec::new();
 
         info!(
@@ -194,7 +191,10 @@ impl StreamingSession {
             let health = self.server_manager.get_server_health(server_id).await;
             if health.status == HealthStatus::Healthy {
                 initialized.push(server_id.clone());
-                info!("Verified backend {} for session {}", server_id, self.session_id);
+                info!(
+                    "Verified backend {} for session {}",
+                    server_id, self.session_id
+                );
 
                 // Start forwarding backend notifications to the merge channel
                 self.start_backend_notification_forwarding(server_id.clone());
@@ -254,9 +254,7 @@ impl StreamingSession {
 
         debug!(
             "Handling request {} (client ID: {:?}) in session {}",
-            request.method,
-            request.id,
-            self.session_id
+            request.method, request.id, self.session_id
         );
 
         // Parse routing
@@ -293,7 +291,10 @@ impl StreamingSession {
                     }
                     Err(e) => {
                         self.pending_requests.remove(&request_id);
-                        return Err(AppError::Mcp(format!("Failed to send request to {}: {}", server_id, e)));
+                        return Err(AppError::Mcp(format!(
+                            "Failed to send request to {}: {}",
+                            server_id, e
+                        )));
                     }
                 }
             }
@@ -320,7 +321,9 @@ impl StreamingSession {
                 }
                 if sent_count == 0 {
                     self.pending_requests.remove(&request_id);
-                    return Err(AppError::Mcp("No servers available for broadcast".to_string()));
+                    return Err(AppError::Mcp(
+                        "No servers available for broadcast".to_string(),
+                    ));
                 }
             }
         }
@@ -451,7 +454,10 @@ impl StreamingSession {
 
         self.pending_requests.retain(|_, req| {
             if now.duration_since(req.created_at) > timeout {
-                warn!("Request {} timed out in session {}", req.request_id, self.session_id);
+                warn!(
+                    "Request {} timed out in session {}",
+                    req.request_id, self.session_id
+                );
                 false
             } else {
                 true
@@ -530,10 +536,14 @@ impl StreamingSessionManager {
         ));
 
         // Initialize backend servers
-        let initialized = session.initialize_backend_servers(initialize_params).await?;
+        let initialized = session
+            .initialize_backend_servers(initialize_params)
+            .await?;
 
         if initialized.is_empty() {
-            return Err(AppError::Mcp("Failed to initialize any backend servers".to_string()));
+            return Err(AppError::Mcp(
+                "Failed to initialize any backend servers".to_string(),
+            ));
         }
 
         info!(
@@ -551,7 +561,9 @@ impl StreamingSessionManager {
 
     /// Get existing session
     pub fn get_session(&self, session_id: &str) -> Option<Arc<StreamingSession>> {
-        self.sessions.get(session_id).map(|entry| entry.value().clone())
+        self.sessions
+            .get(session_id)
+            .map(|entry| entry.value().clone())
     }
 
     /// Close session

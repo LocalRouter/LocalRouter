@@ -55,7 +55,8 @@ pub struct ElicitationManager {
     default_timeout_secs: u64,
 
     /// Broadcast sender for WebSocket notifications (optional)
-    notification_broadcast: Option<Arc<tokio::sync::broadcast::Sender<(String, JsonRpcNotification)>>>,
+    notification_broadcast:
+        Option<Arc<tokio::sync::broadcast::Sender<(String, JsonRpcNotification)>>>,
 }
 
 impl ElicitationManager {

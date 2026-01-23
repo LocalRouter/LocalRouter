@@ -69,7 +69,10 @@ impl McpGateway {
     ) -> Self {
         // Create elicitation manager with broadcast support if available
         let elicitation_manager = match &notification_broadcast {
-            Some(broadcast) => Arc::new(ElicitationManager::new_with_broadcast(120, broadcast.clone())),
+            Some(broadcast) => Arc::new(ElicitationManager::new_with_broadcast(
+                120,
+                broadcast.clone(),
+            )),
             None => Arc::new(ElicitationManager::default()),
         };
 

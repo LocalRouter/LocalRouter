@@ -2,7 +2,6 @@
 ///
 /// Handles emission of synthetic notifications for streaming sessions,
 /// particularly for deferred loading tool activation.
-
 use crate::mcp::protocol::{JsonRpcNotification, JsonRpcResponse};
 use serde_json::json;
 
@@ -16,7 +15,10 @@ pub enum StreamingNotificationType {
     /// Prompts list has changed
     PromptsListChanged,
     /// Custom notification
-    Custom { method: String, params: serde_json::Value },
+    Custom {
+        method: String,
+        params: serde_json::Value,
+    },
 }
 
 impl StreamingNotificationType {
@@ -50,7 +52,9 @@ impl StreamingNotificationType {
     pub fn method(&self) -> &str {
         match self {
             StreamingNotificationType::ToolsListChanged => "notifications/tools/list_changed",
-            StreamingNotificationType::ResourcesListChanged => "notifications/resources/list_changed",
+            StreamingNotificationType::ResourcesListChanged => {
+                "notifications/resources/list_changed"
+            }
             StreamingNotificationType::PromptsListChanged => "notifications/prompts/list_changed",
             StreamingNotificationType::Custom { method, .. } => method,
         }
@@ -166,9 +170,9 @@ impl StreamingSessionEvent {
             StreamingSessionEvent::ToolsActivated { tool_names, .. } => {
                 tool_names.iter().map(|s| s.as_str()).collect()
             }
-            StreamingSessionEvent::ResourcesActivated {
-                resource_names, ..
-            } => resource_names.iter().map(|s| s.as_str()).collect(),
+            StreamingSessionEvent::ResourcesActivated { resource_names, .. } => {
+                resource_names.iter().map(|s| s.as_str()).collect()
+            }
             StreamingSessionEvent::PromptsActivated { prompt_names, .. } => {
                 prompt_names.iter().map(|s| s.as_str()).collect()
             }
@@ -179,7 +183,10 @@ impl StreamingSessionEvent {
     /// Get a summary message for this event
     pub fn summary(&self) -> String {
         match self {
-            StreamingSessionEvent::ToolsActivated { tool_names, server_id } => {
+            StreamingSessionEvent::ToolsActivated {
+                tool_names,
+                server_id,
+            } => {
                 format!(
                     "Activated {} tool(s) on {}: {}",
                     tool_names.len(),
@@ -212,7 +219,11 @@ impl StreamingSessionEvent {
             StreamingSessionEvent::Custom {
                 notification_type,
                 server_id,
-            } => format!("Notification from {}: {}", server_id, notification_type.method()),
+            } => format!(
+                "Notification from {}: {}",
+                server_id,
+                notification_type.method()
+            ),
         }
     }
 }
