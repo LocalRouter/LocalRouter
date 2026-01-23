@@ -159,7 +159,10 @@ fn build_app(state: AppState, enable_cors: bool) -> Router {
     let mcp_routes = Router::new()
         .route("/", post(routes::mcp_gateway_handler)) // Unified MCP gateway at root (POST /)
         .route("/mcp", post(routes::mcp_gateway_handler)) // Alias: /mcp also serves unified gateway
-        .route("/mcp/:server_id", post(routes::mcp_server_handler)) // Individual MCP server proxy
+        .route(
+            "/mcp/:server_id",
+            get(routes::mcp_server_sse_handler).post(routes::mcp_server_handler),
+        ) // Individual MCP server: GET for SSE, POST for JSON-RPC
         .route(
             "/mcp/:server_id/stream",
             post(routes::mcp_server_streaming_handler), // MCP streaming endpoint (SSE)
@@ -231,6 +234,7 @@ fn build_app(state: AppState, enable_cors: bool) -> Router {
         .route("/v1/chat/completions", post(routes::chat_completions))
         .route("/v1/completions", post(routes::completions))
         .route("/v1/embeddings", post(routes::embeddings))
+        .route("/v1/images/generations", post(routes::image_generations))
         .route("/v1/models", get(routes::list_models))
         .route("/v1/models/:id", get(routes::get_model))
         .route(
@@ -242,6 +246,7 @@ fn build_app(state: AppState, enable_cors: bool) -> Router {
         .route("/chat/completions", post(routes::chat_completions))
         .route("/completions", post(routes::completions))
         .route("/embeddings", post(routes::embeddings))
+        .route("/images/generations", post(routes::image_generations))
         .route("/models", get(routes::list_models))
         .route("/models/:id", get(routes::get_model))
         .route(

@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback } from "react"
-import { RefreshCw, Users, Route, Zap, Settings2, ChevronDown, MessageSquare, Hash } from "lucide-react"
+import { RefreshCw, Users, Route, Zap, Settings2, ChevronDown, MessageSquare, ImageIcon, Hash } from "lucide-react"
 import { invoke } from "@tauri-apps/api/core"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card"
@@ -22,6 +22,7 @@ import {
 import { cn } from "@/lib/utils"
 import { createOpenAIClient } from "@/lib/openai-client"
 import { ChatPanel } from "./chat-panel"
+import { ImagesPanel } from "./images-panel"
 import { EmbeddingsPanel } from "./embeddings-panel"
 
 interface ServerConfig {
@@ -467,12 +468,16 @@ export function LlmTab() {
         </CardContent>
       </Card>
 
-      {/* Subtabs for Chat and Embeddings (Images not yet supported) */}
+      {/* Subtabs for Chat, Images, Embeddings */}
       <Tabs value={activeSubtab} onValueChange={setActiveSubtab} className="flex flex-col flex-1 min-h-0">
         <TabsList className="w-fit">
           <TabsTrigger value="chat" className="flex items-center gap-1">
             <MessageSquare className="h-3 w-3" />
             Chat
+          </TabsTrigger>
+          <TabsTrigger value="images" className="flex items-center gap-1">
+            <ImageIcon className="h-3 w-3" />
+            Images
           </TabsTrigger>
           <TabsTrigger value="embeddings" className="flex items-center gap-1">
             <Hash className="h-3 w-3" />
@@ -488,6 +493,10 @@ export function LlmTab() {
             parameters={parameters}
             subtitle={getSubtitle()}
           />
+        </TabsContent>
+
+        <TabsContent value="images" className="flex-1 min-h-0 mt-4">
+          <ImagesPanel openaiClient={openaiClient} isReady={isReady()} />
         </TabsContent>
 
         <TabsContent value="embeddings" className="flex-1 min-h-0 mt-4">

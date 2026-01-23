@@ -739,6 +739,81 @@ impl ModelProvider for OpenAIProvider {
         })
     }
 
+    async fn generate_image(
+        &self,
+        request: super::ImageGenerationRequest,
+    ) -> AppResult<super::ImageGenerationResponse> {
+        // Build the request body
+        let mut body = serde_json::json!({
+            "model": request.model,
+            "prompt": request.prompt,
+            "n": request.n.unwrap_or(1),
+        });
+
+        if let Some(size) = &request.size {
+            body["size"] = serde_json::json!(size);
+        }
+        if let Some(quality) = &request.quality {
+            body["quality"] = serde_json::json!(quality);
+        }
+        if let Some(style) = &request.style {
+            body["style"] = serde_json::json!(style);
+        }
+        if let Some(response_format) = &request.response_format {
+            body["response_format"] = serde_json::json!(response_format);
+        }
+        if let Some(user) = &request.user {
+            body["user"] = serde_json::json!(user);
+        }
+
+        let response = self
+            .client
+            .post(format!("{}/images/generations", OPENAI_API_BASE))
+            .header("Authorization", self.auth_header())
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| AppError::Provider(format!("Request failed: {}", e)))?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let error_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
+
+            return Err(match status {
+                StatusCode::UNAUTHORIZED => AppError::Unauthorized,
+                StatusCode::TOO_MANY_REQUESTS => AppError::RateLimitExceeded,
+                _ => AppError::Provider(format!("API error ({}): {}", status, error_text)),
+            });
+        }
+
+        let openai_response: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| AppError::Provider(format!("Failed to parse response: {}", e)))?;
+
+        // Convert OpenAI response to our generic format
+        let created = openai_response["created"]
+            .as_i64()
+            .unwrap_or_else(|| chrono::Utc::now().timestamp());
+
+        let data: Vec<super::GeneratedImage> = openai_response["data"]
+            .as_array()
+            .unwrap_or(&vec![])
+            .iter()
+            .map(|item| super::GeneratedImage {
+                url: item["url"].as_str().map(|s| s.to_string()),
+                b64_json: item["b64_json"].as_str().map(|s| s.to_string()),
+                revised_prompt: item["revised_prompt"].as_str().map(|s| s.to_string()),
+            })
+            .collect();
+
+        Ok(super::ImageGenerationResponse { created, data })
+    }
+
     fn supports_feature(&self, feature: &str) -> bool {
         matches!(
             feature,

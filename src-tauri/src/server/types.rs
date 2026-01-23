@@ -835,3 +835,90 @@ impl From<&crate::providers::ModelInfo> for ModelData {
         }
     }
 }
+
+// ==================== Image Generation ====================
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[schema(
+    title = "Image Generation Request",
+    description = "Request for image generation API compatible with OpenAI's DALL-E format",
+    example = json!({
+        "model": "dall-e-3",
+        "prompt": "A white siamese cat",
+        "n": 1,
+        "size": "1024x1024",
+        "quality": "standard",
+        "style": "vivid"
+    })
+)]
+pub struct ImageGenerationRequest {
+    /// The model to use for image generation
+    #[schema(example = "dall-e-3")]
+    pub model: String,
+
+    /// A text description of the desired image(s)
+    #[schema(example = "A white siamese cat")]
+    pub prompt: String,
+
+    /// The number of images to generate (1-10)
+    #[serde(default = "default_image_count")]
+    #[schema(minimum = 1, maximum = 10, default = 1)]
+    pub n: Option<u32>,
+
+    /// The size of the generated images
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "1024x1024")]
+    pub size: Option<String>,
+
+    /// The quality of the image (dall-e-3 only)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "standard")]
+    pub quality: Option<String>,
+
+    /// The style of the generated images (dall-e-3 only)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "vivid")]
+    pub style: Option<String>,
+
+    /// The format in which the generated images are returned
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "b64_json")]
+    pub response_format: Option<String>,
+
+    /// A unique identifier representing your end-user
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+}
+
+fn default_image_count() -> Option<u32> {
+    Some(1)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[schema(
+    title = "Image Generation Response",
+    description = "Response from image generation API"
+)]
+pub struct ImageGenerationResponse {
+    /// Unix timestamp when the images were created
+    pub created: i64,
+
+    /// The generated images
+    pub data: Vec<ImageData>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[schema(title = "Image Data", description = "Generated image data")]
+pub struct ImageData {
+    /// The URL of the generated image (if response_format is "url")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+
+    /// The base64-encoded JSON of the generated image (if response_format is "b64_json")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub b64_json: Option<String>,
+
+    /// The prompt that was used to generate the image (dall-e-3 may revise the prompt)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub revised_prompt: Option<String>,
+}

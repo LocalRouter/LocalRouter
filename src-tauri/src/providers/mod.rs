@@ -73,6 +73,22 @@ pub trait ModelProvider: Send + Sync {
         )))
     }
 
+    /// Generate images from text prompts
+    ///
+    /// Used by: POST /v1/images/generations endpoint
+    ///
+    /// Default implementation returns an error indicating image generation is not supported.
+    /// Providers that support image generation (e.g., OpenAI with DALL-E) should override this method.
+    async fn generate_image(
+        &self,
+        _request: ImageGenerationRequest,
+    ) -> AppResult<ImageGenerationResponse> {
+        Err(AppError::Provider(format!(
+            "Provider '{}' does not support image generation",
+            self.name()
+        )))
+    }
+
     /// Check if this provider supports a specific feature
     ///
     /// Features include things like:
@@ -889,6 +905,65 @@ pub struct EmbeddingUsage {
     pub prompt_tokens: u32,
     /// Total tokens (same as prompt_tokens for embeddings)
     pub total_tokens: u32,
+}
+
+// ==================== Image Generation ====================
+
+/// Image generation request
+#[allow(dead_code)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ImageGenerationRequest {
+    /// The model to use (e.g., "dall-e-3", "dall-e-2")
+    pub model: String,
+    /// The text prompt describing the image to generate
+    pub prompt: String,
+    /// Number of images to generate (1-10)
+    #[serde(default = "default_image_n")]
+    pub n: Option<u32>,
+    /// Size of generated images (e.g., "1024x1024")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<String>,
+    /// Quality level ("standard" or "hd", DALL-E 3 only)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quality: Option<String>,
+    /// Style ("vivid" or "natural", DALL-E 3 only)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub style: Option<String>,
+    /// Response format ("url" or "b64_json")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_format: Option<String>,
+    /// User identifier for tracking
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+}
+
+fn default_image_n() -> Option<u32> {
+    Some(1)
+}
+
+/// Image generation response
+#[allow(dead_code)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ImageGenerationResponse {
+    /// Unix timestamp of creation
+    pub created: i64,
+    /// Array of generated images
+    pub data: Vec<GeneratedImage>,
+}
+
+/// Single generated image
+#[allow(dead_code)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct GeneratedImage {
+    /// URL of the generated image (if response_format is "url")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// Base64-encoded image data (if response_format is "b64_json")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub b64_json: Option<String>,
+    /// The revised prompt (DALL-E 3 may modify the prompt)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub revised_prompt: Option<String>,
 }
 
 #[cfg(test)]
