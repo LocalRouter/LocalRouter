@@ -286,6 +286,15 @@ export function LlmTab() {
     return undefined
   }
 
+  // Get the effective model string for API calls
+  // In direct mode, internal test token requires provider/model format
+  const getEffectiveModel = () => {
+    if (mode === "direct" && selectedProvider && selectedModel) {
+      return `${selectedProvider}/${selectedModel}`
+    }
+    return selectedModel
+  }
+
   return (
     <div className="flex flex-col h-full gap-4">
       {/* Mode Selection */}
@@ -480,7 +489,7 @@ export function LlmTab() {
           <ChatPanel
             openaiClient={openaiClient}
             isReady={isReady()}
-            selectedModel={selectedModel}
+            selectedModel={getEffectiveModel()}
             parameters={parameters}
             subtitle={getSubtitle()}
           />
