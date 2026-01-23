@@ -147,18 +147,12 @@ export function ClientModelsTab({
               </SelectTrigger>
               <SelectContent className="min-w-[300px]">
                 {strategies.map((strategy) => {
-                  const isDefault = strategy.id === "default"
                   const isOwned = strategy.parent === client.id
 
                   return (
                     <SelectItem key={strategy.id} value={strategy.id}>
                       <div className="flex items-center gap-2 w-full">
                         <span className="flex-1">{strategy.name}</span>
-                        {isDefault && (
-                          <Badge variant="secondary" className="text-xs shrink-0">
-                            Default
-                          </Badge>
-                        )}
                         {isOwned && (
                           <Badge variant="outline" className="text-xs shrink-0">
                             Personal
@@ -206,8 +200,6 @@ export function ClientModelsTab({
                 variant={
                   currentStrategy.parent === client.id
                     ? "default"
-                    : currentStrategy.id === "default"
-                    ? "secondary"
                     : "outline"
                 }
               >

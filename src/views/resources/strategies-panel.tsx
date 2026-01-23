@@ -160,10 +160,6 @@ export function StrategiesPanel({
       )
       return
     }
-    if (strategy.id === "default") {
-      toast.error("Cannot delete the default strategy")
-      return
-    }
     if (!confirm(`Delete strategy "${strategy.name}"? This cannot be undone.`)) {
       return
     }
@@ -218,7 +214,6 @@ export function StrategiesPanel({
                 ) : (
                   filteredStrategies.map((strategy) => {
                     const clientCount = getClientsForStrategy(strategy.id).length
-                    const isDefault = strategy.id === "default"
                     const isOwned = !!strategy.parent
 
                     return (
@@ -236,11 +231,6 @@ export function StrategiesPanel({
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2">
                             <p className="font-medium truncate">{strategy.name}</p>
-                            {isDefault && (
-                              <Badge variant="secondary" className="text-xs">
-                                Default
-                              </Badge>
-                            )}
                             {isOwned && (
                               <Badge variant="outline" className="text-xs">
                                 Owned
@@ -251,30 +241,28 @@ export function StrategiesPanel({
                             {clientCount} client{clientCount !== 1 ? "s" : ""}
                           </p>
                         </div>
-                        {!isDefault && (
-                          <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-7 w-7"
-                              onClick={(e) => openRenameDialog(strategy, e)}
-                            >
-                              <Pencil className="h-3.5 w-3.5" />
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-7 w-7 text-destructive hover:text-destructive"
-                              onClick={(e) => {
-                                e.stopPropagation()
-                                handleDeleteStrategy(strategy)
-                              }}
-                              disabled={clientCount > 0}
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </Button>
-                          </div>
-                        )}
+                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7"
+                            onClick={(e) => openRenameDialog(strategy, e)}
+                          >
+                            <Pencil className="h-3.5 w-3.5" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7 text-destructive hover:text-destructive"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              handleDeleteStrategy(strategy)
+                            }}
+                            disabled={clientCount > 0}
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </Button>
+                        </div>
                       </div>
                     )
                   })
@@ -298,8 +286,6 @@ export function StrategiesPanel({
                     <p className="text-sm text-muted-foreground mt-1">
                       {selectedStrategy.parent
                         ? "Client-owned strategy"
-                        : selectedStrategy.id === "default"
-                        ? "Default routing strategy"
                         : "Shared routing strategy"}
                     </p>
                   </div>
