@@ -662,34 +662,24 @@ impl Router {
         Ok(response)
     }
 
-    /// Complete with auto-routing (localrouter/auto virtual model)
-    /// Tries models in prioritized order with intelligent fallback
-    async fn complete_with_auto_routing(
+    /// Select models for auto-routing using RouteLLM prediction if configured.
+    ///
+    /// Returns a tuple of (selected_models, optional_win_rate).
+    /// - If RouteLLM is enabled and prediction succeeds, returns strong or weak models based on threshold
+    /// - Falls back to prioritized_models if RouteLLM fails or is disabled
+    async fn select_models_for_auto_routing(
         &self,
-        client_id: &str,
-        strategy: &crate::config::Strategy,
-        request: CompletionRequest,
-    ) -> AppResult<CompletionResponse> {
-        let auto_config = strategy.auto_config.as_ref().ok_or_else(|| {
-            AppError::Router("localrouter/auto not configured for this strategy".into())
-        })?;
+        auto_config: &crate::config::AutoModelConfig,
+        request: &CompletionRequest,
+        context: &str, // "streaming" or empty for logging
+    ) -> (Vec<(String, String)>, Option<f32>) {
+        let log_prefix = if context.is_empty() {
+            "RouteLLM".to_string()
+        } else {
+            format!("RouteLLM ({})", context)
+        };
 
-        if !auto_config.enabled {
-            return Err(AppError::Router(
-                "localrouter/auto is disabled for this strategy".into(),
-            ));
-        }
-
-        if auto_config.prioritized_models.is_empty() {
-            return Err(AppError::Router(
-                "No prioritized models configured for auto-routing".into(),
-            ));
-        }
-
-        // ============ RouteLLM PREDICTION ============
-        let (selected_models, routellm_win_rate) = if let Some(routellm_config) =
-            &auto_config.routellm_config
-        {
+        if let Some(routellm_config) = &auto_config.routellm_config {
             if routellm_config.enabled {
                 // Extract prompt from request messages
                 let prompt = request
@@ -716,33 +706,63 @@ impl Router {
                             };
 
                             info!(
-                                "RouteLLM: win_rate={:.3}, threshold={:.3}, selected={}",
+                                "{}: win_rate={:.3}, threshold={:.3}, selected={}",
+                                log_prefix,
                                 win_rate,
                                 routellm_config.threshold,
                                 if is_strong { "strong" } else { "weak" }
                             );
 
-                            (models.clone(), Some(win_rate))
+                            return (models.clone(), Some(win_rate));
                         }
                         Err(e) => {
                             warn!(
-                                "RouteLLM prediction failed: {}, fallback to prioritized models",
-                                e
+                                "{} prediction failed: {}, fallback to prioritized models",
+                                log_prefix, e
                             );
-                            (auto_config.prioritized_models.clone(), None)
                         }
                     }
                 } else {
-                    warn!("RouteLLM enabled but service not available, using prioritized models");
-                    (auto_config.prioritized_models.clone(), None)
+                    warn!(
+                        "{} enabled but service not available, using prioritized models",
+                        log_prefix
+                    );
                 }
-            } else {
-                (auto_config.prioritized_models.clone(), None)
             }
-        } else {
-            (auto_config.prioritized_models.clone(), None)
-        };
-        // ============ END RouteLLM ============
+        }
+
+        // Default: use prioritized models
+        (auto_config.prioritized_models.clone(), None)
+    }
+
+    /// Complete with auto-routing (localrouter/auto virtual model)
+    /// Tries models in prioritized order with intelligent fallback
+    async fn complete_with_auto_routing(
+        &self,
+        client_id: &str,
+        strategy: &crate::config::Strategy,
+        request: CompletionRequest,
+    ) -> AppResult<CompletionResponse> {
+        let auto_config = strategy.auto_config.as_ref().ok_or_else(|| {
+            AppError::Router("localrouter/auto not configured for this strategy".into())
+        })?;
+
+        if !auto_config.enabled {
+            return Err(AppError::Router(
+                "localrouter/auto is disabled for this strategy".into(),
+            ));
+        }
+
+        if auto_config.prioritized_models.is_empty() {
+            return Err(AppError::Router(
+                "No prioritized models configured for auto-routing".into(),
+            ));
+        }
+
+        // Select models using RouteLLM prediction (if configured)
+        let (selected_models, routellm_win_rate) = self
+            .select_models_for_auto_routing(auto_config, &request, "")
+            .await;
 
         if selected_models.is_empty() {
             return Err(AppError::Router(
@@ -853,60 +873,10 @@ impl Router {
             ));
         }
 
-        // ============ RouteLLM PREDICTION (same logic as non-streaming) ============
-        let selected_models = if let Some(routellm_config) = &auto_config.routellm_config {
-            if routellm_config.enabled {
-                // Extract prompt from request messages
-                let prompt = request
-                    .messages
-                    .iter()
-                    .map(|m| m.content.as_str())
-                    .collect::<Vec<_>>()
-                    .join("\n");
-
-                // Get RouteLLM service
-                if let Some(service) = &self.routellm_service {
-                    // Predict with threshold
-                    match service
-                        .predict_with_threshold(&prompt, routellm_config.threshold)
-                        .await
-                    {
-                        Ok((is_strong, win_rate)) => {
-                            // Select models based on prediction
-                            let models = if is_strong {
-                                &auto_config.prioritized_models
-                            } else {
-                                &routellm_config.weak_models
-                            };
-
-                            info!(
-                                "RouteLLM (streaming): win_rate={:.3}, threshold={:.3}, selected={}",
-                                win_rate,
-                                routellm_config.threshold,
-                                if is_strong { "strong" } else { "weak" }
-                            );
-
-                            models.clone()
-                        }
-                        Err(e) => {
-                            warn!(
-                                "RouteLLM prediction failed: {}, fallback to prioritized models",
-                                e
-                            );
-                            auto_config.prioritized_models.clone()
-                        }
-                    }
-                } else {
-                    warn!("RouteLLM enabled but service not available, using prioritized models");
-                    auto_config.prioritized_models.clone()
-                }
-            } else {
-                auto_config.prioritized_models.clone()
-            }
-        } else {
-            auto_config.prioritized_models.clone()
-        };
-        // ============ END RouteLLM ============
+        // Select models using RouteLLM prediction (if configured)
+        let (selected_models, _routellm_win_rate) = self
+            .select_models_for_auto_routing(auto_config, &request, "streaming")
+            .await;
 
         if selected_models.is_empty() {
             return Err(AppError::Router(
@@ -1150,8 +1120,8 @@ impl Router {
         );
 
         // Special handling for internal test token (bypasses all routing config)
-        // SECURITY: Only enabled in test builds to prevent production bypass
-        #[cfg(test)]
+        // SECURITY: Only enabled in debug builds to prevent production bypass
+        #[cfg(debug_assertions)]
         if client_id == "internal-test" {
             debug!("Internal test token detected - bypassing routing config (test mode only)");
             let (provider, model) = Self::parse_model_string(&request.model);
@@ -1165,8 +1135,8 @@ impl Router {
                 .await;
         }
 
-        // In non-test builds, reject internal-test token to prevent security bypass
-        #[cfg(not(test))]
+        // In release builds, reject internal-test token to prevent security bypass
+        #[cfg(not(debug_assertions))]
         if client_id == "internal-test" {
             warn!("Attempted to use internal-test bypass in production - rejected");
             return Err(AppError::Unauthorized);
@@ -1227,8 +1197,8 @@ impl Router {
         );
 
         // Special handling for internal test token
-        // SECURITY: Only enabled in test builds to prevent production bypass
-        #[cfg(test)]
+        // SECURITY: Only enabled in debug builds to prevent production bypass
+        #[cfg(debug_assertions)]
         if client_id == "internal-test" {
             debug!("Internal test token detected - bypassing routing config for streaming (test mode only)");
             let (provider, model) = Self::parse_model_string(&request.model);
@@ -1252,8 +1222,8 @@ impl Router {
             .await);
         }
 
-        // In non-test builds, reject internal-test token to prevent security bypass
-        #[cfg(not(test))]
+        // In release builds, reject internal-test token to prevent security bypass
+        #[cfg(not(debug_assertions))]
         if client_id == "internal-test" {
             warn!("Attempted to use internal-test bypass in production (streaming) - rejected");
             return Err(AppError::Unauthorized);
@@ -1504,8 +1474,8 @@ impl Router {
         );
 
         // Special handling for internal test token (bypasses all routing config)
-        // SECURITY: Only enabled in test builds to prevent production bypass
-        #[cfg(test)]
+        // SECURITY: Only enabled in debug builds to prevent production bypass
+        #[cfg(debug_assertions)]
         if client_id == "internal-test" {
             debug!("Internal test token detected - bypassing routing config for embeddings (test mode only)");
             let (provider, model) = Self::parse_model_string(&request.model);
@@ -1519,8 +1489,8 @@ impl Router {
                 .await;
         }
 
-        // In non-test builds, reject internal-test token to prevent security bypass
-        #[cfg(not(test))]
+        // In release builds, reject internal-test token to prevent security bypass
+        #[cfg(not(debug_assertions))]
         if client_id == "internal-test" {
             warn!("Attempted to use internal-test bypass in production (embeddings) - rejected");
             return Err(AppError::Unauthorized);

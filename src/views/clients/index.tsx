@@ -6,7 +6,6 @@ import { Button } from "@/components/ui/Button"
 import { ClientList } from "./client-list"
 import { ClientDetail } from "./client-detail"
 import { ClientCreateDialog } from "./client-create-dialog"
-import { useMetricsSubscription } from "@/hooks/useMetricsSubscription"
 
 interface Client {
   id: string
@@ -28,7 +27,6 @@ interface ClientsViewProps {
 }
 
 export function ClientsView({ activeSubTab, onTabChange }: ClientsViewProps) {
-  const refreshKey = useMetricsSubscription()
   const [clients, setClients] = useState<Client[]>([])
   const [loading, setLoading] = useState(true)
   const [createDialogOpen, setCreateDialogOpen] = useState(false)
@@ -95,7 +93,6 @@ export function ClientsView({ activeSubTab, onTabChange }: ClientsViewProps) {
           initialTab={innerTab}
           initialMode={mode as "forced" | "multi" | "prioritized" | null}
           onBack={handleBack}
-          refreshTrigger={refreshKey}
         />
       )
     }

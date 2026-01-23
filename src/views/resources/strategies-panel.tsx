@@ -49,13 +49,11 @@ interface Client {
 interface StrategiesPanelProps {
   selectedId: string | null
   onSelect: (id: string | null) => void
-  refreshTrigger?: number
 }
 
 export function StrategiesPanel({
   selectedId,
   onSelect,
-  refreshTrigger: _refreshTrigger = 0,
 }: StrategiesPanelProps) {
   const [strategies, setStrategies] = useState<StrategyConfig[]>([])
   const [clients, setClients] = useState<Client[]>([])

@@ -367,6 +367,20 @@ impl ClientManager {
             .map(|c| c.mcp_server_access.clone())
     }
 
+    /// Set MCP deferred loading for a client
+    pub fn set_mcp_deferred_loading(&self, client_id: &str, enabled: bool) -> AppResult<()> {
+        let mut clients = self.clients.write();
+
+        let client = clients
+            .iter_mut()
+            .find(|c| c.id == client_id)
+            .ok_or_else(|| AppError::Config(format!("Client not found: {}", client_id)))?;
+
+        client.mcp_deferred_loading = enabled;
+
+        Ok(())
+    }
+
     /// Enable a client
     pub fn enable_client(&self, client_id: &str) -> AppResult<()> {
         let mut clients = self.clients.write();
@@ -446,6 +460,14 @@ impl ClientManager {
     /// Get the current client configs for saving to disk
     pub fn get_configs(&self) -> Vec<Client> {
         self.clients.read().clone()
+    }
+
+    /// Sync in-memory clients from an external source (e.g., ConfigManager)
+    ///
+    /// This updates the client metadata while preserving keychain secrets.
+    /// Use this after config changes to keep ClientManager in sync.
+    pub fn sync_clients(&self, clients: Vec<Client>) {
+        *self.clients.write() = clients;
     }
 
     /// Rotate the secret for a client

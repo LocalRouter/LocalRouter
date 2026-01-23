@@ -17,6 +17,19 @@ use tokio_tungstenite::{
     connect_async, tungstenite::protocol::Message, MaybeTlsStream, WebSocketStream,
 };
 
+/// Normalize response ID for pending map lookup
+///
+/// Handles the case where server returns `id: null` by converting to a special key.
+/// For other values, converts to string representation.
+fn normalize_response_id(id: &Value) -> String {
+    match id {
+        Value::Null => "__null_id__".to_string(),
+        Value::Number(n) => n.to_string(),
+        Value::String(s) => format!("\"{}\"", s),
+        _ => id.to_string(),
+    }
+}
+
 /// Notification callback type for WebSocket transport
 pub type WebSocketNotificationCallback = Arc<dyn Fn(JsonRpcNotification) + Send + Sync>;
 
@@ -102,8 +115,8 @@ impl WebSocketTransport {
                         // Parse JSON-RPC message (response or notification)
                         match serde_json::from_str::<JsonRpcMessage>(&text) {
                             Ok(JsonRpcMessage::Response(response)) => {
-                                // Extract ID and find pending sender
-                                let id_str = response.id.to_string();
+                                // Extract ID and find pending sender using normalized ID
+                                let id_str = normalize_response_id(&response.id);
 
                                 if let Some(sender) = pending.write().remove(&id_str) {
                                     // Send response to waiting caller
@@ -249,24 +262,37 @@ impl Transport for WebSocketTransport {
         })?;
 
         // Send message via WebSocket
+        // Note: We avoid nested locks by separating lock acquisition from error handling
         {
-            // Take write handle temporarily
-            let mut write_handle = {
+            // Take write handle temporarily (single lock acquisition)
+            let write_handle_opt = {
                 let mut write_guard = self.write.write();
-                write_guard.take().ok_or_else(|| {
+                write_guard.take()
+            };
+            // Lock is released here
+
+            let mut write_handle = match write_handle_opt {
+                Some(handle) => handle,
+                None => {
+                    // Clean up pending request (no locks currently held)
                     self.pending.write().remove(&request_id);
-                    AppError::Mcp("WebSocket write handle not available".to_string())
-                })?
+                    return Err(AppError::Mcp(
+                        "WebSocket write handle not available".to_string(),
+                    ));
+                }
             };
 
-            // Send the message
-            write_handle.send(Message::Text(json)).await.map_err(|e| {
-                self.pending.write().remove(&request_id);
-                AppError::Mcp(format!("Failed to send message: {}", e))
-            })?;
+            // Send the message (no locks held during async operation)
+            let send_result = write_handle.send(Message::Text(json)).await;
 
-            // Put write handle back
+            // Put write handle back first (before handling potential error)
             *self.write.write() = Some(write_handle);
+
+            // Now handle any error (write lock is released)
+            if let Err(e) = send_result {
+                self.pending.write().remove(&request_id);
+                return Err(AppError::Mcp(format!("Failed to send message: {}", e)));
+            }
         }
 
         // Wait for response (with timeout)

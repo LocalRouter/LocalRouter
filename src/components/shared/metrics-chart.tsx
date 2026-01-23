@@ -27,6 +27,7 @@ import { cn } from "@/lib/utils"
 type TimeRange = "hour" | "day" | "week" | "month"
 type MetricType = "tokens" | "cost" | "requests" | "latency" | "successrate"
 type McpMetricType = "requests" | "latency" | "successrate"
+type ChartType = "line" | "area" | "bar"
 type Scope = "global" | "api_key" | "provider" | "model" | "strategy"
 type McpScope = "global" | "client" | "server"
 type DataSourceType = "llm" | "mcp"
@@ -48,12 +49,19 @@ interface GraphData {
   rate_limits?: RateLimitInfo[]
 }
 
+interface MultiScopeEntity {
+  id: string
+  label: string
+  scope: Scope | McpScope
+}
+
 interface MetricsChartProps {
   title: string
   scope: Scope | McpScope
   scopeId?: string
   defaultMetricType?: MetricType | McpMetricType
   defaultTimeRange?: TimeRange
+  chartType?: ChartType
   metricOptions?: { id: MetricType | McpMetricType; label: string }[]
   refreshTrigger?: number
   showControls?: boolean
@@ -63,6 +71,8 @@ interface MetricsChartProps {
   dataSource?: DataSourceType
   /** Show method breakdown for MCP requests (only for dataSource='mcp') */
   showMethodBreakdown?: boolean
+  /** Multiple entities to show on a single chart (overrides scope/scopeId) */
+  multiScope?: MultiScopeEntity[]
 }
 
 const CHART_COLORS = [
@@ -79,6 +89,7 @@ export function MetricsChart({
   scopeId,
   defaultMetricType = "requests",
   defaultTimeRange = "day",
+  chartType: _chartType = "bar",
   metricOptions = [
     { id: "requests", label: "Requests" },
     { id: "tokens", label: "Tokens" },
@@ -92,6 +103,7 @@ export function MetricsChart({
   height = 300,
   dataSource = "llm",
   showMethodBreakdown = false,
+  multiScope,
 }: MetricsChartProps) {
   const [data, setData] = React.useState<GraphData | null>(null)
   const [loading, setLoading] = React.useState(true)
@@ -100,76 +112,140 @@ export function MetricsChart({
   const [timeRange, setTimeRange] = React.useState<TimeRange>(defaultTimeRange)
   const [expanded, setExpanded] = React.useState(false)
 
+  // Sync internal state with props when they change (for controlled usage)
+  React.useEffect(() => {
+    setTimeRange(defaultTimeRange)
+  }, [defaultTimeRange])
+
+  React.useEffect(() => {
+    setMetricType(defaultMetricType)
+  }, [defaultMetricType])
+
+  // Helper to get command and args for a single scope
+  const getCommandForScope = React.useCallback((entityScope: Scope | McpScope, entityScopeId?: string) => {
+    let command = ""
+    const args: Record<string, unknown> = { timeRange, metricType }
+
+    if (dataSource === "mcp") {
+      if (showMethodBreakdown && metricType === "requests") {
+        command = "get_mcp_method_breakdown"
+        args.scope = entityScopeId ? `${entityScope}:${entityScopeId}` : entityScope
+      } else {
+        switch (entityScope) {
+          case "global":
+            command = "get_global_mcp_metrics"
+            break
+          case "client":
+            command = "get_client_mcp_metrics"
+            args.clientId = entityScopeId
+            break
+          case "server":
+            command = "get_mcp_server_metrics"
+            args.serverId = entityScopeId
+            break
+        }
+      }
+    } else {
+      switch (entityScope) {
+        case "global":
+          command = "get_global_metrics"
+          break
+        case "api_key":
+          command = "get_api_key_metrics"
+          args.apiKeyId = entityScopeId
+          break
+        case "provider":
+          command = "get_provider_metrics"
+          args.provider = entityScopeId
+          break
+        case "model":
+          command = "get_model_metrics"
+          args.model = entityScopeId
+          break
+        case "strategy":
+          command = "get_strategy_metrics"
+          args.strategyId = entityScopeId
+          break
+      }
+    }
+
+    return { command, args }
+  }, [timeRange, metricType, dataSource, showMethodBreakdown])
+
   const loadMetrics = React.useCallback(async () => {
     try {
       setLoading(true)
       setError(null)
 
-      let command = ""
-      const args: Record<string, unknown> = { timeRange, metricType }
+      if (multiScope && multiScope.length > 0) {
+        // Fetch data for multiple entities and combine
+        const results = await Promise.all(
+          multiScope.map(async (entity) => {
+            const { command, args } = getCommandForScope(entity.scope, entity.id)
+            if (!command) return null
+            try {
+              const result = await invoke<GraphData>(command, args)
+              return { entity, result }
+            } catch {
+              return null
+            }
+          })
+        )
 
-      if (dataSource === "mcp") {
-        // MCP metrics
-        if (showMethodBreakdown && metricType === "requests") {
-          command = "get_mcp_method_breakdown"
-          args.scope = scopeId ? `${scope}:${scopeId}` : scope
-        } else {
-          switch (scope) {
-            case "global":
-              command = "get_global_mcp_metrics"
-              break
-            case "client":
-              command = "get_client_mcp_metrics"
-              args.clientId = scopeId
-              break
-            case "server":
-              command = "get_mcp_server_metrics"
-              args.serverId = scopeId
-              break
+        // Combine results into a single GraphData
+        const validResults = results.filter((r): r is { entity: MultiScopeEntity; result: GraphData } =>
+          r !== null && r.result.labels.length > 0
+        )
+
+        if (validResults.length === 0) {
+          setData({ labels: [], datasets: [] })
+          return
+        }
+
+        // Use the labels from the first result (they should all be the same time buckets)
+        const labels = validResults[0].result.labels
+
+        // Create a dataset for each entity
+        const datasets = validResults.map((r, index) => {
+          // Build a map of timestamp -> value for this entity's data
+          const dataMap = new Map<string, number>()
+          r.result.labels.forEach((label, labelIndex) => {
+            const value = r.result.datasets.reduce((sum, ds) => sum + (ds.data[labelIndex] || 0), 0)
+            dataMap.set(label, value)
+          })
+
+          // Map to common labels, using 0 for missing data points
+          const combinedData = labels.map((label) => dataMap.get(label) || 0)
+
+          return {
+            label: r.entity.label,
+            data: combinedData,
+            background_color: CHART_COLORS[index % CHART_COLORS.length],
+            border_color: CHART_COLORS[index % CHART_COLORS.length],
           }
-        }
+        })
+
+        setData({ labels, datasets })
       } else {
-        // LLM metrics
-        switch (scope) {
-          case "global":
-            command = "get_global_metrics"
-            break
-          case "api_key":
-            command = "get_api_key_metrics"
-            args.apiKeyId = scopeId
-            break
-          case "provider":
-            command = "get_provider_metrics"
-            args.provider = scopeId
-            break
-          case "model":
-            command = "get_model_metrics"
-            args.model = scopeId
-            break
-          case "strategy":
-            command = "get_strategy_metrics"
-            args.strategyId = scopeId
-            break
+        // Single scope - original behavior
+        const { command, args } = getCommandForScope(scope, scopeId)
+
+        if (!command) {
+          console.error(`No command for dataSource=${dataSource}, scope=${scope}`)
+          setError(`Invalid configuration: dataSource=${dataSource}, scope=${scope}`)
+          return
         }
-      }
 
-      if (!command) {
-        console.error(`No command for dataSource=${dataSource}, scope=${scope}`)
-        setError(`Invalid configuration: dataSource=${dataSource}, scope=${scope}`)
-        return
+        const result = await invoke<GraphData>(command, args)
+        setData(result)
       }
-
-      console.log(`[MetricsChart] Invoking ${command}`, { dataSource, scope, scopeId, args })
-      const result = await invoke<GraphData>(command, args)
-      console.log(`[MetricsChart] Result from ${command}:`, result)
-      setData(result)
     } catch (err) {
       console.error("Failed to load metrics:", err)
       setError(err instanceof Error ? err.message : "Failed to load metrics")
     } finally {
       setLoading(false)
     }
-  }, [scope, scopeId, timeRange, metricType, dataSource, showMethodBreakdown])
+  }, [scope, scopeId, timeRange, metricType, dataSource, showMethodBreakdown, multiScope, getCommandForScope])
 
   React.useEffect(() => {
     loadMetrics()
@@ -312,7 +388,7 @@ export function MetricsChart({
 
             return (
               <Bar
-                key={i}
+                key={dataset.label}
                 dataKey={dataset.label}
                 fill={color}
                 animationDuration={300}
@@ -416,9 +492,9 @@ export function MetricsChart({
       </CardHeader>
       <CardContent>
         {loading ? (
-          <Skeleton className="h-[300px] w-full" />
+          <Skeleton style={{ height: expanded ? 500 : height }} className="w-full" />
         ) : error ? (
-          <div className="flex h-[300px] items-center justify-center text-destructive">
+          <div style={{ height: expanded ? 500 : height }} className="flex items-center justify-center text-destructive">
             {error}
           </div>
         ) : (

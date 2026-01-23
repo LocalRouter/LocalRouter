@@ -4,7 +4,6 @@ import { RoutingTab } from "./routing-tab"
 import { RouteLLMTab } from "./routellm-tab"
 import { LoggingTab } from "./logging-tab"
 import { UpdatesTab } from "./updates-tab"
-import { AboutTab } from "./about-tab"
 import { DocsTab } from "./docs-tab"
 
 interface SettingsViewProps {
@@ -56,7 +55,6 @@ export function SettingsView({ activeSubTab, onTabChange }: SettingsViewProps) {
           <TabsTrigger value="routellm">RouteLLM</TabsTrigger>
           <TabsTrigger value="logging">Logging</TabsTrigger>
           <TabsTrigger value="updates">Updates</TabsTrigger>
-          <TabsTrigger value="about">About</TabsTrigger>
           {isDev && <TabsTrigger value="docs">Docs</TabsTrigger>}
         </TabsList>
 
@@ -81,10 +79,6 @@ export function SettingsView({ activeSubTab, onTabChange }: SettingsViewProps) {
 
         <TabsContent value="updates">
           <UpdatesTab />
-        </TabsContent>
-
-        <TabsContent value="about">
-          <AboutTab />
         </TabsContent>
 
         {isDev && (

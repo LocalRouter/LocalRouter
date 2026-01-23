@@ -3,7 +3,6 @@ import { ProvidersPanel } from "./providers-panel"
 import { ModelsPanel } from "./models-panel"
 import { StrategiesPanel } from "./strategies-panel"
 import { McpServersPanel } from "./mcp-servers-panel"
-import { useMetricsSubscription } from "@/hooks/useMetricsSubscription"
 
 interface ResourcesViewProps {
   activeSubTab: string | null
@@ -11,7 +10,6 @@ interface ResourcesViewProps {
 }
 
 export function ResourcesView({ activeSubTab, onTabChange }: ResourcesViewProps) {
-  const refreshKey = useMetricsSubscription()
 
   // Parse subTab to determine which resource type and item is selected
   // Format: "providers", "models", "mcp-servers"
@@ -59,7 +57,6 @@ export function ResourcesView({ activeSubTab, onTabChange }: ResourcesViewProps)
           <ProvidersPanel
             selectedId={resourceType === "providers" ? itemId : null}
             onSelect={(id) => handleItemSelect("providers", id)}
-            refreshTrigger={refreshKey}
           />
         </TabsContent>
 
@@ -67,7 +64,6 @@ export function ResourcesView({ activeSubTab, onTabChange }: ResourcesViewProps)
           <ModelsPanel
             selectedId={resourceType === "models" ? itemId : null}
             onSelect={(id) => handleItemSelect("models", id)}
-            refreshTrigger={refreshKey}
           />
         </TabsContent>
 
@@ -75,7 +71,6 @@ export function ResourcesView({ activeSubTab, onTabChange }: ResourcesViewProps)
           <StrategiesPanel
             selectedId={resourceType === "strategies" ? itemId : null}
             onSelect={(id) => handleItemSelect("strategies", id)}
-            refreshTrigger={refreshKey}
           />
         </TabsContent>
 
@@ -83,7 +78,6 @@ export function ResourcesView({ activeSubTab, onTabChange }: ResourcesViewProps)
           <McpServersPanel
             selectedId={resourceType === "mcp-servers" ? itemId : null}
             onSelect={(id) => handleItemSelect("mcp-servers", id)}
-            refreshTrigger={refreshKey}
           />
         </TabsContent>
       </Tabs>

@@ -53,8 +53,6 @@ fn create_test_config(
         mcp_deferred_loading: false,
         created_at: chrono::Utc::now(),
         last_used: None,
-        #[allow(deprecated)]
-        routing_config: None,
     };
 
     AppConfig {
@@ -126,8 +124,9 @@ fn create_test_router(config: AppConfig) -> Router {
 #[tokio::test]
 async fn test_strategy_allows_specific_model() {
     let allowed_models = AvailableModelsSelection {
-        all_provider_models: vec![],
-        individual_models: vec![("ollama".to_string(), "llama2".to_string())],
+        selected_all: false,
+        selected_providers: vec![],
+        selected_models: vec![("ollama".to_string(), "llama2".to_string())],
     };
 
     let config = create_test_config("test-strategy", allowed_models, None, vec![]);
@@ -153,8 +152,9 @@ async fn test_strategy_allows_specific_model() {
 #[tokio::test]
 async fn test_strategy_blocks_disallowed_model() {
     let allowed_models = AvailableModelsSelection {
-        all_provider_models: vec![],
-        individual_models: vec![("ollama".to_string(), "llama2".to_string())],
+        selected_all: false,
+        selected_providers: vec![],
+        selected_models: vec![("ollama".to_string(), "llama2".to_string())],
     };
 
     let config = create_test_config("test-strategy", allowed_models, None, vec![]);
@@ -179,8 +179,9 @@ async fn test_strategy_blocks_disallowed_model() {
 #[tokio::test]
 async fn test_strategy_allows_all_provider_models() {
     let allowed_models = AvailableModelsSelection {
-        all_provider_models: vec!["ollama".to_string()],
-        individual_models: vec![],
+        selected_all: false,
+        selected_providers: vec!["ollama".to_string()],
+        selected_models: vec![],
     };
 
     let config = create_test_config("test-strategy", allowed_models, None, vec![]);
@@ -218,8 +219,9 @@ async fn test_auto_routing_requires_enabled() {
     };
 
     let allowed_models = AvailableModelsSelection {
-        all_provider_models: vec!["ollama".to_string()],
-        individual_models: vec![],
+        selected_all: false,
+        selected_providers: vec!["ollama".to_string()],
+        selected_models: vec![],
     };
 
     let config = create_test_config("test-strategy", allowed_models, Some(auto_config), vec![]);
@@ -251,8 +253,9 @@ async fn test_auto_routing_requires_prioritized_models() {
     };
 
     let allowed_models = AvailableModelsSelection {
-        all_provider_models: vec!["ollama".to_string()],
-        individual_models: vec![],
+        selected_all: false,
+        selected_providers: vec!["ollama".to_string()],
+        selected_models: vec![],
     };
 
     let config = create_test_config("test-strategy", allowed_models, Some(auto_config), vec![]);
@@ -280,8 +283,9 @@ async fn test_auto_routing_requires_prioritized_models() {
 #[tokio::test]
 async fn test_auto_routing_without_config() {
     let allowed_models = AvailableModelsSelection {
-        all_provider_models: vec!["ollama".to_string()],
-        individual_models: vec![],
+        selected_all: false,
+        selected_providers: vec!["ollama".to_string()],
+        selected_models: vec![],
     };
 
     let config = create_test_config("test-strategy", allowed_models, None, vec![]);
@@ -379,8 +383,9 @@ async fn test_strategy_rate_limit_requests() {
     }];
 
     let allowed_models = AvailableModelsSelection {
-        all_provider_models: vec!["ollama".to_string()],
-        individual_models: vec![],
+        selected_all: false,
+        selected_providers: vec!["ollama".to_string()],
+        selected_models: vec![],
     };
 
     let config = create_test_config("test-strategy", allowed_models, None, rate_limits);
@@ -409,8 +414,9 @@ async fn test_strategy_rate_limit_cost_ignores_free_models() {
     }];
 
     let allowed_models = AvailableModelsSelection {
-        all_provider_models: vec!["ollama".to_string()],
-        individual_models: vec![],
+        selected_all: false,
+        selected_providers: vec!["ollama".to_string()],
+        selected_models: vec![],
     };
 
     let config = create_test_config("test-strategy", allowed_models, None, rate_limits);
@@ -441,8 +447,9 @@ async fn test_disabled_client_returns_unauthorized() {
         name: "Test Strategy".to_string(),
         parent: None,
         allowed_models: AvailableModelsSelection {
-            all_provider_models: vec!["ollama".to_string()],
-            individual_models: vec![],
+            selected_all: false,
+            selected_providers: vec!["ollama".to_string()],
+            selected_models: vec![],
         },
         auto_config: None,
         rate_limits: vec![],
@@ -463,8 +470,6 @@ async fn test_disabled_client_returns_unauthorized() {
         mcp_deferred_loading: false,
         created_at: chrono::Utc::now(),
         last_used: None,
-        #[allow(deprecated)]
-        routing_config: None,
     };
 
     let config = AppConfig {
@@ -502,8 +507,6 @@ async fn test_client_with_missing_strategy() {
         mcp_deferred_loading: false,
         created_at: chrono::Utc::now(),
         last_used: None,
-        #[allow(deprecated)]
-        routing_config: None,
     };
 
     let config = AppConfig {
@@ -548,8 +551,9 @@ async fn test_streaming_supports_auto_routing() {
     };
 
     let allowed_models = AvailableModelsSelection {
-        all_provider_models: vec!["ollama".to_string()],
-        individual_models: vec![],
+        selected_all: false,
+        selected_providers: vec!["ollama".to_string()],
+        selected_models: vec![],
     };
 
     let config = create_test_config("test-strategy", allowed_models, Some(auto_config), vec![]);
@@ -642,8 +646,9 @@ async fn test_internal_test_token_requires_provider_prefix() {
 #[tokio::test]
 async fn test_model_without_provider_finds_from_individual_models() {
     let allowed_models = AvailableModelsSelection {
-        all_provider_models: vec![],
-        individual_models: vec![("ollama".to_string(), "llama2".to_string())],
+        selected_all: false,
+        selected_providers: vec![],
+        selected_models: vec![("ollama".to_string(), "llama2".to_string())],
     };
 
     let config = create_test_config("test-strategy", allowed_models, None, vec![]);
@@ -670,8 +675,9 @@ async fn test_model_without_provider_finds_from_individual_models() {
 #[tokio::test]
 async fn test_model_without_provider_not_in_allowed() {
     let allowed_models = AvailableModelsSelection {
-        all_provider_models: vec![],
-        individual_models: vec![("ollama".to_string(), "llama2".to_string())],
+        selected_all: false,
+        selected_providers: vec![],
+        selected_models: vec![("ollama".to_string(), "llama2".to_string())],
     };
 
     let config = create_test_config("test-strategy", allowed_models, None, vec![]);
@@ -740,8 +746,9 @@ async fn test_bug_model_id_with_tag_suffix() {
     // Should match after normalization
 
     let allowed_models = AvailableModelsSelection {
-        all_provider_models: vec![],
-        individual_models: vec![("ollama".to_string(), "llama2:latest".to_string())],
+        selected_all: false,
+        selected_providers: vec![],
+        selected_models: vec![("ollama".to_string(), "llama2:latest".to_string())],
     };
 
     let config = create_test_config("test-strategy", allowed_models, None, vec![]);
@@ -771,8 +778,9 @@ async fn test_bug_model_id_with_provider_prefix() {
     // Should match after normalization
 
     let allowed_models = AvailableModelsSelection {
-        all_provider_models: vec![],
-        individual_models: vec![("openai".to_string(), "openai/gpt-4".to_string())],
+        selected_all: false,
+        selected_providers: vec![],
+        selected_models: vec![("openai".to_string(), "openai/gpt-4".to_string())],
     };
 
     let config = create_test_config("test-strategy", allowed_models, None, vec![]);
@@ -802,8 +810,9 @@ async fn test_bug_model_id_with_both_prefix_and_suffix() {
     // Should match after stripping both prefix and suffix
 
     let allowed_models = AvailableModelsSelection {
-        all_provider_models: vec![],
-        individual_models: vec![("ollama".to_string(), "ollama/llama2:7b".to_string())],
+        selected_all: false,
+        selected_providers: vec![],
+        selected_models: vec![("ollama".to_string(), "ollama/llama2:7b".to_string())],
     };
 
     let config = create_test_config("test-strategy", allowed_models, None, vec![]);
@@ -834,8 +843,9 @@ async fn test_bug_model_id_with_both_prefix_and_suffix() {
 #[tokio::test]
 async fn test_empty_allowed_models_blocks_all() {
     let allowed_models = AvailableModelsSelection {
-        all_provider_models: vec![],
-        individual_models: vec![],
+        selected_all: false,
+        selected_providers: vec![],
+        selected_models: vec![],
     };
 
     let config = create_test_config("test-strategy", allowed_models, None, vec![]);
@@ -891,8 +901,9 @@ async fn test_auto_routing_fallback_configuration() {
     };
 
     let allowed_models = AvailableModelsSelection {
-        all_provider_models: vec!["ollama".to_string()],
-        individual_models: vec![],
+        selected_all: false,
+        selected_providers: vec!["ollama".to_string()],
+        selected_models: vec![],
     };
 
     let config = create_test_config("test-strategy", allowed_models, Some(auto_config), vec![]);
@@ -944,8 +955,9 @@ async fn test_auto_routing_strategy_rate_limits_checked_per_model() {
     };
 
     let allowed_models = AvailableModelsSelection {
-        all_provider_models: vec!["ollama".to_string()],
-        individual_models: vec![],
+        selected_all: false,
+        selected_providers: vec!["ollama".to_string()],
+        selected_models: vec![],
     };
 
     // Set an impossible rate limit (0 requests per minute)

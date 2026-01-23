@@ -5,8 +5,8 @@ import { AppShell, type View } from './components/layout'
 import { DashboardView } from './views/dashboard'
 import { ClientsView } from './views/clients'
 import { ResourcesView } from './views/resources'
-import { TryItOutView } from './views/try-it-out'
 import { LogsView } from './views/logs'
+import { TryItOutView } from './views/try-it-out'
 import { SettingsView } from './views/settings'
 
 type McpAccessMode = 'none' | 'all' | 'specific'
@@ -103,16 +103,16 @@ function App() {
             onTabChange={handleChildViewChange}
           />
         )
-      case 'try-it-out':
+      case 'logs':
         return (
-          <TryItOutView
+          <LogsView
             activeSubTab={activeSubTab}
             onTabChange={handleChildViewChange}
           />
         )
-      case 'logs':
+      case 'try-it-out':
         return (
-          <LogsView
+          <TryItOutView
             activeSubTab={activeSubTab}
             onTabChange={handleChildViewChange}
           />

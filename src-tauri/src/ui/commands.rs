@@ -8,8 +8,8 @@ use std::sync::Arc;
 
 use crate::api_keys::keychain_trait::KeychainStorage;
 use crate::config::{
-    client_strategy_name, ActiveRoutingStrategy, ConfigManager, McpAuthConfig, McpServerAccess,
-    McpServerConfig, McpTransportConfig, McpTransportType, ModelRoutingConfig, RouterConfig,
+    client_strategy_name, ConfigManager, McpAuthConfig, McpServerAccess, McpServerConfig,
+    McpTransportConfig, McpTransportType,
 };
 use crate::mcp::McpServerManager;
 use crate::monitoring::logger::AccessLogger;
@@ -18,15 +18,6 @@ use crate::providers::registry::ProviderRegistry;
 use crate::server::ServerManager;
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, State};
-
-/// List all routers
-#[tauri::command]
-pub async fn list_routers(
-    config_manager: State<'_, ConfigManager>,
-) -> Result<Vec<RouterConfig>, String> {
-    let config = config_manager.get();
-    Ok(config.routers)
-}
 
 /// Get current configuration
 #[tauri::command]
@@ -2749,6 +2740,7 @@ pub async fn rotate_client_secret(
 pub async fn toggle_client_deferred_loading(
     client_id: String,
     enabled: bool,
+    client_manager: State<'_, Arc<crate::clients::ClientManager>>,
     config_manager: State<'_, ConfigManager>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
@@ -2758,20 +2750,19 @@ pub async fn toggle_client_deferred_loading(
         enabled
     );
 
-    // Update in config
-    let mut found = false;
+    // Update in client manager (in-memory)
+    client_manager
+        .set_mcp_deferred_loading(&client_id, enabled)
+        .map_err(|e| e.to_string())?;
+
+    // Update in config (for persistence)
     config_manager
         .update(|cfg| {
             if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
                 client.mcp_deferred_loading = enabled;
-                found = true;
             }
         })
         .map_err(|e| e.to_string())?;
-
-    if !found {
-        return Err(format!("Client not found: {}", client_id));
-    }
 
     // Persist to disk
     config_manager.save().await.map_err(|e| e.to_string())?;
@@ -3048,236 +3039,6 @@ pub async fn get_client_value(
 }
 
 // ============================================================================
-// Client Routing Configuration
-// ============================================================================
-
-/// Set the routing strategy for a client
-#[allow(deprecated)]
-#[tauri::command]
-pub async fn set_client_routing_strategy(
-    client_id: String,
-    strategy: String, // "forced", "multi", or "prioritized"
-    config_manager: State<'_, ConfigManager>,
-    app: tauri::AppHandle,
-) -> Result<(), String> {
-    tracing::info!(
-        "Setting routing strategy for client {} to: {}",
-        client_id,
-        strategy
-    );
-
-    let active_strategy = match strategy.as_str() {
-        "forced" => ActiveRoutingStrategy::ForceModel,
-        "multi" => ActiveRoutingStrategy::AvailableModels,
-        "prioritized" => ActiveRoutingStrategy::PrioritizedList,
-        _ => return Err(format!("Invalid routing strategy: {}", strategy)),
-    };
-
-    // Update in config
-    let mut found = false;
-    config_manager
-        .update(|cfg| {
-            if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
-                // Get or create routing config
-                let mut routing_config = client
-                    .routing_config
-                    .take()
-                    .unwrap_or_else(ModelRoutingConfig::new_available_models);
-
-                // Update strategy
-                routing_config.active_strategy = active_strategy;
-
-                client.routing_config = Some(routing_config);
-                found = true;
-            }
-        })
-        .map_err(|e| e.to_string())?;
-
-    if !found {
-        return Err(format!("Client not found: {}", client_id));
-    }
-
-    // Persist to disk
-    config_manager.save().await.map_err(|e| e.to_string())?;
-
-    // Rebuild tray menu
-    if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
-        tracing::error!("Failed to rebuild tray menu: {}", e);
-    }
-
-    tracing::info!("Routing strategy updated for client {}", client_id);
-
-    Ok(())
-}
-
-/// Set the forced model for a client (ForceModel strategy)
-#[allow(deprecated)]
-#[tauri::command]
-pub async fn set_client_forced_model(
-    client_id: String,
-    provider: Option<String>,
-    model: Option<String>,
-    config_manager: State<'_, ConfigManager>,
-    app: tauri::AppHandle,
-) -> Result<(), String> {
-    tracing::info!(
-        "Setting forced model for client {}: {:?}/{:?}",
-        client_id,
-        provider,
-        model
-    );
-
-    // Update in config
-    let mut found = false;
-    config_manager
-        .update(|cfg| {
-            if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
-                // Get or create routing config
-                let mut routing_config = client
-                    .routing_config
-                    .take()
-                    .unwrap_or_else(ModelRoutingConfig::new_available_models);
-
-                // Update forced model
-                routing_config.forced_model = match (provider, model) {
-                    (Some(p), Some(m)) => Some((p, m)),
-                    _ => None,
-                };
-
-                client.routing_config = Some(routing_config);
-                found = true;
-            }
-        })
-        .map_err(|e| e.to_string())?;
-
-    if !found {
-        return Err(format!("Client not found: {}", client_id));
-    }
-
-    // Persist to disk
-    config_manager.save().await.map_err(|e| e.to_string())?;
-
-    // Rebuild tray menu
-    if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
-        tracing::error!("Failed to rebuild tray menu: {}", e);
-    }
-
-    tracing::info!("Forced model updated for client {}", client_id);
-
-    Ok(())
-}
-
-/// Update available models for a client (AvailableModels strategy)
-#[allow(deprecated)]
-#[tauri::command]
-pub async fn update_client_available_models(
-    client_id: String,
-    selected_all: bool,
-    selected_providers: Vec<String>,
-    selected_models: Vec<(String, String)>,
-    config_manager: State<'_, ConfigManager>,
-    app: tauri::AppHandle,
-) -> Result<(), String> {
-    tracing::info!(
-        "Updating available models for client {}: all={}, {} provider(s), {} individual model(s)",
-        client_id,
-        selected_all,
-        selected_providers.len(),
-        selected_models.len()
-    );
-
-    // Update in config
-    let mut found = false;
-    config_manager
-        .update(|cfg| {
-            if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
-                // Get or create routing config
-                let mut routing_config = client
-                    .routing_config
-                    .take()
-                    .unwrap_or_else(ModelRoutingConfig::new_available_models);
-
-                // Update available models
-                routing_config.available_models.selected_all = selected_all;
-                routing_config.available_models.selected_providers = selected_providers;
-                routing_config.available_models.selected_models = selected_models;
-
-                client.routing_config = Some(routing_config);
-                found = true;
-            }
-        })
-        .map_err(|e| e.to_string())?;
-
-    if !found {
-        return Err(format!("Client not found: {}", client_id));
-    }
-
-    // Persist to disk
-    config_manager.save().await.map_err(|e| e.to_string())?;
-
-    // Rebuild tray menu
-    if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
-        tracing::error!("Failed to rebuild tray menu: {}", e);
-    }
-
-    tracing::info!("Available models updated for client {}", client_id);
-
-    Ok(())
-}
-
-/// Update prioritized models list for a client (PrioritizedList strategy)
-#[allow(deprecated)]
-#[tauri::command]
-pub async fn update_client_prioritized_models(
-    client_id: String,
-    prioritized_models: Vec<(String, String)>,
-    config_manager: State<'_, ConfigManager>,
-    app: tauri::AppHandle,
-) -> Result<(), String> {
-    tracing::info!(
-        "Updating prioritized models for client {}: {} model(s)",
-        client_id,
-        prioritized_models.len()
-    );
-
-    // Update in config
-    let mut found = false;
-    config_manager
-        .update(|cfg| {
-            if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
-                // Get or create routing config
-                let mut routing_config = client
-                    .routing_config
-                    .take()
-                    .unwrap_or_else(ModelRoutingConfig::new_available_models);
-
-                // Update prioritized models
-                routing_config.prioritized_models = prioritized_models;
-
-                client.routing_config = Some(routing_config);
-                found = true;
-            }
-        })
-        .map_err(|e| e.to_string())?;
-
-    if !found {
-        return Err(format!("Client not found: {}", client_id));
-    }
-
-    // Persist to disk
-    config_manager.save().await.map_err(|e| e.to_string())?;
-
-    // Rebuild tray menu
-    if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
-        tracing::error!("Failed to rebuild tray menu: {}", e);
-    }
-
-    tracing::info!("Prioritized models updated for client {}", client_id);
-
-    Ok(())
-}
-
-// ============================================================================
 // Strategy Management Commands
 // ============================================================================
 
@@ -3551,6 +3312,53 @@ pub async fn get_internal_test_token(
         .ok_or_else(|| "Server not started".to_string())?;
 
     Ok(state.get_internal_test_secret())
+}
+
+/// Create a temporary test client bound to a specific routing strategy.
+/// This is used by the "Try It Out" feature to test requests with specific strategies.
+/// The client is created and persisted so it can be used for testing.
+/// Returns the bearer token that can be used to make requests with this strategy.
+#[tauri::command]
+pub async fn create_test_client_for_strategy(
+    strategy_id: String,
+    client_manager: State<'_, Arc<crate::clients::ClientManager>>,
+    config_manager: State<'_, ConfigManager>,
+) -> Result<String, String> {
+    // Verify strategy exists
+    let config = config_manager.get();
+    let strategy_exists = config.strategies.iter().any(|s| s.name == strategy_id);
+    if !strategy_exists {
+        return Err(format!("Strategy not found: {}", strategy_id));
+    }
+
+    // Create a test client with a unique name
+    let test_client_name = format!("_test_strategy_{}", strategy_id);
+
+    // Check if we already have a test client for this strategy
+    let existing_clients = client_manager.list_clients();
+    if let Some(existing) = existing_clients.iter().find(|c| c.name == test_client_name) {
+        // Return the existing client's secret
+        return client_manager
+            .get_secret(&existing.id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "Failed to retrieve test client secret".to_string());
+    }
+
+    // Create a new test client
+    let (client_id, secret, _) = client_manager
+        .create_client(test_client_name)
+        .map_err(|e| e.to_string())?;
+
+    // Assign the strategy to this client using ConfigManager
+    config_manager
+        .assign_client_strategy(&client_id, &strategy_id)
+        .map_err(|e| e.to_string())?;
+
+    // Sync the client manager with updated config
+    let updated_config = config_manager.get();
+    client_manager.sync_clients(updated_config.clients);
+
+    Ok(secret)
 }
 
 // ============================================================================

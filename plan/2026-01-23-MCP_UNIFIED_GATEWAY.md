@@ -701,35 +701,51 @@ const MIN_ACTIVATIONS: usize = 3;           // Activate at least 3
 
 ### 9.1 Sampling Support (`sampling/createMessage`)
 
-Enables backend MCP servers to request LLM completions through the gateway:
+Enables backend MCP servers to request LLM completions through the gateway.
+
+**Important**: Sampling is handled at the **route handler level** (`mcp.rs`), NOT in the `McpGateway` struct. The request is intercepted before reaching the gateway logic.
 
 ```rust
-// In mcp.rs handler:
-"sampling/createMessage" => {
-    // 1. Check if sampling enabled for this client
-    if !client.mcp_sampling_enabled {
-        return error("Sampling disabled");
+// In mcp.rs route handler (both unified and per-server):
+match request.method.as_str() {
+    "sampling/createMessage" => {
+        // 1. Check if sampling enabled for this client
+        if !client.mcp_sampling_enabled {
+            return error("Sampling disabled");
+        }
+
+        // 2. Parse MCP sampling request format
+        let sampling_req: SamplingRequest = parse(request.params);
+
+        // 3. Convert to chat completion format
+        let completion_req = convert_sampling_to_chat_request(sampling_req);
+
+        // 4. Default model to auto-routing
+        if completion_req.model.is_empty() {
+            completion_req.model = "localrouter/auto";
+        }
+
+        // 5. Route through LLM router
+        let completion_resp = router.complete(&client_id, completion_req).await;
+
+        // 6. Convert back to MCP sampling response
+        let sampling_resp = convert_chat_to_sampling_response(completion_resp);
+
+        return JsonRpcResponse::success(sampling_resp);
     }
-
-    // 2. Parse MCP sampling request format
-    let sampling_req: SamplingRequest = parse(request.params);
-
-    // 3. Convert to chat completion format
-    let completion_req = convert_sampling_to_chat_request(sampling_req);
-
-    // 4. Route through LLM router
-    let completion_resp = router.complete(&client_id, completion_req).await;
-
-    // 5. Convert back to MCP sampling response
-    let sampling_resp = convert_chat_to_sampling_response(completion_resp);
-
-    return JsonRpcResponse::success(sampling_resp);
+    // ... other methods go to McpGateway
 }
 ```
 
+**Note**: If `sampling/createMessage` reaches `McpGateway.handle_direct_request()`, it returns an error suggesting to use the individual server proxy endpoint instead. This should not happen in normal operation since the route handler intercepts it first.
+
 ### 9.2 Elicitation Support (`elicitation/requestInput`)
 
-Enables backend MCP servers to request structured user input:
+Enables backend MCP servers to request structured user input.
+
+**Important**: Elicitation behavior differs between endpoints:
+- **Unified gateway (`/`)**: Fully supported via `McpGateway.handle_elicitation_request()`
+- **Per-server proxy (`/mcp/{server_id}`)**: Returns "not implemented" error
 
 ```rust
 // ElicitationManager handles async user input requests:
@@ -742,7 +758,7 @@ pub async fn request_input(
     // 1. Create unique request ID
     // 2. Create oneshot channel for response
     // 3. Broadcast notification to external clients via WebSocket
-    // 4. Wait for response (with timeout)
+    // 4. Wait for response (with timeout, default 120s)
     // 5. Return response or timeout error
 }
 
@@ -750,9 +766,11 @@ pub async fn request_input(
 POST /mcp/elicitation/respond/{request_id}
 ```
 
+**Note**: The per-server proxy returns an error suggesting WebSocket infrastructure is required. This is because elicitation works best with the unified gateway where the `ElicitationManager` is properly integrated.
+
 ### 9.3 Roots Support (`roots/list`)
 
-Returns configured filesystem roots (advisory boundaries):
+Returns configured filesystem roots (advisory boundaries). Handled as a **direct method** (not broadcast).
 
 ```rust
 "roots/list" => {
@@ -764,6 +782,16 @@ Returns configured filesystem roots (advisory boundaries):
     });
 }
 ```
+
+### 9.4 Unimplemented Methods
+
+The following MCP methods are explicitly handled with "not implemented" errors:
+
+| Method | Response |
+|--------|----------|
+| `completion/complete` | Error: "This is a client capability. Servers request this from clients." |
+| `resources/subscribe` | Error: "Not yet implemented. Use resources/list with notifications." |
+| `resources/unsubscribe` | Error: "Not yet implemented." |
 
 ---
 

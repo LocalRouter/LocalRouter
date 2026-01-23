@@ -110,6 +110,8 @@ pub async fn mcp_websocket_handler(
 }
 
 /// Handle WebSocket connection for a specific client
+///
+/// Uses graceful shutdown via broadcast channel to avoid abrupt task cancellation.
 async fn handle_websocket(
     socket: WebSocket,
     state: AppState,
@@ -124,97 +126,143 @@ async fn handle_websocket(
     // Create channel for sending messages from multiple tasks
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Message>();
 
+    // Shutdown signal for graceful termination
+    let (shutdown_tx, mut shutdown_rx1) = tokio::sync::broadcast::channel::<()>(1);
+    let mut shutdown_rx2 = shutdown_tx.subscribe();
+    let mut shutdown_rx3 = shutdown_tx.subscribe();
+
     // Clone client_id for use in multiple tasks
     let client_id_forward = client_id.clone();
     let client_id_receive = client_id.clone();
 
     // Task 1: Forward notifications from broadcast to send channel
     let tx_clone = tx.clone();
-    let mut forward_task = tokio::spawn(async move {
-        while let Ok((server_id, notification)) = notification_rx.recv().await {
-            // Filter: only forward notifications from servers this client has access to
-            if !allowed_servers.contains(&server_id) {
-                continue;
-            }
-
-            // Create notification message
-            let message = json!({
-                "server_id": server_id,
-                "notification": notification,
-            });
-
-            let text = match serde_json::to_string(&message) {
-                Ok(t) => t,
-                Err(e) => {
-                    tracing::error!("Failed to serialize notification: {}", e);
-                    continue;
+    let forward_task = tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                biased;
+                _ = shutdown_rx1.recv() => {
+                    tracing::debug!("Forward task received shutdown signal for client {}", client_id_forward);
+                    break;
                 }
-            };
+                result = notification_rx.recv() => {
+                    match result {
+                        Ok((server_id, notification)) => {
+                            // Filter: only forward notifications from servers this client has access to
+                            if !allowed_servers.contains(&server_id) {
+                                continue;
+                            }
 
-            // Send to channel
-            if tx_clone.send(Message::Text(text)).is_err() {
-                tracing::debug!("Send channel closed for client {}", client_id_forward);
-                break;
+                            // Create notification message
+                            let message = json!({
+                                "server_id": server_id,
+                                "notification": notification,
+                            });
+
+                            let text = match serde_json::to_string(&message) {
+                                Ok(t) => t,
+                                Err(e) => {
+                                    tracing::error!("Failed to serialize notification: {}", e);
+                                    continue;
+                                }
+                            };
+
+                            // Send to channel
+                            if tx_clone.send(Message::Text(text)).is_err() {
+                                tracing::debug!("Send channel closed for client {}", client_id_forward);
+                                break;
+                            }
+                        }
+                        Err(_) => {
+                            // Broadcast channel closed
+                            break;
+                        }
+                    }
+                }
             }
         }
     });
 
     // Task 2: Handle incoming messages (ping/pong keepalive)
     let tx_clone = tx.clone();
-    let mut receive_task = tokio::spawn(async move {
-        while let Some(msg) = receiver.next().await {
-            match msg {
-                Ok(Message::Text(text)) => {
-                    // Handle ping/pong for keepalive
-                    if text.trim() == "ping" {
-                        let _ = tx_clone.send(Message::Text("pong".to_string()));
+    let shutdown_tx_clone = shutdown_tx.clone();
+    let receive_task = tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                biased;
+                _ = shutdown_rx2.recv() => {
+                    tracing::debug!("Receive task received shutdown signal for client {}", client_id_receive);
+                    break;
+                }
+                msg_opt = receiver.next() => {
+                    match msg_opt {
+                        Some(Ok(Message::Text(text))) => {
+                            // Handle ping/pong for keepalive
+                            if text.trim() == "ping" {
+                                let _ = tx_clone.send(Message::Text("pong".to_string()));
+                            }
+                        }
+                        Some(Ok(Message::Close(_))) => {
+                            tracing::debug!(
+                                "WebSocket close message received from client {}",
+                                client_id_receive
+                            );
+                            // Signal other tasks to shutdown gracefully
+                            let _ = shutdown_tx_clone.send(());
+                            break;
+                        }
+                        Some(Err(e)) => {
+                            tracing::debug!("WebSocket receive error: {}", e);
+                            let _ = shutdown_tx_clone.send(());
+                            break;
+                        }
+                        None => {
+                            // Stream ended
+                            let _ = shutdown_tx_clone.send(());
+                            break;
+                        }
+                        _ => {
+                            // Ignore other message types (Binary, Ping, Pong)
+                        }
                     }
-                }
-                Ok(Message::Close(_)) => {
-                    tracing::debug!(
-                        "WebSocket close message received from client {}",
-                        client_id_receive
-                    );
-                    break;
-                }
-                Err(e) => {
-                    tracing::debug!("WebSocket receive error: {}", e);
-                    break;
-                }
-                _ => {
-                    // Ignore other message types (Binary, Ping, Pong)
                 }
             }
         }
     });
 
     // Task 3: Send messages from channel to WebSocket
-    let mut send_task = tokio::spawn(async move {
-        while let Some(msg) = rx.recv().await {
-            if let Err(e) = sender.send(msg).await {
-                tracing::debug!("WebSocket send error (client likely disconnected): {}", e);
-                break;
+    let shutdown_tx_clone = shutdown_tx.clone();
+    let send_task = tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                biased;
+                _ = shutdown_rx3.recv() => {
+                    tracing::debug!("Send task received shutdown signal");
+                    // Try to send close frame gracefully
+                    let _ = sender.send(Message::Close(None)).await;
+                    break;
+                }
+                msg_opt = rx.recv() => {
+                    match msg_opt {
+                        Some(msg) => {
+                            if let Err(e) = sender.send(msg).await {
+                                tracing::debug!("WebSocket send error (client likely disconnected): {}", e);
+                                let _ = shutdown_tx_clone.send(());
+                                break;
+                            }
+                        }
+                        None => {
+                            // Channel closed
+                            break;
+                        }
+                    }
+                }
             }
         }
     });
 
-    // Wait for any task to complete
-    tokio::select! {
-        _ = &mut forward_task => {
-            tracing::debug!("WebSocket forward task completed for client {}", client_id);
-        }
-        _ = &mut receive_task => {
-            tracing::debug!("WebSocket receive task completed for client {}", client_id);
-        }
-        _ = &mut send_task => {
-            tracing::debug!("WebSocket send task completed for client {}", client_id);
-        }
-    }
-
-    // Clean up remaining tasks
-    forward_task.abort();
-    receive_task.abort();
-    send_task.abort();
+    // Wait for all tasks to complete gracefully
+    let _ = tokio::join!(forward_task, receive_task, send_task);
 
     tracing::info!("WebSocket connection closed for client {}", client_id);
 }

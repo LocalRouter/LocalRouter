@@ -17,7 +17,6 @@ import {
   commonActions,
   createToggleAction,
 } from "@/components/shared/entity-actions"
-import { MetricsChart } from "@/components/shared/metrics-chart"
 import { cn } from "@/lib/utils"
 
 interface Provider {
@@ -36,13 +35,11 @@ interface HealthStatus {
 interface ProvidersPanelProps {
   selectedId: string | null
   onSelect: (id: string | null) => void
-  refreshTrigger?: number
 }
 
 export function ProvidersPanel({
   selectedId,
   onSelect,
-  refreshTrigger = 0,
 }: ProvidersPanelProps) {
   const [providers, setProviders] = useState<Provider[]>([])
   const [healthStatus, setHealthStatus] = useState<Record<string, HealthStatus>>({})
@@ -248,15 +245,6 @@ export function ProvidersPanel({
                 </Card>
               )}
 
-              {/* Metrics */}
-              <MetricsChart
-                title="Provider Metrics"
-                scope="provider"
-                scopeId={selectedProvider.instance_name}
-                defaultMetricType="requests"
-                refreshTrigger={refreshTrigger}
-                height={250}
-              />
             </div>
           </ScrollArea>
         ) : (

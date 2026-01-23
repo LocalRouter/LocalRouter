@@ -143,6 +143,15 @@ async fn run_gui_mode() -> anyhow::Result<()> {
         Arc::new(clients::ClientManager::new(config.clients.clone()))
     };
 
+    // Register client sync callback to keep ClientManager in sync with config
+    // This prevents bugs where config changes aren't reflected in ClientManager
+    {
+        let client_manager_for_sync = client_manager.clone();
+        config_manager.set_client_sync_callback(std::sync::Arc::new(move |clients| {
+            client_manager_for_sync.sync_clients(clients);
+        }));
+    }
+
     // Initialize OAuth token store for short-lived access tokens
     // Tokens are stored in-memory only (1 hour expiry)
     let token_store = Arc::new(clients::TokenStore::new());
@@ -533,6 +542,32 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             // Setup system tray
             ui::tray::setup_tray(app)?;
 
+            // Configure window for test mode
+            if utils::test_mode::is_test_mode() {
+                info!("Running in TEST MODE - configuring window for testing");
+                if let Some(window) = app.get_webview_window("main") {
+                    // Add [TEST] to window title
+                    let _ = window.set_title("LocalRouter AI [TEST]");
+                    // Make window smaller (800x500)
+                    let _ = window.set_size(tauri::LogicalSize::new(800.0, 500.0));
+                    // Position in bottom-right corner
+                    if let Ok(monitor) = window.current_monitor() {
+                        if let Some(monitor) = monitor {
+                            let screen_size = monitor.size();
+                            let scale = monitor.scale_factor();
+                            // Position 50px from right and bottom edges
+                            let x = (screen_size.width as f64 / scale) - 800.0 - 50.0;
+                            let y = (screen_size.height as f64 / scale) - 500.0 - 50.0;
+                            let _ = window.set_position(tauri::LogicalPosition::new(x, y));
+                        }
+                    }
+                    // Minimize the window so it doesn't take focus
+                    // User can restore it from taskbar/dock if needed
+                    let _ = window.minimize();
+                    info!("Test mode window configured: 800x500, bottom-right corner, minimized");
+                }
+            }
+
             // Initialize tray graph manager
             info!("Initializing tray graph manager...");
             let ui_config = config_manager.get().ui.clone();
@@ -599,7 +634,6 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            ui::commands::list_routers,
             ui::commands::get_config,
             ui::commands::reload_config,
             ui::commands::set_provider_api_key,
@@ -706,11 +740,6 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::add_client_mcp_server,
             ui::commands::remove_client_mcp_server,
             ui::commands::set_client_mcp_access,
-            // Client routing configuration commands
-            ui::commands::set_client_routing_strategy,
-            ui::commands::set_client_forced_model,
-            ui::commands::update_client_available_models,
-            ui::commands::update_client_prioritized_models,
             ui::commands::get_client_value,
             // Strategy management commands
             ui::commands::list_strategies,
@@ -724,6 +753,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::get_openapi_spec,
             // Internal testing commands
             ui::commands::get_internal_test_token,
+            ui::commands::create_test_client_for_strategy,
             // Access logs commands
             ui::commands::get_llm_logs,
             ui::commands::get_mcp_logs,

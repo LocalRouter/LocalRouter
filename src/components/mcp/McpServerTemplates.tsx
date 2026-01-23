@@ -20,15 +20,15 @@ export interface McpServerTemplate {
 export const MCP_SERVER_TEMPLATES: McpServerTemplate[] = [
   {
     id: 'github',
-    name: 'GitHub MCP Server',
-    description: 'Access GitHub repositories, issues, PRs, and workflows',
+    name: 'GitHub Copilot MCP Server',
+    description: 'Access GitHub repositories, issues, PRs, and workflows via Copilot',
     icon: '🐙',
     transport: 'Sse',
-    url: 'https://api.github.com/mcp',
+    url: 'https://api.githubcopilot.com/mcp',
     authMethod: 'oauth_browser',
     defaultScopes: ['repo', 'read:user'],
     setupInstructions: 'Create a GitHub OAuth App at github.com/settings/developers with callback URL: http://localhost:8080/callback',
-    docsUrl: 'https://docs.github.com/en/developers/apps/building-oauth-apps',
+    docsUrl: 'https://docs.github.com/en/copilot',
   },
   {
     id: 'gitlab',

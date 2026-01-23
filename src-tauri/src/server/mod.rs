@@ -158,12 +158,14 @@ fn build_app(state: AppState, enable_cors: bool) -> Router {
     // MCP routes: unified gateway at root (/), individual servers under /mcp
     let mcp_routes = Router::new()
         .route("/", post(routes::mcp_gateway_handler)) // Unified MCP gateway at root (POST /)
+        .route("/mcp", post(routes::mcp_gateway_handler)) // Alias: /mcp also serves unified gateway
         .route("/mcp/:server_id", post(routes::mcp_server_handler)) // Individual MCP server proxy
         .route(
             "/mcp/:server_id/stream",
             post(routes::mcp_server_streaming_handler), // MCP streaming endpoint (SSE)
         )
         .route("/ws", get(routes::mcp_websocket_handler)) // WebSocket notifications
+        .route("/mcp/ws", get(routes::mcp_websocket_handler)) // Alias: /mcp/ws
         .route(
             "/mcp/elicitation/respond/:request_id",
             post(routes::elicitation_response_handler), // Submit elicitation responses
@@ -174,17 +176,33 @@ fn build_app(state: AppState, enable_cors: bool) -> Router {
             post(routes::initialize_streaming_session),
         ) // Initialize SSE session
         .route(
+            "/mcp/gateway/stream",
+            post(routes::initialize_streaming_session),
+        ) // Alias: /mcp/gateway/stream
+        .route(
             "/gateway/stream/:session_id",
             get(routes::streaming_event_handler),
         ) // SSE event stream
+        .route(
+            "/mcp/gateway/stream/:session_id",
+            get(routes::streaming_event_handler),
+        ) // Alias
         .route(
             "/gateway/stream/:session_id/request",
             post(routes::send_streaming_request),
         ) // Send request
         .route(
+            "/mcp/gateway/stream/:session_id/request",
+            post(routes::send_streaming_request),
+        ) // Alias
+        .route(
             "/gateway/stream/:session_id",
             delete(routes::close_streaming_session),
         ) // Close session
+        .route(
+            "/mcp/gateway/stream/:session_id",
+            delete(routes::close_streaming_session),
+        ) // Alias
         .layer(axum::middleware::from_fn(
             middleware::client_auth::client_auth_middleware,
         ))

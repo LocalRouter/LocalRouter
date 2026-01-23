@@ -2,7 +2,7 @@
 
 #![allow(deprecated)]
 
-use super::{AppConfig, ProviderConfig, RouterConfig};
+use super::{AppConfig, ProviderConfig};
 use crate::utils::errors::{AppError, AppResult};
 use std::collections::HashSet;
 
@@ -10,9 +10,6 @@ use std::collections::HashSet;
 pub fn validate_config(config: &AppConfig) -> AppResult<()> {
     // Validate server configuration
     validate_server_config(config)?;
-
-    // Validate routers
-    validate_routers(&config.routers)?;
 
     // Validate providers
     validate_providers(&config.providers)?;
@@ -43,57 +40,6 @@ fn validate_server_config(config: &AppConfig) -> AppResult<()> {
         return Err(AppError::Config(
             "Server port must be greater than 0".to_string(),
         ));
-    }
-
-    Ok(())
-}
-
-/// Validate routers
-fn validate_routers(routers: &[RouterConfig]) -> AppResult<()> {
-    if routers.is_empty() {
-        return Err(AppError::Config(
-            "At least one router must be configured".to_string(),
-        ));
-    }
-
-    // Check for duplicate router names
-    let mut names = HashSet::new();
-    for router in routers {
-        if !names.insert(&router.name) {
-            return Err(AppError::Config(format!(
-                "Duplicate router name: {}",
-                router.name
-            )));
-        }
-
-        // Validate name is not empty
-        if router.name.is_empty() {
-            return Err(AppError::Config("Router name cannot be empty".to_string()));
-        }
-
-        // Validate strategies are not empty
-        if router.strategies.is_empty() {
-            return Err(AppError::Config(format!(
-                "Router '{}' has no strategies configured",
-                router.name
-            )));
-        }
-
-        // Validate rate limiters
-        for limiter in &router.rate_limiters {
-            if limiter.value <= 0.0 {
-                return Err(AppError::Config(format!(
-                    "Router '{}' has invalid rate limit value: {}",
-                    router.name, limiter.value
-                )));
-            }
-            if limiter.time_window_seconds == 0 {
-                return Err(AppError::Config(format!(
-                    "Router '{}' has invalid time window: 0",
-                    router.name
-                )));
-            }
-        }
     }
 
     Ok(())
@@ -220,78 +166,27 @@ fn validate_client_strategy_refs(config: &AppConfig) -> AppResult<()> {
     Ok(())
 }
 
-/// Validate API keys
+/// Validate cross-references between configuration objects
 fn validate_cross_references(config: &AppConfig) -> AppResult<()> {
-    // Build set of router names
-    let _router_names: HashSet<&str> = config.routers.iter().map(|r| r.name.as_str()).collect();
-
     // Build set of provider names
     let provider_names: HashSet<&str> = config.providers.iter().map(|p| p.name.as_str()).collect();
 
-    // Validate API key model selections reference valid routers/providers
-    //     for key in &config.api_keys {
-    //         // Model selection is optional - only validate if present
-    //         if let Some(model_selection) = &key.model_selection {
-    //             match model_selection {
-    //                 ModelSelection::All => {
-    //                     // All models allowed - nothing to validate
-    //                 }
-    //                 ModelSelection::Custom {
-    //                     all_provider_models,
-    //                     individual_models,
-    //                 } => {
-    //                     // Validate provider names
-    //                     for provider in all_provider_models {
-    //                         if !provider_names.contains(provider.as_str()) {
-    //                             return Err(AppError::Config(format!(
-    //                                 "API key '{}' references non-existent provider '{}' in model selection",
-    //                                 key.name, provider
-    //                             )));
-    //                         }
-    //                     }
-    //                     // Validate individual model providers
-    //                     for (provider, _model) in individual_models {
-    //                         if !provider_names.contains(provider.as_str()) {
-    //                             return Err(AppError::Config(format!(
-    //                                 "API key '{}' references non-existent provider '{}' in model selection",
-    //                                 key.name, provider
-    //                             )));
-    //                         }
-    //                     }
-    //                 }
-    //                 #[allow(deprecated)]
-    //                 ModelSelection::Router { router_name } => {
-    //                     if !router_names.contains(router_name.as_str()) {
-    //                         return Err(AppError::Config(format!(
-    //                             "API key '{}' references non-existent router '{}'",
-    //                             key.name, router_name
-    //                         )));
-    //                     }
-    //                 }
-    //                 #[allow(deprecated)]
-    //                 ModelSelection::DirectModel { provider, .. } => {
-    //                     if !provider_names.contains(provider.as_str()) {
-    //                         return Err(AppError::Config(format!(
-    //                             "API key '{}' references non-existent provider '{}'",
-    //                             key.name, provider
-    //                         )));
-    //                     }
-    //                 }
-    //             }
-    //         }
-    //     }
-    //
-    // Validate router provider filters reference valid providers
-    for router in &config.routers {
-        if let super::ModelSelectionStrategy::Automatic { providers, .. } = &router.model_selection
-        {
-            for filter in providers {
-                if !provider_names.contains(filter.provider_name.as_str()) {
-                    return Err(AppError::Config(format!(
-                        "Router '{}' references non-existent provider '{}'",
-                        router.name, filter.provider_name
-                    )));
-                }
+    // Validate strategy allowed_models reference valid providers
+    for strategy in &config.strategies {
+        for provider in &strategy.allowed_models.selected_providers {
+            if !provider_names.contains(provider.as_str()) {
+                tracing::warn!(
+                    "Strategy '{}' references provider '{}' which is not configured - model availability may be limited",
+                    strategy.name, provider
+                );
+            }
+        }
+        for (provider, _model) in &strategy.allowed_models.selected_models {
+            if !provider_names.contains(provider.as_str()) {
+                tracing::warn!(
+                    "Strategy '{}' references provider '{}' which is not configured - model may not be accessible",
+                    strategy.name, provider
+                );
             }
         }
     }

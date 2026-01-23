@@ -366,7 +366,6 @@ fn mask_api_key(key: &str) -> String {
 pub struct AuthContext {
     pub api_key_id: String,
     pub model_selection: Option<ModelSelection>, // Legacy, kept for backward compatibility
-    pub routing_config: Option<crate::config::ModelRoutingConfig>,
 }
 
 /// OAuth authenticated request context for MCP proxy

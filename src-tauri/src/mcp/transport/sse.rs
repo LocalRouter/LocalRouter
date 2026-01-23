@@ -71,6 +71,9 @@ pub struct SseTransport {
     /// Whether the transport is closed
     closed: Arc<RwLock<bool>>,
 
+    /// Whether the SSE stream is connected and ready
+    stream_ready: Arc<RwLock<bool>>,
+
     /// Notification callback
     notification_callback: Arc<RwLock<Option<SseNotificationCallback>>>,
 
@@ -87,8 +90,13 @@ impl SseTransport {
     /// event: message
     /// data: {"jsonrpc":"2.0",...}
     /// ```
+    ///
+    /// Also handles plain JSON responses (not wrapped in SSE format).
     fn parse_sse_response(sse_text: &str) -> AppResult<String> {
-        for line in sse_text.lines() {
+        let trimmed = sse_text.trim();
+
+        // First, try to extract from SSE format
+        for line in trimmed.lines() {
             let line = line.trim();
             if line.starts_with("data:") {
                 // Extract JSON after "data: "
@@ -98,8 +106,17 @@ impl SseTransport {
                 }
             }
         }
+
+        // Fallback: Check if it's plain JSON (starts with { or [)
+        if trimmed.starts_with('{') || trimmed.starts_with('[') {
+            // Validate it's actually JSON
+            if serde_json::from_str::<Value>(trimmed).is_ok() {
+                return Ok(trimmed.to_string());
+            }
+        }
+
         Err(AppError::Mcp(
-            "No data field found in SSE response".to_string(),
+            "No valid JSON found in response (expected SSE data: field or plain JSON)".to_string(),
         ))
     }
 
@@ -183,6 +200,7 @@ impl SseTransport {
 
         let pending = Arc::new(RwLock::new(HashMap::new()));
         let closed = Arc::new(RwLock::new(false));
+        let stream_ready = Arc::new(RwLock::new(false));
         let notification_callback = Arc::new(RwLock::new(None));
 
         // Start persistent SSE stream in background
@@ -190,6 +208,7 @@ impl SseTransport {
         let stream_headers = headers.clone();
         let stream_pending = pending.clone();
         let stream_closed = closed.clone();
+        let stream_ready_clone = stream_ready.clone();
         let stream_callback = notification_callback.clone();
         let stream_client = client.clone();
 
@@ -200,10 +219,32 @@ impl SseTransport {
                 stream_client,
                 stream_pending,
                 stream_closed,
+                stream_ready_clone,
                 stream_callback,
             )
             .await;
         });
+
+        // Wait for stream to be ready (with timeout)
+        // This prevents race conditions where requests are sent before stream connects
+        let ready_timeout = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if *stream_ready.read() {
+                    break;
+                }
+                if *closed.read() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await;
+
+        if ready_timeout.is_err() {
+            tracing::warn!(
+                "SSE stream did not become ready within timeout, proceeding anyway (inline responses will still work)"
+            );
+        }
 
         let transport = Self {
             url,
@@ -212,6 +253,7 @@ impl SseTransport {
             pending,
             next_id: Arc::new(RwLock::new(2)), // Start at 2 since we used 1 for initialization
             closed,
+            stream_ready,
             notification_callback,
             stream_task: Arc::new(RwLock::new(Some(stream_task))),
         };
@@ -226,20 +268,39 @@ impl SseTransport {
     /// Reads from GET SSE endpoint and dispatches:
     /// - Responses → pending request handlers
     /// - Notifications → notification callback
+    ///
+    /// Uses exponential backoff for reconnection with a maximum of 10 attempts.
     async fn sse_stream_task(
         url: String,
         headers: HashMap<String, String>,
         client: Client,
         pending: Arc<RwLock<HashMap<String, oneshot::Sender<JsonRpcResponse>>>>,
         closed: Arc<RwLock<bool>>,
+        stream_ready: Arc<RwLock<bool>>,
         notification_callback: Arc<RwLock<Option<SseNotificationCallback>>>,
     ) {
         tracing::info!("Starting persistent SSE stream task for: {}", url);
+
+        const MAX_RECONNECT_ATTEMPTS: u32 = 10;
+        const BASE_DELAY_SECS: u64 = 1;
+        const MAX_DELAY_SECS: u64 = 60;
+
+        let mut reconnect_attempts = 0u32;
+        let mut utf8_buffer = Vec::new(); // Buffer for incomplete UTF-8 sequences
 
         loop {
             // Check if closed
             if *closed.read() {
                 tracing::info!("SSE stream task shutting down");
+                break;
+            }
+
+            // Check reconnection limit
+            if reconnect_attempts >= MAX_RECONNECT_ATTEMPTS {
+                tracing::error!(
+                    "SSE stream exceeded maximum reconnection attempts ({}), giving up",
+                    MAX_RECONNECT_ATTEMPTS
+                );
                 break;
             }
 
@@ -256,19 +317,44 @@ impl SseTransport {
             let response = match request.send().await {
                 Ok(resp) => resp,
                 Err(e) => {
-                    tracing::warn!("Failed to connect to SSE stream: {}", e);
-                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    reconnect_attempts += 1;
+                    let delay = std::cmp::min(
+                        BASE_DELAY_SECS * 2u64.saturating_pow(reconnect_attempts - 1),
+                        MAX_DELAY_SECS,
+                    );
+                    tracing::warn!(
+                        "Failed to connect to SSE stream (attempt {}/{}): {}. Retrying in {}s",
+                        reconnect_attempts,
+                        MAX_RECONNECT_ATTEMPTS,
+                        e,
+                        delay
+                    );
+                    tokio::time::sleep(Duration::from_secs(delay)).await;
                     continue;
                 }
             };
 
             // Check status
             if !response.status().is_success() {
-                tracing::warn!("SSE stream returned error status: {}", response.status());
-                tokio::time::sleep(Duration::from_secs(5)).await;
+                reconnect_attempts += 1;
+                let delay = std::cmp::min(
+                    BASE_DELAY_SECS * 2u64.saturating_pow(reconnect_attempts - 1),
+                    MAX_DELAY_SECS,
+                );
+                tracing::warn!(
+                    "SSE stream returned error status: {} (attempt {}/{}). Retrying in {}s",
+                    response.status(),
+                    reconnect_attempts,
+                    MAX_RECONNECT_ATTEMPTS,
+                    delay
+                );
+                tokio::time::sleep(Duration::from_secs(delay)).await;
                 continue;
             }
 
+            // Reset reconnection counter on successful connection
+            reconnect_attempts = 0;
+            *stream_ready.write() = true;
             tracing::info!("Connected to persistent SSE stream");
 
             // Read SSE events
@@ -283,8 +369,34 @@ impl SseTransport {
 
                 match chunk_result {
                     Ok(chunk) => {
-                        // Append to buffer
-                        buffer.push_str(&String::from_utf8_lossy(&chunk));
+                        // Proper UTF-8 handling: append chunk to byte buffer and decode
+                        utf8_buffer.extend_from_slice(&chunk);
+
+                        // Try to decode as much valid UTF-8 as possible
+                        match String::from_utf8(utf8_buffer.clone()) {
+                            Ok(text) => {
+                                buffer.push_str(&text);
+                                utf8_buffer.clear();
+                            }
+                            Err(e) => {
+                                // Partial UTF-8 sequence at the end
+                                let valid_up_to = e.utf8_error().valid_up_to();
+                                if valid_up_to > 0 {
+                                    // Decode the valid portion
+                                    let valid_text =
+                                        String::from_utf8_lossy(&utf8_buffer[..valid_up_to]);
+                                    buffer.push_str(&valid_text);
+                                    // Keep the incomplete sequence for next chunk
+                                    utf8_buffer = utf8_buffer[valid_up_to..].to_vec();
+                                }
+                                // If valid_up_to is 0, we have an invalid sequence at the start
+                                // Skip one byte and try again
+                                if valid_up_to == 0 && !utf8_buffer.is_empty() {
+                                    tracing::warn!("Invalid UTF-8 byte in SSE stream, skipping");
+                                    utf8_buffer.remove(0);
+                                }
+                            }
+                        }
 
                         // Process complete SSE events (separated by \n\n)
                         while let Some(event_end) = buffer.find("\n\n") {
@@ -299,8 +411,8 @@ impl SseTransport {
                                 {
                                     match message {
                                         JsonRpcMessage::Response(response) => {
-                                            // Find pending request
-                                            let id_str = response.id.to_string();
+                                            // Find pending request using normalized ID
+                                            let id_str = Self::normalize_response_id(&response.id);
                                             if let Some(sender) = pending.write().remove(&id_str) {
                                                 if sender.send(response).is_err() {
                                                     tracing::warn!("Failed to send response to pending request: {}", id_str);
@@ -331,17 +443,42 @@ impl SseTransport {
                     }
                     Err(e) => {
                         tracing::warn!("Error reading SSE stream: {}", e);
+                        *stream_ready.write() = false;
                         break;
                     }
                 }
             }
 
-            // Connection lost - reconnect after delay
-            tracing::info!("SSE stream connection lost, reconnecting in 5s...");
-            tokio::time::sleep(Duration::from_secs(5)).await;
+            // Connection lost - mark not ready and reconnect after delay
+            *stream_ready.write() = false;
+            reconnect_attempts += 1;
+            let delay = std::cmp::min(
+                BASE_DELAY_SECS * 2u64.saturating_pow(reconnect_attempts - 1),
+                MAX_DELAY_SECS,
+            );
+            tracing::info!(
+                "SSE stream connection lost, reconnecting in {}s (attempt {}/{})",
+                delay,
+                reconnect_attempts,
+                MAX_RECONNECT_ATTEMPTS
+            );
+            tokio::time::sleep(Duration::from_secs(delay)).await;
         }
 
         tracing::info!("SSE stream task terminated");
+    }
+
+    /// Normalize response ID for pending map lookup
+    ///
+    /// Handles the case where server returns `id: null` by converting to a special key.
+    /// For other values, converts to string representation.
+    fn normalize_response_id(id: &Value) -> String {
+        match id {
+            Value::Null => "__null_id__".to_string(),
+            Value::Number(n) => n.to_string(),
+            Value::String(s) => format!("\"{}\"", s),
+            _ => id.to_string(),
+        }
     }
 
     /// Set a notification callback
@@ -514,14 +651,36 @@ impl Transport for SseTransport {
         // Create async stream from response
         let mut byte_stream = response.bytes_stream();
         let mut buffer = String::new();
+        let mut utf8_buffer = Vec::new(); // Buffer for incomplete UTF-8 sequences
         let mut chunk_index = 0u32;
 
         let stream = async_stream::stream! {
             loop {
                 match byte_stream.next().await {
                     Some(Ok(chunk)) => {
-                        // Append to buffer
-                        buffer.push_str(&String::from_utf8_lossy(&chunk));
+                        // Proper UTF-8 handling: append chunk to byte buffer and decode
+                        utf8_buffer.extend_from_slice(&chunk);
+
+                        // Try to decode as much valid UTF-8 as possible
+                        match String::from_utf8(utf8_buffer.clone()) {
+                            Ok(text) => {
+                                buffer.push_str(&text);
+                                utf8_buffer.clear();
+                            }
+                            Err(e) => {
+                                // Partial UTF-8 sequence at the end
+                                let valid_up_to = e.utf8_error().valid_up_to();
+                                if valid_up_to > 0 {
+                                    let valid_text = String::from_utf8_lossy(&utf8_buffer[..valid_up_to]);
+                                    buffer.push_str(&valid_text);
+                                    utf8_buffer = utf8_buffer[valid_up_to..].to_vec();
+                                }
+                                if valid_up_to == 0 && !utf8_buffer.is_empty() {
+                                    tracing::warn!("Invalid UTF-8 byte in streaming response, skipping");
+                                    utf8_buffer.remove(0);
+                                }
+                            }
+                        }
 
                         // Process complete SSE events
                         while let Some(event_end) = buffer.find("\n\n") {
@@ -595,6 +754,7 @@ mod tests {
             pending: Arc::new(RwLock::new(HashMap::new())),
             next_id: Arc::new(RwLock::new(1)),
             closed: Arc::new(RwLock::new(false)),
+            stream_ready: Arc::new(RwLock::new(false)),
             notification_callback: Arc::new(RwLock::new(None)),
             stream_task: Arc::new(RwLock::new(None)),
         };
@@ -602,6 +762,45 @@ mod tests {
         assert_eq!(transport.next_request_id(), 1);
         assert_eq!(transport.next_request_id(), 2);
         assert_eq!(transport.next_request_id(), 3);
+    }
+
+    #[test]
+    fn test_parse_sse_response_plain_json() {
+        // Test plain JSON (not wrapped in SSE format)
+        let plain_json = r#"{"jsonrpc":"2.0","id":1,"result":{}}"#;
+        let result = SseTransport::parse_sse_response(plain_json);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), plain_json);
+    }
+
+    #[test]
+    fn test_parse_sse_response_sse_format() {
+        // Test SSE format
+        let sse_text = "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n\n";
+        let result = SseTransport::parse_sse_response(sse_text);
+        assert!(result.is_ok());
+        assert!(result.unwrap().contains("jsonrpc"));
+    }
+
+    #[test]
+    fn test_normalize_response_id() {
+        // Test null ID
+        assert_eq!(
+            SseTransport::normalize_response_id(&Value::Null),
+            "__null_id__"
+        );
+
+        // Test numeric ID
+        assert_eq!(
+            SseTransport::normalize_response_id(&json!(42)),
+            "42"
+        );
+
+        // Test string ID
+        assert_eq!(
+            SseTransport::normalize_response_id(&json!("abc")),
+            "\"abc\""
+        );
     }
 
     #[test]

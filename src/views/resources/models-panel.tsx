@@ -19,7 +19,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/Select"
-import { MetricsChart } from "@/components/shared/metrics-chart"
 import { cn } from "@/lib/utils"
 
 interface Model {
@@ -37,13 +36,11 @@ interface Model {
 interface ModelsPanelProps {
   selectedId: string | null
   onSelect: (id: string | null) => void
-  refreshTrigger?: number
 }
 
 export function ModelsPanel({
   selectedId,
   onSelect,
-  refreshTrigger = 0,
 }: ModelsPanelProps) {
   const [models, setModels] = useState<Model[]>([])
   const [loading, setLoading] = useState(true)
@@ -246,15 +243,6 @@ export function ModelsPanel({
                 </CardContent>
               </Card>
 
-              {/* Metrics */}
-              <MetricsChart
-                title="Model Metrics"
-                scope="model"
-                scopeId={`${selectedModel.provider_instance}/${selectedModel.model_id}`}
-                defaultMetricType="requests"
-                refreshTrigger={refreshTrigger}
-                height={250}
-              />
             </div>
           </ScrollArea>
         ) : (

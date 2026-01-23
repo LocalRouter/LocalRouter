@@ -29,8 +29,6 @@ fn create_test_client(id: &str, name: &str, enabled: bool, strategy_id: &str) ->
         created_at: Utc::now(),
         last_used: None,
         strategy_id: strategy_id.to_string(),
-        #[allow(deprecated)]
-        routing_config: None,
         roots: None,
         mcp_sampling_enabled: false,
         mcp_sampling_requires_approval: true,

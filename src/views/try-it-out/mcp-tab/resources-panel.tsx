@@ -1,18 +1,40 @@
-import { useState, useEffect, useCallback } from "react"
-import { Search, Download, RefreshCw, ChevronRight, AlertCircle, FileText, Image, Code, Bell, BellOff } from "lucide-react"
+import { useState, useEffect } from "react"
+import { Search, Download, RefreshCw, ChevronRight, AlertCircle, FileText, Image, Code } from "lucide-react"
 import { Button } from "@/components/ui/Button"
 import { Input } from "@/components/ui/Input"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Badge } from "@/components/ui/Badge"
 import { cn } from "@/lib/utils"
-import type { McpClientWrapper, Resource, ResourceContent } from "@/lib/mcp-client"
+
+interface Resource {
+  uri: string
+  name: string
+  description?: string
+  mimeType?: string
+}
+
+interface ResourceContent {
+  uri: string
+  mimeType?: string
+  text?: string
+  blob?: string
+}
 
 interface ResourcesPanelProps {
-  mcpClient: McpClientWrapper | null
+  serverPort: number | null
+  clientToken: string | null
+  isGateway: boolean
+  selectedServer: string
   isConnected: boolean
 }
 
-export function ResourcesPanel({ mcpClient, isConnected }: ResourcesPanelProps) {
+export function ResourcesPanel({
+  serverPort,
+  clientToken,
+  isGateway,
+  selectedServer,
+  isConnected,
+}: ResourcesPanelProps) {
   const [resources, setResources] = useState<Resource[]>([])
   const [filteredResources, setFilteredResources] = useState<Resource[]>([])
   const [searchQuery, setSearchQuery] = useState("")
@@ -21,17 +43,43 @@ export function ResourcesPanel({ mcpClient, isConnected }: ResourcesPanelProps) 
   const [isReading, setIsReading] = useState(false)
   const [content, setContent] = useState<ResourceContent | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [subscribedUris, setSubscribedUris] = useState<Set<string>>(new Set())
 
-  // Fetch resources list using MCP client
-  const fetchResources = useCallback(async () => {
-    if (!mcpClient || !isConnected) return
+  // Fetch resources list using JSON-RPC
+  const fetchResources = async () => {
+    if (!serverPort || !clientToken) return
 
     setIsLoading(true)
     setError(null)
 
     try {
-      const resourcesList = await mcpClient.listResources()
+      const endpoint = isGateway
+        ? `http://localhost:${serverPort}/`
+        : `http://localhost:${serverPort}/mcp/${selectedServer}`
+
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${clientToken}`,
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          method: "resources/list",
+          params: {},
+          id: Date.now(),
+        }),
+      })
+
+      if (!response.ok) {
+        const errorText = await response.text()
+        throw new Error(`Failed to fetch resources: ${response.status} - ${errorText}`)
+      }
+
+      const data = await response.json()
+      if (data.error) {
+        throw new Error(data.error.message || "JSON-RPC error")
+      }
+      const resourcesList = data.result?.resources || []
       setResources(resourcesList)
       setFilteredResources(resourcesList)
     } catch (err) {
@@ -39,7 +87,7 @@ export function ResourcesPanel({ mcpClient, isConnected }: ResourcesPanelProps) 
     } finally {
       setIsLoading(false)
     }
-  }, [mcpClient, isConnected])
+  }
 
   useEffect(() => {
     if (isConnected) {
@@ -49,9 +97,8 @@ export function ResourcesPanel({ mcpClient, isConnected }: ResourcesPanelProps) 
       setFilteredResources([])
       setSelectedResource(null)
       setContent(null)
-      setSubscribedUris(new Set())
     }
-  }, [isConnected, fetchResources])
+  }, [isConnected, serverPort, clientToken, isGateway, selectedServer])
 
   // Filter resources based on search
   useEffect(() => {
@@ -70,68 +117,52 @@ export function ResourcesPanel({ mcpClient, isConnected }: ResourcesPanelProps) 
     }
   }, [searchQuery, resources])
 
-  // Read resource content using MCP client
+  // Read resource content using JSON-RPC
   const handleRead = async () => {
-    if (!selectedResource || !mcpClient) return
+    if (!selectedResource || !serverPort || !clientToken) return
 
     setIsReading(true)
     setContent(null)
     setError(null)
 
     try {
-      const result = await mcpClient.readResource(selectedResource.uri)
-      const contents = result.contents || []
+      const endpoint = isGateway
+        ? `http://localhost:${serverPort}/`
+        : `http://localhost:${serverPort}/mcp/${selectedServer}`
+
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${clientToken}`,
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          method: "resources/read",
+          params: {
+            uri: selectedResource.uri,
+          },
+          id: Date.now(),
+        }),
+      })
+
+      if (!response.ok) {
+        const errorText = await response.text()
+        throw new Error(`Failed to read resource: ${response.status} - ${errorText}`)
+      }
+
+      const data = await response.json()
+      if (data.error) {
+        throw new Error(data.error.message || "JSON-RPC error")
+      }
+      const contents = data.result?.contents || []
       if (contents.length > 0) {
-        const firstContent = contents[0]
-        setContent({
-          uri: firstContent.uri,
-          mimeType: firstContent.mimeType,
-          text: "text" in firstContent ? firstContent.text : undefined,
-          blob: "blob" in firstContent ? firstContent.blob : undefined,
-        })
+        setContent(contents[0])
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to read resource")
     } finally {
       setIsReading(false)
-    }
-  }
-
-  // Subscribe/unsubscribe to resource updates
-  const handleToggleSubscription = async () => {
-    if (!selectedResource || !mcpClient) return
-
-    const uri = selectedResource.uri
-    const isSubscribed = subscribedUris.has(uri)
-
-    try {
-      if (isSubscribed) {
-        await mcpClient.unsubscribeFromResource(uri)
-        setSubscribedUris(prev => {
-          const next = new Set(prev)
-          next.delete(uri)
-          return next
-        })
-      } else {
-        await mcpClient.subscribeToResource(uri, (updatedUri, result) => {
-          // Handle resource update notification
-          if (selectedResource?.uri === updatedUri) {
-            const contents = result.contents || []
-            if (contents.length > 0) {
-              const firstContent = contents[0]
-              setContent({
-                uri: firstContent.uri,
-                mimeType: firstContent.mimeType,
-                text: "text" in firstContent ? firstContent.text : undefined,
-                blob: "blob" in firstContent ? firstContent.blob : undefined,
-              })
-            }
-          }
-        })
-        setSubscribedUris(prev => new Set(prev).add(uri))
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to toggle subscription")
     }
   }
 
@@ -181,19 +212,8 @@ export function ResourcesPanel({ mcpClient, isConnected }: ResourcesPanelProps) 
     }
 
     if (content.text) {
-      const isJson = content.mimeType?.includes("json") || content.text.trim().startsWith("{")
-
-      // Safely format JSON with error handling
-      let displayText = content.text
-      if (isJson) {
-        try {
-          displayText = JSON.stringify(JSON.parse(content.text), null, 2)
-        } catch {
-          // If JSON parse fails, just show the raw text
-          displayText = content.text
-        }
-      }
-
+      const isJson =
+        content.mimeType?.includes("json") || content.text.trim().startsWith("{")
       return (
         <pre
           className={cn(
@@ -201,7 +221,7 @@ export function ResourcesPanel({ mcpClient, isConnected }: ResourcesPanelProps) 
             isJson && "whitespace-pre"
           )}
         >
-          {displayText}
+          {isJson ? JSON.stringify(JSON.parse(content.text), null, 2) : content.text}
         </pre>
       )
     }
@@ -216,8 +236,6 @@ export function ResourcesPanel({ mcpClient, isConnected }: ResourcesPanelProps) 
       </div>
     )
   }
-
-  const isSubscribed = selectedResource ? subscribedUris.has(selectedResource.uri) : false
 
   return (
     <div className="flex h-full gap-4">
@@ -270,9 +288,6 @@ export function ResourcesPanel({ mcpClient, isConnected }: ResourcesPanelProps) 
                   <div className="flex items-center gap-2">
                     {getResourceIcon(resource.mimeType)}
                     <span className="text-sm truncate flex-1">{resource.name}</span>
-                    {subscribedUris.has(resource.uri) && (
-                      <Bell className="h-3 w-3 text-primary" />
-                    )}
                     <ChevronRight className="h-3 w-3 text-muted-foreground" />
                   </div>
                   <p className="text-xs text-muted-foreground truncate mt-1 font-mono">
@@ -286,7 +301,6 @@ export function ResourcesPanel({ mcpClient, isConnected }: ResourcesPanelProps) 
 
         <div className="p-2 border-t text-xs text-muted-foreground text-center">
           {filteredResources.length} resource{filteredResources.length !== 1 ? "s" : ""}
-          {subscribedUris.size > 0 && ` (${subscribedUris.size} subscribed)`}
         </div>
       </div>
 
@@ -300,34 +314,14 @@ export function ResourcesPanel({ mcpClient, isConnected }: ResourcesPanelProps) 
                   {getResourceIcon(selectedResource.mimeType)}
                   <h3 className="font-semibold">{selectedResource.name}</h3>
                 </div>
-                <div className="flex items-center gap-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={handleToggleSubscription}
-                    title={isSubscribed ? "Unsubscribe from updates" : "Subscribe to updates"}
-                  >
-                    {isSubscribed ? (
-                      <>
-                        <BellOff className="h-4 w-4 mr-2" />
-                        Unsubscribe
-                      </>
-                    ) : (
-                      <>
-                        <Bell className="h-4 w-4 mr-2" />
-                        Subscribe
-                      </>
-                    )}
-                  </Button>
-                  <Button onClick={handleRead} disabled={isReading}>
-                    {isReading ? (
-                      <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
-                    ) : (
-                      <Download className="h-4 w-4 mr-2" />
-                    )}
-                    Read
-                  </Button>
-                </div>
+                <Button onClick={handleRead} disabled={isReading}>
+                  {isReading ? (
+                    <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                  ) : (
+                    <Download className="h-4 w-4 mr-2" />
+                  )}
+                  Read
+                </Button>
               </div>
               <p className="text-xs text-muted-foreground font-mono mt-1">
                 {selectedResource.uri}

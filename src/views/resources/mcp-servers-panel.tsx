@@ -37,7 +37,6 @@ import {
   commonActions,
   createToggleAction,
 } from "@/components/shared/entity-actions"
-import { MetricsChart } from "@/components/shared/metrics-chart"
 import { McpServerTemplates, McpServerTemplate } from "@/components/mcp/McpServerTemplates"
 import { McpOAuthModal } from "@/components/mcp/McpOAuthModal"
 import { cn } from "@/lib/utils"
@@ -61,13 +60,11 @@ interface McpServer {
 interface McpServersPanelProps {
   selectedId: string | null
   onSelect: (id: string | null) => void
-  refreshTrigger?: number
 }
 
 export function McpServersPanel({
   selectedId,
   onSelect,
-  refreshTrigger = 0,
 }: McpServersPanelProps) {
   const [servers, setServers] = useState<McpServer[]>([])
   const [loading, setLoading] = useState(true)
@@ -563,21 +560,6 @@ export function McpServersPanel({
                 </Card>
               )}
 
-              {/* Metrics */}
-              <MetricsChart
-                title="MCP Metrics"
-                scope="server"
-                scopeId={selectedServer.id}
-                defaultMetricType="requests"
-                metricOptions={[
-                  { id: "requests", label: "Requests" },
-                  { id: "latency", label: "Latency" },
-                  { id: "successrate", label: "Success" },
-                ]}
-                refreshTrigger={refreshTrigger}
-                height={250}
-                dataSource="mcp"
-              />
             </div>
           </ScrollArea>
         ) : (

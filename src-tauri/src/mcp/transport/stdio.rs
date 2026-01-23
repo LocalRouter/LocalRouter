@@ -15,6 +15,20 @@ use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::{oneshot, Mutex};
+use tokio::task::JoinHandle;
+
+/// Normalize response ID for pending map lookup
+///
+/// Handles the case where server returns `id: null` by converting to a special key.
+/// For other values, converts to string representation.
+fn normalize_response_id(id: &Value) -> String {
+    match id {
+        Value::Null => "__null_id__".to_string(),
+        Value::Number(n) => n.to_string(),
+        Value::String(s) => format!("\"{}\"", s),
+        _ => id.to_string(),
+    }
+}
 
 /// Notification callback type for STDIO transport
 pub type StdioNotificationCallback = Arc<dyn Fn(JsonRpcNotification) + Send + Sync>;
@@ -44,6 +58,9 @@ pub struct StdioTransport {
 
     /// Notification callback (optional)
     notification_callback: Arc<RwLock<Option<StdioNotificationCallback>>>,
+
+    /// Background reader task handle (for cancellation)
+    reader_task: Arc<RwLock<Option<JoinHandle<()>>>>,
 }
 
 impl StdioTransport {
@@ -88,17 +105,27 @@ impl StdioTransport {
             .ok_or_else(|| AppError::Mcp("Failed to capture stdout of MCP process".to_string()))?;
 
         // Create transport instance
+        let pending = Arc::new(RwLock::new(HashMap::new()));
+        let closed = Arc::new(RwLock::new(false));
+        let notification_callback = Arc::new(RwLock::new(None));
+
+        // Start reading stdout in background
+        let reader_task = Self::start_stdout_reader(
+            stdout,
+            pending.clone(),
+            closed.clone(),
+            notification_callback.clone(),
+        );
+
         let transport = Self {
             child: Arc::new(RwLock::new(Some(child))),
             stdin: Arc::new(Mutex::new(Some(stdin))),
-            pending: Arc::new(RwLock::new(HashMap::new())),
+            pending,
             next_id: Arc::new(RwLock::new(1)),
-            closed: Arc::new(RwLock::new(false)),
-            notification_callback: Arc::new(RwLock::new(None)),
+            closed,
+            notification_callback,
+            reader_task: Arc::new(RwLock::new(Some(reader_task))),
         };
-
-        // Start reading stdout in background
-        transport.start_stdout_reader(stdout);
 
         tracing::info!("MCP STDIO process spawned successfully");
 
@@ -114,11 +141,14 @@ impl StdioTransport {
     }
 
     /// Start background task to read stdout and dispatch responses/notifications
-    fn start_stdout_reader(&self, stdout: ChildStdout) {
-        let pending = self.pending.clone();
-        let closed = self.closed.clone();
-        let notification_callback = self.notification_callback.clone();
-
+    ///
+    /// Returns a JoinHandle that can be used to cancel the task.
+    fn start_stdout_reader(
+        stdout: ChildStdout,
+        pending: Arc<RwLock<HashMap<String, oneshot::Sender<JsonRpcResponse>>>>,
+        closed: Arc<RwLock<bool>>,
+        notification_callback: Arc<RwLock<Option<StdioNotificationCallback>>>,
+    ) -> JoinHandle<()> {
         tokio::spawn(async move {
             let mut reader = BufReader::new(stdout);
             let mut line = String::new();
@@ -142,8 +172,8 @@ impl StdioTransport {
 
                         match serde_json::from_str::<JsonRpcMessage>(trimmed) {
                             Ok(JsonRpcMessage::Response(response)) => {
-                                // Handle response
-                                let id_str = response.id.to_string();
+                                // Handle response using normalized ID
+                                let id_str = normalize_response_id(&response.id);
 
                                 if let Some(sender) = pending.write().remove(&id_str) {
                                     // Send response to waiting caller
@@ -196,7 +226,7 @@ impl StdioTransport {
             for (id, _sender) in pending.drain() {
                 tracing::warn!("Request ID {} terminated without response", id);
             }
-        });
+        })
     }
 
     /// Generate the next request ID
@@ -235,11 +265,17 @@ impl StdioTransport {
         }
     }
 
-    /// Kill the child process
+    /// Kill the child process and cancel the reader task
     pub async fn kill(&self) -> AppResult<()> {
         tracing::info!("Killing MCP STDIO process");
 
         *self.closed.write() = true;
+
+        // Abort the reader task first
+        if let Some(task) = self.reader_task.write().take() {
+            task.abort();
+            tracing::debug!("STDIO reader task aborted");
+        }
 
         // Take child out of lock temporarily
         let child_process = {
@@ -368,11 +404,26 @@ mod tests {
             next_id: Arc::new(RwLock::new(1)),
             closed: Arc::new(RwLock::new(false)),
             notification_callback: Arc::new(RwLock::new(None)),
+            reader_task: Arc::new(RwLock::new(None)),
         };
 
         assert_eq!(transport.next_request_id(), 1);
         assert_eq!(transport.next_request_id(), 2);
         assert_eq!(transport.next_request_id(), 3);
+    }
+
+    #[test]
+    fn test_normalize_response_id() {
+        use serde_json::json;
+
+        // Test null ID
+        assert_eq!(normalize_response_id(&Value::Null), "__null_id__");
+
+        // Test numeric ID
+        assert_eq!(normalize_response_id(&json!(42)), "42");
+
+        // Test string ID
+        assert_eq!(normalize_response_id(&json!("abc")), "\"abc\"");
     }
 
     #[test]

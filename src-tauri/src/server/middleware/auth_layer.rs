@@ -122,7 +122,6 @@ where
                 let auth_context = AuthContext {
                     api_key_id: "internal-test".to_string(),
                     model_selection: None,
-                    routing_config: None,
                 };
                 req.extensions_mut().insert(auth_context);
                 return inner.call(req).await;
@@ -135,27 +134,10 @@ where
                     Ok(Some(client)) => {
                         tracing::debug!("Authenticated as client: {}", client.id);
 
-                        // Load routing config from config manager
-                        let routing_config = {
-                            let config = state.config_manager.get();
-                            config
-                                .clients
-                                .iter()
-                                .find(|c| c.id == client.id)
-                                .and_then(|c| c.routing_config.clone())
-                        };
-
-                        tracing::debug!(
-                            "Client {} routing config: {:?}",
-                            client.id,
-                            routing_config.as_ref().map(|c| &c.active_strategy)
-                        );
-
-                        // Use the client's ID for routing with routing config
+                        // Use the client's ID for routing
                         AuthContext {
                             api_key_id: client.id.clone(),
                             model_selection: None,
-                            routing_config,
                         }
                     }
                     Ok(None) => {

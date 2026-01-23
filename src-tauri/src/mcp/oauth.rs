@@ -185,6 +185,51 @@ pub fn generate_state() -> String {
         .collect()
 }
 
+/// Build a well-known URL for OAuth protected resource discovery per RFC 8615
+///
+/// When the protected resource identifier has a path component, the
+/// `/.well-known/oauth-protected-resource` segment is inserted between
+/// the host and the path component.
+///
+/// # Arguments
+/// * `resource_url` - The protected resource identifier URL
+///
+/// # Returns
+/// * The well-known discovery URL
+///
+/// # Examples
+/// - `https://api.example.com` → `https://api.example.com/.well-known/oauth-protected-resource`
+/// - `https://api.example.com/mcp` → `https://api.example.com/.well-known/oauth-protected-resource/mcp`
+/// - `https://api.example.com/api/v4/mcp` → `https://api.example.com/.well-known/oauth-protected-resource/api/v4/mcp`
+pub fn build_well_known_url(resource_url: &str) -> String {
+    let url = resource_url.trim_end_matches('/');
+
+    // Find the start of the path (after the scheme and host)
+    // URL format: scheme://host[:port][/path]
+    if let Some(scheme_end) = url.find("://") {
+        let after_scheme = &url[scheme_end + 3..];
+
+        // Find the first slash after the host (start of path)
+        if let Some(path_start) = after_scheme.find('/') {
+            let host_end = scheme_end + 3 + path_start;
+            let origin = &url[..host_end]; // scheme://host[:port]
+            let path = &url[host_end..]; // /path
+
+            // Insert well-known between origin and path
+            format!(
+                "{}/.well-known/oauth-protected-resource{}",
+                origin, path
+            )
+        } else {
+            // No path, just append well-known
+            format!("{}/.well-known/oauth-protected-resource", url)
+        }
+    } else {
+        // Malformed URL, just append (shouldn't happen)
+        format!("{}/.well-known/oauth-protected-resource", url)
+    }
+}
+
 /// Start a temporary HTTP server to receive OAuth callback
 ///
 /// This server listens on http://localhost:{port}/callback and waits for the OAuth
@@ -357,8 +402,17 @@ impl McpOAuthManager {
 
     /// Discover OAuth configuration for an MCP server
     ///
+    /// Constructs the well-known URL according to RFC 8615. When the protected resource
+    /// identifier has a path component, the `/.well-known/oauth-protected-resource`
+    /// segment is inserted between the host and the path.
+    ///
+    /// Examples:
+    /// - `https://api.example.com` → `https://api.example.com/.well-known/oauth-protected-resource`
+    /// - `https://api.example.com/mcp` → `https://api.example.com/.well-known/oauth-protected-resource/mcp`
+    /// - `https://api.example.com/api/v4/mcp` → `https://api.example.com/.well-known/oauth-protected-resource/api/v4/mcp`
+    ///
     /// # Arguments
-    /// * `base_url` - Base URL of the MCP server
+    /// * `base_url` - Base URL of the MCP server (the protected resource identifier)
     ///
     /// # Returns
     /// * OAuth discovery response if the server supports OAuth
@@ -366,11 +420,9 @@ impl McpOAuthManager {
         &self,
         base_url: &str,
     ) -> AppResult<Option<OAuthDiscoveryResponse>> {
-        // Construct .well-known URL
-        let discovery_url = format!(
-            "{}/.well-known/oauth-protected-resource",
-            base_url.trim_end_matches('/')
-        );
+        // Construct .well-known URL per RFC 8615
+        // The well-known segment is inserted between the host and the path
+        let discovery_url = build_well_known_url(base_url);
 
         tracing::info!("Discovering OAuth configuration at: {}", discovery_url);
 
@@ -966,5 +1018,56 @@ mod tests {
         assert!(url.contains("code_challenge_method=S256"));
         assert!(url.contains(&format!("state={}", state)));
         assert!(url.starts_with(auth_url));
+    }
+
+    #[test]
+    fn test_build_well_known_url_no_path() {
+        // URL without path - append well-known directly
+        assert_eq!(
+            build_well_known_url("https://api.example.com"),
+            "https://api.example.com/.well-known/oauth-protected-resource"
+        );
+
+        // URL with trailing slash - same result
+        assert_eq!(
+            build_well_known_url("https://api.example.com/"),
+            "https://api.example.com/.well-known/oauth-protected-resource"
+        );
+    }
+
+    #[test]
+    fn test_build_well_known_url_with_path() {
+        // URL with simple path - insert well-known between host and path
+        assert_eq!(
+            build_well_known_url("https://api.githubcopilot.com/mcp"),
+            "https://api.githubcopilot.com/.well-known/oauth-protected-resource/mcp"
+        );
+
+        // URL with multi-segment path
+        assert_eq!(
+            build_well_known_url("https://gitlab.com/api/v4/mcp"),
+            "https://gitlab.com/.well-known/oauth-protected-resource/api/v4/mcp"
+        );
+
+        // URL with trailing slash on path
+        assert_eq!(
+            build_well_known_url("https://api.example.com/mcp/"),
+            "https://api.example.com/.well-known/oauth-protected-resource/mcp"
+        );
+    }
+
+    #[test]
+    fn test_build_well_known_url_with_port() {
+        // URL with port and no path
+        assert_eq!(
+            build_well_known_url("https://api.example.com:8443"),
+            "https://api.example.com:8443/.well-known/oauth-protected-resource"
+        );
+
+        // URL with port and path
+        assert_eq!(
+            build_well_known_url("https://api.example.com:8443/mcp"),
+            "https://api.example.com:8443/.well-known/oauth-protected-resource/mcp"
+        );
     }
 }

@@ -27,13 +27,11 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import { Switch } from "@/components/ui/Toggle"
-import { MetricsChart } from "@/components/shared/metrics-chart"
 import { ClientConfigTab } from "./tabs/config-tab"
 import { ClientAuthTab } from "./tabs/auth-tab"
 import { ClientModelsTab } from "./tabs/models-tab"
 import { ClientMcpTab } from "./tabs/mcp-tab"
 import { ClientChatTab } from "./tabs/chat-tab"
-import { ClientLogsTab } from "./tabs/logs-tab"
 
 interface Client {
   id: string
@@ -55,7 +53,6 @@ interface ClientDetailProps {
   initialTab?: string | null
   initialMode?: "forced" | "multi" | "prioritized" | null
   onBack: () => void
-  refreshTrigger?: number
 }
 
 export function ClientDetail({
@@ -64,11 +61,10 @@ export function ClientDetail({
   initialTab,
   initialMode,
   onBack,
-  refreshTrigger = 0,
 }: ClientDetailProps) {
   const [client, setClient] = useState<Client | null>(initialClient || null)
   const [loading, setLoading] = useState(!initialClient)
-  const [activeTab, setActiveTab] = useState(initialTab || "metrics")
+  const [activeTab, setActiveTab] = useState(initialTab || "config")
 
   useEffect(() => {
     if (!initialClient) {
@@ -212,41 +208,12 @@ export function ClientDetail({
       {/* Tabs */}
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList>
-          <TabsTrigger value="metrics">Metrics</TabsTrigger>
           <TabsTrigger value="config">Config</TabsTrigger>
           <TabsTrigger value="auth">Auth</TabsTrigger>
           <TabsTrigger value="models">Models</TabsTrigger>
           <TabsTrigger value="mcp">MCP</TabsTrigger>
           <TabsTrigger value="chat">Chat</TabsTrigger>
-          <TabsTrigger value="logs">Logs</TabsTrigger>
         </TabsList>
-
-        <TabsContent value="metrics" className="space-y-4">
-          <MetricsChart
-            title={`${client.name} - LLM Metrics`}
-            scope="api_key"
-            scopeId={client.client_id}
-            defaultMetricType="requests"
-            defaultTimeRange="day"
-            refreshTrigger={refreshTrigger}
-            dataSource="llm"
-          />
-          <MetricsChart
-            title={`${client.name} - MCP Metrics`}
-            scope="client"
-            scopeId={client.client_id}
-            defaultMetricType="requests"
-            defaultTimeRange="day"
-            metricOptions={[
-              { id: "requests", label: "Requests" },
-              { id: "latency", label: "Latency" },
-              { id: "successrate", label: "Success" },
-            ]}
-            refreshTrigger={refreshTrigger}
-            dataSource="mcp"
-            showMethodBreakdown={true}
-          />
-        </TabsContent>
 
         <TabsContent value="config">
           <ClientConfigTab client={client} onUpdate={loadClient} />
@@ -270,10 +237,6 @@ export function ClientDetail({
 
         <TabsContent value="chat">
           <ClientChatTab client={client} />
-        </TabsContent>
-
-        <TabsContent value="logs">
-          <ClientLogsTab client={client} refreshTrigger={refreshTrigger} />
         </TabsContent>
       </Tabs>
 

@@ -61,6 +61,82 @@ pub struct StrategyRateLimit {
     pub time_window: RateLimitTimeWindow,
 }
 
+/// Available models selection configuration
+///
+/// Determines which models are allowed for a strategy. The selection is evaluated in order:
+/// 1. If `selected_all` is true, all models are allowed (including future ones)
+/// 2. Otherwise, check if provider is in `selected_providers`
+/// 3. Otherwise, check if specific model is in `selected_models`
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AvailableModelsSelection {
+    /// If true, all models are allowed (including future models from new providers)
+    #[serde(default = "default_selected_all")]
+    pub selected_all: bool,
+    /// Providers where ALL models are selected (including future models from that provider)
+    #[serde(default)]
+    pub selected_providers: Vec<String>,
+    /// Individual models selected as (provider, model) pairs
+    #[serde(default)]
+    pub selected_models: Vec<(String, String)>,
+}
+
+fn default_selected_all() -> bool {
+    true
+}
+
+impl Default for AvailableModelsSelection {
+    fn default() -> Self {
+        Self::all()
+    }
+}
+
+impl AvailableModelsSelection {
+    /// Create a selection that allows all models
+    pub fn all() -> Self {
+        Self {
+            selected_all: true,
+            selected_providers: vec![],
+            selected_models: vec![],
+        }
+    }
+
+    /// Create a selection that allows no models (empty selection)
+    pub fn none() -> Self {
+        Self {
+            selected_all: false,
+            selected_providers: vec![],
+            selected_models: vec![],
+        }
+    }
+
+    /// Check if a model is allowed by this selection
+    ///
+    /// Returns true if:
+    /// 1. `selected_all` is true, OR
+    /// 2. The provider is in `selected_providers`, OR
+    /// 3. The specific (provider, model) pair is in `selected_models`
+    pub fn is_model_allowed(&self, provider_name: &str, model_id: &str) -> bool {
+        // If all models are selected, everything is allowed
+        if self.selected_all {
+            return true;
+        }
+
+        // Check if the provider is in the selected_providers list
+        if self
+            .selected_providers
+            .iter()
+            .any(|p| p.eq_ignore_ascii_case(provider_name))
+        {
+            return true;
+        }
+
+        // Check if the specific (provider, model) pair is in selected_models
+        self.selected_models
+            .iter()
+            .any(|(p, m)| p.eq_ignore_ascii_case(provider_name) && m.eq_ignore_ascii_case(model_id))
+    }
+}
+
 /// RouteLLM download state
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -235,26 +311,6 @@ impl Strategy {
     }
 }
 
-impl AvailableModelsSelection {
-    /// Create a selection that allows all models
-    pub fn all() -> Self {
-        Self {
-            selected_all: true,
-            selected_providers: vec![],
-            selected_models: vec![],
-        }
-    }
-
-    /// Create a selection that allows no models (empty selection)
-    pub fn none() -> Self {
-        Self {
-            selected_all: false,
-            selected_providers: vec![],
-            selected_models: vec![],
-        }
-    }
-}
-
 /// Main application configuration structure
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AppConfig {
@@ -265,10 +321,6 @@ pub struct AppConfig {
     /// Server configuration
     #[serde(default)]
     pub server: ServerConfig,
-
-    /// Router configurations
-    #[serde(default)]
-    pub routers: Vec<RouterConfig>,
 
     /// Provider configurations
     #[serde(default)]
@@ -488,74 +540,6 @@ pub struct ServerConfig {
     pub enable_cors: bool,
 }
 
-/// Model routing configuration for API keys
-///
-/// Supports three routing strategies:
-/// 1. Available Models: Request model must be in the selected list
-/// 2. Force Model: Always use a specific model, ignore request
-/// 3. Prioritized List: Try models in order, retry on failure
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ModelRoutingConfig {
-    /// The currently active routing strategy
-    pub active_strategy: ActiveRoutingStrategy,
-
-    /// Configuration for "Available Models" strategy
-    /// Models are preserved even when switching to other strategies
-    #[serde(default)]
-    pub available_models: AvailableModelsSelection,
-
-    /// Configuration for "Force Model" strategy
-    /// The forced model is preserved even when switching to other strategies
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub forced_model: Option<(String, String)>,
-
-    /// Configuration for "Prioritized List" strategy
-    /// Models are in priority order; preserved even when switching to other strategies
-    #[serde(default)]
-    pub prioritized_models: Vec<(String, String)>,
-}
-
-/// Active routing strategy for an API key
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ActiveRoutingStrategy {
-    /// Available Models: Request model must be in the selected list
-    AvailableModels,
-    /// Force Model: Always use a specific model, ignore request
-    ForceModel,
-    /// Prioritized List: Try models in order, retry on failure
-    PrioritizedList,
-}
-
-/// Available models selection configuration
-///
-/// Determines which models are allowed for a strategy. The selection is evaluated in order:
-/// 1. If `selected_all` is true, all models are allowed (including future ones)
-/// 2. Otherwise, check if provider is in `selected_providers`
-/// 3. Otherwise, check if specific model is in `selected_models`
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct AvailableModelsSelection {
-    /// If true, all models are allowed (including future models from new providers)
-    #[serde(default = "default_selected_all")]
-    pub selected_all: bool,
-    /// Providers where ALL models are selected (including future models from that provider)
-    #[serde(default)]
-    pub selected_providers: Vec<String>,
-    /// Individual models selected as (provider, model) pairs
-    #[serde(default)]
-    pub selected_models: Vec<(String, String)>,
-}
-
-fn default_selected_all() -> bool {
-    true
-}
-
-impl Default for AvailableModelsSelection {
-    fn default() -> Self {
-        Self::all()
-    }
-}
-
 /// OAuth client configuration for MCP
 ///
 /// The actual client_secret is stored in the OS keychain.
@@ -674,12 +658,6 @@ pub struct Client {
 
     /// Reference to the routing strategy this client uses (required)
     pub strategy_id: String,
-
-    /// Model routing configuration (deprecated, use strategy_id instead)
-    /// Kept for backward compatibility during migration
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[deprecated(note = "Use strategy_id instead")]
-    pub routing_config: Option<ModelRoutingConfig>,
 
     /// MCP filesystem roots override (per-client)
     /// If None, uses global roots from AppConfig
@@ -933,83 +911,6 @@ pub struct McpOAuthDiscovery {
     pub discovered_at: DateTime<Utc>,
 }
 
-/// Router configuration
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct RouterConfig {
-    /// Router name
-    pub name: String,
-
-    /// Model selection strategy
-    pub model_selection: ModelSelectionStrategy,
-
-    /// Routing strategies to apply
-    #[serde(default)]
-    pub strategies: Vec<RoutingStrategy>,
-
-    /// Enable fallback to next model on failure
-    #[serde(default = "default_true")]
-    pub fallback_enabled: bool,
-
-    /// Rate limiters
-    #[serde(default)]
-    pub rate_limiters: Vec<RateLimiter>,
-}
-
-/// Model selection strategy
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum ModelSelectionStrategy {
-    /// Automatic model selection with filters
-    Automatic {
-        /// Provider filters
-        providers: Vec<ProviderFilter>,
-        /// Minimum parameter count
-        #[serde(skip_serializing_if = "Option::is_none")]
-        min_parameters: Option<u64>,
-        /// Maximum parameter count
-        #[serde(skip_serializing_if = "Option::is_none")]
-        max_parameters: Option<u64>,
-    },
-    /// Manual model list in priority order
-    Manual {
-        /// List of (provider, model) in priority order
-        models: Vec<(String, String)>,
-    },
-}
-
-/// Provider filter for model selection
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ProviderFilter {
-    /// Provider name
-    pub provider_name: String,
-
-    /// Include only these models (None = all models)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub include_models: Option<Vec<String>>,
-
-    /// Exclude these models
-    #[serde(default)]
-    pub exclude_models: Vec<String>,
-}
-
-/// Routing strategy
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum RoutingStrategy {
-    /// Route to lowest cost model
-    LowestCost,
-    /// Route to highest performance model
-    HighestPerformance,
-    /// Prefer local models first
-    LocalFirst,
-    /// Prefer remote models first
-    RemoteFirst,
-    /// Prefer subscription-based models
-    SubscriptionFirst,
-    /// Prefer API-based models
-    ApiFirst,
-}
-
 /// Rate limiter configuration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RateLimiter {
@@ -1178,12 +1079,16 @@ pub enum LogLevel {
     Error,
 }
 
+/// Callback type for syncing clients to external managers
+pub type ClientSyncCallback = Arc<dyn Fn(Vec<Client>) + Send + Sync>;
+
 /// Thread-safe configuration manager with file watching and event emission
-#[derive(Clone)]
 pub struct ConfigManager {
     config: Arc<RwLock<AppConfig>>,
     config_path: PathBuf,
     app_handle: Option<AppHandle>,
+    /// Optional callback to sync clients to ClientManager when config changes
+    client_sync_callback: Option<ClientSyncCallback>,
 }
 
 // Manual Debug implementation since AppHandle doesn't implement Debug
@@ -1193,7 +1098,20 @@ impl std::fmt::Debug for ConfigManager {
             .field("config", &self.config)
             .field("config_path", &self.config_path)
             .field("app_handle", &self.app_handle.is_some())
+            .field("client_sync_callback", &self.client_sync_callback.is_some())
             .finish()
+    }
+}
+
+// Manual Clone implementation - callback is cloned by Arc
+impl Clone for ConfigManager {
+    fn clone(&self) -> Self {
+        Self {
+            config: self.config.clone(),
+            config_path: self.config_path.clone(),
+            app_handle: self.app_handle.clone(),
+            client_sync_callback: self.client_sync_callback.clone(),
+        }
     }
 }
 
@@ -1204,6 +1122,7 @@ impl ConfigManager {
             config: Arc::new(RwLock::new(config)),
             config_path,
             app_handle: None,
+            client_sync_callback: None,
         }
     }
 
@@ -1226,6 +1145,22 @@ impl ConfigManager {
     /// Call this during app setup, after the ConfigManager is created.
     pub fn set_app_handle(&mut self, app_handle: AppHandle) {
         self.app_handle = Some(app_handle);
+    }
+
+    /// Set a callback to sync clients when config changes
+    ///
+    /// This callback is invoked whenever clients are modified in the config,
+    /// allowing the ClientManager to stay in sync automatically.
+    pub fn set_client_sync_callback(&mut self, callback: ClientSyncCallback) {
+        self.client_sync_callback = Some(callback);
+    }
+
+    /// Sync clients to the registered callback (if any)
+    fn sync_clients(&self) {
+        if let Some(ref callback) = self.client_sync_callback {
+            let clients = self.config.read().clients.clone();
+            callback(clients);
+        }
     }
 
     /// Start watching the configuration file for changes
@@ -1326,6 +1261,10 @@ impl ConfigManager {
             config.clone()
         };
 
+        // Sync clients to ClientManager if callback is registered
+        // This ensures in-memory state stays in sync with config
+        self.sync_clients();
+
         // Emit event to frontend
         self.emit_config_changed(&updated_config);
 
@@ -1399,8 +1338,6 @@ impl ConfigManager {
             mcp_deferred_loading: false,
             created_at: Utc::now(),
             last_used: None,
-            #[allow(deprecated)]
-            routing_config: None,
             roots: None,
             mcp_sampling_enabled: false,
             mcp_sampling_requires_approval: true,
@@ -1574,10 +1511,6 @@ impl Default for AppConfig {
         Self {
             version: CONFIG_VERSION,
             server: ServerConfig::default(),
-            routers: vec![
-                RouterConfig::default_minimum_cost(),
-                RouterConfig::default_maximum_performance(),
-            ],
             providers: vec![ProviderConfig::default_ollama()],
             logging: LoggingConfig::default(),
             oauth_clients: Vec::new(),
@@ -1643,38 +1576,6 @@ impl Default for UpdateConfig {
     }
 }
 
-impl RouterConfig {
-    /// Create default "Minimum Cost" router
-    pub fn default_minimum_cost() -> Self {
-        Self {
-            name: "Minimum Cost".to_string(),
-            model_selection: ModelSelectionStrategy::Automatic {
-                providers: vec![],
-                min_parameters: None,
-                max_parameters: None,
-            },
-            strategies: vec![RoutingStrategy::LocalFirst, RoutingStrategy::LowestCost],
-            fallback_enabled: true,
-            rate_limiters: Vec::new(),
-        }
-    }
-
-    /// Create default "Maximum Performance" router
-    pub fn default_maximum_performance() -> Self {
-        Self {
-            name: "Maximum Performance".to_string(),
-            model_selection: ModelSelectionStrategy::Automatic {
-                providers: vec![],
-                min_parameters: None,
-                max_parameters: None,
-            },
-            strategies: vec![RoutingStrategy::HighestPerformance],
-            fallback_enabled: true,
-            rate_limiters: Vec::new(),
-        }
-    }
-}
-
 impl ProviderConfig {
     /// Create default Ollama provider configuration
     pub fn default_ollama() -> Self {
@@ -1687,138 +1588,6 @@ impl ProviderConfig {
             })),
             api_key_ref: None,
         }
-    }
-}
-
-impl ModelRoutingConfig {
-    /// Create a new routing config with "Available Models" as default strategy
-    pub fn new_available_models() -> Self {
-        Self {
-            active_strategy: ActiveRoutingStrategy::AvailableModels,
-            available_models: AvailableModelsSelection::default(),
-            forced_model: None,
-            prioritized_models: Vec::new(),
-        }
-    }
-
-    /// Create a new routing config with "Force Model" strategy
-    pub fn new_force_model(provider: String, model: String) -> Self {
-        Self {
-            active_strategy: ActiveRoutingStrategy::ForceModel,
-            available_models: AvailableModelsSelection::default(),
-            forced_model: Some((provider, model)),
-            prioritized_models: Vec::new(),
-        }
-    }
-
-    /// Create a new routing config with "Prioritized List" strategy
-    pub fn new_prioritized_list(models: Vec<(String, String)>) -> Self {
-        Self {
-            active_strategy: ActiveRoutingStrategy::PrioritizedList,
-            available_models: AvailableModelsSelection::default(),
-            forced_model: None,
-            prioritized_models: models,
-        }
-    }
-
-    /// Check if a model is allowed by the current active strategy
-    pub fn is_model_allowed(&self, provider_name: &str, model_id: &str) -> bool {
-        match self.active_strategy {
-            ActiveRoutingStrategy::AvailableModels => self
-                .available_models
-                .is_model_allowed(provider_name, model_id),
-            ActiveRoutingStrategy::ForceModel => {
-                // Only the forced model is allowed
-                if let Some((forced_provider, forced_model)) = &self.forced_model {
-                    forced_provider.eq_ignore_ascii_case(provider_name)
-                        && forced_model.eq_ignore_ascii_case(model_id)
-                } else {
-                    false
-                }
-            }
-            ActiveRoutingStrategy::PrioritizedList => {
-                // Any model in the prioritized list is "allowed" for listing purposes
-                self.prioritized_models.iter().any(|(p, m)| {
-                    p.eq_ignore_ascii_case(provider_name) && m.eq_ignore_ascii_case(model_id)
-                })
-            }
-        }
-    }
-
-    /// Get the model to use for a request (ignoring the requested model for Force and Prioritized strategies)
-    pub fn get_model_for_request(&self, _requested_model: &str) -> Option<(String, String)> {
-        match self.active_strategy {
-            ActiveRoutingStrategy::AvailableModels => {
-                // Use the requested model (caller should validate it's allowed)
-                None // Signal to use requested model
-            }
-            ActiveRoutingStrategy::ForceModel => {
-                // Always use the forced model
-                self.forced_model.clone()
-            }
-            ActiveRoutingStrategy::PrioritizedList => {
-                // Use the first model in the prioritized list
-                self.prioritized_models.first().cloned()
-            }
-        }
-    }
-
-    /// Migration helper: Create ModelRoutingConfig from deprecated ModelSelection
-    #[allow(deprecated)]
-    pub fn from_model_selection(selection: crate::server::state::ModelSelection) -> Self {
-        match selection {
-            crate::server::state::ModelSelection::All => Self::new_available_models(),
-            crate::server::state::ModelSelection::Custom {
-                selected_all,
-                selected_providers,
-                selected_models,
-            } => Self {
-                active_strategy: ActiveRoutingStrategy::AvailableModels,
-                available_models: AvailableModelsSelection {
-                    selected_all,
-                    selected_providers,
-                    selected_models,
-                },
-                forced_model: None,
-                prioritized_models: Vec::new(),
-            },
-            crate::server::state::ModelSelection::DirectModel { provider, model } => {
-                Self::new_force_model(provider, model)
-            }
-            crate::server::state::ModelSelection::Router { .. } => {
-                // Router-based - default to Available Models
-                Self::new_available_models()
-            }
-        }
-    }
-}
-
-impl AvailableModelsSelection {
-    /// Check if a model is allowed by this selection
-    ///
-    /// Returns true if:
-    /// 1. `selected_all` is true, OR
-    /// 2. The provider is in `selected_providers`, OR
-    /// 3. The specific (provider, model) pair is in `selected_models`
-    pub fn is_model_allowed(&self, provider_name: &str, model_id: &str) -> bool {
-        // If all models are selected, everything is allowed
-        if self.selected_all {
-            return true;
-        }
-
-        // Check if the provider is in the selected_providers list
-        if self
-            .selected_providers
-            .iter()
-            .any(|p| p.eq_ignore_ascii_case(provider_name))
-        {
-            return true;
-        }
-
-        // Check if the specific (provider, model) pair is in selected_models
-        self.selected_models
-            .iter()
-            .any(|(p, m)| p.eq_ignore_ascii_case(provider_name) && m.eq_ignore_ascii_case(model_id))
     }
 }
 
@@ -1852,8 +1621,6 @@ impl Client {
             created_at: Utc::now(),
             last_used: None,
             strategy_id: "default".to_string(),
-            #[allow(deprecated)]
-            routing_config: None,
             roots: None,
             mcp_sampling_enabled: false,
             mcp_sampling_requires_approval: true,
@@ -1992,8 +1759,9 @@ mod tests {
         assert_eq!(config.server.port, 33625);
         #[cfg(not(debug_assertions))]
         assert_eq!(config.server.port, 3625);
-        assert_eq!(config.routers.len(), 2);
         assert_eq!(config.providers.len(), 1);
+        // Strategies are empty by default (created on-demand for clients)
+        assert!(config.strategies.is_empty());
     }
 
     #[test]
@@ -2013,20 +1781,6 @@ mod tests {
         assert_eq!(logging.level, LogLevel::Info);
         assert!(logging.enable_access_log);
         assert_eq!(logging.retention_days, 31);
-    }
-
-    #[test]
-    fn test_router_defaults() {
-        let min_cost = RouterConfig::default_minimum_cost();
-        assert_eq!(min_cost.name, "Minimum Cost");
-        assert!(min_cost.fallback_enabled);
-        assert!(min_cost.strategies.contains(&RoutingStrategy::LowestCost));
-
-        let max_perf = RouterConfig::default_maximum_performance();
-        assert_eq!(max_perf.name, "Maximum Performance");
-        assert!(max_perf
-            .strategies
-            .contains(&RoutingStrategy::HighestPerformance));
     }
 
     #[test]

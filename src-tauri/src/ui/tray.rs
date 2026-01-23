@@ -10,6 +10,7 @@ use crate::mcp::manager::McpServerManager;
 use crate::monitoring::metrics::MetricsCollector;
 use crate::providers::registry::ProviderRegistry;
 use crate::ui::tray_graph::{platform_graph_config, DataPoint};
+use crate::utils::test_mode::is_test_mode;
 use chrono::{DateTime, Duration, Utc};
 use parking_lot::RwLock;
 use std::sync::Arc;
@@ -60,10 +61,17 @@ pub fn setup_tray<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
     })?;
 
     // Create the tray icon
+    // In test mode, add a visual indicator to the tooltip
+    let tooltip = if is_test_mode() {
+        "🧪 LocalRouter AI [TEST MODE]"
+    } else {
+        "LocalRouter AI"
+    };
+
     let _tray = TrayIconBuilder::with_id("main")
         .icon(icon)
         .menu(&menu)
-        .tooltip("LocalRouter AI")
+        .tooltip(tooltip)
         .icon_as_template(true)
         .show_menu_on_left_click(true)
         .on_menu_event(move |app, event| {
@@ -210,7 +218,6 @@ pub fn setup_tray<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
 }
 
 /// Build the system tray menu
-#[allow(deprecated)]
 fn build_tray_menu<R: Runtime, M: Manager<R>>(app: &M) -> tauri::Result<tauri::menu::Menu<R>> {
     let mut menu_builder = MenuBuilder::new(app);
 
@@ -227,7 +234,6 @@ fn build_tray_menu<R: Runtime, M: Manager<R>>(app: &M) -> tauri::Result<tauri::m
     // Get client manager and build client list
     if let Some(client_manager) = app.try_state::<Arc<ClientManager>>() {
         let clients = client_manager.list_clients();
-        let provider_registry = app.try_state::<Arc<ProviderRegistry>>();
         let mcp_server_manager = app.try_state::<Arc<McpServerManager>>();
 
         if !clients.is_empty() {
@@ -240,169 +246,11 @@ fn build_tray_menu<R: Runtime, M: Manager<R>>(app: &M) -> tauri::Result<tauri::m
 
                 let mut client_submenu = SubmenuBuilder::new(app, &client_name);
 
-                // LLM Models section header
-                let llm_header = MenuItem::with_id(
-                    app,
-                    format!("llm_header_{}", client.id),
-                    "LLM Models",
-                    false,
-                    None::<&str>,
-                )?;
-                client_submenu = client_submenu.item(&llm_header);
-
-                // Get routing config and models
-                let routing_config = &client.routing_config;
-                let active_strategy = routing_config.as_ref().map(|c| c.active_strategy);
-                let models = if let Some(ref registry) = provider_registry {
-                    registry.get_cached_models()
-                } else {
-                    vec![]
-                };
-
-                if !models.is_empty() {
-                    // 1. Force Model submenu
-                    let force_model_text = if matches!(
-                        active_strategy,
-                        Some(crate::config::ActiveRoutingStrategy::ForceModel)
-                    ) {
-                        "✓ Force model"
-                    } else {
-                        "Force model"
-                    };
-                    let mut force_model_submenu = SubmenuBuilder::new(app, force_model_text);
-                    let forced_model = routing_config
-                        .as_ref()
-                        .and_then(|c| c.forced_model.as_ref());
-
-                    for model in models.iter() {
-                        let model_display = format!("{} ({})", model.id, model.provider);
-                        let is_forced = if let Some((provider, model_name)) = forced_model {
-                            provider == &model.provider && model_name == &model.id
-                        } else {
-                            false
-                        };
-                        let display_text = if is_forced {
-                            format!("✓ {}", model_display)
-                        } else {
-                            model_display
-                        };
-
-                        force_model_submenu = force_model_submenu.text(
-                            format!("force_model_{}_{}_{}", client.id, model.provider, model.id),
-                            display_text,
-                        );
-                    }
-
-                    let force_model_menu = force_model_submenu.build()?;
-                    client_submenu = client_submenu.item(&force_model_menu);
-
-                    // 2. Multi Model submenu
-                    let multi_model_text = if matches!(
-                        active_strategy,
-                        Some(crate::config::ActiveRoutingStrategy::AvailableModels)
-                    ) {
-                        "✓ Multi model"
-                    } else {
-                        "Multi model"
-                    };
-                    let mut multi_model_submenu = SubmenuBuilder::new(app, multi_model_text);
-
-                    // Add strategy toggle
-                    let (toggle_text, toggle_id) = if matches!(
-                        active_strategy,
-                        Some(crate::config::ActiveRoutingStrategy::AvailableModels)
-                    ) {
-                        (
-                            "✓ Client can choose any model",
-                            format!("disabled_strategy_{}", client.id),
-                        )
-                    } else {
-                        (
-                            "Enable to use any selected model",
-                            format!("enable_available_models_{}", client.id),
-                        )
-                    };
-                    multi_model_submenu = multi_model_submenu.text(toggle_id, toggle_text);
-                    multi_model_submenu = multi_model_submenu.separator();
-
-                    // Get available models selection
-                    let available_models = routing_config.as_ref().map(|c| &c.available_models);
-
-                    // Collect unique providers
-                    let mut providers: Vec<String> = models
-                        .iter()
-                        .map(|m| m.provider.clone())
-                        .collect::<std::collections::HashSet<_>>()
-                        .into_iter()
-                        .collect();
-                    providers.sort();
-
-                    // Add provider options
-                    if !providers.is_empty() {
-                        for provider in providers.iter() {
-                            let is_provider_selected = if let Some(avail) = available_models {
-                                avail.selected_all || avail.selected_providers.contains(provider)
-                            } else {
-                                false
-                            };
-                            let provider_text = if is_provider_selected {
-                                format!("✓ All {} Models", provider)
-                            } else {
-                                format!("All {} Models", provider)
-                            };
-                            multi_model_submenu = multi_model_submenu.text(
-                                format!("toggle_provider_{}_{}", client.id, provider),
-                                provider_text,
-                            );
-                        }
-                        multi_model_submenu = multi_model_submenu.separator();
-                    }
-
-                    // Add individual models
-                    for model in models.iter() {
-                        let model_display = format!("{} ({})", model.id, model.provider);
-                        let is_selected = if let Some(avail) = available_models {
-                            avail.selected_all
-                                || avail.selected_providers.contains(&model.provider)
-                                || avail
-                                    .selected_models
-                                    .iter()
-                                    .any(|(p, m)| p == &model.provider && m == &model.id)
-                        } else {
-                            false
-                        };
-                        let display_text = if is_selected {
-                            format!("✓ {}", model_display)
-                        } else {
-                            model_display
-                        };
-
-                        multi_model_submenu = multi_model_submenu.text(
-                            format!("toggle_model_{}_{}_{}", client.id, model.provider, model.id),
-                            display_text,
-                        );
-                    }
-
-                    let multi_model_menu = multi_model_submenu.build()?;
-                    client_submenu = client_submenu.item(&multi_model_menu);
-
-                    // 3. Prioritized list
-                    let prioritized_list_text = if matches!(
-                        active_strategy,
-                        Some(crate::config::ActiveRoutingStrategy::PrioritizedList)
-                    ) {
-                        "✓ Prioritized list..."
-                    } else {
-                        "Prioritized list..."
-                    };
-                    client_submenu = client_submenu.text(
-                        format!("prioritized_list_{}", client.id),
-                        prioritized_list_text,
-                    );
-                } else {
-                    client_submenu = client_submenu
-                        .text(format!("no_models_{}", client.id), "No models available");
-                }
+                // Strategy configuration link
+                client_submenu = client_submenu.text(
+                    format!("configure_strategy_{}", client.id),
+                    "Configure Strategy...",
+                );
 
                 // Add separator before Allowed MCPs
                 client_submenu = client_submenu.separator();

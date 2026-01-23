@@ -1,11 +1,10 @@
 //! Unified client authentication middleware for MCP proxy
 //!
-//! Supports three authentication methods:
-//! 1. Internal test token (for UI testing, bypasses restrictions)
-//! 2. OAuth access tokens (short-lived, from /oauth/token endpoint)
-//! 3. Direct bearer tokens (client secret used directly)
+//! Supports two authentication methods:
+//! 1. OAuth access tokens (short-lived, from /oauth/token endpoint)
+//! 2. Direct bearer tokens (client secret used directly)
 //!
-//! All methods use the same Authorization header format:
+//! Both methods use the same Authorization header format:
 //! "Authorization: Bearer <token>"
 
 use axum::{
@@ -84,19 +83,6 @@ pub async fn client_auth_middleware(mut req: Request, next: Next) -> Response {
             return ApiErrorResponse::internal_error("Missing application state").into_response();
         }
     };
-
-    // Check if this is the internal test token (for UI testing)
-    // This allows the Tauri frontend to access MCP servers without a configured client
-    if token == state.internal_test_secret.as_str() {
-        tracing::debug!(
-            "Internal test token detected - bypassing client restrictions for UI MCP testing"
-        );
-        let auth_context = ClientAuthContext {
-            client_id: "internal-test".to_string(),
-        };
-        req.extensions_mut().insert(auth_context);
-        return next.run(req).await;
-    }
 
     // Try OAuth access token first (short-lived tokens from /oauth/token)
     let client_id = if let Some(id) = state.token_store.verify_token(&token) {
