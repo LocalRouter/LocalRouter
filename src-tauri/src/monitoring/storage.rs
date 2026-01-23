@@ -141,6 +141,69 @@ impl MetricsDatabase {
         Ok(())
     }
 
+    /// Atomically increment metrics for a success event
+    /// Uses SQL ON CONFLICT to avoid race conditions
+    pub fn atomic_record_success(
+        &self,
+        metric_type: &str,
+        timestamp: DateTime<Utc>,
+        latency_ms: u64,
+        input_tokens: u64,
+        output_tokens: u64,
+        cost_usd: f64,
+    ) -> Result<()> {
+        let conn = self.conn.lock();
+
+        conn.execute(
+            "INSERT INTO metrics (metric_type, timestamp, granularity, requests, successful_requests,
+                failed_requests, avg_latency_ms, input_tokens, output_tokens, cost_usd, method_counts,
+                p50_latency_ms, p95_latency_ms, p99_latency_ms)
+             VALUES (?1, ?2, 'minute', 1, 1, 0, ?3, ?4, ?5, ?6, NULL, ?3, ?3, ?3)
+             ON CONFLICT(metric_type, timestamp, granularity) DO UPDATE SET
+                requests = requests + 1,
+                successful_requests = successful_requests + 1,
+                avg_latency_ms = (avg_latency_ms * requests + ?3) / (requests + 1),
+                input_tokens = COALESCE(input_tokens, 0) + ?4,
+                output_tokens = COALESCE(output_tokens, 0) + ?5,
+                cost_usd = COALESCE(cost_usd, 0.0) + ?6",
+            params![
+                metric_type,
+                timestamp.timestamp(),
+                latency_ms as f64,
+                input_tokens as i64,
+                output_tokens as i64,
+                cost_usd,
+            ],
+        )?;
+
+        Ok(())
+    }
+
+    /// Atomically increment metrics for a failure event
+    /// Uses SQL ON CONFLICT to avoid race conditions
+    pub fn atomic_record_failure(
+        &self,
+        metric_type: &str,
+        timestamp: DateTime<Utc>,
+        latency_ms: u64,
+    ) -> Result<()> {
+        let conn = self.conn.lock();
+
+        conn.execute(
+            "INSERT INTO metrics (metric_type, timestamp, granularity, requests, successful_requests,
+                failed_requests, avg_latency_ms, input_tokens, output_tokens, cost_usd, method_counts,
+                p50_latency_ms, p95_latency_ms, p99_latency_ms)
+             VALUES (?1, ?2, 'minute', 1, 0, 1, ?3, NULL, NULL, NULL, NULL, ?3, ?3, ?3)
+             ON CONFLICT(metric_type, timestamp, granularity) DO UPDATE SET
+                requests = requests + 1,
+                failed_requests = failed_requests + 1,
+                avg_latency_ms = (avg_latency_ms * requests + ?3) / (requests + 1)",
+            params![metric_type, timestamp.timestamp(), latency_ms as f64,],
+        )?;
+
+        Ok(())
+    }
+
     /// Query metrics with automatic granularity selection based on time range
     pub fn query_metrics(
         &self,

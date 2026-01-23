@@ -4,10 +4,11 @@
 
 #![allow(dead_code)]
 
+use chrono::DateTime;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
-use super::graphs::{Dataset, GraphData};
+use super::graphs::{Dataset, GraphData, TimeRange};
 use super::mcp_metrics::McpMetricDataPoint;
 
 /// MCP metric type to display
@@ -127,6 +128,7 @@ impl McpGraphGenerator {
     /// Generate method breakdown chart (stacked area)
     ///
     /// Shows a stacked area chart with one dataset per method.
+    /// Falls back to showing total requests if no method-level data is available.
     pub fn generate_method_breakdown(data_points: &[McpMetricDataPoint]) -> GraphData {
         if data_points.is_empty() {
             return GraphData::new(vec![], vec![]);
@@ -147,6 +149,18 @@ impl McpGraphGenerator {
             }
         }
         all_methods.sort();
+
+        // If no method-level data, fall back to showing total requests
+        if all_methods.is_empty() {
+            let values: Vec<f64> = data_points.iter().map(|p| p.requests as f64).collect();
+            let color = Self::get_color(0);
+            let dataset = Dataset::new("Requests", values)
+                .with_background_color(color.clone())
+                .with_border_color(color)
+                .with_fill(true)
+                .with_tension(0.4);
+            return GraphData::new(labels, vec![dataset]);
+        }
 
         // Create a dataset for each method
         let datasets: Vec<Dataset> = all_methods
@@ -228,6 +242,164 @@ impl McpGraphGenerator {
             "#8BC34A", // Light Green
         ];
         COLORS[index % COLORS.len()].to_string()
+    }
+
+    /// Aggregate MCP data points into fixed time buckets
+    pub fn aggregate_into_buckets(
+        data_points: &[McpMetricDataPoint],
+        time_range: TimeRange,
+    ) -> Vec<McpMetricDataPoint> {
+        let (start, end) = time_range.get_range();
+        let interval_minutes = time_range.bucket_interval_minutes();
+        let interval_seconds = interval_minutes * 60;
+
+        let start_ts = start.timestamp();
+        let end_ts = end.timestamp();
+        let bucket_start = (start_ts / interval_seconds) * interval_seconds;
+
+        // Create bucket boundaries with zero-initialized data
+        let mut buckets: BTreeMap<i64, McpMetricDataPoint> = BTreeMap::new();
+
+        let mut current = bucket_start;
+        while current <= end_ts {
+            buckets.insert(
+                current,
+                McpMetricDataPoint {
+                    timestamp: DateTime::from_timestamp(current, 0).unwrap_or(start),
+                    requests: 0,
+                    successful_requests: 0,
+                    failed_requests: 0,
+                    total_latency_ms: 0,
+                    latency_samples: Vec::new(),
+                    method_counts: HashMap::new(),
+                },
+            );
+            current += interval_seconds;
+        }
+
+        // Aggregate data points into buckets
+        for point in data_points {
+            let point_ts = point.timestamp.timestamp();
+            let bucket_ts = (point_ts / interval_seconds) * interval_seconds;
+
+            if let Some(bucket) = buckets.get_mut(&bucket_ts) {
+                bucket.requests += point.requests;
+                bucket.successful_requests += point.successful_requests;
+                bucket.failed_requests += point.failed_requests;
+                bucket.total_latency_ms += point.total_latency_ms;
+                bucket.latency_samples.extend(point.latency_samples.iter().cloned());
+
+                // Merge method counts
+                for (method, metrics) in &point.method_counts {
+                    let entry = bucket.method_counts.entry(method.clone()).or_insert(
+                        super::mcp_metrics::MethodMetrics {
+                            count: 0,
+                            successful: 0,
+                            failed: 0,
+                            total_latency_ms: 0,
+                        },
+                    );
+                    entry.count += metrics.count;
+                    entry.successful += metrics.successful;
+                    entry.failed += metrics.failed;
+                    entry.total_latency_ms += metrics.total_latency_ms;
+                }
+            }
+        }
+
+        buckets.into_values().collect()
+    }
+
+    /// Generate graph data with proper time bucketing
+    pub fn generate_bucketed(
+        data_points: &[McpMetricDataPoint],
+        metric_type: McpMetricType,
+        dataset_label: Option<&str>,
+        time_range: TimeRange,
+    ) -> GraphData {
+        let bucketed = Self::aggregate_into_buckets(data_points, time_range);
+        Self::generate(&bucketed, metric_type, dataset_label)
+    }
+
+    /// Generate multi-dataset graph with proper time bucketing
+    pub fn generate_multi_bucketed(
+        data_sets: Vec<(&str, &[McpMetricDataPoint])>,
+        metric_type: McpMetricType,
+        time_range: TimeRange,
+    ) -> GraphData {
+        if data_sets.is_empty() {
+            return GraphData::new(vec![], vec![]);
+        }
+
+        let (start, end) = time_range.get_range();
+        let interval_minutes = time_range.bucket_interval_minutes();
+        let interval_seconds = interval_minutes * 60;
+
+        let start_ts = start.timestamp();
+        let end_ts = end.timestamp();
+        let bucket_start = (start_ts / interval_seconds) * interval_seconds;
+
+        // Generate all bucket timestamps
+        let mut bucket_timestamps: Vec<i64> = Vec::new();
+        let mut current = bucket_start;
+        while current <= end_ts {
+            bucket_timestamps.push(current);
+            current += interval_seconds;
+        }
+
+        // Generate labels from bucket timestamps
+        let labels: Vec<String> = bucket_timestamps
+            .iter()
+            .filter_map(|&ts| DateTime::from_timestamp(ts, 0))
+            .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
+            .collect();
+
+        // Create datasets
+        let datasets: Vec<Dataset> = data_sets
+            .iter()
+            .enumerate()
+            .map(|(idx, (label, points))| {
+                // Aggregate this dataset's points into buckets
+                let mut bucket_values: HashMap<i64, f64> = HashMap::new();
+
+                for point in *points {
+                    let point_ts = point.timestamp.timestamp();
+                    let bucket_ts = (point_ts / interval_seconds) * interval_seconds;
+
+                    let value = match metric_type {
+                        McpMetricType::Requests => point.requests as f64,
+                        McpMetricType::Latency => point.avg_latency_ms(),
+                        McpMetricType::SuccessRate => point.success_rate() * 100.0,
+                    };
+
+                    *bucket_values.entry(bucket_ts).or_insert(0.0) += value;
+                }
+
+                // Generate values array aligned with bucket_timestamps
+                let values: Vec<f64> = bucket_timestamps
+                    .iter()
+                    .map(|ts| bucket_values.get(ts).copied().unwrap_or(0.0))
+                    .collect();
+
+                let color = Self::get_color(idx);
+                Dataset::new(*label, values)
+                    .with_border_color(color.clone())
+                    .with_background_color(format!("{}33", color))
+                    .with_fill(true)
+                    .with_tension(0.4)
+            })
+            .collect();
+
+        GraphData::new(labels, datasets)
+    }
+
+    /// Generate method breakdown with proper time bucketing
+    pub fn generate_method_breakdown_bucketed(
+        data_points: &[McpMetricDataPoint],
+        time_range: TimeRange,
+    ) -> GraphData {
+        let bucketed = Self::aggregate_into_buckets(data_points, time_range);
+        Self::generate_method_breakdown(&bucketed)
     }
 }
 

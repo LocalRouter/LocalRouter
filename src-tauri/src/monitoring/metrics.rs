@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 use super::mcp_metrics::McpMetricsCollector;
-use super::storage::{Granularity, MetricRow, MetricsDatabase};
+use super::storage::{MetricRow, MetricsDatabase};
 
 /// Request metrics for recording
 #[derive(Debug, Clone)]
@@ -57,8 +57,20 @@ pub struct MetricDataPoint {
     /// Number of failed requests
     pub failed_requests: u64,
 
-    /// Latency samples (for percentile calculation)
+    /// Latency samples (for percentile calculation when available)
     pub latency_samples: Vec<u64>,
+
+    /// Stored P50 latency (from database aggregation)
+    #[serde(default)]
+    pub p50_latency_ms: Option<f64>,
+
+    /// Stored P95 latency (from database aggregation)
+    #[serde(default)]
+    pub p95_latency_ms: Option<f64>,
+
+    /// Stored P99 latency (from database aggregation)
+    #[serde(default)]
+    pub p99_latency_ms: Option<f64>,
 }
 
 impl MetricDataPoint {
@@ -81,16 +93,25 @@ impl MetricDataPoint {
     }
 
     /// Calculate latency percentile
+    /// Uses stored percentiles when samples are not available (e.g., from database)
     pub fn latency_percentile(&self, percentile: f64) -> u64 {
-        if self.latency_samples.is_empty() {
-            return 0;
+        // If we have raw samples, calculate from them
+        if !self.latency_samples.is_empty() {
+            let mut sorted = self.latency_samples.clone();
+            sorted.sort_unstable();
+
+            let index = ((percentile / 100.0) * (sorted.len() as f64 - 1.0)) as usize;
+            return sorted[index];
         }
 
-        let mut sorted = self.latency_samples.clone();
-        sorted.sort_unstable();
+        // Otherwise, use stored percentile values from database
+        let stored_value = match percentile as u32 {
+            0..=50 => self.p50_latency_ms,
+            51..=95 => self.p95_latency_ms,
+            _ => self.p99_latency_ms,
+        };
 
-        let index = ((percentile / 100.0) * (sorted.len() as f64 - 1.0)) as usize;
-        sorted[index]
+        stored_value.unwrap_or(0.0) as u64
     }
 }
 
@@ -109,7 +130,10 @@ impl From<MetricRow> for MetricDataPoint {
             total_latency_ms: (row.avg_latency_ms * row.requests as f64) as u64,
             successful_requests: row.successful_requests,
             failed_requests: row.failed_requests,
-            latency_samples: vec![], // Not stored in aggregated data
+            latency_samples: vec![], // Raw samples not stored in aggregated data
+            p50_latency_ms: row.p50_latency_ms,
+            p95_latency_ms: row.p95_latency_ms,
+            p99_latency_ms: row.p99_latency_ms,
         }
     }
 }
@@ -164,24 +188,7 @@ impl MetricsCollector {
             .duration_trunc(chrono::Duration::minutes(1))
             .unwrap();
 
-        // Create metric row for this minute
-        let row = MetricRow {
-            timestamp: minute_timestamp,
-            granularity: Granularity::Minute,
-            requests: 1,
-            successful_requests: 1,
-            failed_requests: 0,
-            avg_latency_ms: metrics.latency_ms as f64,
-            input_tokens: Some(metrics.input_tokens),
-            output_tokens: Some(metrics.output_tokens),
-            cost_usd: Some(metrics.cost_usd),
-            method_counts: None,
-            p50_latency_ms: Some(metrics.latency_ms as f64),
-            p95_latency_ms: Some(metrics.latency_ms as f64),
-            p99_latency_ms: Some(metrics.latency_ms as f64),
-        };
-
-        // Write to all five tiers
+        // Write to all five tiers using atomic upsert
         let metric_types = vec![
             "llm_global".to_string(),
             format!("llm_key:{}", metrics.api_key_name),
@@ -191,46 +198,14 @@ impl MetricsCollector {
         ];
 
         for metric_type in metric_types {
-            // Try to read existing data for this minute
-            if let Ok(existing) = self.db.query_metrics(
+            let _ = self.db.atomic_record_success(
                 &metric_type,
                 minute_timestamp,
-                minute_timestamp + chrono::Duration::minutes(1),
-            ) {
-                if let Some(existing_row) = existing.first() {
-                    // Merge with existing data
-                    let merged_row = MetricRow {
-                        timestamp: minute_timestamp,
-                        granularity: Granularity::Minute,
-                        requests: existing_row.requests + 1,
-                        successful_requests: existing_row.successful_requests + 1,
-                        failed_requests: existing_row.failed_requests,
-                        avg_latency_ms: (existing_row.avg_latency_ms
-                            * existing_row.requests as f64
-                            + metrics.latency_ms as f64)
-                            / (existing_row.requests + 1) as f64,
-                        input_tokens: Some(
-                            existing_row.input_tokens.unwrap_or(0) + metrics.input_tokens,
-                        ),
-                        output_tokens: Some(
-                            existing_row.output_tokens.unwrap_or(0) + metrics.output_tokens,
-                        ),
-                        cost_usd: Some(existing_row.cost_usd.unwrap_or(0.0) + metrics.cost_usd),
-                        method_counts: None,
-                        p50_latency_ms: existing_row.p50_latency_ms, // Keep existing percentiles
-                        p95_latency_ms: existing_row.p95_latency_ms,
-                        p99_latency_ms: existing_row.p99_latency_ms,
-                    };
-
-                    let _ = self.db.upsert_metric(&metric_type, &merged_row);
-                } else {
-                    // No existing data, insert new
-                    let _ = self.db.upsert_metric(&metric_type, &row);
-                }
-            } else {
-                // Error querying, just insert new
-                let _ = self.db.upsert_metric(&metric_type, &row);
-            }
+                metrics.latency_ms,
+                metrics.input_tokens,
+                metrics.output_tokens,
+                metrics.cost_usd,
+            );
         }
 
         // Notify callback that metrics were recorded
@@ -272,24 +247,7 @@ impl MetricsCollector {
             .duration_trunc(chrono::Duration::minutes(1))
             .unwrap();
 
-        // Create metric row for this minute
-        let row = MetricRow {
-            timestamp: minute_timestamp,
-            granularity: Granularity::Minute,
-            requests: 1,
-            successful_requests: 0,
-            failed_requests: 1,
-            avg_latency_ms: latency_ms as f64,
-            input_tokens: None,
-            output_tokens: None,
-            cost_usd: None,
-            method_counts: None,
-            p50_latency_ms: Some(latency_ms as f64),
-            p95_latency_ms: Some(latency_ms as f64),
-            p99_latency_ms: Some(latency_ms as f64),
-        };
-
-        // Write to all five tiers
+        // Write to all five tiers using atomic upsert
         let metric_types = vec![
             "llm_global".to_string(),
             format!("llm_key:{}", api_key_name),
@@ -299,42 +257,9 @@ impl MetricsCollector {
         ];
 
         for metric_type in metric_types {
-            // Try to read existing data for this minute
-            if let Ok(existing) = self.db.query_metrics(
-                &metric_type,
-                minute_timestamp,
-                minute_timestamp + chrono::Duration::minutes(1),
-            ) {
-                if let Some(existing_row) = existing.first() {
-                    // Merge with existing data
-                    let merged_row = MetricRow {
-                        timestamp: minute_timestamp,
-                        granularity: Granularity::Minute,
-                        requests: existing_row.requests + 1,
-                        successful_requests: existing_row.successful_requests,
-                        failed_requests: existing_row.failed_requests + 1,
-                        avg_latency_ms: (existing_row.avg_latency_ms
-                            * existing_row.requests as f64
-                            + latency_ms as f64)
-                            / (existing_row.requests + 1) as f64,
-                        input_tokens: existing_row.input_tokens,
-                        output_tokens: existing_row.output_tokens,
-                        cost_usd: existing_row.cost_usd,
-                        method_counts: None,
-                        p50_latency_ms: existing_row.p50_latency_ms,
-                        p95_latency_ms: existing_row.p95_latency_ms,
-                        p99_latency_ms: existing_row.p99_latency_ms,
-                    };
-
-                    let _ = self.db.upsert_metric(&metric_type, &merged_row);
-                } else {
-                    // No existing data, insert new
-                    let _ = self.db.upsert_metric(&metric_type, &row);
-                }
-            } else {
-                // Error querying, just insert new
-                let _ = self.db.upsert_metric(&metric_type, &row);
-            }
+            let _ = self
+                .db
+                .atomic_record_failure(&metric_type, minute_timestamp, latency_ms);
         }
     }
 

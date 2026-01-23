@@ -198,6 +198,9 @@ impl LogParser {
                     successful_requests: 0,
                     failed_requests: 0,
                     latency_samples: Vec::new(),
+                    p50_latency_ms: None,
+                    p95_latency_ms: None,
+                    p99_latency_ms: None,
                 }
             });
 
@@ -530,6 +533,9 @@ mod tests {
             successful_requests: 9,
             failed_requests: 1,
             latency_samples: vec![100, 200, 300, 400, 500, 600, 700, 800, 900, 1000],
+            p50_latency_ms: None,
+            p95_latency_ms: None,
+            p99_latency_ms: None,
         }];
 
         let summary = LogSummary::from_data_points(&points);

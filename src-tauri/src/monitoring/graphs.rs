@@ -40,6 +40,17 @@ impl TimeRange {
         let start = end - self.duration();
         (start, end)
     }
+
+    /// Get the appropriate bucket interval in minutes for this time range
+    /// This determines how data points are aggregated for display
+    pub fn bucket_interval_minutes(&self) -> i64 {
+        match self {
+            TimeRange::Hour => 5,    // 12 buckets per hour
+            TimeRange::Day => 60,    // 24 buckets per day
+            TimeRange::Week => 360,  // 28 buckets (6-hour intervals)
+            TimeRange::Month => 720, // 60 buckets (12-hour intervals)
+        }
+    }
 }
 
 /// Metric type to display
@@ -377,6 +388,159 @@ impl GraphGenerator {
         colors[index % colors.len()].to_string()
     }
 
+    /// Aggregate data points into fixed time buckets
+    /// This ensures consistent time intervals on the chart regardless of data density
+    pub fn aggregate_into_buckets(
+        data_points: &[MetricDataPoint],
+        time_range: TimeRange,
+    ) -> Vec<MetricDataPoint> {
+        let (start, end) = time_range.get_range();
+        let interval_minutes = time_range.bucket_interval_minutes();
+        let interval_seconds = interval_minutes * 60;
+
+        // Create bucket boundaries
+        let start_ts = start.timestamp();
+        let end_ts = end.timestamp();
+
+        // Round start to bucket boundary
+        let bucket_start = (start_ts / interval_seconds) * interval_seconds;
+
+        // Create a map of bucket start time -> aggregated data
+        let mut buckets: std::collections::BTreeMap<i64, MetricDataPoint> =
+            std::collections::BTreeMap::new();
+
+        // Initialize all buckets with zero values
+        let mut current = bucket_start;
+        while current <= end_ts {
+            buckets.insert(
+                current,
+                MetricDataPoint {
+                    timestamp: DateTime::from_timestamp(current, 0).unwrap_or(start),
+                    requests: 0,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    total_tokens: 0,
+                    cost_usd: 0.0,
+                    total_latency_ms: 0,
+                    successful_requests: 0,
+                    failed_requests: 0,
+                    latency_samples: Vec::new(),
+                    p50_latency_ms: None,
+                    p95_latency_ms: None,
+                    p99_latency_ms: None,
+                },
+            );
+            current += interval_seconds;
+        }
+
+        // Aggregate data points into buckets
+        for point in data_points {
+            let point_ts = point.timestamp.timestamp();
+            let bucket_ts = (point_ts / interval_seconds) * interval_seconds;
+
+            if let Some(bucket) = buckets.get_mut(&bucket_ts) {
+                bucket.requests += point.requests;
+                bucket.input_tokens += point.input_tokens;
+                bucket.output_tokens += point.output_tokens;
+                bucket.total_tokens += point.total_tokens;
+                bucket.cost_usd += point.cost_usd;
+                bucket.total_latency_ms += point.total_latency_ms;
+                bucket.successful_requests += point.successful_requests;
+                bucket.failed_requests += point.failed_requests;
+                bucket.latency_samples.extend(point.latency_samples.iter().cloned());
+            }
+        }
+
+        buckets.into_values().collect()
+    }
+
+    /// Generate graph data with proper time bucketing
+    pub fn generate_bucketed(
+        data_points: &[MetricDataPoint],
+        metric_type: MetricType,
+        dataset_label: Option<&str>,
+        time_range: TimeRange,
+    ) -> GraphData {
+        let bucketed = Self::aggregate_into_buckets(data_points, time_range);
+        Self::generate(&bucketed, metric_type, dataset_label)
+    }
+
+    /// Generate multi-dataset graph with proper time bucketing
+    pub fn generate_multi_bucketed(
+        data_sets: Vec<(&str, &[MetricDataPoint])>,
+        metric_type: MetricType,
+        time_range: TimeRange,
+    ) -> GraphData {
+        if data_sets.is_empty() {
+            return GraphData::new(vec![], vec![]);
+        }
+
+        let (start, end) = time_range.get_range();
+        let interval_minutes = time_range.bucket_interval_minutes();
+        let interval_seconds = interval_minutes * 60;
+
+        // Create bucket boundaries
+        let start_ts = start.timestamp();
+        let end_ts = end.timestamp();
+        let bucket_start = (start_ts / interval_seconds) * interval_seconds;
+
+        // Generate all bucket timestamps
+        let mut bucket_timestamps: Vec<i64> = Vec::new();
+        let mut current = bucket_start;
+        while current <= end_ts {
+            bucket_timestamps.push(current);
+            current += interval_seconds;
+        }
+
+        // Generate labels from bucket timestamps
+        let labels: Vec<String> = bucket_timestamps
+            .iter()
+            .filter_map(|&ts| DateTime::from_timestamp(ts, 0))
+            .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
+            .collect();
+
+        // Create datasets
+        let datasets: Vec<Dataset> = data_sets
+            .iter()
+            .enumerate()
+            .map(|(idx, (label, points))| {
+                // Aggregate this dataset's points into buckets
+                let mut bucket_values: std::collections::HashMap<i64, f64> =
+                    std::collections::HashMap::new();
+
+                for point in *points {
+                    let point_ts = point.timestamp.timestamp();
+                    let bucket_ts = (point_ts / interval_seconds) * interval_seconds;
+
+                    let value = match metric_type {
+                        MetricType::Tokens => point.total_tokens as f64,
+                        MetricType::Cost => point.cost_usd,
+                        MetricType::Requests => point.requests as f64,
+                        MetricType::Latency => point.avg_latency_ms(),
+                        MetricType::SuccessRate => point.success_rate() * 100.0,
+                    };
+
+                    *bucket_values.entry(bucket_ts).or_insert(0.0) += value;
+                }
+
+                // Generate values array aligned with bucket_timestamps
+                let values: Vec<f64> = bucket_timestamps
+                    .iter()
+                    .map(|ts| bucket_values.get(ts).copied().unwrap_or(0.0))
+                    .collect();
+
+                let color = Self::get_color(idx);
+                Dataset::new(*label, values)
+                    .with_border_color(color.clone())
+                    .with_background_color(format!("{}33", color))
+                    .with_fill(true)
+                    .with_tension(0.4)
+            })
+            .collect();
+
+        GraphData::new(labels, datasets)
+    }
+
     /// Fill missing time points with zeros
     pub fn fill_gaps(
         data_points: &[MetricDataPoint],
@@ -421,6 +585,9 @@ impl GraphGenerator {
                     successful_requests: 0,
                     failed_requests: 0,
                     latency_samples: Vec::new(),
+                    p50_latency_ms: None,
+                    p95_latency_ms: None,
+                    p99_latency_ms: None,
                 }
             };
 
@@ -450,6 +617,9 @@ mod tests {
                 successful_requests: (i + 1) as u64,
                 failed_requests: 0,
                 latency_samples: vec![(i + 1) as u64 * 100],
+                p50_latency_ms: None,
+                p95_latency_ms: None,
+                p99_latency_ms: None,
             })
             .collect()
     }
@@ -578,6 +748,9 @@ mod tests {
             successful_requests: 10,
             failed_requests: 0,
             latency_samples: vec![100],
+            p50_latency_ms: None,
+            p95_latency_ms: None,
+            p99_latency_ms: None,
         }];
 
         let start = now - Duration::minutes(2);
