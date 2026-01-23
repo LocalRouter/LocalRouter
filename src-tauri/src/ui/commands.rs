@@ -8,8 +8,8 @@ use std::sync::Arc;
 
 use crate::api_keys::keychain_trait::KeychainStorage;
 use crate::config::{
-    ActiveRoutingStrategy, ConfigManager, McpAuthConfig, McpServerConfig, McpTransportConfig,
-    McpTransportType, ModelRoutingConfig, RouterConfig,
+    client_strategy_name, ActiveRoutingStrategy, ConfigManager, McpAuthConfig, McpServerAccess,
+    McpServerConfig, McpTransportConfig, McpTransportType, ModelRoutingConfig, RouterConfig,
 };
 use crate::mcp::McpServerManager;
 use crate::oauth_clients::OAuthClientManager;
@@ -1280,6 +1280,29 @@ pub enum FrontendAuthConfig {
     EnvVars {
         env: std::collections::HashMap<String, String>,
     },
+    /// OAuth with browser-based authorization code flow (PKCE)
+    /// Initially a placeholder - full OAuth details configured during first auth
+    #[serde(rename = "oauth_browser")]
+    OAuthBrowser {
+        /// OAuth client ID (optional - can be configured later)
+        #[serde(default)]
+        client_id: Option<String>,
+        /// Client secret (optional - can be configured later)
+        #[serde(default)]
+        client_secret: Option<String>,
+        /// Authorization endpoint URL (optional - can be auto-discovered)
+        #[serde(default)]
+        auth_url: Option<String>,
+        /// Token endpoint URL (optional - can be auto-discovered)
+        #[serde(default)]
+        token_url: Option<String>,
+        /// OAuth scopes to request
+        #[serde(default)]
+        scopes: Vec<String>,
+        /// Redirect URI (defaults to http://localhost:8080/callback)
+        #[serde(default)]
+        redirect_uri: Option<String>,
+    },
 }
 
 /// Process frontend auth config and store secrets in keychain
@@ -1350,6 +1373,41 @@ fn process_auth_config(
             }
         }
         FrontendAuthConfig::EnvVars { env } => McpAuthConfig::EnvVars { env },
+        FrontendAuthConfig::OAuthBrowser {
+            client_id,
+            client_secret,
+            auth_url,
+            token_url,
+            scopes,
+            redirect_uri,
+        } => {
+            // Store client secret in keychain if provided
+            let secret_ref = if let Some(secret) = client_secret {
+                let keychain = crate::api_keys::CachedKeychain::auto()
+                    .map_err(|e| format!("Failed to access keychain: {}", e))?;
+
+                let key = format!("{}_oauth_browser_secret", server_id);
+                keychain
+                    .store("LocalRouter-McpServers", &key, &secret)
+                    .map_err(|e| format!("Failed to store OAuth secret in keychain: {}", e))?;
+
+                tracing::debug!("Stored OAuth browser secret in keychain with key: {}", key);
+                key
+            } else {
+                // No secret provided yet - use placeholder
+                format!("{}_oauth_browser_secret", server_id)
+            };
+
+            McpAuthConfig::OAuthBrowser {
+                client_id: client_id.unwrap_or_default(),
+                client_secret_ref: secret_ref,
+                auth_url: auth_url.unwrap_or_default(),
+                token_url: token_url.unwrap_or_default(),
+                scopes,
+                redirect_uri: redirect_uri
+                    .unwrap_or_else(|| "http://localhost:8080/callback".to_string()),
+            }
+        }
     };
 
     tracing::info!(
@@ -2225,11 +2283,18 @@ pub async fn get_mcp_token_stats(
         .find(|c| c.id == client_id)
         .ok_or_else(|| format!("Client not found: {}", client_id))?;
 
+    // Determine which servers to analyze based on access mode
+    let server_ids: Vec<String> = match &client.mcp_server_access {
+        McpServerAccess::None => vec![],
+        McpServerAccess::All => config.mcp_servers.iter().map(|s| s.id.clone()).collect(),
+        McpServerAccess::Specific(servers) => servers.clone(),
+    };
+
     let mut server_stats = Vec::new();
     let mut total_tokens = 0;
 
     // Analyze each allowed server
-    for server_id in &client.allowed_mcp_servers {
+    for server_id in &server_ids {
         // Ensure server is started
         if !mcp_manager.is_running(server_id) {
             if let Err(e) = mcp_manager.start_server(server_id).await {
@@ -2368,19 +2433,52 @@ pub async fn get_mcp_token_stats(
 // Unified Client Management Commands
 // ============================================================================
 
+/// MCP server access mode for the UI
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum McpAccessMode {
+    /// No MCP access
+    None,
+    /// Access to all MCP servers
+    All,
+    /// Access to specific servers only
+    Specific,
+}
+
 /// Client information for display
+///
+/// NOTE: This struct does NOT contain the client secret. The secret is stored
+/// securely in the keychain and must be fetched separately via `get_client_value`.
+/// The `client_id` field here is just the public identifier (same as `id`),
+/// NOT the secret key used for authentication.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientInfo {
+    /// The unique client identifier (UUID)
     pub id: String,
+    /// Human-readable name for the client
     pub name: String,
+    /// Public client identifier for OAuth (same as `id`, NOT the secret).
+    /// To get the actual secret/API key, use `get_client_value` command.
     pub client_id: String,
     pub enabled: bool,
     pub strategy_id: String,
     pub allowed_llm_providers: Vec<String>,
-    pub allowed_mcp_servers: Vec<String>,
+    /// The MCP access mode: "none", "all", or "specific"
+    pub mcp_access_mode: McpAccessMode,
+    /// List of specific MCP server IDs (only relevant when mcp_access_mode is "specific")
+    pub mcp_servers: Vec<String>,
     pub mcp_deferred_loading: bool,
     pub created_at: String,
     pub last_used: Option<String>,
+}
+
+/// Convert McpServerAccess to UI representation
+fn mcp_access_to_ui(access: &McpServerAccess) -> (McpAccessMode, Vec<String>) {
+    match access {
+        McpServerAccess::None => (McpAccessMode::None, vec![]),
+        McpServerAccess::All => (McpAccessMode::All, vec![]),
+        McpServerAccess::Specific(servers) => (McpAccessMode::Specific, servers.clone()),
+    }
 }
 
 /// List all clients
@@ -2391,17 +2489,21 @@ pub async fn list_clients(
     let clients = client_manager.list_clients();
     Ok(clients
         .into_iter()
-        .map(|c| ClientInfo {
-            id: c.id.clone(),
-            name: c.name.clone(),
-            client_id: c.id.clone(),
-            enabled: c.enabled,
-            strategy_id: c.strategy_id.clone(),
-            allowed_llm_providers: c.allowed_llm_providers.clone(),
-            allowed_mcp_servers: c.allowed_mcp_servers.clone(),
-            mcp_deferred_loading: c.mcp_deferred_loading,
-            created_at: c.created_at.to_rfc3339(),
-            last_used: c.last_used.map(|t| t.to_rfc3339()),
+        .map(|c| {
+            let (mcp_access_mode, mcp_servers) = mcp_access_to_ui(&c.mcp_server_access);
+            ClientInfo {
+                id: c.id.clone(),
+                name: c.name.clone(),
+                client_id: c.id.clone(),
+                enabled: c.enabled,
+                strategy_id: c.strategy_id.clone(),
+                allowed_llm_providers: c.allowed_llm_providers.clone(),
+                mcp_access_mode,
+                mcp_servers,
+                mcp_deferred_loading: c.mcp_deferred_loading,
+                created_at: c.created_at.to_rfc3339(),
+                last_used: c.last_used.map(|t| t.to_rfc3339()),
+            }
         })
         .collect())
 }
@@ -2444,6 +2546,7 @@ pub async fn create_client(
         tracing::error!("Failed to emit strategies-changed event: {}", e);
     }
 
+    let (mcp_access_mode, mcp_servers) = mcp_access_to_ui(&client.mcp_server_access);
     let client_info = ClientInfo {
         id: client.id.clone(),
         name: client.name.clone(),
@@ -2451,7 +2554,8 @@ pub async fn create_client(
         enabled: client.enabled,
         strategy_id: client.strategy_id.clone(),
         allowed_llm_providers: client.allowed_llm_providers.clone(),
-        allowed_mcp_servers: client.allowed_mcp_servers.clone(),
+        mcp_access_mode,
+        mcp_servers,
         mcp_deferred_loading: client.mcp_deferred_loading,
         created_at: client.created_at.to_rfc3339(),
         last_used: client.last_used.map(|t| t.to_rfc3339()),
@@ -2511,11 +2615,20 @@ pub async fn update_client_name(
 
     // Update in config
     let mut found = false;
+    let mut strategies_renamed = false;
     config_manager
         .update(|cfg| {
             if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
                 client.name = name.clone();
                 found = true;
+            }
+
+            // Also rename strategies that have this client as parent
+            for strategy in cfg.strategies.iter_mut() {
+                if strategy.parent.as_ref() == Some(&client_id) {
+                    strategy.name = client_strategy_name(&name);
+                    strategies_renamed = true;
+                }
             }
         })
         .map_err(|e| e.to_string())?;
@@ -2530,6 +2643,16 @@ pub async fn update_client_name(
     // Rebuild tray menu
     if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
         tracing::error!("Failed to rebuild tray menu: {}", e);
+    }
+
+    // Emit events for UI updates
+    if let Err(e) = app.emit("clients-changed", ()) {
+        tracing::error!("Failed to emit clients-changed event: {}", e);
+    }
+    if strategies_renamed {
+        if let Err(e) = app.emit("strategies-changed", ()) {
+            tracing::error!("Failed to emit strategies-changed event: {}", e);
+        }
     }
 
     Ok(())
@@ -2580,7 +2703,36 @@ pub async fn toggle_client_enabled(
         tracing::error!("Failed to rebuild tray menu: {}", e);
     }
 
+    // Emit clients-changed event for UI updates
+    if let Err(e) = app.emit("clients-changed", ()) {
+        tracing::error!("Failed to emit clients-changed event: {}", e);
+    }
+
     Ok(())
+}
+
+/// Rotate a client's secret (API key)
+///
+/// Generates a new secret for the client and stores it in the keychain.
+/// The old secret is immediately invalidated.
+///
+/// # Arguments
+/// * `client_id` - The client ID whose secret should be rotated
+///
+/// # Returns
+/// The new secret string (shown once to the user)
+#[tauri::command]
+pub async fn rotate_client_secret(
+    client_id: String,
+    client_manager: State<'_, Arc<crate::clients::ClientManager>>,
+) -> Result<String, String> {
+    tracing::info!("Rotating secret for client: {}", client_id);
+
+    let new_secret = client_manager
+        .rotate_secret(&client_id)
+        .map_err(|e| e.to_string())?;
+
+    Ok(new_secret)
 }
 
 /// Toggle MCP deferred loading for a client
@@ -2597,6 +2749,7 @@ pub async fn toggle_client_deferred_loading(
     client_id: String,
     enabled: bool,
     config_manager: State<'_, ConfigManager>,
+    app: tauri::AppHandle,
 ) -> Result<(), String> {
     tracing::info!(
         "Setting client {} MCP deferred loading: {}",
@@ -2622,6 +2775,11 @@ pub async fn toggle_client_deferred_loading(
     // Persist to disk
     config_manager.save().await.map_err(|e| e.to_string())?;
 
+    // Emit clients-changed event for UI updates
+    if let Err(e) = app.emit("clients-changed", ()) {
+        tracing::error!("Failed to emit clients-changed event: {}", e);
+    }
+
     Ok(())
 }
 
@@ -2632,6 +2790,7 @@ pub async fn add_client_llm_provider(
     provider: String,
     client_manager: State<'_, Arc<crate::clients::ClientManager>>,
     config_manager: State<'_, ConfigManager>,
+    app: tauri::AppHandle,
 ) -> Result<(), String> {
     tracing::info!("Adding LLM provider {} to client {}", provider, client_id);
 
@@ -2660,6 +2819,11 @@ pub async fn add_client_llm_provider(
     // Persist to disk
     config_manager.save().await.map_err(|e| e.to_string())?;
 
+    // Emit clients-changed event for UI updates
+    if let Err(e) = app.emit("clients-changed", ()) {
+        tracing::error!("Failed to emit clients-changed event: {}", e);
+    }
+
     Ok(())
 }
 
@@ -2670,6 +2834,7 @@ pub async fn remove_client_llm_provider(
     provider: String,
     client_manager: State<'_, Arc<crate::clients::ClientManager>>,
     config_manager: State<'_, ConfigManager>,
+    app: tauri::AppHandle,
 ) -> Result<(), String> {
     tracing::info!(
         "Removing LLM provider {} from client {}",
@@ -2700,6 +2865,11 @@ pub async fn remove_client_llm_provider(
     // Persist to disk
     config_manager.save().await.map_err(|e| e.to_string())?;
 
+    // Emit clients-changed event for UI updates
+    if let Err(e) = app.emit("clients-changed", ()) {
+        tracing::error!("Failed to emit clients-changed event: {}", e);
+    }
+
     Ok(())
 }
 
@@ -2710,6 +2880,7 @@ pub async fn add_client_mcp_server(
     server_id: String,
     client_manager: State<'_, Arc<crate::clients::ClientManager>>,
     config_manager: State<'_, ConfigManager>,
+    app: tauri::AppHandle,
 ) -> Result<(), String> {
     tracing::info!("Adding MCP server {} to client {}", server_id, client_id);
 
@@ -2723,9 +2894,7 @@ pub async fn add_client_mcp_server(
     config_manager
         .update(|cfg| {
             if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
-                if !client.allowed_mcp_servers.contains(&server_id) {
-                    client.allowed_mcp_servers.push(server_id.clone());
-                }
+                client.add_mcp_server(server_id.clone());
                 found = true;
             }
         })
@@ -2738,6 +2907,11 @@ pub async fn add_client_mcp_server(
     // Persist to disk
     config_manager.save().await.map_err(|e| e.to_string())?;
 
+    // Emit clients-changed event for UI updates
+    if let Err(e) = app.emit("clients-changed", ()) {
+        tracing::error!("Failed to emit clients-changed event: {}", e);
+    }
+
     Ok(())
 }
 
@@ -2748,6 +2922,7 @@ pub async fn remove_client_mcp_server(
     server_id: String,
     client_manager: State<'_, Arc<crate::clients::ClientManager>>,
     config_manager: State<'_, ConfigManager>,
+    app: tauri::AppHandle,
 ) -> Result<(), String> {
     tracing::info!(
         "Removing MCP server {} from client {}",
@@ -2765,7 +2940,7 @@ pub async fn remove_client_mcp_server(
     config_manager
         .update(|cfg| {
             if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
-                client.allowed_mcp_servers.retain(|s| s != &server_id);
+                client.remove_mcp_server(&server_id);
                 found = true;
             }
         })
@@ -2777,6 +2952,65 @@ pub async fn remove_client_mcp_server(
 
     // Persist to disk
     config_manager.save().await.map_err(|e| e.to_string())?;
+
+    // Emit clients-changed event for UI updates
+    if let Err(e) = app.emit("clients-changed", ()) {
+        tracing::error!("Failed to emit clients-changed event: {}", e);
+    }
+
+    Ok(())
+}
+
+/// Set MCP server access mode for a client
+///
+/// # Arguments
+/// * `client_id` - The client ID
+/// * `mode` - The access mode: "none", "all", or "specific"
+/// * `servers` - List of server IDs (only used when mode is "specific")
+#[tauri::command]
+pub async fn set_client_mcp_access(
+    client_id: String,
+    mode: McpAccessMode,
+    servers: Vec<String>,
+    client_manager: State<'_, Arc<crate::clients::ClientManager>>,
+    config_manager: State<'_, ConfigManager>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    let access = match mode {
+        McpAccessMode::None => McpServerAccess::None,
+        McpAccessMode::All => McpServerAccess::All,
+        McpAccessMode::Specific => McpServerAccess::Specific(servers),
+    };
+
+    tracing::info!("Setting MCP access for client {} to {:?}", client_id, access);
+
+    // Update in client manager
+    client_manager
+        .set_mcp_server_access(&client_id, access.clone())
+        .map_err(|e| e.to_string())?;
+
+    // Update in config
+    let mut found = false;
+    config_manager
+        .update(|cfg| {
+            if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
+                client.set_mcp_server_access(access.clone());
+                found = true;
+            }
+        })
+        .map_err(|e| e.to_string())?;
+
+    if !found {
+        return Err(format!("Client not found: {}", client_id));
+    }
+
+    // Persist to disk
+    config_manager.save().await.map_err(|e| e.to_string())?;
+
+    // Emit clients-changed event for UI updates
+    if let Err(e) = app.emit("clients-changed", ()) {
+        tracing::error!("Failed to emit clients-changed event: {}", e);
+    }
 
     Ok(())
 }
@@ -2933,16 +3167,18 @@ pub async fn set_client_forced_model(
 #[tauri::command]
 pub async fn update_client_available_models(
     client_id: String,
-    all_provider_models: Vec<String>,
-    individual_models: Vec<(String, String)>,
+    selected_all: bool,
+    selected_providers: Vec<String>,
+    selected_models: Vec<(String, String)>,
     config_manager: State<'_, ConfigManager>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     tracing::info!(
-        "Updating available models for client {}: {} provider(s), {} individual model(s)",
+        "Updating available models for client {}: all={}, {} provider(s), {} individual model(s)",
         client_id,
-        all_provider_models.len(),
-        individual_models.len()
+        selected_all,
+        selected_providers.len(),
+        selected_models.len()
     );
 
     // Update in config
@@ -2957,8 +3193,9 @@ pub async fn update_client_available_models(
                     .unwrap_or_else(ModelRoutingConfig::new_available_models);
 
                 // Update available models
-                routing_config.available_models.all_provider_models = all_provider_models;
-                routing_config.available_models.individual_models = individual_models;
+                routing_config.available_models.selected_all = selected_all;
+                routing_config.available_models.selected_providers = selected_providers;
+                routing_config.available_models.selected_models = selected_models;
 
                 client.routing_config = Some(routing_config);
                 found = true;

@@ -89,10 +89,12 @@ pub async fn get_global_metrics(
     let (start, end) = time_range.get_range();
     let data_points = app_state.metrics_collector.get_global_range(start, end);
 
-    Ok(GraphGenerator::generate(
+    // Use bucketed generation for consistent time intervals
+    Ok(GraphGenerator::generate_bucketed(
         &data_points,
         metric_type,
         Some("Global"),
+        time_range,
     ))
 }
 
@@ -114,7 +116,17 @@ pub async fn get_api_key_metrics(
         .metrics_collector
         .get_key_range(&api_key_id, start, end);
 
-    let mut graph_data = GraphGenerator::generate(&data_points, metric_type, Some(&api_key_id));
+    // Look up client name for the label
+    let config = config_manager.get();
+    let label = config
+        .clients
+        .iter()
+        .find(|c| c.id == api_key_id)
+        .map(|c| c.name.as_str())
+        .unwrap_or(&api_key_id);
+
+    // Use bucketed generation for consistent time intervals
+    let mut graph_data = GraphGenerator::generate_bucketed(&data_points, metric_type, Some(label), time_range);
 
     // Add rate limits if available
     let rate_limits = get_client_rate_limits(&config_manager, &api_key_id, metric_type, time_range);
@@ -142,10 +154,12 @@ pub async fn get_provider_metrics(
         .metrics_collector
         .get_provider_range(&provider, start, end);
 
-    Ok(GraphGenerator::generate(
+    // Use bucketed generation for consistent time intervals
+    Ok(GraphGenerator::generate_bucketed(
         &data_points,
         metric_type,
         Some(&provider),
+        time_range,
     ))
 }
 
@@ -166,10 +180,12 @@ pub async fn get_model_metrics(
         .metrics_collector
         .get_model_range(&model, start, end);
 
-    Ok(GraphGenerator::generate(
+    // Use bucketed generation for consistent time intervals
+    Ok(GraphGenerator::generate_bucketed(
         &data_points,
         metric_type,
         Some(&model),
+        time_range,
     ))
 }
 
@@ -224,20 +240,31 @@ pub async fn compare_api_keys(
 
     let (start, end) = time_range.get_range();
 
+    // Build a map of client id -> client name for label lookup
+    let config = config_manager.get();
+    let client_names: std::collections::HashMap<String, String> = config
+        .clients
+        .iter()
+        .map(|c| (c.id.clone(), c.name.clone()))
+        .collect();
+
     let data_sets: Vec<(String, Vec<_>)> = api_key_ids
         .iter()
         .map(|id| {
             let points = app_state.metrics_collector.get_key_range(id, start, end);
-            (id.clone(), points)
+            // Use client name if available, otherwise fall back to ID
+            let label = client_names.get(id).cloned().unwrap_or_else(|| id.clone());
+            (label, points)
         })
         .collect();
 
     let data_sets_refs: Vec<(&str, &[_])> = data_sets
         .iter()
-        .map(|(id, points)| (id.as_str(), points.as_slice()))
+        .map(|(label, points)| (label.as_str(), points.as_slice()))
         .collect();
 
-    let mut graph_data = GraphGenerator::generate_multi(data_sets_refs, metric_type);
+    // Use bucketed graph generation for consistent time intervals
+    let mut graph_data = GraphGenerator::generate_multi_bucketed(data_sets_refs, metric_type, time_range);
 
     // Collect rate limits from all clients
     // We'll show all unique rate limits (deduplicated by value)
@@ -291,7 +318,8 @@ pub async fn compare_providers(
         .map(|(provider, points)| (provider.as_str(), points.as_slice()))
         .collect();
 
-    Ok(GraphGenerator::generate_multi(data_sets_refs, metric_type))
+    // Use bucketed generation for consistent time intervals
+    Ok(GraphGenerator::generate_multi_bucketed(data_sets_refs, metric_type, time_range))
 }
 
 /// Compare multiple models (stacked chart for model usage breakdown)
@@ -323,7 +351,8 @@ pub async fn compare_models(
         .map(|(model, points)| (model.as_str(), points.as_slice()))
         .collect();
 
-    Ok(GraphGenerator::generate_multi(data_sets_refs, metric_type))
+    // Use bucketed generation for consistent time intervals
+    Ok(GraphGenerator::generate_multi_bucketed(data_sets_refs, metric_type, time_range))
 }
 
 /// Get strategy-specific metrics
@@ -344,7 +373,8 @@ pub async fn get_strategy_metrics(
         .metrics_collector
         .get_strategy_range(&strategy_id, start, end);
 
-    let mut graph_data = GraphGenerator::generate(&data_points, metric_type, Some(&strategy_id));
+    // Use bucketed generation for consistent time intervals
+    let mut graph_data = GraphGenerator::generate_bucketed(&data_points, metric_type, Some(&strategy_id), time_range);
 
     // Add rate limits for this strategy
     let config = config_manager.get();
@@ -431,5 +461,6 @@ pub async fn compare_strategies(
         .map(|(strategy_id, points)| (strategy_id.as_str(), points.as_slice()))
         .collect();
 
-    Ok(GraphGenerator::generate_multi(data_sets_refs, metric_type))
+    // Use bucketed generation for consistent time intervals
+    Ok(GraphGenerator::generate_multi_bucketed(data_sets_refs, metric_type, time_range))
 }

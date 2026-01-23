@@ -26,10 +26,12 @@ pub async fn get_global_mcp_metrics(
         .mcp()
         .get_global_range(start, end);
 
-    Ok(McpGraphGenerator::generate(
+    // Use bucketed generation for consistent time intervals
+    Ok(McpGraphGenerator::generate_bucketed(
         &data_points,
         metric_type,
         Some("Global MCP"),
+        time_range,
     ))
 }
 
@@ -58,10 +60,12 @@ pub async fn get_client_mcp_metrics(
         .map(|c| c.name)
         .unwrap_or_else(|| "Client".to_string());
 
-    Ok(McpGraphGenerator::generate(
+    // Use bucketed generation for consistent time intervals
+    Ok(McpGraphGenerator::generate_bucketed(
         &data_points,
         metric_type,
         Some(&label),
+        time_range,
     ))
 }
 
@@ -90,10 +94,12 @@ pub async fn get_mcp_server_metrics(
         .map(|s| s.name)
         .unwrap_or_else(|| "MCP Server".to_string());
 
-    Ok(McpGraphGenerator::generate(
+    // Use bucketed generation for consistent time intervals
+    Ok(McpGraphGenerator::generate_bucketed(
         &data_points,
         metric_type,
         Some(&label),
+        time_range,
     ))
 }
 
@@ -132,7 +138,8 @@ pub async fn get_mcp_method_breakdown(
         ));
     };
 
-    Ok(McpGraphGenerator::generate_method_breakdown(&data_points))
+    // Use bucketed generation for consistent time intervals
+    Ok(McpGraphGenerator::generate_method_breakdown_bucketed(&data_points, time_range))
 }
 
 /// List all tracked MCP clients
@@ -194,9 +201,11 @@ pub async fn compare_mcp_clients(
         .map(|(label, points)| (label.as_str(), points.as_slice()))
         .collect();
 
-    Ok(McpGraphGenerator::generate_multi(
+    // Use bucketed generation for consistent time intervals
+    Ok(McpGraphGenerator::generate_multi_bucketed(
         data_sets_refs,
         metric_type,
+        time_range,
     ))
 }
 
@@ -235,9 +244,11 @@ pub async fn compare_mcp_servers(
         .map(|(label, points)| (label.as_str(), points.as_slice()))
         .collect();
 
-    Ok(McpGraphGenerator::generate_multi(
+    // Use bucketed generation for consistent time intervals
+    Ok(McpGraphGenerator::generate_multi_bucketed(
         data_sets_refs,
         metric_type,
+        time_range,
     ))
 }
 
