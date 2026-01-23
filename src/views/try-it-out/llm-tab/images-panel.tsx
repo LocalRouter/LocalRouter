@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo } from "react"
+import { useState, useCallback } from "react"
 import { ImagePlus, Download, RefreshCw, Sparkles } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card"
 import { Button } from "@/components/ui/Button"
@@ -28,61 +28,21 @@ interface GeneratedImage {
   timestamp: Date
 }
 
-interface Model {
-  id: string
-  object: string
-  owned_by: string
-}
-
 interface ImagesPanelProps {
   openaiClient: OpenAI | null
   isReady: boolean
-  mode: "client" | "strategy" | "direct"
-  selectedProvider?: string
-  models: Model[]
+  selectedModel: string
 }
 
 type ImageSize = "256x256" | "512x512" | "1024x1024" | "1024x1792" | "1792x1024"
 type ImageQuality = "standard" | "hd"
 type ImageStyle = "vivid" | "natural"
 
-// Known image generation model patterns by provider
-const IMAGE_MODEL_PATTERNS: Record<string, RegExp[]> = {
-  openai: [/^dall-e-/i],
-  togetherai: [/flux/i, /sdxl/i, /stable-diffusion/i],
-  deepinfra: [/sdxl/i, /stable-diffusion/i],
-  gemini: [/imagen/i],
-}
-
-// Size options by provider/model type
+// Size options by model type
 const SIZE_OPTIONS: Record<string, ImageSize[]> = {
   "dall-e-2": ["256x256", "512x512", "1024x1024"],
   "dall-e-3": ["1024x1024", "1024x1792", "1792x1024"],
   default: ["512x512", "1024x1024"],
-}
-
-// Check if a model is likely an image generation model
-function isImageModel(modelId: string, provider?: string): boolean {
-  const lowerModelId = modelId.toLowerCase()
-
-  // Check against known patterns
-  for (const [providerKey, patterns] of Object.entries(IMAGE_MODEL_PATTERNS)) {
-    if (provider && providerKey !== provider.toLowerCase()) continue
-    for (const pattern of patterns) {
-      if (pattern.test(lowerModelId)) return true
-    }
-  }
-
-  // If no provider specified, check all patterns
-  if (!provider) {
-    for (const patterns of Object.values(IMAGE_MODEL_PATTERNS)) {
-      for (const pattern of patterns) {
-        if (pattern.test(lowerModelId)) return true
-      }
-    }
-  }
-
-  return false
 }
 
 // Get available sizes for a model
@@ -98,44 +58,14 @@ function supportsQualityAndStyle(modelId: string): boolean {
   return modelId.toLowerCase().includes("dall-e-3")
 }
 
-export function ImagesPanel({ openaiClient, isReady, mode, selectedProvider, models }: ImagesPanelProps) {
+export function ImagesPanel({ openaiClient, isReady, selectedModel }: ImagesPanelProps) {
   const [prompt, setPrompt] = useState("")
-  const [selectedModel, setSelectedModel] = useState<string>("")
   const [size, setSize] = useState<ImageSize>("1024x1024")
   const [quality, setQuality] = useState<ImageQuality>("standard")
   const [style, setStyle] = useState<ImageStyle>("vivid")
   const [isGenerating, setIsGenerating] = useState(false)
   const [images, setImages] = useState<GeneratedImage[]>([])
   const [error, setError] = useState<string | null>(null)
-
-  // Filter to image-capable models
-  const imageModels = useMemo(() => {
-    return models.filter(m => isImageModel(m.id, mode === "direct" ? selectedProvider : undefined))
-  }, [models, mode, selectedProvider])
-
-  // Auto-select first image model when available
-  useMemo(() => {
-    if (!selectedModel && imageModels.length > 0) {
-      setSelectedModel(imageModels[0].id)
-    }
-  }, [imageModels, selectedModel])
-
-  // Get effective model string (with provider prefix for direct mode)
-  const getEffectiveModel = useCallback(() => {
-    if (mode === "direct" && selectedProvider && selectedModel) {
-      return `${selectedProvider}/${selectedModel}`
-    }
-    return selectedModel
-  }, [mode, selectedProvider, selectedModel])
-
-  // Update size when model changes
-  const handleModelChange = (newModel: string) => {
-    setSelectedModel(newModel)
-    const availableSizes = getSizesForModel(newModel)
-    if (!availableSizes.includes(size)) {
-      setSize(availableSizes[0])
-    }
-  }
 
   const handleGenerate = useCallback(async () => {
     if (!openaiClient || !prompt.trim() || !selectedModel) return
@@ -144,11 +74,10 @@ export function ImagesPanel({ openaiClient, isReady, mode, selectedProvider, mod
     setError(null)
 
     try {
-      const effectiveModel = getEffectiveModel()
       const hasQualityStyle = supportsQualityAndStyle(selectedModel)
 
       const response = await openaiClient.images.generate({
-        model: effectiveModel,
+        model: selectedModel,
         prompt: prompt.trim(),
         n: 1,
         size,
@@ -180,7 +109,7 @@ export function ImagesPanel({ openaiClient, isReady, mode, selectedProvider, mod
     } finally {
       setIsGenerating(false)
     }
-  }, [openaiClient, prompt, selectedModel, size, quality, style, getEffectiveModel])
+  }, [openaiClient, prompt, selectedModel, size, quality, style])
 
   const handleDownload = (image: GeneratedImage) => {
     if (!image.b64Json) return
@@ -217,29 +146,8 @@ export function ImagesPanel({ openaiClient, isReady, mode, selectedProvider, mod
             />
           </div>
 
-          {/* Model Options */}
-          <div className="grid grid-cols-4 gap-4">
-            <div className="space-y-2">
-              <Label>Model</Label>
-              <Select value={selectedModel} onValueChange={handleModelChange}>
-                <SelectTrigger>
-                  <SelectValue placeholder={imageModels.length === 0 ? "No image models" : "Select model"} />
-                </SelectTrigger>
-                <SelectContent>
-                  {imageModels.map((m) => (
-                    <SelectItem key={m.id} value={m.id}>
-                      {m.id}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              {imageModels.length === 0 && (
-                <p className="text-xs text-muted-foreground">
-                  No image models found for current provider
-                </p>
-              )}
-            </div>
-
+          {/* Generation Options */}
+          <div className="grid grid-cols-3 gap-4">
             <div className="space-y-2">
               <Label>Size</Label>
               <Select value={size} onValueChange={(v: string) => setSize(v as ImageSize)}>

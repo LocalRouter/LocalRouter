@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo } from "react"
+import { useState, useCallback } from "react"
 import { Hash, RefreshCw, Copy, Check, ArrowRightLeft } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card"
 import { Button } from "@/components/ui/Button"
@@ -6,13 +6,6 @@ import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Badge } from "@/components/ui/Badge"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/Select"
 import type OpenAI from "openai"
 
 interface EmbeddingResult {
@@ -24,54 +17,10 @@ interface EmbeddingResult {
   timestamp: Date
 }
 
-interface Model {
-  id: string
-  object: string
-  owned_by: string
-}
-
 interface EmbeddingsPanelProps {
   openaiClient: OpenAI | null
   isReady: boolean
-  mode: "client" | "strategy" | "direct"
-  selectedProvider?: string
-  models: Model[]
-}
-
-// Known embedding model patterns by provider
-const EMBEDDING_MODEL_PATTERNS: Record<string, RegExp[]> = {
-  openai: [/^text-embedding/i, /^embedding/i],
-  ollama: [/embed/i, /nomic/i, /bge/i, /e5/i, /gte/i, /mxbai/i],
-  togetherai: [/bert/i, /bge/i, /e5/i, /embed/i],
-  gemini: [/^text-embedding/i, /^embedding/i],
-  voyage: [/^voyage/i],
-  cohere: [/^embed/i],
-  deepinfra: [/bge/i, /e5/i, /gte/i, /embed/i],
-}
-
-// Check if a model is likely an embedding model
-function isEmbeddingModel(modelId: string, provider?: string): boolean {
-  const lowerModelId = modelId.toLowerCase()
-
-  // Check against known patterns for specific provider
-  if (provider) {
-    const providerLower = provider.toLowerCase()
-    const patterns = EMBEDDING_MODEL_PATTERNS[providerLower]
-    if (patterns) {
-      for (const pattern of patterns) {
-        if (pattern.test(lowerModelId)) return true
-      }
-    }
-  }
-
-  // Check all patterns if no provider or no match yet
-  for (const patterns of Object.values(EMBEDDING_MODEL_PATTERNS)) {
-    for (const pattern of patterns) {
-      if (pattern.test(lowerModelId)) return true
-    }
-  }
-
-  return false
+  selectedModel: string
 }
 
 // Calculate cosine similarity between two vectors
@@ -88,9 +37,8 @@ function cosineSimilarity(a: number[], b: number[]): number {
   return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB))
 }
 
-export function EmbeddingsPanel({ openaiClient, isReady, mode, selectedProvider, models }: EmbeddingsPanelProps) {
+export function EmbeddingsPanel({ openaiClient, isReady, selectedModel }: EmbeddingsPanelProps) {
   const [text, setText] = useState("")
-  const [selectedModel, setSelectedModel] = useState<string>("")
   const [isGenerating, setIsGenerating] = useState(false)
   const [results, setResults] = useState<EmbeddingResult[]>([])
   const [error, setError] = useState<string | null>(null)
@@ -100,26 +48,6 @@ export function EmbeddingsPanel({ openaiClient, isReady, mode, selectedProvider,
   const [compareMode, setCompareMode] = useState(false)
   const [selectedForCompare, setSelectedForCompare] = useState<string[]>([])
 
-  // Filter to embedding-capable models
-  const embeddingModels = useMemo(() => {
-    return models.filter(m => isEmbeddingModel(m.id, mode === "direct" ? selectedProvider : undefined))
-  }, [models, mode, selectedProvider])
-
-  // Auto-select first embedding model when available
-  useMemo(() => {
-    if (!selectedModel && embeddingModels.length > 0) {
-      setSelectedModel(embeddingModels[0].id)
-    }
-  }, [embeddingModels, selectedModel])
-
-  // Get effective model string (with provider prefix for direct mode)
-  const getEffectiveModel = useCallback(() => {
-    if (mode === "direct" && selectedProvider && selectedModel) {
-      return `${selectedProvider}/${selectedModel}`
-    }
-    return selectedModel
-  }, [mode, selectedProvider, selectedModel])
-
   const handleGenerate = useCallback(async () => {
     if (!openaiClient || !text.trim() || !selectedModel) return
 
@@ -127,9 +55,8 @@ export function EmbeddingsPanel({ openaiClient, isReady, mode, selectedProvider,
     setError(null)
 
     try {
-      const effectiveModel = getEffectiveModel()
       const response = await openaiClient.embeddings.create({
-        model: effectiveModel,
+        model: selectedModel,
         input: text.trim(),
       })
 
@@ -150,7 +77,7 @@ export function EmbeddingsPanel({ openaiClient, isReady, mode, selectedProvider,
     } finally {
       setIsGenerating(false)
     }
-  }, [openaiClient, text, selectedModel, getEffectiveModel])
+  }, [openaiClient, text, selectedModel])
 
   const handleCopy = async (result: EmbeddingResult) => {
     await navigator.clipboard.writeText(JSON.stringify(result.embedding))
@@ -191,28 +118,6 @@ export function EmbeddingsPanel({ openaiClient, isReady, mode, selectedProvider,
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          {/* Model Selector */}
-          <div className="space-y-2">
-            <Label>Embedding Model</Label>
-            <Select value={selectedModel} onValueChange={setSelectedModel}>
-              <SelectTrigger>
-                <SelectValue placeholder={embeddingModels.length === 0 ? "No embedding models" : "Select model"} />
-              </SelectTrigger>
-              <SelectContent>
-                {embeddingModels.map((m) => (
-                  <SelectItem key={m.id} value={m.id}>
-                    {m.id}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            {embeddingModels.length === 0 && (
-              <p className="text-xs text-muted-foreground">
-                No embedding models found for current provider
-              </p>
-            )}
-          </div>
-
           {/* Text Input */}
           <div className="space-y-2">
             <Label>Text to embed</Label>

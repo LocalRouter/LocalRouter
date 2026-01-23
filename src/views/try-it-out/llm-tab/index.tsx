@@ -499,9 +499,7 @@ export function LlmTab() {
           <ImagesPanel
             openaiClient={openaiClient}
             isReady={isReady()}
-            mode={mode}
-            selectedProvider={selectedProvider}
-            models={models}
+            selectedModel={getEffectiveModel()}
           />
         </TabsContent>
 
@@ -509,9 +507,7 @@ export function LlmTab() {
           <EmbeddingsPanel
             openaiClient={openaiClient}
             isReady={isReady()}
-            mode={mode}
-            selectedProvider={selectedProvider}
-            models={models}
+            selectedModel={getEffectiveModel()}
           />
         </TabsContent>
       </Tabs>
