@@ -4,6 +4,7 @@ pub mod chat;
 pub mod completions;
 pub mod embeddings;
 pub mod generation;
+pub mod helpers;
 pub mod mcp;
 pub mod mcp_streaming;
 pub mod mcp_ws;
