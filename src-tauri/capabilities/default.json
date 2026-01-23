@@ -86,6 +86,7 @@
     "core:menu:allow-set-checked",
     "core:menu:allow-set-icon",
     "core:webview:default",
-    "core:webview:allow-print"
+    "core:webview:allow-print",
+    "shell:allow-open"
   ]
 }
