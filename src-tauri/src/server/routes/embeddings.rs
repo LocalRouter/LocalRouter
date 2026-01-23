@@ -46,8 +46,10 @@ pub async fn embeddings(
     // Emit LLM request event to trigger tray icon indicator
     state.emit_event("llm-request", "embedding");
 
-    // Validate client is enabled
-    let _client = get_enabled_client(&state, &auth.api_key_id)?;
+    // Validate client is enabled (skip for internal test token)
+    if auth.api_key_id != "internal-test" {
+        let _client = get_enabled_client(&state, &auth.api_key_id)?;
+    }
 
     // Validate request
     validate_request(&request)?;
