@@ -139,7 +139,10 @@ pub async fn get_mcp_method_breakdown(
     };
 
     // Use bucketed generation for consistent time intervals
-    Ok(McpGraphGenerator::generate_method_breakdown_bucketed(&data_points, time_range))
+    Ok(McpGraphGenerator::generate_method_breakdown_bucketed(
+        &data_points,
+        time_range,
+    ))
 }
 
 /// List all tracked MCP clients

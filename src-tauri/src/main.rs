@@ -135,15 +135,6 @@ async fn run_gui_mode() -> anyhow::Result<()> {
         )
     });
 
-    // Ensure default strategy exists and all clients have strategy_id assigned
-    info!("Ensuring default strategy exists...");
-    config_manager
-        .ensure_default_strategy()
-        .await
-        .unwrap_or_else(|e| {
-            tracing::error!("Failed to ensure default strategy: {}", e);
-        });
-
     // Initialize unified client manager
     // Replaces both API key manager and OAuth client manager
     // Client secrets are stored in OS keychain, only metadata in config
@@ -752,6 +743,10 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::mark_update_check_performed,
             ui::commands::skip_update_version,
             ui::commands::set_update_notification,
+            // Logging configuration commands
+            ui::commands::get_logging_config,
+            ui::commands::update_logging_config,
+            ui::commands::open_logs_folder,
             // RouteLLM intelligent routing commands
             ui::commands_routellm::routellm_get_status,
             ui::commands_routellm::routellm_test_prediction,

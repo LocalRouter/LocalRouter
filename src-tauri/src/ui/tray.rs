@@ -424,7 +424,9 @@ fn build_tray_menu<R: Runtime, M: Manager<R>>(app: &M) -> tauri::Result<tauri::m
                     // Get allowed server IDs based on access mode
                     let allowed_server_ids: Vec<String> = match &client.mcp_server_access {
                         McpServerAccess::None => vec![],
-                        McpServerAccess::All => all_mcp_servers.iter().map(|s| s.id.clone()).collect(),
+                        McpServerAccess::All => {
+                            all_mcp_servers.iter().map(|s| s.id.clone()).collect()
+                        }
                         McpServerAccess::Specific(servers) => servers.clone(),
                     };
 

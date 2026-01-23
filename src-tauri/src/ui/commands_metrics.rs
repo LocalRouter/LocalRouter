@@ -126,7 +126,8 @@ pub async fn get_api_key_metrics(
         .unwrap_or(&api_key_id);
 
     // Use bucketed generation for consistent time intervals
-    let mut graph_data = GraphGenerator::generate_bucketed(&data_points, metric_type, Some(label), time_range);
+    let mut graph_data =
+        GraphGenerator::generate_bucketed(&data_points, metric_type, Some(label), time_range);
 
     // Add rate limits if available
     let rate_limits = get_client_rate_limits(&config_manager, &api_key_id, metric_type, time_range);
@@ -264,7 +265,8 @@ pub async fn compare_api_keys(
         .collect();
 
     // Use bucketed graph generation for consistent time intervals
-    let mut graph_data = GraphGenerator::generate_multi_bucketed(data_sets_refs, metric_type, time_range);
+    let mut graph_data =
+        GraphGenerator::generate_multi_bucketed(data_sets_refs, metric_type, time_range);
 
     // Collect rate limits from all clients
     // We'll show all unique rate limits (deduplicated by value)
@@ -319,7 +321,11 @@ pub async fn compare_providers(
         .collect();
 
     // Use bucketed generation for consistent time intervals
-    Ok(GraphGenerator::generate_multi_bucketed(data_sets_refs, metric_type, time_range))
+    Ok(GraphGenerator::generate_multi_bucketed(
+        data_sets_refs,
+        metric_type,
+        time_range,
+    ))
 }
 
 /// Compare multiple models (stacked chart for model usage breakdown)
@@ -352,7 +358,11 @@ pub async fn compare_models(
         .collect();
 
     // Use bucketed generation for consistent time intervals
-    Ok(GraphGenerator::generate_multi_bucketed(data_sets_refs, metric_type, time_range))
+    Ok(GraphGenerator::generate_multi_bucketed(
+        data_sets_refs,
+        metric_type,
+        time_range,
+    ))
 }
 
 /// Get strategy-specific metrics
@@ -374,7 +384,12 @@ pub async fn get_strategy_metrics(
         .get_strategy_range(&strategy_id, start, end);
 
     // Use bucketed generation for consistent time intervals
-    let mut graph_data = GraphGenerator::generate_bucketed(&data_points, metric_type, Some(&strategy_id), time_range);
+    let mut graph_data = GraphGenerator::generate_bucketed(
+        &data_points,
+        metric_type,
+        Some(&strategy_id),
+        time_range,
+    );
 
     // Add rate limits for this strategy
     let config = config_manager.get();
@@ -462,5 +477,9 @@ pub async fn compare_strategies(
         .collect();
 
     // Use bucketed generation for consistent time intervals
-    Ok(GraphGenerator::generate_multi_bucketed(data_sets_refs, metric_type, time_range))
+    Ok(GraphGenerator::generate_multi_bucketed(
+        data_sets_refs,
+        metric_type,
+        time_range,
+    ))
 }

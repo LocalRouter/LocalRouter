@@ -12,6 +12,7 @@ use crate::config::{
     McpServerConfig, McpTransportConfig, McpTransportType, ModelRoutingConfig, RouterConfig,
 };
 use crate::mcp::McpServerManager;
+use crate::monitoring::logger::AccessLogger;
 use crate::oauth_clients::OAuthClientManager;
 use crate::providers::registry::ProviderRegistry;
 use crate::server::ServerManager;
@@ -2982,7 +2983,11 @@ pub async fn set_client_mcp_access(
         McpAccessMode::Specific => McpServerAccess::Specific(servers),
     };
 
-    tracing::info!("Setting MCP access for client {} to {:?}", client_id, access);
+    tracing::info!(
+        "Setting MCP access for client {} to {:?}",
+        client_id,
+        access
+    );
 
     // Update in client manager
     client_manager
@@ -3415,11 +3420,6 @@ pub async fn delete_strategy(
 ) -> Result<(), String> {
     tracing::info!("Deleting strategy: {}", strategy_id);
 
-    // Don't allow deleting the default strategy
-    if strategy_id == "default" {
-        return Err("Cannot delete the default strategy".to_string());
-    }
-
     // Check if any clients are using this strategy
     let config = config_manager.get();
     let clients_using = config
@@ -3562,6 +3562,7 @@ use std::io::{BufRead, BufReader};
 /// Get LLM access logs
 ///
 /// Reads log entries from the LLM access log files.
+/// Optimized to stop early once enough entries are collected.
 ///
 /// # Arguments
 /// * `limit` - Maximum number of entries to return (default: 100)
@@ -3584,6 +3585,7 @@ pub async fn get_llm_logs(
 
     let limit = limit.unwrap_or(100);
     let offset = offset.unwrap_or(0);
+    let target_count = offset + limit;
 
     // Get log directory
     let log_dir = get_log_directory().map_err(|e: crate::utils::errors::AppError| e.to_string())?;
@@ -3607,48 +3609,54 @@ pub async fn get_llm_logs(
         }
     }
 
-    // Sort by filename (date) in descending order
+    // Sort by filename (date) in descending order (newest files first)
     log_files.sort_by(|a, b| b.cmp(a));
 
     // Read and parse log entries with filtering
+    // Process files from newest to oldest, collect entries in reverse order per file
     let mut entries = Vec::new();
+    let mut collected_enough = false;
+
     for log_file in log_files {
+        if collected_enough {
+            break;
+        }
+
         if let Ok(file) = fs::File::open(&log_file) {
             let reader = BufReader::new(file);
+            // Collect all matching entries from this file, then reverse to get newest first
+            let mut file_entries: Vec<crate::monitoring::logger::AccessLogEntry> = Vec::new();
+
             for line in reader.lines().map_while(Result::ok) {
                 if let Ok(entry) =
                     serde_json::from_str::<crate::monitoring::logger::AccessLogEntry>(&line)
                 {
                     // Apply filters
-                    let mut matches = true;
-
-                    if let Some(ref filter_client) = client_name {
-                        if entry.api_key_name != *filter_client {
-                            matches = false;
-                        }
-                    }
-
-                    if let Some(ref filter_provider) = provider {
-                        if entry.provider != *filter_provider {
-                            matches = false;
-                        }
-                    }
-
-                    if let Some(ref filter_model) = model {
-                        if entry.model != *filter_model {
-                            matches = false;
-                        }
-                    }
+                    let matches = client_name
+                        .as_ref()
+                        .map_or(true, |f| entry.api_key_name == *f)
+                        && provider.as_ref().map_or(true, |f| entry.provider == *f)
+                        && model.as_ref().map_or(true, |f| entry.model == *f);
 
                     if matches {
-                        entries.push(entry);
+                        file_entries.push(entry);
                     }
                 }
+            }
+
+            // Reverse to get newest entries first within this file
+            file_entries.reverse();
+            entries.extend(file_entries);
+
+            // Check if we have collected enough entries (with buffer for sorting)
+            // We need offset + limit entries to return the correct page
+            if entries.len() >= target_count {
+                collected_enough = true;
             }
         }
     }
 
-    // Sort by timestamp (newest first)
+    // Sort by timestamp (newest first) to handle entries spanning midnight
     entries.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
 
     // Apply offset and limit
@@ -3660,6 +3668,7 @@ pub async fn get_llm_logs(
 /// Get MCP access logs
 ///
 /// Reads log entries from the MCP access log files.
+/// Optimized to stop early once enough entries are collected.
 ///
 /// # Arguments
 /// * `limit` - Maximum number of entries to return (default: 100)
@@ -3680,6 +3689,7 @@ pub async fn get_mcp_logs(
 
     let limit = limit.unwrap_or(100);
     let offset = offset.unwrap_or(0);
+    let target_count = offset + limit;
 
     // Get log directory
     let log_dir = get_log_directory().map_err(|e: crate::utils::errors::AppError| e.to_string())?;
@@ -3700,42 +3710,52 @@ pub async fn get_mcp_logs(
         }
     }
 
-    // Sort by filename (date) in descending order
+    // Sort by filename (date) in descending order (newest files first)
     log_files.sort_by(|a, b| b.cmp(a));
 
     // Read and parse log entries with filtering
+    // Process files from newest to oldest, collect entries in reverse order per file
     let mut entries = Vec::new();
+    let mut collected_enough = false;
+
     for log_file in log_files {
+        if collected_enough {
+            break;
+        }
+
         if let Ok(file) = fs::File::open(&log_file) {
             let reader = BufReader::new(file);
+            // Collect all matching entries from this file, then reverse to get newest first
+            let mut file_entries: Vec<crate::monitoring::mcp_logger::McpAccessLogEntry> =
+                Vec::new();
+
             for line in reader.lines().map_while(Result::ok) {
                 if let Ok(entry) =
                     serde_json::from_str::<crate::monitoring::mcp_logger::McpAccessLogEntry>(&line)
                 {
                     // Apply filters
-                    let mut matches = true;
-
-                    if let Some(ref filter_client) = client_id {
-                        if entry.client_id != *filter_client {
-                            matches = false;
-                        }
-                    }
-
-                    if let Some(ref filter_server) = server_id {
-                        if entry.server_id != *filter_server {
-                            matches = false;
-                        }
-                    }
+                    let matches = client_id.as_ref().map_or(true, |f| entry.client_id == *f)
+                        && server_id.as_ref().map_or(true, |f| entry.server_id == *f);
 
                     if matches {
-                        entries.push(entry);
+                        file_entries.push(entry);
                     }
                 }
+            }
+
+            // Reverse to get newest entries first within this file
+            file_entries.reverse();
+            entries.extend(file_entries);
+
+            // Check if we have collected enough entries (with buffer for sorting)
+            // We need offset + limit entries to return the correct page
+            if entries.len() >= target_count {
+                collected_enough = true;
             }
         }
     }
 
-    // Sort by timestamp (newest first)
+    // Sort by timestamp (newest first) to handle entries spanning midnight
     entries.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
 
     // Apply offset and limit
@@ -3745,43 +3765,10 @@ pub async fn get_mcp_logs(
 }
 
 /// Get the OS-specific log directory
+///
+/// Delegates to AccessLogger::get_log_directory() to avoid code duplication.
 fn get_log_directory() -> Result<PathBuf, crate::utils::errors::AppError> {
-    #[cfg(target_os = "linux")]
-    {
-        // Try /var/log/localrouter first, fall back to ~/.localrouter/logs
-        let system_log = PathBuf::from("/var/log/localrouter");
-        if system_log.exists() {
-            Ok(system_log)
-        } else {
-            let home = dirs::home_dir().ok_or_else(|| {
-                crate::utils::errors::AppError::Internal("Failed to get home directory".to_string())
-            })?;
-            Ok(home.join(".localrouter").join("logs"))
-        }
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        let home = dirs::home_dir().ok_or_else(|| {
-            crate::utils::errors::AppError::Internal("Failed to get home directory".to_string())
-        })?;
-        Ok(home.join("Library").join("Logs").join("LocalRouter"))
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        let app_data = std::env::var("APPDATA").map_err(|_| {
-            crate::utils::errors::AppError::Internal("Failed to get APPDATA directory".to_string())
-        })?;
-        Ok(PathBuf::from(app_data).join("LocalRouter").join("logs"))
-    }
-
-    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-    {
-        Err(crate::utils::errors::AppError::Internal(
-            "Unsupported operating system".to_string(),
-        ))
-    }
+    AccessLogger::get_log_directory()
 }
 
 // ============================================================================
@@ -4190,4 +4177,74 @@ pub fn revoke_mcp_oauth_tokens(
     oauth_browser_manager
         .revoke_tokens(&server_id)
         .map_err(|e| e.to_string())
+}
+
+// ============================================================================
+// Logging Configuration Commands
+// ============================================================================
+
+/// Logging configuration returned to the frontend
+#[derive(serde::Serialize)]
+pub struct LoggingConfigResponse {
+    pub retention_days: u32,
+    pub log_dir: String,
+}
+
+/// Get logging configuration
+#[tauri::command]
+pub fn get_logging_config(
+    config_manager: State<'_, ConfigManager>,
+    access_logger: State<'_, Arc<crate::monitoring::logger::AccessLogger>>,
+) -> Result<LoggingConfigResponse, String> {
+    let config = config_manager.get();
+    Ok(LoggingConfigResponse {
+        retention_days: config.logging.retention_days,
+        log_dir: access_logger.log_dir().to_string_lossy().to_string(),
+    })
+}
+
+/// Update logging configuration
+#[tauri::command]
+pub async fn update_logging_config(
+    retention_days: u32,
+    config_manager: State<'_, ConfigManager>,
+) -> Result<(), String> {
+    // Validate retention days (1-365)
+    if retention_days == 0 || retention_days > 365 {
+        return Err("retention_days must be between 1 and 365".to_string());
+    }
+
+    config_manager
+        .update(|config| {
+            config.logging.retention_days = retention_days;
+        })
+        .map_err(|e| e.to_string())?;
+
+    config_manager.save().await.map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+/// Open the logs folder in the system file manager
+#[tauri::command]
+pub async fn open_logs_folder(
+    access_logger: State<'_, Arc<crate::monitoring::logger::AccessLogger>>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    use tauri_plugin_shell::ShellExt;
+
+    let log_dir = access_logger.log_dir();
+
+    // Ensure directory exists
+    if !log_dir.exists() {
+        std::fs::create_dir_all(log_dir)
+            .map_err(|e| format!("Failed to create log directory: {}", e))?;
+    }
+
+    // Open in system file manager
+    app.shell()
+        .open(log_dir.to_string_lossy().as_ref(), None)
+        .map_err(|e| format!("Failed to open logs folder: {}", e))?;
+
+    Ok(())
 }
