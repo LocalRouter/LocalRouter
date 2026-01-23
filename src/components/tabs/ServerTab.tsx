@@ -773,6 +773,205 @@ export default function ServerTab() {
           )}
         </div>
       </div>
+
+      {/* About & Licenses */}
+      <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-6">
+        <h2 className="text-xl font-bold text-gray-900 dark:text-gray-100 mb-6">About & Licenses</h2>
+
+        {/* App Info */}
+        <div className="p-4 bg-gradient-to-r from-indigo-50 to-purple-50 dark:from-indigo-900/20 dark:to-purple-900/20 border border-indigo-200 dark:border-indigo-700 rounded-lg mb-6">
+          <div className="flex items-center gap-4">
+            <div className="text-4xl">🚀</div>
+            <div>
+              <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100">LocalRouter AI</h3>
+              <p className="text-sm text-gray-600 dark:text-gray-400">
+                Version {appVersion || '0.0.1'} • Licensed under AGPL-3.0-or-later
+              </p>
+              <p className="text-xs text-gray-500 dark:text-gray-500 mt-1">
+                Intelligent AI model routing with OpenAI-compatible API
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {/* Inspirations & Credits */}
+        <div className="mb-6">
+          <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-3">
+            Inspirations & Credits
+          </h3>
+          <p className="text-xs text-gray-600 dark:text-gray-400 mb-3">
+            This project was inspired by the following projects. No code was directly used, but their ideas influenced the design:
+          </p>
+          <div className="space-y-3">
+            <div className="p-3 bg-gray-50 dark:bg-gray-900/50 rounded-lg border border-gray-200 dark:border-gray-700">
+              <div className="flex items-center justify-between">
+                <div>
+                  <span className="font-medium text-gray-900 dark:text-gray-100 text-sm">RouteLLM</span>
+                  <span className="ml-2 text-xs px-2 py-0.5 bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 rounded">Apache-2.0</span>
+                </div>
+                <button
+                  onClick={() => open('https://github.com/lm-sys/RouteLLM')}
+                  className="text-xs text-blue-600 dark:text-blue-400 hover:underline"
+                >
+                  View Repository
+                </button>
+              </div>
+              <p className="text-xs text-gray-600 dark:text-gray-400 mt-1">
+                ML-based intelligent routing framework. LocalRouter's RouteLLM feature is a Rust reimplementation of their approach.
+              </p>
+            </div>
+
+            <div className="p-3 bg-gray-50 dark:bg-gray-900/50 rounded-lg border border-gray-200 dark:border-gray-700">
+              <div className="flex items-center justify-between">
+                <div>
+                  <span className="font-medium text-gray-900 dark:text-gray-100 text-sm">Microsoft MCP Gateway</span>
+                  <span className="ml-2 text-xs px-2 py-0.5 bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 rounded">MIT</span>
+                </div>
+                <button
+                  onClick={() => open('https://github.com/microsoft/mcp-gateway')}
+                  className="text-xs text-blue-600 dark:text-blue-400 hover:underline"
+                >
+                  View Repository
+                </button>
+              </div>
+              <p className="text-xs text-gray-600 dark:text-gray-400 mt-1">
+                Inspiration for MCP gateway architecture and unified proxy design patterns.
+              </p>
+            </div>
+
+            <div className="p-3 bg-gray-50 dark:bg-gray-900/50 rounded-lg border border-gray-200 dark:border-gray-700">
+              <div className="flex items-center justify-between">
+                <div>
+                  <span className="font-medium text-gray-900 dark:text-gray-100 text-sm">NotDiamond</span>
+                </div>
+                <button
+                  onClick={() => open('https://notdiamond.ai')}
+                  className="text-xs text-blue-600 dark:text-blue-400 hover:underline"
+                >
+                  Visit Website
+                </button>
+              </div>
+              <p className="text-xs text-gray-600 dark:text-gray-400 mt-1">
+                Inspiration for intelligent model selection and routing strategies.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {/* RouteLLM Model Licenses */}
+        <div className="mb-6">
+          <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-3">
+            RouteLLM Model Licenses
+          </h3>
+          <p className="text-xs text-gray-600 dark:text-gray-400 mb-3">
+            When using RouteLLM intelligent routing, the following model weights are downloaded:
+          </p>
+          <div className="p-3 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-700 rounded-lg">
+            <div className="flex items-center gap-2 mb-2">
+              <span className="font-medium text-gray-900 dark:text-gray-100 text-sm">routellm/mf_gpt4_augmented</span>
+              <span className="text-xs px-2 py-0.5 bg-yellow-100 dark:bg-yellow-800/30 text-yellow-700 dark:text-yellow-300 rounded">Apache-2.0</span>
+            </div>
+            <p className="text-xs text-gray-600 dark:text-gray-400">
+              Matrix factorization router model trained on GPT-4 preference data. Hosted on Hugging Face.
+            </p>
+          </div>
+        </div>
+
+        {/* Key Dependencies */}
+        <div className="mb-6">
+          <button
+            onClick={() => setLicensesExpanded(!licensesExpanded)}
+            className="flex items-center justify-between w-full text-sm font-semibold text-gray-900 dark:text-gray-100 mb-3"
+          >
+            <span>Open Source Dependencies</span>
+            <span className="text-xs text-gray-500">{licensesExpanded ? '▼' : '▶'}</span>
+          </button>
+
+          {licensesExpanded && (
+            <div className="space-y-4">
+              {/* Rust Dependencies */}
+              <div>
+                <h4 className="text-xs font-semibold text-gray-700 dark:text-gray-300 mb-2 uppercase tracking-wide">
+                  Backend (Rust)
+                </h4>
+                <div className="grid grid-cols-2 gap-2 text-xs">
+                  {[
+                    { name: 'Tauri', license: 'MIT/Apache-2.0', url: 'https://tauri.app' },
+                    { name: 'Axum', license: 'MIT', url: 'https://github.com/tokio-rs/axum' },
+                    { name: 'Tokio', license: 'MIT', url: 'https://tokio.rs' },
+                    { name: 'Reqwest', license: 'MIT/Apache-2.0', url: 'https://github.com/seanmonstar/reqwest' },
+                    { name: 'Serde', license: 'MIT/Apache-2.0', url: 'https://serde.rs' },
+                    { name: 'Candle', license: 'MIT/Apache-2.0', url: 'https://github.com/huggingface/candle' },
+                    { name: 'Tokenizers', license: 'Apache-2.0', url: 'https://github.com/huggingface/tokenizers' },
+                    { name: 'Ring', license: 'ISC', url: 'https://github.com/briansmith/ring' },
+                    { name: 'rusqlite', license: 'MIT', url: 'https://github.com/rusqlite/rusqlite' },
+                    { name: 'utoipa', license: 'MIT/Apache-2.0', url: 'https://github.com/juhaku/utoipa' },
+                    { name: 'Tower', license: 'MIT', url: 'https://github.com/tower-rs/tower' },
+                    { name: 'Tracing', license: 'MIT', url: 'https://github.com/tokio-rs/tracing' },
+                    { name: 'Chrono', license: 'MIT/Apache-2.0', url: 'https://github.com/chronotope/chrono' },
+                    { name: 'UUID', license: 'MIT/Apache-2.0', url: 'https://github.com/uuid-rs/uuid' },
+                    { name: 'OAuth2', license: 'MIT/Apache-2.0', url: 'https://github.com/ramosbugs/oauth2-rs' },
+                    { name: 'Keyring', license: 'MIT/Apache-2.0', url: 'https://github.com/hwchen/keyring-rs' },
+                  ].map((dep) => (
+                    <button
+                      key={dep.name}
+                      onClick={() => open(dep.url)}
+                      className="flex items-center justify-between p-2 bg-gray-50 dark:bg-gray-900/50 rounded border border-gray-200 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-800 text-left"
+                    >
+                      <span className="text-gray-900 dark:text-gray-100">{dep.name}</span>
+                      <span className="text-gray-500 dark:text-gray-500">{dep.license}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Frontend Dependencies */}
+              <div>
+                <h4 className="text-xs font-semibold text-gray-700 dark:text-gray-300 mb-2 uppercase tracking-wide">
+                  Frontend (TypeScript/React)
+                </h4>
+                <div className="grid grid-cols-2 gap-2 text-xs">
+                  {[
+                    { name: 'React', license: 'MIT', url: 'https://react.dev' },
+                    { name: 'Radix UI', license: 'MIT', url: 'https://radix-ui.com' },
+                    { name: 'Tailwind CSS', license: 'MIT', url: 'https://tailwindcss.com' },
+                    { name: 'Recharts', license: 'MIT', url: 'https://recharts.org' },
+                    { name: 'React Flow', license: 'MIT', url: 'https://reactflow.dev' },
+                    { name: 'Lucide Icons', license: 'ISC', url: 'https://lucide.dev' },
+                    { name: 'Heroicons', license: 'MIT', url: 'https://heroicons.com' },
+                    { name: 'cmdk', license: 'MIT', url: 'https://cmdk.paco.me' },
+                    { name: 'Sonner', license: 'MIT', url: 'https://sonner.emilkowal.ski' },
+                    { name: 'OpenAI SDK', license: 'Apache-2.0', url: 'https://github.com/openai/openai-node' },
+                  ].map((dep) => (
+                    <button
+                      key={dep.name}
+                      onClick={() => open(dep.url)}
+                      className="flex items-center justify-between p-2 bg-gray-50 dark:bg-gray-900/50 rounded border border-gray-200 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-800 text-left"
+                    >
+                      <span className="text-gray-900 dark:text-gray-100">{dep.name}</span>
+                      <span className="text-gray-500 dark:text-gray-500">{dep.license}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="pt-4 border-t border-gray-200 dark:border-gray-700">
+          <p className="text-xs text-gray-500 dark:text-gray-500 text-center">
+            LocalRouter AI is open source software. View the full source code and contribute on{' '}
+            <button
+              onClick={() => open('https://github.com/yourusername/localrouterai')}
+              className="text-blue-600 dark:text-blue-400 hover:underline"
+            >
+              GitHub
+            </button>
+            .
+          </p>
+        </div>
+      </div>
     </div>
   )
 }
