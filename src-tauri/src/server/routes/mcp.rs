@@ -64,6 +64,7 @@ pub async fn mcp_gateway_handler(
 
     // Handle internal-test client specially (for UI MCP testing)
     // Internal test client has access to all MCP servers
+    #[allow(deprecated)]
     let client = if client_id == "internal-test" {
         tracing::debug!("Internal test client using MCP gateway - granting full access");
         // Create a synthetic client with full MCP access
@@ -71,10 +72,18 @@ pub async fn mcp_gateway_handler(
             id: "internal-test".to_string(),
             name: "Internal Test".to_string(),
             enabled: true,
+            allowed_llm_providers: vec![],
             mcp_server_access: McpServerAccess::All,
             mcp_deferred_loading: false,
+            created_at: chrono::Utc::now(),
+            last_used: None,
+            strategy_id: String::new(),
+            routing_config: None,
+            roots: None,
             mcp_sampling_enabled: true,
-            ..Default::default()
+            mcp_sampling_requires_approval: false,
+            mcp_sampling_max_tokens: None,
+            mcp_sampling_rate_limit: None,
         }
     } else {
         // Get enabled client for regular clients
@@ -313,6 +322,7 @@ pub async fn mcp_server_handler(
 
     // Handle internal-test client specially (for UI MCP testing)
     // Internal test client has access to all MCP servers
+    #[allow(deprecated)]
     let client = if client_id == "internal-test" {
         tracing::debug!(
             "Internal test client accessing MCP server {} - granting full access",
@@ -323,10 +333,18 @@ pub async fn mcp_server_handler(
             id: "internal-test".to_string(),
             name: "Internal Test".to_string(),
             enabled: true,
+            allowed_llm_providers: vec![],
             mcp_server_access: McpServerAccess::All,
             mcp_deferred_loading: false,
+            created_at: chrono::Utc::now(),
+            last_used: None,
+            strategy_id: String::new(),
+            routing_config: None,
+            roots: None,
             mcp_sampling_enabled: true,
-            ..Default::default()
+            mcp_sampling_requires_approval: false,
+            mcp_sampling_max_tokens: None,
+            mcp_sampling_rate_limit: None,
         }
     } else {
         // Get enabled client for regular clients
@@ -665,6 +683,7 @@ pub async fn mcp_server_streaming_handler(
     };
 
     // Handle internal-test client specially (for UI MCP testing)
+    #[allow(deprecated)]
     let client = if client_id == "internal-test" {
         tracing::debug!(
             "Internal test client streaming from MCP server {} - granting full access",
@@ -674,10 +693,18 @@ pub async fn mcp_server_streaming_handler(
             id: "internal-test".to_string(),
             name: "Internal Test".to_string(),
             enabled: true,
+            allowed_llm_providers: vec![],
             mcp_server_access: McpServerAccess::All,
             mcp_deferred_loading: false,
+            created_at: chrono::Utc::now(),
+            last_used: None,
+            strategy_id: String::new(),
+            routing_config: None,
+            roots: None,
             mcp_sampling_enabled: true,
-            ..Default::default()
+            mcp_sampling_requires_approval: false,
+            mcp_sampling_max_tokens: None,
+            mcp_sampling_rate_limit: None,
         }
     } else {
         match get_enabled_client_from_manager(&state, &client_id) {
