@@ -9,8 +9,8 @@ use tokio::time::sleep;
 /// Run the ignored test `test_download_and_verify_models` first to download them:
 ///   cargo test test_download_and_verify -- --ignored
 fn create_test_service() -> RouteLLMService {
-    let home_dir = std::env::var("HOME").expect("HOME not set");
-    let routellm_dir = PathBuf::from(home_dir).join(".localrouter-dev/routellm");
+    let home_dir = dirs::home_dir().expect("Could not determine home directory");
+    let routellm_dir = home_dir.join(".localrouter-dev/routellm");
 
     RouteLLMService::new(
         routellm_dir.join("model"),     // Directory containing model.safetensors
@@ -417,11 +417,9 @@ mod downloader_tests {
     #[tokio::test]
     #[ignore] // Requires internet connection and downloads ~440 MB - run manually with: cargo test test_download_and_verify -- --ignored
     async fn test_download_and_verify_models() {
-        use std::env;
-
         // Use the actual dev directory like the app does
-        let home_dir = env::var("HOME").expect("HOME not set");
-        let routellm_dir = PathBuf::from(home_dir).join(".localrouter-dev/routellm");
+        let home_dir = dirs::home_dir().expect("Could not determine home directory");
+        let routellm_dir = home_dir.join(".localrouter-dev/routellm");
         let model_path = routellm_dir.join("model");
         let tokenizer_path = routellm_dir.join("tokenizer");
 
