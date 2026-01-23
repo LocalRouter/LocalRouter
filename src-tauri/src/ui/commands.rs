@@ -2609,19 +2609,23 @@ pub async fn delete_client(
 pub async fn update_client_name(
     client_id: String,
     name: String,
+    client_manager: State<'_, Arc<crate::clients::ClientManager>>,
     config_manager: State<'_, ConfigManager>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     tracing::info!("Updating client {} name to: {}", client_id, name);
 
+    // Update in client manager (in-memory)
+    client_manager
+        .update_client(&client_id, Some(name.clone()), None)
+        .map_err(|e| e.to_string())?;
+
     // Update in config
-    let mut found = false;
     let mut strategies_renamed = false;
     config_manager
         .update(|cfg| {
             if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
                 client.name = name.clone();
-                found = true;
             }
 
             // Also rename strategies that have this client as parent
@@ -2633,10 +2637,6 @@ pub async fn update_client_name(
             }
         })
         .map_err(|e| e.to_string())?;
-
-    if !found {
-        return Err(format!("Client not found: {}", client_id));
-    }
 
     // Persist to disk
     config_manager.save().await.map_err(|e| e.to_string())?;
