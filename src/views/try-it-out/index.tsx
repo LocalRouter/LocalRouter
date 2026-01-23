@@ -48,10 +48,7 @@ export function TryItOutView({ activeSubTab, onTabChange }: TryItOutViewProps) {
         </TabsList>
 
         <TabsContent value="llm" className="flex-1 min-h-0 mt-4">
-          <LlmTab
-            innerPath={mainTab === "llm" ? innerPath : null}
-            onPathChange={(path) => handleInnerPathChange("llm", path)}
-          />
+          <LlmTab />
         </TabsContent>
 
         <TabsContent value="mcp" className="flex-1 min-h-0 mt-4">

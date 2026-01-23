@@ -1,13 +1,12 @@
-import * as React from "react"
-import { useState, useRef, useEffect, useMemo } from "react"
-import { Send, Bot, User, RefreshCw, Users, Route, Zap } from "lucide-react"
+import { useState, useEffect, useMemo, useCallback } from "react"
+import { RefreshCw, Users, Route, Zap, Settings2, ChevronDown, MessageSquare, ImageIcon, Hash } from "lucide-react"
 import { invoke } from "@tauri-apps/api/core"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card"
 import { Button } from "@/components/ui/Button"
-import { Input } from "@/components/ui/Input"
-import { ScrollArea } from "@/components/ui/scroll-area"
-import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { Label } from "@/components/ui/label"
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
+import { Slider } from "@/components/ui/Slider"
 import {
   Select,
   SelectContent,
@@ -15,8 +14,16 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/Select"
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible"
 import { cn } from "@/lib/utils"
 import { createOpenAIClient } from "@/lib/openai-client"
+import { ChatPanel } from "./chat-panel"
+import { ImagesPanel } from "./images-panel"
+import { EmbeddingsPanel } from "./embeddings-panel"
 
 interface ServerConfig {
   host: string
@@ -48,38 +55,24 @@ interface ProviderModel {
   provider: string
 }
 
-interface Message {
-  id: string
-  role: "user" | "assistant"
-  content: string
-  timestamp: Date
-}
-
 interface Model {
   id: string
   object: string
   owned_by: string
 }
 
-interface ModelsResponse {
-  object: string
-  data: Model[]
-}
-
-interface LlmTabProps {
-  innerPath: string | null
-  onPathChange: (path: string | null) => void
+interface ModelParameters {
+  temperature: number
+  maxTokens: number
+  topP: number
 }
 
 type TestMode = "client" | "strategy" | "direct"
 
-export function LlmTab({ }: LlmTabProps) {
+export function LlmTab() {
+  const [activeSubtab, setActiveSubtab] = useState("chat")
   const [mode, setMode] = useState<TestMode>("client")
-  const [messages, setMessages] = useState<Message[]>([])
-  const [input, setInput] = useState("")
-  const [isLoading, setIsLoading] = useState(false)
   const [serverPort, setServerPort] = useState<number | null>(null)
-  const scrollRef = useRef<HTMLDivElement>(null)
 
   // Client mode state
   const [clients, setClients] = useState<Client[]>([])
@@ -101,6 +94,14 @@ export function LlmTab({ }: LlmTabProps) {
   const [models, setModels] = useState<Model[]>([])
   const [selectedModel, setSelectedModel] = useState<string>("")
   const [loadingModels, setLoadingModels] = useState(false)
+
+  // Model parameters
+  const [showParameters, setShowParameters] = useState(false)
+  const [parameters, setParameters] = useState<ModelParameters>({
+    temperature: 1.0,
+    maxTokens: 2048,
+    topP: 1.0,
+  })
 
   // Initialize: load server config and data
   useEffect(() => {
@@ -197,7 +198,7 @@ export function LlmTab({ }: LlmTabProps) {
   }, [mode])
 
   // Get the current auth token based on mode
-  const getAuthToken = (): string | null => {
+  const getAuthToken = useCallback((): string | null => {
     switch (mode) {
       case "client":
         return clientApiKey
@@ -208,7 +209,7 @@ export function LlmTab({ }: LlmTabProps) {
       default:
         return null
     }
-  }
+  }, [mode, clientApiKey, strategyToken, internalTestToken])
 
   // Create OpenAI client when token/port changes
   const openaiClient = useMemo(() => {
@@ -219,11 +220,30 @@ export function LlmTab({ }: LlmTabProps) {
       apiKey: token,
       baseURL: `http://localhost:${serverPort}/v1`,
     })
-  }, [clientApiKey, strategyToken, internalTestToken, serverPort, mode])
+  }, [getAuthToken, serverPort])
+
+  // Fetch models using OpenAI SDK
+  const fetchModels = useCallback(async () => {
+    if (!openaiClient) return
+
+    setLoadingModels(true)
+    try {
+      const response = await openaiClient.models.list()
+      const modelsList = response.data || []
+      setModels(modelsList.map(m => ({ id: m.id, object: m.object, owned_by: m.owned_by })))
+
+      if (!selectedModel && modelsList.length > 0) {
+        setSelectedModel(modelsList[0].id)
+      }
+    } catch (error) {
+      console.error("Failed to fetch models:", error)
+    } finally {
+      setLoadingModels(false)
+    }
+  }, [openaiClient, selectedModel])
 
   // Fetch models when auth changes
   useEffect(() => {
-    const token = getAuthToken()
     if (mode === "direct" && selectedProvider && serverPort) {
       // For direct mode, filter to provider's models
       const filtered = providerModels.filter(m => m.provider === selectedProvider)
@@ -231,139 +251,10 @@ export function LlmTab({ }: LlmTabProps) {
       if (filtered.length > 0 && !selectedModel) {
         setSelectedModel(filtered[0].id)
       }
-    } else if (token && serverPort) {
-      fetchModels(token)
+    } else if (openaiClient) {
+      fetchModels()
     }
-  }, [mode, clientApiKey, strategyToken, selectedProvider, serverPort, providerModels])
-
-  const fetchModels = async (token: string) => {
-    if (!serverPort) return
-
-    setLoadingModels(true)
-    try {
-      const response = await fetch(`http://localhost:${serverPort}/v1/models`, {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-      })
-
-      if (!response.ok) {
-        throw new Error(`Failed to fetch models: ${response.status}`)
-      }
-
-      const data: ModelsResponse = await response.json()
-      setModels(data.data || [])
-
-      if (!selectedModel && data.data?.length > 0) {
-        setSelectedModel(data.data[0].id)
-      }
-    } catch (error) {
-      console.error("Failed to fetch models:", error)
-    } finally {
-      setLoadingModels(false)
-    }
-  }
-
-  useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight
-    }
-  }, [messages])
-
-  const handleSend = async () => {
-    if (!input.trim() || isLoading || !serverPort) return
-
-    if (!openaiClient) {
-      const errorMessage: Message = {
-        id: crypto.randomUUID(),
-        role: "assistant",
-        content: "Error: No authentication token available",
-        timestamp: new Date(),
-      }
-      setMessages((prev) => [...prev, errorMessage])
-      return
-    }
-
-    if (!selectedModel) {
-      const errorMessage: Message = {
-        id: crypto.randomUUID(),
-        role: "assistant",
-        content: "Error: Please select a model first",
-        timestamp: new Date(),
-      }
-      setMessages((prev) => [...prev, errorMessage])
-      return
-    }
-
-    const userMessage: Message = {
-      id: crypto.randomUUID(),
-      role: "user",
-      content: input.trim(),
-      timestamp: new Date(),
-    }
-
-    // Add user message immediately
-    setMessages((prev) => [...prev, userMessage])
-    setInput("")
-    setIsLoading(true)
-
-    // Create assistant message placeholder for streaming
-    const assistantId = crypto.randomUUID()
-    setMessages((prev) => [
-      ...prev,
-      { id: assistantId, role: "assistant", content: "", timestamp: new Date() },
-    ])
-
-    try {
-      // Use OpenAI SDK for streaming chat completion
-      const stream = await openaiClient.chat.completions.create({
-        model: selectedModel,
-        messages: [...messages, userMessage].map((m) => ({
-          role: m.role,
-          content: m.content,
-        })),
-        stream: true,
-      })
-
-      // Stream response token by token
-      for await (const chunk of stream) {
-        const content = chunk.choices[0]?.delta?.content || ""
-        if (content) {
-          setMessages((prev) =>
-            prev.map((m) =>
-              m.id === assistantId ? { ...m, content: m.content + content } : m
-            )
-          )
-        }
-      }
-    } catch (error) {
-      console.error("Failed to send message:", error)
-      // Update the assistant message with error
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.id === assistantId
-            ? {
-                ...m,
-                content: `Error: ${error instanceof Error ? error.message : "Failed to get response"}`,
-              }
-            : m
-        )
-      )
-    } finally {
-      setIsLoading(false)
-    }
-  }
-
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault()
-      handleSend()
-    }
-  }
-
-  const clearChat = () => {
-    setMessages([])
-  }
+  }, [mode, selectedProvider, serverPort, providerModels, openaiClient, fetchModels, selectedModel])
 
   const getModeDescription = () => {
     switch (mode) {
@@ -382,6 +273,19 @@ export function LlmTab({ }: LlmTabProps) {
     return true
   }
 
+  const getSubtitle = () => {
+    if (mode === "client" && selectedClientId) {
+      return `Using client: ${clients.find(c => c.id === selectedClientId)?.name}`
+    }
+    if (mode === "strategy" && selectedStrategy) {
+      return `Using strategy: ${selectedStrategy}`
+    }
+    if (mode === "direct" && selectedProvider) {
+      return `Direct to: ${selectedProvider}`
+    }
+    return undefined
+  }
+
   return (
     <div className="flex flex-col h-full gap-4">
       {/* Mode Selection */}
@@ -394,9 +298,8 @@ export function LlmTab({ }: LlmTabProps) {
           <div className="space-y-4">
             <RadioGroup
               value={mode}
-              onValueChange={(v) => {
+              onValueChange={(v: string) => {
                 setMode(v as TestMode)
-                setMessages([])
                 setSelectedModel("")
               }}
               className="flex gap-4"
@@ -491,102 +394,106 @@ export function LlmTab({ }: LlmTabProps) {
               <Button
                 variant="outline"
                 size="icon"
-                onClick={() => {
-                  const token = getAuthToken()
-                  if (token) fetchModels(token)
-                }}
-                disabled={loadingModels || (!clientApiKey && mode === "client") || (!strategyToken && mode === "strategy")}
+                onClick={fetchModels}
+                disabled={loadingModels || !openaiClient}
                 title="Refresh models"
               >
                 <RefreshCw className={cn("h-4 w-4", loadingModels && "animate-spin")} />
               </Button>
             </div>
-          </div>
-        </CardContent>
-      </Card>
 
-      {/* Chat Interface */}
-      <Card className="flex flex-col flex-1 min-h-0">
-        <CardHeader className="pb-3 flex-shrink-0">
-          <div className="flex items-center justify-between">
-            <div>
-              <CardTitle className="text-base">Chat Interface</CardTitle>
-              <p className="text-sm text-muted-foreground">
-                {mode === "client" && selectedClientId && `Using client: ${clients.find(c => c.id === selectedClientId)?.name}`}
-                {mode === "strategy" && selectedStrategy && `Using strategy: ${selectedStrategy}`}
-                {mode === "direct" && selectedProvider && `Direct to: ${selectedProvider}`}
-              </p>
-            </div>
-            <Button variant="outline" size="sm" onClick={clearChat}>
-              Clear
-            </Button>
-          </div>
-        </CardHeader>
-        <CardContent className="flex-1 flex flex-col min-h-0">
-          {/* Messages */}
-          <ScrollArea className="flex-1 pr-4" ref={scrollRef}>
-            <div className="space-y-4">
-              {messages.length === 0 ? (
-                <div className="flex items-center justify-center h-64 text-muted-foreground">
-                  <p className="text-sm">
-                    {!isReady() ? "Select a model to start chatting" : "Send a message to start chatting"}
-                  </p>
-                </div>
-              ) : (
-                messages.map((message) => (
-                  <div
-                    key={message.id}
-                    className={cn(
-                      "flex gap-3",
-                      message.role === "user" ? "justify-end" : "justify-start"
-                    )}
-                  >
-                    {message.role === "assistant" && (
-                      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-muted">
-                        <Bot className="h-4 w-4" />
-                      </div>
-                    )}
-                    <div
-                      className={cn(
-                        "rounded-lg px-4 py-2 max-w-[80%]",
-                        message.role === "user"
-                          ? "bg-primary text-primary-foreground"
-                          : "bg-muted"
-                      )}
-                    >
-                      <p className="text-sm whitespace-pre-wrap">
-                        {message.content}
-                        {message.role === "assistant" && isLoading && message.content === "" && (
-                          <span className="inline-block w-2 h-4 bg-foreground/50 animate-pulse" />
-                        )}
-                      </p>
+            {/* Model Parameters */}
+            <Collapsible open={showParameters} onOpenChange={setShowParameters}>
+              <CollapsibleTrigger asChild>
+                <Button variant="ghost" size="sm" className="gap-2">
+                  <Settings2 className="h-4 w-4" />
+                  Model Parameters
+                  <ChevronDown className={cn("h-4 w-4 transition-transform", showParameters && "rotate-180")} />
+                </Button>
+              </CollapsibleTrigger>
+              <CollapsibleContent className="pt-4">
+                <div className="grid grid-cols-3 gap-6">
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <Label className="text-sm">Temperature</Label>
+                      <span className="text-sm text-muted-foreground">{parameters.temperature.toFixed(2)}</span>
                     </div>
-                    {message.role === "user" && (
-                      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary">
-                        <User className="h-4 w-4 text-primary-foreground" />
-                      </div>
-                    )}
+                    <Slider
+                      value={[parameters.temperature]}
+                      onValueChange={(values: number[]) => setParameters(p => ({ ...p, temperature: values[0] }))}
+                      min={0}
+                      max={2}
+                      step={0.01}
+                    />
                   </div>
-                ))
-              )}
-            </div>
-          </ScrollArea>
-
-          {/* Input */}
-          <div className="flex gap-2 pt-4 border-t mt-4 flex-shrink-0">
-            <Input
-              placeholder="Type a message..."
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={handleKeyDown}
-              disabled={isLoading || !isReady()}
-            />
-            <Button onClick={handleSend} disabled={!input.trim() || isLoading || !isReady()}>
-              <Send className="h-4 w-4" />
-            </Button>
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <Label className="text-sm">Max Tokens</Label>
+                      <span className="text-sm text-muted-foreground">{parameters.maxTokens}</span>
+                    </div>
+                    <Slider
+                      value={[parameters.maxTokens]}
+                      onValueChange={(values: number[]) => setParameters(p => ({ ...p, maxTokens: values[0] }))}
+                      min={1}
+                      max={8192}
+                      step={1}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <Label className="text-sm">Top P</Label>
+                      <span className="text-sm text-muted-foreground">{parameters.topP.toFixed(2)}</span>
+                    </div>
+                    <Slider
+                      value={[parameters.topP]}
+                      onValueChange={(values: number[]) => setParameters(p => ({ ...p, topP: values[0] }))}
+                      min={0}
+                      max={1}
+                      step={0.01}
+                    />
+                  </div>
+                </div>
+              </CollapsibleContent>
+            </Collapsible>
           </div>
         </CardContent>
       </Card>
+
+      {/* Subtabs for Chat, Images, Embeddings */}
+      <Tabs value={activeSubtab} onValueChange={setActiveSubtab} className="flex flex-col flex-1 min-h-0">
+        <TabsList className="w-fit">
+          <TabsTrigger value="chat" className="flex items-center gap-1">
+            <MessageSquare className="h-3 w-3" />
+            Chat
+          </TabsTrigger>
+          <TabsTrigger value="images" className="flex items-center gap-1">
+            <ImageIcon className="h-3 w-3" />
+            Images
+          </TabsTrigger>
+          <TabsTrigger value="embeddings" className="flex items-center gap-1">
+            <Hash className="h-3 w-3" />
+            Embeddings
+          </TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="chat" className="flex-1 min-h-0 mt-4">
+          <ChatPanel
+            openaiClient={openaiClient}
+            isReady={isReady()}
+            selectedModel={selectedModel}
+            parameters={parameters}
+            subtitle={getSubtitle()}
+          />
+        </TabsContent>
+
+        <TabsContent value="images" className="flex-1 min-h-0 mt-4">
+          <ImagesPanel openaiClient={openaiClient} isReady={isReady()} />
+        </TabsContent>
+
+        <TabsContent value="embeddings" className="flex-1 min-h-0 mt-4">
+          <EmbeddingsPanel openaiClient={openaiClient} isReady={isReady()} />
+        </TabsContent>
+      </Tabs>
     </div>
   )
 }

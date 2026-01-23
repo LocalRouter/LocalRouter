@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react"
+import { useState, useEffect, useCallback } from "react"
 import { Search, Play, RefreshCw, ChevronRight, AlertCircle, MessageSquare, User, Bot } from "lucide-react"
 import { Button } from "@/components/ui/Button"
 import { Input } from "@/components/ui/Input"
@@ -7,18 +7,7 @@ import { Badge } from "@/components/ui/Badge"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { cn } from "@/lib/utils"
-
-interface PromptArgument {
-  name: string
-  description?: string
-  required?: boolean
-}
-
-interface Prompt {
-  name: string
-  description?: string
-  arguments?: PromptArgument[]
-}
+import type { McpClientWrapper, Prompt } from "@/lib/mcp-client"
 
 interface PromptMessage {
   role: "user" | "assistant"
@@ -29,20 +18,11 @@ interface PromptMessage {
 }
 
 interface PromptsPanelProps {
-  serverPort: number | null
-  clientToken: string | null
-  isGateway: boolean
-  selectedServer: string
+  mcpClient: McpClientWrapper | null
   isConnected: boolean
 }
 
-export function PromptsPanel({
-  serverPort,
-  clientToken,
-  isGateway,
-  selectedServer,
-  isConnected,
-}: PromptsPanelProps) {
+export function PromptsPanel({ mcpClient, isConnected }: PromptsPanelProps) {
   const [prompts, setPrompts] = useState<Prompt[]>([])
   const [filteredPrompts, setFilteredPrompts] = useState<Prompt[]>([])
   const [searchQuery, setSearchQuery] = useState("")
@@ -53,42 +33,15 @@ export function PromptsPanel({
   const [expandedMessages, setExpandedMessages] = useState<PromptMessage[]>([])
   const [error, setError] = useState<string | null>(null)
 
-  // Fetch prompts list using JSON-RPC
-  const fetchPrompts = async () => {
-    if (!serverPort || !clientToken) return
+  // Fetch prompts list using MCP client
+  const fetchPrompts = useCallback(async () => {
+    if (!mcpClient || !isConnected) return
 
     setIsLoading(true)
     setError(null)
 
     try {
-      const endpoint = isGateway
-        ? `http://localhost:${serverPort}/`
-        : `http://localhost:${serverPort}/mcp/${selectedServer}`
-
-      const response = await fetch(endpoint, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${clientToken}`,
-        },
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          method: "prompts/list",
-          params: {},
-          id: Date.now(),
-        }),
-      })
-
-      if (!response.ok) {
-        const errorText = await response.text()
-        throw new Error(`Failed to fetch prompts: ${response.status} - ${errorText}`)
-      }
-
-      const data = await response.json()
-      if (data.error) {
-        throw new Error(data.error.message || "JSON-RPC error")
-      }
-      const promptsList = data.result?.prompts || []
+      const promptsList = await mcpClient.listPrompts()
       setPrompts(promptsList)
       setFilteredPrompts(promptsList)
     } catch (err) {
@@ -96,7 +49,7 @@ export function PromptsPanel({
     } finally {
       setIsLoading(false)
     }
-  }
+  }, [mcpClient, isConnected])
 
   useEffect(() => {
     if (isConnected) {
@@ -107,7 +60,7 @@ export function PromptsPanel({
       setSelectedPrompt(null)
       setExpandedMessages([])
     }
-  }, [isConnected, serverPort, clientToken, isGateway, selectedServer])
+  }, [isConnected, fetchPrompts])
 
   // Filter prompts based on search
   useEffect(() => {
@@ -138,44 +91,19 @@ export function PromptsPanel({
   }, [selectedPrompt])
 
   const handleExpand = async () => {
-    if (!selectedPrompt || !serverPort || !clientToken) return
+    if (!selectedPrompt || !mcpClient) return
 
     setIsExpanding(true)
     setExpandedMessages([])
     setError(null)
 
     try {
-      const endpoint = isGateway
-        ? `http://localhost:${serverPort}/`
-        : `http://localhost:${serverPort}/mcp/${selectedServer}`
-
-      const response = await fetch(endpoint, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${clientToken}`,
-        },
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          method: "prompts/get",
-          params: {
-            name: selectedPrompt.name,
-            arguments: argValues,
-          },
-          id: Date.now(),
-        }),
-      })
-
-      if (!response.ok) {
-        const errorText = await response.text()
-        throw new Error(`Failed to get prompt: ${response.status} - ${errorText}`)
-      }
-
-      const data = await response.json()
-      if (data.error) {
-        throw new Error(data.error.message || "JSON-RPC error")
-      }
-      setExpandedMessages(data.result?.messages || [])
+      const result = await mcpClient.getPrompt(selectedPrompt.name, argValues)
+      const messages = (result.messages || []).map(msg => ({
+        role: msg.role as "user" | "assistant",
+        content: msg.content as { type: string; text?: string },
+      }))
+      setExpandedMessages(messages)
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to get prompt")
     } finally {

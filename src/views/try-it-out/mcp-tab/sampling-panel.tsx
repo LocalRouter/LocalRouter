@@ -1,13 +1,31 @@
-import { useState, useEffect } from "react"
+import { useState, useEffect, useCallback, useMemo } from "react"
 import { listen } from "@tauri-apps/api/event"
-import { Radio, CheckCircle2, XCircle, Clock, RefreshCw, Bot, User, Settings } from "lucide-react"
+import { emit } from "@tauri-apps/api/event"
+import { invoke } from "@tauri-apps/api/core"
+import { Radio, CheckCircle2, XCircle, Clock, RefreshCw, Bot, User, Settings, Send } from "lucide-react"
 import { Button } from "@/components/ui/Button"
 import { Switch } from "@/components/ui/Toggle"
 import { Label } from "@/components/ui/label"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Badge } from "@/components/ui/Badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/Select"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import { cn } from "@/lib/utils"
+import { createOpenAIClient } from "@/lib/openai-client"
 
 interface SamplingRequest {
   id: string
@@ -36,6 +54,19 @@ interface SamplingRequest {
   error?: string
 }
 
+interface Model {
+  id: string
+  object: string
+  owned_by: string
+}
+
+interface ServerConfig {
+  host: string
+  port: number
+  actual_port: number | null
+  enable_cors: boolean
+}
+
 interface SamplingPanelProps {
   serverPort: number | null
   clientToken: string | null
@@ -45,20 +76,81 @@ interface SamplingPanelProps {
 }
 
 export function SamplingPanel({
-  serverPort: _serverPort,
+  serverPort: propServerPort,
   clientToken: _clientToken,
   isGateway: _isGateway,
   selectedServer: _selectedServer,
   isConnected,
 }: SamplingPanelProps) {
-  // Note: serverPort, clientToken, isGateway, selectedServer are reserved for future use
-  void _serverPort
   void _clientToken
   void _isGateway
   void _selectedServer
+
   const [requests, setRequests] = useState<SamplingRequest[]>([])
   const [selectedRequest, setSelectedRequest] = useState<SamplingRequest | null>(null)
   const [autoApprove, setAutoApprove] = useState(false)
+  const [defaultModel, setDefaultModel] = useState<string>("")
+
+  // Approval dialog state
+  const [approvalDialogOpen, setApprovalDialogOpen] = useState(false)
+  const [pendingApprovalRequest, setPendingApprovalRequest] = useState<SamplingRequest | null>(null)
+  const [approvalModel, setApprovalModel] = useState<string>("")
+  const [isProcessing, setIsProcessing] = useState(false)
+
+  // Model list state
+  const [models, setModels] = useState<Model[]>([])
+  const [loadingModels, setLoadingModels] = useState(false)
+  const [serverPort, setServerPort] = useState<number | null>(propServerPort)
+  const [internalToken, setInternalToken] = useState<string | null>(null)
+
+  // Initialize server port and token
+  useEffect(() => {
+    const init = async () => {
+      try {
+        const config = await invoke<ServerConfig>("get_server_config")
+        const port = config.actual_port ?? config.port
+        setServerPort(port)
+
+        const token = await invoke<string>("get_internal_test_token")
+        setInternalToken(token)
+      } catch (error) {
+        console.error("Failed to initialize:", error)
+      }
+    }
+    init()
+  }, [])
+
+  // Create OpenAI client
+  const openaiClient = useMemo(() => {
+    if (!internalToken || !serverPort) return null
+    return createOpenAIClient({
+      apiKey: internalToken,
+      baseURL: `http://localhost:${serverPort}/v1`,
+    })
+  }, [internalToken, serverPort])
+
+  // Fetch models when client is ready
+  useEffect(() => {
+    const fetchModels = async () => {
+      if (!openaiClient) return
+
+      setLoadingModels(true)
+      try {
+        const response = await openaiClient.models.list()
+        const modelsList = response.data || []
+        setModels(modelsList.map(m => ({ id: m.id, object: m.object, owned_by: m.owned_by })))
+
+        if (!defaultModel && modelsList.length > 0) {
+          setDefaultModel(modelsList[0].id)
+        }
+      } catch (error) {
+        console.error("Failed to fetch models:", error)
+      } finally {
+        setLoadingModels(false)
+      }
+    }
+    fetchModels()
+  }, [openaiClient, defaultModel])
 
   // Listen for sampling requests from MCP servers
   useEffect(() => {
@@ -68,33 +160,135 @@ export function SamplingPanel({
       return
     }
 
-    const unsubscribe = listen<SamplingRequest>("mcp-sampling-request", (event) => {
+    const unsubscribe = listen<SamplingRequest>("mcp-sampling-request", async (event) => {
       const request = {
         ...event.payload,
         timestamp: new Date(),
-        status: autoApprove ? "completed" : "pending",
-      } as SamplingRequest
+        status: "pending" as const,
+      }
 
       setRequests((prev) => [request, ...prev])
 
-      // Auto-select the first pending request
-      if (!autoApprove && !selectedRequest) {
-        setSelectedRequest(request)
+      // Auto-approve if enabled and we have a default model
+      if (autoApprove && defaultModel && openaiClient) {
+        await processSamplingRequest(request, defaultModel)
+      } else if (!autoApprove) {
+        // Auto-select the first pending request
+        if (!selectedRequest) {
+          setSelectedRequest(request)
+        }
       }
     })
 
     return () => {
       unsubscribe.then((fn) => fn())
     }
-  }, [isConnected, autoApprove, selectedRequest])
+  }, [isConnected, autoApprove, selectedRequest, defaultModel, openaiClient])
 
-  const handleApprove = async (request: SamplingRequest) => {
-    // In a real implementation, this would send approval to the backend
+  // Process a sampling request through the LLM
+  const processSamplingRequest = useCallback(async (request: SamplingRequest, model: string) => {
+    if (!openaiClient) return
+
+    // Mark as processing
     setRequests((prev) =>
       prev.map((r) =>
         r.id === request.id ? { ...r, status: "approved" as const } : r
       )
     )
+
+    try {
+      // Build messages array for OpenAI API
+      const messages: Array<{ role: "user" | "assistant" | "system"; content: string }> = []
+
+      // Add system prompt if provided
+      if (request.systemPrompt) {
+        messages.push({ role: "system", content: request.systemPrompt })
+      }
+
+      // Add conversation messages
+      for (const msg of request.messages) {
+        const content = msg.content.text || JSON.stringify(msg.content)
+        messages.push({
+          role: msg.role,
+          content,
+        })
+      }
+
+      // Call the LLM
+      const response = await openaiClient.chat.completions.create({
+        model,
+        messages,
+        temperature: request.temperature ?? 1.0,
+        max_tokens: request.maxTokens ?? 2048,
+      })
+
+      const responseText = response.choices[0]?.message?.content || ""
+
+      // Update request with response
+      setRequests((prev) =>
+        prev.map((r) =>
+          r.id === request.id
+            ? {
+                ...r,
+                status: "completed" as const,
+                response: {
+                  model: response.model,
+                  content: { type: "text", text: responseText },
+                },
+              }
+            : r
+        )
+      )
+
+      // Emit response back to backend
+      await emit("mcp-sampling-response", {
+        requestId: request.id,
+        serverId: request.serverId,
+        model: response.model,
+        content: { type: "text", text: responseText },
+        stopReason: response.choices[0]?.finish_reason || "stop",
+      })
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : "Failed to process request"
+      setRequests((prev) =>
+        prev.map((r) =>
+          r.id === request.id
+            ? { ...r, status: "error" as const, error: errorMessage }
+            : r
+        )
+      )
+
+      // Emit error back to backend
+      await emit("mcp-sampling-error", {
+        requestId: request.id,
+        serverId: request.serverId,
+        error: errorMessage,
+      })
+    }
+  }, [openaiClient])
+
+  // Open approval dialog
+  const handleApproveClick = (request: SamplingRequest) => {
+    setPendingApprovalRequest(request)
+    // Try to find a matching model from hints
+    const hintModel = request.modelPreferences?.hints?.[0]?.name
+    if (hintModel && models.some(m => m.id === hintModel)) {
+      setApprovalModel(hintModel)
+    } else {
+      setApprovalModel(defaultModel)
+    }
+    setApprovalDialogOpen(true)
+  }
+
+  // Confirm approval and process
+  const handleConfirmApproval = async () => {
+    if (!pendingApprovalRequest || !approvalModel) return
+
+    setIsProcessing(true)
+    await processSamplingRequest(pendingApprovalRequest, approvalModel)
+    setIsProcessing(false)
+    setApprovalDialogOpen(false)
+    setPendingApprovalRequest(null)
   }
 
   const handleReject = async (request: SamplingRequest) => {
@@ -103,6 +297,13 @@ export function SamplingPanel({
         r.id === request.id ? { ...r, status: "rejected" as const } : r
       )
     )
+
+    // Emit rejection to backend
+    await emit("mcp-sampling-error", {
+      requestId: request.id,
+      serverId: request.serverId,
+      error: "Request rejected by user",
+    })
   }
 
   const clearHistory = () => {
@@ -169,8 +370,26 @@ export function SamplingPanel({
               checked={autoApprove}
               onCheckedChange={setAutoApprove}
             />
-            <Label htmlFor="auto-approve">Auto-approve sampling requests</Label>
+            <Label htmlFor="auto-approve">Auto-approve</Label>
           </div>
+
+          {autoApprove && (
+            <div className="flex items-center gap-2">
+              <Label className="text-sm">Default Model:</Label>
+              <Select value={defaultModel} onValueChange={setDefaultModel}>
+                <SelectTrigger className="w-[200px]">
+                  <SelectValue placeholder={loadingModels ? "Loading..." : "Select model"} />
+                </SelectTrigger>
+                <SelectContent>
+                  {models.map((model) => (
+                    <SelectItem key={model.id} value={model.id}>
+                      {model.id}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
         </div>
         <Button variant="outline" size="sm" onClick={clearHistory}>
           Clear History
@@ -247,10 +466,10 @@ export function SamplingPanel({
                       <>
                         <Button
                           size="sm"
-                          onClick={() => handleApprove(selectedRequest)}
+                          onClick={() => handleApproveClick(selectedRequest)}
                         >
-                          <CheckCircle2 className="h-4 w-4 mr-1" />
-                          Approve
+                          <Send className="h-4 w-4 mr-1" />
+                          Approve & Send
                         </Button>
                         <Button
                           size="sm"
@@ -401,6 +620,85 @@ export function SamplingPanel({
           )}
         </div>
       </div>
+
+      {/* Approval Dialog */}
+      <Dialog open={approvalDialogOpen} onOpenChange={setApprovalDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Approve Sampling Request</DialogTitle>
+            <DialogDescription>
+              Select a model to process this sampling request from{" "}
+              <strong>{pendingApprovalRequest?.serverName}</strong>.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label>Model</Label>
+              <Select value={approvalModel} onValueChange={setApprovalModel}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select a model" />
+                </SelectTrigger>
+                <SelectContent>
+                  {models.map((model) => (
+                    <SelectItem key={model.id} value={model.id}>
+                      {model.id}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            {pendingApprovalRequest?.modelPreferences?.hints?.[0]?.name && (
+              <p className="text-xs text-muted-foreground">
+                Server requested: {pendingApprovalRequest.modelPreferences.hints[0].name}
+              </p>
+            )}
+
+            <div className="text-sm text-muted-foreground">
+              <p>
+                <strong>Messages:</strong> {pendingApprovalRequest?.messages.length || 0}
+              </p>
+              {pendingApprovalRequest?.temperature !== undefined && (
+                <p>
+                  <strong>Temperature:</strong> {pendingApprovalRequest.temperature}
+                </p>
+              )}
+              {pendingApprovalRequest?.maxTokens !== undefined && (
+                <p>
+                  <strong>Max Tokens:</strong> {pendingApprovalRequest.maxTokens}
+                </p>
+              )}
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setApprovalDialogOpen(false)}
+              disabled={isProcessing}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleConfirmApproval}
+              disabled={!approvalModel || isProcessing}
+            >
+              {isProcessing ? (
+                <>
+                  <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                  Processing...
+                </>
+              ) : (
+                <>
+                  <CheckCircle2 className="h-4 w-4 mr-2" />
+                  Approve & Send
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

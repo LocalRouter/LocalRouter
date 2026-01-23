@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react"
+import { useState, useEffect, useCallback } from "react"
 import { Search, Play, RefreshCw, ChevronRight, AlertCircle, CheckCircle2 } from "lucide-react"
 import { Button } from "@/components/ui/Button"
 import { Input } from "@/components/ui/Input"
@@ -7,16 +7,7 @@ import { Badge } from "@/components/ui/Badge"
 import { Textarea } from "@/components/ui/textarea"
 import { Label } from "@/components/ui/label"
 import { cn } from "@/lib/utils"
-
-interface Tool {
-  name: string
-  description?: string
-  inputSchema?: {
-    type: string
-    properties?: Record<string, SchemaProperty>
-    required?: string[]
-  }
-}
+import type { McpClientWrapper, Tool } from "@/lib/mcp-client"
 
 interface SchemaProperty {
   type: string
@@ -27,20 +18,11 @@ interface SchemaProperty {
 }
 
 interface ToolsPanelProps {
-  serverPort: number | null
-  clientToken: string | null
-  isGateway: boolean
-  selectedServer: string
+  mcpClient: McpClientWrapper | null
   isConnected: boolean
 }
 
-export function ToolsPanel({
-  serverPort,
-  clientToken,
-  isGateway,
-  selectedServer,
-  isConnected,
-}: ToolsPanelProps) {
+export function ToolsPanel({ mcpClient, isConnected }: ToolsPanelProps) {
   const [tools, setTools] = useState<Tool[]>([])
   const [filteredTools, setFilteredTools] = useState<Tool[]>([])
   const [searchQuery, setSearchQuery] = useState("")
@@ -51,42 +33,15 @@ export function ToolsPanel({
   const [result, setResult] = useState<{ success: boolean; data: unknown } | null>(null)
   const [error, setError] = useState<string | null>(null)
 
-  // Fetch tools list using JSON-RPC
-  const fetchTools = async () => {
-    if (!serverPort || !clientToken) return
+  // Fetch tools list using MCP client
+  const fetchTools = useCallback(async () => {
+    if (!mcpClient || !isConnected) return
 
     setIsLoading(true)
     setError(null)
 
     try {
-      const endpoint = isGateway
-        ? `http://localhost:${serverPort}/`
-        : `http://localhost:${serverPort}/mcp/${selectedServer}`
-
-      const response = await fetch(endpoint, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${clientToken}`,
-        },
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          method: "tools/list",
-          params: {},
-          id: Date.now(),
-        }),
-      })
-
-      if (!response.ok) {
-        const errorText = await response.text()
-        throw new Error(`Failed to fetch tools: ${response.status} - ${errorText}`)
-      }
-
-      const data = await response.json()
-      if (data.error) {
-        throw new Error(data.error.message || "JSON-RPC error")
-      }
-      const toolsList = data.result?.tools || []
+      const toolsList = await mcpClient.listTools()
       setTools(toolsList)
       setFilteredTools(toolsList)
     } catch (err) {
@@ -94,7 +49,7 @@ export function ToolsPanel({
     } finally {
       setIsLoading(false)
     }
-  }
+  }, [mcpClient, isConnected])
 
   useEffect(() => {
     if (isConnected) {
@@ -104,7 +59,7 @@ export function ToolsPanel({
       setFilteredTools([])
       setSelectedTool(null)
     }
-  }, [isConnected, serverPort, clientToken, isGateway, selectedServer])
+  }, [isConnected, fetchTools])
 
   // Filter tools based on search
   useEffect(() => {
@@ -126,7 +81,8 @@ export function ToolsPanel({
   useEffect(() => {
     if (selectedTool) {
       const defaults: Record<string, unknown> = {}
-      const props = selectedTool.inputSchema?.properties || {}
+      const schema = selectedTool.inputSchema as { properties?: Record<string, SchemaProperty> } | undefined
+      const props = schema?.properties || {}
       for (const [key, prop] of Object.entries(props)) {
         if (prop.default !== undefined) {
           defaults[key] = prop.default
@@ -138,46 +94,18 @@ export function ToolsPanel({
   }, [selectedTool])
 
   const handleExecute = async () => {
-    if (!selectedTool || !serverPort || !clientToken) return
+    if (!selectedTool || !mcpClient) return
 
     setIsExecuting(true)
     setResult(null)
     setError(null)
 
     try {
-      const endpoint = isGateway
-        ? `http://localhost:${serverPort}/`
-        : `http://localhost:${serverPort}/mcp/${selectedServer}`
-
-      const response = await fetch(endpoint, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${clientToken}`,
-        },
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          method: "tools/call",
-          params: {
-            name: selectedTool.name,
-            arguments: formValues,
-          },
-          id: Date.now(),
-        }),
+      const callResult = await mcpClient.callTool(selectedTool.name, formValues)
+      setResult({
+        success: !callResult.isError,
+        data: callResult.content,
       })
-
-      if (!response.ok) {
-        const errorText = await response.text()
-        throw new Error(`Tool execution failed: ${response.status} - ${errorText}`)
-      }
-
-      const data = await response.json()
-      if (data.error) {
-        setResult({ success: false, data: data.error.message || "JSON-RPC error" })
-      } else {
-        const resultData = data.result
-        setResult({ success: !resultData?.isError, data: resultData?.content || resultData })
-      }
     } catch (err) {
       setResult({
         success: false,
@@ -257,6 +185,21 @@ export function ToolsPanel({
     }
   }
 
+  const renderResultContent = (data: unknown): string => {
+    if (Array.isArray(data)) {
+      return data.map(item => {
+        if (typeof item === "object" && item !== null && "text" in item) {
+          return (item as { text: string }).text
+        }
+        return JSON.stringify(item, null, 2)
+      }).join("\n")
+    }
+    if (typeof data === "string") {
+      return data
+    }
+    return JSON.stringify(data, null, 2)
+  }
+
   if (!isConnected) {
     return (
       <div className="flex items-center justify-center h-full text-muted-foreground">
@@ -264,6 +207,8 @@ export function ToolsPanel({
       </div>
     )
   }
+
+  const toolSchema = selectedTool?.inputSchema as { properties?: Record<string, SchemaProperty>; required?: string[] } | undefined
 
   return (
     <div className="flex h-full gap-4">
@@ -356,15 +301,15 @@ export function ToolsPanel({
             <ScrollArea className="flex-1 p-4">
               <div className="space-y-6">
                 {/* Input Form */}
-                {selectedTool.inputSchema?.properties && (
+                {toolSchema?.properties && (
                   <div className="space-y-4">
                     <h4 className="text-sm font-medium">Arguments</h4>
-                    {Object.entries(selectedTool.inputSchema.properties).map(
+                    {Object.entries(toolSchema.properties).map(
                       ([name, prop]) => (
                         <div key={name} className="space-y-2">
                           <div className="flex items-center gap-2">
                             <Label className="font-mono text-sm">{name}</Label>
-                            {selectedTool.inputSchema?.required?.includes(name) && (
+                            {toolSchema.required?.includes(name) && (
                               <Badge variant="outline" className="text-xs">
                                 required
                               </Badge>
@@ -397,9 +342,7 @@ export function ToolsPanel({
                       )}
                     </div>
                     <pre className="p-3 bg-muted rounded-md text-sm overflow-auto max-h-64">
-                      {typeof result.data === "string"
-                        ? result.data
-                        : JSON.stringify(result.data, null, 2)}
+                      {renderResultContent(result.data)}
                     </pre>
                   </div>
                 )}

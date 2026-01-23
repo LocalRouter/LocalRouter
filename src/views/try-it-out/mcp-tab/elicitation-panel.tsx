@@ -1,5 +1,5 @@
-import { useState, useEffect } from "react"
-import { listen } from "@tauri-apps/api/event"
+import { useState, useEffect, useCallback } from "react"
+import { listen, emit } from "@tauri-apps/api/event"
 import { HelpCircle, CheckCircle2, XCircle, Clock, Send, Bot } from "lucide-react"
 import { Button } from "@/components/ui/Button"
 import { Input } from "@/components/ui/Input"
@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/Badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card"
 import { Textarea } from "@/components/ui/textarea"
 import { cn } from "@/lib/utils"
+import type { McpClientWrapper } from "@/lib/mcp-client"
 
 interface SchemaProperty {
   type: string
@@ -37,31 +38,20 @@ interface ElicitationRequest {
 }
 
 interface ElicitationPanelProps {
-  serverPort: number | null
-  clientToken: string | null
-  isGateway: boolean
-  selectedServer: string
+  mcpClient: McpClientWrapper | null
   isConnected: boolean
 }
 
-export function ElicitationPanel({
-  serverPort: _serverPort,
-  clientToken: _clientToken,
-  isGateway: _isGateway,
-  selectedServer: _selectedServer,
-  isConnected,
-}: ElicitationPanelProps) {
-  // Note: serverPort, clientToken, isGateway, selectedServer are reserved for future use
-  void _serverPort
-  void _clientToken
-  void _isGateway
-  void _selectedServer
+export function ElicitationPanel({ mcpClient: _mcpClient, isConnected }: ElicitationPanelProps) {
+  // Note: mcpClient is reserved for future use when elicitation is fully implemented
+  void _mcpClient
 
   const [requests, setRequests] = useState<ElicitationRequest[]>([])
   const [selectedRequest, setSelectedRequest] = useState<ElicitationRequest | null>(null)
   const [formValues, setFormValues] = useState<Record<string, unknown>>({})
+  const [isSubmitting, setIsSubmitting] = useState(false)
 
-  // Listen for elicitation requests from MCP servers
+  // Listen for elicitation requests from backend
   useEffect(() => {
     if (!isConnected) {
       setRequests([])
@@ -69,11 +59,11 @@ export function ElicitationPanel({
       return
     }
 
-    const unsubscribe = listen<ElicitationRequest>("mcp-elicitation-request", (event) => {
-      const request = {
+    const unsubscribe = listen<Omit<ElicitationRequest, "timestamp" | "status">>("mcp-elicitation-request", (event) => {
+      const request: ElicitationRequest = {
         ...event.payload,
         timestamp: new Date(),
-        status: "pending" as const,
+        status: "pending",
       }
 
       setRequests((prev) => [request, ...prev])
@@ -81,7 +71,6 @@ export function ElicitationPanel({
       // Auto-select if no request selected
       if (!selectedRequest) {
         setSelectedRequest(request)
-        // Initialize form values
         initializeFormValues(request)
       }
     })
@@ -91,7 +80,7 @@ export function ElicitationPanel({
     }
   }, [isConnected, selectedRequest])
 
-  const initializeFormValues = (request: ElicitationRequest) => {
+  const initializeFormValues = useCallback((request: ElicitationRequest) => {
     const defaults: Record<string, unknown> = {}
     const props = request.requestedSchema?.properties || {}
     for (const [key, prop] of Object.entries(props)) {
@@ -106,47 +95,71 @@ export function ElicitationPanel({
       }
     }
     setFormValues(defaults)
-  }
+  }, [])
 
-  const handleSelectRequest = (request: ElicitationRequest) => {
+  const handleSelectRequest = useCallback((request: ElicitationRequest) => {
     setSelectedRequest(request)
     if (request.status === "pending") {
       initializeFormValues(request)
     } else if (request.response) {
       setFormValues(request.response)
     }
-  }
+  }, [initializeFormValues])
 
   const handleSubmit = async () => {
     if (!selectedRequest) return
 
-    // In a real implementation, this would send the response to the backend
-    setRequests((prev) =>
-      prev.map((r) =>
-        r.id === selectedRequest.id
-          ? { ...r, status: "submitted" as const, response: formValues }
-          : r
+    setIsSubmitting(true)
+
+    try {
+      // Send response back to backend
+      await emit("mcp-elicitation-response", {
+        requestId: selectedRequest.id,
+        serverId: selectedRequest.serverId,
+        response: formValues,
+      })
+
+      // Update local state
+      const updatedRequest = {
+        ...selectedRequest,
+        status: "submitted" as const,
+        response: formValues,
+      }
+
+      setRequests((prev) =>
+        prev.map((r) => (r.id === selectedRequest.id ? updatedRequest : r))
       )
-    )
-    setSelectedRequest({
-      ...selectedRequest,
-      status: "submitted",
-      response: formValues,
-    })
+      setSelectedRequest(updatedRequest)
+    } catch (error) {
+      console.error("Failed to submit elicitation response:", error)
+    } finally {
+      setIsSubmitting(false)
+    }
   }
 
   const handleCancel = async () => {
     if (!selectedRequest) return
 
-    setRequests((prev) =>
-      prev.map((r) =>
-        r.id === selectedRequest.id ? { ...r, status: "cancelled" as const } : r
+    try {
+      // Notify backend of cancellation
+      await emit("mcp-elicitation-cancelled", {
+        requestId: selectedRequest.id,
+        serverId: selectedRequest.serverId,
+      })
+
+      // Update local state
+      const updatedRequest = {
+        ...selectedRequest,
+        status: "cancelled" as const,
+      }
+
+      setRequests((prev) =>
+        prev.map((r) => (r.id === selectedRequest.id ? updatedRequest : r))
       )
-    )
-    setSelectedRequest({
-      ...selectedRequest,
-      status: "cancelled",
-    })
+      setSelectedRequest(updatedRequest)
+    } catch (error) {
+      console.error("Failed to cancel elicitation:", error)
+    }
   }
 
   const clearHistory = () => {
@@ -343,9 +356,9 @@ export function ElicitationPanel({
                     {getStatusBadge(selectedRequest.status)}
                     {selectedRequest.status === "pending" && (
                       <>
-                        <Button size="sm" onClick={handleSubmit}>
+                        <Button size="sm" onClick={handleSubmit} disabled={isSubmitting}>
                           <Send className="h-4 w-4 mr-1" />
-                          Submit
+                          {isSubmitting ? "Submitting..." : "Submit"}
                         </Button>
                         <Button
                           size="sm"
