@@ -384,10 +384,13 @@ pub enum ModelSelection {
 
     /// Custom selection of providers and/or individual models
     Custom {
+        /// If true, all models are allowed (including future models)
+        #[serde(default)]
+        selected_all: bool,
         /// Providers where ALL models are selected (including future models)
-        all_provider_models: Vec<String>,
+        selected_providers: Vec<String>,
         /// Individual models selected as (provider, model) pairs
-        individual_models: Vec<(String, String)>,
+        selected_models: Vec<(String, String)>,
     },
 
     /// Legacy: Direct model selection (deprecated, use Custom instead)
@@ -408,19 +411,25 @@ impl ModelSelection {
         match self {
             ModelSelection::All => true,
             ModelSelection::Custom {
-                all_provider_models,
-                individual_models,
+                selected_all,
+                selected_providers,
+                selected_models,
             } => {
-                // Check if the provider is in the all_provider_models list
-                if all_provider_models
+                // If all are selected, everything is allowed
+                if *selected_all {
+                    return true;
+                }
+
+                // Check if the provider is in the selected_providers list
+                if selected_providers
                     .iter()
                     .any(|p| p.eq_ignore_ascii_case(provider_name))
                 {
                     return true;
                 }
 
-                // Check if the specific (provider, model) pair is in individual_models
-                individual_models.iter().any(|(p, m)| {
+                // Check if the specific (provider, model) pair is in selected_models
+                selected_models.iter().any(|(p, m)| {
                     p.eq_ignore_ascii_case(provider_name) && m.eq_ignore_ascii_case(model_id)
                 })
             }

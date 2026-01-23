@@ -14,10 +14,12 @@ use serde_json::Value;
 use tracing::error;
 use utoipa::ToSchema;
 
+use crate::config::McpServerAccess;
 use crate::mcp::protocol::{JsonRpcRequest, Root};
 use crate::server::middleware::client_auth::ClientAuthContext;
 use crate::server::middleware::error::ApiErrorResponse;
 use crate::server::state::AppState;
+use super::helpers::get_enabled_client;
 
 /// Request to initialize a streaming session
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -105,21 +107,25 @@ pub async fn initialize_streaming_session(
         .ok_or_else(|| ApiErrorResponse::unauthorized("Missing authentication"))?
         .0;
 
-    // Get client config to find allowed MCP servers
+    // Get enabled client
+    let client = get_enabled_client(&state, &auth_ctx.client_id)?;
+
+    // Get config for MCP server list
     let config = state.config_manager.get();
-    let client = config
-        .clients
-        .iter()
-        .find(|c| c.id == auth_ctx.client_id)
-        .ok_or_else(|| ApiErrorResponse::forbidden("Client not found"))?;
 
-    let allowed_servers = client.allowed_mcp_servers.clone();
-
-    if allowed_servers.is_empty() {
+    // Check MCP access mode
+    if !client.mcp_server_access.has_any_access() {
         return Err(ApiErrorResponse::forbidden(
             "Client has no MCP server access",
         ));
     }
+
+    // Get allowed servers based on access mode
+    let allowed_servers: Vec<String> = match &client.mcp_server_access {
+        McpServerAccess::None => vec![],
+        McpServerAccess::All => config.mcp_servers.iter().map(|s| s.id.clone()).collect(),
+        McpServerAccess::Specific(servers) => servers.clone(),
+    };
 
     // Create gateway session
     let roots = config

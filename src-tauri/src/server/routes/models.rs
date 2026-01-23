@@ -8,6 +8,7 @@ use axum::{
     Json,
 };
 
+use super::helpers::get_client_with_strategy;
 use crate::server::middleware::error::{ApiErrorResponse, ApiResult};
 use crate::server::state::{AppState, AuthContext};
 use crate::server::types::{ModelData, ModelPricing, ModelsResponse};
@@ -37,21 +38,8 @@ pub async fn list_models<B>(
         .get::<AuthContext>()
         .ok_or_else(|| ApiErrorResponse::unauthorized("Authentication required"))?;
 
-    // Get client and strategy from config
-    let config = state.config_manager.get();
-    let client = config
-        .clients
-        .iter()
-        .find(|c| c.id == auth_context.api_key_id)
-        .ok_or_else(|| ApiErrorResponse::unauthorized("Client not found"))?;
-
-    let strategy = config
-        .strategies
-        .iter()
-        .find(|s| s.id == client.strategy_id)
-        .ok_or_else(|| {
-            ApiErrorResponse::internal_error(format!("Strategy '{}' not found", client.strategy_id))
-        })?;
+    // Get enabled client and strategy
+    let (_client, strategy) = get_client_with_strategy(&state, &auth_context.api_key_id)?;
 
     // Get all models from provider registry
     let all_models = state
@@ -150,21 +138,8 @@ pub async fn get_model<B>(
         .get::<AuthContext>()
         .ok_or_else(|| ApiErrorResponse::unauthorized("Authentication required"))?;
 
-    // Get client and strategy from config
-    let config = state.config_manager.get();
-    let client = config
-        .clients
-        .iter()
-        .find(|c| c.id == auth_context.api_key_id)
-        .ok_or_else(|| ApiErrorResponse::unauthorized("Client not found"))?;
-
-    let strategy = config
-        .strategies
-        .iter()
-        .find(|s| s.id == client.strategy_id)
-        .ok_or_else(|| {
-            ApiErrorResponse::internal_error(format!("Strategy '{}' not found", client.strategy_id))
-        })?;
+    // Get enabled client and strategy
+    let (_client, strategy) = get_client_with_strategy(&state, &auth_context.api_key_id)?;
 
     // Special handling for localrouter/auto virtual model
     if model_id == "localrouter/auto" {
@@ -201,10 +176,10 @@ pub async fn get_model<B>(
         .await
         .map_err(|e| ApiErrorResponse::internal_error(format!("Failed to list models: {}", e)))?;
 
-    // Find the requested model
+    // Find the requested model (case-insensitive comparison for consistency with chat endpoint)
     let model_info = all_models
         .iter()
-        .find(|m| m.id == model_id)
+        .find(|m| m.id.eq_ignore_ascii_case(&model_id))
         .ok_or_else(|| ApiErrorResponse::not_found(format!("Model '{}' not found", model_id)))?;
 
     // Check if strategy allows access to this model
@@ -264,21 +239,8 @@ pub async fn get_model_pricing<B>(
         .get::<AuthContext>()
         .ok_or_else(|| ApiErrorResponse::unauthorized("Authentication required"))?;
 
-    // Get client and strategy from config
-    let config = state.config_manager.get();
-    let client = config
-        .clients
-        .iter()
-        .find(|c| c.id == auth_context.api_key_id)
-        .ok_or_else(|| ApiErrorResponse::unauthorized("Client not found"))?;
-
-    let strategy = config
-        .strategies
-        .iter()
-        .find(|s| s.id == client.strategy_id)
-        .ok_or_else(|| {
-            ApiErrorResponse::internal_error(format!("Strategy '{}' not found", client.strategy_id))
-        })?;
+    // Get enabled client and strategy
+    let (_client, strategy) = get_client_with_strategy(&state, &auth_context.api_key_id)?;
 
     // Check if strategy allows access to this model
     if !strategy.is_model_allowed(&provider, &model) {

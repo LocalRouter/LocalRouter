@@ -13,9 +13,11 @@ use axum::{
 use futures::{sink::SinkExt, stream::StreamExt};
 use serde_json::json;
 
+use crate::config::McpServerAccess;
 use crate::server::middleware::client_auth::ClientAuthContext;
 use crate::server::middleware::error::ApiErrorResponse;
 use crate::server::state::AppState;
+use super::helpers::get_enabled_client_from_manager;
 
 /// WebSocket upgrade handler for MCP notifications
 ///
@@ -68,27 +70,34 @@ pub async fn mcp_websocket_handler(
         }
     };
 
-    // Get client and validate
-    let client = match state.client_manager.get_client(&client_id) {
-        Some(client) => client,
-        None => {
-            return ApiErrorResponse::unauthorized("Client not found").into_response();
-        }
+    // Get enabled client
+    let client = match get_enabled_client_from_manager(&state, &client_id) {
+        Ok(client) => client,
+        Err(e) => return e.into_response(),
     };
 
-    if !client.enabled {
-        return ApiErrorResponse::forbidden("Client is disabled").into_response();
-    }
-
-    // Get allowed servers (IMPORTANT: empty list = NO ACCESS)
-    let allowed_servers = client.allowed_mcp_servers.clone();
-
-    if allowed_servers.is_empty() {
+    // Check MCP access mode
+    if !client.mcp_server_access.has_any_access() {
         return ApiErrorResponse::forbidden(
-            "Client has no MCP server access. Configure allowed_mcp_servers in client settings.",
+            "Client has no MCP server access. Configure mcp_server_access in client settings.",
         )
         .into_response();
     }
+
+    // Get allowed servers based on access mode
+    let all_server_ids: Vec<String> = state
+        .config_manager
+        .get()
+        .mcp_servers
+        .iter()
+        .map(|s| s.id.clone())
+        .collect();
+
+    let allowed_servers: Vec<String> = match &client.mcp_server_access {
+        McpServerAccess::None => vec![],
+        McpServerAccess::All => all_server_ids,
+        McpServerAccess::Specific(servers) => servers.clone(),
+    };
 
     tracing::info!(
         "WebSocket connection from client {} with access to {} server(s)",

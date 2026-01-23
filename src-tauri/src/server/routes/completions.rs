@@ -19,7 +19,9 @@ use crate::providers::{
     ChatMessage as ProviderChatMessage, ChatMessageContent,
     CompletionRequest as ProviderCompletionRequest,
 };
+use crate::router::UsageInfo;
 use crate::server::middleware::client_auth::ClientAuthContext;
+use super::helpers::get_enabled_client_from_manager;
 use crate::server::middleware::error::{ApiErrorResponse, ApiResult};
 use crate::server::state::{AppState, AuthContext, GenerationDetails};
 use crate::server::types::{
@@ -61,6 +63,9 @@ pub async fn completions(
 
     // Validate client provider access (if using client auth)
     validate_client_provider_access(&state, client_auth.as_ref().map(|e| &e.0), &request).await?;
+
+    // Check rate limits
+    check_rate_limits(&state, &auth, &request).await?;
 
     // Convert prompt to chat messages format
     let messages = convert_prompt_to_messages(&request.prompt)?;
@@ -124,6 +129,81 @@ fn validate_request(request: &CompletionRequest) -> ApiResult<()> {
                 ApiErrorResponse::bad_request("top_p must be between 0 and 1").with_param("top_p"),
             );
         }
+    }
+
+    // Validate n parameter
+    if let Some(n) = request.n {
+        if n == 0 {
+            return Err(ApiErrorResponse::bad_request("n must be at least 1").with_param("n"));
+        }
+        if n > 128 {
+            return Err(ApiErrorResponse::bad_request("n must be at most 128").with_param("n"));
+        }
+        if n > 1 && request.stream {
+            return Err(
+                ApiErrorResponse::bad_request("n > 1 is not supported with streaming")
+                    .with_param("n"),
+            );
+        }
+    }
+
+    // Validate frequency_penalty (OpenAI range: -2.0 to 2.0)
+    if let Some(freq_penalty) = request.frequency_penalty {
+        if !(-2.0..=2.0).contains(&freq_penalty) {
+            return Err(
+                ApiErrorResponse::bad_request("frequency_penalty must be between -2 and 2")
+                    .with_param("frequency_penalty"),
+            );
+        }
+    }
+
+    // Validate presence_penalty (OpenAI range: -2.0 to 2.0)
+    if let Some(pres_penalty) = request.presence_penalty {
+        if !(-2.0..=2.0).contains(&pres_penalty) {
+            return Err(
+                ApiErrorResponse::bad_request("presence_penalty must be between -2 and 2")
+                    .with_param("presence_penalty"),
+            );
+        }
+    }
+
+    Ok(())
+}
+
+/// Check rate limits before processing request
+async fn check_rate_limits(
+    state: &AppState,
+    auth: &AuthContext,
+    request: &CompletionRequest,
+) -> ApiResult<()> {
+    // Estimate usage for rate limit check (rough estimate)
+    let estimated_tokens = estimate_prompt_tokens(&request.prompt);
+    let max_output_tokens = request.max_tokens.unwrap_or(100);
+    let usage_estimate = UsageInfo {
+        input_tokens: estimated_tokens,
+        output_tokens: max_output_tokens as u64,
+        cost_usd: 0.0, // Can't estimate cost without knowing provider
+    };
+
+    let rate_limit_result = state
+        .rate_limiter
+        .check_api_key(&auth.api_key_id, &usage_estimate)
+        .await
+        .map_err(|e| ApiErrorResponse::internal_error(format!("Rate limit check failed: {}", e)))?;
+
+    if !rate_limit_result.allowed {
+        let mut error = ApiErrorResponse::rate_limited(format!(
+            "Rate limit exceeded: {}/{} used",
+            rate_limit_result.current_usage, rate_limit_result.limit
+        ));
+
+        if let Some(retry_after) = rate_limit_result.retry_after_secs {
+            error.error = error
+                .error
+                .with_code(format!("retry_after_{}", retry_after));
+        }
+
+        return Err(error);
     }
 
     Ok(())
@@ -292,7 +372,7 @@ async fn handle_non_streaming(
     let generation_details = GenerationDetails {
         id: generation_id,
         model: response.model.clone(),
-        provider: "router".to_string(), // Using router, not a specific provider
+        provider: response.provider.clone(), // Use actual provider, not "router"
         created_at,
         finish_reason: api_response
             .choices
@@ -336,15 +416,17 @@ async fn validate_client_provider_access(
         return Ok(());
     };
 
-    // Get the client to check allowed providers
-    let client = state
-        .client_manager
-        .get_client(&client_ctx.client_id)
-        .ok_or_else(|| ApiErrorResponse::unauthorized("Client not found"))?;
+    // Get enabled client
+    let client = get_enabled_client_from_manager(state, &client_ctx.client_id)?;
 
-    // If client is disabled, deny access
-    if !client.enabled {
-        return Err(ApiErrorResponse::forbidden("Client is disabled"));
+    // Special case: localrouter/auto is a virtual model that routes to actual providers
+    // The actual provider access will be checked by the router during auto-routing
+    if request.model == "localrouter/auto" {
+        tracing::debug!(
+            "Client {} using localrouter/auto - provider access will be checked during routing",
+            client.id
+        );
+        return Ok(());
     }
 
     // Extract provider from model string
@@ -372,8 +454,13 @@ async fn validate_client_provider_access(
         matching_model.provider.clone()
     };
 
-    // Check if provider is in allowed list
-    if !client.allowed_llm_providers.contains(&provider) {
+    // Check if provider is in allowed list (case-insensitive comparison)
+    let is_allowed = client
+        .allowed_llm_providers
+        .iter()
+        .any(|p| p.eq_ignore_ascii_case(&provider));
+
+    if !is_allowed {
         tracing::warn!(
             "Client {} attempted to access unauthorized LLM provider: {}",
             client.id,
@@ -462,9 +549,14 @@ async fn handle_streaming(
     let content_accumulator = Arc::new(Mutex::new(String::new())); // Track completion content
     let finish_reason = Arc::new(Mutex::new(String::from("stop")));
 
+    // Use a oneshot channel to signal stream completion instead of fixed delay
+    let (completion_tx, completion_rx) = tokio::sync::oneshot::channel::<()>();
+    let completion_tx = Arc::new(Mutex::new(Some(completion_tx)));
+
     // Clone for the stream.map closure
     let content_accumulator_map = content_accumulator.clone();
     let finish_reason_map = finish_reason.clone();
+    let completion_tx_map = completion_tx.clone();
 
     // Clone for tracking after stream completes
     let state_clone = state.clone();
@@ -480,14 +572,26 @@ async fn handle_streaming(
             match chunk_result {
                 Ok(provider_chunk) => {
                     // Track content for token estimation
-                    if let Some(choice) = provider_chunk.choices.first() {
+                    let is_done = if let Some(choice) = provider_chunk.choices.first() {
                         if let Some(content) = &choice.delta.content {
                             content_accumulator_map.lock().push_str(content);
                         }
 
-                        // Track finish reason
+                        // Track finish reason and check if stream is done
                         if let Some(reason) = &choice.finish_reason {
                             *finish_reason_map.lock() = reason.clone();
+                            true
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    };
+
+                    // Signal completion when stream is done
+                    if is_done {
+                        if let Some(tx) = completion_tx_map.lock().take() {
+                            let _ = tx.send(());
                         }
                     }
 
@@ -512,7 +616,19 @@ async fn handle_streaming(
                 }
                 Err(e) => {
                     tracing::error!("Error in streaming: {}", e);
-                    Ok(Event::default().data("[ERROR]"))
+                    // Signal completion on error as well
+                    if let Some(tx) = completion_tx_map.lock().take() {
+                        let _ = tx.send(());
+                    }
+                    // Return error in SSE format with actual error message
+                    let error_response = serde_json::json!({
+                        "error": {
+                            "message": format!("Streaming error: {}", e),
+                            "type": "server_error",
+                            "code": "streaming_error"
+                        }
+                    });
+                    Ok(Event::default().data(serde_json::to_string(&error_response).unwrap_or_else(|_| "[ERROR]".to_string())))
                 }
             }
         },
@@ -520,8 +636,11 @@ async fn handle_streaming(
 
     // Record generation details after stream completes
     tokio::spawn(async move {
-        // Wait a bit to ensure stream has completed and tokens were accumulated
-        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+        // Wait for stream completion signal with a timeout fallback
+        let _ = tokio::time::timeout(
+            tokio::time::Duration::from_secs(300), // 5 minute timeout for long completions
+            completion_rx
+        ).await;
 
         let completed_at = Instant::now();
         let completion_content = content_accumulator.lock().clone();
