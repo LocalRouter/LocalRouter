@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import {
-  AreaChart,
-  Area,
+  BarChart,
+  Bar,
   XAxis,
   YAxis,
   CartesianGrid,
@@ -235,7 +235,7 @@ export function StackedAreaChart({
       </div>
 
       <ResponsiveContainer width="100%" height={400}>
-        <AreaChart data={chartData}>
+        <BarChart data={chartData}>
           <CartesianGrid strokeDasharray="3 3" stroke={isDark ? '#4b5563' : '#e5e7eb'} />
           <XAxis
             dataKey="timestamp"
@@ -261,14 +261,11 @@ export function StackedAreaChart({
           />
           <Legend wrapperStyle={{ fontSize: '12px', color: isDark ? '#f3f4f6' : '#111827' }} />
           {data.datasets.map((dataset, i) => (
-            <Area
+            <Bar
               key={i}
-              type="monotone"
               dataKey={dataset.label}
               stackId="1"
-              stroke={colors[i % colors.length]}
               fill={colors[i % colors.length]}
-              fillOpacity={0.6}
               animationDuration={100}
             />
           ))}
@@ -288,7 +285,7 @@ export function StackedAreaChart({
               }}
             />
           ))}
-        </AreaChart>
+        </BarChart>
       </ResponsiveContainer>
     </div>
   )

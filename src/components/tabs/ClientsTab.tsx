@@ -15,7 +15,8 @@ interface Client {
   client_id: string
   enabled: boolean
   allowed_llm_providers: string[]
-  allowed_mcp_servers: string[]
+  mcp_access_mode: "none" | "all" | "specific"
+  mcp_servers: string[]
   created_at: string
   last_used: string | null
 }

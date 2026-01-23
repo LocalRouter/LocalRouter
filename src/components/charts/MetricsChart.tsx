@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import {
-  LineChart,
-  Line,
+  BarChart,
+  Bar,
   XAxis,
   YAxis,
   CartesianGrid,
@@ -194,7 +194,7 @@ export function MetricsChart({
       </div>
 
       <ResponsiveContainer width="100%" height={300}>
-        <LineChart data={chartData}>
+        <BarChart data={chartData}>
           <CartesianGrid strokeDasharray="3 3" stroke={isDark ? '#4b5563' : '#e5e7eb'} />
           <XAxis
             dataKey="timestamp"
@@ -219,13 +219,10 @@ export function MetricsChart({
           />
           <Legend wrapperStyle={{ fontSize: '12px', color: isDark ? '#f3f4f6' : '#111827' }} />
           {data.datasets.map((dataset, i) => (
-            <Line
+            <Bar
               key={i}
-              type="monotone"
               dataKey={dataset.label}
-              stroke={dataset.border_color || `hsl(${i * 60}, 70%, 50%)`}
-              strokeWidth={2}
-              dot={false}
+              fill={dataset.border_color || `hsl(${i * 60}, 70%, 50%)`}
               animationDuration={100}
             />
           ))}
@@ -245,7 +242,7 @@ export function MetricsChart({
               }}
             />
           ))}
-        </LineChart>
+        </BarChart>
       </ResponsiveContainer>
     </div>
   )

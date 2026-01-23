@@ -100,11 +100,8 @@ export const McpServerTemplates: React.FC<McpServerTemplatesProps> = ({ onSelect
   return (
     <div className="space-y-4">
       <div>
-        <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-2">
-          Quick Start Templates
-        </h3>
-        <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
-          Select a pre-configured template to get started quickly, or scroll down to create from scratch.
+        <p className="text-sm text-muted-foreground mb-4">
+          Select a pre-configured template to get started quickly.
         </p>
       </div>
 
@@ -161,14 +158,6 @@ export const McpServerTemplates: React.FC<McpServerTemplatesProps> = ({ onSelect
         ))}
       </div>
 
-      <div className="border-t border-gray-300 dark:border-gray-700 pt-4 mt-6">
-        <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-2">
-          Or Create From Scratch
-        </h3>
-        <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
-          Configure your own custom MCP server with specific settings.
-        </p>
-      </div>
     </div>
   )
 }

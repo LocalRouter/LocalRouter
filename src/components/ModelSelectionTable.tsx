@@ -4,9 +4,9 @@ export interface Model {
 }
 
 export interface ModelSelectionValue {
-  type: 'all' | 'custom'
-  all_provider_models?: string[]
-  individual_models?: [string, string][]
+  selected_all: boolean
+  selected_providers: string[]
+  selected_models: [string, string][]
 }
 
 interface ModelSelectionTableProps {
@@ -26,84 +26,147 @@ export default function ModelSelectionTable({ models, value, onChange }: ModelSe
   const providers = Object.keys(groupedModels).sort()
 
   // Determine if "All" is selected
-  const isAllSelected = value?.type === 'all'
+  const isAllSelected = value?.selected_all ?? true
 
   // Determine if a provider has all its models selected
   const isProviderSelected = (provider: string): boolean => {
     if (isAllSelected) return true
-    if (value?.type !== 'custom') return false
-    return value.all_provider_models?.includes(provider) || false
+    return value?.selected_providers?.some(p => p.toLowerCase() === provider.toLowerCase()) || false
   }
 
   // Determine if a specific model is selected
   const isModelSelected = (provider: string, modelId: string): boolean => {
     if (isAllSelected) return true
     if (isProviderSelected(provider)) return true
-    if (value?.type !== 'custom') return false
-    return value.individual_models?.some(([p, m]) => p === provider && m === modelId) || false
+    return value?.selected_models?.some(([p, m]) =>
+      p.toLowerCase() === provider.toLowerCase() && m.toLowerCase() === modelId.toLowerCase()
+    ) || false
   }
 
   // Handle "All" checkbox toggle
   const handleAllToggle = () => {
     if (isAllSelected) {
-      // Uncheck all - set to empty custom selection
+      // Uncheck all - keep existing selections but disable selected_all
       onChange({
-        type: 'custom',
-        all_provider_models: [],
-        individual_models: [],
+        selected_all: false,
+        selected_providers: value?.selected_providers || [],
+        selected_models: value?.selected_models || [],
       })
     } else {
       // Check all
-      onChange({ type: 'all' })
+      onChange({
+        selected_all: true,
+        selected_providers: value?.selected_providers || [],
+        selected_models: value?.selected_models || [],
+      })
     }
   }
 
   // Handle provider checkbox toggle
   const handleProviderToggle = (provider: string) => {
-    if (isAllSelected) return // Can't toggle providers when "All" is selected
+    if (isAllSelected) {
+      // Turn off selected_all and select all providers except this one
+      onChange({
+        selected_all: false,
+        selected_providers: providers.filter(p => p.toLowerCase() !== provider.toLowerCase()),
+        selected_models: [],
+      })
+      return
+    }
 
-    const currentProviders = value?.all_provider_models || []
-    const currentModels = value?.individual_models || []
+    const currentProviders = value?.selected_providers || []
+    const currentModels = value?.selected_models || []
+    const providerLower = provider.toLowerCase()
 
     if (isProviderSelected(provider)) {
-      // Uncheck provider - remove from all_provider_models
+      // Uncheck provider - remove from selected_providers
       onChange({
-        type: 'custom',
-        all_provider_models: currentProviders.filter(p => p !== provider),
-        individual_models: currentModels.filter(([p]) => p !== provider),
+        selected_all: false,
+        selected_providers: currentProviders.filter(p => p.toLowerCase() !== providerLower),
+        selected_models: currentModels,
       })
     } else {
-      // Check provider - add to all_provider_models and remove individual models from this provider
+      // Check provider - add to selected_providers and remove individual models from this provider
       onChange({
-        type: 'custom',
-        all_provider_models: [...currentProviders, provider],
-        individual_models: currentModels.filter(([p]) => p !== provider),
+        selected_all: false,
+        selected_providers: [...currentProviders, provider],
+        selected_models: currentModels.filter(([p]) => p.toLowerCase() !== providerLower),
       })
     }
   }
 
   // Handle individual model checkbox toggle
   const handleModelToggle = (provider: string, modelId: string) => {
-    if (isAllSelected) return // Can't toggle models when "All" is selected
-    if (isProviderSelected(provider)) return // Can't toggle individual models when provider is selected
+    const providerLower = provider.toLowerCase()
+    const modelLower = modelId.toLowerCase()
 
-    const currentProviders = value?.all_provider_models || []
-    const currentModels = value?.individual_models || []
+    if (isAllSelected) {
+      // Turn off selected_all and select everything except this model
+      const otherProviders = providers.filter(p => p.toLowerCase() !== providerLower)
+      const providerModels = groupedModels[provider] || []
+      const otherModels = providerModels
+        .filter(m => m.id.toLowerCase() !== modelLower)
+        .map(m => [provider, m.id] as [string, string])
+
+      onChange({
+        selected_all: false,
+        selected_providers: otherProviders,
+        selected_models: otherModels,
+      })
+      return
+    }
+
+    if (isProviderSelected(provider)) {
+      // Demote provider to individual models minus this one
+      const providerModels = groupedModels[provider] || []
+      const otherModels = providerModels
+        .filter(m => m.id.toLowerCase() !== modelLower)
+        .map(m => [provider, m.id] as [string, string])
+
+      onChange({
+        selected_all: false,
+        selected_providers: (value?.selected_providers || []).filter(p => p.toLowerCase() !== providerLower),
+        selected_models: [...(value?.selected_models || []), ...otherModels],
+      })
+      return
+    }
+
+    const currentProviders = value?.selected_providers || []
+    const currentModels = value?.selected_models || []
 
     if (isModelSelected(provider, modelId)) {
       // Uncheck model
       onChange({
-        type: 'custom',
-        all_provider_models: currentProviders,
-        individual_models: currentModels.filter(([p, m]) => !(p === provider && m === modelId)),
+        selected_all: false,
+        selected_providers: currentProviders,
+        selected_models: currentModels.filter(([p, m]) =>
+          !(p.toLowerCase() === providerLower && m.toLowerCase() === modelLower)
+        ),
       })
     } else {
       // Check model
-      onChange({
-        type: 'custom',
-        all_provider_models: currentProviders,
-        individual_models: [...currentModels, [provider, modelId]],
-      })
+      const newSelectedModels = [...currentModels, [provider, modelId] as [string, string]]
+
+      // Check if all models from this provider are now selected - promote to provider level
+      const providerModels = groupedModels[provider] || []
+      const selectedFromProvider = newSelectedModels.filter(
+        ([p]) => p.toLowerCase() === providerLower
+      ).length
+
+      if (selectedFromProvider === providerModels.length) {
+        // Promote to provider-level selection
+        onChange({
+          selected_all: false,
+          selected_providers: [...currentProviders, provider],
+          selected_models: newSelectedModels.filter(([p]) => p.toLowerCase() !== providerLower),
+        })
+      } else {
+        onChange({
+          selected_all: false,
+          selected_providers: currentProviders,
+          selected_models: newSelectedModels,
+        })
+      }
     }
   }
 
@@ -126,7 +189,14 @@ export default function ModelSelectionTable({ models, value, onChange }: ModelSe
                   onChange={handleAllToggle}
                   className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500 cursor-pointer"
                 />
-                <span className="ml-3 font-semibold text-gray-900 dark:text-gray-100">All Providers & Models</span>
+                <span className="ml-3 font-semibold text-gray-900 dark:text-gray-100">
+                  All Providers & Models
+                  {isAllSelected && (
+                    <span className="ml-2 text-xs text-blue-600 dark:text-blue-400 font-normal">
+                      (including future models)
+                    </span>
+                  )}
+                </span>
               </label>
             </td>
           </tr>
@@ -137,17 +207,16 @@ export default function ModelSelectionTable({ models, value, onChange }: ModelSe
             const providerModels = groupedModels[provider]
 
             return (
-              <>
+              <div key={provider}>
                 {/* Provider row */}
-                <tr key={provider} className={`border-b border-gray-200 dark:border-gray-700 ${isAllSelected ? 'bg-gray-100 dark:bg-gray-800' : 'hover:bg-gray-50 dark:hover:bg-gray-800'}`}>
+                <tr className={`border-b border-gray-200 dark:border-gray-700 ${isAllSelected ? 'bg-gray-100 dark:bg-gray-800' : 'hover:bg-gray-50 dark:hover:bg-gray-800'}`}>
                   <td className="px-4 py-2 pl-8">
-                    <label className={`flex items-center ${isAllSelected ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}>
+                    <label className={`flex items-center ${isAllSelected ? 'opacity-60' : ''} cursor-pointer`}>
                       <input
                         type="checkbox"
                         checked={providerSelected}
                         onChange={() => handleProviderToggle(provider)}
-                        disabled={isAllSelected}
-                        className={`w-4 h-4 text-blue-600 rounded focus:ring-blue-500 ${isAllSelected ? 'cursor-not-allowed' : 'cursor-pointer'}`}
+                        className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500 cursor-pointer"
                       />
                       <span className="ml-3 font-medium text-gray-800 dark:text-gray-200">{provider}</span>
                     </label>
@@ -157,21 +226,21 @@ export default function ModelSelectionTable({ models, value, onChange }: ModelSe
                 {/* Model rows */}
                 {providerModels.map((model) => {
                   const modelSelected = isModelSelected(provider, model.id)
-                  const disabled = isAllSelected || providerSelected
+                  const canToggle = !isAllSelected && !providerSelected
 
                   return (
                     <tr
                       key={`${provider}/${model.id}`}
-                      className={`border-b border-gray-100 dark:border-gray-700 ${disabled ? 'bg-gray-50 dark:bg-gray-800/50' : 'hover:bg-gray-50 dark:hover:bg-gray-800'}`}
+                      className={`border-b border-gray-100 dark:border-gray-700 ${!canToggle ? 'bg-gray-50 dark:bg-gray-800/50' : 'hover:bg-gray-50 dark:hover:bg-gray-800'}`}
                     >
                       <td className="px-4 py-2 pl-16">
-                        <label className={`flex items-center ${disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}>
+                        <label className={`flex items-center ${!canToggle ? 'opacity-50' : ''} cursor-pointer`}>
                           <input
                             type="checkbox"
                             checked={modelSelected}
                             onChange={() => handleModelToggle(provider, model.id)}
-                            disabled={disabled}
-                            className={`w-4 h-4 text-blue-600 rounded focus:ring-blue-500 ${disabled ? 'cursor-not-allowed' : 'cursor-pointer'}`}
+                            disabled={!canToggle}
+                            className={`w-4 h-4 text-blue-600 rounded focus:ring-blue-500 ${!canToggle ? 'cursor-not-allowed' : 'cursor-pointer'}`}
                           />
                           <span className="ml-3 text-gray-700 dark:text-gray-300 text-sm">{model.id}</span>
                         </label>
@@ -179,7 +248,7 @@ export default function ModelSelectionTable({ models, value, onChange }: ModelSe
                     </tr>
                   )
                 })}
-              </>
+              </div>
             )
           })}
         </tbody>

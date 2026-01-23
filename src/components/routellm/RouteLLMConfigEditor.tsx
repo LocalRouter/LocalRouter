@@ -77,24 +77,19 @@ export const RouteLLMConfigEditor: React.FC<RouteLLMConfigEditorProps> = ({
     }
   };
 
-  const addModel = (list: 'strong' | 'weak', provider: string, model: string) => {
-    const models = list === 'strong' ? config.strong_models : config.weak_models;
-    if (!models.some(([p, m]) => p === provider && m === model)) {
+  const addWeakModel = (provider: string, model: string) => {
+    if (!config.weak_models.some(([p, m]) => p === provider && m === model)) {
       onChange({
         ...config,
-        [list === 'strong' ? 'strong_models' : 'weak_models']: [
-          ...models,
-          [provider, model] as [string, string],
-        ],
+        weak_models: [...config.weak_models, [provider, model] as [string, string]],
       });
     }
   };
 
-  const removeModel = (list: 'strong' | 'weak', index: number) => {
-    const models = list === 'strong' ? config.strong_models : config.weak_models;
+  const removeWeakModel = (index: number) => {
     onChange({
       ...config,
-      [list === 'strong' ? 'strong_models' : 'weak_models']: models.filter((_, i) => i !== index),
+      weak_models: config.weak_models.filter((_, i) => i !== index),
     });
   };
 
@@ -191,19 +186,10 @@ export const RouteLLMConfigEditor: React.FC<RouteLLMConfigEditorProps> = ({
 
           {/* Model Selection */}
           <div className="space-y-4">
-            <div>
-              <h4 className="font-semibold text-gray-900 dark:text-gray-100 mb-2">
-                Strong Models (High Quality)
-              </h4>
-              <p className="text-xs text-gray-600 dark:text-gray-400 mb-2">
-                Used when prompts are complex or require high-quality output
+            <div className="p-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-700 rounded-lg">
+              <p className="text-sm text-blue-800 dark:text-blue-200">
+                <strong>Strong models:</strong> Prioritized models from Auto-Routing are used when prompts are complex.
               </p>
-              <ModelList
-                models={config.strong_models}
-                availableModels={availableModels}
-                onAdd={(provider, model) => addModel('strong', provider, model)}
-                onRemove={(index) => removeModel('strong', index)}
-              />
             </div>
 
             <div>
@@ -216,8 +202,8 @@ export const RouteLLMConfigEditor: React.FC<RouteLLMConfigEditorProps> = ({
               <ModelList
                 models={config.weak_models}
                 availableModels={availableModels}
-                onAdd={(provider, model) => addModel('weak', provider, model)}
-                onRemove={(index) => removeModel('weak', index)}
+                onAdd={addWeakModel}
+                onRemove={removeWeakModel}
               />
             </div>
           </div>

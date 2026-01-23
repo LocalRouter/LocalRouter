@@ -90,16 +90,16 @@ export default function ProviderDetailPage({
       // Filter API keys that use this provider
       const filteredKeys = keys.filter((key) => {
         if (!key.model_selection) return false
-        if (key.model_selection.type === 'all') return true
-        if (key.model_selection.type === 'custom') {
-          const providers = key.model_selection.all_provider_models || []
-          const individualModels = key.model_selection.individual_models || []
-          // Check if this provider is in the list
-          if (providers.includes(instanceName)) return true
-          // Check if any individual models from this provider are selected
-          return individualModels.some(([provider]: [string, string]) => provider === instanceName)
-        }
-        return false
+        // If selected_all is true, all providers are allowed
+        if (key.model_selection.selected_all) return true
+        // Check if this provider is in the selected_providers list
+        const providers = key.model_selection.selected_providers || []
+        if (providers.some((p: string) => p.toLowerCase() === instanceName.toLowerCase())) return true
+        // Check if any individual models from this provider are selected
+        const individualModels = key.model_selection.selected_models || []
+        return individualModels.some(([provider]: [string, string]) =>
+          provider.toLowerCase() === instanceName.toLowerCase()
+        )
       })
       setApiKeys(filteredKeys)
     } catch (error) {

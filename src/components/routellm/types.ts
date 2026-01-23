@@ -24,7 +24,6 @@ export interface RouteLLMTestResult {
 export interface RouteLLMConfig {
   enabled: boolean;
   threshold: number;
-  strong_models: [string, string][];
   weak_models: [string, string][];
 }
 

@@ -136,7 +136,6 @@ export default function StrategyDetailPage({
             config={strategy?.auto_config?.routellm_config || {
               enabled: false,
               threshold: 0.3,
-              strong_models: [],
               weak_models: [],
             }}
             onChange={async (routellmConfig: RouteLLMConfig) => {

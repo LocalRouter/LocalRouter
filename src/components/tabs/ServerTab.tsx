@@ -22,7 +22,7 @@ interface NetworkInterface {
 
 interface TrayGraphSettings {
   enabled: boolean
-  interval_secs: number
+  refresh_rate_secs: number
 }
 
 export default function ServerTab() {
@@ -39,7 +39,7 @@ export default function ServerTab() {
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false)
   const [trayGraphSettings, setTrayGraphSettings] = useState<TrayGraphSettings>({
     enabled: false,
-    interval_secs: 2,
+    refresh_rate_secs: 10,
   })
   const [isUpdatingTrayGraph, setIsUpdatingTrayGraph] = useState(false)
   const [routellmStatus, setRouteLLMStatus] = useState<RouteLLMStatus | null>(null)
@@ -182,7 +182,7 @@ export default function ServerTab() {
     try {
       await invoke('update_tray_graph_settings', {
         enabled: trayGraphSettings.enabled,
-        intervalSecs: trayGraphSettings.interval_secs,
+        refreshRateSecs: trayGraphSettings.refresh_rate_secs,
       })
 
       setFeedback({ type: 'success', message: 'Tray graph settings updated successfully!' })
@@ -543,22 +543,19 @@ export default function ServerTab() {
           {trayGraphSettings.enabled && (
             <>
               <Select
-                label="Update Interval (Time per Pixel)"
-                value={trayGraphSettings.interval_secs}
+                label="Refresh Rate"
+                value={trayGraphSettings.refresh_rate_secs}
                 onChange={(e) =>
                   setTrayGraphSettings({
                     ...trayGraphSettings,
-                    interval_secs: parseInt(e.target.value),
+                    refresh_rate_secs: parseInt(e.target.value),
                   })
                 }
-                helperText={`Each pixel = ${trayGraphSettings.interval_secs}s | Total window = ${calculateTimeWindow(trayGraphSettings.interval_secs)}`}
+                helperText={`Window: ${calculateTimeWindow(trayGraphSettings.refresh_rate_secs)}`}
               >
-                <option value="1">1 second/pixel (30 second window)</option>
-                <option value="2">2 seconds/pixel (1 minute window)</option>
-                <option value="5">5 seconds/pixel (2.5 minute window)</option>
-                <option value="10">10 seconds/pixel (5 minute window)</option>
-                <option value="30">30 seconds/pixel (15 minute window)</option>
-                <option value="60">60 seconds/pixel (30 minute window)</option>
+                <option value="1">Fast (1s refresh, 30s window)</option>
+                <option value="10">Medium (10s refresh, 5m window)</option>
+                <option value="60">Slow (60s refresh, 30m window)</option>
               </Select>
 
               {/* Info Box */}

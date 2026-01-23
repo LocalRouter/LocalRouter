@@ -11,9 +11,9 @@ export interface Strategy {
   name: string
   parent: string | null
   allowed_models: {
-    type: 'all' | 'custom'
-    all_provider_models?: string[]
-    individual_models?: [string, string][]
+    selected_all: boolean
+    selected_providers: string[]
+    selected_models: [string, string][]
   }
   auto_config: AutoModelConfig | null
   rate_limits: StrategyRateLimit[]
@@ -26,7 +26,6 @@ export interface AutoModelConfig {
   routellm_config?: {
     enabled: boolean
     threshold: number
-    strong_models: [string, string][]
     weak_models: [string, string][]
   }
 }
@@ -56,7 +55,7 @@ export default function StrategyConfigEditor({
     setLoading(true)
     try {
       const [strategyData, modelsData] = await Promise.all([
-        invoke<Strategy>('get_strategy', { strategy_id: strategyId }),
+        invoke<Strategy>('get_strategy', { strategyId }),
         invoke<any[]>('list_all_models'),
       ])
 
@@ -75,11 +74,11 @@ export default function StrategyConfigEditor({
     setSaving(true)
     try {
       await invoke('update_strategy', {
-        strategy_id: strategy.id,
+        strategyId: strategy.id,
         name: updates.name !== undefined ? updates.name : null,
-        allowed_models: updates.allowed_models || null,
-        auto_config: updates.auto_config !== undefined ? updates.auto_config : null,
-        rate_limits: updates.rate_limits || null,
+        allowedModels: updates.allowed_models || null,
+        autoConfig: updates.auto_config !== undefined ? updates.auto_config : null,
+        rateLimits: updates.rate_limits || null,
       })
 
       // Reload strategy to get updated state

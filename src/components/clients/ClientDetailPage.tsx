@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
 import { invoke } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
 import Card from '../ui/Card'
 import Button from '../ui/Button'
 import Badge from '../ui/Badge'
@@ -48,6 +49,8 @@ interface ClientDetailPageProps {
   onBack: () => void
 }
 
+type McpAccessMode = 'none' | 'all' | 'specific'
+
 interface Client {
   id: string
   name: string
@@ -55,7 +58,8 @@ interface Client {
   enabled: boolean
   strategy_id: string
   allowed_llm_providers: string[]
-  allowed_mcp_servers: string[]
+  mcp_access_mode: McpAccessMode
+  mcp_servers: string[]
   mcp_deferred_loading: boolean
   created_at: string
   last_used: string | null
@@ -123,12 +127,33 @@ export default function ClientDetailPage({ clientId, initialTab, initialRoutingM
     loadStrategies()
   }, [clientId])
 
+  // Listen for clients-changed events to refresh data
+  useEffect(() => {
+    const unsubscribe = listen('clients-changed', () => {
+      loadClientData()
+    })
+
+    return () => {
+      unsubscribe.then((fn) => fn())
+    }
+  }, [clientId])
+
+  // Helper to check if client has MCP access
+  const hasAnyMcpAccess = (c: Client | null) => c && c.mcp_access_mode !== 'none'
+
+  // Helper to check if client can access a specific server
+  const canAccessServer = (c: Client, serverId: string) => {
+    if (c.mcp_access_mode === 'all') return true
+    if (c.mcp_access_mode === 'specific') return c.mcp_servers.includes(serverId)
+    return false
+  }
+
   // Load token stats when MCP tab is active
   useEffect(() => {
-    if (activeTab === 'mcp' && client && client.allowed_mcp_servers.length > 0) {
+    if (activeTab === 'mcp' && client && hasAnyMcpAccess(client)) {
       loadTokenStats()
     }
-  }, [activeTab, client?.allowed_mcp_servers.length])
+  }, [activeTab, client?.mcp_access_mode, client?.mcp_servers?.length])
 
   // Update active tab when prop changes (e.g., from system tray)
   useEffect(() => {
@@ -283,6 +308,28 @@ export default function ClientDetailPage({ clientId, initialTab, initialRoutingM
     }
   }
 
+  const handleSetMcpAccessMode = async (mode: McpAccessMode) => {
+    if (!client) return
+
+    try {
+      // When switching to specific mode, preserve any existing servers
+      const servers = mode === 'specific' && client.mcp_access_mode !== 'specific'
+        ? [] // Start with empty list when switching TO specific
+        : client.mcp_servers
+
+      await invoke('set_client_mcp_access', {
+        clientId: client.client_id,
+        mode,
+        servers,
+      })
+
+      await loadClientData()
+    } catch (error) {
+      console.error('Failed to set MCP access mode:', error)
+      alert(`Error updating MCP access mode: ${error}`)
+    }
+  }
+
   const copyToClipboard = async (text: string, label: string) => {
     try {
       await navigator.clipboard.writeText(text)
@@ -326,8 +373,9 @@ export default function ClientDetailPage({ clientId, initialTab, initialRoutingM
     try {
       await invoke('update_client_available_models', {
         clientId: client?.client_id,
-        allProviderModels: selection?.all_provider_models || [],
-        individualModels: selection?.individual_models || [],
+        selectedAll: selection?.selected_all ?? true,
+        selectedProviders: selection?.selected_providers || [],
+        selectedModels: selection?.selected_models || [],
       })
       console.log('Model selection changed:', selection)
     } catch (error) {
@@ -516,7 +564,7 @@ export default function ClientDetailPage({ clientId, initialTab, initialRoutingM
               )}
 
               {/* MCP Endpoints */}
-              {client.allowed_mcp_servers.length > 0 && mcpServers.length > 0 && (
+              {hasAnyMcpAccess(client) && mcpServers.length > 0 && (
                 <div>
                   <label className="block text-sm font-medium mb-2">MCP Endpoints</label>
                   <div className="space-y-2">
@@ -539,11 +587,11 @@ export default function ClientDetailPage({ clientId, initialTab, initialRoutingM
                     {/* Individual Proxies */}
                     <details className="bg-gray-800 dark:bg-gray-800 rounded p-3">
                       <summary className="text-xs font-medium text-gray-400 dark:text-gray-500 cursor-pointer">
-                        Individual Server Proxies ({client.allowed_mcp_servers.length} servers)
+                        Individual Server Proxies ({client.mcp_access_mode === 'all' ? 'all' : client.mcp_servers.length} servers)
                       </summary>
                       <div className="mt-2 space-y-2">
                         {mcpServers
-                          .filter(server => client.allowed_mcp_servers.includes(server.id))
+                          .filter(server => canAccessServer(client, server.id))
                           .map(server => (
                             <div key={server.id} className="flex items-center justify-between pl-2">
                               <code className="text-xs text-gray-300 dark:text-gray-400 font-mono">{server.proxy_url}</code>
@@ -561,7 +609,7 @@ export default function ClientDetailPage({ clientId, initialTab, initialRoutingM
                 </div>
               )}
 
-              {client.allowed_llm_providers.length === 0 && client.allowed_mcp_servers.length === 0 && (
+              {client.allowed_llm_providers.length === 0 && !hasAnyMcpAccess(client) && (
                 <div className="p-4 bg-yellow-900/20 dark:bg-yellow-900/30 border border-yellow-700 dark:border-yellow-600 rounded">
                   <p className="text-sm text-yellow-300 dark:text-yellow-400">
                     No LLM providers or MCP servers configured for this client. Configure access in the Models or MCP tabs.
@@ -817,7 +865,7 @@ export default function ClientDetailPage({ clientId, initialTab, initialRoutingM
       content: (
         <div className="space-y-6">
           {/* Token Statistics - Show First */}
-          {client.allowed_mcp_servers.length > 0 && (
+          {hasAnyMcpAccess(client) && (
             <Card>
               <div className="p-6 space-y-4">
                 <div className="flex items-center justify-between">
@@ -982,7 +1030,7 @@ export default function ClientDetailPage({ clientId, initialTab, initialRoutingM
 
                   <div>
                     <label className="block text-sm font-medium mb-2">Accessible MCP Server URLs</label>
-                    {client.allowed_mcp_servers.length === 0 ? (
+                    {!hasAnyMcpAccess(client) ? (
                       <p className="text-sm text-gray-400 dark:text-gray-500">No MCP servers granted access yet. Add servers below.</p>
                     ) : (
                       <div className="space-y-3">
@@ -1009,7 +1057,7 @@ export default function ClientDetailPage({ clientId, initialTab, initialRoutingM
                         <div className="space-y-2">
                           <p className="text-xs font-medium text-gray-400 dark:text-gray-500">Individual Server Proxies</p>
                           {mcpServers
-                            .filter(server => client.allowed_mcp_servers.includes(server.id))
+                            .filter(server => canAccessServer(client, server.id))
                             .map(server => (
                               <div key={server.id} className="bg-gray-800 dark:bg-gray-800 rounded p-3">
                                 <div className="flex items-center justify-between mb-1">
@@ -1148,7 +1196,7 @@ export default function ClientDetailPage({ clientId, initialTab, initialRoutingM
 
                   <div>
                     <label className="block text-sm font-medium mb-2">Accessible MCP Server URLs</label>
-                    {client.allowed_mcp_servers.length === 0 ? (
+                    {!hasAnyMcpAccess(client) ? (
                       <p className="text-sm text-gray-400 dark:text-gray-500">No MCP servers granted access yet. Add servers below.</p>
                     ) : (
                       <div className="space-y-3">
@@ -1175,7 +1223,7 @@ export default function ClientDetailPage({ clientId, initialTab, initialRoutingM
                         <div className="space-y-2">
                           <p className="text-xs font-medium text-gray-400 dark:text-gray-500">Individual Server Proxies</p>
                           {mcpServers
-                            .filter(server => client.allowed_mcp_servers.includes(server.id))
+                            .filter(server => canAccessServer(client, server.id))
                             .map(server => (
                               <div key={server.id} className="bg-gray-800 dark:bg-gray-800 rounded p-3">
                                 <div className="flex items-center justify-between mb-1">
@@ -1207,14 +1255,47 @@ export default function ClientDetailPage({ clientId, initialTab, initialRoutingM
                 Select which MCP servers this client can access.
               </p>
 
+              {/* Access Mode Selection */}
+              <div className="mb-4">
+                <label className="block text-sm font-medium mb-2">Access Mode</label>
+                <div className="flex gap-2">
+                  <Button
+                    variant={client.mcp_access_mode === 'none' ? 'primary' : 'secondary'}
+                    onClick={() => handleSetMcpAccessMode('none')}
+                  >
+                    None
+                  </Button>
+                  <Button
+                    variant={client.mcp_access_mode === 'all' ? 'primary' : 'secondary'}
+                    onClick={() => handleSetMcpAccessMode('all')}
+                  >
+                    All Servers
+                  </Button>
+                  <Button
+                    variant={client.mcp_access_mode === 'specific' ? 'primary' : 'secondary'}
+                    onClick={() => handleSetMcpAccessMode('specific')}
+                  >
+                    Specific Servers
+                  </Button>
+                </div>
+              </div>
+
               {mcpServers.length === 0 ? (
                 <div className="p-4 bg-gray-800 dark:bg-gray-800 rounded text-center">
                   <p className="text-gray-400 dark:text-gray-500 text-sm">No MCP servers configured</p>
                 </div>
+              ) : client.mcp_access_mode === 'none' ? (
+                <div className="p-4 bg-gray-800 dark:bg-gray-800 rounded text-center">
+                  <p className="text-gray-400 dark:text-gray-500 text-sm">Client has no MCP access. Select &quot;All Servers&quot; or &quot;Specific Servers&quot; to grant access.</p>
+                </div>
+              ) : client.mcp_access_mode === 'all' ? (
+                <div className="p-4 bg-green-900/20 dark:bg-green-900/30 border border-green-700 dark:border-green-600 rounded text-center">
+                  <p className="text-green-300 dark:text-green-400 text-sm">Client has access to all {mcpServers.length} MCP servers.</p>
+                </div>
               ) : (
                 <div className="space-y-2">
                   {mcpServers.map((server) => {
-                    const hasAccess = client.allowed_mcp_servers.includes(server.id)
+                    const hasAccess = canAccessServer(client, server.id)
                     return (
                       <div
                         key={server.id}
