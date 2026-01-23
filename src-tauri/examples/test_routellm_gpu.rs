@@ -14,9 +14,9 @@ fn main() {
     println!("RouteLLM GPU Performance Test");
     println!("================================================\n");
 
-    // Set up paths
-    let home = std::env::var("HOME").expect("HOME not set");
-    let routellm_dir = PathBuf::from(home).join(".localrouter-dev/routellm");
+    // Set up paths (cross-platform)
+    let home = dirs::home_dir().expect("Could not determine home directory");
+    let routellm_dir = home.join(".localrouter-dev/routellm");
     let model_path = routellm_dir.join("model");
     let tokenizer_path = routellm_dir.join("tokenizer");
 

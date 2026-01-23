@@ -54,7 +54,11 @@ mod integration_tests {
         let meta = metadata();
         assert_eq!(meta.api_version, "v1");
         // Model count varies as OpenRouter updates their catalog
-        assert!(meta.total_models > 300, "Expected at least 300 models, got {}", meta.total_models);
+        assert!(
+            meta.total_models > 300,
+            "Expected at least 300 models, got {}",
+            meta.total_models
+        );
         assert!(meta.fetch_timestamp > 0);
 
         // Fetch date should be recent (within last 365 days)

@@ -94,6 +94,12 @@ impl OAuthStorage {
                 .map_err(|e| AppError::Storage(format!("Failed to set file permissions: {}", e)))?;
         }
 
+        // Note: On Windows, file permissions work differently (ACLs).
+        // Windows files are already restricted to the current user by default
+        // when created in the user's APPDATA directory, so no additional
+        // permission setting is needed. The keychain is the primary secure
+        // storage method; this file-based storage is a fallback.
+
         Ok(())
     }
 
