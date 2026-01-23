@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react"
+import { useState, useEffect, useCallback } from "react"
 import { Search, Play, RefreshCw, ChevronRight, AlertCircle, CheckCircle2 } from "lucide-react"
 import { Button } from "@/components/ui/Button"
 import { Input } from "@/components/ui/Input"
@@ -7,16 +7,7 @@ import { Badge } from "@/components/ui/Badge"
 import { Textarea } from "@/components/ui/textarea"
 import { Label } from "@/components/ui/label"
 import { cn } from "@/lib/utils"
-
-interface Tool {
-  name: string
-  description?: string
-  inputSchema?: {
-    type: string
-    properties?: Record<string, SchemaProperty>
-    required?: string[]
-  }
-}
+import type { McpClientWrapper, Tool } from "@/lib/mcp-client"
 
 interface SchemaProperty {
   type: string
@@ -27,18 +18,12 @@ interface SchemaProperty {
 }
 
 interface ToolsPanelProps {
-  serverPort: number | null
-  clientToken: string | null
-  isGateway: boolean
-  selectedServer: string
+  mcpClient: McpClientWrapper | null
   isConnected: boolean
 }
 
 export function ToolsPanel({
-  serverPort,
-  clientToken,
-  isGateway,
-  selectedServer,
+  mcpClient,
   isConnected,
 }: ToolsPanelProps) {
   const [tools, setTools] = useState<Tool[]>([])
@@ -51,42 +36,15 @@ export function ToolsPanel({
   const [result, setResult] = useState<{ success: boolean; data: unknown } | null>(null)
   const [error, setError] = useState<string | null>(null)
 
-  // Fetch tools list using JSON-RPC
-  const fetchTools = async () => {
-    if (!serverPort || !clientToken) return
+  // Fetch tools list using MCP SDK
+  const fetchTools = useCallback(async () => {
+    if (!mcpClient || !isConnected) return
 
     setIsLoading(true)
     setError(null)
 
     try {
-      const endpoint = isGateway
-        ? `http://localhost:${serverPort}/`
-        : `http://localhost:${serverPort}/mcp/${selectedServer}`
-
-      const response = await fetch(endpoint, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${clientToken}`,
-        },
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          method: "tools/list",
-          params: {},
-          id: Date.now(),
-        }),
-      })
-
-      if (!response.ok) {
-        const errorText = await response.text()
-        throw new Error(`Failed to fetch tools: ${response.status} - ${errorText}`)
-      }
-
-      const data = await response.json()
-      if (data.error) {
-        throw new Error(data.error.message || "JSON-RPC error")
-      }
-      const toolsList = data.result?.tools || []
+      const toolsList = await mcpClient.listTools()
       setTools(toolsList)
       setFilteredTools(toolsList)
     } catch (err) {
@@ -94,21 +52,21 @@ export function ToolsPanel({
     } finally {
       setIsLoading(false)
     }
-  }
+  }, [mcpClient, isConnected])
 
   useEffect(() => {
-    if (isConnected) {
+    if (isConnected && mcpClient) {
       fetchTools()
     } else {
       setTools([])
       setFilteredTools([])
       setSelectedTool(null)
     }
-  }, [isConnected, serverPort, clientToken, isGateway, selectedServer])
+  }, [isConnected, mcpClient, fetchTools])
 
-  // Filter tools based on search
+  // Filter tools by search query
   useEffect(() => {
-    if (!searchQuery.trim()) {
+    if (!searchQuery) {
       setFilteredTools(tools)
     } else {
       const query = searchQuery.toLowerCase()
@@ -122,84 +80,48 @@ export function ToolsPanel({
     }
   }, [searchQuery, tools])
 
-  // Reset form when tool changes
-  useEffect(() => {
-    if (selectedTool) {
-      const defaults: Record<string, unknown> = {}
-      const props = selectedTool.inputSchema?.properties || {}
-      for (const [key, prop] of Object.entries(props)) {
-        if (prop.default !== undefined) {
-          defaults[key] = prop.default
-        }
-      }
-      setFormValues(defaults)
-      setResult(null)
-    }
-  }, [selectedTool])
-
-  const handleExecute = async () => {
-    if (!selectedTool || !serverPort || !clientToken) return
+  // Execute tool using MCP SDK
+  const executeTool = async () => {
+    if (!mcpClient || !selectedTool) return
 
     setIsExecuting(true)
     setResult(null)
     setError(null)
 
     try {
-      const endpoint = isGateway
-        ? `http://localhost:${serverPort}/`
-        : `http://localhost:${serverPort}/mcp/${selectedServer}`
-
-      const response = await fetch(endpoint, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${clientToken}`,
-        },
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          method: "tools/call",
-          params: {
-            name: selectedTool.name,
-            arguments: formValues,
-          },
-          id: Date.now(),
-        }),
-      })
-
-      if (!response.ok) {
-        const errorText = await response.text()
-        throw new Error(`Tool execution failed: ${response.status} - ${errorText}`)
-      }
-
-      const data = await response.json()
-      if (data.error) {
-        setResult({ success: false, data: data.error.message || "JSON-RPC error" })
-      } else {
-        const resultData = data.result
-        setResult({ success: !resultData?.isError, data: resultData?.content || resultData })
-      }
-    } catch (err) {
+      const response = await mcpClient.callTool(selectedTool.name, formValues)
       setResult({
-        success: false,
-        data: err instanceof Error ? err.message : "Execution failed",
+        success: !response.isError,
+        data: response.content,
       })
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to execute tool")
     } finally {
       setIsExecuting(false)
     }
   }
 
-  const renderFormField = (name: string, prop: SchemaProperty) => {
-    const value = formValues[name]
+  const handleToolSelect = (tool: Tool) => {
+    setSelectedTool(tool)
+    setFormValues({})
+    setResult(null)
+    setError(null)
+  }
 
-    if (prop.enum) {
+  const renderFormField = (name: string, schema: SchemaProperty) => {
+    const value = formValues[name] ?? schema.default ?? ""
+
+    if (schema.enum) {
       return (
         <select
-          className="w-full p-2 border rounded-md bg-background"
-          value={value as string || ""}
-          onChange={(e) => setFormValues({ ...formValues, [name]: e.target.value })}
+          className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm"
+          value={String(value)}
+          onChange={(e) =>
+            setFormValues((prev) => ({ ...prev, [name]: e.target.value }))
+          }
         >
           <option value="">Select...</option>
-          {prop.enum.map((opt) => (
+          {schema.enum.map((opt) => (
             <option key={opt} value={opt}>
               {opt}
             </option>
@@ -208,144 +130,136 @@ export function ToolsPanel({
       )
     }
 
-    switch (prop.type) {
-      case "boolean":
-        return (
-          <input
-            type="checkbox"
-            checked={value as boolean || false}
-            onChange={(e) => setFormValues({ ...formValues, [name]: e.target.checked })}
-            className="h-4 w-4"
-          />
-        )
-      case "number":
-      case "integer":
-        return (
-          <Input
-            type="number"
-            value={value as number || ""}
-            onChange={(e) =>
-              setFormValues({ ...formValues, [name]: e.target.value ? Number(e.target.value) : undefined })
-            }
-          />
-        )
-      case "array":
-      case "object":
-        return (
-          <Textarea
-            value={typeof value === "string" ? value : JSON.stringify(value || "", null, 2)}
-            onChange={(e) => {
-              try {
-                const parsed = JSON.parse(e.target.value)
-                setFormValues({ ...formValues, [name]: parsed })
-              } catch {
-                setFormValues({ ...formValues, [name]: e.target.value })
-              }
-            }}
-            placeholder={`Enter ${prop.type} as JSON`}
-            rows={3}
-          />
-        )
-      default:
-        return (
-          <Input
-            value={value as string || ""}
-            onChange={(e) => setFormValues({ ...formValues, [name]: e.target.value })}
-            placeholder={prop.description}
-          />
-        )
+    if (schema.type === "boolean") {
+      return (
+        <input
+          type="checkbox"
+          checked={Boolean(value)}
+          onChange={(e) =>
+            setFormValues((prev) => ({ ...prev, [name]: e.target.checked }))
+          }
+          className="h-4 w-4"
+        />
+      )
     }
+
+    if (schema.type === "number" || schema.type === "integer") {
+      return (
+        <Input
+          type="number"
+          value={String(value)}
+          onChange={(e) =>
+            setFormValues((prev) => ({
+              ...prev,
+              [name]: e.target.value ? Number(e.target.value) : undefined,
+            }))
+          }
+        />
+      )
+    }
+
+    if (schema.type === "array" || schema.type === "object") {
+      return (
+        <Textarea
+          placeholder="Enter JSON..."
+          value={typeof value === "string" ? value : JSON.stringify(value, null, 2)}
+          onChange={(e) => {
+            try {
+              const parsed = JSON.parse(e.target.value)
+              setFormValues((prev) => ({ ...prev, [name]: parsed }))
+            } catch {
+              setFormValues((prev) => ({ ...prev, [name]: e.target.value }))
+            }
+          }}
+          rows={3}
+        />
+      )
+    }
+
+    // Default: string input
+    return (
+      <Input
+        value={String(value)}
+        onChange={(e) =>
+          setFormValues((prev) => ({ ...prev, [name]: e.target.value }))
+        }
+      />
+    )
   }
 
   if (!isConnected) {
     return (
       <div className="flex items-center justify-center h-full text-muted-foreground">
-        <p>Connect to an MCP server to view tools</p>
+        <p>Connect to an MCP server to browse tools</p>
       </div>
     )
   }
 
   return (
     <div className="flex h-full gap-4">
-      {/* Left: Tools List */}
-      <div className="w-80 flex flex-col border rounded-lg">
-        <div className="p-3 border-b flex items-center gap-2">
-          <Search className="h-4 w-4 text-muted-foreground" />
-          <Input
-            placeholder="Search tools..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="h-8 border-0 p-0 focus-visible:ring-0"
-          />
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-8 w-8"
-            onClick={fetchTools}
-            disabled={isLoading}
-          >
-            <RefreshCw className={cn("h-4 w-4", isLoading && "animate-spin")} />
-          </Button>
+      {/* Left: Tools list */}
+      <div className="w-72 flex flex-col border rounded-lg">
+        <div className="p-3 border-b">
+          <div className="flex items-center gap-2 mb-2">
+            <span className="font-medium text-sm">Tools</span>
+            <Badge variant="secondary">{tools.length}</Badge>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-6 w-6 ml-auto"
+              onClick={fetchTools}
+              disabled={isLoading}
+            >
+              <RefreshCw className={cn("h-3 w-3", isLoading && "animate-spin")} />
+            </Button>
+          </div>
+          <div className="relative">
+            <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
+            <Input
+              placeholder="Search tools..."
+              className="pl-8 h-9"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+            />
+          </div>
         </div>
 
         <ScrollArea className="flex-1">
-          {error ? (
-            <div className="p-4 text-sm text-destructive flex items-center gap-2">
-              <AlertCircle className="h-4 w-4" />
-              {error}
-            </div>
-          ) : filteredTools.length === 0 ? (
-            <div className="p-4 text-sm text-muted-foreground text-center">
-              {isLoading ? "Loading tools..." : "No tools available"}
-            </div>
-          ) : (
-            <div className="p-2 space-y-1">
-              {filteredTools.map((tool) => (
-                <button
-                  key={tool.name}
-                  onClick={() => setSelectedTool(tool)}
-                  className={cn(
-                    "w-full text-left p-2 rounded-md transition-colors",
-                    "hover:bg-accent",
-                    selectedTool?.name === tool.name && "bg-accent"
-                  )}
-                >
-                  <div className="flex items-center gap-2">
-                    <span className="font-mono text-sm truncate">{tool.name}</span>
-                    <ChevronRight className="h-3 w-3 ml-auto text-muted-foreground" />
-                  </div>
-                  {tool.description && (
-                    <p className="text-xs text-muted-foreground truncate mt-1">
-                      {tool.description}
-                    </p>
-                  )}
-                </button>
-              ))}
-            </div>
+          {error && !selectedTool && (
+            <div className="p-4 text-sm text-destructive">{error}</div>
           )}
+          <div className="p-2">
+            {filteredTools.map((tool) => (
+              <button
+                key={tool.name}
+                onClick={() => handleToolSelect(tool)}
+                className={cn(
+                  "w-full text-left px-3 py-2 rounded-md text-sm transition-colors",
+                  "hover:bg-accent",
+                  selectedTool?.name === tool.name && "bg-accent"
+                )}
+              >
+                <div className="flex items-center gap-2">
+                  <ChevronRight className="h-3 w-3 text-muted-foreground" />
+                  <span className="font-medium truncate">{tool.name}</span>
+                </div>
+                {tool.description && (
+                  <p className="text-xs text-muted-foreground truncate ml-5 mt-0.5">
+                    {tool.description}
+                  </p>
+                )}
+              </button>
+            ))}
+          </div>
         </ScrollArea>
-
-        <div className="p-2 border-t text-xs text-muted-foreground text-center">
-          {filteredTools.length} tool{filteredTools.length !== 1 ? "s" : ""}
-        </div>
       </div>
 
-      {/* Right: Tool Details & Execution */}
+      {/* Right: Tool details and execution */}
       <div className="flex-1 flex flex-col border rounded-lg">
         {selectedTool ? (
           <>
             <div className="p-4 border-b">
-              <div className="flex items-center justify-between">
-                <h3 className="font-mono font-semibold">{selectedTool.name}</h3>
-                <Button onClick={handleExecute} disabled={isExecuting}>
-                  {isExecuting ? (
-                    <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
-                  ) : (
-                    <Play className="h-4 w-4 mr-2" />
-                  )}
-                  Execute
-                </Button>
-              </div>
+              <h3 className="font-semibold">{selectedTool.name}</h3>
               {selectedTool.description && (
                 <p className="text-sm text-muted-foreground mt-1">
                   {selectedTool.description}
@@ -354,53 +268,68 @@ export function ToolsPanel({
             </div>
 
             <ScrollArea className="flex-1 p-4">
-              <div className="space-y-6">
-                {/* Input Form */}
+              <div className="space-y-4">
+                {/* Input form */}
                 {selectedTool.inputSchema?.properties && (
                   <div className="space-y-4">
-                    <h4 className="text-sm font-medium">Arguments</h4>
+                    <h4 className="text-sm font-medium">Parameters</h4>
                     {Object.entries(selectedTool.inputSchema.properties).map(
-                      ([name, prop]) => (
+                      ([name, schema]) => (
                         <div key={name} className="space-y-2">
-                          <div className="flex items-center gap-2">
-                            <Label className="font-mono text-sm">{name}</Label>
+                          <Label className="flex items-center gap-2">
+                            {name}
                             {selectedTool.inputSchema?.required?.includes(name) && (
-                              <Badge variant="outline" className="text-xs">
-                                required
-                              </Badge>
+                              <span className="text-destructive">*</span>
                             )}
-                            <Badge variant="secondary" className="text-xs">
-                              {prop.type}
-                            </Badge>
-                          </div>
-                          {prop.description && (
+                          </Label>
+                          {(schema as SchemaProperty).description && (
                             <p className="text-xs text-muted-foreground">
-                              {prop.description}
+                              {(schema as SchemaProperty).description}
                             </p>
                           )}
-                          {renderFormField(name, prop)}
+                          {renderFormField(name, schema as SchemaProperty)}
                         </div>
                       )
                     )}
                   </div>
                 )}
 
-                {/* Result */}
-                {result && (
+                {/* Execute button */}
+                <Button onClick={executeTool} disabled={isExecuting} className="w-full">
+                  {isExecuting ? (
+                    <>
+                      <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                      Executing...
+                    </>
+                  ) : (
+                    <>
+                      <Play className="h-4 w-4 mr-2" />
+                      Execute Tool
+                    </>
+                  )}
+                </Button>
+
+                {/* Results */}
+                {(result || error) && (
                   <div className="space-y-2">
-                    <div className="flex items-center gap-2">
-                      <h4 className="text-sm font-medium">Result</h4>
-                      {result.success ? (
+                    <h4 className="text-sm font-medium flex items-center gap-2">
+                      Result
+                      {result?.success && (
                         <CheckCircle2 className="h-4 w-4 text-green-500" />
-                      ) : (
+                      )}
+                      {(error || !result?.success) && (
                         <AlertCircle className="h-4 w-4 text-destructive" />
                       )}
-                    </div>
-                    <pre className="p-3 bg-muted rounded-md text-sm overflow-auto max-h-64">
-                      {typeof result.data === "string"
-                        ? result.data
-                        : JSON.stringify(result.data, null, 2)}
-                    </pre>
+                    </h4>
+                    {error ? (
+                      <pre className="p-3 bg-destructive/10 text-destructive rounded-md text-xs overflow-auto">
+                        {error}
+                      </pre>
+                    ) : (
+                      <pre className="p-3 bg-muted rounded-md text-xs overflow-auto max-h-64">
+                        {JSON.stringify(result?.data, null, 2)}
+                      </pre>
+                    )}
                   </div>
                 )}
               </div>

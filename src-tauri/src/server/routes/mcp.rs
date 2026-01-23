@@ -652,10 +652,18 @@ pub async fn mcp_server_streaming_handler(
         }
     };
 
-    // Get enabled client
-    let client = match get_enabled_client_from_manager(&state, &client_id) {
-        Ok(client) => client,
-        Err(e) => return e.into_response(),
+    // Handle internal test client specially (for UI testing)
+    let client = if client_id == "internal-test" {
+        let mut test_client = crate::config::Client::new("Internal Test Client".to_string());
+        test_client.id = "internal-test".to_string();
+        test_client.mcp_server_access = McpServerAccess::All;
+        test_client.mcp_sampling_enabled = true;
+        test_client
+    } else {
+        match get_enabled_client_from_manager(&state, &client_id) {
+            Ok(client) => client,
+            Err(e) => return e.into_response(),
+        }
     };
 
     // Check if client has access to this MCP server

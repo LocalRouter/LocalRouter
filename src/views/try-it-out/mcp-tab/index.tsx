@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react"
+import { useState, useEffect, useCallback, useRef } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -13,12 +13,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/Select"
-import { Wrench, FileText, MessageSquare, Radio, HelpCircle, RefreshCw, AlertCircle } from "lucide-react"
+import { Wrench, FileText, MessageSquare, Radio, HelpCircle, RefreshCw, AlertCircle, Server } from "lucide-react"
 import { ToolsPanel } from "./tools-panel"
 import { ResourcesPanel } from "./resources-panel"
 import { PromptsPanel } from "./prompts-panel"
 import { SamplingPanel } from "./sampling-panel"
 import { ElicitationPanel } from "./elicitation-panel"
+import { createMcpClient, type McpClientWrapper, type McpConnectionState } from "@/lib/mcp-client"
 
 interface McpServer {
   id: string
@@ -47,10 +48,15 @@ export function McpTab({ innerPath, onPathChange }: McpTabProps) {
   const [mcpServers, setMcpServers] = useState<McpServer[]>([])
   const [selectedTarget, setSelectedTarget] = useState<McpTarget>("gateway")
   const [serverPort, setServerPort] = useState<number | null>(null)
-  const [isConnected, setIsConnected] = useState(false)
-  const [isConnecting, setIsConnecting] = useState(false)
-  const [connectionError, setConnectionError] = useState<string | null>(null)
   const [internalTestToken, setInternalTestToken] = useState<string | null>(null)
+
+  // MCP Client state
+  const mcpClientRef = useRef<McpClientWrapper | null>(null)
+  const [connectionState, setConnectionState] = useState<McpConnectionState>({
+    isConnected: false,
+    isConnecting: false,
+    error: null,
+  })
 
   // Parse inner path to get subtab
   const parseInnerPath = (path: string | null) => {
@@ -97,28 +103,52 @@ export function McpTab({ innerPath, onPathChange }: McpTabProps) {
 
     return () => {
       unsubscribe.then((fn) => fn())
+      // Cleanup: disconnect client on unmount
+      if (mcpClientRef.current) {
+        mcpClientRef.current.disconnect()
+      }
     }
   }, [])
 
+  // Handle connection state changes from the client
+  const handleStateChange = useCallback((state: McpConnectionState) => {
+    setConnectionState(state)
+  }, [])
+
   const handleConnect = async () => {
-    setIsConnecting(true)
-    setConnectionError(null)
+    if (!serverPort || !internalTestToken) return
+
+    // Disconnect existing client if any
+    if (mcpClientRef.current) {
+      await mcpClientRef.current.disconnect()
+    }
+
+    // Create new client
+    const client = createMcpClient(
+      {
+        serverPort,
+        clientToken: internalTestToken,
+        serverId: isGatewayTarget ? undefined : selectedServerId,
+        transportType: "sse",
+      },
+      handleStateChange
+    )
+
+    mcpClientRef.current = client
 
     try {
-      // For now, just validate the connection
-      // The actual MCP SDK integration would happen here
-      await new Promise((resolve) => setTimeout(resolve, 500))
-      setIsConnected(true)
+      await client.connect()
     } catch (error) {
-      setConnectionError(error instanceof Error ? error.message : "Connection failed")
-    } finally {
-      setIsConnecting(false)
+      console.error("Failed to connect:", error)
+      // Error state is already set via handleStateChange
     }
   }
 
-  const handleDisconnect = () => {
-    setIsConnected(false)
-    setConnectionError(null)
+  const handleDisconnect = async () => {
+    if (mcpClientRef.current) {
+      await mcpClientRef.current.disconnect()
+      mcpClientRef.current = null
+    }
   }
 
   const getEndpointUrl = () => {
@@ -129,6 +159,8 @@ export function McpTab({ innerPath, onPathChange }: McpTabProps) {
       return `http://localhost:${serverPort}/mcp/${selectedServerId}`
     }
   }
+
+  const { isConnected, isConnecting, error: connectionError, serverInfo, capabilities } = connectionState
 
   return (
     <div className="flex flex-col h-full gap-4">
@@ -207,6 +239,24 @@ export function McpTab({ innerPath, onPathChange }: McpTabProps) {
               {connectionError}
             </div>
           )}
+
+          {/* Server info when connected */}
+          {isConnected && serverInfo && (
+            <div className="flex items-center gap-4 mt-4 pt-4 border-t">
+              <div className="flex items-center gap-2">
+                <Server className="h-4 w-4 text-muted-foreground" />
+                <span className="text-sm font-medium">{serverInfo.name}</span>
+                <Badge variant="outline" className="text-xs">v{serverInfo.version}</Badge>
+              </div>
+              {capabilities && (
+                <div className="flex items-center gap-2">
+                  {capabilities.tools && <Badge variant="secondary" className="text-xs">Tools</Badge>}
+                  {capabilities.resources && <Badge variant="secondary" className="text-xs">Resources</Badge>}
+                  {capabilities.prompts && <Badge variant="secondary" className="text-xs">Prompts</Badge>}
+                </div>
+              )}
+            </div>
+          )}
         </CardContent>
       </Card>
 
@@ -245,30 +295,21 @@ export function McpTab({ innerPath, onPathChange }: McpTabProps) {
           <CardContent className="flex-1 min-h-0 pt-4">
             <TabsContent value="tools" className="h-full m-0">
               <ToolsPanel
-                serverPort={serverPort}
-                clientToken={internalTestToken}
-                isGateway={isGatewayTarget}
-                selectedServer={selectedServerId}
+                mcpClient={mcpClientRef.current}
                 isConnected={isConnected}
               />
             </TabsContent>
 
             <TabsContent value="resources" className="h-full m-0">
               <ResourcesPanel
-                serverPort={serverPort}
-                clientToken={internalTestToken}
-                isGateway={isGatewayTarget}
-                selectedServer={selectedServerId}
+                mcpClient={mcpClientRef.current}
                 isConnected={isConnected}
               />
             </TabsContent>
 
             <TabsContent value="prompts" className="h-full m-0">
               <PromptsPanel
-                serverPort={serverPort}
-                clientToken={internalTestToken}
-                isGateway={isGatewayTarget}
-                selectedServer={selectedServerId}
+                mcpClient={mcpClientRef.current}
                 isConnected={isConnected}
               />
             </TabsContent>

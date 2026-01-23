@@ -1,38 +1,19 @@
-import { useState, useEffect } from "react"
-import { Search, Download, RefreshCw, ChevronRight, AlertCircle, FileText, Image, Code } from "lucide-react"
+import { useState, useEffect, useCallback } from "react"
+import { Search, RefreshCw, ChevronRight, FileText, Eye, Bell, BellOff } from "lucide-react"
 import { Button } from "@/components/ui/Button"
 import { Input } from "@/components/ui/Input"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Badge } from "@/components/ui/Badge"
 import { cn } from "@/lib/utils"
-
-interface Resource {
-  uri: string
-  name: string
-  description?: string
-  mimeType?: string
-}
-
-interface ResourceContent {
-  uri: string
-  mimeType?: string
-  text?: string
-  blob?: string
-}
+import type { McpClientWrapper, Resource, ReadResourceResult } from "@/lib/mcp-client"
 
 interface ResourcesPanelProps {
-  serverPort: number | null
-  clientToken: string | null
-  isGateway: boolean
-  selectedServer: string
+  mcpClient: McpClientWrapper | null
   isConnected: boolean
 }
 
 export function ResourcesPanel({
-  serverPort,
-  clientToken,
-  isGateway,
-  selectedServer,
+  mcpClient,
   isConnected,
 }: ResourcesPanelProps) {
   const [resources, setResources] = useState<Resource[]>([])
@@ -41,45 +22,19 @@ export function ResourcesPanel({
   const [selectedResource, setSelectedResource] = useState<Resource | null>(null)
   const [isLoading, setIsLoading] = useState(false)
   const [isReading, setIsReading] = useState(false)
-  const [content, setContent] = useState<ResourceContent | null>(null)
+  const [content, setContent] = useState<ReadResourceResult | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [subscribedUris, setSubscribedUris] = useState<Set<string>>(new Set())
 
-  // Fetch resources list using JSON-RPC
-  const fetchResources = async () => {
-    if (!serverPort || !clientToken) return
+  // Fetch resources list using MCP SDK
+  const fetchResources = useCallback(async () => {
+    if (!mcpClient || !isConnected) return
 
     setIsLoading(true)
     setError(null)
 
     try {
-      const endpoint = isGateway
-        ? `http://localhost:${serverPort}/`
-        : `http://localhost:${serverPort}/mcp/${selectedServer}`
-
-      const response = await fetch(endpoint, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${clientToken}`,
-        },
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          method: "resources/list",
-          params: {},
-          id: Date.now(),
-        }),
-      })
-
-      if (!response.ok) {
-        const errorText = await response.text()
-        throw new Error(`Failed to fetch resources: ${response.status} - ${errorText}`)
-      }
-
-      const data = await response.json()
-      if (data.error) {
-        throw new Error(data.error.message || "JSON-RPC error")
-      }
-      const resourcesList = data.result?.resources || []
+      const resourcesList = await mcpClient.listResources()
       setResources(resourcesList)
       setFilteredResources(resourcesList)
     } catch (err) {
@@ -87,22 +42,23 @@ export function ResourcesPanel({
     } finally {
       setIsLoading(false)
     }
-  }
+  }, [mcpClient, isConnected])
 
   useEffect(() => {
-    if (isConnected) {
+    if (isConnected && mcpClient) {
       fetchResources()
     } else {
       setResources([])
       setFilteredResources([])
       setSelectedResource(null)
       setContent(null)
+      setSubscribedUris(new Set())
     }
-  }, [isConnected, serverPort, clientToken, isGateway, selectedServer])
+  }, [isConnected, mcpClient, fetchResources])
 
-  // Filter resources based on search
+  // Filter resources by search query
   useEffect(() => {
-    if (!searchQuery.trim()) {
+    if (!searchQuery) {
       setFilteredResources(resources)
     } else {
       const query = searchQuery.toLowerCase()
@@ -117,48 +73,17 @@ export function ResourcesPanel({
     }
   }, [searchQuery, resources])
 
-  // Read resource content using JSON-RPC
-  const handleRead = async () => {
-    if (!selectedResource || !serverPort || !clientToken) return
+  // Read resource content
+  const readResource = async (resource: Resource) => {
+    if (!mcpClient) return
 
     setIsReading(true)
     setContent(null)
     setError(null)
 
     try {
-      const endpoint = isGateway
-        ? `http://localhost:${serverPort}/`
-        : `http://localhost:${serverPort}/mcp/${selectedServer}`
-
-      const response = await fetch(endpoint, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${clientToken}`,
-        },
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          method: "resources/read",
-          params: {
-            uri: selectedResource.uri,
-          },
-          id: Date.now(),
-        }),
-      })
-
-      if (!response.ok) {
-        const errorText = await response.text()
-        throw new Error(`Failed to read resource: ${response.status} - ${errorText}`)
-      }
-
-      const data = await response.json()
-      if (data.error) {
-        throw new Error(data.error.message || "JSON-RPC error")
-      }
-      const contents = data.result?.contents || []
-      if (contents.length > 0) {
-        setContent(contents[0])
-      }
+      const result = await mcpClient.readResource(resource.uri)
+      setContent(result)
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to read resource")
     } finally {
@@ -166,171 +91,183 @@ export function ResourcesPanel({
     }
   }
 
-  const getResourceIcon = (mimeType?: string) => {
-    if (!mimeType) return <FileText className="h-4 w-4" />
-    if (mimeType.startsWith("image/")) return <Image className="h-4 w-4" />
-    if (mimeType.includes("json") || mimeType.includes("javascript") || mimeType.includes("code"))
-      return <Code className="h-4 w-4" />
-    return <FileText className="h-4 w-4" />
+  // Toggle subscription to resource updates
+  const toggleSubscription = async (resource: Resource) => {
+    if (!mcpClient) return
+
+    const uri = resource.uri
+    const isSubscribed = subscribedUris.has(uri)
+
+    try {
+      if (isSubscribed) {
+        await mcpClient.unsubscribeFromResource(uri)
+        setSubscribedUris((prev) => {
+          const newSet = new Set(prev)
+          newSet.delete(uri)
+          return newSet
+        })
+      } else {
+        await mcpClient.subscribeToResource(uri, (updatedUri, updatedContent) => {
+          // Update content if this resource is currently selected
+          if (selectedResource?.uri === updatedUri) {
+            setContent(updatedContent)
+          }
+        })
+        setSubscribedUris((prev) => new Set(prev).add(uri))
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to toggle subscription")
+    }
+  }
+
+  const handleResourceSelect = (resource: Resource) => {
+    setSelectedResource(resource)
+    setContent(null)
+    setError(null)
+    readResource(resource)
   }
 
   const renderContent = () => {
     if (!content) return null
 
-    if (content.blob) {
-      const mimeType = content.mimeType || "application/octet-stream"
-      if (mimeType.startsWith("image/")) {
-        return (
-          <img
-            src={`data:${mimeType};base64,${content.blob}`}
-            alt={selectedResource?.name}
-            className="max-w-full h-auto rounded"
-          />
-        )
-      }
-      return (
-        <div className="p-4 bg-muted rounded-md">
-          <p className="text-sm text-muted-foreground">
-            Binary content ({content.blob.length} bytes base64)
-          </p>
-          <Button
-            variant="outline"
-            size="sm"
-            className="mt-2"
-            onClick={() => {
-              const link = document.createElement("a")
-              link.href = `data:${mimeType};base64,${content.blob}`
-              link.download = selectedResource?.name || "download"
-              link.click()
-            }}
-          >
-            <Download className="h-4 w-4 mr-2" />
-            Download
-          </Button>
+    return content.contents.map((c, idx) => (
+      <div key={idx} className="space-y-2">
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <span>{c.uri}</span>
+          {c.mimeType && <Badge variant="outline">{c.mimeType}</Badge>}
         </div>
-      )
-    }
-
-    if (content.text) {
-      const isJson =
-        content.mimeType?.includes("json") || content.text.trim().startsWith("{")
-      return (
-        <pre
-          className={cn(
-            "p-3 bg-muted rounded-md text-sm overflow-auto max-h-96",
-            isJson && "whitespace-pre"
-          )}
-        >
-          {isJson ? JSON.stringify(JSON.parse(content.text), null, 2) : content.text}
-        </pre>
-      )
-    }
-
-    return <p className="text-sm text-muted-foreground">No content available</p>
+        {c.text && (
+          <pre className="p-3 bg-muted rounded-md text-xs overflow-auto max-h-96 whitespace-pre-wrap">
+            {c.text}
+          </pre>
+        )}
+        {c.blob && (
+          <div className="p-3 bg-muted rounded-md text-xs">
+            <p className="text-muted-foreground">Binary content ({c.blob.length} bytes base64)</p>
+          </div>
+        )}
+      </div>
+    ))
   }
 
   if (!isConnected) {
     return (
       <div className="flex items-center justify-center h-full text-muted-foreground">
-        <p>Connect to an MCP server to view resources</p>
+        <p>Connect to an MCP server to browse resources</p>
       </div>
     )
   }
 
   return (
     <div className="flex h-full gap-4">
-      {/* Left: Resources List */}
-      <div className="w-80 flex flex-col border rounded-lg">
-        <div className="p-3 border-b flex items-center gap-2">
-          <Search className="h-4 w-4 text-muted-foreground" />
-          <Input
-            placeholder="Search resources..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="h-8 border-0 p-0 focus-visible:ring-0"
-          />
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-8 w-8"
-            onClick={fetchResources}
-            disabled={isLoading}
-          >
-            <RefreshCw className={cn("h-4 w-4", isLoading && "animate-spin")} />
-          </Button>
+      {/* Left: Resources list */}
+      <div className="w-72 flex flex-col border rounded-lg">
+        <div className="p-3 border-b">
+          <div className="flex items-center gap-2 mb-2">
+            <span className="font-medium text-sm">Resources</span>
+            <Badge variant="secondary">{resources.length}</Badge>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-6 w-6 ml-auto"
+              onClick={fetchResources}
+              disabled={isLoading}
+            >
+              <RefreshCw className={cn("h-3 w-3", isLoading && "animate-spin")} />
+            </Button>
+          </div>
+          <div className="relative">
+            <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
+            <Input
+              placeholder="Search resources..."
+              className="pl-8 h-9"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+            />
+          </div>
         </div>
 
         <ScrollArea className="flex-1">
-          {error ? (
-            <div className="p-4 text-sm text-destructive flex items-center gap-2">
-              <AlertCircle className="h-4 w-4" />
-              {error}
-            </div>
-          ) : filteredResources.length === 0 ? (
-            <div className="p-4 text-sm text-muted-foreground text-center">
-              {isLoading ? "Loading resources..." : "No resources available"}
-            </div>
-          ) : (
-            <div className="p-2 space-y-1">
-              {filteredResources.map((resource) => (
-                <button
-                  key={resource.uri}
-                  onClick={() => {
-                    setSelectedResource(resource)
-                    setContent(null)
-                  }}
-                  className={cn(
-                    "w-full text-left p-2 rounded-md transition-colors",
-                    "hover:bg-accent",
-                    selectedResource?.uri === resource.uri && "bg-accent"
-                  )}
-                >
-                  <div className="flex items-center gap-2">
-                    {getResourceIcon(resource.mimeType)}
-                    <span className="text-sm truncate flex-1">{resource.name}</span>
-                    <ChevronRight className="h-3 w-3 text-muted-foreground" />
-                  </div>
-                  <p className="text-xs text-muted-foreground truncate mt-1 font-mono">
-                    {resource.uri}
-                  </p>
-                </button>
-              ))}
-            </div>
+          {error && !selectedResource && (
+            <div className="p-4 text-sm text-destructive">{error}</div>
           )}
+          <div className="p-2">
+            {filteredResources.map((resource) => (
+              <button
+                key={resource.uri}
+                onClick={() => handleResourceSelect(resource)}
+                className={cn(
+                  "w-full text-left px-3 py-2 rounded-md text-sm transition-colors",
+                  "hover:bg-accent",
+                  selectedResource?.uri === resource.uri && "bg-accent"
+                )}
+              >
+                <div className="flex items-center gap-2">
+                  <ChevronRight className="h-3 w-3 text-muted-foreground" />
+                  <FileText className="h-3 w-3 text-muted-foreground" />
+                  <span className="font-medium truncate">{resource.name}</span>
+                  {subscribedUris.has(resource.uri) && (
+                    <Bell className="h-3 w-3 text-primary ml-auto" />
+                  )}
+                </div>
+                <p className="text-xs text-muted-foreground truncate ml-8 mt-0.5">
+                  {resource.uri}
+                </p>
+                {resource.description && (
+                  <p className="text-xs text-muted-foreground truncate ml-8">
+                    {resource.description}
+                  </p>
+                )}
+              </button>
+            ))}
+          </div>
         </ScrollArea>
-
-        <div className="p-2 border-t text-xs text-muted-foreground text-center">
-          {filteredResources.length} resource{filteredResources.length !== 1 ? "s" : ""}
-        </div>
       </div>
 
-      {/* Right: Resource Details & Content */}
+      {/* Right: Resource content */}
       <div className="flex-1 flex flex-col border rounded-lg">
         {selectedResource ? (
           <>
             <div className="p-4 border-b">
               <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  {getResourceIcon(selectedResource.mimeType)}
+                <div>
                   <h3 className="font-semibold">{selectedResource.name}</h3>
+                  <p className="text-xs text-muted-foreground">{selectedResource.uri}</p>
                 </div>
-                <Button onClick={handleRead} disabled={isReading}>
-                  {isReading ? (
-                    <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
-                  ) : (
-                    <Download className="h-4 w-4 mr-2" />
-                  )}
-                  Read
-                </Button>
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => toggleSubscription(selectedResource)}
+                    title={subscribedUris.has(selectedResource.uri) ? "Unsubscribe" : "Subscribe to updates"}
+                  >
+                    {subscribedUris.has(selectedResource.uri) ? (
+                      <>
+                        <BellOff className="h-4 w-4 mr-1" />
+                        Unsubscribe
+                      </>
+                    ) : (
+                      <>
+                        <Bell className="h-4 w-4 mr-1" />
+                        Subscribe
+                      </>
+                    )}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => readResource(selectedResource)}
+                    disabled={isReading}
+                  >
+                    {isReading ? (
+                      <RefreshCw className="h-4 w-4 mr-1 animate-spin" />
+                    ) : (
+                      <Eye className="h-4 w-4 mr-1" />
+                    )}
+                    Read
+                  </Button>
+                </div>
               </div>
-              <p className="text-xs text-muted-foreground font-mono mt-1">
-                {selectedResource.uri}
-              </p>
-              {selectedResource.mimeType && (
-                <Badge variant="secondary" className="mt-2">
-                  {selectedResource.mimeType}
-                </Badge>
-              )}
               {selectedResource.description && (
                 <p className="text-sm text-muted-foreground mt-2">
                   {selectedResource.description}
@@ -339,18 +276,30 @@ export function ResourcesPanel({
             </div>
 
             <ScrollArea className="flex-1 p-4">
-              {content ? (
-                renderContent()
-              ) : (
-                <div className="flex items-center justify-center h-full text-muted-foreground">
-                  <p>Click "Read" to fetch resource content</p>
+              {error && (
+                <div className="p-3 bg-destructive/10 text-destructive rounded-md text-sm mb-4">
+                  {error}
+                </div>
+              )}
+              {isReading && (
+                <div className="flex items-center justify-center h-32 text-muted-foreground">
+                  <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                  Reading resource...
+                </div>
+              )}
+              {!isReading && content && (
+                <div className="space-y-4">{renderContent()}</div>
+              )}
+              {!isReading && !content && !error && (
+                <div className="flex items-center justify-center h-32 text-muted-foreground">
+                  Click "Read" to load resource content
                 </div>
               )}
             </ScrollArea>
           </>
         ) : (
           <div className="flex items-center justify-center h-full text-muted-foreground">
-            <p>Select a resource to view details</p>
+            <p>Select a resource to view its content</p>
           </div>
         )}
       </div>

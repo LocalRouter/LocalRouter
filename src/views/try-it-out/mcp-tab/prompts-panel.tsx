@@ -1,5 +1,5 @@
-import { useState, useEffect } from "react"
-import { Search, Play, RefreshCw, ChevronRight, AlertCircle, MessageSquare, User, Bot } from "lucide-react"
+import { useState, useEffect, useCallback } from "react"
+import { Search, Play, RefreshCw, ChevronRight, MessageSquare, User, Bot } from "lucide-react"
 import { Button } from "@/components/ui/Button"
 import { Input } from "@/components/ui/Input"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -7,40 +7,15 @@ import { Badge } from "@/components/ui/Badge"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { cn } from "@/lib/utils"
-
-interface PromptArgument {
-  name: string
-  description?: string
-  required?: boolean
-}
-
-interface Prompt {
-  name: string
-  description?: string
-  arguments?: PromptArgument[]
-}
-
-interface PromptMessage {
-  role: "user" | "assistant"
-  content: {
-    type: string
-    text?: string
-  }
-}
+import type { McpClientWrapper, Prompt, GetPromptResult } from "@/lib/mcp-client"
 
 interface PromptsPanelProps {
-  serverPort: number | null
-  clientToken: string | null
-  isGateway: boolean
-  selectedServer: string
+  mcpClient: McpClientWrapper | null
   isConnected: boolean
 }
 
 export function PromptsPanel({
-  serverPort,
-  clientToken,
-  isGateway,
-  selectedServer,
+  mcpClient,
   isConnected,
 }: PromptsPanelProps) {
   const [prompts, setPrompts] = useState<Prompt[]>([])
@@ -48,47 +23,20 @@ export function PromptsPanel({
   const [searchQuery, setSearchQuery] = useState("")
   const [selectedPrompt, setSelectedPrompt] = useState<Prompt | null>(null)
   const [isLoading, setIsLoading] = useState(false)
-  const [isExpanding, setIsExpanding] = useState(false)
+  const [isGetting, setIsGetting] = useState(false)
   const [argValues, setArgValues] = useState<Record<string, string>>({})
-  const [expandedMessages, setExpandedMessages] = useState<PromptMessage[]>([])
+  const [result, setResult] = useState<GetPromptResult | null>(null)
   const [error, setError] = useState<string | null>(null)
 
-  // Fetch prompts list using JSON-RPC
-  const fetchPrompts = async () => {
-    if (!serverPort || !clientToken) return
+  // Fetch prompts list using MCP SDK
+  const fetchPrompts = useCallback(async () => {
+    if (!mcpClient || !isConnected) return
 
     setIsLoading(true)
     setError(null)
 
     try {
-      const endpoint = isGateway
-        ? `http://localhost:${serverPort}/`
-        : `http://localhost:${serverPort}/mcp/${selectedServer}`
-
-      const response = await fetch(endpoint, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${clientToken}`,
-        },
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          method: "prompts/list",
-          params: {},
-          id: Date.now(),
-        }),
-      })
-
-      if (!response.ok) {
-        const errorText = await response.text()
-        throw new Error(`Failed to fetch prompts: ${response.status} - ${errorText}`)
-      }
-
-      const data = await response.json()
-      if (data.error) {
-        throw new Error(data.error.message || "JSON-RPC error")
-      }
-      const promptsList = data.result?.prompts || []
+      const promptsList = await mcpClient.listPrompts()
       setPrompts(promptsList)
       setFilteredPrompts(promptsList)
     } catch (err) {
@@ -96,22 +44,22 @@ export function PromptsPanel({
     } finally {
       setIsLoading(false)
     }
-  }
+  }, [mcpClient, isConnected])
 
   useEffect(() => {
-    if (isConnected) {
+    if (isConnected && mcpClient) {
       fetchPrompts()
     } else {
       setPrompts([])
       setFilteredPrompts([])
       setSelectedPrompt(null)
-      setExpandedMessages([])
+      setResult(null)
     }
-  }, [isConnected, serverPort, clientToken, isGateway, selectedServer])
+  }, [isConnected, mcpClient, fetchPrompts])
 
-  // Filter prompts based on search
+  // Filter prompts by search query
   useEffect(() => {
-    if (!searchQuery.trim()) {
+    if (!searchQuery) {
       setFilteredPrompts(prompts)
     } else {
       const query = searchQuery.toLowerCase()
@@ -125,170 +73,159 @@ export function PromptsPanel({
     }
   }, [searchQuery, prompts])
 
-  // Reset form when prompt changes
-  useEffect(() => {
-    if (selectedPrompt) {
-      const defaults: Record<string, string> = {}
-      for (const arg of selectedPrompt.arguments || []) {
-        defaults[arg.name] = ""
-      }
-      setArgValues(defaults)
-      setExpandedMessages([])
-    }
-  }, [selectedPrompt])
+  // Get prompt with arguments
+  const getPrompt = async () => {
+    if (!mcpClient || !selectedPrompt) return
 
-  const handleExpand = async () => {
-    if (!selectedPrompt || !serverPort || !clientToken) return
-
-    setIsExpanding(true)
-    setExpandedMessages([])
+    setIsGetting(true)
+    setResult(null)
     setError(null)
 
     try {
-      const endpoint = isGateway
-        ? `http://localhost:${serverPort}/`
-        : `http://localhost:${serverPort}/mcp/${selectedServer}`
-
-      const response = await fetch(endpoint, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${clientToken}`,
-        },
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          method: "prompts/get",
-          params: {
-            name: selectedPrompt.name,
-            arguments: argValues,
-          },
-          id: Date.now(),
-        }),
-      })
-
-      if (!response.ok) {
-        const errorText = await response.text()
-        throw new Error(`Failed to get prompt: ${response.status} - ${errorText}`)
-      }
-
-      const data = await response.json()
-      if (data.error) {
-        throw new Error(data.error.message || "JSON-RPC error")
-      }
-      setExpandedMessages(data.result?.messages || [])
+      const response = await mcpClient.getPrompt(selectedPrompt.name, argValues)
+      setResult(response)
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to get prompt")
     } finally {
-      setIsExpanding(false)
+      setIsGetting(false)
     }
+  }
+
+  const handlePromptSelect = (prompt: Prompt) => {
+    setSelectedPrompt(prompt)
+    setArgValues({})
+    setResult(null)
+    setError(null)
+  }
+
+  const renderMessage = (msg: { role: string; content: unknown }, idx: number) => {
+    const role = msg.role as "user" | "assistant"
+    const content = msg.content
+
+    // Extract text content
+    let textContent = ""
+    if (typeof content === "string") {
+      textContent = content
+    } else if (Array.isArray(content)) {
+      textContent = content
+        .filter((c: unknown) => typeof c === "object" && c !== null && "type" in c && (c as { type: string }).type === "text")
+        .map((c: unknown) => (c as { text?: string }).text || "")
+        .join("\n")
+    } else if (typeof content === "object" && content !== null && "text" in content) {
+      textContent = (content as { text: string }).text
+    }
+
+    return (
+      <div
+        key={idx}
+        className={cn(
+          "flex gap-3",
+          role === "user" ? "justify-end" : "justify-start"
+        )}
+      >
+        {role === "assistant" && (
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-muted">
+            <Bot className="h-4 w-4" />
+          </div>
+        )}
+        <div
+          className={cn(
+            "rounded-lg px-4 py-2 max-w-[80%]",
+            role === "user"
+              ? "bg-primary text-primary-foreground"
+              : "bg-muted"
+          )}
+        >
+          <p className="text-sm whitespace-pre-wrap">{textContent}</p>
+        </div>
+        {role === "user" && (
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary">
+            <User className="h-4 w-4 text-primary-foreground" />
+          </div>
+        )}
+      </div>
+    )
   }
 
   if (!isConnected) {
     return (
       <div className="flex items-center justify-center h-full text-muted-foreground">
-        <p>Connect to an MCP server to view prompts</p>
+        <p>Connect to an MCP server to browse prompts</p>
       </div>
     )
   }
 
   return (
     <div className="flex h-full gap-4">
-      {/* Left: Prompts List */}
-      <div className="w-80 flex flex-col border rounded-lg">
-        <div className="p-3 border-b flex items-center gap-2">
-          <Search className="h-4 w-4 text-muted-foreground" />
-          <Input
-            placeholder="Search prompts..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="h-8 border-0 p-0 focus-visible:ring-0"
-          />
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-8 w-8"
-            onClick={fetchPrompts}
-            disabled={isLoading}
-          >
-            <RefreshCw className={cn("h-4 w-4", isLoading && "animate-spin")} />
-          </Button>
+      {/* Left: Prompts list */}
+      <div className="w-72 flex flex-col border rounded-lg">
+        <div className="p-3 border-b">
+          <div className="flex items-center gap-2 mb-2">
+            <span className="font-medium text-sm">Prompts</span>
+            <Badge variant="secondary">{prompts.length}</Badge>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-6 w-6 ml-auto"
+              onClick={fetchPrompts}
+              disabled={isLoading}
+            >
+              <RefreshCw className={cn("h-3 w-3", isLoading && "animate-spin")} />
+            </Button>
+          </div>
+          <div className="relative">
+            <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
+            <Input
+              placeholder="Search prompts..."
+              className="pl-8 h-9"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+            />
+          </div>
         </div>
 
         <ScrollArea className="flex-1">
-          {error ? (
-            <div className="p-4 text-sm text-destructive flex items-center gap-2">
-              <AlertCircle className="h-4 w-4" />
-              {error}
-            </div>
-          ) : filteredPrompts.length === 0 ? (
-            <div className="p-4 text-sm text-muted-foreground text-center">
-              {isLoading ? "Loading prompts..." : "No prompts available"}
-            </div>
-          ) : (
-            <div className="p-2 space-y-1">
-              {filteredPrompts.map((prompt) => (
-                <button
-                  key={prompt.name}
-                  onClick={() => setSelectedPrompt(prompt)}
-                  className={cn(
-                    "w-full text-left p-2 rounded-md transition-colors",
-                    "hover:bg-accent",
-                    selectedPrompt?.name === prompt.name && "bg-accent"
-                  )}
-                >
-                  <div className="flex items-center gap-2">
-                    <MessageSquare className="h-4 w-4 text-muted-foreground" />
-                    <span className="font-mono text-sm truncate">{prompt.name}</span>
-                    <ChevronRight className="h-3 w-3 ml-auto text-muted-foreground" />
-                  </div>
-                  {prompt.description && (
-                    <p className="text-xs text-muted-foreground truncate mt-1">
-                      {prompt.description}
-                    </p>
-                  )}
-                  {prompt.arguments && prompt.arguments.length > 0 && (
-                    <div className="flex gap-1 mt-1 flex-wrap">
-                      {prompt.arguments.map((arg) => (
-                        <Badge
-                          key={arg.name}
-                          variant={arg.required ? "default" : "secondary"}
-                          className="text-xs"
-                        >
-                          {arg.name}
-                        </Badge>
-                      ))}
-                    </div>
-                  )}
-                </button>
-              ))}
-            </div>
+          {error && !selectedPrompt && (
+            <div className="p-4 text-sm text-destructive">{error}</div>
           )}
+          <div className="p-2">
+            {filteredPrompts.map((prompt) => (
+              <button
+                key={prompt.name}
+                onClick={() => handlePromptSelect(prompt)}
+                className={cn(
+                  "w-full text-left px-3 py-2 rounded-md text-sm transition-colors",
+                  "hover:bg-accent",
+                  selectedPrompt?.name === prompt.name && "bg-accent"
+                )}
+              >
+                <div className="flex items-center gap-2">
+                  <ChevronRight className="h-3 w-3 text-muted-foreground" />
+                  <MessageSquare className="h-3 w-3 text-muted-foreground" />
+                  <span className="font-medium truncate">{prompt.name}</span>
+                </div>
+                {prompt.description && (
+                  <p className="text-xs text-muted-foreground truncate ml-8 mt-0.5">
+                    {prompt.description}
+                  </p>
+                )}
+                {prompt.arguments && prompt.arguments.length > 0 && (
+                  <p className="text-xs text-muted-foreground ml-8 mt-0.5">
+                    {prompt.arguments.length} argument(s)
+                  </p>
+                )}
+              </button>
+            ))}
+          </div>
         </ScrollArea>
-
-        <div className="p-2 border-t text-xs text-muted-foreground text-center">
-          {filteredPrompts.length} prompt{filteredPrompts.length !== 1 ? "s" : ""}
-        </div>
       </div>
 
-      {/* Right: Prompt Details & Expansion */}
+      {/* Right: Prompt details and execution */}
       <div className="flex-1 flex flex-col border rounded-lg">
         {selectedPrompt ? (
           <>
             <div className="p-4 border-b">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <MessageSquare className="h-4 w-4" />
-                  <h3 className="font-mono font-semibold">{selectedPrompt.name}</h3>
-                </div>
-                <Button onClick={handleExpand} disabled={isExpanding}>
-                  {isExpanding ? (
-                    <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
-                  ) : (
-                    <Play className="h-4 w-4 mr-2" />
-                  )}
-                  Get Prompt
-                </Button>
-              </div>
+              <h3 className="font-semibold">{selectedPrompt.name}</h3>
               {selectedPrompt.description && (
                 <p className="text-sm text-muted-foreground mt-1">
                   {selectedPrompt.description}
@@ -297,32 +234,33 @@ export function PromptsPanel({
             </div>
 
             <ScrollArea className="flex-1 p-4">
-              <div className="space-y-6">
-                {/* Arguments Form */}
+              <div className="space-y-4">
+                {/* Arguments form */}
                 {selectedPrompt.arguments && selectedPrompt.arguments.length > 0 && (
                   <div className="space-y-4">
                     <h4 className="text-sm font-medium">Arguments</h4>
                     {selectedPrompt.arguments.map((arg) => (
                       <div key={arg.name} className="space-y-2">
-                        <div className="flex items-center gap-2">
-                          <Label className="font-mono text-sm">{arg.name}</Label>
+                        <Label className="flex items-center gap-2">
+                          {arg.name}
                           {arg.required && (
-                            <Badge variant="outline" className="text-xs">
-                              required
-                            </Badge>
+                            <span className="text-destructive">*</span>
                           )}
-                        </div>
+                        </Label>
                         {arg.description && (
                           <p className="text-xs text-muted-foreground">
                             {arg.description}
                           </p>
                         )}
                         <Textarea
+                          placeholder={`Enter ${arg.name}...`}
                           value={argValues[arg.name] || ""}
                           onChange={(e) =>
-                            setArgValues({ ...argValues, [arg.name]: e.target.value })
+                            setArgValues((prev) => ({
+                              ...prev,
+                              [arg.name]: e.target.value,
+                            }))
                           }
-                          placeholder={`Enter ${arg.name}...`}
                           rows={2}
                         />
                       </div>
@@ -330,43 +268,34 @@ export function PromptsPanel({
                   </div>
                 )}
 
-                {/* Expanded Messages */}
-                {expandedMessages.length > 0 && (
+                {/* Get prompt button */}
+                <Button onClick={getPrompt} disabled={isGetting} className="w-full">
+                  {isGetting ? (
+                    <>
+                      <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                      Getting...
+                    </>
+                  ) : (
+                    <>
+                      <Play className="h-4 w-4 mr-2" />
+                      Get Prompt
+                    </>
+                  )}
+                </Button>
+
+                {/* Error */}
+                {error && (
+                  <div className="p-3 bg-destructive/10 text-destructive rounded-md text-sm">
+                    {error}
+                  </div>
+                )}
+
+                {/* Result messages */}
+                {result && result.messages.length > 0 && (
                   <div className="space-y-4">
-                    <h4 className="text-sm font-medium">Expanded Messages</h4>
+                    <h4 className="text-sm font-medium">Generated Messages</h4>
                     <div className="space-y-3">
-                      {expandedMessages.map((msg, idx) => (
-                        <div
-                          key={idx}
-                          className={cn(
-                            "flex gap-3",
-                            msg.role === "user" ? "justify-end" : "justify-start"
-                          )}
-                        >
-                          {msg.role === "assistant" && (
-                            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-muted">
-                              <Bot className="h-4 w-4" />
-                            </div>
-                          )}
-                          <div
-                            className={cn(
-                              "rounded-lg px-4 py-2 max-w-[80%]",
-                              msg.role === "user"
-                                ? "bg-primary text-primary-foreground"
-                                : "bg-muted"
-                            )}
-                          >
-                            <p className="text-sm whitespace-pre-wrap">
-                              {msg.content.text || JSON.stringify(msg.content)}
-                            </p>
-                          </div>
-                          {msg.role === "user" && (
-                            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary">
-                              <User className="h-4 w-4 text-primary-foreground" />
-                            </div>
-                          )}
-                        </div>
-                      ))}
+                      {result.messages.map((msg, idx) => renderMessage(msg, idx))}
                     </div>
                   </div>
                 )}
@@ -375,7 +304,7 @@ export function PromptsPanel({
           </>
         ) : (
           <div className="flex items-center justify-center h-full text-muted-foreground">
-            <p>Select a prompt to view details and expand</p>
+            <p>Select a prompt to view details and execute</p>
           </div>
         )}
       </div>
