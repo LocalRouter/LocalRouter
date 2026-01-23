@@ -27,7 +27,6 @@ import { cn } from "@/lib/utils"
 type TimeRange = "hour" | "day" | "week" | "month"
 type MetricType = "tokens" | "cost" | "requests" | "latency" | "successrate"
 type McpMetricType = "requests" | "latency" | "successrate"
-type ChartType = "line" | "area" | "bar"
 type Scope = "global" | "api_key" | "provider" | "model" | "strategy"
 type McpScope = "global" | "client" | "server"
 type DataSourceType = "llm" | "mcp"
@@ -55,7 +54,6 @@ interface MetricsChartProps {
   scopeId?: string
   defaultMetricType?: MetricType | McpMetricType
   defaultTimeRange?: TimeRange
-  chartType?: ChartType
   metricOptions?: { id: MetricType | McpMetricType; label: string }[]
   refreshTrigger?: number
   showControls?: boolean
@@ -81,7 +79,6 @@ export function MetricsChart({
   scopeId,
   defaultMetricType = "requests",
   defaultTimeRange = "day",
-  chartType: _chartType = "bar",
   metricOptions = [
     { id: "requests", label: "Requests" },
     { id: "tokens", label: "Tokens" },

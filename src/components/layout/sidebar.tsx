@@ -8,6 +8,7 @@ import {
   Settings,
   Router,
   ScrollText,
+  FlaskConical,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import {
@@ -24,7 +25,7 @@ interface ServerConfig {
   enable_cors: boolean
 }
 
-export type View = 'dashboard' | 'clients' | 'resources' | 'logs' | 'settings'
+export type View = 'dashboard' | 'clients' | 'resources' | 'try-it-out' | 'logs' | 'settings'
 
 interface SidebarProps {
   activeView: View
@@ -42,8 +43,9 @@ const navItems: NavItem[] = [
   { id: 'dashboard', icon: LayoutDashboard, label: 'Dashboard', shortcut: '⌘1' },
   { id: 'clients', icon: Users, label: 'Clients', shortcut: '⌘2' },
   { id: 'resources', icon: Database, label: 'Resources', shortcut: '⌘3' },
-  { id: 'logs', icon: ScrollText, label: 'Logs', shortcut: '⌘4' },
-  { id: 'settings', icon: Settings, label: 'Settings', shortcut: '⌘5' },
+  { id: 'try-it-out', icon: FlaskConical, label: 'Try It Out', shortcut: '⌘4' },
+  { id: 'logs', icon: ScrollText, label: 'Logs', shortcut: '⌘5' },
+  { id: 'settings', icon: Settings, label: 'Settings', shortcut: '⌘6' },
 ]
 
 export function Sidebar({ activeView, onViewChange }: SidebarProps) {
@@ -115,9 +117,13 @@ export function Sidebar({ activeView, onViewChange }: SidebarProps) {
             break
           case '4':
             e.preventDefault()
-            onViewChange('logs')
+            onViewChange('try-it-out')
             break
           case '5':
+            e.preventDefault()
+            onViewChange('logs')
+            break
+          case '6':
             e.preventDefault()
             onViewChange('settings')
             break

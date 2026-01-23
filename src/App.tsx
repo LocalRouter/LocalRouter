@@ -5,6 +5,7 @@ import { AppShell, type View } from './components/layout'
 import { DashboardView } from './views/dashboard'
 import { ClientsView } from './views/clients'
 import { ResourcesView } from './views/resources'
+import { TryItOutView } from './views/try-it-out'
 import { LogsView } from './views/logs'
 import { SettingsView } from './views/settings'
 
@@ -98,6 +99,13 @@ function App() {
       case 'resources':
         return (
           <ResourcesView
+            activeSubTab={activeSubTab}
+            onTabChange={handleChildViewChange}
+          />
+        )
+      case 'try-it-out':
+        return (
+          <TryItOutView
             activeSubTab={activeSubTab}
             onTabChange={handleChildViewChange}
           />

@@ -78,7 +78,6 @@ export function DashboardView() {
       <MetricsChart
         title="LLM Metrics"
         scope="global"
-        chartType="bar"
         defaultMetricType="requests"
         defaultTimeRange="day"
         metricOptions={[
@@ -95,7 +94,6 @@ export function DashboardView() {
       <MetricsChart
         title="MCP Metrics"
         scope="global"
-        chartType="bar"
         defaultMetricType="requests"
         defaultTimeRange="day"
         metricOptions={[

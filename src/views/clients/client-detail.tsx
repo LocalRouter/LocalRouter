@@ -226,7 +226,6 @@ export function ClientDetail({
             title={`${client.name} - LLM Metrics`}
             scope="api_key"
             scopeId={client.client_id}
-            chartType="bar"
             defaultMetricType="requests"
             defaultTimeRange="day"
             refreshTrigger={refreshTrigger}
@@ -236,7 +235,6 @@ export function ClientDetail({
             title={`${client.name} - MCP Metrics`}
             scope="client"
             scopeId={client.client_id}
-            chartType="bar"
             defaultMetricType="requests"
             defaultTimeRange="day"
             metricOptions={[

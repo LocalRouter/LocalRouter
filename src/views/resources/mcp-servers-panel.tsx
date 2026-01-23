@@ -568,7 +568,6 @@ export function McpServersPanel({
                 title="MCP Metrics"
                 scope="server"
                 scopeId={selectedServer.id}
-                chartType="bar"
                 defaultMetricType="requests"
                 metricOptions={[
                   { id: "requests", label: "Requests" },

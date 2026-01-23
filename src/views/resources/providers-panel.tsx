@@ -253,7 +253,6 @@ export function ProvidersPanel({
                 title="Provider Metrics"
                 scope="provider"
                 scopeId={selectedProvider.instance_name}
-                chartType="bar"
                 defaultMetricType="requests"
                 refreshTrigger={refreshTrigger}
                 height={250}

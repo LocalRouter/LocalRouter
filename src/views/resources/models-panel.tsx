@@ -251,7 +251,6 @@ export function ModelsPanel({
                 title="Model Metrics"
                 scope="model"
                 scopeId={`${selectedModel.provider_instance}/${selectedModel.model_id}`}
-                chartType="bar"
                 defaultMetricType="requests"
                 refreshTrigger={refreshTrigger}
                 height={250}
