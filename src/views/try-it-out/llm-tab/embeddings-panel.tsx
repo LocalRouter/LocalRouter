@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react"
+import { useState, useCallback, useMemo } from "react"
 import { Hash, RefreshCw, Copy, Check, ArrowRightLeft } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card"
 import { Button } from "@/components/ui/Button"
@@ -24,18 +24,55 @@ interface EmbeddingResult {
   timestamp: Date
 }
 
+interface Model {
+  id: string
+  object: string
+  owned_by: string
+}
+
 interface EmbeddingsPanelProps {
   openaiClient: OpenAI | null
   isReady: boolean
+  mode: "client" | "strategy" | "direct"
+  selectedProvider?: string
+  models: Model[]
 }
 
-type EmbeddingModel = "text-embedding-3-small" | "text-embedding-3-large" | "text-embedding-ada-002"
+// Known embedding model patterns by provider
+const EMBEDDING_MODEL_PATTERNS: Record<string, RegExp[]> = {
+  openai: [/^text-embedding/i, /^embedding/i],
+  ollama: [/embed/i, /nomic/i, /bge/i, /e5/i, /gte/i, /mxbai/i],
+  togetherai: [/bert/i, /bge/i, /e5/i, /embed/i],
+  gemini: [/^text-embedding/i, /^embedding/i],
+  voyage: [/^voyage/i],
+  cohere: [/^embed/i],
+  deepinfra: [/bge/i, /e5/i, /gte/i, /embed/i],
+}
 
-const EMBEDDING_MODELS: { value: EmbeddingModel; label: string; dimensions: number }[] = [
-  { value: "text-embedding-3-small", label: "text-embedding-3-small", dimensions: 1536 },
-  { value: "text-embedding-3-large", label: "text-embedding-3-large", dimensions: 3072 },
-  { value: "text-embedding-ada-002", label: "text-embedding-ada-002", dimensions: 1536 },
-]
+// Check if a model is likely an embedding model
+function isEmbeddingModel(modelId: string, provider?: string): boolean {
+  const lowerModelId = modelId.toLowerCase()
+
+  // Check against known patterns for specific provider
+  if (provider) {
+    const providerLower = provider.toLowerCase()
+    const patterns = EMBEDDING_MODEL_PATTERNS[providerLower]
+    if (patterns) {
+      for (const pattern of patterns) {
+        if (pattern.test(lowerModelId)) return true
+      }
+    }
+  }
+
+  // Check all patterns if no provider or no match yet
+  for (const patterns of Object.values(EMBEDDING_MODEL_PATTERNS)) {
+    for (const pattern of patterns) {
+      if (pattern.test(lowerModelId)) return true
+    }
+  }
+
+  return false
+}
 
 // Calculate cosine similarity between two vectors
 function cosineSimilarity(a: number[], b: number[]): number {
@@ -51,9 +88,9 @@ function cosineSimilarity(a: number[], b: number[]): number {
   return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB))
 }
 
-export function EmbeddingsPanel({ openaiClient, isReady }: EmbeddingsPanelProps) {
+export function EmbeddingsPanel({ openaiClient, isReady, mode, selectedProvider, models }: EmbeddingsPanelProps) {
   const [text, setText] = useState("")
-  const [model, setModel] = useState<EmbeddingModel>("text-embedding-3-small")
+  const [selectedModel, setSelectedModel] = useState<string>("")
   const [isGenerating, setIsGenerating] = useState(false)
   const [results, setResults] = useState<EmbeddingResult[]>([])
   const [error, setError] = useState<string | null>(null)
@@ -63,15 +100,36 @@ export function EmbeddingsPanel({ openaiClient, isReady }: EmbeddingsPanelProps)
   const [compareMode, setCompareMode] = useState(false)
   const [selectedForCompare, setSelectedForCompare] = useState<string[]>([])
 
+  // Filter to embedding-capable models
+  const embeddingModels = useMemo(() => {
+    return models.filter(m => isEmbeddingModel(m.id, mode === "direct" ? selectedProvider : undefined))
+  }, [models, mode, selectedProvider])
+
+  // Auto-select first embedding model when available
+  useMemo(() => {
+    if (!selectedModel && embeddingModels.length > 0) {
+      setSelectedModel(embeddingModels[0].id)
+    }
+  }, [embeddingModels, selectedModel])
+
+  // Get effective model string (with provider prefix for direct mode)
+  const getEffectiveModel = useCallback(() => {
+    if (mode === "direct" && selectedProvider && selectedModel) {
+      return `${selectedProvider}/${selectedModel}`
+    }
+    return selectedModel
+  }, [mode, selectedProvider, selectedModel])
+
   const handleGenerate = useCallback(async () => {
-    if (!openaiClient || !text.trim()) return
+    if (!openaiClient || !text.trim() || !selectedModel) return
 
     setIsGenerating(true)
     setError(null)
 
     try {
+      const effectiveModel = getEffectiveModel()
       const response = await openaiClient.embeddings.create({
-        model,
+        model: effectiveModel,
         input: text.trim(),
       })
 
@@ -79,7 +137,7 @@ export function EmbeddingsPanel({ openaiClient, isReady }: EmbeddingsPanelProps)
       const result: EmbeddingResult = {
         id: crypto.randomUUID(),
         text: text.trim(),
-        model,
+        model: selectedModel,
         dimensions: embeddingData.embedding.length,
         embedding: embeddingData.embedding,
         timestamp: new Date(),
@@ -92,7 +150,7 @@ export function EmbeddingsPanel({ openaiClient, isReady }: EmbeddingsPanelProps)
     } finally {
       setIsGenerating(false)
     }
-  }, [openaiClient, text, model])
+  }, [openaiClient, text, selectedModel, getEffectiveModel])
 
   const handleCopy = async (result: EmbeddingResult) => {
     await navigator.clipboard.writeText(JSON.stringify(result.embedding))
@@ -133,6 +191,28 @@ export function EmbeddingsPanel({ openaiClient, isReady }: EmbeddingsPanelProps)
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
+          {/* Model Selector */}
+          <div className="space-y-2">
+            <Label>Embedding Model</Label>
+            <Select value={selectedModel} onValueChange={setSelectedModel}>
+              <SelectTrigger>
+                <SelectValue placeholder={embeddingModels.length === 0 ? "No embedding models" : "Select model"} />
+              </SelectTrigger>
+              <SelectContent>
+                {embeddingModels.map((m) => (
+                  <SelectItem key={m.id} value={m.id}>
+                    {m.id}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {embeddingModels.length === 0 && (
+              <p className="text-xs text-muted-foreground">
+                No embedding models found for current provider
+              </p>
+            )}
+          </div>
+
           {/* Text Input */}
           <div className="space-y-2">
             <Label>Text to embed</Label>
@@ -145,42 +225,23 @@ export function EmbeddingsPanel({ openaiClient, isReady }: EmbeddingsPanelProps)
             />
           </div>
 
-          {/* Model Selection */}
-          <div className="flex items-center gap-4">
-            <div className="flex-1 space-y-2">
-              <Label>Model</Label>
-              <Select value={model} onValueChange={(v: string) => setModel(v as EmbeddingModel)}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {EMBEDDING_MODELS.map((m) => (
-                    <SelectItem key={m.value} value={m.value}>
-                      {m.label} ({m.dimensions}d)
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            <Button
-              onClick={handleGenerate}
-              disabled={!isReady || !text.trim() || isGenerating}
-              className="mt-6"
-            >
-              {isGenerating ? (
-                <>
-                  <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
-                  Generating...
-                </>
-              ) : (
-                <>
-                  <Hash className="h-4 w-4 mr-2" />
-                  Generate
-                </>
-              )}
-            </Button>
-          </div>
+          {/* Generate Button */}
+          <Button
+            onClick={handleGenerate}
+            disabled={!isReady || !text.trim() || !selectedModel || isGenerating}
+          >
+            {isGenerating ? (
+              <>
+                <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                Generating...
+              </>
+            ) : (
+              <>
+                <Hash className="h-4 w-4 mr-2" />
+                Generate
+              </>
+            )}
+          </Button>
 
           {error && (
             <div className="p-3 bg-destructive/10 text-destructive rounded-md text-sm">
