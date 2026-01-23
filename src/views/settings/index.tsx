@@ -2,7 +2,9 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { ServerTab } from "./server-tab"
 import { RoutingTab } from "./routing-tab"
 import { RouteLLMTab } from "./routellm-tab"
+import { LoggingTab } from "./logging-tab"
 import { UpdatesTab } from "./updates-tab"
+import { AboutTab } from "./about-tab"
 import { DocsTab } from "./docs-tab"
 
 interface SettingsViewProps {
@@ -52,7 +54,9 @@ export function SettingsView({ activeSubTab, onTabChange }: SettingsViewProps) {
           <TabsTrigger value="server">Server</TabsTrigger>
           <TabsTrigger value="routing">Routing</TabsTrigger>
           <TabsTrigger value="routellm">RouteLLM</TabsTrigger>
+          <TabsTrigger value="logging">Logging</TabsTrigger>
           <TabsTrigger value="updates">Updates</TabsTrigger>
+          <TabsTrigger value="about">About</TabsTrigger>
           {isDev && <TabsTrigger value="docs">Docs</TabsTrigger>}
         </TabsList>
 
@@ -71,8 +75,16 @@ export function SettingsView({ activeSubTab, onTabChange }: SettingsViewProps) {
           <RouteLLMTab />
         </TabsContent>
 
+        <TabsContent value="logging">
+          <LoggingTab />
+        </TabsContent>
+
         <TabsContent value="updates">
           <UpdatesTab />
+        </TabsContent>
+
+        <TabsContent value="about">
+          <AboutTab />
         </TabsContent>
 
         {isDev && (
