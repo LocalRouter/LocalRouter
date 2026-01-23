@@ -404,8 +404,14 @@ impl LogSummary {
         all_latencies.sort_unstable();
 
         let median_latency_ms = if !all_latencies.is_empty() {
-            let mid = all_latencies.len() / 2;
-            all_latencies[mid]
+            let len = all_latencies.len();
+            if len % 2 == 0 {
+                // For even-length arrays, average the two middle elements
+                (all_latencies[len / 2 - 1] + all_latencies[len / 2]) / 2
+            } else {
+                // For odd-length arrays, take the middle element
+                all_latencies[len / 2]
+            }
         } else {
             0
         };

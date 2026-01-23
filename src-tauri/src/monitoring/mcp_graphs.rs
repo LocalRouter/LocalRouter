@@ -287,7 +287,9 @@ impl McpGraphGenerator {
                 bucket.successful_requests += point.successful_requests;
                 bucket.failed_requests += point.failed_requests;
                 bucket.total_latency_ms += point.total_latency_ms;
-                bucket.latency_samples.extend(point.latency_samples.iter().cloned());
+                bucket
+                    .latency_samples
+                    .extend(point.latency_samples.iter().cloned());
 
                 // Merge method counts
                 for (method, metrics) in &point.method_counts {

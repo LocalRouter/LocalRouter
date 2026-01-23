@@ -447,7 +447,9 @@ impl GraphGenerator {
                 bucket.total_latency_ms += point.total_latency_ms;
                 bucket.successful_requests += point.successful_requests;
                 bucket.failed_requests += point.failed_requests;
-                bucket.latency_samples.extend(point.latency_samples.iter().cloned());
+                bucket
+                    .latency_samples
+                    .extend(point.latency_samples.iter().cloned());
             }
         }
 

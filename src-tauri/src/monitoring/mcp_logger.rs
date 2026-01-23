@@ -16,6 +16,8 @@ use tracing::{info, warn};
 
 use crate::utils::errors::{AppError, AppResult};
 
+use super::logger::AccessLogger;
+
 /// MCP access log entry in JSON Lines format
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpAccessLogEntry {
@@ -150,41 +152,10 @@ impl McpAccessLogger {
     }
 
     /// Get the OS-specific log directory (shared with LLM logs)
+    ///
+    /// Delegates to AccessLogger::get_log_directory() to avoid code duplication.
     fn get_log_directory() -> AppResult<PathBuf> {
-        #[cfg(target_os = "linux")]
-        {
-            // Try /var/log/localrouter first, fall back to ~/.localrouter/logs
-            let system_log = PathBuf::from("/var/log/localrouter");
-            if system_log.exists() || fs::create_dir_all(&system_log).is_ok() {
-                Ok(system_log)
-            } else {
-                let home = dirs::home_dir().ok_or_else(|| {
-                    AppError::Internal("Failed to get home directory".to_string())
-                })?;
-                Ok(home.join(".localrouter").join("logs"))
-            }
-        }
-
-        #[cfg(target_os = "macos")]
-        {
-            let home = dirs::home_dir()
-                .ok_or_else(|| AppError::Internal("Failed to get home directory".to_string()))?;
-            Ok(home.join("Library").join("Logs").join("LocalRouter"))
-        }
-
-        #[cfg(target_os = "windows")]
-        {
-            let app_data = std::env::var("APPDATA")
-                .map_err(|_| AppError::Internal("Failed to get APPDATA directory".to_string()))?;
-            Ok(PathBuf::from(app_data).join("LocalRouter").join("logs"))
-        }
-
-        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-        {
-            Err(AppError::Internal(
-                "Unsupported operating system".to_string(),
-            ))
-        }
+        AccessLogger::get_log_directory()
     }
 
     /// Get the log file path for a given date

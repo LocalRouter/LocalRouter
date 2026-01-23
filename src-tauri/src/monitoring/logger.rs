@@ -161,17 +161,21 @@ impl AccessLogger {
     }
 
     /// Get the OS-specific log directory
-    fn get_log_directory() -> AppResult<PathBuf> {
+    ///
+    /// This is the canonical implementation - use this everywhere to avoid inconsistencies.
+    pub fn get_log_directory() -> AppResult<PathBuf> {
         #[cfg(target_os = "linux")]
         {
-            // Try /var/log/localrouter first, fall back to ~/.localrouter/logs
-            let system_log = PathBuf::from("/var/log/localrouter");
-            if system_log.exists() || fs::create_dir_all(&system_log).is_ok() {
-                Ok(system_log)
+            // Use user's home directory for logs (consistent with config location)
+            // Follows XDG conventions: ~/.local/share/localrouter/logs
+            // Falls back to ~/.localrouter/logs for compatibility
+            let home = dirs::home_dir()
+                .ok_or_else(|| AppError::Internal("Failed to get home directory".to_string()))?;
+
+            // Try XDG data home first
+            if let Some(data_home) = dirs::data_local_dir() {
+                Ok(data_home.join("localrouter").join("logs"))
             } else {
-                let home = dirs::home_dir().ok_or_else(|| {
-                    AppError::Internal("Failed to get home directory".to_string())
-                })?;
                 Ok(home.join(".localrouter").join("logs"))
             }
         }
@@ -185,9 +189,15 @@ impl AccessLogger {
 
         #[cfg(target_os = "windows")]
         {
-            let app_data = std::env::var("APPDATA")
-                .map_err(|_| AppError::Internal("Failed to get APPDATA directory".to_string()))?;
-            Ok(PathBuf::from(app_data).join("LocalRouter").join("logs"))
+            // Use LOCALAPPDATA for logs (local to the machine, not roaming)
+            let local_app_data = std::env::var("LOCALAPPDATA")
+                .or_else(|_| std::env::var("APPDATA"))
+                .map_err(|_| {
+                    AppError::Internal("Failed to get LOCALAPPDATA directory".to_string())
+                })?;
+            Ok(PathBuf::from(local_app_data)
+                .join("LocalRouter")
+                .join("logs"))
         }
 
         #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
@@ -282,7 +292,11 @@ impl AccessLogger {
             if path.is_file() {
                 if let Some(filename) = path.file_name().and_then(|n| n.to_str()) {
                     // Parse date from filename (localrouter-YYYY-MM-DD.log)
-                    if filename.starts_with("localrouter-") && filename.ends_with(".log") {
+                    // Exclude MCP log files (localrouter-mcp-YYYY-MM-DD.log)
+                    if filename.starts_with("localrouter-")
+                        && !filename.starts_with("localrouter-mcp-")
+                        && filename.ends_with(".log")
+                    {
                         let date_str = &filename[12..22]; // Extract YYYY-MM-DD
 
                         if let Ok(file_date) =
