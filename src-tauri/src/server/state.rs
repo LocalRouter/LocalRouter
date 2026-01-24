@@ -52,8 +52,7 @@ pub struct SseConnectionManager {
     connections: DashMap<String, tokio::sync::mpsc::UnboundedSender<SseMessage>>,
     /// Map of (client_id, request_id) -> response sender for server-initiated requests
     /// Used to match responses from clients to pending server requests
-    pending_server_requests:
-        DashMap<String, tokio::sync::oneshot::Sender<JsonRpcResponse>>,
+    pending_server_requests: DashMap<String, tokio::sync::oneshot::Sender<JsonRpcResponse>>,
 }
 
 impl SseConnectionManager {
@@ -97,7 +96,8 @@ impl SseConnectionManager {
     /// Returns true if the message was sent, false if no connection exists
     pub fn send_response(&self, client_id: &str, response: JsonRpcResponse) -> bool {
         let response_id = response.id.clone();
-        let active_connections: Vec<String> = self.connections.iter().map(|e| e.key().clone()).collect();
+        let active_connections: Vec<String> =
+            self.connections.iter().map(|e| e.key().clone()).collect();
 
         tracing::debug!(
             "SseConnectionManager::send_response: looking for client_id={}, active_connections={:?}",
@@ -175,7 +175,8 @@ impl SseConnectionManager {
             let (response_tx, response_rx) = tokio::sync::oneshot::channel();
 
             // Store the pending request
-            self.pending_server_requests.insert(key.clone(), response_tx);
+            self.pending_server_requests
+                .insert(key.clone(), response_tx);
 
             match tx.send(SseMessage::Request(request)) {
                 Ok(_) => {
@@ -208,11 +209,7 @@ impl SseConnectionManager {
 
     /// Resolve a pending server-initiated request with a response from the client
     /// Returns true if the response was matched with a pending request
-    pub fn resolve_server_request(
-        &self,
-        client_id: &str,
-        response: JsonRpcResponse,
-    ) -> bool {
+    pub fn resolve_server_request(&self, client_id: &str, response: JsonRpcResponse) -> bool {
         let key = format!("{}:{}", client_id, response.id);
 
         if let Some((_, tx)) = self.pending_server_requests.remove(&key) {
@@ -346,16 +343,18 @@ impl AppState {
         let access_log_enabled = logging_config.enable_access_log;
 
         // Initialize access logger with configured retention and enabled status
-        let access_logger = AccessLogger::new(retention_days, access_log_enabled).unwrap_or_else(|e| {
-            tracing::error!("Failed to initialize access logger: {}", e);
-            panic!("Access logger initialization failed");
-        });
+        let access_logger =
+            AccessLogger::new(retention_days, access_log_enabled).unwrap_or_else(|e| {
+                tracing::error!("Failed to initialize access logger: {}", e);
+                panic!("Access logger initialization failed");
+            });
 
         // Initialize MCP access logger with configured retention and enabled status
-        let mcp_access_logger = McpAccessLogger::new(retention_days, access_log_enabled).unwrap_or_else(|e| {
-            tracing::error!("Failed to initialize MCP access logger: {}", e);
-            panic!("MCP access logger initialization failed");
-        });
+        let mcp_access_logger = McpAccessLogger::new(retention_days, access_log_enabled)
+            .unwrap_or_else(|e| {
+                tracing::error!("Failed to initialize MCP access logger: {}", e);
+                panic!("MCP access logger initialization failed");
+            });
 
         // Create broadcast channel for MCP notifications
         // Capacity of 1000 messages - old messages dropped if no subscribers are reading fast enough

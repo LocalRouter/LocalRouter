@@ -16,7 +16,7 @@ use chrono::Utc;
 use futures::stream::StreamExt;
 use uuid::Uuid;
 
-use super::helpers::get_enabled_client_from_manager;
+use super::helpers::{get_client_with_strategy, get_enabled_client_from_manager};
 use crate::providers::{
     ChatMessage as ProviderChatMessage, ChatMessageContent as ProviderMessageContent,
     CompletionRequest as ProviderCompletionRequest, ContentPart as ProviderContentPart,
@@ -55,7 +55,7 @@ pub async fn chat_completions(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     client_auth: Option<Extension<ClientAuthContext>>,
-    Json(request): Json<ChatCompletionRequest>,
+    Json(mut request): Json<ChatCompletionRequest>,
 ) -> ApiResult<Response> {
     // Emit LLM request event to trigger tray icon indicator
     state.emit_event("llm-request", "chat");
@@ -63,8 +63,26 @@ pub async fn chat_completions(
     // Validate request
     validate_request(&request)?;
 
-    // Validate model access based on API key's model selection
-    validate_model_access(&state, &auth, &request).await?;
+    // Check if auto-routing is enabled for this client's strategy
+    // If so, override the requested model with localrouter/auto
+    if let Ok((_client, strategy)) = get_client_with_strategy(&state, &auth.api_key_id) {
+        if let Some(auto_config) = &strategy.auto_config {
+            if auto_config.enabled {
+                tracing::info!(
+                    "Auto-routing enabled: overriding '{}' with '{}'",
+                    request.model,
+                    auto_config.model_name
+                );
+                request.model = "localrouter/auto".to_string();
+            }
+        }
+    }
+
+    // Skip model access validation for localrouter/auto (handled by router)
+    if request.model != "localrouter/auto" {
+        // Validate model access based on API key's model selection
+        validate_model_access(&state, &auth, &request).await?;
+    }
 
     // Validate client provider access (if using client auth)
     validate_client_provider_access(&state, client_auth.as_ref().map(|e| &e.0), &request).await?;

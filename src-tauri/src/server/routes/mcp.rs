@@ -432,32 +432,33 @@ pub async fn mcp_gateway_handler(
             }
 
             // Parse sampling request from params
-            let sampling_req: crate::mcp::protocol::SamplingRequest =
-                match request.params.as_ref() {
-                    Some(params) => match serde_json::from_value(params.clone()) {
-                        Ok(req) => req,
-                        Err(e) => {
-                            let error = crate::mcp::protocol::JsonRpcError::invalid_params(
-                                format!("Invalid sampling request: {}", e),
-                            );
-                            let response = crate::mcp::protocol::JsonRpcResponse::error(
-                                request.id.unwrap_or(serde_json::Value::Null),
-                                error,
-                            );
-                            return send_response(&state.sse_connection_manager, &client_id, response);
-                        }
-                    },
-                    None => {
-                        let error = crate::mcp::protocol::JsonRpcError::invalid_params(
-                            "Missing params for sampling request".to_string(),
-                        );
+            let sampling_req: crate::mcp::protocol::SamplingRequest = match request.params.as_ref()
+            {
+                Some(params) => match serde_json::from_value(params.clone()) {
+                    Ok(req) => req,
+                    Err(e) => {
+                        let error = crate::mcp::protocol::JsonRpcError::invalid_params(format!(
+                            "Invalid sampling request: {}",
+                            e
+                        ));
                         let response = crate::mcp::protocol::JsonRpcResponse::error(
                             request.id.unwrap_or(serde_json::Value::Null),
                             error,
                         );
                         return send_response(&state.sse_connection_manager, &client_id, response);
                     }
-                };
+                },
+                None => {
+                    let error = crate::mcp::protocol::JsonRpcError::invalid_params(
+                        "Missing params for sampling request".to_string(),
+                    );
+                    let response = crate::mcp::protocol::JsonRpcResponse::error(
+                        request.id.unwrap_or(serde_json::Value::Null),
+                        error,
+                    );
+                    return send_response(&state.sse_connection_manager, &client_id, response);
+                }
+            };
 
             // Convert MCP sampling request to provider completion request
             let mut completion_req =
@@ -607,7 +608,9 @@ pub async fn mcp_server_handler(
 
     // Check if this is a response to a server-initiated request
     // Responses have "result" or "error" field but no "method" field
-    if message.get("method").is_none() && (message.get("result").is_some() || message.get("error").is_some()) {
+    if message.get("method").is_none()
+        && (message.get("result").is_some() || message.get("error").is_some())
+    {
         // This is a response to a server-initiated request
         match serde_json::from_value::<JsonRpcResponse>(message) {
             Ok(response) => {
@@ -618,7 +621,10 @@ pub async fn mcp_server_handler(
                 );
 
                 // Try to resolve a pending server request
-                if state.sse_connection_manager.resolve_server_request(&sse_connection_key, response) {
+                if state
+                    .sse_connection_manager
+                    .resolve_server_request(&sse_connection_key, response)
+                {
                     return (axum::http::StatusCode::ACCEPTED, "").into_response();
                 } else {
                     tracing::warn!(
@@ -739,7 +745,11 @@ pub async fn mcp_server_handler(
                                 request.id.unwrap_or(serde_json::Value::Null),
                                 error,
                             );
-                            return send_response(&state.sse_connection_manager, &sse_connection_key, response);
+                            return send_response(
+                                &state.sse_connection_manager,
+                                &sse_connection_key,
+                                response,
+                            );
                         }
                     },
                     None => {
@@ -750,7 +760,11 @@ pub async fn mcp_server_handler(
                             request.id.unwrap_or(serde_json::Value::Null),
                             error,
                         );
-                        return send_response(&state.sse_connection_manager, &sse_connection_key, response);
+                        return send_response(
+                            &state.sse_connection_manager,
+                            &sse_connection_key,
+                            response,
+                        );
                     }
                 };
 
@@ -769,7 +783,11 @@ pub async fn mcp_server_handler(
                             request.id.unwrap_or(serde_json::Value::Null),
                             error,
                         );
-                        return send_response(&state.sse_connection_manager, &sse_connection_key, response);
+                        return send_response(
+                            &state.sse_connection_manager,
+                            &sse_connection_key,
+                            response,
+                        );
                     }
                 };
 
@@ -791,7 +809,11 @@ pub async fn mcp_server_handler(
                         request.id.unwrap_or(serde_json::Value::Null),
                         error,
                     );
-                    return send_response(&state.sse_connection_manager, &sse_connection_key, response);
+                    return send_response(
+                        &state.sse_connection_manager,
+                        &sse_connection_key,
+                        response,
+                    );
                 }
             };
 
@@ -811,7 +833,11 @@ pub async fn mcp_server_handler(
                             request.id.unwrap_or(serde_json::Value::Null),
                             error,
                         );
-                        return send_response(&state.sse_connection_manager, &sse_connection_key, response);
+                        return send_response(
+                            &state.sse_connection_manager,
+                            &sse_connection_key,
+                            response,
+                        );
                     }
                 };
 
@@ -838,7 +864,11 @@ pub async fn mcp_server_handler(
                                 request.id.unwrap_or(serde_json::Value::Null),
                                 error,
                             );
-                            return send_response(&state.sse_connection_manager, &sse_connection_key, response);
+                            return send_response(
+                                &state.sse_connection_manager,
+                                &sse_connection_key,
+                                response,
+                            );
                         }
                     },
                     None => {
@@ -849,7 +879,11 @@ pub async fn mcp_server_handler(
                             request.id.unwrap_or(serde_json::Value::Null),
                             error,
                         );
-                        return send_response(&state.sse_connection_manager, &sse_connection_key, response);
+                        return send_response(
+                            &state.sse_connection_manager,
+                            &sse_connection_key,
+                            response,
+                        );
                     }
                 };
 

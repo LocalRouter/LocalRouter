@@ -41,7 +41,34 @@ pub async fn list_models<B>(
     // Get enabled client and strategy
     let (_client, strategy) = get_client_with_strategy(&state, &auth_context.api_key_id)?;
 
-    // Get all models from provider registry
+    // If auto-routing is enabled, return ONLY the auto router model
+    // This simplifies the client experience - they see one model to use
+    if let Some(auto_config) = &strategy.auto_config {
+        if auto_config.enabled {
+            return Ok(Json(ModelsResponse {
+                object: "list".to_string(),
+                data: vec![ModelData {
+                    id: auto_config.model_name.clone(),
+                    object: "model".to_string(),
+                    owned_by: "localrouter".to_string(),
+                    created: Some(0),
+                    provider: "localrouter".to_string(),
+                    parameter_count: None,
+                    context_window: 0, // Virtual model, delegates to actual models
+                    supports_streaming: true,
+                    capabilities: vec!["chat".to_string(), "completion".to_string()],
+                    pricing: None,
+                    detailed_capabilities: None,
+                    features: None,
+                    supported_parameters: None,
+                    performance: None,
+                    catalog_info: None,
+                }],
+            }));
+        }
+    }
+
+    // Auto-routing disabled: return allowed models filtered by strategy
     let all_models = state
         .provider_registry
         .list_all_models()
@@ -57,33 +84,9 @@ pub async fn list_models<B>(
         })
         .collect();
 
-    // Convert to API response format
+    // Convert to API response format with pricing information
     let mut model_data_vec = Vec::new();
 
-    // Add localrouter/auto virtual model ONLY if auto_config is enabled
-    if let Some(auto_config) = &strategy.auto_config {
-        if auto_config.enabled {
-            model_data_vec.push(ModelData {
-                id: "localrouter/auto".to_string(),
-                object: "model".to_string(),
-                owned_by: "localrouter".to_string(),
-                created: Some(0),
-                provider: "localrouter".to_string(),
-                parameter_count: None,
-                context_window: 0, // Virtual model, delegates to actual models
-                supports_streaming: false, // Auto-routing not supported for streaming
-                capabilities: vec!["chat".to_string(), "completion".to_string()],
-                pricing: None,
-                detailed_capabilities: None,
-                features: None,
-                supported_parameters: None,
-                performance: None,
-                catalog_info: None,
-            });
-        }
-    }
-
-    // Add real models with pricing information
     for model_info in filtered_models {
         let mut model_data: ModelData = (&model_info).into();
 
@@ -141,31 +144,40 @@ pub async fn get_model<B>(
     // Get enabled client and strategy
     let (_client, strategy) = get_client_with_strategy(&state, &auth_context.api_key_id)?;
 
-    // Special handling for localrouter/auto virtual model
-    if model_id == "localrouter/auto" {
-        if let Some(auto_config) = &strategy.auto_config {
-            if auto_config.enabled {
-                return Ok(Json(ModelData {
-                    id: "localrouter/auto".to_string(),
-                    object: "model".to_string(),
-                    owned_by: "localrouter".to_string(),
-                    created: Some(0),
-                    provider: "localrouter".to_string(),
-                    parameter_count: None,
-                    context_window: 0, // Virtual model, delegates to actual models
-                    supports_streaming: false, // Auto-routing not supported for streaming
-                    capabilities: vec!["chat".to_string(), "completion".to_string()],
-                    pricing: None,
-                    detailed_capabilities: None,
-                    features: None,
-                    supported_parameters: None,
-                    performance: None,
-                    catalog_info: None,
-                }));
-            }
+    // Special handling for auto router virtual model
+    if let Some(auto_config) = &strategy.auto_config {
+        if auto_config.enabled && model_id == auto_config.model_name {
+            return Ok(Json(ModelData {
+                id: auto_config.model_name.clone(),
+                object: "model".to_string(),
+                owned_by: "localrouter".to_string(),
+                created: Some(0),
+                provider: "localrouter".to_string(),
+                parameter_count: None,
+                context_window: 0, // Virtual model, delegates to actual models
+                supports_streaming: true,
+                capabilities: vec!["chat".to_string(), "completion".to_string()],
+                pricing: None,
+                detailed_capabilities: None,
+                features: None,
+                supported_parameters: None,
+                performance: None,
+                catalog_info: None,
+            }));
         }
+    }
+
+    // Check if requesting auto router model but it's not enabled
+    if model_id == "localrouter/auto"
+        || model_id.starts_with("localrouter/")
+        || (strategy
+            .auto_config
+            .as_ref()
+            .map(|c| model_id == c.model_name)
+            .unwrap_or(false))
+    {
         return Err(ApiErrorResponse::not_found(
-            "localrouter/auto is not enabled for this client".to_string(),
+            "Auto router model is not enabled for this client".to_string(),
         ));
     }
 
