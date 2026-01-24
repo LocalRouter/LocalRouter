@@ -9,6 +9,8 @@ use image::{codecs::png::PngEncoder, ImageEncoder, Rgba, RgbaImage};
 use std::io::Cursor;
 use tracing::error;
 
+use crate::providers::health_cache::AggregateHealthStatus;
+
 /// Data point for graph rendering
 #[derive(Debug, Clone)]
 pub struct DataPoint {
@@ -49,20 +51,88 @@ impl GraphConfig {
     }
 }
 
+/// Status dot colors
+pub struct StatusDotColors;
+
+impl StatusDotColors {
+    /// Green color for healthy status (#22c55e)
+    pub fn green() -> Rgba<u8> {
+        Rgba([34, 197, 94, 255])
+    }
+
+    /// Yellow color for degraded/warning status (#eab308)
+    pub fn yellow() -> Rgba<u8> {
+        Rgba([234, 179, 8, 255])
+    }
+
+    /// Red color for unhealthy/down status (#ef4444)
+    pub fn red() -> Rgba<u8> {
+        Rgba([239, 68, 68, 255])
+    }
+
+    /// Get color for aggregate health status
+    pub fn for_status(status: AggregateHealthStatus) -> Rgba<u8> {
+        match status {
+            AggregateHealthStatus::Green => Self::green(),
+            AggregateHealthStatus::Yellow => Self::yellow(),
+            AggregateHealthStatus::Red => Self::red(),
+        }
+    }
+}
+
+/// Draw a filled circle (status dot) on the image
+///
+/// # Arguments
+/// * `img` - The image to draw on
+/// * `center_x` - X coordinate of the center
+/// * `center_y` - Y coordinate of the center
+/// * `radius` - Radius of the circle
+/// * `color` - Fill color
+fn draw_filled_circle(
+    img: &mut RgbaImage,
+    center_x: i32,
+    center_y: i32,
+    radius: i32,
+    color: Rgba<u8>,
+) {
+    let width = img.width() as i32;
+    let height = img.height() as i32;
+
+    for y in (center_y - radius)..=(center_y + radius) {
+        for x in (center_x - radius)..=(center_x + radius) {
+            // Check if within image bounds
+            if x >= 0 && x < width && y >= 0 && y < height {
+                // Check if within circle using distance formula
+                let dx = x - center_x;
+                let dy = y - center_y;
+                if dx * dx + dy * dy <= radius * radius {
+                    img.put_pixel(x as u32, y as u32, color);
+                }
+            }
+        }
+    }
+}
+
 /// Generate a 32x32 PNG sparkline graph from data points
 ///
 /// Creates a filled vertical bar chart showing token usage over time.
 /// Automatically normalizes values to fit the 32px height.
 /// Always renders exactly 32 bars (one per pixel width), padding with zeros if needed.
 /// Includes a 1-pixel border around the graph.
+/// Optionally includes a health status dot in the top-left corner.
 ///
 /// # Arguments
 /// * `data_points` - Time-series data points (sorted by timestamp, oldest to newest)
 /// * `config` - Rendering configuration (colors, template mode)
+/// * `health_status` - Optional aggregate health status for status dot overlay
 ///
 /// # Returns
 /// PNG-encoded image as bytes, or None if generation fails
-pub fn generate_graph(data_points: &[DataPoint], config: &GraphConfig) -> Option<Vec<u8>> {
+pub fn generate_graph(
+    data_points: &[DataPoint],
+    config: &GraphConfig,
+    health_status: Option<AggregateHealthStatus>,
+) -> Option<Vec<u8>> {
     const WIDTH: u32 = 32;
     const HEIGHT: u32 = 32;
     const BORDER_WIDTH: u32 = 1;
@@ -224,6 +294,14 @@ pub fn generate_graph(data_points: &[DataPoint], config: &GraphConfig) -> Option
         }
     }
 
+    // Draw health status dot if provided
+    // Position: top-left corner, centered at (5, 5) with radius 3
+    // This gives a ~6x6 pixel dot that's clearly visible
+    if let Some(status) = health_status {
+        let dot_color = StatusDotColors::for_status(status);
+        draw_filled_circle(&mut img, 5, 5, 3, dot_color);
+    }
+
     encode_png(&img)
 }
 
@@ -266,7 +344,7 @@ mod tests {
     #[test]
     fn test_generate_empty_graph() {
         let config = GraphConfig::macos_template();
-        let png = generate_graph(&[], &config);
+        let png = generate_graph(&[], &config, None);
         assert!(png.is_some());
         assert!(!png.unwrap().is_empty());
     }
@@ -278,7 +356,7 @@ mod tests {
             timestamp: Utc::now(),
             total_tokens: 1000,
         }];
-        let png = generate_graph(&data, &config);
+        let png = generate_graph(&data, &config, None);
         assert!(png.is_some());
         assert!(!png.unwrap().is_empty());
     }
@@ -297,7 +375,7 @@ mod tests {
             });
         }
 
-        let png = generate_graph(&data, &config);
+        let png = generate_graph(&data, &config, None);
         assert!(png.is_some());
         assert!(!png.unwrap().is_empty());
     }
@@ -323,7 +401,7 @@ mod tests {
             },
         ];
 
-        let png = generate_graph(&data, &config);
+        let png = generate_graph(&data, &config, None);
         assert!(png.is_some());
         assert!(!png.unwrap().is_empty());
     }
@@ -349,7 +427,7 @@ mod tests {
             },
         ];
 
-        let png = generate_graph(&data, &config);
+        let png = generate_graph(&data, &config, None);
         assert!(png.is_some());
         assert!(!png.unwrap().is_empty());
     }
@@ -395,7 +473,7 @@ mod tests {
             total_tokens: 1000,
         });
 
-        let png = generate_graph(&data, &config);
+        let png = generate_graph(&data, &config, None);
         assert!(png.is_some());
         assert!(!png.unwrap().is_empty());
 
@@ -417,10 +495,41 @@ mod tests {
             });
         }
 
-        let png = generate_graph(&data, &config);
+        let png = generate_graph(&data, &config, None);
         assert!(png.is_some());
         assert!(!png.unwrap().is_empty());
 
         // All bars should have the same height since token counts are consistent
+    }
+
+    #[test]
+    fn test_health_status_dot_green() {
+        let config = GraphConfig::macos_template();
+        let png = generate_graph(&[], &config, Some(AggregateHealthStatus::Green));
+        assert!(png.is_some());
+        assert!(!png.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_health_status_dot_yellow() {
+        let config = GraphConfig::macos_template();
+        let png = generate_graph(&[], &config, Some(AggregateHealthStatus::Yellow));
+        assert!(png.is_some());
+        assert!(!png.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_health_status_dot_red() {
+        let config = GraphConfig::macos_template();
+        let png = generate_graph(&[], &config, Some(AggregateHealthStatus::Red));
+        assert!(png.is_some());
+        assert!(!png.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_status_dot_colors() {
+        assert_eq!(StatusDotColors::green(), Rgba([34, 197, 94, 255]));
+        assert_eq!(StatusDotColors::yellow(), Rgba([234, 179, 8, 255]));
+        assert_eq!(StatusDotColors::red(), Rgba([239, 68, 68, 255]));
     }
 }

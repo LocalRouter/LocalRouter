@@ -491,6 +491,116 @@ pub async fn check_single_provider_health(
     Ok(())
 }
 
+// ============================================================================
+// Centralized Health Cache Commands
+// ============================================================================
+
+/// Get the current cached health state
+///
+/// Returns the centralized health cache state including:
+/// - Server running status and port
+/// - Provider health statuses
+/// - MCP server health statuses
+/// - Last refresh timestamp
+/// - Aggregate health status (red/yellow/green)
+#[tauri::command]
+pub async fn get_health_cache(
+    app_state: State<'_, Arc<crate::server::state::AppState>>,
+) -> Result<crate::providers::health_cache::HealthCacheState, String> {
+    Ok(app_state.health_cache.get())
+}
+
+/// Refresh all health checks
+///
+/// Triggers a full refresh of all provider and MCP server health checks.
+/// Results are emitted via "health-status-changed" event as they complete.
+/// Returns immediately after starting the refresh.
+#[tauri::command]
+pub async fn refresh_all_health(
+    app: tauri::AppHandle,
+    app_state: State<'_, Arc<crate::server::state::AppState>>,
+    config_manager: State<'_, ConfigManager>,
+) -> Result<(), String> {
+    let health_cache = app_state.health_cache.clone();
+    let provider_registry = app_state.provider_registry.clone();
+    let mcp_server_manager = app_state.mcp_server_manager.clone();
+    let timeout_secs = config_manager.get().health_check.timeout_secs;
+
+    // Spawn the refresh in the background
+    tokio::spawn(async move {
+        tracing::info!("Manual health refresh triggered...");
+
+        // Check all providers
+        let providers = provider_registry.list_providers();
+        for provider_info in providers {
+            if let Some(provider) = provider_registry.get_provider(&provider_info.instance_name) {
+                let health = tokio::time::timeout(
+                    std::time::Duration::from_secs(timeout_secs),
+                    provider.health_check(),
+                )
+                .await;
+
+                let item_health = match health {
+                    Ok(h) => {
+                        use crate::providers::health_cache::ItemHealth;
+                        use crate::providers::HealthStatus;
+                        match h.status {
+                            HealthStatus::Healthy => ItemHealth::healthy(
+                                provider_info.instance_name.clone(),
+                                h.latency_ms,
+                            ),
+                            HealthStatus::Degraded => ItemHealth::degraded(
+                                provider_info.instance_name.clone(),
+                                h.latency_ms,
+                                h.error_message.unwrap_or_else(|| "Degraded".to_string()),
+                            ),
+                            HealthStatus::Unhealthy => ItemHealth::unhealthy(
+                                provider_info.instance_name.clone(),
+                                h.error_message.unwrap_or_else(|| "Unhealthy".to_string()),
+                            ),
+                        }
+                    }
+                    Err(_) => {
+                        use crate::providers::health_cache::ItemHealth;
+                        ItemHealth::unhealthy(
+                            provider_info.instance_name.clone(),
+                            format!("Health check timeout ({}s)", timeout_secs),
+                        )
+                    }
+                };
+                health_cache.update_provider(&provider_info.instance_name, item_health);
+            }
+        }
+
+        // Check all MCP servers
+        let mcp_health = mcp_server_manager.get_all_health().await;
+        for mcp_server_health in mcp_health {
+            use crate::mcp::manager::HealthStatus as McpHealthStatus;
+            use crate::providers::health_cache::ItemHealth;
+            let server_id = mcp_server_health.server_id.clone();
+            let server_name = mcp_server_health.server_name.clone();
+            let item_health = match mcp_server_health.status {
+                McpHealthStatus::Ready => ItemHealth::ready(server_name),
+                McpHealthStatus::Healthy => {
+                    ItemHealth::healthy(server_name, mcp_server_health.latency_ms)
+                }
+                McpHealthStatus::Unhealthy | McpHealthStatus::Unknown => ItemHealth::unhealthy(
+                    server_name,
+                    mcp_server_health
+                        .error
+                        .unwrap_or_else(|| "Unhealthy".to_string()),
+                ),
+            };
+            health_cache.update_mcp_server(&server_id, item_health);
+        }
+
+        health_cache.mark_refresh();
+        tracing::info!("Manual health refresh completed");
+    });
+
+    Ok(())
+}
+
 /// List models from a specific provider instance
 ///
 /// # Arguments
@@ -1806,7 +1916,11 @@ pub async fn start_mcp_health_checks(
     app: tauri::AppHandle,
     mcp_manager: State<'_, Arc<McpServerManager>>,
 ) -> Result<Vec<String>, String> {
-    let server_ids: Vec<String> = mcp_manager.list_configs().iter().map(|c| c.id.clone()).collect();
+    let server_ids: Vec<String> = mcp_manager
+        .list_configs()
+        .iter()
+        .map(|c| c.id.clone())
+        .collect();
 
     let mcp_manager = mcp_manager.inner().clone();
     let app_handle = app.clone();

@@ -815,7 +815,10 @@ async fn handle_create_and_copy_api_key<R: Runtime>(app: &AppHandle<R>) -> tauri
         error!("Failed to emit strategies-changed event: {}", e);
     }
 
-    info!("Quick client created and API key copied to clipboard: {}", client.id);
+    info!(
+        "Quick client created and API key copied to clipboard: {}",
+        client.id
+    );
 
     Ok(())
 }
@@ -1378,10 +1381,16 @@ impl TrayGraphManager {
             }
         };
 
-        // Generate graph PNG
+        // Get health status from health cache (if available)
+        let health_status = app_handle
+            .try_state::<Arc<crate::server::state::AppState>>()
+            .map(|state| state.health_cache.aggregate_status());
+
+        // Generate graph PNG with health status dot overlay
         let graph_config = platform_graph_config();
-        let png_bytes = crate::ui::tray_graph::generate_graph(&data_points, &graph_config)
-            .ok_or_else(|| anyhow::anyhow!("Failed to generate graph PNG"))?;
+        let png_bytes =
+            crate::ui::tray_graph::generate_graph(&data_points, &graph_config, health_status)
+                .ok_or_else(|| anyhow::anyhow!("Failed to generate graph PNG"))?;
 
         // Update tray icon
         if let Some(tray) = app_handle.tray_by_id("main") {
