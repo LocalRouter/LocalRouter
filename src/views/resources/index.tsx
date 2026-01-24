@@ -1,19 +1,17 @@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { ProvidersPanel } from "./providers-panel"
-import { ModelsPanel } from "./models-panel"
 import { StrategiesPanel } from "./strategies-panel"
-import { McpServersPanel } from "./mcp-servers-panel"
 
-interface ResourcesViewProps {
+interface LlmProvidersViewProps {
   activeSubTab: string | null
   onTabChange: (view: string, subTab?: string | null) => void
 }
 
-export function ResourcesView({ activeSubTab, onTabChange }: ResourcesViewProps) {
+export function ResourcesView({ activeSubTab, onTabChange }: LlmProvidersViewProps) {
 
   // Parse subTab to determine which resource type and item is selected
-  // Format: "providers", "models", "mcp-servers"
-  // Or: "providers/instance-name", "mcp-servers/server-id"
+  // Format: "providers", "strategies"
+  // Or: "providers/instance-name", "strategies/strategy-id"
   const parseSubTab = (subTab: string | null) => {
     if (!subTab) return { resourceType: "providers", itemId: null }
     const parts = subTab.split("/")
@@ -35,9 +33,9 @@ export function ResourcesView({ activeSubTab, onTabChange }: ResourcesViewProps)
   return (
     <div className="flex flex-col h-full min-h-0">
       <div className="flex-shrink-0 pb-4">
-        <h1 className="text-2xl font-bold tracking-tight">Resources</h1>
+        <h1 className="text-2xl font-bold tracking-tight">LLM Providers</h1>
         <p className="text-sm text-muted-foreground">
-          Manage providers, models, and MCP servers
+          Manage providers and routing strategies
         </p>
       </div>
 
@@ -48,9 +46,7 @@ export function ResourcesView({ activeSubTab, onTabChange }: ResourcesViewProps)
       >
         <TabsList className="flex-shrink-0 w-fit">
           <TabsTrigger value="providers">Providers</TabsTrigger>
-          <TabsTrigger value="models">Models</TabsTrigger>
           <TabsTrigger value="strategies">Model Routing</TabsTrigger>
-          <TabsTrigger value="mcp-servers">MCP Servers</TabsTrigger>
         </TabsList>
 
         <TabsContent value="providers" className="flex-1 min-h-0 mt-4">
@@ -60,24 +56,11 @@ export function ResourcesView({ activeSubTab, onTabChange }: ResourcesViewProps)
           />
         </TabsContent>
 
-        <TabsContent value="models" className="flex-1 min-h-0 mt-4">
-          <ModelsPanel
-            selectedId={resourceType === "models" ? itemId : null}
-            onSelect={(id) => handleItemSelect("models", id)}
-          />
-        </TabsContent>
-
         <TabsContent value="strategies" className="flex-1 min-h-0 mt-4">
           <StrategiesPanel
             selectedId={resourceType === "strategies" ? itemId : null}
             onSelect={(id) => handleItemSelect("strategies", id)}
-          />
-        </TabsContent>
-
-        <TabsContent value="mcp-servers" className="flex-1 min-h-0 mt-4">
-          <McpServersPanel
-            selectedId={resourceType === "mcp-servers" ? itemId : null}
-            onSelect={(id) => handleItemSelect("mcp-servers", id)}
+            onNavigateToClient={(clientId) => onTabChange("clients", clientId)}
           />
         </TabsContent>
       </Tabs>

@@ -15,7 +15,7 @@
 import {useCallback, useEffect, useRef, useState} from "react"
 import {invoke} from "@tauri-apps/api/core"
 import {listen} from "@tauri-apps/api/event"
-import {Brain, Info, Zap} from "lucide-react"
+import {Bot, Brain, MessageSquareWarning} from "lucide-react"
 import {Card, CardContent, CardDescription, CardHeader, CardTitle,} from "@/components/ui/Card"
 import {Switch} from "@/components/ui/Toggle"
 import {Input} from "@/components/ui/Input"
@@ -24,7 +24,7 @@ import {cn} from "@/lib/utils"
 import {AllowedModelsSelection, AllowedModelsSelector, Model,} from "./AllowedModelsSelector"
 import {DragThresholdModelSelector} from "./DragThresholdModelSelector"
 import {ThresholdSlider} from "@/components/routellm/ThresholdSlider"
-import {ROUTELLM_REQUIREMENTS, RouteLLMStatus, RouteLLMState, RouteLLMTestResult} from "@/components/routellm/types"
+import {ROUTELLM_REQUIREMENTS, RouteLLMState, RouteLLMStatus, RouteLLMTestResult} from "@/components/routellm/types"
 
 // Strategy configuration types
 export interface AutoModelConfig {
@@ -365,17 +365,24 @@ export function StrategyModelConfiguration({
                         <div className="flex items-center justify-between">
                             <div className="flex items-center gap-3">
                                 <div className="p-2 rounded-lg bg-primary/10">
-                                    <Zap className="h-4 w-4 text-primary"/>
+                                    <Bot className="h-4 w-4 text-primary"/>
                                 </div>
                                 <div>
                                     <CardTitle className="text-base flex items-center gap-2">
                                         Auto Router
+                                        <CardDescription>
+                                            Choose
+                                            {" "}
                                         <code className="text-xs bg-muted px-1.5 py-0.5 rounded font-mono">
                                             localrouter/auto
                                         </code>
+                                            {" "}
+                                            model.
+                                        </CardDescription>
                                     </CardTitle>
                                     <CardDescription>
-                                        Tries models in order until one succeeds
+                                        Prioritize models to try in case of failures. (e.g. outage, context limit, policy violation)
+                                        Span multiple online providers and fallback to local models.
                                     </CardDescription>
                                 </div>
                             </div>
@@ -415,12 +422,14 @@ export function StrategyModelConfiguration({
                                 <div>
                                     <CardTitle className="text-base flex items-center gap-2">
                                         Weak Model
-                                        <span className="text-xs px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-700 dark:text-purple-300 font-medium">
+                                        <span
+                                            className="text-xs px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-700 dark:text-purple-300 font-medium">
                                             EXPERIMENTAL
                                         </span>
                                     </CardTitle>
                                     <CardDescription>
-                                        ML routes easy queries here to save costs
+                                        Use weaker models for simpler prompts for faster and cheaper results.
+                                        Uses local Machine Learning model to determine each request's complexity.
                                     </CardDescription>
                                 </div>
                             </div>
@@ -438,15 +447,13 @@ export function StrategyModelConfiguration({
                             </div>
                         ) : !routellmConfig?.enabled ? (
                             <div className="space-y-4">
-                                <div className="text-center py-4 text-muted-foreground text-sm">
-                                    Enable to route simple requests to cheaper models
-                                </div>
                                 {/* Resource Requirements - shown when disabled */}
                                 <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/20">
                                     <div className="flex items-start gap-2">
-                                        <Info className="h-4 w-4 text-amber-600 dark:text-amber-400 mt-0.5 shrink-0"/>
+                                        <MessageSquareWarning
+                                            className="h-4 w-4 text-amber-600 dark:text-amber-400 mt-0.5 shrink-0"/>
                                         <div className="text-xs text-amber-700 dark:text-amber-300">
-                                            <p className="font-medium mb-1">Resource Requirements</p>
+                                            <p className="font-medium mb-2">Resource Requirements</p>
                                             <div className="grid grid-cols-2 gap-x-4 gap-y-1">
                                                 <span>Disk Space:</span>
                                                 <span>{ROUTELLM_REQUIREMENTS.DISK_GB} GB</span>
@@ -480,13 +487,16 @@ export function StrategyModelConfiguration({
                                 <div className="mt-4 pt-4 border-t border-border/50">
                                     <div className="space-y-3">
                                         <div className="flex items-center justify-between">
-                                            <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                                            <span
+                                                className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
                                                 Test It Out
                                             </span>
                                             {routellmStatus && (
                                                 <div className="flex items-center gap-1.5">
-                                                    <span className="text-sm">{getStatusInfo(routellmStatus.state).icon}</span>
-                                                    <Badge variant={getStatusInfo(routellmStatus.state).variant} className="text-xs">
+                                                    <span
+                                                        className="text-sm">{getStatusInfo(routellmStatus.state).icon}</span>
+                                                    <Badge variant={getStatusInfo(routellmStatus.state).variant}
+                                                           className="text-xs">
                                                         {getStatusInfo(routellmStatus.state).label}
                                                     </Badge>
                                                 </div>

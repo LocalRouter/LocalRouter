@@ -1,7 +1,7 @@
 /**
  * StrategiesPanel Component
  *
- * Panel for managing routing strategies in Resources -> Model Routing tab.
+ * Panel for managing routing strategies in LLM Providers -> Model Routing tab.
  * Shows list of strategies with detail view for configuration.
  */
 
@@ -9,7 +9,7 @@ import { useState, useEffect, useMemo } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
 import { toast } from "sonner"
-import { Plus, Route, Users, Pencil, Trash2 } from "lucide-react"
+import { Plus, Route, Users } from "lucide-react"
 import { Badge } from "@/components/ui/Badge"
 import { Button } from "@/components/ui/Button"
 import {
@@ -34,7 +34,21 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import { Label } from "@/components/ui/label"
+import {
+  EntityActions,
+  commonActions,
+} from "@/components/shared/entity-actions"
 import { cn } from "@/lib/utils"
 import { StrategyModelConfiguration, StrategyConfig } from "@/components/strategy"
 
@@ -49,11 +63,13 @@ interface Client {
 interface StrategiesPanelProps {
   selectedId: string | null
   onSelect: (id: string | null) => void
+  onNavigateToClient?: (clientId: string) => void
 }
 
 export function StrategiesPanel({
   selectedId,
   onSelect,
+  onNavigateToClient,
 }: StrategiesPanelProps) {
   const [strategies, setStrategies] = useState<StrategyConfig[]>([])
   const [clients, setClients] = useState<Client[]>([])
@@ -62,9 +78,11 @@ export function StrategiesPanel({
 
   // Dialog states
   const [createDialogOpen, setCreateDialogOpen] = useState(false)
-  const [renameDialogOpen, setRenameDialogOpen] = useState(false)
+  const [editDialogOpen, setEditDialogOpen] = useState(false)
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
   const [newStrategyName, setNewStrategyName] = useState("")
-  const [strategyToRename, setStrategyToRename] = useState<StrategyConfig | null>(null)
+  const [strategyToEdit, setStrategyToEdit] = useState<StrategyConfig | null>(null)
+  const [strategyToDelete, setStrategyToDelete] = useState<StrategyConfig | null>(null)
 
   useEffect(() => {
     loadData()
@@ -127,12 +145,12 @@ export function StrategiesPanel({
     }
   }
 
-  // Rename strategy
+  // Rename strategy (from edit dialog)
   const handleRenameStrategy = async () => {
-    if (!strategyToRename || !newStrategyName.trim()) return
+    if (!strategyToEdit || !newStrategyName.trim()) return
     try {
       await invoke("update_strategy", {
-        strategyId: strategyToRename.id,
+        strategyId: strategyToEdit.id,
         name: newStrategyName.trim(),
         allowedModels: null,
         autoConfig: null,
@@ -140,8 +158,8 @@ export function StrategiesPanel({
       })
       toast.success("Strategy renamed")
       setNewStrategyName("")
-      setStrategyToRename(null)
-      setRenameDialogOpen(false)
+      setStrategyToEdit(null)
+      setEditDialogOpen(false)
       loadData()
     } catch (error) {
       console.error("Failed to rename strategy:", error)
@@ -150,36 +168,53 @@ export function StrategiesPanel({
   }
 
   // Delete strategy
-  const handleDeleteStrategy = async (strategy: StrategyConfig) => {
-    const usingClients = getClientsForStrategy(strategy.id)
+  const handleDeleteStrategy = async () => {
+    if (!strategyToDelete) return
+
+    const usingClients = getClientsForStrategy(strategyToDelete.id)
     if (usingClients.length > 0) {
       toast.error(
-        `Cannot delete strategy "${strategy.name}" - it's used by ${usingClients.length} client(s)`
+        `Cannot delete strategy "${strategyToDelete.name}" - it's used by ${usingClients.length} client(s)`
       )
+      setStrategyToDelete(null)
+      setDeleteDialogOpen(false)
       return
     }
-    if (!confirm(`Delete strategy "${strategy.name}"? This cannot be undone.`)) {
-      return
-    }
+
     try {
-      await invoke("delete_strategy", { strategyId: strategy.id })
+      await invoke("delete_strategy", { strategyId: strategyToDelete.id })
       toast.success("Strategy deleted")
-      if (selectedId === strategy.id) {
+      if (selectedId === strategyToDelete.id) {
         onSelect(null)
       }
       loadData()
     } catch (error) {
       console.error("Failed to delete strategy:", error)
       toast.error("Failed to delete strategy")
+    } finally {
+      setStrategyToDelete(null)
+      setDeleteDialogOpen(false)
     }
   }
 
-  // Open rename dialog
-  const openRenameDialog = (strategy: StrategyConfig, e: React.MouseEvent) => {
-    e.stopPropagation()
-    setStrategyToRename(strategy)
+  // Open edit dialog
+  const openEditDialog = (strategy: StrategyConfig) => {
+    setStrategyToEdit(strategy)
     setNewStrategyName(strategy.name)
-    setRenameDialogOpen(true)
+    setEditDialogOpen(true)
+  }
+
+  // Open delete dialog
+  const openDeleteDialog = (strategy: StrategyConfig) => {
+    setStrategyToDelete(strategy)
+    setDeleteDialogOpen(true)
+  }
+
+  // Handle client click - navigate to client detail
+  const handleClientClick = (client: Client) => {
+    if (onNavigateToClient) {
+      onNavigateToClient(client.id)
+    }
   }
 
   return (
@@ -219,7 +254,7 @@ export function StrategiesPanel({
                         key={strategy.id}
                         onClick={() => onSelect(strategy.id)}
                         className={cn(
-                          "flex items-center gap-3 p-3 rounded-md cursor-pointer group",
+                          "flex items-center gap-3 p-3 rounded-md cursor-pointer",
                           selectedId === strategy.id
                             ? "bg-accent"
                             : "hover:bg-muted"
@@ -238,28 +273,6 @@ export function StrategiesPanel({
                           <p className="text-xs text-muted-foreground">
                             {clientCount} client{clientCount !== 1 ? "s" : ""}
                           </p>
-                        </div>
-                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-7 w-7"
-                            onClick={(e) => openRenameDialog(strategy, e)}
-                          >
-                            <Pencil className="h-3.5 w-3.5" />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-7 w-7 text-destructive hover:text-destructive"
-                            onClick={(e) => {
-                              e.stopPropagation()
-                              handleDeleteStrategy(strategy)
-                            }}
-                            disabled={clientCount > 0}
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </Button>
                         </div>
                       </div>
                     )
@@ -287,6 +300,15 @@ export function StrategiesPanel({
                         : "Shared routing strategy"}
                     </p>
                   </div>
+                  <EntityActions
+                    actions={[
+                      commonActions.edit(() => openEditDialog(selectedStrategy)),
+                      {
+                        ...commonActions.delete(() => openDeleteDialog(selectedStrategy)),
+                        disabled: strategyClients.length > 0,
+                      },
+                    ]}
+                  />
                 </div>
 
                 {/* Clients Using This Strategy */}
@@ -297,28 +319,28 @@ export function StrategiesPanel({
                       Clients Using This Strategy
                     </CardTitle>
                     <CardDescription>
-                      Changes to this strategy will affect all listed clients
+                      {strategyClients.length > 0
+                        ? "Changes to this strategy will affect all listed clients"
+                        : "No clients are using this strategy"}
                     </CardDescription>
                   </CardHeader>
-                  <CardContent>
-                    {strategyClients.length === 0 ? (
-                      <p className="text-sm text-muted-foreground">
-                        No clients are using this strategy
-                      </p>
-                    ) : (
+                  {strategyClients.length > 0 && (
+                    <CardContent>
                       <div className="flex flex-wrap gap-2">
                         {strategyClients.map((client) => (
                           <Badge
                             key={client.id}
                             variant={client.enabled ? "default" : "secondary"}
+                            className="cursor-pointer hover:bg-primary/80 transition-colors"
+                            onClick={() => handleClientClick(client)}
                           >
                             {client.name}
                             {!client.enabled && " (disabled)"}
                           </Badge>
                         ))}
                       </div>
-                    )}
-                  </CardContent>
+                    </CardContent>
+                  )}
                 </Card>
 
                 {/* Strategy Configuration */}
@@ -377,20 +399,20 @@ export function StrategiesPanel({
         </DialogContent>
       </Dialog>
 
-      {/* Rename Strategy Dialog */}
-      <Dialog open={renameDialogOpen} onOpenChange={setRenameDialogOpen}>
+      {/* Edit Strategy Dialog */}
+      <Dialog open={editDialogOpen} onOpenChange={setEditDialogOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Rename Strategy</DialogTitle>
+            <DialogTitle>Edit Strategy</DialogTitle>
             <DialogDescription>
-              Enter a new name for the strategy.
+              Update the strategy name. Use the configuration panel below to modify allowed models and routing settings.
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 py-4">
             <div className="grid gap-2">
-              <Label htmlFor="rename-strategy-name">Strategy Name</Label>
+              <Label htmlFor="edit-strategy-name">Strategy Name</Label>
               <Input
-                id="rename-strategy-name"
+                id="edit-strategy-name"
                 value={newStrategyName}
                 onChange={(e) => setNewStrategyName(e.target.value)}
                 onKeyDown={(e) => {
@@ -400,18 +422,39 @@ export function StrategiesPanel({
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setRenameDialogOpen(false)}>
+            <Button variant="outline" onClick={() => setEditDialogOpen(false)}>
               Cancel
             </Button>
             <Button
               onClick={handleRenameStrategy}
               disabled={!newStrategyName.trim()}
             >
-              Rename
+              Save
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Delete Confirmation Dialog */}
+      <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Strategy</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete "{strategyToDelete?.name}"? This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleDeleteStrategy}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </>
   )
 }
