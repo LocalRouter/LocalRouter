@@ -68,6 +68,7 @@ jsonschema = "0.18"  # JSON Schema validation for structured outputs
 rusqlite = { version = "0.32", features = ["bundled"] }  # SQLite for metrics storage
 once_cell = "1.20"  # Lazy static initialization for catalog
 image = { version = "0.25", default-features = false, features = ["png"] }  # PNG generation for tray icon graphs
+shell-words = "1.1"  # POSIX shell-like command parsing for MCP STDIO
 
 # OpenAPI documentation
 utoipa = { version = "5", features = ["axum_extras", "chrono", "uuid"] }
