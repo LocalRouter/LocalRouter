@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect, useCallback, type SetStateAction } from "react"
 import { Search, RefreshCw, ChevronRight, FileText, Eye, Bell, BellOff, Circle } from "lucide-react"
 import { Button } from "@/components/ui/Button"
 import { Input } from "@/components/ui/Input"
@@ -6,6 +6,7 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import { Badge } from "@/components/ui/Badge"
 import { cn } from "@/lib/utils"
 import type { McpClientWrapper, Resource, ReadResourceResult } from "@/lib/mcp-client"
+import type { ResourceState } from "./index"
 
 interface ResourcesPanelProps {
   mcpClient: McpClientWrapper | null
@@ -15,6 +16,8 @@ interface ResourcesPanelProps {
   resourceUpdates: Map<string, ReadResourceResult>
   onResourceUpdate: (uri: string, content: ReadResourceResult) => void
   onResourceViewed: (uri: string) => void
+  resourceState: ResourceState
+  onResourceStateChange: (state: SetStateAction<ResourceState>) => void
 }
 
 export function ResourcesPanel({
@@ -25,34 +28,43 @@ export function ResourcesPanel({
   resourceUpdates,
   onResourceUpdate,
   onResourceViewed,
+  resourceState,
+  onResourceStateChange,
 }: ResourcesPanelProps) {
   const [resources, setResources] = useState<Resource[]>([])
   const [filteredResources, setFilteredResources] = useState<Resource[]>([])
   const [searchQuery, setSearchQuery] = useState("")
-  const [selectedResource, setSelectedResource] = useState<Resource | null>(null)
   const [isLoading, setIsLoading] = useState(false)
-  const [isReading, setIsReading] = useState(false)
   const [subscribingUris, setSubscribingUris] = useState<Set<string>>(new Set())
-  const [content, setContent] = useState<ReadResourceResult | null>(null)
-  const [error, setError] = useState<string | null>(null)
+
+  // Destructure lifted state
+  const { selectedResource, content, isReading, error } = resourceState
+
+  // Helper to update partial state (using functional update to avoid infinite loops)
+  const updateState = useCallback(
+    (updates: Partial<ResourceState>) => {
+      onResourceStateChange(prev => ({ ...prev, ...updates }))
+    },
+    [onResourceStateChange]
+  )
 
   // Fetch resources list using MCP SDK
   const fetchResources = useCallback(async () => {
     if (!mcpClient || !isConnected) return
 
     setIsLoading(true)
-    setError(null)
+    updateState({ error: null })
 
     try {
       const resourcesList = await mcpClient.listResources()
       setResources(resourcesList)
       setFilteredResources(resourcesList)
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to fetch resources")
+      updateState({ error: err instanceof Error ? err.message : "Failed to fetch resources" })
     } finally {
       setIsLoading(false)
     }
-  }, [mcpClient, isConnected])
+  }, [mcpClient, isConnected, updateState])
 
   useEffect(() => {
     if (isConnected && mcpClient) {
@@ -60,11 +72,15 @@ export function ResourcesPanel({
     } else {
       setResources([])
       setFilteredResources([])
-      setSelectedResource(null)
-      setContent(null)
+      onResourceStateChange({
+        selectedResource: null,
+        content: null,
+        isReading: false,
+        error: null,
+      })
       // Note: subscribedUris is cleared by parent on disconnect
     }
-  }, [isConnected, mcpClient, fetchResources])
+  }, [isConnected, mcpClient, fetchResources, onResourceStateChange])
 
   // Filter resources by search query
   useEffect(() => {
@@ -87,17 +103,16 @@ export function ResourcesPanel({
   const readResource = async (resource: Resource) => {
     if (!mcpClient) return
 
-    setIsReading(true)
-    setContent(null)
-    setError(null)
+    updateState({ isReading: true, content: null, error: null })
 
     try {
       const result = await mcpClient.readResource(resource.uri)
-      setContent(result)
+      updateState({ isReading: false, content: result })
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to read resource")
-    } finally {
-      setIsReading(false)
+      updateState({
+        isReading: false,
+        error: err instanceof Error ? err.message : "Failed to read resource",
+      })
     }
   }
 
@@ -121,7 +136,7 @@ export function ResourcesPanel({
         await mcpClient.subscribeToResource(uri, (updatedUri, updatedContent) => {
           // Update content if this resource is currently selected
           if (selectedResource?.uri === updatedUri) {
-            setContent(updatedContent)
+            updateState({ content: updatedContent })
           }
           // Notify parent about the update (for tab indicator)
           onResourceUpdate(updatedUri, updatedContent)
@@ -129,7 +144,9 @@ export function ResourcesPanel({
         onSubscribedUrisChange(new Set(subscribedUris).add(uri))
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to toggle subscription")
+      updateState({
+        error: err instanceof Error ? err.message : "Failed to toggle subscription",
+      })
     } finally {
       // Clear subscribing state
       setSubscribingUris((prev) => {
@@ -141,9 +158,11 @@ export function ResourcesPanel({
   }
 
   const handleResourceSelect = (resource: Resource) => {
-    setSelectedResource(resource)
-    setContent(null)
-    setError(null)
+    updateState({
+      selectedResource: resource,
+      content: null,
+      error: null,
+    })
     // Mark this resource as viewed (clears update indicator)
     if (resourceUpdates.has(resource.uri)) {
       onResourceViewed(resource.uri)
@@ -185,7 +204,7 @@ export function ResourcesPanel({
   return (
     <div className="flex h-full gap-4">
       {/* Left: Resources list */}
-      <div className="w-72 flex flex-col border rounded-lg">
+      <div className="w-72 flex-shrink-0 flex flex-col border rounded-lg">
         <div className="p-3 border-b">
           <div className="flex items-center gap-2 mb-2">
             <span className="font-medium text-sm">Resources</span>
@@ -262,7 +281,7 @@ export function ResourcesPanel({
       </div>
 
       {/* Right: Resource content */}
-      <div className="flex-1 flex flex-col border rounded-lg">
+      <div className="flex-1 min-w-0 flex flex-col border rounded-lg">
         {selectedResource ? (
           <>
             <div className="p-4 border-b">

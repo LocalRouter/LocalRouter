@@ -19,6 +19,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
+import { Checkbox } from "@/components/ui/checkbox"
 import { Wrench, FileText, MessageSquare, Radio, HelpCircle, AlertCircle, X, Circle, Info } from "lucide-react"
 import { ConnectionInfoPanel } from "./connection-info-panel"
 import { ToolsPanel } from "./tools-panel"
@@ -34,6 +35,10 @@ import {
   type CreateMessageRequest,
   type CreateMessageResult,
   type ElicitRequest,
+  type Tool,
+  type Resource,
+  type Prompt,
+  type GetPromptResult,
 } from "@/lib/mcp-client"
 
 // Types for pending requests that need user action
@@ -51,6 +56,63 @@ export interface PendingElicitationRequest {
   timestamp: Date
   resolve: (result: { action: "accept" | "decline"; content?: Record<string, unknown> }) => void
   reject: (error: Error) => void
+}
+
+// Types for completed requests (history)
+export interface CompletedSamplingRequest {
+  id: string
+  params: PendingSamplingRequest["params"]
+  timestamp: Date
+  status: "completed" | "rejected"
+  response?: CreateMessageResult
+  error?: string
+}
+
+export interface CompletedElicitationRequest {
+  id: string
+  params: PendingElicitationRequest["params"]
+  timestamp: Date
+  status: "submitted" | "cancelled"
+  response?: Record<string, unknown>
+}
+
+// Types for tool execution state
+export interface ToolExecutionState {
+  selectedTool: Tool | null
+  formValues: Record<string, unknown>
+  isExecuting: boolean
+  result: { success: boolean; data: unknown } | null
+  error: string | null
+}
+
+// Types for resource state
+export interface ResourceState {
+  selectedResource: Resource | null
+  content: ReadResourceResult | null
+  isReading: boolean
+  error: string | null
+}
+
+// Types for prompt state
+export interface PromptState {
+  selectedPrompt: Prompt | null
+  argValues: Record<string, string>
+  isGetting: boolean
+  result: GetPromptResult | null
+  error: string | null
+}
+
+// Types for sampling state (lifted)
+export interface SamplingState {
+  completedRequests: CompletedSamplingRequest[]
+  selectedRequestId: string | null
+}
+
+// Types for elicitation state (lifted)
+export interface ElicitationState {
+  completedRequests: CompletedElicitationRequest[]
+  selectedRequestId: string | null
+  formValues: Record<string, unknown>
 }
 
 interface McpServer {
@@ -97,6 +159,51 @@ export function McpTab({ innerPath, onPathChange }: McpTabProps) {
   // Pending sampling and elicitation requests from MCP servers
   const [pendingSamplingRequests, setPendingSamplingRequests] = useState<PendingSamplingRequest[]>([])
   const [pendingElicitationRequests, setPendingElicitationRequests] = useState<PendingElicitationRequest[]>([])
+
+  // Auto-approve settings (lifted from SamplingPanel to persist across tab switches)
+  const [autoApproveSampling, setAutoApproveSampling] = useState(false)
+
+  // Deferred loading for unified gateway (reduces token consumption for large catalogs)
+  const [deferredLoading, setDeferredLoading] = useState(false)
+
+  // Sampling panel state (lifted to persist across tab switches)
+  const [samplingState, setSamplingState] = useState<SamplingState>({
+    completedRequests: [],
+    selectedRequestId: null,
+  })
+
+  // Elicitation panel state (lifted to persist across tab switches)
+  const [elicitationState, setElicitationState] = useState<ElicitationState>({
+    completedRequests: [],
+    selectedRequestId: null,
+    formValues: {},
+  })
+
+  // Tools panel state (lifted to persist across tab switches)
+  const [toolState, setToolState] = useState<ToolExecutionState>({
+    selectedTool: null,
+    formValues: {},
+    isExecuting: false,
+    result: null,
+    error: null,
+  })
+
+  // Resources panel state (lifted to persist across tab switches)
+  const [resourceState, setResourceState] = useState<ResourceState>({
+    selectedResource: null,
+    content: null,
+    isReading: false,
+    error: null,
+  })
+
+  // Prompts panel state (lifted to persist across tab switches)
+  const [promptState, setPromptState] = useState<PromptState>({
+    selectedPrompt: null,
+    argValues: {},
+    isGetting: false,
+    result: null,
+    error: null,
+  })
 
   // Counter for generating unique request IDs
   const requestIdCounter = useRef(0)
@@ -271,6 +378,8 @@ export function McpTab({ innerPath, onPathChange }: McpTabProps) {
         clientToken: internalTestToken,
         serverId: isGatewayTarget ? undefined : selectedServerId,
         transportType: "sse",
+        // Only enable deferred loading for unified gateway
+        deferredLoading: isGatewayTarget ? deferredLoading : undefined,
       },
       {
         onStateChange: handleStateChange,
@@ -357,6 +466,33 @@ export function McpTab({ innerPath, onPathChange }: McpTabProps) {
                 </SelectContent>
               </Select>
             </div>
+
+            {/* Deferred Loading toggle - only for unified gateway */}
+            {isGatewayTarget && (
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <div className="flex items-center gap-2">
+                      <Checkbox
+                        id="deferred-loading"
+                        checked={deferredLoading}
+                        onCheckedChange={(checked) => setDeferredLoading(checked === true)}
+                        disabled={isConnected || isConnecting}
+                      />
+                      <Label htmlFor="deferred-loading" className="text-sm cursor-pointer">
+                        Deferred Loading
+                      </Label>
+                    </div>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom" className="max-w-[300px]">
+                    <p>
+                      When enabled, tools and resources are loaded on-demand via search
+                      instead of all at once. Reduces token consumption for large catalogs.
+                    </p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+            )}
 
             {/* Connection buttons */}
             <div className="flex items-center gap-2 ml-auto">
@@ -492,6 +628,8 @@ export function McpTab({ innerPath, onPathChange }: McpTabProps) {
               <ToolsPanel
                 mcpClient={mcpClientRef.current}
                 isConnected={isConnected}
+                toolState={toolState}
+                onToolStateChange={setToolState}
               />
             </TabsContent>
 
@@ -504,6 +642,8 @@ export function McpTab({ innerPath, onPathChange }: McpTabProps) {
                 resourceUpdates={resourceUpdates}
                 onResourceUpdate={handleResourceUpdate}
                 onResourceViewed={handleResourceViewed}
+                resourceState={resourceState}
+                onResourceStateChange={setResourceState}
               />
             </TabsContent>
 
@@ -511,6 +651,8 @@ export function McpTab({ innerPath, onPathChange }: McpTabProps) {
               <PromptsPanel
                 mcpClient={mcpClientRef.current}
                 isConnected={isConnected}
+                promptState={promptState}
+                onPromptStateChange={setPromptState}
               />
             </TabsContent>
 
@@ -520,6 +662,10 @@ export function McpTab({ innerPath, onPathChange }: McpTabProps) {
                 pendingRequests={pendingSamplingRequests}
                 onResolve={resolveSamplingRequest}
                 onReject={rejectSamplingRequest}
+                autoApprove={autoApproveSampling}
+                onAutoApproveChange={setAutoApproveSampling}
+                samplingState={samplingState}
+                onSamplingStateChange={setSamplingState}
               />
             </TabsContent>
 
@@ -528,6 +674,8 @@ export function McpTab({ innerPath, onPathChange }: McpTabProps) {
                 isConnected={isConnected}
                 pendingRequests={pendingElicitationRequests}
                 onResolve={resolveElicitationRequest}
+                elicitationState={elicitationState}
+                onElicitationStateChange={setElicitationState}
               />
             </TabsContent>
           </CardContent>

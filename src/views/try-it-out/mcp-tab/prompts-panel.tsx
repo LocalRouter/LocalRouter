@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect, useCallback, type SetStateAction } from "react"
 import { Search, Play, RefreshCw, ChevronRight, MessageSquare, User, Bot } from "lucide-react"
 import { Button } from "@/components/ui/Button"
 import { Input } from "@/components/ui/Input"
@@ -7,44 +7,55 @@ import { Badge } from "@/components/ui/Badge"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { cn } from "@/lib/utils"
-import type { McpClientWrapper, Prompt, GetPromptResult } from "@/lib/mcp-client"
+import type { McpClientWrapper, Prompt } from "@/lib/mcp-client"
+import type { PromptState } from "./index"
 
 interface PromptsPanelProps {
   mcpClient: McpClientWrapper | null
   isConnected: boolean
+  promptState: PromptState
+  onPromptStateChange: (state: SetStateAction<PromptState>) => void
 }
 
 export function PromptsPanel({
   mcpClient,
   isConnected,
+  promptState,
+  onPromptStateChange,
 }: PromptsPanelProps) {
   const [prompts, setPrompts] = useState<Prompt[]>([])
   const [filteredPrompts, setFilteredPrompts] = useState<Prompt[]>([])
   const [searchQuery, setSearchQuery] = useState("")
-  const [selectedPrompt, setSelectedPrompt] = useState<Prompt | null>(null)
   const [isLoading, setIsLoading] = useState(false)
-  const [isGetting, setIsGetting] = useState(false)
-  const [argValues, setArgValues] = useState<Record<string, string>>({})
-  const [result, setResult] = useState<GetPromptResult | null>(null)
-  const [error, setError] = useState<string | null>(null)
+
+  // Destructure lifted state
+  const { selectedPrompt, argValues, isGetting, result, error } = promptState
+
+  // Helper to update partial state (using functional update to avoid infinite loops)
+  const updateState = useCallback(
+    (updates: Partial<PromptState>) => {
+      onPromptStateChange(prev => ({ ...prev, ...updates }))
+    },
+    [onPromptStateChange]
+  )
 
   // Fetch prompts list using MCP SDK
   const fetchPrompts = useCallback(async () => {
     if (!mcpClient || !isConnected) return
 
     setIsLoading(true)
-    setError(null)
+    updateState({ error: null })
 
     try {
       const promptsList = await mcpClient.listPrompts()
       setPrompts(promptsList)
       setFilteredPrompts(promptsList)
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to fetch prompts")
+      updateState({ error: err instanceof Error ? err.message : "Failed to fetch prompts" })
     } finally {
       setIsLoading(false)
     }
-  }, [mcpClient, isConnected])
+  }, [mcpClient, isConnected, updateState])
 
   useEffect(() => {
     if (isConnected && mcpClient) {
@@ -52,10 +63,15 @@ export function PromptsPanel({
     } else {
       setPrompts([])
       setFilteredPrompts([])
-      setSelectedPrompt(null)
-      setResult(null)
+      onPromptStateChange({
+        selectedPrompt: null,
+        argValues: {},
+        isGetting: false,
+        result: null,
+        error: null,
+      })
     }
-  }, [isConnected, mcpClient, fetchPrompts])
+  }, [isConnected, mcpClient, fetchPrompts, onPromptStateChange])
 
   // Filter prompts by search query
   useEffect(() => {
@@ -77,25 +93,30 @@ export function PromptsPanel({
   const getPrompt = async () => {
     if (!mcpClient || !selectedPrompt) return
 
-    setIsGetting(true)
-    setResult(null)
-    setError(null)
+    updateState({ isGetting: true, result: null, error: null })
 
     try {
       const response = await mcpClient.getPrompt(selectedPrompt.name, argValues)
-      setResult(response)
+      updateState({ isGetting: false, result: response })
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to get prompt")
-    } finally {
-      setIsGetting(false)
+      updateState({
+        isGetting: false,
+        error: err instanceof Error ? err.message : "Failed to get prompt",
+      })
     }
   }
 
   const handlePromptSelect = (prompt: Prompt) => {
-    setSelectedPrompt(prompt)
-    setArgValues({})
-    setResult(null)
-    setError(null)
+    updateState({
+      selectedPrompt: prompt,
+      argValues: {},
+      result: null,
+      error: null,
+    })
+  }
+
+  const setArgValues = (newValues: Record<string, string>) => {
+    updateState({ argValues: newValues })
   }
 
   const renderMessage = (msg: { role: string; content: unknown }, idx: number) => {
@@ -158,7 +179,7 @@ export function PromptsPanel({
   return (
     <div className="flex h-full gap-4">
       {/* Left: Prompts list */}
-      <div className="w-72 flex flex-col border rounded-lg">
+      <div className="w-72 flex-shrink-0 flex flex-col border rounded-lg">
         <div className="p-3 border-b">
           <div className="flex items-center gap-2 mb-2">
             <span className="font-medium text-sm">Prompts</span>
@@ -223,7 +244,7 @@ export function PromptsPanel({
       </div>
 
       {/* Right: Prompt details and execution */}
-      <div className="flex-1 flex flex-col border rounded-lg">
+      <div className="flex-1 min-w-0 flex flex-col border rounded-lg">
         {selectedPrompt ? (
           <>
             <div className="p-4 border-b">
@@ -260,10 +281,10 @@ export function PromptsPanel({
                           placeholder={`Enter ${arg.name}...`}
                           value={argValues[arg.name] || ""}
                           onChange={(e) =>
-                            setArgValues((prev) => ({
-                              ...prev,
+                            setArgValues({
+                              ...argValues,
                               [arg.name]: e.target.value,
-                            }))
+                            })
                           }
                           rows={2}
                         />

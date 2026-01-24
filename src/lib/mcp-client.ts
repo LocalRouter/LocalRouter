@@ -42,6 +42,7 @@ export interface McpClientConfig {
   clientToken: string
   serverId?: string // If provided, connect to specific server; otherwise use gateway
   transportType?: TransportType
+  deferredLoading?: boolean // Enable deferred loading for unified gateway
 }
 
 // Detailed capability info for display
@@ -168,11 +169,16 @@ export class McpClientWrapper {
         this.transport = new WebSocketClientTransport(new URL(wsUrl))
       } else {
         // SSE transport
+        // Build headers - include deferred loading header if enabled
+        const headers: Record<string, string> = {
+          Authorization: `Bearer ${this.config.clientToken}`,
+        }
+        if (this.config.deferredLoading) {
+          headers["X-Deferred-Loading"] = "true"
+        }
         this.transport = new SSEClientTransport(new URL(endpoint), {
           requestInit: {
-            headers: {
-              Authorization: `Bearer ${this.config.clientToken}`,
-            },
+            headers,
           },
         })
       }

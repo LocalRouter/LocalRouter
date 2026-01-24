@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect, useCallback, type SetStateAction } from "react"
 import { Search, Play, RefreshCw, ChevronRight, AlertCircle, CheckCircle2 } from "lucide-react"
 import { Button } from "@/components/ui/Button"
 import { Input } from "@/components/ui/Input"
@@ -8,6 +8,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { Label } from "@/components/ui/label"
 import { cn } from "@/lib/utils"
 import type { McpClientWrapper, Tool } from "@/lib/mcp-client"
+import type { ToolExecutionState } from "./index"
 
 interface SchemaProperty {
   type: string
@@ -20,39 +21,49 @@ interface SchemaProperty {
 interface ToolsPanelProps {
   mcpClient: McpClientWrapper | null
   isConnected: boolean
+  toolState: ToolExecutionState
+  onToolStateChange: (state: SetStateAction<ToolExecutionState>) => void
 }
 
 export function ToolsPanel({
   mcpClient,
   isConnected,
+  toolState,
+  onToolStateChange,
 }: ToolsPanelProps) {
   const [tools, setTools] = useState<Tool[]>([])
   const [filteredTools, setFilteredTools] = useState<Tool[]>([])
   const [searchQuery, setSearchQuery] = useState("")
-  const [selectedTool, setSelectedTool] = useState<Tool | null>(null)
   const [isLoading, setIsLoading] = useState(false)
-  const [isExecuting, setIsExecuting] = useState(false)
-  const [formValues, setFormValues] = useState<Record<string, unknown>>({})
-  const [result, setResult] = useState<{ success: boolean; data: unknown } | null>(null)
-  const [error, setError] = useState<string | null>(null)
+
+  // Destructure lifted state
+  const { selectedTool, formValues, isExecuting, result, error } = toolState
+
+  // Helper to update partial state (using functional update to avoid infinite loops)
+  const updateState = useCallback(
+    (updates: Partial<ToolExecutionState>) => {
+      onToolStateChange(prev => ({ ...prev, ...updates }))
+    },
+    [onToolStateChange]
+  )
 
   // Fetch tools list using MCP SDK
   const fetchTools = useCallback(async () => {
     if (!mcpClient || !isConnected) return
 
     setIsLoading(true)
-    setError(null)
+    updateState({ error: null })
 
     try {
       const toolsList = await mcpClient.listTools()
       setTools(toolsList)
       setFilteredTools(toolsList)
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to fetch tools")
+      updateState({ error: err instanceof Error ? err.message : "Failed to fetch tools" })
     } finally {
       setIsLoading(false)
     }
-  }, [mcpClient, isConnected])
+  }, [mcpClient, isConnected, updateState])
 
   useEffect(() => {
     if (isConnected && mcpClient) {
@@ -60,9 +71,15 @@ export function ToolsPanel({
     } else {
       setTools([])
       setFilteredTools([])
-      setSelectedTool(null)
+      onToolStateChange({
+        selectedTool: null,
+        formValues: {},
+        isExecuting: false,
+        result: null,
+        error: null,
+      })
     }
-  }, [isConnected, mcpClient, fetchTools])
+  }, [isConnected, mcpClient, fetchTools, onToolStateChange])
 
   // Filter tools by search query
   useEffect(() => {
@@ -84,28 +101,36 @@ export function ToolsPanel({
   const executeTool = async () => {
     if (!mcpClient || !selectedTool) return
 
-    setIsExecuting(true)
-    setResult(null)
-    setError(null)
+    updateState({ isExecuting: true, result: null, error: null })
 
     try {
       const response = await mcpClient.callTool(selectedTool.name, formValues)
-      setResult({
-        success: !response.isError,
-        data: response.content,
+      updateState({
+        isExecuting: false,
+        result: {
+          success: !response.isError,
+          data: response.content,
+        },
       })
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to execute tool")
-    } finally {
-      setIsExecuting(false)
+      updateState({
+        isExecuting: false,
+        error: err instanceof Error ? err.message : "Failed to execute tool",
+      })
     }
   }
 
   const handleToolSelect = (tool: Tool) => {
-    setSelectedTool(tool)
-    setFormValues({})
-    setResult(null)
-    setError(null)
+    updateState({
+      selectedTool: tool,
+      formValues: {},
+      result: null,
+      error: null,
+    })
+  }
+
+  const setFormValues = (newValues: Record<string, unknown>) => {
+    updateState({ formValues: newValues })
   }
 
   const renderFormField = (name: string, schema: SchemaProperty) => {
@@ -117,7 +142,7 @@ export function ToolsPanel({
           className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm"
           value={String(value)}
           onChange={(e) =>
-            setFormValues((prev) => ({ ...prev, [name]: e.target.value }))
+            setFormValues({ ...formValues, [name]: e.target.value })
           }
         >
           <option value="">Select...</option>
@@ -136,7 +161,7 @@ export function ToolsPanel({
           type="checkbox"
           checked={Boolean(value)}
           onChange={(e) =>
-            setFormValues((prev) => ({ ...prev, [name]: e.target.checked }))
+            setFormValues({ ...formValues, [name]: e.target.checked })
           }
           className="h-4 w-4"
         />
@@ -149,10 +174,10 @@ export function ToolsPanel({
           type="number"
           value={String(value)}
           onChange={(e) =>
-            setFormValues((prev) => ({
-              ...prev,
+            setFormValues({
+              ...formValues,
               [name]: e.target.value ? Number(e.target.value) : undefined,
-            }))
+            })
           }
         />
       )
@@ -166,9 +191,9 @@ export function ToolsPanel({
           onChange={(e) => {
             try {
               const parsed = JSON.parse(e.target.value)
-              setFormValues((prev) => ({ ...prev, [name]: parsed }))
+              setFormValues({ ...formValues, [name]: parsed })
             } catch {
-              setFormValues((prev) => ({ ...prev, [name]: e.target.value }))
+              setFormValues({ ...formValues, [name]: e.target.value })
             }
           }}
           rows={3}
@@ -181,7 +206,7 @@ export function ToolsPanel({
       <Input
         value={String(value)}
         onChange={(e) =>
-          setFormValues((prev) => ({ ...prev, [name]: e.target.value }))
+          setFormValues({ ...formValues, [name]: e.target.value })
         }
       />
     )
@@ -198,7 +223,7 @@ export function ToolsPanel({
   return (
     <div className="flex h-full gap-4">
       {/* Left: Tools list */}
-      <div className="w-72 flex flex-col border rounded-lg">
+      <div className="w-72 flex-shrink-0 flex flex-col border rounded-lg">
         <div className="p-3 border-b">
           <div className="flex items-center gap-2 mb-2">
             <span className="font-medium text-sm">Tools</span>
@@ -257,7 +282,7 @@ export function ToolsPanel({
       </div>
 
       {/* Right: Tool details and execution */}
-      <div className="flex-1 flex flex-col border rounded-lg">
+      <div className="flex-1 min-w-0 flex flex-col border rounded-lg">
         {selectedTool ? (
           <>
             <div className="p-4 border-b">
@@ -326,11 +351,11 @@ export function ToolsPanel({
                       )}
                     </h4>
                     {error ? (
-                      <pre className="p-3 bg-destructive/10 text-destructive rounded-md text-xs overflow-auto">
+                      <pre className="p-3 bg-destructive/10 text-destructive rounded-md text-xs overflow-auto whitespace-pre-wrap break-all">
                         {error}
                       </pre>
                     ) : (
-                      <pre className="p-3 bg-muted rounded-md text-xs overflow-auto max-h-64">
+                      <pre className="p-3 bg-muted rounded-md text-xs overflow-auto max-h-64 whitespace-pre-wrap break-all">
                         {JSON.stringify(result?.data, null, 2)}
                       </pre>
                     )}

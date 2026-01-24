@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react"
+import { useEffect, useCallback, type SetStateAction } from "react"
 import { HelpCircle, CheckCircle2, XCircle, Clock, Send, Bot } from "lucide-react"
 import { Button } from "@/components/ui/Button"
 import { Input } from "@/components/ui/Input"
@@ -8,7 +8,7 @@ import { Badge } from "@/components/ui/Badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card"
 import { Textarea } from "@/components/ui/textarea"
 import { cn } from "@/lib/utils"
-import type { PendingElicitationRequest } from "./index"
+import type { PendingElicitationRequest, ElicitationState, CompletedElicitationRequest } from "./index"
 
 interface SchemaProperty {
   type: string
@@ -21,44 +21,38 @@ interface SchemaProperty {
   maximum?: number
 }
 
-interface CompletedElicitationRequest {
-  id: string
-  params: PendingElicitationRequest["params"]
-  timestamp: Date
-  status: "submitted" | "cancelled"
-  response?: Record<string, unknown>
-}
-
 interface ElicitationPanelProps {
   isConnected: boolean
   pendingRequests: PendingElicitationRequest[]
   onResolve: (id: string, result: { action: "accept" | "decline"; content?: Record<string, unknown> }) => void
+  elicitationState: ElicitationState
+  onElicitationStateChange: (state: SetStateAction<ElicitationState>) => void
 }
 
 export function ElicitationPanel({
   isConnected,
   pendingRequests,
   onResolve,
+  elicitationState,
+  onElicitationStateChange,
 }: ElicitationPanelProps) {
-  const [completedRequests, setCompletedRequests] = useState<CompletedElicitationRequest[]>([])
-  const [selectedRequestId, setSelectedRequestId] = useState<string | null>(null)
-  const [formValues, setFormValues] = useState<Record<string, unknown>>({})
+  // Destructure lifted state
+  const { completedRequests, selectedRequestId, formValues } = elicitationState
+
+  // Helper to update partial state (using functional update to avoid infinite loops)
+  const updateState = useCallback(
+    (updates: Partial<ElicitationState>) => {
+      onElicitationStateChange(prev => ({ ...prev, ...updates }))
+    },
+    [onElicitationStateChange]
+  )
 
   // Find the selected request from either pending or completed
   const selectedPending = pendingRequests.find((r) => r.id === selectedRequestId)
   const selectedCompleted = completedRequests.find((r) => r.id === selectedRequestId)
   const selectedRequest = selectedPending || selectedCompleted
 
-  // Auto-select first pending request if none selected
-  useEffect(() => {
-    if (!selectedRequest && pendingRequests.length > 0) {
-      const firstPending = pendingRequests[0]
-      setSelectedRequestId(firstPending.id)
-      initializeFormValues(firstPending.params)
-    }
-  }, [pendingRequests, selectedRequest])
-
-  const initializeFormValues = (params: PendingElicitationRequest["params"]) => {
+  const initializeFormValues = useCallback((params: PendingElicitationRequest["params"]) => {
     const defaults: Record<string, unknown> = {}
     // Handle form mode elicitation
     if ("requestedSchema" in params && params.requestedSchema) {
@@ -76,16 +70,25 @@ export function ElicitationPanel({
         }
       }
     }
-    setFormValues(defaults)
-  }
+    updateState({ formValues: defaults })
+  }, [updateState])
+
+  // Auto-select first pending request if none selected
+  useEffect(() => {
+    if (!selectedRequest && pendingRequests.length > 0) {
+      const firstPending = pendingRequests[0]
+      updateState({ selectedRequestId: firstPending.id })
+      initializeFormValues(firstPending.params)
+    }
+  }, [pendingRequests, selectedRequest, updateState, initializeFormValues])
 
   const handleSelectRequest = (request: PendingElicitationRequest | CompletedElicitationRequest) => {
-    setSelectedRequestId(request.id)
+    updateState({ selectedRequestId: request.id })
     if ("resolve" in request) {
       // It's a pending request
       initializeFormValues(request.params)
     } else if (request.response) {
-      setFormValues(request.response)
+      updateState({ formValues: request.response })
     }
   }
 
@@ -95,7 +98,7 @@ export function ElicitationPanel({
     onResolve(selectedPending.id, { action: "accept", content: formValues })
 
     // Move to completed
-    setCompletedRequests((prev) => [
+    const newCompleted: CompletedElicitationRequest[] = [
       {
         id: selectedPending.id,
         params: selectedPending.params,
@@ -103,16 +106,22 @@ export function ElicitationPanel({
         status: "submitted",
         response: formValues,
       },
-      ...prev,
-    ])
+      ...completedRequests,
+    ]
 
     // Select next pending or clear selection
     const remainingPending = pendingRequests.filter((r) => r.id !== selectedPending.id)
     if (remainingPending.length > 0) {
-      setSelectedRequestId(remainingPending[0].id)
+      updateState({
+        completedRequests: newCompleted,
+        selectedRequestId: remainingPending[0].id,
+      })
       initializeFormValues(remainingPending[0].params)
     } else {
-      setSelectedRequestId(null)
+      updateState({
+        completedRequests: newCompleted,
+        selectedRequestId: null,
+      })
     }
   }
 
@@ -122,33 +131,44 @@ export function ElicitationPanel({
     onResolve(selectedPending.id, { action: "decline" })
 
     // Move to completed
-    setCompletedRequests((prev) => [
+    const newCompleted: CompletedElicitationRequest[] = [
       {
         id: selectedPending.id,
         params: selectedPending.params,
         timestamp: selectedPending.timestamp,
         status: "cancelled",
       },
-      ...prev,
-    ])
+      ...completedRequests,
+    ]
 
     // Select next pending or clear selection
     const remainingPending = pendingRequests.filter((r) => r.id !== selectedPending.id)
     if (remainingPending.length > 0) {
-      setSelectedRequestId(remainingPending[0].id)
+      updateState({
+        completedRequests: newCompleted,
+        selectedRequestId: remainingPending[0].id,
+      })
       initializeFormValues(remainingPending[0].params)
     } else {
-      setSelectedRequestId(null)
+      updateState({
+        completedRequests: newCompleted,
+        selectedRequestId: null,
+      })
     }
   }
 
   const clearHistory = () => {
-    setCompletedRequests([])
     if (pendingRequests.length > 0) {
-      setSelectedRequestId(pendingRequests[0].id)
+      updateState({
+        completedRequests: [],
+        selectedRequestId: pendingRequests[0].id,
+      })
       initializeFormValues(pendingRequests[0].params)
     } else {
-      setSelectedRequestId(null)
+      updateState({
+        completedRequests: [],
+        selectedRequestId: null,
+      })
     }
   }
 
@@ -178,6 +198,10 @@ export function ElicitationPanel({
     }
   }
 
+  const setFormValuesLocal = (newValues: Record<string, unknown>) => {
+    updateState({ formValues: newValues })
+  }
+
   const renderFormField = (name: string, prop: SchemaProperty, _isRequired: boolean) => {
     const value = formValues[name]
     const disabled = !selectedPending
@@ -187,7 +211,7 @@ export function ElicitationPanel({
         <select
           className="w-full p-2 border rounded-md bg-background disabled:opacity-50"
           value={value as string || ""}
-          onChange={(e) => setFormValues({ ...formValues, [name]: e.target.value })}
+          onChange={(e) => setFormValuesLocal({ ...formValues, [name]: e.target.value })}
           disabled={disabled}
         >
           <option value="">Select...</option>
@@ -206,7 +230,7 @@ export function ElicitationPanel({
           <input
             type="checkbox"
             checked={value as boolean || false}
-            onChange={(e) => setFormValues({ ...formValues, [name]: e.target.checked })}
+            onChange={(e) => setFormValuesLocal({ ...formValues, [name]: e.target.checked })}
             disabled={disabled}
             className="h-4 w-4"
           />
@@ -218,7 +242,7 @@ export function ElicitationPanel({
             type="number"
             value={value as number ?? ""}
             onChange={(e) =>
-              setFormValues({
+              setFormValuesLocal({
                 ...formValues,
                 [name]: e.target.value ? Number(e.target.value) : undefined,
               })
@@ -233,7 +257,7 @@ export function ElicitationPanel({
           return (
             <Textarea
               value={value as string || ""}
-              onChange={(e) => setFormValues({ ...formValues, [name]: e.target.value })}
+              onChange={(e) => setFormValuesLocal({ ...formValues, [name]: e.target.value })}
               placeholder={prop.description}
               minLength={prop.minLength}
               maxLength={prop.maxLength}
@@ -245,7 +269,7 @@ export function ElicitationPanel({
         return (
           <Input
             value={value as string || ""}
-            onChange={(e) => setFormValues({ ...formValues, [name]: e.target.value })}
+            onChange={(e) => setFormValuesLocal({ ...formValues, [name]: e.target.value })}
             placeholder={prop.description}
             minLength={prop.minLength}
             maxLength={prop.maxLength}
@@ -299,7 +323,7 @@ export function ElicitationPanel({
 
       <div className="flex h-full gap-4 min-h-0">
         {/* Left: Request List */}
-        <div className="w-80 flex flex-col border rounded-lg">
+        <div className="w-80 flex-shrink-0 flex flex-col border rounded-lg">
           <div className="p-3 border-b flex items-center justify-between">
             <div className="flex items-center gap-2">
               <HelpCircle className="h-4 w-4" />
@@ -350,7 +374,7 @@ export function ElicitationPanel({
         </div>
 
         {/* Right: Request Details & Form */}
-        <div className="flex-1 flex flex-col border rounded-lg">
+        <div className="flex-1 min-w-0 flex flex-col border rounded-lg">
           {selectedRequest ? (
             <>
               <div className="p-4 border-b">
@@ -442,7 +466,7 @@ export function ElicitationPanel({
                   {selectedCompleted?.status === "submitted" && selectedCompleted.response && (
                     <div className="space-y-2">
                       <h4 className="text-sm font-medium">Submitted Response</h4>
-                      <pre className="p-3 bg-muted rounded-md text-xs overflow-auto">
+                      <pre className="p-3 bg-muted rounded-md text-xs overflow-auto whitespace-pre-wrap break-all">
                         {JSON.stringify(selectedCompleted.response, null, 2)}
                       </pre>
                     </div>
