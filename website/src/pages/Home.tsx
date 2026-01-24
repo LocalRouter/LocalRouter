@@ -2,6 +2,7 @@ import { Link } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
+import ArchitectureGraph from '@/components/ArchitectureGraph'
 import {
   ArrowRight,
   Shield,
@@ -127,54 +128,7 @@ export default function Home() {
 
           {/* Architecture Visual */}
           <div className="mx-auto mt-16 max-w-4xl">
-            <div className="rounded-xl border bg-card p-6 shadow-sm">
-              <div className="flex flex-col items-center gap-4 md:flex-row md:justify-between">
-                {/* Apps */}
-                <div className="flex flex-col gap-2 text-sm">
-                  <div className="font-medium text-muted-foreground mb-1">Your Apps</div>
-                  {['Cursor', 'Open WebUI', 'Your Code', 'Any Tool'].map((app) => (
-                    <div key={app} className="rounded-md border bg-background px-3 py-1.5 text-center">
-                      {app}
-                    </div>
-                  ))}
-                </div>
-
-                {/* Arrow */}
-                <div className="flex items-center text-muted-foreground">
-                  <div className="hidden md:block h-px w-8 bg-border" />
-                  <ArrowRight className="h-5 w-5 mx-2" />
-                  <div className="hidden md:block h-px w-8 bg-border" />
-                </div>
-
-                {/* LocalRouter */}
-                <div className="rounded-xl bg-primary px-6 py-8 text-primary-foreground text-center">
-                  <div className="font-bold text-lg">LocalRouter</div>
-                  <div className="text-sm opacity-90 mt-1">localhost:3625</div>
-                  <div className="mt-3 flex flex-wrap justify-center gap-1">
-                    <Badge variant="secondary" className="text-xs">Route</Badge>
-                    <Badge variant="secondary" className="text-xs">Monitor</Badge>
-                    <Badge variant="secondary" className="text-xs">Limit</Badge>
-                  </div>
-                </div>
-
-                {/* Arrow */}
-                <div className="flex items-center text-muted-foreground">
-                  <div className="hidden md:block h-px w-8 bg-border" />
-                  <ArrowRight className="h-5 w-5 mx-2" />
-                  <div className="hidden md:block h-px w-8 bg-border" />
-                </div>
-
-                {/* Providers */}
-                <div className="flex flex-col gap-2 text-sm">
-                  <div className="font-medium text-muted-foreground mb-1">Providers</div>
-                  {['Ollama (Local)', 'OpenAI', 'Anthropic', '10+ more...'].map((provider) => (
-                    <div key={provider} className="rounded-md border bg-background px-3 py-1.5 text-center">
-                      {provider}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
+            <ArchitectureGraph />
           </div>
         </div>
       </section>
