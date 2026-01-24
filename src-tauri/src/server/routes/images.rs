@@ -81,10 +81,13 @@ pub async fn image_generations(
     };
 
     // Call the provider's generate_image method
-    let provider_response = provider.generate_image(provider_request).await.map_err(|e| {
-        tracing::error!("Image generation failed: {}", e);
-        ApiErrorResponse::bad_gateway(format!("Provider error: {}", e))
-    })?;
+    let provider_response = provider
+        .generate_image(provider_request)
+        .await
+        .map_err(|e| {
+            tracing::error!("Image generation failed: {}", e);
+            ApiErrorResponse::bad_gateway(format!("Provider error: {}", e))
+        })?;
 
     let latency_ms = Instant::now().duration_since(started_at).as_millis() as u64;
 
@@ -133,21 +136,13 @@ fn validate_request(request: &ImageGenerationRequest) -> ApiResult<()> {
     // Validate n (number of images)
     if let Some(n) = request.n {
         if n == 0 || n > 10 {
-            return Err(
-                ApiErrorResponse::bad_request("n must be between 1 and 10").with_param("n")
-            );
+            return Err(ApiErrorResponse::bad_request("n must be between 1 and 10").with_param("n"));
         }
     }
 
     // Validate size if provided
     if let Some(size) = &request.size {
-        let valid_sizes = [
-            "256x256",
-            "512x512",
-            "1024x1024",
-            "1024x1792",
-            "1792x1024",
-        ];
+        let valid_sizes = ["256x256", "512x512", "1024x1024", "1024x1792", "1792x1024"];
         if !valid_sizes.contains(&size.as_str()) {
             return Err(ApiErrorResponse::bad_request(format!(
                 "Invalid size '{}'. Valid sizes are: {}",
@@ -181,10 +176,10 @@ fn validate_request(request: &ImageGenerationRequest) -> ApiResult<()> {
     // Validate response_format if provided
     if let Some(format) = &request.response_format {
         if format != "url" && format != "b64_json" {
-            return Err(
-                ApiErrorResponse::bad_request("response_format must be 'url' or 'b64_json'")
-                    .with_param("response_format"),
-            );
+            return Err(ApiErrorResponse::bad_request(
+                "response_format must be 'url' or 'b64_json'",
+            )
+            .with_param("response_format"));
         }
     }
 
