@@ -389,6 +389,7 @@ impl AppState {
             mcp_notification_broadcast: Arc::new(notification_tx),
             sse_connection_manager: Arc::new(SseConnectionManager::new()),
             mcp_notification_handlers_registered: Arc::new(DashMap::new()),
+            health_cache: Arc::new(HealthCacheManager::new()),
         }
     }
 
