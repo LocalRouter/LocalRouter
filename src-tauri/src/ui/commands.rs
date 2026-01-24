@@ -393,6 +393,104 @@ pub async fn get_providers_health(
     Ok(registry.get_all_health().await)
 }
 
+/// Health check result for streaming to frontend
+#[derive(Clone, Serialize)]
+pub struct HealthCheckResult {
+    pub provider_name: String,
+    pub status: String,
+    pub latency_ms: Option<u64>,
+    pub error_message: Option<String>,
+}
+
+/// Start streaming health checks for all providers
+///
+/// Emits "provider-health-check" events as each provider's health check completes.
+/// Returns immediately with the list of providers being checked.
+#[tauri::command]
+pub async fn start_provider_health_checks(
+    app: tauri::AppHandle,
+    registry: State<'_, Arc<ProviderRegistry>>,
+) -> Result<Vec<String>, String> {
+    let provider_names = registry.get_provider_names();
+
+    // Clone what we need for the spawned task
+    let registry = registry.inner().clone();
+    let app_handle = app.clone();
+
+    // Spawn health checks for each provider instance in parallel
+    // We check each instance directly (not via HealthCheckManager) to ensure
+    // proper instance name mapping even with multiple instances of the same provider type
+    tokio::spawn(async move {
+        let instance_names = registry.get_provider_names();
+        let mut handles = Vec::new();
+
+        for instance_name in instance_names {
+            let registry = registry.clone();
+            let app_handle = app_handle.clone();
+            let instance_name_clone = instance_name.clone();
+
+            let handle = tokio::spawn(async move {
+                if let Some(provider) = registry.get_provider_unchecked(&instance_name_clone) {
+                    let health = provider.health_check().await;
+                    let result = HealthCheckResult {
+                        provider_name: instance_name_clone,
+                        status: match health.status {
+                            crate::providers::HealthStatus::Healthy => "healthy".to_string(),
+                            crate::providers::HealthStatus::Degraded => "degraded".to_string(),
+                            crate::providers::HealthStatus::Unhealthy => "unhealthy".to_string(),
+                        },
+                        latency_ms: health.latency_ms,
+                        error_message: health.error_message,
+                    };
+                    let _ = app_handle.emit("provider-health-check", result);
+                }
+            });
+            handles.push(handle);
+        }
+
+        // Wait for all health checks to complete
+        for handle in handles {
+            let _ = handle.await;
+        }
+    });
+
+    Ok(provider_names)
+}
+
+/// Check health for a single provider
+///
+/// Emits "provider-health-check" event when the health check completes.
+#[tauri::command]
+pub async fn check_single_provider_health(
+    app: tauri::AppHandle,
+    registry: State<'_, Arc<ProviderRegistry>>,
+    instance_name: String,
+) -> Result<(), String> {
+    let registry = registry.inner().clone();
+    let app_handle = app.clone();
+
+    // Spawn the health check in the background
+    tokio::spawn(async move {
+        // Get the provider directly and perform health check
+        if let Some(provider) = registry.get_provider_unchecked(&instance_name) {
+            let health = provider.health_check().await;
+            let result = HealthCheckResult {
+                provider_name: instance_name,
+                status: match health.status {
+                    crate::providers::HealthStatus::Healthy => "healthy".to_string(),
+                    crate::providers::HealthStatus::Degraded => "degraded".to_string(),
+                    crate::providers::HealthStatus::Unhealthy => "unhealthy".to_string(),
+                },
+                latency_ms: health.latency_ms,
+                error_message: health.error_message,
+            };
+            let _ = app_handle.emit("provider-health-check", result);
+        }
+    });
+
+    Ok(())
+}
+
 /// List models from a specific provider instance
 ///
 /// # Arguments
@@ -1687,6 +1785,100 @@ pub async fn get_all_mcp_server_health(
     mcp_manager: State<'_, Arc<McpServerManager>>,
 ) -> Result<Vec<crate::mcp::manager::McpServerHealth>, String> {
     Ok(mcp_manager.get_all_health().await)
+}
+
+/// Health check result for streaming MCP health to frontend
+#[derive(Clone, Serialize)]
+pub struct McpHealthCheckResult {
+    pub server_id: String,
+    pub server_name: String,
+    pub status: String,
+    pub latency_ms: Option<u64>,
+    pub error: Option<String>,
+}
+
+/// Start streaming health checks for all MCP servers
+///
+/// Emits "mcp-health-check" events as each server's health check completes.
+/// Returns immediately with the list of server IDs being checked.
+#[tauri::command]
+pub async fn start_mcp_health_checks(
+    app: tauri::AppHandle,
+    mcp_manager: State<'_, Arc<McpServerManager>>,
+) -> Result<Vec<String>, String> {
+    let server_ids: Vec<String> = mcp_manager.list_configs().iter().map(|c| c.id.clone()).collect();
+
+    let mcp_manager = mcp_manager.inner().clone();
+    let app_handle = app.clone();
+
+    // Spawn health checks for each server in parallel
+    tokio::spawn(async move {
+        let configs = mcp_manager.list_configs();
+        let mut handles = Vec::new();
+
+        for config in configs {
+            let mcp_manager = mcp_manager.clone();
+            let app_handle = app_handle.clone();
+            let server_id = config.id.clone();
+
+            let handle = tokio::spawn(async move {
+                let health = mcp_manager.get_server_health(&server_id).await;
+                let result = McpHealthCheckResult {
+                    server_id: health.server_id,
+                    server_name: health.server_name,
+                    status: match health.status {
+                        crate::mcp::manager::HealthStatus::Healthy => "healthy".to_string(),
+                        crate::mcp::manager::HealthStatus::Ready => "ready".to_string(),
+                        crate::mcp::manager::HealthStatus::Unhealthy => "unhealthy".to_string(),
+                        crate::mcp::manager::HealthStatus::Unknown => "unknown".to_string(),
+                    },
+                    latency_ms: health.latency_ms,
+                    error: health.error,
+                };
+                let _ = app_handle.emit("mcp-health-check", result);
+            });
+            handles.push(handle);
+        }
+
+        // Wait for all health checks to complete
+        for handle in handles {
+            let _ = handle.await;
+        }
+    });
+
+    Ok(server_ids)
+}
+
+/// Check health for a single MCP server
+///
+/// Emits "mcp-health-check" event when the health check completes.
+#[tauri::command]
+pub async fn check_single_mcp_health(
+    app: tauri::AppHandle,
+    mcp_manager: State<'_, Arc<McpServerManager>>,
+    server_id: String,
+) -> Result<(), String> {
+    let mcp_manager = mcp_manager.inner().clone();
+    let app_handle = app.clone();
+
+    tokio::spawn(async move {
+        let health = mcp_manager.get_server_health(&server_id).await;
+        let result = McpHealthCheckResult {
+            server_id: health.server_id,
+            server_name: health.server_name,
+            status: match health.status {
+                crate::mcp::manager::HealthStatus::Healthy => "healthy".to_string(),
+                crate::mcp::manager::HealthStatus::Ready => "ready".to_string(),
+                crate::mcp::manager::HealthStatus::Unhealthy => "unhealthy".to_string(),
+                crate::mcp::manager::HealthStatus::Unknown => "unknown".to_string(),
+            },
+            latency_ms: health.latency_ms,
+            error: health.error,
+        };
+        let _ = app_handle.emit("mcp-health-check", result);
+    });
+
+    Ok(())
 }
 
 /// Update an MCP server's name
@@ -3459,6 +3651,39 @@ pub async fn create_test_client_for_strategy(
     client_manager.sync_clients(updated_config.clients);
 
     Ok(secret)
+}
+
+// ============================================================================
+// Setup Wizard Commands
+// ============================================================================
+
+/// Check if the setup wizard has been shown
+///
+/// Used for first-run detection. Returns true if the wizard has been shown,
+/// false if this is the first time the app is being run.
+#[tauri::command]
+pub async fn get_setup_wizard_shown(
+    config_manager: State<'_, ConfigManager>,
+) -> Result<bool, String> {
+    let config = config_manager.get();
+    Ok(config.setup_wizard_shown)
+}
+
+/// Mark the setup wizard as shown
+///
+/// Called after the user completes or dismisses the setup wizard.
+/// This prevents the wizard from showing again on subsequent app launches.
+#[tauri::command]
+pub async fn set_setup_wizard_shown(
+    config_manager: State<'_, ConfigManager>,
+) -> Result<(), String> {
+    config_manager
+        .update(|cfg| {
+            cfg.setup_wizard_shown = true;
+        })
+        .map_err(|e| e.to_string())?;
+
+    config_manager.save().await.map_err(|e| e.to_string())
 }
 
 // ============================================================================

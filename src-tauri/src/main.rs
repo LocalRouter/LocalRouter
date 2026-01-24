@@ -642,6 +642,8 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::remove_provider_instance,
             ui::commands::set_provider_enabled,
             ui::commands::get_providers_health,
+            ui::commands::start_provider_health_checks,
+            ui::commands::check_single_provider_health,
             ui::commands::list_provider_models,
             ui::commands::list_all_models,
             ui::commands::list_all_models_detailed,
@@ -707,6 +709,8 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::stop_mcp_server,
             ui::commands::get_mcp_server_health,
             ui::commands::get_all_mcp_server_health,
+            ui::commands::start_mcp_health_checks,
+            ui::commands::check_single_mcp_health,
             ui::commands::update_mcp_server_name,
             ui::commands::update_mcp_server_config,
             ui::commands::update_mcp_server,
@@ -771,6 +775,9 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::get_logging_config,
             ui::commands::update_logging_config,
             ui::commands::open_logs_folder,
+            // Setup wizard commands
+            ui::commands::get_setup_wizard_shown,
+            ui::commands::set_setup_wizard_shown,
             // RouteLLM intelligent routing commands
             ui::commands_routellm::routellm_get_status,
             ui::commands_routellm::routellm_test_prediction,

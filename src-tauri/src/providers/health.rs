@@ -95,6 +95,41 @@ impl HealthCheckManager {
         }
         None
     }
+
+    /// Perform streaming health checks for all providers
+    ///
+    /// Calls the callback as each provider's health check completes.
+    /// Returns the list of provider names that were checked.
+    pub async fn check_all_health_streaming<F>(&self, mut on_result: F) -> Vec<String>
+    where
+        F: FnMut(String, ProviderHealth) + Send,
+    {
+        let providers = self.providers.read().await.clone();
+        let provider_names: Vec<String> = providers.iter().map(|p| p.name().to_string()).collect();
+
+        // Spawn all health checks concurrently
+        let config = self.config.clone();
+        let mut handles = Vec::new();
+
+        for provider in providers {
+            let config = config.clone();
+            let handle = tokio::spawn(async move {
+                let name = provider.name().to_string();
+                let health = check_provider_health(provider, &config).await;
+                (name, health)
+            });
+            handles.push(handle);
+        }
+
+        // Collect results as they complete
+        for handle in handles {
+            if let Ok((name, health)) = handle.await {
+                on_result(name, health);
+            }
+        }
+
+        provider_names
+    }
 }
 
 impl Default for HealthCheckManager {
