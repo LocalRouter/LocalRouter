@@ -422,7 +422,9 @@ impl AppState {
 
         // Also set app handle on loggers for event emission
         self.access_logger.set_app_handle(handle.clone());
-        self.mcp_access_logger.set_app_handle(handle);
+        self.mcp_access_logger.set_app_handle(handle.clone());
+        // Also set app handle on health cache for event emission
+        self.health_cache.set_app_handle(handle);
     }
 
     /// Set the tray graph manager (called after Tauri initialization when it's created)
