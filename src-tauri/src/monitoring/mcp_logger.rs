@@ -157,7 +157,10 @@ impl McpAccessLogger {
 
     /// Set whether MCP access logging is enabled
     pub fn set_enabled(&self, enabled: bool) {
-        info!("MCP access logging {}", if enabled { "enabled" } else { "disabled" });
+        info!(
+            "MCP access logging {}",
+            if enabled { "enabled" } else { "disabled" }
+        );
         *self.enabled.write() = enabled;
     }
 

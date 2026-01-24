@@ -169,7 +169,10 @@ impl AccessLogger {
 
     /// Set whether access logging is enabled
     pub fn set_enabled(&self, enabled: bool) {
-        info!("Access logging {}", if enabled { "enabled" } else { "disabled" });
+        info!(
+            "Access logging {}",
+            if enabled { "enabled" } else { "disabled" }
+        );
         *self.enabled.write() = enabled;
     }
 
