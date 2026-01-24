@@ -1,4 +1,5 @@
-import React from 'react'
+import React, { useState, useEffect } from 'react'
+import { invoke } from '@tauri-apps/api/core'
 import Card from '../ui/Card'
 import Button from '../ui/Button'
 
@@ -17,6 +18,9 @@ export interface McpServerTemplate {
   docsUrl?: string
   devOnly?: boolean
 }
+
+// Placeholder that will be replaced with the user's home directory
+const HOME_DIR_PLACEHOLDER = '{{HOME_DIR}}'
 
 export const MCP_SERVER_TEMPLATES: McpServerTemplate[] = [
   {
@@ -50,9 +54,9 @@ export const MCP_SERVER_TEMPLATES: McpServerTemplate[] = [
     icon: '📁',
     transport: 'Stdio',
     command: 'npx',
-    args: ['-y', '@modelcontextprotocol/server-filesystem', '/path/to/directory'],
+    args: ['-y', '@modelcontextprotocol/server-filesystem', HOME_DIR_PLACEHOLDER],
     authMethod: 'none',
-    setupInstructions: 'Update the path argument to point to the directory you want to access',
+    setupInstructions: 'Change the path to the directory you want to give access to',
     docsUrl: 'https://github.com/modelcontextprotocol/servers',
   },
   {
@@ -101,6 +105,29 @@ interface McpServerTemplatesProps {
 export const McpServerTemplates: React.FC<McpServerTemplatesProps> = ({ onSelectTemplate }) => {
   const isDev = import.meta.env.DEV
   const visibleTemplates = MCP_SERVER_TEMPLATES.filter(t => !t.devOnly || isDev)
+  const [homeDir, setHomeDir] = useState<string | null>(null)
+
+  // Fetch user's home directory on mount
+  useEffect(() => {
+    invoke<string>('get_home_dir')
+      .then(setHomeDir)
+      .catch((err) => console.error('Failed to get home directory:', err))
+  }, [])
+
+  // Replace placeholders in template args with actual values
+  const resolveTemplate = (template: McpServerTemplate): McpServerTemplate => {
+    if (!template.args || !homeDir) return template
+
+    const resolvedArgs = template.args.map(arg =>
+      arg === HOME_DIR_PLACEHOLDER ? homeDir : arg
+    )
+
+    return { ...template, args: resolvedArgs }
+  }
+
+  const handleSelectTemplate = (template: McpServerTemplate) => {
+    onSelectTemplate(resolveTemplate(template))
+  }
 
   return (
     <div className="space-y-4">
@@ -113,7 +140,7 @@ export const McpServerTemplates: React.FC<McpServerTemplatesProps> = ({ onSelect
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {visibleTemplates.map((template) => (
           <Card key={template.id} className="hover:border-blue-500 dark:hover:border-blue-400 transition-colors cursor-pointer">
-            <div className="p-4" onClick={() => onSelectTemplate(template)}>
+            <div className="p-4" onClick={() => handleSelectTemplate(template)}>
               <div className="flex items-start gap-3">
                 <div className="text-3xl flex-shrink-0">{template.icon}</div>
                 <div className="flex-1 min-w-0">
@@ -156,7 +183,7 @@ export const McpServerTemplates: React.FC<McpServerTemplatesProps> = ({ onSelect
               <Button
                 onClick={(e) => {
                   e.stopPropagation()
-                  onSelectTemplate(template)
+                  handleSelectTemplate(template)
                 }}
                 variant="secondary"
                 className="w-full mt-3"

@@ -129,24 +129,13 @@ export default function McpConfigForm({ formData, onChange, disabled = false, sh
             <Input
               value={formData.command}
               onChange={(e) => onChange('command', e.target.value)}
-              placeholder="npx"
+              placeholder="npx -y @modelcontextprotocol/server-everything"
               disabled={disabled}
               required
             />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium mb-2">
-              Arguments (one per line)
-            </label>
-            <textarea
-              value={formData.args}
-              onChange={(e) => onChange('args', e.target.value)}
-              placeholder="-y&#10;@modelcontextprotocol/server-everything"
-              className="w-full px-3 py-2 bg-gray-800 dark:bg-gray-900 border border-gray-700 dark:border-gray-600 rounded-md text-gray-900 dark:text-gray-100"
-              rows={3}
-              disabled={disabled}
-            />
+            <p className="text-xs text-muted-foreground mt-1">
+              Full command with arguments (e.g., npx -y @modelcontextprotocol/server-filesystem /tmp)
+            </p>
           </div>
 
           <div>

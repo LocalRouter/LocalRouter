@@ -429,7 +429,7 @@ export function StrategyModelConfiguration({
                                     </CardTitle>
                                     <CardDescription>
                                         Use weaker models for simpler prompts for faster and cheaper results.
-                                        Uses local Machine Learning model to determine each request's complexity.
+                                        Every request is determined for complexity using local Machine Learning model.
                                     </CardDescription>
                                 </div>
                             </div>
