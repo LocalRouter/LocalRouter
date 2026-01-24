@@ -12,17 +12,24 @@ interface ThresholdSliderProps {
   onEstimateUpdate?: (split: { weak: number; strong: number }) => void;
 }
 
+// Define threshold stages with their positions (as percentage 0-1)
+const STAGES = [
+  { position: 0.1, short: 'Quality' },
+  { position: 0.3, short: 'Balanced' },
+  { position: 0.5, short: 'Cost' },
+] as const;
+
 const getProfile = (threshold: number): ThresholdProfile => {
-  if (threshold >= 0.6) {
+  if (threshold >= 0.4) {
     return {
-      name: 'Cost Optimized',
+      name: 'Cost Saving',
       weak: 70,
       strong: 30,
       savings: '60%',
       quality: '85%',
     };
   }
-  if (threshold >= 0.4) {
+  if (threshold >= 0.2) {
     return {
       name: 'Balanced',
       weak: 50,
@@ -31,21 +38,12 @@ const getProfile = (threshold: number): ThresholdProfile => {
       quality: '90%',
     };
   }
-  if (threshold >= 0.2) {
-    return {
-      name: 'Quality Prioritized',
-      weak: 25,
-      strong: 75,
-      savings: '24%',
-      quality: '95%',
-    };
-  }
   return {
-    name: 'Maximum Quality',
-    weak: 10,
-    strong: 90,
-    savings: '10%',
-    quality: '98%',
+    name: 'Quality Optimized',
+    weak: 25,
+    strong: 75,
+    savings: '24%',
+    quality: '95%',
   };
 };
 
@@ -61,53 +59,54 @@ export const ThresholdSlider: React.FC<ThresholdSliderProps> = ({
   }, [value, profile.weak, profile.strong, onEstimateUpdate]);
 
   return (
-    <div className="space-y-3">
-      <div className="flex items-center justify-between">
-        <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
-          Routing Threshold
-        </label>
-        <span className="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300">
-          {profile.name}
-        </span>
-      </div>
-
-      <div className="relative">
-        <input
-          type="range"
-          min="0"
-          max="1"
-          step="0.05"
-          value={value}
-          onChange={(e) => onChange(parseFloat(e.target.value))}
-          className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer dark:bg-gray-700 accent-blue-600"
-        />
-        <div className="flex justify-between mt-1 text-xs text-gray-500 dark:text-gray-400">
-          <span>More Cheap</span>
-          <span className="font-mono font-semibold text-gray-700 dark:text-gray-300">
+    <div className="space-y-1 mt-4">
+      <div className="space-y-1">
+        <div className="flex items-center justify-between">
+          <label className="text-sm font-medium text-foreground">
+            Routing Threshold
+          </label>
+          <span className="font-mono text-xs text-muted-foreground">
             {value.toFixed(2)}
           </span>
-          <span>More Quality</span>
         </div>
+        <p className="text-xs text-muted-foreground">
+          Higher values route more requests to weak models, saving costs but potentially reducing quality.
+        </p>
       </div>
 
-      <div className="grid grid-cols-2 gap-2 text-xs">
-        <div className="p-2 bg-gray-50 dark:bg-gray-800 rounded border border-gray-200 dark:border-gray-700">
-          <div className="font-semibold text-gray-900 dark:text-gray-100">
-            {profile.weak}% / {profile.strong}%
-          </div>
-          <div className="text-gray-600 dark:text-gray-400">Weak / Strong Split</div>
-        </div>
-        <div className="p-2 bg-gray-50 dark:bg-gray-800 rounded border border-gray-200 dark:border-gray-700">
-          <div className="font-semibold text-green-600 dark:text-green-400">
-            {profile.savings} savings
-          </div>
-          <div className="text-gray-600 dark:text-gray-400">{profile.quality} quality</div>
-        </div>
-      </div>
+      {/* Slider */}
+      <input
+        type="range"
+        min="0"
+        max="1"
+        step="0.01"
+        value={value}
+        onChange={(e) => onChange(parseFloat(e.target.value))}
+        className="w-full h-2 bg-muted rounded-lg appearance-none cursor-pointer accent-primary"
+      />
 
-      <div className="p-2 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-700 rounded text-xs text-yellow-800 dark:text-yellow-200">
-        <strong>Note:</strong> Estimates based on RouteLLM research paper. Actual results may
-        vary depending on your workload and model selection.
+      {/* Stage markers positioned below slider */}
+      <div className="relative h-6">
+        {STAGES.map((stage) => {
+          const isActive = Math.abs(value - stage.position) < 0.05;
+          // Position as percentage, with small offset for centering
+          const leftPercent = stage.position * 100;
+          return (
+            <button
+              key={stage.position}
+              type="button"
+              onClick={() => onChange(stage.position)}
+              style={{ left: `${leftPercent}%` }}
+              className={`absolute -translate-x-1/2 text-[10px] px-1.5 py-0.5 rounded transition-colors ${
+                isActive
+                  ? 'bg-primary/20 text-primary font-medium'
+                  : 'text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              {stage.short}
+            </button>
+          );
+        })}
       </div>
     </div>
   );

@@ -10,7 +10,7 @@ import { RouteLLMStatusIndicator } from './RouteLLMStatusIndicator';
 import { RouteLLMValueProp } from './RouteLLMValueProp';
 import { ThresholdSlider } from './ThresholdSlider';
 import { RouteLLMTester } from './RouteLLMTester';
-import { RouteLLMConfig, RouteLLMStatus } from './types';
+import { RouteLLMConfig, RouteLLMStatus, ROUTELLM_REQUIREMENTS } from './types';
 
 interface RouteLLMConfigEditorProps {
   config: RouteLLMConfig;
@@ -140,7 +140,7 @@ export const RouteLLMConfigEditor: React.FC<RouteLLMConfigEditorProps> = ({
                 Models Required
               </h4>
               <p className="text-sm text-yellow-800 dark:text-yellow-200 mb-3">
-                RouteLLM requires downloading model files (~1.08 GB) before it can be used.
+                RouteLLM requires downloading model files ({ROUTELLM_REQUIREMENTS.DISK_GB} GB) before it can be used.
               </p>
               <button
                 onClick={handleDownload}
@@ -159,16 +159,16 @@ export const RouteLLMConfigEditor: React.FC<RouteLLMConfigEditorProps> = ({
             </h4>
             <div className="grid grid-cols-2 gap-2 text-xs text-orange-700 dark:text-orange-200">
               <div>
-                <strong>Cold Start:</strong> ~1.5s
+                <strong>Cold Start:</strong> {ROUTELLM_REQUIREMENTS.COLD_START_SECS}s
               </div>
               <div>
-                <strong>Disk Space:</strong> 1.08 GB
+                <strong>Disk Space:</strong> {ROUTELLM_REQUIREMENTS.DISK_GB} GB
               </div>
               <div>
-                <strong>Latency:</strong> ~10ms per request
+                <strong>Latency:</strong> {ROUTELLM_REQUIREMENTS.PER_REQUEST_MS}ms per request
               </div>
               <div>
-                <strong>Memory:</strong> ~2.65 GB (when loaded)
+                <strong>Memory:</strong> {ROUTELLM_REQUIREMENTS.MEMORY_GB} GB (when loaded)
               </div>
             </div>
             {status?.state === 'started' && (

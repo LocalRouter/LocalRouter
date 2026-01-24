@@ -2,6 +2,14 @@
  * RouteLLM type definitions
  */
 
+// Resource requirement constants for RouteLLM
+export const ROUTELLM_REQUIREMENTS = {
+  DISK_GB: '~1',
+  MEMORY_GB: '~1.3',
+  COLD_START_SECS: '~1.5',
+  PER_REQUEST_MS: '~10',
+} as const;
+
 export type RouteLLMState =
   | 'not_downloaded'
   | 'downloading'

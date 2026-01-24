@@ -18,6 +18,7 @@ import {
   SelectValue,
 } from "@/components/ui/Select"
 import { Input } from "@/components/ui/Input"
+import { ROUTELLM_REQUIREMENTS } from "@/components/routellm/types"
 
 type RouteLLMState =
   | "not_downloaded"
@@ -263,14 +264,14 @@ export function RouteLLMTab() {
                 <p className="text-xs text-muted-foreground">Quality Retained</p>
               </div>
               <div className="p-3 bg-purple-500/10 rounded-lg">
-                <p className="text-lg font-bold text-purple-600">~10ms</p>
+                <p className="text-lg font-bold text-purple-600">{ROUTELLM_REQUIREMENTS.PER_REQUEST_MS}ms</p>
                 <p className="text-xs text-muted-foreground">Routing Time</p>
               </div>
             </div>
 
             <div className="p-3 bg-yellow-500/10 border border-yellow-500/20 rounded-lg">
               <p className="text-xs text-yellow-600 dark:text-yellow-400">
-                <strong>Download Required:</strong> Models (~1.08 GB) will be downloaded to{" "}
+                <strong>Download Required:</strong> Models ({ROUTELLM_REQUIREMENTS.DISK_GB} GB) will be downloaded to{" "}
                 <code className="bg-yellow-500/20 px-1 rounded">~/.localrouter/routellm/</code>
               </p>
             </div>
@@ -324,7 +325,7 @@ export function RouteLLMTab() {
                   </SelectContent>
                 </Select>
                 <p className="text-xs text-muted-foreground">
-                  Automatically unload models after inactivity to save RAM (~2.65 GB)
+                  Automatically unload models after inactivity to save RAM ({ROUTELLM_REQUIREMENTS.MEMORY_GB} GB)
                 </p>
               </div>
 
@@ -343,19 +344,19 @@ export function RouteLLMTab() {
               <div className="grid grid-cols-2 gap-4 text-sm">
                 <div>
                   <span className="text-muted-foreground">Cold Start:</span>{" "}
-                  <span className="font-medium">~1.5s</span>
+                  <span className="font-medium">{ROUTELLM_REQUIREMENTS.COLD_START_SECS}s</span>
                 </div>
                 <div>
                   <span className="text-muted-foreground">Disk Space:</span>{" "}
-                  <span className="font-medium">1.08 GB</span>
+                  <span className="font-medium">{ROUTELLM_REQUIREMENTS.DISK_GB} GB</span>
                 </div>
                 <div>
                   <span className="text-muted-foreground">Latency:</span>{" "}
-                  <span className="font-medium">~10ms per request</span>
+                  <span className="font-medium">{ROUTELLM_REQUIREMENTS.PER_REQUEST_MS}ms per request</span>
                 </div>
                 <div>
                   <span className="text-muted-foreground">Memory:</span>{" "}
-                  <span className="font-medium">~2.65 GB (when loaded)</span>
+                  <span className="font-medium">{ROUTELLM_REQUIREMENTS.MEMORY_GB} GB (when loaded)</span>
                 </div>
               </div>
             </CardContent>

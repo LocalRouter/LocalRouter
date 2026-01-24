@@ -4,6 +4,7 @@
  */
 
 import React from 'react';
+import { ROUTELLM_REQUIREMENTS } from './types';
 
 export const RouteLLMValueProp: React.FC = () => {
   return (
@@ -32,7 +33,7 @@ export const RouteLLMValueProp: React.FC = () => {
           <div className="text-gray-600 dark:text-gray-400">Quality Retained</div>
         </div>
         <div className="bg-white dark:bg-gray-800 p-2 rounded border border-blue-100 dark:border-blue-800">
-          <div className="font-semibold text-purple-600 dark:text-purple-400">~10ms</div>
+          <div className="font-semibold text-purple-600 dark:text-purple-400">{ROUTELLM_REQUIREMENTS.PER_REQUEST_MS}ms</div>
           <div className="text-gray-600 dark:text-gray-400">Routing Time</div>
         </div>
       </div>
