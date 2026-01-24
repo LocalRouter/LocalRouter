@@ -743,7 +743,10 @@ impl McpGateway {
                 "Client capabilities parsed: sampling={}, elicitation={}, roots_listChanged={}",
                 caps.supports_sampling(),
                 caps.supports_elicitation(),
-                caps.roots.as_ref().and_then(|r| r.list_changed).unwrap_or(false)
+                caps.roots
+                    .as_ref()
+                    .and_then(|r| r.list_changed)
+                    .unwrap_or(false)
             );
         } else {
             tracing::warn!(
@@ -1608,10 +1611,7 @@ impl McpGateway {
                     drop(session_read);
                     return Ok(JsonRpcResponse::error(
                         request.id.unwrap_or(Value::Null),
-                        JsonRpcError::resource_not_found(format!(
-                            "Resource not found: {}",
-                            name
-                        )),
+                        JsonRpcError::resource_not_found(format!("Resource not found: {}", name)),
                     ));
                 }
             }

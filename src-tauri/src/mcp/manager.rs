@@ -126,7 +126,11 @@ impl McpServerManager {
     ///
     /// # Returns
     /// * `true` if the callback was set, `false` if the server is not a STDIO server
-    pub fn set_request_callback(&self, server_id: &str, callback: crate::mcp::transport::StdioRequestCallback) -> bool {
+    pub fn set_request_callback(
+        &self,
+        server_id: &str,
+        callback: crate::mcp::transport::StdioRequestCallback,
+    ) -> bool {
         if let Some(transport) = self.stdio_transports.get(server_id) {
             transport.set_request_callback(callback);
             tracing::info!("Set request callback for STDIO server: {}", server_id);
@@ -802,43 +806,44 @@ impl McpServerManager {
         let config = self.get_config(server_id);
         let start = std::time::Instant::now();
 
-        let (status, latency_ms, error) = if let Some(transport) = self.stdio_transports.get(server_id) {
-            // STDIO doesn't have meaningful latency (no network)
-            if transport.is_alive() {
-                (HealthStatus::Healthy, None, None)
+        let (status, latency_ms, error) =
+            if let Some(transport) = self.stdio_transports.get(server_id) {
+                // STDIO doesn't have meaningful latency (no network)
+                if transport.is_alive() {
+                    (HealthStatus::Healthy, None, None)
+                } else {
+                    (
+                        HealthStatus::Unhealthy,
+                        None,
+                        Some("Process not running".to_string()),
+                    )
+                }
+            } else if let Some(transport) = self.sse_transports.get(server_id) {
+                let latency = start.elapsed().as_millis() as u64;
+                if transport.is_healthy() {
+                    (HealthStatus::Healthy, Some(latency), None)
+                } else {
+                    (
+                        HealthStatus::Unhealthy,
+                        None,
+                        Some("SSE connection lost".to_string()),
+                    )
+                }
+            } else if let Some(transport) = self.websocket_transports.get(server_id) {
+                let latency = start.elapsed().as_millis() as u64;
+                if transport.is_healthy() {
+                    (HealthStatus::Healthy, Some(latency), None)
+                } else {
+                    (
+                        HealthStatus::Unhealthy,
+                        None,
+                        Some("WebSocket connection lost".to_string()),
+                    )
+                }
             } else {
-                (
-                    HealthStatus::Unhealthy,
-                    None,
-                    Some("Process not running".to_string()),
-                )
-            }
-        } else if let Some(transport) = self.sse_transports.get(server_id) {
-            let latency = start.elapsed().as_millis() as u64;
-            if transport.is_healthy() {
-                (HealthStatus::Healthy, Some(latency), None)
-            } else {
-                (
-                    HealthStatus::Unhealthy,
-                    None,
-                    Some("SSE connection lost".to_string()),
-                )
-            }
-        } else if let Some(transport) = self.websocket_transports.get(server_id) {
-            let latency = start.elapsed().as_millis() as u64;
-            if transport.is_healthy() {
-                (HealthStatus::Healthy, Some(latency), None)
-            } else {
-                (
-                    HealthStatus::Unhealthy,
-                    None,
-                    Some("WebSocket connection lost".to_string()),
-                )
-            }
-        } else {
-            // Server not running - check if it's ready to start
-            self.check_server_readiness(&config).await
-        };
+                // Server not running - check if it's ready to start
+                self.check_server_readiness(&config).await
+            };
 
         McpServerHealth {
             server_id: server_id.to_string(),
@@ -861,7 +866,11 @@ impl McpServerManager {
         config: &Option<McpServerConfig>,
     ) -> (HealthStatus, Option<u64>, Option<String>) {
         let Some(config) = config else {
-            return (HealthStatus::Unknown, None, Some("Server not configured".to_string()));
+            return (
+                HealthStatus::Unknown,
+                None,
+                Some("Server not configured".to_string()),
+            );
         };
 
         match &config.transport_config {
@@ -919,7 +928,9 @@ impl McpServerManager {
             Err(e) => {
                 return Err(match e.kind() {
                     std::io::ErrorKind::NotFound => format!("Command not found: {}", command),
-                    std::io::ErrorKind::PermissionDenied => format!("Permission denied: {}", command),
+                    std::io::ErrorKind::PermissionDenied => {
+                        format!("Permission denied: {}", command)
+                    }
                     _ => format!("Failed to spawn: {}", e),
                 });
             }
@@ -956,7 +967,10 @@ impl McpServerManager {
             Err(_) => {
                 // Timeout - process is still running but no output
                 // This is unusual but not necessarily an error
-                Err(format!("Timeout after {}s waiting for response", TIMEOUT_SECS))
+                Err(format!(
+                    "Timeout after {}s waiting for response",
+                    TIMEOUT_SECS
+                ))
             }
         }
     }
@@ -1368,7 +1382,10 @@ mod tests {
         // This will download the package if not cached, so it may take a while
         let result = McpServerManager::try_spawn_command(
             "npx",
-            &["-y".to_string(), "@modelcontextprotocol/server-everything".to_string()],
+            &[
+                "-y".to_string(),
+                "@modelcontextprotocol/server-everything".to_string(),
+            ],
             &HashMap::new(),
         )
         .await;
@@ -1386,7 +1403,10 @@ mod tests {
         // Test with a nonexistent npm package
         let result = McpServerManager::try_spawn_command(
             "npx",
-            &["-y".to_string(), "@nonexistent/package-that-does-not-exist-12345".to_string()],
+            &[
+                "-y".to_string(),
+                "@nonexistent/package-that-does-not-exist-12345".to_string(),
+            ],
             &HashMap::new(),
         )
         .await;

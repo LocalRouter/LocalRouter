@@ -36,7 +36,9 @@ pub type StdioNotificationCallback = Arc<dyn Fn(JsonRpcNotification) + Send + Sy
 /// Request callback type for STDIO transport (for server-initiated requests like sampling/elicitation)
 /// Returns a future that resolves to the response
 pub type StdioRequestCallback = Arc<
-    dyn Fn(JsonRpcRequest) -> std::pin::Pin<Box<dyn std::future::Future<Output = JsonRpcResponse> + Send>>
+    dyn Fn(
+            JsonRpcRequest,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = JsonRpcResponse> + Send>>
         + Send
         + Sync,
 >;
@@ -394,9 +396,8 @@ impl Transport for StdioTransport {
 
         if is_notification {
             // For notifications: don't add ID, don't wait for response
-            let mut json = serde_json::to_string(&request).map_err(|e| {
-                AppError::Mcp(format!("Failed to serialize notification: {}", e))
-            })?;
+            let mut json = serde_json::to_string(&request)
+                .map_err(|e| AppError::Mcp(format!("Failed to serialize notification: {}", e)))?;
             json.push('\n');
 
             tracing::debug!("STDIO sending notification: {}", request.method);
@@ -404,17 +405,18 @@ impl Transport for StdioTransport {
             // Write to stdin
             {
                 let mut stdin_guard = self.stdin.lock().await;
-                let stdin = stdin_guard.as_mut().ok_or_else(|| {
-                    AppError::Mcp("Stdin not available".to_string())
-                })?;
+                let stdin = stdin_guard
+                    .as_mut()
+                    .ok_or_else(|| AppError::Mcp("Stdin not available".to_string()))?;
 
                 stdin.write_all(json.as_bytes()).await.map_err(|e| {
                     AppError::Mcp(format!("Failed to write notification to stdin: {}", e))
                 })?;
 
-                stdin.flush().await.map_err(|e| {
-                    AppError::Mcp(format!("Failed to flush stdin: {}", e))
-                })?;
+                stdin
+                    .flush()
+                    .await
+                    .map_err(|e| AppError::Mcp(format!("Failed to flush stdin: {}", e)))?;
             }
 
             // Return empty success response for notifications

@@ -250,9 +250,8 @@ impl Transport for WebSocketTransport {
             tracing::debug!("WebSocket sending notification: {}", request.method);
 
             // Serialize notification to JSON (no ID added)
-            let json = serde_json::to_string(&request).map_err(|e| {
-                AppError::Mcp(format!("Failed to serialize notification: {}", e))
-            })?;
+            let json = serde_json::to_string(&request)
+                .map_err(|e| AppError::Mcp(format!("Failed to serialize notification: {}", e)))?;
 
             // Send message via WebSocket
             {

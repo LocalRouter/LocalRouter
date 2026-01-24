@@ -503,7 +503,8 @@ impl SseTransport {
                                         JsonRpcMessage::Response(response) => {
                                             // Find pending request using normalized ID
                                             let id_str = Self::normalize_response_id(&response.id);
-                                            let pending_keys: Vec<String> = pending.read().keys().cloned().collect();
+                                            let pending_keys: Vec<String> =
+                                                pending.read().keys().cloned().collect();
                                             tracing::info!(
                                                 "SSE transport received response: id={}, pending_keys={:?}",
                                                 id_str,
@@ -646,9 +647,10 @@ impl Transport for SseTransport {
             }
 
             // Send POST request (fire and forget)
-            let post_response = req_builder.send().await.map_err(|e| {
-                AppError::Mcp(format!("Failed to send notification: {}", e))
-            })?;
+            let post_response = req_builder
+                .send()
+                .await
+                .map_err(|e| AppError::Mcp(format!("Failed to send notification: {}", e)))?;
 
             // Check status but don't wait for response body
             if !post_response.status().is_success() {
