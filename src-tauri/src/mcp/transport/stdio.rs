@@ -33,6 +33,14 @@ fn normalize_response_id(id: &Value) -> String {
 /// Notification callback type for STDIO transport
 pub type StdioNotificationCallback = Arc<dyn Fn(JsonRpcNotification) + Send + Sync>;
 
+/// Request callback type for STDIO transport (for server-initiated requests like sampling/elicitation)
+/// Returns a future that resolves to the response
+pub type StdioRequestCallback = Arc<
+    dyn Fn(JsonRpcRequest) -> std::pin::Pin<Box<dyn std::future::Future<Output = JsonRpcResponse> + Send>>
+        + Send
+        + Sync,
+>;
+
 /// STDIO transport implementation
 ///
 /// Manages a subprocess with JSON-RPC communication over stdin/stdout.
@@ -58,6 +66,9 @@ pub struct StdioTransport {
 
     /// Notification callback (optional)
     notification_callback: Arc<RwLock<Option<StdioNotificationCallback>>>,
+
+    /// Request callback for server-initiated requests like sampling/elicitation (optional)
+    request_callback: Arc<RwLock<Option<StdioRequestCallback>>>,
 
     /// Background reader task handle (for cancellation)
     reader_task: Arc<RwLock<Option<JoinHandle<()>>>>,
@@ -108,6 +119,8 @@ impl StdioTransport {
         let pending = Arc::new(RwLock::new(HashMap::new()));
         let closed = Arc::new(RwLock::new(false));
         let notification_callback = Arc::new(RwLock::new(None));
+        let request_callback = Arc::new(RwLock::new(None));
+        let stdin = Arc::new(Mutex::new(Some(stdin)));
 
         // Start reading stdout in background
         let reader_task = Self::start_stdout_reader(
@@ -115,15 +128,18 @@ impl StdioTransport {
             pending.clone(),
             closed.clone(),
             notification_callback.clone(),
+            request_callback.clone(),
+            stdin.clone(),
         );
 
         let transport = Self {
             child: Arc::new(RwLock::new(Some(child))),
-            stdin: Arc::new(Mutex::new(Some(stdin))),
+            stdin,
             pending,
             next_id: Arc::new(RwLock::new(1)),
             closed,
             notification_callback,
+            request_callback,
             reader_task: Arc::new(RwLock::new(Some(reader_task))),
         };
 
@@ -140,7 +156,15 @@ impl StdioTransport {
         *self.notification_callback.write() = Some(callback);
     }
 
-    /// Start background task to read stdout and dispatch responses/notifications
+    /// Set a request callback for server-initiated requests (sampling, elicitation, etc.)
+    ///
+    /// # Arguments
+    /// * `callback` - The callback to invoke when requests are received from the server
+    pub fn set_request_callback(&self, callback: StdioRequestCallback) {
+        *self.request_callback.write() = Some(callback);
+    }
+
+    /// Start background task to read stdout and dispatch responses/notifications/requests
     ///
     /// Returns a JoinHandle that can be used to cancel the task.
     fn start_stdout_reader(
@@ -148,6 +172,8 @@ impl StdioTransport {
         pending: Arc<RwLock<HashMap<String, oneshot::Sender<JsonRpcResponse>>>>,
         closed: Arc<RwLock<bool>>,
         notification_callback: Arc<RwLock<Option<StdioNotificationCallback>>>,
+        request_callback: Arc<RwLock<Option<StdioRequestCallback>>>,
+        stdin: Arc<Mutex<Option<ChildStdin>>>,
     ) -> JoinHandle<()> {
         tokio::spawn(async move {
             let mut reader = BufReader::new(stdout);
@@ -164,7 +190,7 @@ impl StdioTransport {
                         break;
                     }
                     Ok(_) => {
-                        // Parse JSON-RPC message (could be response or notification)
+                        // Parse JSON-RPC message (could be response, notification, or request)
                         let trimmed = line.trim();
                         if trimmed.is_empty() {
                             continue;
@@ -197,12 +223,73 @@ impl StdioTransport {
                                     callback(notification);
                                 }
                             }
-                            Ok(JsonRpcMessage::Request(_)) => {
-                                // Unexpected: server shouldn't send requests to client
-                                tracing::warn!(
-                                    "Received unexpected request from server (ignored): {}",
-                                    trimmed
+                            Ok(JsonRpcMessage::Request(request)) => {
+                                // Handle server-initiated request (sampling, elicitation, roots/list)
+                                tracing::info!(
+                                    "Received request from server: method={}, id={:?}",
+                                    request.method,
+                                    request.id
                                 );
+
+                                // Get the callback if registered
+                                let callback = request_callback.read().clone();
+                                if let Some(callback) = callback {
+                                    let stdin_clone = stdin.clone();
+                                    let request_id = request.id.clone();
+
+                                    // Spawn a task to handle the request asynchronously
+                                    tokio::spawn(async move {
+                                        // Call the handler and get the response
+                                        let response = callback(request).await;
+
+                                        // Send response back to the server via stdin
+                                        let mut json = match serde_json::to_string(&response) {
+                                            Ok(j) => j,
+                                            Err(e) => {
+                                                tracing::error!(
+                                                    "Failed to serialize response for request {:?}: {}",
+                                                    request_id,
+                                                    e
+                                                );
+                                                return;
+                                            }
+                                        };
+                                        json.push('\n');
+
+                                        let mut stdin_guard = stdin_clone.lock().await;
+                                        if let Some(stdin) = stdin_guard.as_mut() {
+                                            if let Err(e) = stdin.write_all(json.as_bytes()).await {
+                                                tracing::error!(
+                                                    "Failed to write response to stdin for request {:?}: {}",
+                                                    request_id,
+                                                    e
+                                                );
+                                                return;
+                                            }
+                                            if let Err(e) = stdin.flush().await {
+                                                tracing::error!(
+                                                    "Failed to flush stdin for request {:?}: {}",
+                                                    request_id,
+                                                    e
+                                                );
+                                            }
+                                            tracing::debug!(
+                                                "Sent response for server request {:?}",
+                                                request_id
+                                            );
+                                        } else {
+                                            tracing::error!(
+                                                "Stdin not available for sending response to request {:?}",
+                                                request_id
+                                            );
+                                        }
+                                    });
+                                } else {
+                                    tracing::warn!(
+                                        "No request callback registered, ignoring server request: {}",
+                                        request.method
+                                    );
+                                }
                             }
                             Err(e) => {
                                 tracing::error!(
@@ -301,6 +388,46 @@ impl Transport for StdioTransport {
             return Err(AppError::Mcp("Transport is closed".to_string()));
         }
 
+        // Check if this is a notification (no ID, starts with "notifications/")
+        // Notifications are fire-and-forget - no response expected
+        let is_notification = request.id.is_none() && request.method.starts_with("notifications/");
+
+        if is_notification {
+            // For notifications: don't add ID, don't wait for response
+            let mut json = serde_json::to_string(&request).map_err(|e| {
+                AppError::Mcp(format!("Failed to serialize notification: {}", e))
+            })?;
+            json.push('\n');
+
+            tracing::debug!("STDIO sending notification: {}", request.method);
+
+            // Write to stdin
+            {
+                let mut stdin_guard = self.stdin.lock().await;
+                let stdin = stdin_guard.as_mut().ok_or_else(|| {
+                    AppError::Mcp("Stdin not available".to_string())
+                })?;
+
+                stdin.write_all(json.as_bytes()).await.map_err(|e| {
+                    AppError::Mcp(format!("Failed to write notification to stdin: {}", e))
+                })?;
+
+                stdin.flush().await.map_err(|e| {
+                    AppError::Mcp(format!("Failed to flush stdin: {}", e))
+                })?;
+            }
+
+            // Return empty success response for notifications
+            return Ok(JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                id: Value::Null,
+                result: Some(Value::Null),
+                error: None,
+            });
+        }
+
+        // For regular requests: assign ID and wait for response
+
         // Store the original request ID to restore in response
         let original_request_id = request.id.clone();
 
@@ -323,6 +450,12 @@ impl Transport for StdioTransport {
             self.pending.write().remove(&request_id);
             AppError::Mcp(format!("Failed to serialize request: {}", e))
         })?;
+
+        // Debug: log the actual JSON being sent for initialize requests
+        if request.method == "initialize" {
+            tracing::info!("STDIO sending initialize request: {}", json);
+        }
+
         json.push('\n');
 
         // Write to stdin
@@ -409,6 +542,7 @@ mod tests {
             next_id: Arc::new(RwLock::new(1)),
             closed: Arc::new(RwLock::new(false)),
             notification_callback: Arc::new(RwLock::new(None)),
+            request_callback: Arc::new(RwLock::new(None)),
             reader_task: Arc::new(RwLock::new(None)),
         };
 

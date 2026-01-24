@@ -623,6 +623,52 @@ impl Transport for SseTransport {
             return Err(AppError::Mcp("Transport is closed".to_string()));
         }
 
+        // Check if this is a notification (no ID, starts with "notifications/")
+        // Notifications are fire-and-forget - no response expected
+        let is_notification = request.id.is_none() && request.method.starts_with("notifications/");
+
+        if is_notification {
+            // For notifications: send without waiting for response
+            tracing::debug!("SSE sending notification: {}", request.method);
+
+            // Determine POST URL: use message_endpoint if available, otherwise fall back to base url
+            let post_url = self
+                .message_endpoint
+                .read()
+                .clone()
+                .unwrap_or_else(|| self.url.clone());
+
+            // Build POST request for notification (no ID added)
+            let mut req_builder = self.client.post(&post_url).json(&request);
+            req_builder = req_builder.header("Accept", "application/json, text/event-stream");
+            for (key, value) in &self.headers {
+                req_builder = req_builder.header(key, value);
+            }
+
+            // Send POST request (fire and forget)
+            let post_response = req_builder.send().await.map_err(|e| {
+                AppError::Mcp(format!("Failed to send notification: {}", e))
+            })?;
+
+            // Check status but don't wait for response body
+            if !post_response.status().is_success() {
+                tracing::warn!(
+                    "SSE notification POST returned non-success status: {}",
+                    post_response.status()
+                );
+            }
+
+            // Return empty success response for notifications
+            return Ok(JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                id: Value::Null,
+                result: Some(Value::Null),
+                error: None,
+            });
+        }
+
+        // For regular requests: assign ID and wait for response
+
         // Store the original request ID to restore in response
         let original_request_id = request.id.clone();
 

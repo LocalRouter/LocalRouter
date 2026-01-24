@@ -12,7 +12,7 @@ pub mod stdio;
 pub mod websocket;
 
 pub use sse::SseTransport;
-pub use stdio::StdioTransport;
+pub use stdio::{StdioRequestCallback, StdioTransport};
 pub use websocket::WebSocketTransport;
 
 use crate::mcp::protocol::{JsonRpcRequest, JsonRpcResponse, StreamingChunk};

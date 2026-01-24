@@ -241,6 +241,54 @@ impl Transport for WebSocketTransport {
             return Err(AppError::Mcp("Transport is closed".to_string()));
         }
 
+        // Check if this is a notification (no ID, starts with "notifications/")
+        // Notifications are fire-and-forget - no response expected
+        let is_notification = request.id.is_none() && request.method.starts_with("notifications/");
+
+        if is_notification {
+            // For notifications: send without waiting for response
+            tracing::debug!("WebSocket sending notification: {}", request.method);
+
+            // Serialize notification to JSON (no ID added)
+            let json = serde_json::to_string(&request).map_err(|e| {
+                AppError::Mcp(format!("Failed to serialize notification: {}", e))
+            })?;
+
+            // Send message via WebSocket
+            {
+                let write_handle_opt = {
+                    let mut write_guard = self.write.write();
+                    write_guard.take()
+                };
+
+                let mut write_handle = match write_handle_opt {
+                    Some(handle) => handle,
+                    None => {
+                        return Err(AppError::Mcp(
+                            "WebSocket write handle not available".to_string(),
+                        ));
+                    }
+                };
+
+                let send_result = write_handle.send(Message::Text(json)).await;
+                *self.write.write() = Some(write_handle);
+
+                if let Err(e) = send_result {
+                    return Err(AppError::Mcp(format!("Failed to send notification: {}", e)));
+                }
+            }
+
+            // Return empty success response for notifications
+            return Ok(JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                id: Value::Null,
+                result: Some(Value::Null),
+                error: None,
+            });
+        }
+
+        // For regular requests: assign ID and wait for response
+
         // Store the original request ID to restore in response
         let original_request_id = request.id.clone();
 

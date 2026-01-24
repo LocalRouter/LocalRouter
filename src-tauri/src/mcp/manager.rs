@@ -106,6 +106,31 @@ impl McpServerManager {
         }
     }
 
+    /// Set a request callback for a STDIO server
+    ///
+    /// This allows the server to send requests (like sampling/createMessage) to the client.
+    /// The callback should process the request and return a response.
+    ///
+    /// # Arguments
+    /// * `server_id` - The server ID to set the callback for
+    /// * `callback` - The callback to invoke when requests are received from the server
+    ///
+    /// # Returns
+    /// * `true` if the callback was set, `false` if the server is not a STDIO server
+    pub fn set_request_callback(&self, server_id: &str, callback: crate::mcp::transport::StdioRequestCallback) -> bool {
+        if let Some(transport) = self.stdio_transports.get(server_id) {
+            transport.set_request_callback(callback);
+            tracing::info!("Set request callback for STDIO server: {}", server_id);
+            true
+        } else {
+            tracing::warn!(
+                "Cannot set request callback - server {} is not a STDIO transport",
+                server_id
+            );
+            false
+        }
+    }
+
     /// Register a notification handler for a specific server
     ///
     /// # Arguments

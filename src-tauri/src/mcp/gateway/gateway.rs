@@ -187,7 +187,24 @@ impl McpGateway {
                 // Remove expired session
                 self.sessions.remove(client_id);
             } else {
+                // Update deferred loading setting if it changed
+                // This allows the Try it out UI to toggle deferred loading between connections
+                let current_deferred = session_read.deferred_loading_requested;
                 drop(session_read);
+
+                if current_deferred != enable_deferred_loading {
+                    let mut session_write = session.write().await;
+                    session_write.deferred_loading_requested = enable_deferred_loading;
+                    // Reset deferred loading state so it can be re-initialized
+                    session_write.deferred_loading = None;
+                    tracing::info!(
+                        "Updated deferred loading setting for session {}: {} -> {}",
+                        client_id,
+                        current_deferred,
+                        enable_deferred_loading
+                    );
+                }
+
                 return Ok(session.clone());
             }
         }
@@ -806,10 +823,13 @@ impl McpGateway {
 
         if should_enable_deferred {
             // Check if client supports receiving listChanged notifications
-            let client_supports_notifications = client_capabilities
-                .as_ref()
-                .map(|caps| caps.supports_tools_list_changed())
-                .unwrap_or(false);
+            // For internal-test client (Try it out UI), we skip this check since we know it can handle notifications
+            let is_internal_test = client_id_for_log == "internal-test";
+            let client_supports_notifications = is_internal_test
+                || client_capabilities
+                    .as_ref()
+                    .map(|caps| caps.supports_tools_list_changed())
+                    .unwrap_or(false);
 
             if !client_supports_notifications {
                 tracing::warn!(
