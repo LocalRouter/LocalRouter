@@ -1,15 +1,39 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js"
 import { WebSocketClientTransport } from "@modelcontextprotocol/sdk/client/websocket.js"
+import {
+  ResourceUpdatedNotificationSchema,
+  CreateMessageRequestSchema,
+  ElicitRequestSchema,
+} from "@modelcontextprotocol/sdk/types.js"
 import type {
   Tool,
   Resource,
   Prompt,
   TextContent,
   ImageContent,
+  CreateMessageRequest,
+  CreateMessageResult,
+  ElicitRequest,
+  Progress,
 } from "@modelcontextprotocol/sdk/types.js"
 
 export type { Tool, Resource, Prompt, TextContent, ImageContent }
+
+// Re-export types needed by sampling/elicitation panels
+export type { CreateMessageRequest, CreateMessageResult, ElicitRequest, Progress }
+
+// Callback types for sampling and elicitation requests from servers
+export type SamplingRequestHandler = (
+  request: CreateMessageRequest["params"]
+) => Promise<CreateMessageResult>
+
+export type ElicitationRequestHandler = (
+  request: ElicitRequest["params"]
+) => Promise<{ action: "accept" | "decline"; content?: Record<string, unknown> }>
+
+// Progress callback type
+export type ProgressCallback = (progress: Progress) => void
 
 export type TransportType = "sse" | "websocket"
 
@@ -20,6 +44,23 @@ export interface McpClientConfig {
   transportType?: TransportType
 }
 
+// Detailed capability info for display
+export interface ServerCapabilitiesInfo {
+  tools?: { listChanged?: boolean }
+  resources?: { subscribe?: boolean; listChanged?: boolean }
+  prompts?: { listChanged?: boolean }
+  logging?: boolean
+  completions?: boolean
+  experimental?: Record<string, unknown>
+}
+
+export interface ClientCapabilitiesInfo {
+  sampling?: boolean
+  elicitation?: { form?: boolean; url?: boolean }
+  roots?: { listChanged?: boolean }
+  experimental?: Record<string, unknown>
+}
+
 export interface McpConnectionState {
   isConnected: boolean
   isConnecting: boolean
@@ -28,7 +69,15 @@ export interface McpConnectionState {
     name: string
     version: string
     protocolVersion: string
+    instructions?: string
   }
+  clientInfo?: {
+    name: string
+    version: string
+  }
+  serverCapabilities?: ServerCapabilitiesInfo
+  clientCapabilities?: ClientCapabilitiesInfo
+  // Legacy simplified capabilities for backward compatibility
   capabilities?: {
     tools?: boolean
     resources?: boolean
@@ -57,6 +106,12 @@ export interface GetPromptResult {
 
 export type ResourceUpdateCallback = (uri: string, content: ReadResourceResult) => void
 
+export interface McpClientCallbacks {
+  onStateChange?: (state: McpConnectionState) => void
+  onSamplingRequest?: SamplingRequestHandler
+  onElicitationRequest?: ElicitationRequestHandler
+}
+
 export class McpClientWrapper {
   private client: Client | null = null
   private transport: SSEClientTransport | WebSocketClientTransport | null = null
@@ -67,16 +122,21 @@ export class McpClientWrapper {
     error: null,
   }
   private resourceSubscriptions = new Map<string, ResourceUpdateCallback>()
-  private onStateChange?: (state: McpConnectionState) => void
+  private callbacks: McpClientCallbacks
 
-  constructor(config: McpClientConfig, onStateChange?: (state: McpConnectionState) => void) {
+  constructor(config: McpClientConfig, callbacks: McpClientCallbacks = {}) {
     this.config = config
-    this.onStateChange = onStateChange
+    this.callbacks = callbacks
+  }
+
+  // Allow updating callbacks after construction (for React state updates)
+  setCallbacks(callbacks: Partial<McpClientCallbacks>) {
+    this.callbacks = { ...this.callbacks, ...callbacks }
   }
 
   private updateState(updates: Partial<McpConnectionState>) {
     this.state = { ...this.state, ...updates }
-    this.onStateChange?.(this.state)
+    this.callbacks.onStateChange?.(this.state)
   }
 
   getState(): McpConnectionState {
@@ -117,23 +177,100 @@ export class McpClientWrapper {
         })
       }
 
-      // Create MCP client
+      // Create MCP client with proper capabilities declared
+      // These tell the server what this client can handle
       this.client = new Client(
         {
           name: "localrouter-try-it-out",
           version: "1.0.0",
         },
         {
-          capabilities: {},
+          capabilities: {
+            // Declare support for receiving sampling requests from servers
+            sampling: {},
+            // Declare support for receiving elicitation requests (form mode)
+            elicitation: { form: {} },
+            // Declare support for filesystem roots with list change notifications
+            roots: { listChanged: true },
+          },
         }
       )
+
+      // Register request handler for sampling/createMessage requests from servers
+      // This allows MCP servers to request LLM completions through the client
+      this.client.setRequestHandler(CreateMessageRequestSchema, async (request) => {
+        console.log("[MCP Client] Received sampling/createMessage request:", request.params)
+
+        if (this.callbacks.onSamplingRequest) {
+          const result = await this.callbacks.onSamplingRequest(request.params)
+          return result
+        }
+
+        // If no handler registered, return an error
+        throw new Error("Sampling requests are not handled by this client")
+      })
+
+      // Register request handler for elicitation requests from servers
+      // This allows MCP servers to request user input through the client
+      this.client.setRequestHandler(ElicitRequestSchema, async (request) => {
+        console.log("[MCP Client] Received elicitation request:", request.params)
+
+        if (this.callbacks.onElicitationRequest) {
+          const result = await this.callbacks.onElicitationRequest(request.params)
+          return result
+        }
+
+        // If no handler registered, decline the request
+        return { action: "decline" as const }
+      })
 
       // Connect
       await this.client.connect(this.transport)
 
+      // Register notification handler for resource updates
+      this.client.setNotificationHandler(ResourceUpdatedNotificationSchema, (notification) => {
+        const uri = notification.params.uri
+        console.log("[MCP Client] Received resource update notification for:", uri)
+
+        // Look up callback for this URI and call it
+        const callback = this.resourceSubscriptions.get(uri)
+        if (callback) {
+          // Read the updated resource content
+          this.readResource(uri)
+            .then((content) => {
+              callback(uri, content)
+            })
+            .catch((err) => {
+              console.error("[MCP Client] Failed to read updated resource:", err)
+            })
+        } else {
+          console.log("[MCP Client] No subscription callback for URI:", uri)
+        }
+      })
+
       // Get server info
       const serverInfo = this.client.getServerVersion()
-      const capabilities = this.client.getServerCapabilities()
+      const serverCapabilities = this.client.getServerCapabilities()
+      const instructions = this.client.getInstructions()
+
+      // Build detailed capability info
+      const serverCapsInfo: ServerCapabilitiesInfo = {
+        tools: serverCapabilities?.tools ? { listChanged: serverCapabilities.tools.listChanged } : undefined,
+        resources: serverCapabilities?.resources ? {
+          subscribe: serverCapabilities.resources.subscribe,
+          listChanged: serverCapabilities.resources.listChanged,
+        } : undefined,
+        prompts: serverCapabilities?.prompts ? { listChanged: serverCapabilities.prompts.listChanged } : undefined,
+        logging: !!serverCapabilities?.logging,
+        completions: !!serverCapabilities?.completions,
+        experimental: serverCapabilities?.experimental as Record<string, unknown> | undefined,
+      }
+
+      const clientCapsInfo: ClientCapabilitiesInfo = {
+        sampling: true, // We declared sampling support
+        elicitation: { form: true }, // We declared form elicitation support
+        roots: { listChanged: true },
+      }
 
       this.updateState({
         isConnected: true,
@@ -142,12 +279,20 @@ export class McpClientWrapper {
           name: serverInfo.name,
           version: serverInfo.version,
           protocolVersion: "2024-11-05",
+          instructions,
         } : undefined,
+        clientInfo: {
+          name: "localrouter-try-it-out",
+          version: "1.0.0",
+        },
+        serverCapabilities: serverCapsInfo,
+        clientCapabilities: clientCapsInfo,
+        // Legacy simplified capabilities
         capabilities: {
-          tools: !!capabilities?.tools,
-          resources: !!capabilities?.resources,
-          prompts: !!capabilities?.prompts,
-          sampling: false, // Sampling handled separately via Tauri events
+          tools: !!serverCapabilities?.tools,
+          resources: !!serverCapabilities?.resources,
+          prompts: !!serverCapabilities?.prompts,
+          sampling: !!this.callbacks.onSamplingRequest,
         },
       })
     } catch (error) {
@@ -183,6 +328,9 @@ export class McpClientWrapper {
       isConnecting: false,
       error: null,
       serverInfo: undefined,
+      clientInfo: undefined,
+      serverCapabilities: undefined,
+      clientCapabilities: undefined,
       capabilities: undefined,
     })
   }
@@ -196,11 +344,19 @@ export class McpClientWrapper {
     return result.tools
   }
 
-  async callTool(name: string, args: Record<string, unknown>): Promise<{ content: unknown[]; isError?: boolean }> {
+  async callTool(
+    name: string,
+    args: Record<string, unknown>,
+    onProgress?: ProgressCallback
+  ): Promise<{ content: unknown[]; isError?: boolean }> {
     if (!this.client || !this.state.isConnected) {
       throw new Error("Not connected")
     }
-    const result = await this.client.callTool({ name, arguments: args })
+    const result = await this.client.callTool(
+      { name, arguments: args },
+      undefined, // resultSchema
+      { onprogress: onProgress } // RequestOptions with progress callback
+    )
     return {
       content: result.content as unknown[],
       isError: result.isError as boolean | undefined,
@@ -275,10 +431,16 @@ export class McpClientWrapper {
   }
 }
 
-// Factory function
+// Factory function - supports both old and new callback signatures
 export function createMcpClient(
   config: McpClientConfig,
-  onStateChange?: (state: McpConnectionState) => void
+  callbacksOrOnStateChange?: McpClientCallbacks | ((state: McpConnectionState) => void)
 ): McpClientWrapper {
-  return new McpClientWrapper(config, onStateChange)
+  // Support both old signature (just onStateChange) and new signature (full callbacks)
+  const callbacks: McpClientCallbacks =
+    typeof callbacksOrOnStateChange === "function"
+      ? { onStateChange: callbacksOrOnStateChange }
+      : callbacksOrOnStateChange ?? {}
+
+  return new McpClientWrapper(config, callbacks)
 }
