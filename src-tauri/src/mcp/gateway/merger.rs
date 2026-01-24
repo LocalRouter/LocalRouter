@@ -112,20 +112,34 @@ fn build_server_description(
 }
 
 /// Merge tools from multiple servers with namespacing
+///
+/// # Arguments
+/// * `server_tools` - Vec of (server_id, tools) tuples
+/// * `_failures` - Server failures (for potential future use)
+/// * `server_id_to_name` - Optional mapping from server ID (UUID) to human-readable name.
+///   If provided, uses the name for the namespace prefix (e.g., "filesystem__read_file").
+///   If not provided, uses the server ID (UUID) as the prefix.
 pub fn merge_tools(
     server_tools: Vec<(String, Vec<McpTool>)>,
     _failures: &[ServerFailure],
+    server_id_to_name: Option<&std::collections::HashMap<String, String>>,
 ) -> Vec<NamespacedTool> {
     let mut merged_tools = Vec::new();
 
     for (server_id, tools) in server_tools {
+        // Use the human-readable name for the namespace if available, otherwise use server_id
+        let display_name = server_id_to_name
+            .and_then(|map| map.get(&server_id))
+            .cloned()
+            .unwrap_or_else(|| server_id.clone());
+
         for tool in tools {
-            let namespaced_name = apply_namespace(&server_id, &tool.name);
+            let namespaced_name = apply_namespace(&display_name, &tool.name);
 
             merged_tools.push(NamespacedTool {
                 name: namespaced_name,
                 original_name: tool.name.clone(),
-                server_id: server_id.clone(),
+                server_id: server_id.clone(), // Keep UUID for routing
                 description: tool.description.clone(),
                 input_schema: tool.input_schema.clone(),
             });
@@ -143,20 +157,33 @@ pub fn merge_tools(
 }
 
 /// Merge resources from multiple servers with namespacing
+///
+/// # Arguments
+/// * `server_resources` - Vec of (server_id, resources) tuples
+/// * `_failures` - Server failures (for potential future use)
+/// * `server_id_to_name` - Optional mapping from server ID (UUID) to human-readable name.
+///   If provided, uses the name for the namespace prefix.
 pub fn merge_resources(
     server_resources: Vec<(String, Vec<McpResource>)>,
     _failures: &[ServerFailure],
+    server_id_to_name: Option<&std::collections::HashMap<String, String>>,
 ) -> Vec<NamespacedResource> {
     let mut merged_resources = Vec::new();
 
     for (server_id, resources) in server_resources {
+        // Use the human-readable name for the namespace if available
+        let display_name = server_id_to_name
+            .and_then(|map| map.get(&server_id))
+            .cloned()
+            .unwrap_or_else(|| server_id.clone());
+
         for resource in resources {
-            let namespaced_name = apply_namespace(&server_id, &resource.name);
+            let namespaced_name = apply_namespace(&display_name, &resource.name);
 
             merged_resources.push(NamespacedResource {
                 name: namespaced_name,
                 original_name: resource.name.clone(),
-                server_id: server_id.clone(),
+                server_id: server_id.clone(), // Keep UUID for routing
                 uri: resource.uri.clone(),
                 description: resource.description.clone(),
                 mime_type: resource.mime_type.clone(),
@@ -175,15 +202,28 @@ pub fn merge_resources(
 }
 
 /// Merge prompts from multiple servers with namespacing
+///
+/// # Arguments
+/// * `server_prompts` - Vec of (server_id, prompts) tuples
+/// * `_failures` - Server failures (for potential future use)
+/// * `server_id_to_name` - Optional mapping from server ID (UUID) to human-readable name.
+///   If provided, uses the name for the namespace prefix.
 pub fn merge_prompts(
     server_prompts: Vec<(String, Vec<McpPrompt>)>,
     _failures: &[ServerFailure],
+    server_id_to_name: Option<&std::collections::HashMap<String, String>>,
 ) -> Vec<NamespacedPrompt> {
     let mut merged_prompts = Vec::new();
 
     for (server_id, prompts) in server_prompts {
+        // Use the human-readable name for the namespace if available
+        let display_name = server_id_to_name
+            .and_then(|map| map.get(&server_id))
+            .cloned()
+            .unwrap_or_else(|| server_id.clone());
+
         for prompt in prompts {
-            let namespaced_name = apply_namespace(&server_id, &prompt.name);
+            let namespaced_name = apply_namespace(&display_name, &prompt.name);
 
             // Convert arguments
             let arguments = prompt.arguments.map(|args| {
@@ -199,7 +239,7 @@ pub fn merge_prompts(
             merged_prompts.push(NamespacedPrompt {
                 name: namespaced_name,
                 original_name: prompt.name.clone(),
-                server_id: server_id.clone(),
+                server_id: server_id.clone(), // Keep UUID for routing
                 description: prompt.description.clone(),
                 arguments,
             });
@@ -372,12 +412,48 @@ mod tests {
             ("github".to_string(), vec![tool2]),
         ];
 
-        let merged = merge_tools(server_tools, &[]);
+        // Test without name mapping (uses server_id as-is)
+        let merged = merge_tools(server_tools.clone(), &[], None);
 
         assert_eq!(merged.len(), 2);
         assert_eq!(merged[0].name, "filesystem__read_file");
         assert_eq!(merged[1].name, "github__create_issue");
         assert_eq!(merged[0].server_id, "filesystem");
         assert_eq!(merged[1].server_id, "github");
+    }
+
+    #[test]
+    fn test_merge_tools_with_name_mapping() {
+        let tool1 = McpTool {
+            name: "read_file".to_string(),
+            description: Some("Read a file".to_string()),
+            input_schema: json!({"type": "object"}),
+        };
+
+        let tool2 = McpTool {
+            name: "create_issue".to_string(),
+            description: Some("Create an issue".to_string()),
+            input_schema: json!({"type": "object"}),
+        };
+
+        let server_tools = vec![
+            ("uuid-123-abc".to_string(), vec![tool1]),
+            ("uuid-456-def".to_string(), vec![tool2]),
+        ];
+
+        // Create name mapping (UUID -> human-readable name)
+        let mut name_map = std::collections::HashMap::new();
+        name_map.insert("uuid-123-abc".to_string(), "filesystem".to_string());
+        name_map.insert("uuid-456-def".to_string(), "github".to_string());
+
+        let merged = merge_tools(server_tools, &[], Some(&name_map));
+
+        assert_eq!(merged.len(), 2);
+        // Display name uses human-readable name
+        assert_eq!(merged[0].name, "filesystem__read_file");
+        assert_eq!(merged[1].name, "github__create_issue");
+        // But server_id still contains UUID for routing
+        assert_eq!(merged[0].server_id, "uuid-123-abc");
+        assert_eq!(merged[1].server_id, "uuid-456-def");
     }
 }

@@ -52,8 +52,12 @@ pub type SseNotificationCallback = Arc<dyn Fn(JsonRpcNotification) + Send + Sync
 /// The persistent SSE connection is established on connect() and maintained
 /// for the lifetime of the transport.
 pub struct SseTransport {
-    /// Base URL of the MCP server
+    /// Base URL of the MCP server (used for SSE connection)
     url: String,
+
+    /// Message endpoint URL for POST requests (received from "endpoint" SSE event)
+    /// If None, falls back to using `url` for POST requests
+    message_endpoint: Arc<RwLock<Option<String>>>,
 
     /// HTTP client for sending requests
     client: Client,
@@ -118,6 +122,31 @@ impl SseTransport {
         Err(AppError::Mcp(
             "No valid JSON found in response (expected SSE data: field or plain JSON)".to_string(),
         ))
+    }
+
+    /// Parse SSE event and extract event type and data
+    ///
+    /// SSE events have the format:
+    /// ```
+    /// event: endpoint
+    /// data: /messages
+    /// ```
+    ///
+    /// Returns (event_type, data) where either can be None if not present.
+    fn parse_sse_event(sse_text: &str) -> (Option<String>, Option<String>) {
+        let mut event_type = None;
+        let mut data = None;
+
+        for line in sse_text.lines() {
+            let line = line.trim();
+            if line.starts_with("event:") {
+                event_type = Some(line.strip_prefix("event:").unwrap_or("").trim().to_string());
+            } else if line.starts_with("data:") {
+                data = Some(line.strip_prefix("data:").unwrap_or("").trim().to_string());
+            }
+        }
+
+        (event_type, data)
     }
 
     /// Create a new SSE transport
@@ -202,6 +231,7 @@ impl SseTransport {
         let closed = Arc::new(RwLock::new(false));
         let stream_ready = Arc::new(RwLock::new(false));
         let notification_callback = Arc::new(RwLock::new(None));
+        let message_endpoint = Arc::new(RwLock::new(None));
 
         // Start persistent SSE stream in background
         let stream_url = url.clone();
@@ -211,6 +241,7 @@ impl SseTransport {
         let stream_ready_clone = stream_ready.clone();
         let stream_callback = notification_callback.clone();
         let stream_client = client.clone();
+        let stream_message_endpoint = message_endpoint.clone();
 
         let stream_task = tokio::spawn(async move {
             Self::sse_stream_task(
@@ -221,6 +252,7 @@ impl SseTransport {
                 stream_closed,
                 stream_ready_clone,
                 stream_callback,
+                stream_message_endpoint,
             )
             .await;
         });
@@ -248,6 +280,7 @@ impl SseTransport {
 
         let transport = Self {
             url,
+            message_endpoint,
             client,
             headers,
             pending,
@@ -266,6 +299,7 @@ impl SseTransport {
     /// Background task that maintains persistent SSE stream
     ///
     /// Reads from GET SSE endpoint and dispatches:
+    /// - Endpoint events → message_endpoint for POST URL
     /// - Responses → pending request handlers
     /// - Notifications → notification callback
     ///
@@ -278,6 +312,7 @@ impl SseTransport {
         closed: Arc<RwLock<bool>>,
         stream_ready: Arc<RwLock<bool>>,
         notification_callback: Arc<RwLock<Option<SseNotificationCallback>>>,
+        message_endpoint: Arc<RwLock<Option<String>>>,
     ) {
         tracing::info!("Starting persistent SSE stream task for: {}", url);
 
@@ -336,6 +371,30 @@ impl SseTransport {
 
             // Check status
             if !response.status().is_success() {
+                let status = response.status();
+
+                // 405 Method Not Allowed means the server doesn't support GET SSE streams
+                // This is a permanent failure - the server only supports POST (inline responses)
+                // Mark as ready anyway so POST requests work, then exit the SSE stream task
+                if status == reqwest::StatusCode::METHOD_NOT_ALLOWED {
+                    tracing::info!(
+                        "Server at {} doesn't support GET SSE stream (405). Transport will use inline responses only. Server-initiated notifications won't be received.",
+                        url
+                    );
+                    *stream_ready.write() = true;
+                    break;
+                }
+
+                // 404 Not Found also means no SSE endpoint exists - don't retry
+                if status == reqwest::StatusCode::NOT_FOUND {
+                    tracing::info!(
+                        "SSE endpoint not found at {} (404). Transport will use inline responses only.",
+                        url
+                    );
+                    *stream_ready.write() = true;
+                    break;
+                }
+
                 reconnect_attempts += 1;
                 let delay = std::cmp::min(
                     BASE_DELAY_SECS * 2u64.saturating_pow(reconnect_attempts - 1),
@@ -343,7 +402,7 @@ impl SseTransport {
                 );
                 tracing::warn!(
                     "SSE stream returned error status: {} (attempt {}/{}). Retrying in {}s",
-                    response.status(),
+                    status,
                     reconnect_attempts,
                     MAX_RECONNECT_ATTEMPTS,
                     delay
@@ -403,7 +462,38 @@ impl SseTransport {
                             let event_text = buffer[..event_end].to_string();
                             buffer = buffer[event_end + 2..].to_string();
 
-                            // Parse SSE event
+                            // Parse SSE event type and data
+                            let (event_type, event_data) = Self::parse_sse_event(&event_text);
+
+                            // Handle "endpoint" event (MCP SSE transport spec)
+                            if event_type.as_deref() == Some("endpoint") {
+                                if let Some(endpoint_path) = event_data {
+                                    // Resolve endpoint URL relative to base URL
+                                    let endpoint_url = if endpoint_path.starts_with("http://")
+                                        || endpoint_path.starts_with("https://")
+                                    {
+                                        endpoint_path.clone()
+                                    } else {
+                                        // Resolve relative path against base URL
+                                        if let Ok(base) = reqwest::Url::parse(&url) {
+                                            base.join(&endpoint_path)
+                                                .map(|u| u.to_string())
+                                                .unwrap_or_else(|_| endpoint_path.clone())
+                                        } else {
+                                            endpoint_path.clone()
+                                        }
+                                    };
+                                    tracing::info!(
+                                        "Received MCP endpoint event: {} -> {}",
+                                        endpoint_path,
+                                        endpoint_url
+                                    );
+                                    *message_endpoint.write() = Some(endpoint_url);
+                                }
+                                continue;
+                            }
+
+                            // Parse SSE data as JSON
                             if let Ok(json_str) = Self::parse_sse_response(&event_text) {
                                 // Try to parse as JSON-RPC message
                                 if let Ok(message) =
@@ -413,14 +503,21 @@ impl SseTransport {
                                         JsonRpcMessage::Response(response) => {
                                             // Find pending request using normalized ID
                                             let id_str = Self::normalize_response_id(&response.id);
+                                            let pending_keys: Vec<String> = pending.read().keys().cloned().collect();
+                                            tracing::info!(
+                                                "SSE transport received response: id={}, pending_keys={:?}",
+                                                id_str,
+                                                pending_keys
+                                            );
                                             if let Some(sender) = pending.write().remove(&id_str) {
                                                 if sender.send(response).is_err() {
                                                     tracing::warn!("Failed to send response to pending request: {}", id_str);
                                                 }
                                             } else {
-                                                tracing::debug!(
-                                                    "Received response for unknown request ID: {}",
-                                                    id_str
+                                                tracing::warn!(
+                                                    "Received response for unknown request ID: {} (pending_keys={:?})",
+                                                    id_str,
+                                                    pending_keys
                                                 );
                                             }
                                         }
@@ -526,12 +623,22 @@ impl Transport for SseTransport {
             return Err(AppError::Mcp("Transport is closed".to_string()));
         }
 
-        // Generate unique request ID
+        // Store the original request ID to restore in response
+        let original_request_id = request.id.clone();
+
+        // Generate unique internal request ID for tracking pending requests
         let request_id = {
             let id = self.next_request_id();
             request.id = Some(Value::Number(id.into()));
             id.to_string()
         };
+
+        tracing::info!(
+            "SSE transport send_request: method={}, internal_id={}, original_id={:?}",
+            request.method,
+            request_id,
+            original_request_id
+        );
 
         // Create oneshot channel for response
         let (tx, rx) = oneshot::channel();
@@ -539,13 +646,30 @@ impl Transport for SseTransport {
         // Register pending request
         self.pending.write().insert(request_id.clone(), tx);
 
-        // Build POST request
-        let mut req_builder = self.client.post(&self.url).json(&request);
+        // Determine POST URL: use message_endpoint if available, otherwise fall back to base url
+        let post_url = self
+            .message_endpoint
+            .read()
+            .clone()
+            .unwrap_or_else(|| self.url.clone());
 
-        // Add headers
+        // Build POST request
+        let mut req_builder = self.client.post(&post_url).json(&request);
+
+        // Add Accept header for content negotiation
+        req_builder = req_builder.header("Accept", "application/json, text/event-stream");
+
+        // Add custom headers
         for (key, value) in &self.headers {
             req_builder = req_builder.header(key, value);
         }
+
+        tracing::debug!(
+            "SSE POST request: url={}, method={}, headers={:?}",
+            post_url,
+            request.method,
+            self.headers
+        );
 
         // Send POST request
         let post_response = req_builder.send().await.map_err(|e| {
@@ -557,9 +681,25 @@ impl Transport for SseTransport {
         // Check POST status (should be 202 Accepted or 200 OK)
         if !post_response.status().is_success() {
             self.pending.write().remove(&request_id);
+            let status = post_response.status();
+            let headers = post_response.headers().clone();
+            let body = post_response.text().await.unwrap_or_default();
+            tracing::error!(
+                "SSE POST request failed: status={}, url={}, method={}, headers={:?}, body={}",
+                status,
+                post_url,
+                request.method,
+                headers,
+                body
+            );
             return Err(AppError::Mcp(format!(
-                "Server returned error status: {}",
-                post_response.status()
+                "Server returned error status: {} - {}",
+                status,
+                if body.is_empty() {
+                    "no body".to_string()
+                } else {
+                    body
+                }
             )));
         }
 
@@ -570,34 +710,79 @@ impl Transport for SseTransport {
         // Try to read and parse the response body - if it contains valid JSON-RPC, use it
         if let Ok(body_text) = post_response.text().await {
             if !body_text.trim().is_empty() {
+                tracing::debug!(
+                    "SSE transport POST response body (request_id={}): {} bytes",
+                    request_id,
+                    body_text.len()
+                );
                 // Try SSE format first (data: {...}\n\n)
                 if let Ok(json_str) = Self::parse_sse_response(&body_text) {
-                    if let Ok(response) = serde_json::from_str::<JsonRpcResponse>(&json_str) {
+                    if let Ok(mut response) = serde_json::from_str::<JsonRpcResponse>(&json_str) {
                         // Got inline response - remove from pending and return
                         self.pending.write().remove(&request_id);
-                        tracing::debug!("Returning inline SSE response");
+                        // Restore original request ID in response
+                        response.id = original_request_id.clone().unwrap_or(Value::Null);
+                        tracing::info!(
+                            "SSE transport returning inline SSE response (internal_id={}, restored_id={:?})",
+                            request_id,
+                            response.id
+                        );
                         return Ok(response);
                     }
                 }
                 // Try plain JSON format
-                if let Ok(response) = serde_json::from_str::<JsonRpcResponse>(&body_text) {
+                if let Ok(mut response) = serde_json::from_str::<JsonRpcResponse>(&body_text) {
                     // Got inline JSON response - remove from pending and return
                     self.pending.write().remove(&request_id);
-                    tracing::debug!("Returning inline JSON response");
+                    // Restore original request ID in response
+                    response.id = original_request_id.clone().unwrap_or(Value::Null);
+                    tracing::info!(
+                        "SSE transport returning inline JSON response (internal_id={}, restored_id={:?})",
+                        request_id,
+                        response.id
+                    );
                     return Ok(response);
                 }
+            } else {
+                tracing::debug!(
+                    "SSE transport POST response body empty (request_id={}), waiting for SSE stream",
+                    request_id
+                );
             }
         }
 
         // No inline response - wait for response from SSE stream (with timeout)
-        let response = tokio::time::timeout(Duration::from_secs(30), rx)
+        tracing::info!(
+            "SSE transport waiting for SSE stream response (internal_id={}, timeout=30s)",
+            request_id
+        );
+
+        let mut response = tokio::time::timeout(Duration::from_secs(30), rx)
             .await
             .map_err(|_| {
                 self.pending.write().remove(&request_id);
+                tracing::error!(
+                    "SSE transport timeout waiting for response (internal_id={})",
+                    request_id
+                );
                 AppError::Mcp("Request timeout waiting for response".to_string())
             })?
-            .map_err(|_| AppError::Mcp("Response channel closed".to_string()))?;
+            .map_err(|e| {
+                tracing::error!(
+                    "SSE transport response channel error (internal_id={}): {}",
+                    request_id,
+                    e
+                );
+                AppError::Mcp("Response channel closed".to_string())
+            })?;
 
+        // Restore original request ID in response
+        response.id = original_request_id.unwrap_or(Value::Null);
+        tracing::info!(
+            "SSE transport received response via SSE stream (internal_id={}, restored_id={:?})",
+            request_id,
+            response.id
+        );
         Ok(response)
     }
 
@@ -749,6 +934,7 @@ mod tests {
     async fn test_request_id_generation() {
         let transport = SseTransport {
             url: "http://localhost:3000".to_string(),
+            message_endpoint: Arc::new(RwLock::new(None)),
             client: Client::new(),
             headers: HashMap::new(),
             pending: Arc::new(RwLock::new(HashMap::new())),
@@ -791,10 +977,7 @@ mod tests {
         );
 
         // Test numeric ID
-        assert_eq!(
-            SseTransport::normalize_response_id(&json!(42)),
-            "42"
-        );
+        assert_eq!(SseTransport::normalize_response_id(&json!(42)), "42");
 
         // Test string ID
         assert_eq!(

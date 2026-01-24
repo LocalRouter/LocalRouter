@@ -58,8 +58,8 @@ The gateway implements a **dual-role architecture**:
 ┌─────────────────────────────────────────────────────────────────────┐
 │                       MCP Unified Gateway                            │
 │  ┌───────────────┐  ┌───────────────┐  ┌───────────────┐            │
-│  │ Route Handler │  │ GatewaySession│  │   Streaming   │            │
-│  │   (mcp.rs)    │  │ (per-client)  │  │ SessionMgr   │            │
+│  │ Route Handler │  │ GatewaySession│  │     SSE       │            │
+│  │   (mcp.rs)    │  │ (per-client)  │  │ ConnManager   │            │
 │  └───────────────┘  └───────────────┘  └───────────────┘            │
 │           │                  │                  │                    │
 │           ▼                  ▼                  ▼                    │
@@ -98,14 +98,13 @@ The gateway implements a **dual-role architecture**:
 | `src/mcp/gateway/merger.rs` | Response merging (tools, resources, prompts, capabilities) |
 | `src/mcp/gateway/session.rs` | Per-client session state, cache management |
 | `src/mcp/gateway/types.rs` | Data structures, namespace parsing |
-| `src/mcp/gateway/streaming.rs` | SSE streaming session management |
 | `src/mcp/gateway/deferred.rs` | Deferred loading search functionality |
 | `src/mcp/gateway/elicitation.rs` | User input request handling |
 | `src/mcp/manager.rs` | Transport lifecycle management |
 | `src/mcp/transport/sse.rs` | SSE transport implementation |
-| `src/server/routes/mcp.rs` | HTTP route handlers |
-| `src/server/routes/mcp_streaming.rs` | Streaming endpoint handlers |
+| `src/server/routes/mcp.rs` | HTTP route handlers (unified gateway SSE) |
 | `src/server/routes/mcp_ws.rs` | WebSocket notification endpoint |
+| `src/server/state.rs` | SseConnectionManager for client connections |
 
 ---
 
@@ -783,40 +782,68 @@ Returns configured filesystem roots (advisory boundaries). Handled as a **direct
 }
 ```
 
-### 9.4 Unimplemented Methods
+### 9.4 Resource Subscriptions (`resources/subscribe`, `resources/unsubscribe`)
 
-The following MCP methods are explicitly handled with "not implemented" errors:
+The gateway supports subscribing to resource change notifications:
 
-| Method | Response |
+```rust
+// Subscribe to a resource
+"resources/subscribe" => {
+    // 1. Extract URI from params
+    // 2. Look up server_id from resource_uri_mapping
+    // 3. Check if server supports subscriptions (capabilities.resources.subscribe)
+    // 4. Forward to backend server
+    // 5. Track subscription in session.subscribed_resources
+}
+
+// Unsubscribe from a resource
+"resources/unsubscribe" => {
+    // 1. Extract URI from params
+    // 2. Look up server_id from subscribed_resources
+    // 3. Forward to backend server
+    // 4. Remove from session tracking
+}
+```
+
+**Session tracking**: Subscriptions are stored in `session.subscribed_resources: HashMap<String, String>` (uri → server_id).
+
+### 9.5 Other Direct Methods
+
+| Method | Behavior |
 |--------|----------|
 | `completion/complete` | Error: "This is a client capability. Servers request this from clients." |
-| `resources/subscribe` | Error: "Not yet implemented. Use resources/list with notifications." |
-| `resources/unsubscribe` | Error: "Not yet implemented." |
 
 ---
 
 ## 10. API Endpoints
 
-### 10.1 Unified Gateway Endpoints
+### 10.1 Unified Gateway Endpoints (MCP SSE Transport)
+
+The gateway implements the MCP SSE transport specification:
 
 | Method | Path | Description |
 |--------|------|-------------|
+| `GET` | `/` | SSE stream (if Accept: text/event-stream) or API info |
 | `POST` | `/` | Unified MCP gateway - routes to all servers |
+| `GET` | `/mcp/{server_id}` | SSE stream for specific server |
 | `POST` | `/mcp/{server_id}` | Direct proxy to specific server |
 | `POST` | `/mcp/{server_id}/stream` | Streaming proxy (SSE response) |
 | `GET` | `/ws` | WebSocket for real-time notifications |
 | `POST` | `/mcp/elicitation/respond/{request_id}` | Submit elicitation response |
 
-### 10.2 Streaming Session Endpoints
+**SSE Event Format** (MCP SSE Transport Spec):
+- `endpoint` event: Data is just the endpoint path (e.g., `/` or `/mcp/filesystem`)
+- `message` event: Data is raw JSON-RPC (not wrapped in envelope)
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `POST` | `/gateway/stream` | Initialize streaming session |
-| `GET` | `/gateway/stream/{session_id}` | Connect to SSE event stream |
-| `POST` | `/gateway/stream/{session_id}/request` | Submit request via streaming session |
-| `DELETE` | `/gateway/stream/{session_id}` | Close streaming session |
+```
+event: endpoint
+data: /
 
-### 10.3 Authentication
+event: message
+data: {"jsonrpc":"2.0","id":1,"result":{...}}
+```
+
+### 10.2 Authentication
 
 All endpoints require Bearer token authentication:
 ```
@@ -899,9 +926,7 @@ mcp_servers:
 
 **Issue**: The `start_backend_notification_forwarding()` method was a placeholder.
 
-**Status**: FIXED - Now registers notification handlers with the `McpServerManager` to forward notifications to the streaming session's event channel.
-
-**Remaining Limitation**: Handlers cannot be removed when sessions close, which could lead to memory accumulation over time. Consider adding handler removal API to `McpServerManager`.
+**Status**: FIXED - Now registers notification handlers with the `McpServerManager` to forward notifications to the streaming session's event channel. Handler IDs are tracked in `notification_handler_ids: DashMap<String, u64>` and cleaned up when sessions close via `cleanup_handlers()`.
 
 ### 12.3 RESOLVED: Streaming Broadcast Request ID (Not a Bug)
 
@@ -917,7 +942,35 @@ mcp_servers:
 
 **Status**: FIXED - Added `initialize`, `ping`, and `logging/setLevel` to the broadcast method check.
 
-### 12.5 ISSUE: SSE Transport Validation Conflates Connect with Initialize
+### 12.5 ~~ISSUE: SSE Message Format Did Not Follow MCP Spec~~ (FIXED)
+
+**File**: `src/server/routes/mcp.rs`
+
+**Issue**: The SSE message events were wrapping JSON-RPC in an `SseMessage` enum, producing output like:
+```
+event: message
+data: {"Response":{"jsonrpc":"2.0","id":1,"result":{...}}}
+```
+
+**Status**: FIXED - SSE message events now send raw JSON-RPC per the MCP SSE transport spec:
+```
+event: message
+data: {"jsonrpc":"2.0","id":1,"result":{...}}
+```
+
+The endpoint event was already correct (sending just the path string).
+
+### 12.6 ~~CLEANUP: Removed Redundant Streaming Session Endpoints~~ (DONE)
+
+**Files Removed**:
+- `src/server/routes/mcp_streaming.rs`
+- `src/mcp/gateway/streaming.rs`
+
+**Issue**: The session-based streaming endpoints (`/gateway/stream/*`) duplicated functionality already provided by the unified gateway's SSE support at `/` and `/mcp/{server_id}`.
+
+**Status**: DONE - Removed redundant endpoints. The proper MCP SSE transport is now at `/` and `/mcp/{server_id}`.
+
+### 12.7 ISSUE: SSE Transport Validation Conflates Connect with Initialize
 
 **File**: `src/mcp/transport/sse.rs:125-175`
 
@@ -929,15 +982,13 @@ mcp_servers:
 
 **Recommendation**: Consider separating transport connection validation from MCP initialization.
 
-### 12.6 LIMITATION: Notification Handler Cleanup
+### 12.8 ~~LIMITATION: Notification Handler Cleanup~~ (FIXED)
 
 **File**: `src/mcp/manager.rs`
 
-**Issue**: The `on_notification()` method allows registering handlers but there's no way to remove them. When streaming sessions close, their notification handlers remain registered.
+**Issue**: The `on_notification()` method allowed registering handlers but there was no way to remove them.
 
-**Impact**: Memory accumulation over time with many short-lived sessions.
-
-**Recommendation**: Add `remove_notification_handler()` method or use weak references.
+**Status**: FIXED - Added `remove_notification_handler(server_id, handler_id)` and `clear_notification_handlers(server_id)` methods to `McpServerManager`.
 
 ---
 
@@ -962,15 +1013,15 @@ pub struct NamespacedTool {
 }
 ```
 
-### StreamingEvent
+### SseMessage (for client→gateway SSE)
 ```rust
-pub enum StreamingEvent {
-    Response { request_id: String, server_id: String, response: JsonRpcResponse },
-    Notification { server_id: String, notification: JsonRpcNotification },
-    StreamChunk { request_id: String, server_id: String, chunk: StreamingChunk },
-    Error { request_id: Option<String>, server_id: Option<String>, error: String },
-    Heartbeat,
+pub enum SseMessage {
+    Response(JsonRpcResponse),      // JSON-RPC response
+    Notification(JsonRpcNotification), // JSON-RPC notification
+    Endpoint { endpoint: String },   // Endpoint info (internal)
 }
+// Note: When serialized to SSE, Response and Notification send raw JSON-RPC,
+// not the wrapper enum (per MCP SSE transport spec).
 ```
 
 ---

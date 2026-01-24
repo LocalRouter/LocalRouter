@@ -216,10 +216,7 @@ pub fn build_well_known_url(resource_url: &str) -> String {
             let path = &url[host_end..]; // /path
 
             // Insert well-known between origin and path
-            format!(
-                "{}/.well-known/oauth-protected-resource{}",
-                origin, path
-            )
+            format!("{}/.well-known/oauth-protected-resource{}", origin, path)
         } else {
             // No path, just append well-known
             format!("{}/.well-known/oauth-protected-resource", url)

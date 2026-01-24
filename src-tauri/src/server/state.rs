@@ -16,7 +16,7 @@ use uuid::Uuid;
 
 use crate::clients::{ClientManager, TokenStore};
 use crate::config::ConfigManager;
-use crate::mcp::protocol::JsonRpcNotification;
+use crate::mcp::protocol::{JsonRpcNotification, JsonRpcResponse};
 use crate::mcp::{McpGateway, McpServerManager};
 use crate::monitoring::logger::AccessLogger;
 use crate::monitoring::mcp_logger::McpAccessLogger;
@@ -26,6 +26,143 @@ use crate::router::{RateLimiterManager, Router};
 use crate::ui::tray::TrayGraphManager;
 
 use super::types::{CostDetails, GenerationDetailsResponse, ProviderHealthSnapshot, TokenUsage};
+
+/// Message types that can be sent through the SSE stream
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SseMessage {
+    /// JSON-RPC response to a request
+    Response(JsonRpcResponse),
+    /// JSON-RPC notification from server
+    Notification(JsonRpcNotification),
+    /// Endpoint information (sent on SSE connection)
+    Endpoint { endpoint: String },
+}
+
+/// Manages active SSE connections for MCP clients
+///
+/// Each client can have one active SSE connection. When a client sends
+/// a POST request, the response is routed through their SSE connection.
+pub struct SseConnectionManager {
+    /// Map of client_id -> response sender
+    /// Using unbounded channel to avoid blocking POST handlers
+    connections: DashMap<String, tokio::sync::mpsc::UnboundedSender<SseMessage>>,
+}
+
+impl SseConnectionManager {
+    pub fn new() -> Self {
+        Self {
+            connections: DashMap::new(),
+        }
+    }
+
+    /// Register an SSE connection for a client
+    /// Returns a receiver that the SSE handler should listen on
+    pub fn register(&self, client_id: &str) -> tokio::sync::mpsc::UnboundedReceiver<SseMessage> {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+
+        // If there's an existing connection, it will be replaced
+        // The old sender will be dropped, causing the old SSE stream to end
+        if let Some(old) = self.connections.insert(client_id.to_string(), tx) {
+            tracing::info!("Replaced existing SSE connection for client {}", client_id);
+            drop(old);
+        }
+
+        let active_connections: Vec<String> =
+            self.connections.iter().map(|e| e.key().clone()).collect();
+        tracing::info!(
+            "Registered SSE connection for client {} (active_connections={:?})",
+            client_id,
+            active_connections
+        );
+        rx
+    }
+
+    /// Unregister an SSE connection
+    pub fn unregister(&self, client_id: &str) {
+        if self.connections.remove(client_id).is_some() {
+            tracing::debug!("Unregistered SSE connection for client {}", client_id);
+        }
+    }
+
+    /// Send a response to a client's SSE stream
+    /// Returns true if the message was sent, false if no connection exists
+    pub fn send_response(&self, client_id: &str, response: JsonRpcResponse) -> bool {
+        let response_id = response.id.clone();
+        let active_connections: Vec<String> = self.connections.iter().map(|e| e.key().clone()).collect();
+
+        tracing::debug!(
+            "SseConnectionManager::send_response: looking for client_id={}, active_connections={:?}",
+            client_id,
+            active_connections
+        );
+
+        if let Some(tx) = self.connections.get(client_id) {
+            match tx.send(SseMessage::Response(response)) {
+                Ok(_) => {
+                    tracing::info!(
+                        "Sent response to client {} via SSE channel (response_id={:?})",
+                        client_id,
+                        response_id
+                    );
+                    true
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to send response to client {} - channel closed: {} (response_id={:?})",
+                        client_id,
+                        e,
+                        response_id
+                    );
+                    false
+                }
+            }
+        } else {
+            tracing::warn!(
+                "No SSE connection for client {} - cannot send response (response_id={:?}, active_connections={:?})",
+                client_id,
+                response_id,
+                active_connections
+            );
+            false
+        }
+    }
+
+    /// Send a notification to a client's SSE stream
+    pub fn send_notification(&self, client_id: &str, notification: JsonRpcNotification) -> bool {
+        if let Some(tx) = self.connections.get(client_id) {
+            match tx.send(SseMessage::Notification(notification)) {
+                Ok(_) => true,
+                Err(_) => false,
+            }
+        } else {
+            false
+        }
+    }
+
+    /// Send endpoint information to a client (sent on initial connection)
+    pub fn send_endpoint(&self, client_id: &str, endpoint: String) -> bool {
+        if let Some(tx) = self.connections.get(client_id) {
+            match tx.send(SseMessage::Endpoint { endpoint }) {
+                Ok(_) => true,
+                Err(_) => false,
+            }
+        } else {
+            false
+        }
+    }
+
+    /// Check if a client has an active SSE connection
+    pub fn has_connection(&self, client_id: &str) -> bool {
+        self.connections.contains_key(client_id)
+    }
+}
+
+impl Default for SseConnectionManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// Server state shared across all handlers
 #[derive(Clone)]
@@ -86,8 +223,9 @@ pub struct AppState {
     pub mcp_notification_broadcast:
         Arc<tokio::sync::broadcast::Sender<(String, JsonRpcNotification)>>,
 
-    /// Streaming session manager for SSE multiplexing
-    pub streaming_session_manager: Arc<crate::mcp::gateway::streaming::StreamingSessionManager>,
+    /// SSE connection manager for MCP HTTP+SSE transport
+    /// Tracks active SSE connections and routes responses to the correct stream
+    pub sse_connection_manager: Arc<SseConnectionManager>,
 }
 
 impl AppState {
@@ -133,16 +271,6 @@ impl AppState {
             router.clone(),
         ));
 
-        // Create placeholder streaming session manager (will be replaced by with_mcp)
-        let streaming_config = config_manager.get().streaming.clone();
-        let streaming_session_manager = Arc::new(
-            crate::mcp::gateway::streaming::StreamingSessionManager::new(
-                mcp_gateway.clone(),
-                mcp_server_manager.clone(),
-                streaming_config,
-            ),
-        );
-
         Self {
             router,
             client_manager,
@@ -161,7 +289,7 @@ impl AppState {
             routellm_service: None,
             tray_graph_manager: Arc::new(RwLock::new(None)),
             mcp_notification_broadcast: Arc::new(notification_tx),
-            streaming_session_manager,
+            sse_connection_manager: Arc::new(SseConnectionManager::new()),
         }
     }
 
@@ -174,20 +302,9 @@ impl AppState {
             self.router.clone(),
         ));
 
-        // Create streaming session manager with the actual components
-        let streaming_config = self.config_manager.get().streaming.clone();
-        let streaming_session_manager = Arc::new(
-            crate::mcp::gateway::streaming::StreamingSessionManager::new(
-                mcp_gateway.clone(),
-                mcp_server_manager.clone(),
-                streaming_config,
-            ),
-        );
-
         Self {
             mcp_server_manager,
             mcp_gateway,
-            streaming_session_manager,
             ..self
         }
     }

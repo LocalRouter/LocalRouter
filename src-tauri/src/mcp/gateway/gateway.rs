@@ -87,6 +87,23 @@ impl McpGateway {
         }
     }
 
+    /// Build a mapping from server ID (UUID) to human-readable server name
+    ///
+    /// This is used to namespace tools/resources/prompts with readable names
+    /// (e.g., "filesystem__read_file") instead of UUIDs.
+    fn build_server_id_to_name_mapping(
+        &self,
+        server_ids: &[String],
+    ) -> std::collections::HashMap<String, String> {
+        let mut mapping = std::collections::HashMap::new();
+        for server_id in server_ids {
+            if let Some(config) = self.server_manager.get_config(server_id) {
+                mapping.insert(server_id.clone(), config.name);
+            }
+        }
+        mapping
+    }
+
     /// Handle an MCP gateway request
     pub async fn handle_request(
         &self,
@@ -96,6 +113,19 @@ impl McpGateway {
         roots: Vec<crate::mcp::protocol::Root>,
         request: JsonRpcRequest,
     ) -> AppResult<JsonRpcResponse> {
+        let method = request.method.clone();
+        let request_id = request.id.clone();
+        let is_broadcast = should_broadcast(&method);
+
+        tracing::info!(
+            "Gateway handle_request: client_id={}, method={}, request_id={:?}, is_broadcast={}, servers={}",
+            client_id,
+            method,
+            request_id,
+            is_broadcast,
+            allowed_servers.len()
+        );
+
         // Get or create session
         let session: Arc<RwLock<GatewaySession>> = self
             .get_or_create_session(client_id, allowed_servers, enable_deferred_loading, roots)
@@ -108,11 +138,33 @@ impl McpGateway {
         }
 
         // Route based on method
-        if should_broadcast(&request.method) {
+        let result = if is_broadcast {
             self.handle_broadcast_request(session, request).await
         } else {
             self.handle_direct_request(session, request).await
+        };
+
+        match &result {
+            Ok(response) => {
+                tracing::info!(
+                    "Gateway handle_request completed: client_id={}, method={}, response_id={:?}, has_error={}",
+                    client_id,
+                    method,
+                    response.id,
+                    response.error.is_some()
+                );
+            }
+            Err(e) => {
+                tracing::error!(
+                    "Gateway handle_request failed: client_id={}, method={}, error={}",
+                    client_id,
+                    method,
+                    e
+                );
+            }
         }
+
+        result
     }
 
     /// Get or create a session
@@ -363,30 +415,13 @@ impl McpGateway {
 
             "roots/list" => self.handle_roots_list(session, request).await,
 
-            // Future MCP features - return not implemented with workarounds
+            // Resource subscription methods
             "resources/subscribe" => {
-                Ok(JsonRpcResponse::error(
-                    request.id.unwrap_or(Value::Null),
-                    JsonRpcError::custom(
-                        -32601,
-                        "resources/subscribe not yet implemented. Use resources/list with notifications/resources/list_changed for updates.".to_string(),
-                        Some(json!({
-                            "workaround": "poll_resources_list",
-                            "hint": "Call resources/list periodically, or rely on notifications/resources/list_changed"
-                        }))
-                    )
-                ))
+                self.handle_resources_subscribe(session, request).await
             }
 
             "resources/unsubscribe" => {
-                Ok(JsonRpcResponse::error(
-                    request.id.unwrap_or(Value::Null),
-                    JsonRpcError::custom(
-                        -32601,
-                        "resources/unsubscribe not yet implemented.".to_string(),
-                        None
-                    )
-                ))
+                self.handle_resources_unsubscribe(session, request).await
             }
 
             _ => {
@@ -433,6 +468,169 @@ impl McpGateway {
             request.id.unwrap_or(Value::Null),
             result,
         ))
+    }
+
+    /// Handle resources/subscribe request
+    ///
+    /// Subscribes to change notifications for a specific resource.
+    /// When the resource changes, the backend server sends notifications/resources/updated.
+    async fn handle_resources_subscribe(
+        &self,
+        session: Arc<RwLock<GatewaySession>>,
+        request: JsonRpcRequest,
+    ) -> AppResult<JsonRpcResponse> {
+        // Extract URI from params
+        let uri = match request.params.as_ref().and_then(|p| p.get("uri")) {
+            Some(Value::String(uri)) => uri.clone(),
+            _ => {
+                return Ok(JsonRpcResponse::error(
+                    request.id.unwrap_or(Value::Null),
+                    JsonRpcError::invalid_params("Missing or invalid 'uri' parameter".to_string()),
+                ));
+            }
+        };
+
+        // Look up the server that owns this resource
+        let server_id = {
+            let session_read = session.read().await;
+
+            // First try resource_uri_mapping
+            if let Some((server_id, _)) = session_read.resource_uri_mapping.get(&uri) {
+                server_id.clone()
+            } else {
+                // If not found, we need to determine which server owns this resource
+                // Try to match by URI prefix or pattern
+                // For now, return an error if not found in mapping
+                return Ok(JsonRpcResponse::error(
+                    request.id.unwrap_or(Value::Null),
+                    JsonRpcError::custom(
+                        -32602,
+                        format!("Resource URI not found: {}. Call resources/list first to populate mappings.", uri),
+                        None,
+                    ),
+                ));
+            }
+        };
+
+        // Check if server supports subscriptions
+        {
+            let session_read = session.read().await;
+            if let Some(caps) = &session_read.merged_capabilities {
+                let supports_subscribe = caps
+                    .capabilities
+                    .resources
+                    .as_ref()
+                    .and_then(|r| r.subscribe)
+                    .unwrap_or(false);
+
+                if !supports_subscribe {
+                    return Ok(JsonRpcResponse::error(
+                        request.id.unwrap_or(Value::Null),
+                        JsonRpcError::custom(
+                            -32601,
+                            "Resource subscriptions not supported by backend servers".to_string(),
+                            Some(json!({
+                                "workaround": "Use notifications/resources/list_changed for general updates"
+                            })),
+                        ),
+                    ));
+                }
+            }
+        }
+
+        // Forward subscription request to the backend server
+        let backend_request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: request.id.clone(),
+            method: "resources/subscribe".to_string(),
+            params: Some(json!({ "uri": uri })),
+        };
+
+        match self
+            .server_manager
+            .send_request(&server_id, backend_request)
+            .await
+        {
+            Ok(response) => {
+                // If successful, track the subscription in the session
+                if response.error.is_none() {
+                    let mut session_write = session.write().await;
+                    session_write.subscribe_resource(uri.clone(), server_id.clone());
+                    tracing::info!("Subscribed to resource {} on server {}", uri, server_id);
+                }
+                Ok(response)
+            }
+            Err(e) => Ok(JsonRpcResponse::error(
+                request.id.unwrap_or(Value::Null),
+                JsonRpcError::custom(-32603, format!("Subscription failed: {}", e), None),
+            )),
+        }
+    }
+
+    /// Handle resources/unsubscribe request
+    ///
+    /// Unsubscribes from change notifications for a specific resource.
+    async fn handle_resources_unsubscribe(
+        &self,
+        session: Arc<RwLock<GatewaySession>>,
+        request: JsonRpcRequest,
+    ) -> AppResult<JsonRpcResponse> {
+        // Extract URI from params
+        let uri = match request.params.as_ref().and_then(|p| p.get("uri")) {
+            Some(Value::String(uri)) => uri.clone(),
+            _ => {
+                return Ok(JsonRpcResponse::error(
+                    request.id.unwrap_or(Value::Null),
+                    JsonRpcError::invalid_params("Missing or invalid 'uri' parameter".to_string()),
+                ));
+            }
+        };
+
+        // Check if we're subscribed and get the server_id
+        let server_id = {
+            let session_read = session.read().await;
+            match session_read.subscribed_resources.get(&uri) {
+                Some(server_id) => server_id.clone(),
+                None => {
+                    // Not subscribed - return success anyway (idempotent)
+                    return Ok(JsonRpcResponse::success(
+                        request.id.unwrap_or(Value::Null),
+                        json!({}),
+                    ));
+                }
+            }
+        };
+
+        // Forward unsubscribe request to the backend server
+        let backend_request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: request.id.clone(),
+            method: "resources/unsubscribe".to_string(),
+            params: Some(json!({ "uri": uri })),
+        };
+
+        match self
+            .server_manager
+            .send_request(&server_id, backend_request)
+            .await
+        {
+            Ok(response) => {
+                // Remove the subscription from session tracking
+                let mut session_write = session.write().await;
+                session_write.unsubscribe_resource(&uri);
+                tracing::info!("Unsubscribed from resource {} on server {}", uri, server_id);
+                Ok(response)
+            }
+            Err(e) => {
+                // Even on error, remove from local tracking
+                let mut session_write = session.write().await;
+                session_write.unsubscribe_resource(&uri);
+                Ok(JsonRpcResponse::error(
+                    request.id.unwrap_or(Value::Null),
+                    JsonRpcError::custom(-32603, format!("Unsubscribe failed: {}", e), None),
+                ))
+            }
+        }
     }
 
     /// Handle elicitation/requestInput
@@ -814,7 +1012,13 @@ impl McpGateway {
             })
             .collect();
 
-        Ok((merge_tools(server_tools, &failures), failures))
+        // Build server ID to human-readable name mapping
+        let name_mapping = self.build_server_id_to_name_mapping(server_ids);
+
+        Ok((
+            merge_tools(server_tools, &failures, Some(&name_mapping)),
+            failures,
+        ))
     }
 
     /// Handle resources/list request
@@ -823,6 +1027,7 @@ impl McpGateway {
         session: Arc<RwLock<GatewaySession>>,
         request: JsonRpcRequest,
     ) -> AppResult<JsonRpcResponse> {
+        let request_id = request.id.clone();
         let session_read = session.read().await;
 
         // Check cache
@@ -830,6 +1035,12 @@ impl McpGateway {
             if cached.is_valid() {
                 let resources = cached.data.clone();
                 drop(session_read);
+
+                tracing::debug!(
+                    "resources/list returning {} cached resources (request_id={:?})",
+                    resources.len(),
+                    request_id
+                );
 
                 return Ok(JsonRpcResponse::success(
                     request.id.unwrap_or(Value::Null),
@@ -841,10 +1052,23 @@ impl McpGateway {
         let allowed_servers = session_read.allowed_servers.clone();
         drop(session_read);
 
+        tracing::info!(
+            "resources/list fetching from {} servers (request_id={:?})",
+            allowed_servers.len(),
+            request_id
+        );
+
         // Fetch from servers
         let (resources, failures) = self
             .fetch_and_merge_resources(&allowed_servers, request.clone())
             .await?;
+
+        tracing::info!(
+            "resources/list fetched {} resources with {} failures (request_id={:?})",
+            resources.len(),
+            failures.len(),
+            request_id
+        );
 
         // Update session mappings, cache, failures, and mark as fetched
         {
@@ -915,7 +1139,13 @@ impl McpGateway {
             })
             .collect();
 
-        Ok((merge_resources(server_resources, &failures), failures))
+        // Build server ID to human-readable name mapping
+        let name_mapping = self.build_server_id_to_name_mapping(server_ids);
+
+        Ok((
+            merge_resources(server_resources, &failures, Some(&name_mapping)),
+            failures,
+        ))
     }
 
     /// Handle prompts/list request
@@ -1015,7 +1245,13 @@ impl McpGateway {
             })
             .collect();
 
-        Ok((merge_prompts(server_prompts, &failures), failures))
+        // Build server ID to human-readable name mapping
+        let name_mapping = self.build_server_id_to_name_mapping(server_ids);
+
+        Ok((
+            merge_prompts(server_prompts, &failures, Some(&name_mapping)),
+            failures,
+        ))
     }
 
     /// Handle tools/call request
@@ -1045,26 +1281,20 @@ impl McpGateway {
             return self.handle_search_tool(session, request).await;
         }
 
-        // Parse namespace
-        let (server_id, original_name) = match parse_namespace(tool_name) {
-            Some((id, name)) => (id, name),
+        // Look up tool in session mapping to get server_id (UUID) and original_name
+        // The mapping stores: namespaced_name -> (server_id, original_name)
+        // where namespaced_name uses human-readable server name but server_id is the UUID for routing
+        let session_read = session.read().await;
+        let (server_id, original_name) = match session_read.tool_mapping.get(tool_name) {
+            Some((id, name)) => (id.clone(), name.clone()),
             None => {
+                drop(session_read);
                 return Ok(JsonRpcResponse::error(
                     request.id.unwrap_or(Value::Null),
-                    JsonRpcError::invalid_params(format!("Invalid namespaced tool: {}", tool_name)),
+                    JsonRpcError::tool_not_found(tool_name),
                 ));
             }
         };
-
-        // Verify mapping exists in session
-        let session_read = session.read().await;
-        if !session_read.tool_mapping.contains_key(tool_name) {
-            drop(session_read);
-            return Ok(JsonRpcResponse::error(
-                request.id.unwrap_or(Value::Null),
-                JsonRpcError::tool_not_found(tool_name),
-            ));
-        }
         drop(session_read);
 
         // Transform request: Strip namespace
@@ -1075,10 +1305,38 @@ impl McpGateway {
             }
         }
 
+        tracing::info!(
+            "Gateway routing tools/call to server {}: tool={}, request_id={:?}",
+            server_id,
+            original_name,
+            transformed_request.id
+        );
+
         // Route to server
-        self.server_manager
+        let result = self
+            .server_manager
             .send_request(&server_id, transformed_request)
-            .await
+            .await;
+
+        match &result {
+            Ok(response) => {
+                tracing::info!(
+                    "Gateway received response from server {}: response_id={:?}, has_error={}",
+                    server_id,
+                    response.id,
+                    response.error.is_some()
+                );
+            }
+            Err(e) => {
+                tracing::error!(
+                    "Gateway failed to get response from server {}: {}",
+                    server_id,
+                    e
+                );
+            }
+        }
+
+        result
     }
 
     /// Handle search tool call (for deferred loading)
@@ -1227,14 +1485,20 @@ impl McpGateway {
         let resource_name = params.get("name").and_then(|n| n.as_str());
 
         let (server_id, original_name) = if let Some(name) = resource_name {
-            // Prefer namespaced name routing
-            match parse_namespace(name) {
-                Some((id, n)) => (id, n),
+            // Look up resource in session mapping to get server_id (UUID) and original_name
+            let session_read = session.read().await;
+            match session_read.resource_mapping.get(name) {
+                Some((id, orig)) => {
+                    let result = (id.clone(), orig.clone());
+                    drop(session_read);
+                    result
+                }
                 None => {
+                    drop(session_read);
                     return Ok(JsonRpcResponse::error(
                         request.id.unwrap_or(Value::Null),
-                        JsonRpcError::invalid_params(format!(
-                            "Invalid namespaced resource: {}",
+                        JsonRpcError::resource_not_found(format!(
+                            "Resource not found: {}",
                             name
                         )),
                     ));
@@ -1353,29 +1617,18 @@ impl McpGateway {
             }
         };
 
-        // Parse namespace
-        let (server_id, original_name) = match parse_namespace(prompt_name) {
-            Some((id, name)) => (id, name),
+        // Look up prompt in session mapping to get server_id (UUID) and original_name
+        let session_read = session.read().await;
+        let (server_id, original_name) = match session_read.prompt_mapping.get(prompt_name) {
+            Some((id, name)) => (id.clone(), name.clone()),
             None => {
+                drop(session_read);
                 return Ok(JsonRpcResponse::error(
                     request.id.unwrap_or(Value::Null),
-                    JsonRpcError::invalid_params(format!(
-                        "Invalid namespaced prompt: {}",
-                        prompt_name
-                    )),
+                    JsonRpcError::prompt_not_found(prompt_name),
                 ));
             }
         };
-
-        // Verify mapping exists
-        let session_read = session.read().await;
-        if !session_read.prompt_mapping.contains_key(prompt_name) {
-            drop(session_read);
-            return Ok(JsonRpcResponse::error(
-                request.id.unwrap_or(Value::Null),
-                JsonRpcError::prompt_not_found(prompt_name),
-            ));
-        }
         drop(session_read);
 
         // Transform request: Strip namespace

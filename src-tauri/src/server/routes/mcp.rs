@@ -2,9 +2,11 @@
 //!
 //! Handles proxying JSON-RPC requests from external MCP clients to MCP servers.
 //! Routes: POST / (unified gateway), POST /mcp/:server_id (individual server)
+//! GET / and GET /mcp return SSE stream if Accept: text/event-stream, otherwise API info.
 
 use axum::{
     extract::{Path, State},
+    http::header,
     response::{
         sse::{Event, KeepAlive, Sse},
         IntoResponse, Response,
@@ -16,11 +18,263 @@ use std::time::Instant;
 
 use super::helpers::get_enabled_client_from_manager;
 use crate::config::{McpServerAccess, RootConfig};
-use crate::mcp::protocol::{JsonRpcRequest, Root};
+use crate::mcp::protocol::{JsonRpcRequest, JsonRpcResponse, Root};
 use crate::monitoring::mcp_metrics::McpRequestMetrics;
 use crate::server::middleware::client_auth::ClientAuthContext;
 use crate::server::middleware::error::ApiErrorResponse;
-use crate::server::state::AppState;
+use crate::server::state::{AppState, SseConnectionManager, SseMessage};
+
+/// Send a JSON-RPC response via SSE stream (preferred) or HTTP body (fallback)
+///
+/// The MCP SDK's SSEClientTransport expects responses via the SSE stream.
+/// We send via SSE if a connection exists, and also include in HTTP body as fallback.
+fn send_response(
+    sse_manager: &SseConnectionManager,
+    client_id: &str,
+    response: JsonRpcResponse,
+) -> Response {
+    let response_id = response.id.clone();
+    let has_error = response.error.is_some();
+
+    tracing::debug!(
+        "send_response called: client_id={}, response_id={:?}, has_error={}",
+        client_id,
+        response_id,
+        has_error
+    );
+
+    // Try to send via SSE stream first (required for MCP SDK's SSEClientTransport)
+    if sse_manager.send_response(client_id, response.clone()) {
+        // Response sent via SSE - return 202 Accepted with empty body
+        // The SDK will receive the response on the SSE stream
+        tracing::debug!(
+            "Response sent via SSE for client {}, returning 202 Accepted",
+            client_id
+        );
+        (axum::http::StatusCode::ACCEPTED, "").into_response()
+    } else {
+        // No SSE connection - fall back to returning in HTTP body
+        // This handles cases where client connects without SSE
+        tracing::warn!(
+            "No SSE connection for client {}, returning response in HTTP body (response_id={:?})",
+            client_id,
+            response_id
+        );
+        Json(response).into_response()
+    }
+}
+
+/// Unified MCP gateway with content negotiation
+///
+/// Returns SSE stream if Accept header contains text/event-stream,
+/// otherwise returns API information text.
+///
+/// SSE mode: Establishes an SSE connection to receive notifications from all
+/// allowed MCP servers for this client. Used by MCP SDK's SSEClientTransport.
+///
+/// Text mode: Returns basic API information.
+#[utoipa::path(
+    get,
+    path = "/",
+    tag = "mcp",
+    responses(
+        (status = 200, description = "SSE event stream or API info", content_type = "text/event-stream"),
+        (status = 401, description = "Unauthorized", body = crate::server::types::ErrorResponse),
+        (status = 403, description = "Forbidden - no MCP server access", body = crate::server::types::ErrorResponse)
+    ),
+    security(("bearer" = []))
+)]
+pub async fn mcp_gateway_get_handler(
+    State(state): State<AppState>,
+    client_auth: Option<axum::Extension<ClientAuthContext>>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    // Check if client accepts SSE
+    let accepts_sse = headers
+        .get(header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.contains("text/event-stream"))
+        .unwrap_or(false);
+
+    if !accepts_sse {
+        // Return API info text
+        return (
+            axum::http::StatusCode::OK,
+            [(header::CONTENT_TYPE, "text/plain")],
+            "LocalRouter AI - Unified MCP Gateway\n\
+             \n\
+             This endpoint supports both SSE and JSON-RPC:\n\
+               GET  / (Accept: text/event-stream) - SSE notification stream\n\
+               POST / - JSON-RPC requests to unified gateway\n\
+             \n\
+             Individual MCP servers:\n\
+               GET  /mcp/{server_id} (Accept: text/event-stream) - SSE for specific server\n\
+               POST /mcp/{server_id} - JSON-RPC to specific server\n\
+             \n\
+             Authentication: Include 'Authorization: Bearer <your-token>' header\n",
+        )
+            .into_response();
+    }
+
+    // SSE mode - return event stream for unified gateway
+    let client_id = match client_auth {
+        Some(ctx) => ctx.0.client_id.clone(),
+        None => {
+            return ApiErrorResponse::unauthorized("Missing authentication context")
+                .into_response();
+        }
+    };
+
+    // Get all server IDs
+    let all_server_ids: Vec<String> = state
+        .config_manager
+        .get()
+        .mcp_servers
+        .iter()
+        .map(|s| s.id.clone())
+        .collect();
+
+    // Handle internal test client specially (for UI testing)
+    let allowed_servers = if client_id == "internal-test" {
+        tracing::debug!("Internal test client establishing unified SSE connection");
+        all_server_ids
+    } else {
+        // Get enabled client from manager
+        let client = match get_enabled_client_from_manager(&state, &client_id) {
+            Ok(client) => client,
+            Err(e) => return e.into_response(),
+        };
+
+        // Check MCP access mode
+        if !client.mcp_server_access.has_any_access() {
+            return ApiErrorResponse::forbidden(
+                "Client has no MCP server access. Configure mcp_server_access in client settings.",
+            )
+            .into_response();
+        }
+
+        // Get allowed servers based on access mode
+        match &client.mcp_server_access {
+            McpServerAccess::None => vec![],
+            McpServerAccess::All => all_server_ids,
+            McpServerAccess::Specific(servers) => servers.clone(),
+        }
+    };
+
+    tracing::debug!(
+        "Unified SSE connection established for client {} with {} servers",
+        client_id,
+        allowed_servers.len()
+    );
+
+    // Register with SSE connection manager to receive responses
+    let mut response_rx = state.sse_connection_manager.register(&client_id);
+
+    // Subscribe to notification broadcast
+    let mut notification_rx = state.mcp_notification_broadcast.subscribe();
+
+    // Clone for cleanup
+    let client_id_cleanup = client_id.clone();
+    let sse_manager = state.sse_connection_manager.clone();
+
+    // Create SSE stream that forwards both responses and notifications
+    let sse_stream = async_stream::stream! {
+        // Send endpoint event first (MCP SSE transport spec)
+        // The data should be just the endpoint path, not a JSON object
+        tracing::info!("SSE stream started for client {}, sending endpoint event", client_id);
+        yield Ok::<_, Infallible>(Event::default().event("endpoint").data("/"));
+
+        loop {
+            // Use biased select to prioritize responses over notifications
+            // This ensures responses are sent immediately when available
+            tokio::select! {
+                biased;
+
+                // Handle responses from POST requests (high priority)
+                msg = response_rx.recv() => {
+                    match msg {
+                        Some(sse_msg) => {
+                            // Send raw JSON-RPC, not wrapped SseMessage (MCP SSE transport spec)
+                            match sse_msg {
+                                SseMessage::Response(response) => {
+                                    let response_id = response.id.clone();
+                                    match serde_json::to_string(&response) {
+                                        Ok(json) => {
+                                            tracing::info!(
+                                                "SSE stream yielding response for client {}: id={:?}, json_len={}",
+                                                client_id,
+                                                response_id,
+                                                json.len()
+                                            );
+                                            yield Ok::<_, Infallible>(Event::default().event("message").data(json));
+                                        }
+                                        Err(e) => {
+                                            tracing::error!(
+                                                "Failed to serialize response for SSE: {} (client={}, id={:?})",
+                                                e,
+                                                client_id,
+                                                response_id
+                                            );
+                                        }
+                                    }
+                                }
+                                SseMessage::Notification(notification) => {
+                                    if let Ok(json) = serde_json::to_string(&notification) {
+                                        tracing::debug!("SSE stream yielding notification for client {}", client_id);
+                                        yield Ok::<_, Infallible>(Event::default().event("message").data(json));
+                                    }
+                                }
+                                SseMessage::Endpoint { .. } => {
+                                    // Endpoint events handled separately at stream start
+                                }
+                            }
+                        }
+                        None => {
+                            tracing::debug!("Response channel closed for client {}", client_id);
+                            break;
+                        }
+                    }
+                }
+
+                // Handle notifications from MCP servers
+                notif_result = notification_rx.recv() => {
+                    match notif_result {
+                        Ok((server_id, notification)) => {
+                            // Only forward notifications for allowed servers
+                            if allowed_servers.contains(&server_id) {
+                                // Namespace the notification for the unified gateway
+                                let namespaced_notification = crate::mcp::protocol::JsonRpcNotification {
+                                    jsonrpc: notification.jsonrpc.clone(),
+                                    method: format!("{}::{}", server_id, notification.method),
+                                    params: notification.params.clone(),
+                                };
+                                // Send raw JSON-RPC notification (MCP SSE transport spec)
+                                if let Ok(json) = serde_json::to_string(&namespaced_notification) {
+                                    yield Ok::<_, Infallible>(Event::default().event("message").data(json));
+                                }
+                            }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                            tracing::warn!("Unified SSE client {} lagged, missed {} notifications", client_id, n);
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                            tracing::debug!("Notification broadcast closed");
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Cleanup: unregister from SSE manager when stream ends
+        sse_manager.unregister(&client_id_cleanup);
+        tracing::debug!("SSE stream ended for client {}", client_id_cleanup);
+    };
+
+    Sse::new(sse_stream)
+        .keep_alive(KeepAlive::default())
+        .into_response()
+}
 
 /// MCP unified gateway handler
 ///
@@ -104,12 +358,13 @@ pub async fn mcp_gateway_handler(
         (client, allowed)
     };
 
-    tracing::debug!(
-        "Gateway request from client {} for {} servers: method={}, deferred_loading={}",
+    let request_id = request.id.clone();
+    tracing::info!(
+        "Gateway POST request from client {}: method={}, request_id={:?}, servers={}",
         client_id,
-        allowed_servers.len(),
         request.method,
-        client.mcp_deferred_loading
+        request_id,
+        allowed_servers.len()
     );
 
     // Merge global and per-client roots
@@ -135,7 +390,7 @@ pub async fn mcp_gateway_handler(
                     error,
                 );
 
-                return Json(response).into_response();
+                return send_response(&state.sse_connection_manager, &client_id, response);
             }
 
             // Parse sampling request from params
@@ -151,7 +406,7 @@ pub async fn mcp_gateway_handler(
                                 request.id.unwrap_or(serde_json::Value::Null),
                                 error,
                             );
-                            return Json(response).into_response();
+                            return send_response(&state.sse_connection_manager, &client_id, response);
                         }
                     },
                     None => {
@@ -162,7 +417,7 @@ pub async fn mcp_gateway_handler(
                             request.id.unwrap_or(serde_json::Value::Null),
                             error,
                         );
-                        return Json(response).into_response();
+                        return send_response(&state.sse_connection_manager, &client_id, response);
                     }
                 };
 
@@ -181,7 +436,7 @@ pub async fn mcp_gateway_handler(
                             request.id.unwrap_or(serde_json::Value::Null),
                             error,
                         );
-                        return Json(response).into_response();
+                        return send_response(&state.sse_connection_manager, &client_id, response);
                     }
                 };
 
@@ -203,7 +458,7 @@ pub async fn mcp_gateway_handler(
                         request.id.unwrap_or(serde_json::Value::Null),
                         error,
                     );
-                    return Json(response).into_response();
+                    return send_response(&state.sse_connection_manager, &client_id, response);
                 }
             };
 
@@ -223,7 +478,7 @@ pub async fn mcp_gateway_handler(
                             request.id.unwrap_or(serde_json::Value::Null),
                             error,
                         );
-                        return Json(response).into_response();
+                        return send_response(&state.sse_connection_manager, &client_id, response);
                     }
                 };
 
@@ -233,7 +488,7 @@ pub async fn mcp_gateway_handler(
                 serde_json::to_value(sampling_resp).unwrap(),
             );
 
-            return Json(response).into_response();
+            return send_response(&state.sse_connection_manager, &client_id, response);
         }
 
         _ => {
@@ -253,7 +508,7 @@ pub async fn mcp_gateway_handler(
         )
         .await
     {
-        Ok(response) => Json(response).into_response(),
+        Ok(response) => send_response(&state.sse_connection_manager, &client_id, response),
         Err(err) => {
             tracing::error!("Gateway error for client {}: {}", client_id, err);
             ApiErrorResponse::internal_error(format!("Gateway error: {}", err)).into_response()
@@ -324,6 +579,10 @@ pub async fn mcp_server_handler(
         }
     };
 
+    // Use composite key (client_id:server_id) for SSE connection to support
+    // same client connecting to multiple proxied servers simultaneously
+    let sse_connection_key = format!("{}:{}", client_id, server_id);
+
     // Check if client has access to this MCP server
     if !client.mcp_server_access.can_access(&server_id) {
         tracing::warn!(
@@ -364,7 +623,7 @@ pub async fn mcp_server_handler(
                 result,
             );
 
-            return Json(response).into_response();
+            return send_response(&state.sse_connection_manager, &sse_connection_key, response);
         }
 
         "sampling/createMessage" => {
@@ -383,7 +642,7 @@ pub async fn mcp_server_handler(
                     error,
                 );
 
-                return Json(response).into_response();
+                return send_response(&state.sse_connection_manager, &sse_connection_key, response);
             }
 
             // Parse sampling request from params
@@ -399,7 +658,7 @@ pub async fn mcp_server_handler(
                                 request.id.unwrap_or(serde_json::Value::Null),
                                 error,
                             );
-                            return Json(response).into_response();
+                            return send_response(&state.sse_connection_manager, &sse_connection_key, response);
                         }
                     },
                     None => {
@@ -410,7 +669,7 @@ pub async fn mcp_server_handler(
                             request.id.unwrap_or(serde_json::Value::Null),
                             error,
                         );
-                        return Json(response).into_response();
+                        return send_response(&state.sse_connection_manager, &sse_connection_key, response);
                     }
                 };
 
@@ -429,7 +688,7 @@ pub async fn mcp_server_handler(
                             request.id.unwrap_or(serde_json::Value::Null),
                             error,
                         );
-                        return Json(response).into_response();
+                        return send_response(&state.sse_connection_manager, &sse_connection_key, response);
                     }
                 };
 
@@ -451,7 +710,7 @@ pub async fn mcp_server_handler(
                         request.id.unwrap_or(serde_json::Value::Null),
                         error,
                     );
-                    return Json(response).into_response();
+                    return send_response(&state.sse_connection_manager, &sse_connection_key, response);
                 }
             };
 
@@ -471,7 +730,7 @@ pub async fn mcp_server_handler(
                             request.id.unwrap_or(serde_json::Value::Null),
                             error,
                         );
-                        return Json(response).into_response();
+                        return send_response(&state.sse_connection_manager, &sse_connection_key, response);
                     }
                 };
 
@@ -481,7 +740,7 @@ pub async fn mcp_server_handler(
                 serde_json::to_value(sampling_resp).unwrap(),
             );
 
-            return Json(response).into_response();
+            return send_response(&state.sse_connection_manager, &sse_connection_key, response);
         }
 
         "elicitation/requestInput" => {
@@ -498,7 +757,7 @@ pub async fn mcp_server_handler(
                                 request.id.unwrap_or(serde_json::Value::Null),
                                 error,
                             );
-                            return Json(response).into_response();
+                            return send_response(&state.sse_connection_manager, &sse_connection_key, response);
                         }
                     },
                     None => {
@@ -509,7 +768,7 @@ pub async fn mcp_server_handler(
                             request.id.unwrap_or(serde_json::Value::Null),
                             error,
                         );
-                        return Json(response).into_response();
+                        return send_response(&state.sse_connection_manager, &sse_connection_key, response);
                     }
                 };
 
@@ -531,7 +790,7 @@ pub async fn mcp_server_handler(
                 error,
             );
 
-            return Json(response).into_response();
+            return send_response(&state.sse_connection_manager, &sse_connection_key, response);
         }
 
         _ => {
@@ -543,10 +802,11 @@ pub async fn mcp_server_handler(
     let start_time = Instant::now();
     let method = request.method.clone();
 
-    tracing::debug!(
-        "Proxying JSON-RPC request to server {}: method={}",
+    tracing::info!(
+        "Proxying JSON-RPC request to server {}: method={}, client={}",
         server_id,
-        request.method
+        request.method,
+        client_id
     );
 
     let response = match state
@@ -554,8 +814,22 @@ pub async fn mcp_server_handler(
         .send_request(&server_id, request)
         .await
     {
-        Ok(response) => response,
+        Ok(response) => {
+            tracing::info!(
+                "Received response from backend server {}: id={:?}, has_error={}",
+                server_id,
+                response.id,
+                response.error.is_some()
+            );
+            response
+        }
         Err(e) => {
+            tracing::error!(
+                "Backend server {} returned error: {} (client={})",
+                server_id,
+                e,
+                client_id
+            );
             return ApiErrorResponse::bad_gateway(format!("MCP server error: {}", e))
                 .into_response();
         }
@@ -600,7 +874,208 @@ pub async fn mcp_server_handler(
         tracing::warn!("Failed to write MCP access log: {}", e);
     }
 
-    Json(response).into_response()
+    // sse_connection_key already defined at start of function
+    send_response(&state.sse_connection_manager, &sse_connection_key, response)
+}
+
+/// SSE event stream handler for MCP server
+///
+/// Establishes an SSE connection to receive notifications and responses from the MCP server.
+/// Used by the MCP SDK's SSEClientTransport for the server→client message channel.
+///
+/// # Path Parameters
+/// * `server_id` - MCP server ID to connect to
+///
+/// # Response
+/// Server-Sent Events stream with JSON-RPC notifications
+#[utoipa::path(
+    get,
+    path = "/mcp/{server_id}",
+    tag = "mcp",
+    params(
+        ("server_id" = String, Path, description = "MCP server ID")
+    ),
+    responses(
+        (status = 200, description = "SSE event stream", content_type = "text/event-stream"),
+        (status = 401, description = "Unauthorized", body = crate::server::types::ErrorResponse),
+        (status = 403, description = "Forbidden - no access to server", body = crate::server::types::ErrorResponse),
+        (status = 502, description = "Bad gateway - MCP server error", body = crate::server::types::ErrorResponse)
+    ),
+    security(("bearer" = []))
+)]
+pub async fn mcp_server_sse_handler(
+    Path(server_id): Path<String>,
+    State(state): State<AppState>,
+    client_auth: Option<axum::Extension<ClientAuthContext>>,
+) -> Response {
+    // Extract client_id from auth context
+    let client_id = match client_auth {
+        Some(ctx) => ctx.0.client_id.clone(),
+        None => {
+            return ApiErrorResponse::unauthorized("Missing authentication context")
+                .into_response();
+        }
+    };
+
+    // Handle internal test client specially (for UI testing)
+    let client = if client_id == "internal-test" {
+        tracing::debug!(
+            "Internal test client establishing SSE connection to MCP server {}",
+            server_id
+        );
+        let mut test_client = crate::config::Client::new("Internal Test Client".to_string());
+        test_client.id = "internal-test".to_string();
+        test_client.mcp_server_access = McpServerAccess::All;
+        test_client.mcp_sampling_enabled = true;
+        test_client
+    } else {
+        match get_enabled_client_from_manager(&state, &client_id) {
+            Ok(client) => client,
+            Err(e) => return e.into_response(),
+        }
+    };
+
+    // Check if client has access to this MCP server
+    if !client.mcp_server_access.can_access(&server_id) {
+        tracing::warn!(
+            "Client {} attempted SSE connection to unauthorized MCP server {}",
+            client_id,
+            server_id
+        );
+        return ApiErrorResponse::forbidden(format!(
+            "Access denied: Client is not authorized to access MCP server '{}'.",
+            server_id
+        ))
+        .into_response();
+    }
+
+    // Start server if not running
+    if !state.mcp_server_manager.is_running(&server_id) {
+        tracing::info!("Starting MCP server {} for SSE connection", server_id);
+        if let Err(e) = state.mcp_server_manager.start_server(&server_id).await {
+            return ApiErrorResponse::bad_gateway(format!("Failed to start MCP server: {}", e))
+                .into_response();
+        }
+    }
+
+    // For proxied servers, use a composite key (client_id:server_id) to allow
+    // the same client to have separate SSE connections to different servers
+    let sse_connection_key = format!("{}:{}", client_id, server_id);
+
+    tracing::debug!(
+        "SSE connection established for client {} to MCP server {} (key={})",
+        client_id,
+        server_id,
+        sse_connection_key
+    );
+
+    // Register with SSE connection manager to receive responses
+    let mut response_rx = state.sse_connection_manager.register(&sse_connection_key);
+
+    // Subscribe to notification broadcast
+    let mut notification_rx = state.mcp_notification_broadcast.subscribe();
+    let target_server_id = server_id.clone();
+
+    // Clone for cleanup (use composite key for proxied servers)
+    let sse_connection_key_cleanup = sse_connection_key.clone();
+    let sse_manager = state.sse_connection_manager.clone();
+
+    // Create SSE stream that forwards both responses and notifications
+    let sse_stream = async_stream::stream! {
+        // Send endpoint event first (MCP SSE transport spec)
+        // The data should be just the endpoint path, not a JSON object
+        let endpoint_path = format!("/mcp/{}", target_server_id);
+        tracing::info!("SSE stream started for client {} to server {}, sending endpoint event: {}", client_id, target_server_id, endpoint_path);
+        yield Ok::<_, Infallible>(Event::default().event("endpoint").data(endpoint_path));
+        tracing::info!("SSE endpoint event yielded for client {} to server {}, entering select loop", client_id, target_server_id);
+
+        loop {
+            tracing::debug!("SSE select loop iteration for client {} to server {}", client_id, target_server_id);
+            // Use biased select to prioritize responses over notifications
+            tokio::select! {
+                biased;
+
+                // Handle responses from POST requests (high priority)
+                msg = response_rx.recv() => {
+                    tracing::debug!("SSE received message on response_rx for client {} to server {}", client_id, target_server_id);
+                    match msg {
+                        Some(sse_msg) => {
+                            // Send raw JSON-RPC, not wrapped SseMessage (MCP SSE transport spec)
+                            match sse_msg {
+                                SseMessage::Response(response) => {
+                                    let response_id = response.id.clone();
+                                    match serde_json::to_string(&response) {
+                                        Ok(json) => {
+                                            tracing::info!(
+                                                "SSE stream yielding response for client {} to server {}: id={:?}, json_len={}",
+                                                client_id,
+                                                target_server_id,
+                                                response_id,
+                                                json.len()
+                                            );
+                                            yield Ok::<_, Infallible>(Event::default().event("message").data(json));
+                                        }
+                                        Err(e) => {
+                                            tracing::error!(
+                                                "Failed to serialize response for SSE: {} (client={}, server={}, id={:?})",
+                                                e,
+                                                client_id,
+                                                target_server_id,
+                                                response_id
+                                            );
+                                        }
+                                    }
+                                }
+                                SseMessage::Notification(notification) => {
+                                    if let Ok(json) = serde_json::to_string(&notification) {
+                                        tracing::debug!("SSE stream yielding notification for client {} to server {}", client_id, target_server_id);
+                                        yield Ok::<_, Infallible>(Event::default().event("message").data(json));
+                                    }
+                                }
+                                SseMessage::Endpoint { .. } => {
+                                    // Endpoint events handled separately at stream start
+                                }
+                            }
+                        }
+                        None => {
+                            tracing::debug!("Response channel closed for client {} to server {}", client_id, target_server_id);
+                            break;
+                        }
+                    }
+                }
+
+                // Handle notifications from MCP servers
+                notif_result = notification_rx.recv() => {
+                    match notif_result {
+                        Ok((notif_server_id, notification)) => {
+                            // Only forward notifications for our target server
+                            // Send raw JSON-RPC notification (MCP SSE transport spec)
+                            if notif_server_id == target_server_id {
+                                if let Ok(json) = serde_json::to_string(&notification) {
+                                    yield Ok::<_, Infallible>(Event::default().event("message").data(json));
+                                }
+                            }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                            tracing::warn!("SSE client {} lagged, missed {} notifications", client_id, n);
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                            tracing::debug!("Notification broadcast closed");
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Cleanup: unregister from SSE manager when stream ends
+        sse_manager.unregister(&sse_connection_key_cleanup);
+        tracing::debug!("SSE stream ended for client {} to server {} (key={})", client_id, target_server_id, sse_connection_key_cleanup);
+    };
+
+    Sse::new(sse_stream)
+        .keep_alive(KeepAlive::default())
+        .into_response()
 }
 
 /// Streaming MCP server handler

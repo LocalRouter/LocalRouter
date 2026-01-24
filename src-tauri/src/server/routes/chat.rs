@@ -909,7 +909,7 @@ async fn handle_streaming(
                         id: gen_id.clone(),
                         object: "chat.completion.chunk".to_string(),
                         created: created_timestamp,
-                        model: model.clone(),
+                        model: provider_chunk.model.clone(),
                         choices: provider_chunk
                             .choices
                             .into_iter()

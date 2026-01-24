@@ -458,13 +458,13 @@ pub struct ModelCacheConfig {
 }
 
 fn default_model_cache_ttl() -> u64 {
-    3600 // 1 hour
+    5 // 5 seconds
 }
 
 impl Default for ModelCacheConfig {
     fn default() -> Self {
         Self {
-            default_ttl_seconds: 3600,
+            default_ttl_seconds: 5,
             provider_ttl_overrides: std::collections::HashMap::new(),
             use_catalog_fallback: true,
         }

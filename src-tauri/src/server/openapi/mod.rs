@@ -40,8 +40,10 @@ use utoipa::OpenApi;
         crate::server::routes::generation::get_generation,
 
         // MCP endpoints
+        crate::server::routes::mcp::mcp_gateway_get_handler,
         crate::server::routes::mcp::mcp_gateway_handler,
         crate::server::routes::mcp::mcp_server_handler,
+        crate::server::routes::mcp::mcp_server_sse_handler,
         crate::server::routes::mcp::mcp_server_streaming_handler,
         crate::server::routes::mcp::elicitation_response_handler,
 
@@ -50,7 +52,6 @@ use utoipa::OpenApi;
 
         // System endpoints
         crate::server::health_check,
-        crate::server::root_handler,
         crate::server::serve_openapi_json,
         crate::server::serve_openapi_yaml
     ),

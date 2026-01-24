@@ -153,19 +153,26 @@ impl RouterError {
     }
 }
 
-/// Wraps a completion stream to count tokens and record usage when complete
+/// Wraps a completion stream to count tokens, record usage, and set the correct model name
 ///
 /// This is an approximation: we estimate tokens based on content length
 /// since streaming chunks don't include token counts.
+///
+/// The `resolved_model` parameter should be in `provider/model` format (e.g., "openai/gpt-4o")
+/// and will be set on each chunk to ensure clients know which model actually processed the request.
 async fn wrap_stream_with_usage_tracking(
     stream: Pin<Box<dyn Stream<Item = AppResult<CompletionChunk>> + Send>>,
     client_id: String,
+    resolved_model: String,
     rate_limiter: Arc<RateLimiterManager>,
 ) -> Pin<Box<dyn Stream<Item = AppResult<CompletionChunk>> + Send>> {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     // Track token counts as stream progresses
     let completion_chars = Arc::new(AtomicU64::new(0));
+
+    // Clone for map closure (model injection)
+    let resolved_model_for_map = resolved_model.clone();
 
     // Clone for inspect closure
     let completion_chars_for_inspect = completion_chars.clone();
@@ -175,17 +182,26 @@ async fn wrap_stream_with_usage_tracking(
     let client_id_for_then = client_id.clone();
     let rate_limiter_for_then = rate_limiter.clone();
 
-    let wrapped = stream.inspect(move |chunk_result| {
-        if let Ok(chunk) = chunk_result {
-            // Count content characters in this chunk
-            for choice in &chunk.choices {
-                if let Some(content) = &choice.delta.content {
-                    let char_count = content.len() as u64;
-                    completion_chars_for_inspect.fetch_add(char_count, Ordering::Relaxed);
+    let wrapped = stream
+        .map(move |chunk_result| {
+            // Inject the resolved model name into each chunk
+            chunk_result.map(|mut chunk| {
+                chunk.model = resolved_model_for_map.clone();
+                chunk
+            })
+        })
+        .inspect(move |chunk_result| {
+            if let Ok(chunk) = chunk_result {
+                // Count content characters in this chunk
+                for choice in &chunk.choices {
+                    if let Some(content) = &choice.delta.content {
+                        let char_count = content.len() as u64;
+                        completion_chars_for_inspect.fetch_add(char_count, Ordering::Relaxed);
+                    }
                 }
             }
-        }
-    }).then(move |chunk_result| {
+        })
+        .then(move |chunk_result| {
         let client_id = client_id_for_then.clone();
         let rate_limiter = rate_limiter_for_then.clone();
         let completion_chars = completion_chars_for_then.clone();
@@ -938,9 +954,11 @@ impl Router {
                         "Auto-routing streaming succeeded with {}/{}",
                         provider, model
                     );
+                    let resolved_model = format!("{}/{}", provider, model);
                     return Ok(wrap_stream_with_usage_tracking(
                         stream,
                         client_id.to_string(),
+                        resolved_model,
                         self.rate_limiter.clone(),
                     )
                     .await);
@@ -1212,11 +1230,13 @@ impl Router {
                 .get_provider(&provider)
                 .ok_or_else(|| AppError::Router(format!("Provider '{}' not found", provider)))?;
             let mut modified_request = request.clone();
-            modified_request.model = model;
+            modified_request.model = model.clone();
             let stream = provider_instance.stream_complete(modified_request).await?;
+            let resolved_model = format!("{}/{}", provider, model);
             return Ok(wrap_stream_with_usage_tracking(
                 stream,
                 client_id.to_string(),
+                resolved_model,
                 self.rate_limiter.clone(),
             )
             .await);
@@ -1268,11 +1288,13 @@ impl Router {
             .ok_or_else(|| AppError::Router(format!("Provider '{}' not found", final_provider)))?;
 
         let mut modified_request = request.clone();
-        modified_request.model = final_model;
+        modified_request.model = final_model.clone();
         let stream = provider_instance.stream_complete(modified_request).await?;
+        let resolved_model = format!("{}/{}", final_provider, final_model);
         Ok(wrap_stream_with_usage_tracking(
             stream,
             client_id.to_string(),
+            resolved_model,
             self.rate_limiter.clone(),
         )
         .await)

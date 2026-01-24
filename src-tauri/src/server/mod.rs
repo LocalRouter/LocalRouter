@@ -20,7 +20,7 @@ use axum::{
     http::{header, Method, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
-    routing::{delete, get, post},
+    routing::{get, post},
     Router,
 };
 use tokio::net::TcpListener;
@@ -156,9 +156,16 @@ pub async fn start_server(
 fn build_app(state: AppState, enable_cors: bool) -> Router {
     // Build MCP routes with client auth middleware
     // MCP routes: unified gateway at root (/), individual servers under /mcp
+    // GET returns SSE if Accept: text/event-stream, otherwise API info
     let mcp_routes = Router::new()
-        .route("/", post(routes::mcp_gateway_handler)) // Unified MCP gateway at root (POST /)
-        .route("/mcp", post(routes::mcp_gateway_handler)) // Alias: /mcp also serves unified gateway
+        .route(
+            "/",
+            get(routes::mcp_gateway_get_handler).post(routes::mcp_gateway_handler),
+        ) // Unified MCP gateway: GET for SSE/info, POST for JSON-RPC
+        .route(
+            "/mcp",
+            get(routes::mcp_gateway_get_handler).post(routes::mcp_gateway_handler),
+        ) // Alias: /mcp also serves unified gateway
         .route(
             "/mcp/:server_id",
             get(routes::mcp_server_sse_handler).post(routes::mcp_server_handler),
@@ -173,39 +180,6 @@ fn build_app(state: AppState, enable_cors: bool) -> Router {
             "/mcp/elicitation/respond/:request_id",
             post(routes::elicitation_response_handler), // Submit elicitation responses
         )
-        // SSE streaming gateway endpoints
-        .route(
-            "/gateway/stream",
-            post(routes::initialize_streaming_session),
-        ) // Initialize SSE session
-        .route(
-            "/mcp/gateway/stream",
-            post(routes::initialize_streaming_session),
-        ) // Alias: /mcp/gateway/stream
-        .route(
-            "/gateway/stream/:session_id",
-            get(routes::streaming_event_handler),
-        ) // SSE event stream
-        .route(
-            "/mcp/gateway/stream/:session_id",
-            get(routes::streaming_event_handler),
-        ) // Alias
-        .route(
-            "/gateway/stream/:session_id/request",
-            post(routes::send_streaming_request),
-        ) // Send request
-        .route(
-            "/mcp/gateway/stream/:session_id/request",
-            post(routes::send_streaming_request),
-        ) // Alias
-        .route(
-            "/gateway/stream/:session_id",
-            delete(routes::close_streaming_session),
-        ) // Close session
-        .route(
-            "/mcp/gateway/stream/:session_id",
-            delete(routes::close_streaming_session),
-        ) // Alias
         .layer(axum::middleware::from_fn(
             middleware::client_auth::client_auth_middleware,
         ))
@@ -224,9 +198,9 @@ fn build_app(state: AppState, enable_cors: bool) -> Router {
 
     // Build the Axum router with all routes
     // Support both /v1 prefix and without for OpenAI compatibility
+    // Note: GET / is handled by mcp_gateway_get_handler in mcp_routes (content negotiation)
     let mut router = Router::new()
         .route("/health", get(health_check))
-        .route("/", get(root_handler))
         // OpenAPI specification endpoints
         .route("/openapi.json", get(serve_openapi_json))
         .route("/openapi.yaml", get(serve_openapi_yaml))
@@ -302,40 +276,6 @@ fn build_app(state: AppState, enable_cors: bool) -> Router {
 )]
 async fn health_check() -> StatusCode {
     StatusCode::OK
-}
-
-/// Root handler
-#[utoipa::path(
-    get,
-    path = "/",
-    tag = "system",
-    responses(
-        (status = 200, description = "API information", content_type = "text/plain")
-    )
-)]
-async fn root_handler() -> &'static str {
-    "LocalRouter AI - Unified OpenAI & MCP API Gateway\n\
-     \n\
-     OpenAI Endpoints (both /v1 prefix and without are supported):\n\
-       POST /v1/chat/completions or /chat/completions\n\
-       POST /v1/completions or /completions\n\
-       POST /v1/embeddings or /embeddings\n\
-       GET  /v1/models or /models\n\
-       GET  /v1/models/{id} or /models/{id}\n\
-       GET  /v1/models/{provider}/{model}/pricing or /models/{provider}/{model}/pricing\n\
-       GET  /v1/generation?id={id} or /generation?id={id}\n\
-     \n\
-     MCP Endpoints:\n\
-       POST /                       - Unified MCP gateway (all servers)\n\
-       POST /mcp/{server_id}        - Individual MCP server proxy\n\
-       POST /mcp/{server_id}/stream - Streaming MCP endpoint (SSE)\n\
-       GET  /ws                     - WebSocket real-time notifications\n\
-     \n\
-     Documentation:\n\
-       GET  /openapi.json - OpenAPI specification (JSON)\n\
-       GET  /openapi.yaml - OpenAPI specification (YAML)\n\
-     \n\
-     Authentication: Include 'Authorization: Bearer <your-token>' header\n"
 }
 
 /// Serve OpenAPI specification as JSON

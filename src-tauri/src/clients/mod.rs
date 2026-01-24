@@ -104,8 +104,12 @@ impl ClientManager {
                 AppError::Config(format!("Failed to store client secret in keychain: {}", e))
             })?;
 
-        // Add to in-memory storage
-        self.clients.write().push(client);
+        // Add to in-memory storage only if not already present
+        // (sync_clients may have already added it via ConfigManager callback)
+        let mut clients = self.clients.write();
+        if !clients.iter().any(|c| c.id == client.id) {
+            clients.push(client);
+        }
 
         Ok(secret)
     }

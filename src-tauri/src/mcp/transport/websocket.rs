@@ -241,6 +241,9 @@ impl Transport for WebSocketTransport {
             return Err(AppError::Mcp("Transport is closed".to_string()));
         }
 
+        // Store the original request ID to restore in response
+        let original_request_id = request.id.clone();
+
         // Always generate a unique request ID to avoid collisions
         // This prevents race conditions when concurrent requests might have the same ID
         let request_id = {
@@ -296,7 +299,7 @@ impl Transport for WebSocketTransport {
         }
 
         // Wait for response (with timeout)
-        let response = tokio::time::timeout(std::time::Duration::from_secs(30), rx)
+        let mut response = tokio::time::timeout(std::time::Duration::from_secs(30), rx)
             .await
             .map_err(|_| {
                 self.pending.write().remove(&request_id);
@@ -306,6 +309,8 @@ impl Transport for WebSocketTransport {
                 AppError::Mcp(format!("Response channel closed for ID: {}", request_id))
             })?;
 
+        // Restore original request ID in response
+        response.id = original_request_id.unwrap_or(Value::Null);
         Ok(response)
     }
 

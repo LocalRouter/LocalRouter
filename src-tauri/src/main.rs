@@ -716,6 +716,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::get_all_mcp_server_health,
             ui::commands::update_mcp_server_name,
             ui::commands::update_mcp_server_config,
+            ui::commands::update_mcp_server,
             ui::commands::toggle_mcp_server_enabled,
             ui::commands::list_mcp_tools,
             ui::commands::call_mcp_tool,

@@ -68,7 +68,7 @@ mod tests {
             ("github".to_string(), vec![tool2]),
         ];
 
-        let merged = merger::merge_tools(server_tools, &[]);
+        let merged = merger::merge_tools(server_tools, &[], None);
 
         assert_eq!(merged.len(), 2);
         assert_eq!(merged[0].name, "filesystem__read_file");
@@ -100,7 +100,7 @@ mod tests {
             ("github".to_string(), vec![resource2]),
         ];
 
-        let merged = merger::merge_resources(server_resources, &[]);
+        let merged = merger::merge_resources(server_resources, &[], None);
 
         assert_eq!(merged.len(), 2);
         assert_eq!(merged[0].name, "filesystem__config");
@@ -128,7 +128,7 @@ mod tests {
             ("github".to_string(), vec![prompt2]),
         ];
 
-        let merged = merger::merge_prompts(server_prompts, &[]);
+        let merged = merger::merge_prompts(server_prompts, &[], None);
 
         assert_eq!(merged.len(), 2);
         assert_eq!(merged[0].name, "git__commit_template");

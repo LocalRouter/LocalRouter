@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 use super::types::*;
@@ -73,6 +73,10 @@ pub struct GatewaySession {
     /// Filesystem roots for this session (advisory boundaries)
     /// Merged from global config + per-client overrides
     pub roots: Vec<Root>,
+
+    /// Subscribed resource URIs (uri -> server_id)
+    /// Tracks which resources this session has subscribed to for change notifications
+    pub subscribed_resources: HashMap<String, String>,
 }
 
 impl GatewaySession {
@@ -115,6 +119,7 @@ impl GatewaySession {
             last_broadcast_failures: Vec::new(),
             resources_list_fetched: false,
             roots,
+            subscribed_resources: HashMap::new(),
         }
     }
 
@@ -225,6 +230,58 @@ impl GatewaySession {
             })
             .collect()
     }
+
+    /// Subscribe to a resource
+    ///
+    /// # Arguments
+    /// * `uri` - The resource URI to subscribe to
+    /// * `server_id` - The server that owns this resource
+    ///
+    /// # Returns
+    /// * `true` if this is a new subscription
+    /// * `false` if already subscribed
+    pub fn subscribe_resource(&mut self, uri: String, server_id: String) -> bool {
+        if self.subscribed_resources.contains_key(&uri) {
+            false
+        } else {
+            self.subscribed_resources.insert(uri, server_id);
+            true
+        }
+    }
+
+    /// Unsubscribe from a resource
+    ///
+    /// # Arguments
+    /// * `uri` - The resource URI to unsubscribe from
+    ///
+    /// # Returns
+    /// * `Some(server_id)` if was subscribed
+    /// * `None` if was not subscribed
+    pub fn unsubscribe_resource(&mut self, uri: &str) -> Option<String> {
+        self.subscribed_resources.remove(uri)
+    }
+
+    /// Check if subscribed to a resource
+    pub fn is_subscribed(&self, uri: &str) -> bool {
+        self.subscribed_resources.contains_key(uri)
+    }
+
+    /// Get all subscribed resources for a specific server
+    pub fn get_subscriptions_for_server(&self, server_id: &str) -> Vec<String> {
+        self.subscribed_resources
+            .iter()
+            .filter(|(_, sid)| *sid == server_id)
+            .map(|(uri, _)| uri.clone())
+            .collect()
+    }
+
+    /// Get all subscribed resources
+    pub fn get_all_subscriptions(&self) -> Vec<(String, String)> {
+        self.subscribed_resources
+            .iter()
+            .map(|(uri, server_id)| (uri.clone(), server_id.clone()))
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -322,5 +379,73 @@ mod tests {
 
         assert!(session.cached_tools.is_none());
         assert!(session.cached_resources.is_none());
+    }
+
+    #[test]
+    fn test_resource_subscription() {
+        let mut session = GatewaySession::new(
+            "client-123".to_string(),
+            vec!["filesystem".to_string()],
+            Duration::from_secs(3600),
+            300,
+            Vec::new(),
+            false,
+        );
+
+        // Subscribe to a resource
+        let is_new = session.subscribe_resource(
+            "file:///home/user/config.json".to_string(),
+            "filesystem".to_string(),
+        );
+        assert!(is_new);
+        assert!(session.is_subscribed("file:///home/user/config.json"));
+
+        // Subscribe again (should return false)
+        let is_new = session.subscribe_resource(
+            "file:///home/user/config.json".to_string(),
+            "filesystem".to_string(),
+        );
+        assert!(!is_new);
+
+        // Unsubscribe
+        let server_id = session.unsubscribe_resource("file:///home/user/config.json");
+        assert_eq!(server_id, Some("filesystem".to_string()));
+        assert!(!session.is_subscribed("file:///home/user/config.json"));
+
+        // Unsubscribe again (should return None)
+        let server_id = session.unsubscribe_resource("file:///home/user/config.json");
+        assert_eq!(server_id, None);
+    }
+
+    #[test]
+    fn test_get_subscriptions_for_server() {
+        let mut session = GatewaySession::new(
+            "client-123".to_string(),
+            vec!["filesystem".to_string(), "github".to_string()],
+            Duration::from_secs(3600),
+            300,
+            Vec::new(),
+            false,
+        );
+
+        // Subscribe to resources from different servers
+        session.subscribe_resource("file:///config.json".to_string(), "filesystem".to_string());
+        session.subscribe_resource("file:///data.json".to_string(), "filesystem".to_string());
+        session.subscribe_resource("github://repo/file".to_string(), "github".to_string());
+
+        // Get subscriptions for filesystem
+        let fs_subs = session.get_subscriptions_for_server("filesystem");
+        assert_eq!(fs_subs.len(), 2);
+        assert!(fs_subs.contains(&"file:///config.json".to_string()));
+        assert!(fs_subs.contains(&"file:///data.json".to_string()));
+
+        // Get subscriptions for github
+        let gh_subs = session.get_subscriptions_for_server("github");
+        assert_eq!(gh_subs.len(), 1);
+        assert!(gh_subs.contains(&"github://repo/file".to_string()));
+
+        // Get all subscriptions
+        let all_subs = session.get_all_subscriptions();
+        assert_eq!(all_subs.len(), 3);
     }
 }

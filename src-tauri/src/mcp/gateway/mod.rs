@@ -11,7 +11,6 @@ mod merger;
 pub mod router;
 pub mod sampling;
 pub mod session;
-pub mod streaming;
 pub mod streaming_notifications;
 pub mod types;
 

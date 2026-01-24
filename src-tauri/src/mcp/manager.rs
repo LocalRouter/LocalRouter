@@ -22,6 +22,18 @@ use std::sync::Arc;
 /// Receives the server_id and the notification.
 pub type NotificationCallback = Arc<dyn Fn(String, JsonRpcNotification) + Send + Sync>;
 
+/// Notification handler with unique ID for removal
+#[derive(Clone)]
+pub struct NotificationHandler {
+    /// Unique handler ID
+    pub id: u64,
+    /// The callback function
+    pub callback: NotificationCallback,
+}
+
+/// Handler ID for tracking and removal
+pub type HandlerId = u64;
+
 /// MCP server manager
 ///
 /// Manages the lifecycle of MCP server instances.
@@ -44,8 +56,11 @@ pub struct McpServerManager {
     /// OAuth manager for MCP servers
     oauth_manager: Arc<McpOAuthManager>,
 
-    /// Notification handlers (server_id -> list of callbacks)
-    notification_handlers: Arc<DashMap<String, Vec<NotificationCallback>>>,
+    /// Notification handlers (server_id -> list of handlers with IDs)
+    notification_handlers: Arc<DashMap<String, Vec<NotificationHandler>>>,
+
+    /// Next handler ID (atomic counter)
+    next_handler_id: Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// Health status for an MCP server
@@ -87,6 +102,7 @@ impl McpServerManager {
             configs: Arc::new(DashMap::new()),
             oauth_manager: Arc::new(McpOAuthManager::new()),
             notification_handlers: Arc::new(DashMap::new()),
+            next_handler_id: Arc::new(std::sync::atomic::AtomicU64::new(1)),
         }
     }
 
@@ -96,12 +112,57 @@ impl McpServerManager {
     /// * `server_id` - The server ID to register the handler for
     /// * `callback` - The callback to invoke when notifications are received
     ///
+    /// # Returns
+    /// * `HandlerId` - A unique ID that can be used to remove this handler later
+    ///
     /// Note: Multiple handlers can be registered for the same server.
-    pub fn on_notification(&self, server_id: &str, callback: NotificationCallback) {
+    pub fn on_notification(&self, server_id: &str, callback: NotificationCallback) -> HandlerId {
+        let id = self
+            .next_handler_id
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+        let handler = NotificationHandler { id, callback };
+
         self.notification_handlers
             .entry(server_id.to_string())
             .or_default()
-            .push(callback);
+            .push(handler);
+
+        id
+    }
+
+    /// Remove a notification handler by ID
+    ///
+    /// # Arguments
+    /// * `server_id` - The server ID the handler was registered for
+    /// * `handler_id` - The handler ID returned from `on_notification`
+    ///
+    /// # Returns
+    /// * `true` if the handler was found and removed
+    /// * `false` if the handler was not found
+    pub fn remove_notification_handler(&self, server_id: &str, handler_id: HandlerId) -> bool {
+        if let Some(mut handlers) = self.notification_handlers.get_mut(server_id) {
+            let initial_len = handlers.len();
+            handlers.retain(|h| h.id != handler_id);
+            handlers.len() < initial_len
+        } else {
+            false
+        }
+    }
+
+    /// Remove all notification handlers for a server
+    ///
+    /// # Arguments
+    /// * `server_id` - The server ID to remove handlers for
+    ///
+    /// # Returns
+    /// * Number of handlers removed
+    pub fn clear_notification_handlers(&self, server_id: &str) -> usize {
+        if let Some((_, handlers)) = self.notification_handlers.remove(server_id) {
+            handlers.len()
+        } else {
+            0
+        }
     }
 
     /// Dispatch a notification to all registered handlers
@@ -112,7 +173,7 @@ impl McpServerManager {
     pub(crate) fn dispatch_notification(&self, server_id: &str, notification: JsonRpcNotification) {
         if let Some(handlers) = self.notification_handlers.get(server_id) {
             for handler in handlers.iter() {
-                handler(server_id.to_string(), notification.clone());
+                (handler.callback)(server_id.to_string(), notification.clone());
             }
         }
     }
