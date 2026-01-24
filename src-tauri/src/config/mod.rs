@@ -375,6 +375,10 @@ pub struct AppConfig {
     /// Streaming session configuration
     #[serde(default)]
     pub streaming: StreamingConfig,
+
+    /// Whether the setup wizard has been shown (first-run detection)
+    #[serde(default)]
+    pub setup_wizard_shown: bool,
 }
 
 /// Pricing override for a specific model
@@ -751,10 +755,12 @@ pub enum McpTransportType {
 pub enum McpTransportConfig {
     /// STDIO process configuration
     Stdio {
-        /// Command to execute
+        /// Full command to execute (parsed using shell-words at runtime)
+        /// Example: "npx -y @modelcontextprotocol/server-filesystem /tmp"
         command: String,
-        /// Command arguments
-        #[serde(default)]
+        /// Legacy: Command arguments (deprecated, use command string instead)
+        /// Kept for backward compatibility with existing configs
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
         args: Vec<String>,
         /// Base environment variables (auth env vars go in McpAuthConfig::EnvVars)
         #[serde(default)]
@@ -789,6 +795,43 @@ pub enum McpTransportConfig {
         #[serde(default)]
         headers: std::collections::HashMap<String, String>,
     },
+}
+
+impl McpTransportConfig {
+    /// Parse STDIO command into executable and arguments.
+    ///
+    /// Supports two formats for backward compatibility:
+    /// 1. New format: Single command string parsed using shell-words
+    ///    Example: "npx -y @modelcontextprotocol/server-filesystem /tmp"
+    /// 2. Legacy format: Separate command + args fields
+    ///
+    /// Returns (executable, args, env) or error if parsing fails.
+    pub fn parse_stdio_command(
+        &self,
+    ) -> Result<(String, Vec<String>, std::collections::HashMap<String, String>), String> {
+        match self {
+            McpTransportConfig::Stdio { command, args, env } => {
+                // If legacy args are provided, use them directly
+                if !args.is_empty() {
+                    return Ok((command.clone(), args.clone(), env.clone()));
+                }
+
+                // Parse the command string using shell-words
+                let parts = shell_words::split(command)
+                    .map_err(|e| format!("Failed to parse command '{}': {}", command, e))?;
+
+                if parts.is_empty() {
+                    return Err("Command is empty".to_string());
+                }
+
+                let executable = parts[0].clone();
+                let parsed_args = parts[1..].to_vec();
+
+                Ok((executable, parsed_args, env.clone()))
+            }
+            _ => Err("Not a STDIO transport".to_string()),
+        }
+    }
 }
 
 /// OAuth configuration for MCP server (auto-discovered)
@@ -1524,6 +1567,7 @@ impl Default for AppConfig {
             model_cache: ModelCacheConfig::default(),
             roots: Vec::new(),
             streaming: StreamingConfig::default(),
+            setup_wizard_shown: false,
         }
     }
 }

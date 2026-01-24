@@ -755,19 +755,74 @@ impl McpGateway {
         let allowed_servers = session_read.allowed_servers.clone();
         drop(session_read);
 
-        // Ensure all servers are started
+        // Try to start all servers, collecting failures
+        // We continue even if some servers fail to start
+        let mut start_failures: Vec<ServerFailure> = Vec::new();
+        let mut started_servers: Vec<String> = Vec::new();
+
         for server_id in &allowed_servers {
-            if !self.server_manager.is_running(server_id) {
-                self.server_manager.start_server(server_id).await?;
+            if self.server_manager.is_running(server_id) {
+                started_servers.push(server_id.clone());
+                continue;
+            }
+
+            match self.server_manager.start_server(server_id).await {
+                Ok(()) => {
+                    started_servers.push(server_id.clone());
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to start MCP server {} during gateway initialization: {}",
+                        server_id,
+                        e
+                    );
+                    start_failures.push(ServerFailure {
+                        server_id: server_id.clone(),
+                        error: e.to_string(),
+                    });
+                }
             }
         }
 
-        // Broadcast initialize to all servers
+        // If no servers could be started, fail immediately
+        if started_servers.is_empty() {
+            let error_summary = start_failures
+                .iter()
+                .map(|f| format!("{}: {}", f.server_id, f.error))
+                .collect::<Vec<_>>()
+                .join("; ");
+            return Err(AppError::Mcp(format!(
+                "All MCP servers failed to start: {}",
+                error_summary
+            )));
+        }
+
+        // Update session to only include successfully started servers
+        if !start_failures.is_empty() {
+            let mut session_write = session.write().await;
+            session_write.allowed_servers = started_servers.clone();
+            // Remove init status for failed servers
+            for failure in &start_failures {
+                session_write.server_init_status.remove(&failure.server_id);
+            }
+            drop(session_write);
+            tracing::info!(
+                "Gateway proceeding with {} of {} servers ({} failed to start)",
+                started_servers.len(),
+                allowed_servers.len(),
+                start_failures.len()
+            );
+        }
+
+        // Use only the successfully started servers for broadcast
+        let servers_to_initialize = started_servers;
+
+        // Broadcast initialize to all successfully started servers
         let timeout = Duration::from_secs(self.config.server_timeout_seconds);
         let max_retries = self.config.max_retry_attempts;
 
         let results = broadcast_request(
-            &allowed_servers,
+            &servers_to_initialize,
             request.clone(),
             &self.server_manager,
             timeout,
@@ -776,7 +831,10 @@ impl McpGateway {
         .await;
 
         // Separate successes and failures
-        let (successes, failures) = separate_results(results);
+        let (successes, mut failures) = separate_results(results);
+
+        // Include servers that failed to start in the failures list
+        failures.extend(start_failures);
 
         // Parse initialize results
         let init_results: Vec<(String, InitializeResult)> = successes
@@ -801,7 +859,7 @@ impl McpGateway {
             )));
         }
 
-        // Merge results
+        // Merge results (includes both start failures and initialize failures)
         let merged = merge_initialize_results(init_results, failures);
 
         // Store capabilities in session
@@ -843,17 +901,32 @@ impl McpGateway {
                     client_id_for_log
                 );
 
-                // Ensure servers are started
+                // Note: Servers should already be started from the initialization phase above.
+                // The allowed_servers_for_deferred list only contains successfully started servers.
+                // We skip any that may have stopped in the meantime.
+                let mut active_servers = Vec::new();
                 for server_id in &allowed_servers_for_deferred {
-                    if !self.server_manager.is_running(server_id) {
-                        self.server_manager.start_server(server_id).await?;
+                    if self.server_manager.is_running(server_id) {
+                        active_servers.push(server_id.clone());
+                    } else {
+                        // Try to restart if needed, but don't fail the whole operation
+                        match self.server_manager.start_server(server_id).await {
+                            Ok(()) => active_servers.push(server_id.clone()),
+                            Err(e) => {
+                                tracing::warn!(
+                                    "Failed to start server {} for deferred loading catalog: {}",
+                                    server_id,
+                                    e
+                                );
+                            }
+                        }
                     }
                 }
 
-                // Fetch full catalog from all backend servers
+                // Fetch full catalog from active backend servers
                 let (tools, _) = self
                     .fetch_and_merge_tools(
-                        &allowed_servers_for_deferred,
+                        &active_servers,
                         JsonRpcRequest::new(
                             Some(serde_json::json!(1)),
                             "tools/list".to_string(),
@@ -865,7 +938,7 @@ impl McpGateway {
 
                 let (resources, _) = self
                     .fetch_and_merge_resources(
-                        &allowed_servers_for_deferred,
+                        &active_servers,
                         JsonRpcRequest::new(
                             Some(serde_json::json!(2)),
                             "resources/list".to_string(),
@@ -877,7 +950,7 @@ impl McpGateway {
 
                 let (prompts, _) = self
                     .fetch_and_merge_prompts(
-                        &allowed_servers_for_deferred,
+                        &active_servers,
                         JsonRpcRequest::new(
                             Some(serde_json::json!(3)),
                             "prompts/list".to_string(),

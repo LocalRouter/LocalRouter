@@ -75,6 +75,10 @@ pub struct McpServerHealth {
     /// Health status
     pub status: HealthStatus,
 
+    /// Latency in milliseconds (for running servers)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_ms: Option<u64>,
+
     /// Error message (if unhealthy)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -87,8 +91,13 @@ pub struct McpServerHealth {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum HealthStatus {
+    /// Server is running and responding
     Healthy,
+    /// Server is not running but ready to start (command exists for STDIO)
+    Ready,
+    /// Server is unhealthy or cannot start
     Unhealthy,
+    /// Status unknown
     Unknown,
 }
 
@@ -279,17 +288,11 @@ impl McpServerManager {
 
     /// Start a STDIO MCP server
     async fn start_stdio_server(&self, server_id: &str, config: &McpServerConfig) -> AppResult<()> {
-        // Extract STDIO config
-        let (command, args, mut env) = match &config.transport_config {
-            McpTransportConfig::Stdio { command, args, env } => {
-                (command.clone(), args.clone(), env.clone())
-            }
-            _ => {
-                return Err(AppError::Mcp(
-                    "Invalid transport config for STDIO".to_string(),
-                ))
-            }
-        };
+        // Parse STDIO command using shell-words (handles both new single-command and legacy formats)
+        let (command, args, mut env) = config
+            .transport_config
+            .parse_stdio_command()
+            .map_err(|e| AppError::Mcp(e))?;
 
         // Merge auth config environment variables (if specified)
         if let Some(crate::config::McpAuthConfig::EnvVars { env: auth_env }) = &config.auth_config {
@@ -797,36 +800,44 @@ impl McpServerManager {
     /// * The health status
     pub async fn get_server_health(&self, server_id: &str) -> McpServerHealth {
         let config = self.get_config(server_id);
+        let start = std::time::Instant::now();
 
-        let (status, error) = if let Some(transport) = self.stdio_transports.get(server_id) {
+        let (status, latency_ms, error) = if let Some(transport) = self.stdio_transports.get(server_id) {
+            // STDIO doesn't have meaningful latency (no network)
             if transport.is_alive() {
-                (HealthStatus::Healthy, None)
+                (HealthStatus::Healthy, None, None)
             } else {
                 (
                     HealthStatus::Unhealthy,
+                    None,
                     Some("Process not running".to_string()),
                 )
             }
         } else if let Some(transport) = self.sse_transports.get(server_id) {
+            let latency = start.elapsed().as_millis() as u64;
             if transport.is_healthy() {
-                (HealthStatus::Healthy, None)
+                (HealthStatus::Healthy, Some(latency), None)
             } else {
                 (
                     HealthStatus::Unhealthy,
+                    None,
                     Some("SSE connection lost".to_string()),
                 )
             }
         } else if let Some(transport) = self.websocket_transports.get(server_id) {
+            let latency = start.elapsed().as_millis() as u64;
             if transport.is_healthy() {
-                (HealthStatus::Healthy, None)
+                (HealthStatus::Healthy, Some(latency), None)
             } else {
                 (
                     HealthStatus::Unhealthy,
+                    None,
                     Some("WebSocket connection lost".to_string()),
                 )
             }
         } else {
-            (HealthStatus::Unhealthy, Some("Not started".to_string()))
+            // Server not running - check if it's ready to start
+            self.check_server_readiness(&config).await
         };
 
         McpServerHealth {
@@ -835,8 +846,331 @@ impl McpServerManager {
                 .map(|c| c.name)
                 .unwrap_or_else(|| "Unknown".to_string()),
             status,
+            latency_ms,
             error,
             last_check: chrono::Utc::now(),
+        }
+    }
+
+    /// Check if a non-running server is ready to start
+    ///
+    /// For STDIO servers: attempts to spawn the command briefly to verify it can run
+    /// For SSE/WebSocket servers: returns "Not started" status
+    async fn check_server_readiness(
+        &self,
+        config: &Option<McpServerConfig>,
+    ) -> (HealthStatus, Option<u64>, Option<String>) {
+        let Some(config) = config else {
+            return (HealthStatus::Unknown, None, Some("Server not configured".to_string()));
+        };
+
+        match &config.transport_config {
+            McpTransportConfig::Stdio { .. } => {
+                // Parse the command using shell-words
+                let (command, args, env) = match config.transport_config.parse_stdio_command() {
+                    Ok(parsed) => parsed,
+                    Err(e) => return (HealthStatus::Unhealthy, None, Some(e)),
+                };
+                // Try to spawn the command briefly to verify it can run
+                // Don't report latency for STDIO - it's not meaningful (not network latency)
+                match Self::try_spawn_command(&command, &args, &env).await {
+                    Ok(_) => (HealthStatus::Ready, None, Some("Not started".to_string())),
+                    Err(e) => (HealthStatus::Unhealthy, None, Some(e)),
+                }
+            }
+            McpTransportConfig::Sse { url, .. } | McpTransportConfig::HttpSse { url, .. } => {
+                // Try an HTTP HEAD request to check connectivity and measure latency
+                Self::check_http_endpoint(url).await
+            }
+            McpTransportConfig::WebSocket { url, .. } => {
+                // For WebSocket, try HTTP endpoint first (many WS servers also respond to HTTP)
+                // Convert ws:// to http:// or wss:// to https://
+                let http_url = url
+                    .replace("ws://", "http://")
+                    .replace("wss://", "https://");
+                Self::check_http_endpoint(&http_url).await
+            }
+        }
+    }
+
+    /// Try to spawn a command and wait for it to produce output
+    ///
+    /// This verifies the command can actually run (including npx downloads).
+    /// Returns Ok(latency_ms) if the command starts and produces output, Err(message) otherwise.
+    async fn try_spawn_command(
+        command: &str,
+        args: &[String],
+        env: &std::collections::HashMap<String, String>,
+    ) -> Result<u64, String> {
+        let start = std::time::Instant::now();
+        const TIMEOUT_SECS: u64 = 60; // Allow time for npx downloads
+
+        // Build the command
+        let mut cmd = tokio::process::Command::new(command);
+        cmd.args(args)
+            .envs(env.iter())
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+
+        // Try to spawn
+        let mut child = match cmd.spawn() {
+            Ok(child) => child,
+            Err(e) => {
+                return Err(match e.kind() {
+                    std::io::ErrorKind::NotFound => format!("Command not found: {}", command),
+                    std::io::ErrorKind::PermissionDenied => format!("Permission denied: {}", command),
+                    _ => format!("Failed to spawn: {}", e),
+                });
+            }
+        };
+
+        let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
+
+        // Wait for either:
+        // 1. Any output on stdout (MCP server is running)
+        // 2. Any output on stderr (could be error or npx progress)
+        // 3. Process exit
+        // 4. Timeout
+        let result = tokio::time::timeout(
+            tokio::time::Duration::from_secs(TIMEOUT_SECS),
+            Self::wait_for_output_or_exit(&mut child, stdout, stderr),
+        )
+        .await;
+
+        let latency = start.elapsed().as_millis() as u64;
+
+        // Always try to kill the child process
+        let _ = child.kill().await;
+
+        match result {
+            Ok(Ok(())) => {
+                // Got output - server can start
+                Ok(latency)
+            }
+            Ok(Err(e)) => {
+                // Process exited with error
+                Err(e)
+            }
+            Err(_) => {
+                // Timeout - process is still running but no output
+                // This is unusual but not necessarily an error
+                Err(format!("Timeout after {}s waiting for response", TIMEOUT_SECS))
+            }
+        }
+    }
+
+    /// Wait for stdout/stderr output or process exit
+    async fn wait_for_output_or_exit(
+        child: &mut tokio::process::Child,
+        stdout: Option<tokio::process::ChildStdout>,
+        stderr: Option<tokio::process::ChildStderr>,
+    ) -> Result<(), String> {
+        use tokio::io::AsyncBufReadExt;
+
+        let stdout_reader = stdout.map(|s| tokio::io::BufReader::new(s));
+        let stderr_reader = stderr.map(|s| tokio::io::BufReader::new(s));
+
+        // Track if we got any successful output
+        let got_output = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let got_output_clone = got_output.clone();
+
+        tokio::select! {
+            // Wait for stdout line
+            result = async {
+                if let Some(mut reader) = stdout_reader {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).await
+                } else {
+                    std::future::pending::<std::io::Result<usize>>().await
+                }
+            } => {
+                match result {
+                    Ok(0) => {
+                        // EOF on stdout - check if we already got stderr output
+                        if got_output.load(std::sync::atomic::Ordering::Relaxed) {
+                            Ok(())
+                        } else {
+                            Err("Process closed stdout".to_string())
+                        }
+                    }
+                    Ok(_) => {
+                        // Got output on stdout - server is running!
+                        Ok(())
+                    }
+                    Err(e) => Err(format!("Failed to read stdout: {}", e)),
+                }
+            }
+
+            // Wait for stderr line (could be error or progress)
+            result = async {
+                if let Some(mut reader) = stderr_reader {
+                    // Read multiple lines to catch errors that come after notices
+                    let mut all_stderr = String::new();
+                    let mut line = String::new();
+
+                    // Read up to 10 lines or until we see a definitive result
+                    for _ in 0..10 {
+                        line.clear();
+                        match tokio::time::timeout(
+                            tokio::time::Duration::from_secs(5),
+                            reader.read_line(&mut line),
+                        ).await {
+                            Ok(Ok(0)) => break, // EOF
+                            Ok(Ok(_)) => {
+                                all_stderr.push_str(&line);
+                                // Check if this line indicates an error
+                                let lower = line.to_lowercase();
+                                if lower.contains("error")
+                                    || lower.contains("fatal")
+                                    || lower.contains("failed")
+                                    || lower.contains("not found")
+                                    || lower.contains("e404")
+                                    || lower.contains("404") {
+                                    return Err(all_stderr);
+                                }
+                                // Check if this line indicates success (server starting)
+                                if line.starts_with('{')
+                                    || lower.contains("listening")
+                                    || lower.contains("started")
+                                    || lower.contains("starting")
+                                    || lower.contains("server")
+                                    || lower.contains("ready") {
+                                    got_output_clone.store(true, std::sync::atomic::Ordering::Relaxed);
+                                    return Ok(all_stderr);
+                                }
+                            }
+                            Ok(Err(e)) => return Err(format!("Read error: {}", e)),
+                            Err(_) => break, // Timeout waiting for more lines
+                        }
+                    }
+                    // Got some output without explicit error - likely success
+                    if !all_stderr.is_empty() {
+                        got_output_clone.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    Ok(all_stderr)
+                } else {
+                    std::future::pending::<Result<String, String>>().await
+                }
+            } => {
+                match result {
+                    Ok(_) => {
+                        // Got stderr output that didn't look like an error
+                        Ok(())
+                    }
+                    Err(stderr_output) => {
+                        // Got stderr with error indication
+                        let first_error_line = stderr_output
+                            .lines()
+                            .find(|l| {
+                                let lower = l.to_lowercase();
+                                lower.contains("error")
+                                    || lower.contains("fatal")
+                                    || lower.contains("failed")
+                                    || lower.contains("not found")
+                            })
+                            .unwrap_or(&stderr_output);
+
+                        let truncated = if first_error_line.len() > 100 {
+                            format!("{}...", &first_error_line[..100])
+                        } else {
+                            first_error_line.to_string()
+                        };
+                        Err(truncated)
+                    }
+                }
+            }
+
+            // Wait for process exit
+            result = child.wait() => {
+                match result {
+                    Ok(status) => {
+                        if status.success() {
+                            // Exited successfully (unusual for MCP servers)
+                            Ok(())
+                        } else {
+                            Err(format!("Exited with code: {}", status))
+                        }
+                    }
+                    Err(e) => Err(format!("Failed to wait for process: {}", e)),
+                }
+            }
+        }
+    }
+
+    /// Check an HTTP endpoint for connectivity and measure latency
+    ///
+    /// Returns (Ready, latency, message) if reachable, (Unhealthy, None, error) if not
+    async fn check_http_endpoint(url: &str) -> (HealthStatus, Option<u64>, Option<String>) {
+        let start = std::time::Instant::now();
+
+        let client = match reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+        {
+            Ok(c) => c,
+            Err(e) => {
+                return (
+                    HealthStatus::Unhealthy,
+                    None,
+                    Some(format!("Failed to create HTTP client: {}", e)),
+                )
+            }
+        };
+
+        // Try a HEAD request first (lightweight), fall back to GET if HEAD fails
+        match client.head(url).send().await {
+            Ok(response) => {
+                let latency = start.elapsed().as_millis() as u64;
+                if response.status().is_success() || response.status().is_redirection() {
+                    (
+                        HealthStatus::Ready,
+                        Some(latency),
+                        Some("Not started".to_string()),
+                    )
+                } else {
+                    // Server responded but with error status
+                    (
+                        HealthStatus::Ready,
+                        Some(latency),
+                        Some(format!("Not started (HTTP {})", response.status())),
+                    )
+                }
+            }
+            Err(e) => {
+                // Try GET as some servers don't support HEAD
+                let start_get = std::time::Instant::now();
+                match client.get(url).send().await {
+                    Ok(response) => {
+                        let latency = start_get.elapsed().as_millis() as u64;
+                        if response.status().is_success() || response.status().is_redirection() {
+                            (
+                                HealthStatus::Ready,
+                                Some(latency),
+                                Some("Not started".to_string()),
+                            )
+                        } else {
+                            (
+                                HealthStatus::Ready,
+                                Some(latency),
+                                Some(format!("Not started (HTTP {})", response.status())),
+                            )
+                        }
+                    }
+                    Err(_) => {
+                        // Both HEAD and GET failed
+                        let error_msg = if e.is_timeout() {
+                            "Connection timeout".to_string()
+                        } else if e.is_connect() {
+                            "Connection refused".to_string()
+                        } else {
+                            format!("Connection failed: {}", e)
+                        };
+                        (HealthStatus::Unhealthy, None, Some(error_msg))
+                    }
+                }
+            }
         }
     }
 
@@ -949,14 +1283,38 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_health_check_not_running() {
+    async fn test_health_check_not_running_valid_command() {
         let manager = McpServerManager::new();
 
+        // echo is a valid command that exits immediately
         let config = McpServerConfig::new(
             "Test Server".to_string(),
             McpTransportType::Stdio,
             McpTransportConfig::Stdio {
                 command: "echo".to_string(),
+                args: vec!["hello".to_string()],
+                env: HashMap::new(),
+            },
+        );
+
+        let server_id = config.id.clone();
+        manager.add_config(config);
+
+        let health = manager.get_server_health(&server_id).await;
+        // echo outputs "hello" and exits successfully, so it should be Ready
+        assert_eq!(health.status, HealthStatus::Ready);
+    }
+
+    #[tokio::test]
+    async fn test_health_check_invalid_command() {
+        let manager = McpServerManager::new();
+
+        // nonexistent command should fail
+        let config = McpServerConfig::new(
+            "Test Server".to_string(),
+            McpTransportType::Stdio,
+            McpTransportConfig::Stdio {
+                command: "this-command-definitely-does-not-exist-12345".to_string(),
                 args: vec![],
                 env: HashMap::new(),
             },
@@ -968,5 +1326,75 @@ mod tests {
         let health = manager.get_server_health(&server_id).await;
         assert_eq!(health.status, HealthStatus::Unhealthy);
         assert!(health.error.is_some());
+        assert!(health.error.unwrap().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn test_try_spawn_command_valid() {
+        // Test with a simple command that produces output
+        let result = McpServerManager::try_spawn_command(
+            "echo",
+            &["test output".to_string()],
+            &HashMap::new(),
+        )
+        .await;
+
+        assert!(result.is_ok(), "echo should succeed: {:?}", result);
+    }
+
+    #[tokio::test]
+    async fn test_try_spawn_command_not_found() {
+        // Test with a nonexistent command
+        let result = McpServerManager::try_spawn_command(
+            "this-command-definitely-does-not-exist-xyz",
+            &[],
+            &HashMap::new(),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("not found") || err.contains("No such file"),
+            "Error should mention command not found: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    #[ignore] // This test requires npx/npm to be installed
+    async fn test_try_spawn_npx_valid_package() {
+        // Test with a real MCP server package
+        // This will download the package if not cached, so it may take a while
+        let result = McpServerManager::try_spawn_command(
+            "npx",
+            &["-y".to_string(), "@modelcontextprotocol/server-everything".to_string()],
+            &HashMap::new(),
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "npx @modelcontextprotocol/server-everything should succeed: {:?}",
+            result
+        );
+    }
+
+    #[tokio::test]
+    #[ignore] // This test requires npx/npm to be installed
+    async fn test_try_spawn_npx_invalid_package() {
+        // Test with a nonexistent npm package
+        let result = McpServerManager::try_spawn_command(
+            "npx",
+            &["-y".to_string(), "@nonexistent/package-that-does-not-exist-12345".to_string()],
+            &HashMap::new(),
+        )
+        .await;
+
+        assert!(
+            result.is_err(),
+            "npx with invalid package should fail: {:?}",
+            result
+        );
     }
 }
