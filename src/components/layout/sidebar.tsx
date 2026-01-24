@@ -2,7 +2,6 @@ import * as React from "react"
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import {
-  LayoutDashboard,
   Users,
   Database,
   Settings,
@@ -39,11 +38,13 @@ interface NavItem {
   shortcut: string
 }
 
-const navItems: NavItem[] = [
-  { id: 'dashboard', icon: LayoutDashboard, label: 'Dashboard', shortcut: '⌘1' },
+const mainNavItems: NavItem[] = [
   { id: 'clients', icon: Users, label: 'Clients', shortcut: '⌘2' },
   { id: 'resources', icon: Database, label: 'LLM Providers', shortcut: '⌘3' },
   { id: 'mcp-servers', icon: ServerCog, label: 'MCP Servers', shortcut: '⌘4' },
+]
+
+const bottomNavItems: NavItem[] = [
   { id: 'try-it-out', icon: FlaskConical, label: 'Try It Out', shortcut: '⌘5' },
   { id: 'settings', icon: Settings, label: 'Settings', shortcut: '⌘6' },
 ]
@@ -138,23 +139,71 @@ export function Sidebar({ activeView, onViewChange }: SidebarProps) {
   return (
     <TooltipProvider delayDuration={0}>
       <aside className="flex h-full w-12 flex-col border-r bg-background">
-        {/* Logo */}
+        {/* Logo - Dashboard */}
         <div className="flex h-12 items-center justify-center border-b">
           <Tooltip>
             <TooltipTrigger asChild>
-              <div className="flex h-8 w-8 items-center justify-center rounded-md bg-primary text-primary-foreground">
+              <button
+                onClick={() => onViewChange('dashboard')}
+                className={cn(
+                  "flex h-8 w-8 items-center justify-center rounded-md transition-colors",
+                  activeView === 'dashboard'
+                    ? "bg-primary text-primary-foreground"
+                    : "bg-primary/80 text-primary-foreground hover:bg-primary"
+                )}
+              >
                 <Router className="h-4 w-4" />
-              </div>
+              </button>
             </TooltipTrigger>
             <TooltipContent side="right" sideOffset={8}>
-              <p className="font-semibold">LocalRouter AI</p>
+              <div className="flex items-center gap-2">
+                <span className="font-semibold">Dashboard</span>
+                <kbd className="ml-auto rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                  ⌘1
+                </kbd>
+              </div>
             </TooltipContent>
           </Tooltip>
         </div>
 
-        {/* Navigation */}
+        {/* Main Navigation */}
         <nav className="flex flex-1 flex-col gap-1 p-2">
-          {navItems.map((item) => {
+          {mainNavItems.map((item) => {
+            const Icon = item.icon
+            const isActive = activeView === item.id
+
+            return (
+              <Tooltip key={item.id}>
+                <TooltipTrigger asChild>
+                  <button
+                    onClick={() => onViewChange(item.id)}
+                    className={cn(
+                      "flex h-8 w-8 items-center justify-center rounded-md transition-colors",
+                      isActive
+                        ? "bg-accent text-accent-foreground"
+                        : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+                    )}
+                  >
+                    <Icon className="h-4 w-4" />
+                    <span className="sr-only">{item.label}</span>
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="right" sideOffset={8}>
+                  <div className="flex items-center gap-2">
+                    <span>{item.label}</span>
+                    <kbd className="ml-auto rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                      {item.shortcut}
+                    </kbd>
+                  </div>
+                </TooltipContent>
+              </Tooltip>
+            )
+          })}
+        </nav>
+
+        {/* Bottom Navigation */}
+        <nav className="flex flex-col gap-1 p-2">
+          {bottomNavItems.map((item) => {
             const Icon = item.icon
             const isActive = activeView === item.id
 
