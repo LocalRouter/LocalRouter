@@ -16,7 +16,7 @@ use uuid::Uuid;
 
 use crate::clients::{ClientManager, TokenStore};
 use crate::config::ConfigManager;
-use crate::mcp::protocol::{JsonRpcNotification, JsonRpcResponse};
+use crate::mcp::protocol::{JsonRpcNotification, JsonRpcRequest, JsonRpcResponse};
 use crate::mcp::{McpGateway, McpServerManager};
 use crate::monitoring::logger::AccessLogger;
 use crate::monitoring::mcp_logger::McpAccessLogger;
@@ -35,6 +35,8 @@ pub enum SseMessage {
     Response(JsonRpcResponse),
     /// JSON-RPC notification from server
     Notification(JsonRpcNotification),
+    /// JSON-RPC request from server (sampling, elicitation, etc.)
+    Request(JsonRpcRequest),
     /// Endpoint information (sent on SSE connection)
     Endpoint { endpoint: String },
 }
@@ -47,12 +49,17 @@ pub struct SseConnectionManager {
     /// Map of client_id -> response sender
     /// Using unbounded channel to avoid blocking POST handlers
     connections: DashMap<String, tokio::sync::mpsc::UnboundedSender<SseMessage>>,
+    /// Map of (client_id, request_id) -> response sender for server-initiated requests
+    /// Used to match responses from clients to pending server requests
+    pending_server_requests:
+        DashMap<String, tokio::sync::oneshot::Sender<JsonRpcResponse>>,
 }
 
 impl SseConnectionManager {
     pub fn new() -> Self {
         Self {
             connections: DashMap::new(),
+            pending_server_requests: DashMap::new(),
         }
     }
 
@@ -152,6 +159,88 @@ impl SseConnectionManager {
         }
     }
 
+    /// Send a server-initiated request to a client's SSE stream
+    /// Returns a receiver that will receive the response when the client responds
+    pub fn send_request(
+        &self,
+        client_id: &str,
+        request: JsonRpcRequest,
+    ) -> Option<tokio::sync::oneshot::Receiver<JsonRpcResponse>> {
+        let request_id = request.id.clone().unwrap_or(serde_json::Value::Null);
+        let key = format!("{}:{}", client_id, request_id);
+
+        if let Some(tx) = self.connections.get(client_id) {
+            // Create oneshot channel for the response
+            let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+
+            // Store the pending request
+            self.pending_server_requests.insert(key.clone(), response_tx);
+
+            match tx.send(SseMessage::Request(request)) {
+                Ok(_) => {
+                    tracing::info!(
+                        "Sent server-initiated request to client {} (request_id={:?})",
+                        client_id,
+                        request_id
+                    );
+                    Some(response_rx)
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to send request to client {} - channel closed: {}",
+                        client_id,
+                        e
+                    );
+                    // Clean up the pending request
+                    self.pending_server_requests.remove(&key);
+                    None
+                }
+            }
+        } else {
+            tracing::warn!(
+                "No SSE connection for client {} - cannot send request",
+                client_id
+            );
+            None
+        }
+    }
+
+    /// Resolve a pending server-initiated request with a response from the client
+    /// Returns true if the response was matched with a pending request
+    pub fn resolve_server_request(
+        &self,
+        client_id: &str,
+        response: JsonRpcResponse,
+    ) -> bool {
+        let key = format!("{}:{}", client_id, response.id);
+
+        if let Some((_, tx)) = self.pending_server_requests.remove(&key) {
+            match tx.send(response) {
+                Ok(_) => {
+                    tracing::info!(
+                        "Resolved server-initiated request for client {} (request_id={})",
+                        client_id,
+                        key
+                    );
+                    true
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        "Failed to resolve server request - receiver dropped (key={})",
+                        key
+                    );
+                    false
+                }
+            }
+        } else {
+            tracing::debug!(
+                "No pending server request for key {} - this might be a client-initiated response",
+                key
+            );
+            false
+        }
+    }
+
     /// Check if a client has an active SSE connection
     pub fn has_connection(&self, client_id: &str) -> bool {
         self.connections.contains_key(client_id)
@@ -247,17 +336,19 @@ impl AppState {
         let internal_test_secret = format!("lr-internal-{}", Uuid::new_v4().simple());
         tracing::info!("Generated transient internal test bearer token for UI model testing");
 
-        // Get log retention from config (default: 31 days)
-        let retention_days = config_manager.get().logging.retention_days;
+        // Get logging config (retention and enabled status)
+        let logging_config = &config_manager.get().logging;
+        let retention_days = logging_config.retention_days;
+        let access_log_enabled = logging_config.enable_access_log;
 
-        // Initialize access logger with configured retention
-        let access_logger = AccessLogger::new(retention_days).unwrap_or_else(|e| {
+        // Initialize access logger with configured retention and enabled status
+        let access_logger = AccessLogger::new(retention_days, access_log_enabled).unwrap_or_else(|e| {
             tracing::error!("Failed to initialize access logger: {}", e);
             panic!("Access logger initialization failed");
         });
 
-        // Initialize MCP access logger with configured retention
-        let mcp_access_logger = McpAccessLogger::new(retention_days).unwrap_or_else(|e| {
+        // Initialize MCP access logger with configured retention and enabled status
+        let mcp_access_logger = McpAccessLogger::new(retention_days, access_log_enabled).unwrap_or_else(|e| {
             tracing::error!("Failed to initialize MCP access logger: {}", e);
             panic!("MCP access logger initialization failed");
         });

@@ -4094,7 +4094,7 @@ pub fn revoke_mcp_oauth_tokens(
 /// Logging configuration returned to the frontend
 #[derive(serde::Serialize)]
 pub struct LoggingConfigResponse {
-    pub retention_days: u32,
+    pub enabled: bool,
     pub log_dir: String,
 }
 
@@ -4106,29 +4106,31 @@ pub fn get_logging_config(
 ) -> Result<LoggingConfigResponse, String> {
     let config = config_manager.get();
     Ok(LoggingConfigResponse {
-        retention_days: config.logging.retention_days,
+        enabled: config.logging.enable_access_log,
         log_dir: access_logger.log_dir().to_string_lossy().to_string(),
     })
 }
 
-/// Update logging configuration
+/// Update logging configuration (enable/disable access logging)
 #[tauri::command]
 pub async fn update_logging_config(
-    retention_days: u32,
+    enabled: bool,
     config_manager: State<'_, ConfigManager>,
+    access_logger: State<'_, Arc<crate::monitoring::logger::AccessLogger>>,
+    mcp_access_logger: State<'_, Arc<crate::monitoring::mcp_logger::McpAccessLogger>>,
 ) -> Result<(), String> {
-    // Validate retention days (1-365)
-    if retention_days == 0 || retention_days > 365 {
-        return Err("retention_days must be between 1 and 365".to_string());
-    }
-
+    // Update config
     config_manager
         .update(|config| {
-            config.logging.retention_days = retention_days;
+            config.logging.enable_access_log = enabled;
         })
         .map_err(|e| e.to_string())?;
 
     config_manager.save().await.map_err(|e| e.to_string())?;
+
+    // Update the loggers in real-time
+    access_logger.set_enabled(enabled);
+    mcp_access_logger.set_enabled(enabled);
 
     Ok(())
 }

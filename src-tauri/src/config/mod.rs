@@ -1055,8 +1055,8 @@ pub struct LoggingConfig {
     /// Log level
     pub level: LogLevel,
 
-    /// Enable access logging
-    #[serde(default = "default_true")]
+    /// Enable access logging (disabled by default)
+    #[serde(default)]
     pub enable_access_log: bool,
 
     /// Access log directory (None = use default OS location)
@@ -1549,7 +1549,7 @@ impl Default for LoggingConfig {
     fn default() -> Self {
         Self {
             level: LogLevel::Info,
-            enable_access_log: true,
+            enable_access_log: false,
             log_dir: None,
             retention_days: 31,
         }
@@ -1779,7 +1779,7 @@ mod tests {
     fn test_logging_config_default() {
         let logging = LoggingConfig::default();
         assert_eq!(logging.level, LogLevel::Info);
-        assert!(logging.enable_access_log);
+        assert!(!logging.enable_access_log); // Disabled by default
         assert_eq!(logging.retention_days, 31);
     }
 
