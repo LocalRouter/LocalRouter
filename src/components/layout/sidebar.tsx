@@ -7,8 +7,8 @@ import {
   Database,
   Settings,
   Router,
-  ScrollText,
   FlaskConical,
+  ServerCog,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import {
@@ -25,7 +25,7 @@ interface ServerConfig {
   enable_cors: boolean
 }
 
-export type View = 'dashboard' | 'clients' | 'resources' | 'logs' | 'settings' | 'try-it-out'
+export type View = 'dashboard' | 'clients' | 'resources' | 'mcp-servers' | 'settings' | 'try-it-out'
 
 interface SidebarProps {
   activeView: View
@@ -42,8 +42,8 @@ interface NavItem {
 const navItems: NavItem[] = [
   { id: 'dashboard', icon: LayoutDashboard, label: 'Dashboard', shortcut: '⌘1' },
   { id: 'clients', icon: Users, label: 'Clients', shortcut: '⌘2' },
-  { id: 'resources', icon: Database, label: 'Resources', shortcut: '⌘3' },
-  { id: 'logs', icon: ScrollText, label: 'Logs', shortcut: '⌘4' },
+  { id: 'resources', icon: Database, label: 'LLM Providers', shortcut: '⌘3' },
+  { id: 'mcp-servers', icon: ServerCog, label: 'MCP Servers', shortcut: '⌘4' },
   { id: 'try-it-out', icon: FlaskConical, label: 'Try It Out', shortcut: '⌘5' },
   { id: 'settings', icon: Settings, label: 'Settings', shortcut: '⌘6' },
 ]
@@ -117,7 +117,7 @@ export function Sidebar({ activeView, onViewChange }: SidebarProps) {
             break
           case '4':
             e.preventDefault()
-            onViewChange('logs')
+            onViewChange('mcp-servers')
             break
           case '5':
             e.preventDefault()

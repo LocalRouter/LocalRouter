@@ -5,7 +5,7 @@ import { AppShell, type View } from './components/layout'
 import { DashboardView } from './views/dashboard'
 import { ClientsView } from './views/clients'
 import { ResourcesView } from './views/resources'
-import { LogsView } from './views/logs'
+import { McpServersView } from './views/mcp-servers'
 import { TryItOutView } from './views/try-it-out'
 import { SettingsView } from './views/settings'
 
@@ -103,9 +103,9 @@ function App() {
             onTabChange={handleChildViewChange}
           />
         )
-      case 'logs':
+      case 'mcp-servers':
         return (
-          <LogsView
+          <McpServersView
             activeSubTab={activeSubTab}
             onTabChange={handleChildViewChange}
           />
