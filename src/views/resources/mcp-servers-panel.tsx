@@ -2,7 +2,7 @@ import { useState, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
 import { toast } from "sonner"
-import { Database, Plus } from "lucide-react"
+import { Database, Plus, CheckCircle, XCircle, Loader2, RefreshCw } from "lucide-react"
 import { Badge } from "@/components/ui/Badge"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card"
@@ -57,14 +57,34 @@ interface McpServer {
   gateway_url: string
 }
 
+export interface McpHealthStatus {
+  status: "pending" | "healthy" | "ready" | "unhealthy" | "unknown"
+  latency_ms?: number
+  error?: string
+}
+
+export interface McpHealthCheckEvent {
+  server_id: string
+  server_name: string
+  status: string
+  latency_ms?: number
+  error?: string
+}
+
 interface McpServersPanelProps {
   selectedId: string | null
   onSelect: (id: string | null) => void
+  healthStatus: Record<string, McpHealthStatus>
+  onHealthInit: (serverIds: string[]) => void
+  onRefreshHealth: (serverId: string) => Promise<void>
 }
 
 export function McpServersPanel({
   selectedId,
   onSelect,
+  healthStatus,
+  onHealthInit,
+  onRefreshHealth,
 }: McpServersPanelProps) {
   const [servers, setServers] = useState<McpServer[]>([])
   const [loading, setLoading] = useState(true)
@@ -99,7 +119,6 @@ export function McpServersPanel({
   const [serverName, setServerName] = useState("")
   const [transportType, setTransportType] = useState<"Stdio" | "Sse">("Stdio")
   const [command, setCommand] = useState("")
-  const [args, setArgs] = useState("")
   const [envVars, setEnvVars] = useState<Record<string, string>>({})
   const [url, setUrl] = useState("")
   const [headers, setHeaders] = useState<Record<string, string>>({})
@@ -112,7 +131,7 @@ export function McpServersPanel({
     loadServers()
 
     const unsubscribe = listen("mcp-servers-changed", () => {
-      loadServers()
+      loadServersOnly()
     })
 
     return () => {
@@ -120,11 +139,15 @@ export function McpServersPanel({
     }
   }, [])
 
+  // Load servers and initialize health checks (only on first load)
   const loadServers = async () => {
     try {
       setLoading(true)
       const serverList = await invoke<McpServer[]>("list_mcp_servers")
       setServers(serverList)
+
+      // Initialize health checks (parent will only do this once)
+      onHealthInit(serverList.map(s => s.id))
     } catch (error) {
       console.error("Failed to load MCP servers:", error)
     } finally {
@@ -132,11 +155,20 @@ export function McpServersPanel({
     }
   }
 
+  // Load servers without triggering health checks (for refreshes/updates)
+  const loadServersOnly = async () => {
+    try {
+      const serverList = await invoke<McpServer[]>("list_mcp_servers")
+      setServers(serverList)
+    } catch (error) {
+      console.error("Failed to load MCP servers:", error)
+    }
+  }
+
   const resetForm = () => {
     setServerName("")
     setTransportType("Stdio")
     setCommand("")
-    setArgs("")
     setEnvVars({})
     setUrl("")
     setHeaders({})
@@ -152,10 +184,11 @@ export function McpServersPanel({
     setTransportType(template.transport)
 
     if (template.transport === "Stdio" && template.command) {
-      setCommand(template.command)
-      if (template.args) {
-        setArgs(template.args.join("\n"))
-      }
+      // Combine command and args into single command string
+      const fullCommand = template.args
+        ? [template.command, ...template.args].join(" ")
+        : template.command
+      setCommand(fullCommand)
     } else if (template.transport === "Sse" && template.url) {
       setUrl(template.url)
     }
@@ -177,14 +210,9 @@ export function McpServersPanel({
       // Parse transport config based on type
       let transportConfig
       if (transportType === "Stdio") {
-        const argsList = args.trim()
-          ? args.split(/[\n,]/).map((a) => a.trim()).filter((a) => a)
-          : []
-
         transportConfig = {
           type: "stdio",
           command,
-          args: argsList,
           env: envVars,
         }
       } else {
@@ -210,7 +238,7 @@ export function McpServersPanel({
         }
       }
 
-      await invoke("create_mcp_server", {
+      const newServer = await invoke<{ id: string }>("create_mcp_server", {
         name: serverName || null,
         transport: transportType,
         transportConfig,
@@ -218,9 +246,12 @@ export function McpServersPanel({
       })
 
       toast.success("MCP server created")
-      await loadServers()
+      await loadServersOnly()
       setShowCreateModal(false)
       resetForm()
+
+      // Trigger health check for the new server
+      onRefreshHealth(newServer.id)
     } catch (error) {
       console.error("Failed to create MCP server:", error)
       toast.error(`Error creating MCP server: ${error}`)
@@ -236,7 +267,7 @@ export function McpServersPanel({
         enabled: !server.enabled,
       })
       toast.success(`Server ${server.enabled ? "disabled" : "enabled"}`)
-      loadServers()
+      loadServersOnly()
     } catch (error) {
       toast.error("Failed to update server")
     }
@@ -250,8 +281,11 @@ export function McpServersPanel({
 
     const tc = server.transport_config as Record<string, unknown>
     if (server.transport === "Stdio") {
-      setCommand((tc.command as string) || "")
-      setArgs(((tc.args as string[]) || []).join("\n"))
+      // Combine command and legacy args into single command string
+      const cmd = (tc.command as string) || ""
+      const args = (tc.args as string[]) || []
+      const fullCommand = args.length > 0 ? [cmd, ...args].join(" ") : cmd
+      setCommand(fullCommand)
       setEnvVars((tc.env as Record<string, string>) || {})
       setUrl("")
       setHeaders({})
@@ -259,7 +293,6 @@ export function McpServersPanel({
       setUrl((tc.url as string) || "")
       setHeaders((tc.headers as Record<string, string>) || {})
       setCommand("")
-      setArgs("")
       setEnvVars({})
     }
 
@@ -294,14 +327,9 @@ export function McpServersPanel({
       // Parse transport config based on type
       let transportConfig
       if (transportType === "Stdio") {
-        const argsList = args.trim()
-          ? args.split(/[\n,]/).map((a) => a.trim()).filter((a) => a)
-          : []
-
         transportConfig = {
           type: "stdio",
           command,
-          args: argsList,
           env: envVars,
         }
       } else {
@@ -353,7 +381,7 @@ export function McpServersPanel({
       })
 
       toast.success("MCP server updated")
-      await loadServers()
+      await loadServersOnly()
       setShowEditModal(false)
       resetForm()
     } catch (error) {
@@ -372,7 +400,7 @@ export function McpServersPanel({
       if (selectedId === serverToDelete.id) {
         onSelect(null)
       }
-      loadServers()
+      loadServersOnly()
     } catch (error) {
       toast.error("Failed to delete server")
     } finally {
@@ -477,7 +505,7 @@ export function McpServersPanel({
 
       toast.success("OAuth credentials saved")
       setShowOAuthSetup(false)
-      await loadServers()
+      await loadServersOnly()
     } catch (error) {
       toast.error(`Failed to save OAuth credentials: ${error}`)
     } finally {
@@ -532,27 +560,59 @@ export function McpServersPanel({
               ) : filteredServers.length === 0 ? (
                 <p className="text-sm text-muted-foreground p-4">No MCP servers found</p>
               ) : (
-                filteredServers.map((server) => (
-                  <div
-                    key={server.id}
-                    onClick={() => onSelect(server.id)}
-                    className={cn(
-                      "flex items-center gap-3 p-3 rounded-md cursor-pointer",
-                      selectedId === server.id ? "bg-accent" : "hover:bg-muted"
-                    )}
-                  >
-                    <Database className="h-4 w-4 text-muted-foreground" />
-                    <div className="flex-1 min-w-0">
-                      <p className="font-medium truncate">{server.name}</p>
-                      <p className="text-xs text-muted-foreground capitalize">
-                        {server.transport === "Stdio" ? "STDIO" : "HTTP SSE"}
-                      </p>
+                filteredServers.map((server) => {
+                  const health = healthStatus[server.id]
+                  const formatLatency = (ms?: number) => {
+                    if (!ms) return ""
+                    return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`
+                  }
+                  return (
+                    <div
+                      key={server.id}
+                      onClick={() => onSelect(server.id)}
+                      className={cn(
+                        "flex items-center gap-3 p-3 rounded-md cursor-pointer",
+                        selectedId === server.id ? "bg-accent" : "hover:bg-muted"
+                      )}
+                    >
+                      <Database className="h-4 w-4 text-muted-foreground" />
+                      <div className="flex-1 min-w-0">
+                        <p className="font-medium truncate">{server.name}</p>
+                        <p className="text-xs text-muted-foreground capitalize">
+                          {server.transport === "Stdio" ? "STDIO" : "HTTP SSE"}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {health && health.latency_ms && health.status !== "pending" && (
+                          <span className="text-xs text-muted-foreground">
+                            {formatLatency(health.latency_ms)}
+                          </span>
+                        )}
+                        {(!health || health.status === "pending") ? (
+                          <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
+                        ) : (
+                          <div
+                            className={cn(
+                              "h-2 w-2 rounded-full",
+                              (health.status === "healthy" || health.status === "ready") && "bg-green-500",
+                              (health.status === "unhealthy" || health.status === "unknown") && "bg-red-500"
+                            )}
+                            title={
+                              health.status === "healthy"
+                                ? `Running (${formatLatency(health.latency_ms)})`
+                                : health.status === "ready"
+                                ? "Ready to start"
+                                : health.error || "Unhealthy"
+                            }
+                          />
+                        )}
+                      </div>
+                      {!server.enabled && (
+                        <Badge variant="secondary" className="text-xs">Off</Badge>
+                      )}
                     </div>
-                    {!server.enabled && (
-                      <Badge variant="secondary" className="text-xs">Off</Badge>
-                    )}
-                  </div>
-                ))
+                  )
+                })
               )}
             </div>
           </ScrollArea>
@@ -588,6 +648,82 @@ export function McpServersPanel({
                   />
                 </div>
               </div>
+
+              {/* Health Status */}
+              <Card>
+                <CardHeader className="pb-3">
+                  <div className="flex items-center justify-between">
+                    <CardTitle className="text-sm">Health Status</CardTitle>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-6 w-6"
+                      onClick={() => onRefreshHealth(selectedServer.id)}
+                      disabled={healthStatus[selectedServer.id]?.status === "pending"}
+                    >
+                      <RefreshCw className={cn(
+                        "h-3 w-3",
+                        healthStatus[selectedServer.id]?.status === "pending" && "animate-spin"
+                      )} />
+                    </Button>
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  {(() => {
+                    const health = healthStatus[selectedServer.id]
+                    const formatLatency = (ms?: number) => {
+                      if (!ms) return ""
+                      return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`
+                    }
+
+                    if (!health || health.status === "pending") {
+                      return (
+                        <div className="flex items-center gap-2 text-muted-foreground">
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                          <span>Checking health...</span>
+                        </div>
+                      )
+                    }
+
+                    if (health.status === "healthy") {
+                      return (
+                        <div className="flex items-center gap-2 text-green-600">
+                          <CheckCircle className="h-4 w-4" />
+                          <span>Running</span>
+                          {health.latency_ms && (
+                            <span className="text-muted-foreground">
+                              ({formatLatency(health.latency_ms)})
+                            </span>
+                          )}
+                        </div>
+                      )
+                    }
+
+                    if (health.status === "ready") {
+                      return (
+                        <div className="flex items-center gap-2 text-green-600">
+                          <CheckCircle className="h-4 w-4" />
+                          <span>Ready</span>
+                          {health.error && (
+                            <span className="text-muted-foreground">- {health.error}</span>
+                          )}
+                        </div>
+                      )
+                    }
+
+                    // unhealthy or unknown
+                    return (
+                      <div className="flex items-center gap-2 text-red-600">
+                        <XCircle className="h-4 w-4" />
+                        <span>Unhealthy</span>
+                        {health.error && (
+                          <span className="text-muted-foreground">- {health.error}</span>
+                        )}
+                      </div>
+                    )
+                  })()}
+                </CardContent>
+              </Card>
 
               {/* Connection Info */}
               <Card>
@@ -815,7 +951,6 @@ export function McpServersPanel({
                         setSelectedTemplate(null)
                         setServerName("")
                         setCommand("")
-                        setArgs("")
                         setUrl("")
                         setAuthMethod("none")
                       }}
@@ -864,21 +999,8 @@ export function McpServersPanel({
                       required
                     />
                     <p className="text-xs text-muted-foreground mt-1">
-                      Example: npx -y &lt;command&gt;
+                      Full command with arguments (e.g., npx -y @modelcontextprotocol/server-filesystem /tmp)
                     </p>
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium mb-2">
-                      Arguments (one per line)
-                    </label>
-                    <textarea
-                      value={args}
-                      onChange={(e) => setArgs(e.target.value)}
-                      placeholder={"-y\n@modelcontextprotocol/server-everything"}
-                      className="w-full px-3 py-2 bg-background border border-input rounded-md text-sm min-h-[80px]"
-                      rows={3}
-                    />
                   </div>
 
                   <div>
@@ -1118,21 +1240,8 @@ export function McpServersPanel({
                   required
                 />
                 <p className="text-xs text-muted-foreground mt-1">
-                  Example: npx -y &lt;command&gt;
+                  Full command with arguments (e.g., npx -y @modelcontextprotocol/server-filesystem /tmp)
                 </p>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium mb-2">
-                  Arguments (one per line)
-                </label>
-                <textarea
-                  value={args}
-                  onChange={(e) => setArgs(e.target.value)}
-                  placeholder={"-y\n@modelcontextprotocol/server-everything"}
-                  className="w-full px-3 py-2 bg-background border border-input rounded-md text-sm min-h-[80px]"
-                  rows={3}
-                />
               </div>
 
               <div>

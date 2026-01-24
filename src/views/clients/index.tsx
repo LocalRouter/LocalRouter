@@ -5,7 +5,7 @@ import { Plus } from "lucide-react"
 import { Button } from "@/components/ui/Button"
 import { ClientList } from "./client-list"
 import { ClientDetail } from "./client-detail"
-import { ClientCreateDialog } from "./client-create-dialog"
+import { ClientCreationWizard } from "@/components/wizard/ClientCreationWizard"
 
 interface Client {
   id: string
@@ -29,7 +29,7 @@ interface ClientsViewProps {
 export function ClientsView({ activeSubTab, onTabChange }: ClientsViewProps) {
   const [clients, setClients] = useState<Client[]>([])
   const [loading, setLoading] = useState(true)
-  const [createDialogOpen, setCreateDialogOpen] = useState(false)
+  const [wizardOpen, setWizardOpen] = useState(false)
 
   useEffect(() => {
     loadClients()
@@ -63,9 +63,11 @@ export function ClientsView({ activeSubTab, onTabChange }: ClientsViewProps) {
     onTabChange("clients", null)
   }
 
-  const handleClientCreated = () => {
-    setCreateDialogOpen(false)
+  const handleWizardComplete = (clientId: string) => {
+    setWizardOpen(false)
     loadClients()
+    // Navigate to the newly created client
+    onTabChange("clients", `${clientId}/config`)
   }
 
   // Parse subTab to get client ID and optional inner tab
@@ -109,7 +111,7 @@ export function ClientsView({ activeSubTab, onTabChange }: ClientsViewProps) {
             Give access to your LLM-powered application by creating a client.
           </p>
         </div>
-        <Button onClick={() => setCreateDialogOpen(true)}>
+        <Button onClick={() => setWizardOpen(true)}>
           <Plus className="mr-2 h-4 w-4" />
           Create Client
         </Button>
@@ -122,10 +124,10 @@ export function ClientsView({ activeSubTab, onTabChange }: ClientsViewProps) {
         onRefresh={loadClients}
       />
 
-      <ClientCreateDialog
-        open={createDialogOpen}
-        onOpenChange={setCreateDialogOpen}
-        onCreated={handleClientCreated}
+      <ClientCreationWizard
+        open={wizardOpen}
+        onOpenChange={setWizardOpen}
+        onComplete={handleWizardComplete}
       />
     </div>
   )

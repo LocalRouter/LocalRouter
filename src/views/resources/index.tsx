@@ -1,5 +1,8 @@
+import { useState, useEffect, useCallback } from "react"
+import { invoke } from "@tauri-apps/api/core"
+import { listen } from "@tauri-apps/api/event"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { ProvidersPanel } from "./providers-panel"
+import { ProvidersPanel, HealthStatus, HealthCheckEvent } from "./providers-panel"
 import { StrategiesPanel } from "./strategies-panel"
 
 interface LlmProvidersViewProps {
@@ -8,6 +11,57 @@ interface LlmProvidersViewProps {
 }
 
 export function ResourcesView({ activeSubTab, onTabChange }: LlmProvidersViewProps) {
+  // Lifted health status state - persists across tab switches
+  const [healthStatus, setHealthStatus] = useState<Record<string, HealthStatus>>({})
+  const [healthInitialized, setHealthInitialized] = useState(false)
+
+  // Start health checks for all providers (called once on mount)
+  const startHealthChecks = useCallback(async (providerNames: string[]) => {
+    // Set providers to pending state (only for new providers)
+    setHealthStatus((prev) => {
+      const updated = { ...prev }
+      for (const name of providerNames) {
+        if (!updated[name]) {
+          updated[name] = { status: "pending" }
+        }
+      }
+      return updated
+    })
+
+    try {
+      await invoke("start_provider_health_checks")
+    } catch (error) {
+      console.error("Failed to start health checks:", error)
+    }
+  }, [])
+
+  // Refresh health for a single provider
+  const refreshHealth = useCallback(async (instanceName: string) => {
+    setHealthStatus((prev) => ({
+      ...prev,
+      [instanceName]: { status: "pending" },
+    }))
+    await invoke("check_single_provider_health", { instanceName })
+  }, [])
+
+  // Listen for health check events
+  useEffect(() => {
+    const unsubHealth = listen<HealthCheckEvent>("provider-health-check", (event) => {
+      const { provider_name, status, latency_ms, error_message } = event.payload
+      setHealthStatus((prev) => ({
+        ...prev,
+        [provider_name]: {
+          status: status as HealthStatus["status"],
+          latency_ms,
+          error: error_message,
+        },
+      }))
+    })
+
+    return () => {
+      unsubHealth.then((fn) => fn())
+    }
+  }, [])
 
   // Parse subTab to determine which resource type and item is selected
   // Format: "providers", "strategies"
@@ -53,6 +107,14 @@ export function ResourcesView({ activeSubTab, onTabChange }: LlmProvidersViewPro
           <ProvidersPanel
             selectedId={resourceType === "providers" ? itemId : null}
             onSelect={(id) => handleItemSelect("providers", id)}
+            healthStatus={healthStatus}
+            onHealthInit={(providerNames) => {
+              if (!healthInitialized) {
+                setHealthInitialized(true)
+                startHealthChecks(providerNames)
+              }
+            }}
+            onRefreshHealth={refreshHealth}
           />
         </TabsContent>
 

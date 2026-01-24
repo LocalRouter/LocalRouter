@@ -1,8 +1,8 @@
-import { useState, useEffect } from "react"
+import { useState, useEffect, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
 import { toast } from "sonner"
-import { Server, CheckCircle, XCircle, Plus } from "lucide-react"
+import { Server, CheckCircle, XCircle, AlertCircle, Plus, Loader2, RefreshCw } from "lucide-react"
 import { Badge } from "@/components/ui/Badge"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card"
@@ -53,26 +53,50 @@ interface Provider {
   config?: Record<string, string>
 }
 
-interface HealthStatus {
-  healthy: boolean
+export interface HealthStatus {
+  status: "pending" | "healthy" | "degraded" | "unhealthy"
   latency_ms?: number
   error?: string
+}
+
+export interface HealthCheckEvent {
+  provider_name: string
+  status: string
+  latency_ms?: number
+  error_message?: string
+}
+
+interface ModelInfo {
+  id: string
+  name: string
+  provider: string
+  parameter_count?: number
+  context_window: number
+  supports_streaming: boolean
+  capabilities: string[]
 }
 
 interface ProvidersPanelProps {
   selectedId: string | null
   onSelect: (id: string | null) => void
+  healthStatus: Record<string, HealthStatus>
+  onHealthInit: (providerNames: string[]) => void
+  onRefreshHealth: (instanceName: string) => Promise<void>
 }
 
 export function ProvidersPanel({
   selectedId,
   onSelect,
+  healthStatus,
+  onHealthInit,
+  onRefreshHealth,
 }: ProvidersPanelProps) {
   const [providers, setProviders] = useState<Provider[]>([])
   const [providerTypes, setProviderTypes] = useState<ProviderType[]>([])
-  const [healthStatus, setHealthStatus] = useState<Record<string, HealthStatus>>({})
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState("")
+  const [models, setModels] = useState<ModelInfo[]>([])
+  const [modelsLoading, setModelsLoading] = useState(false)
 
   // Dialog states
   const [createDialogOpen, setCreateDialogOpen] = useState(false)
@@ -89,29 +113,39 @@ export function ProvidersPanel({
     loadProviders()
     loadProviderTypes()
 
-    const unsubscribe = listen("providers-changed", () => {
-      loadProviders()
+    // Listen for provider changes
+    const unsubProviders = listen("providers-changed", () => {
+      loadProvidersOnly()
     })
 
     return () => {
-      unsubscribe.then((fn) => fn())
+      unsubProviders.then((fn) => fn())
     }
   }, [])
 
+  // Load providers and initialize health checks (only on first load)
   const loadProviders = async () => {
     try {
       setLoading(true)
       const providerList = await invoke<Provider[]>("list_provider_instances")
       setProviders(providerList)
 
-      // Check health for each provider
-      for (const provider of providerList) {
-        checkHealth(provider.instance_name)
-      }
+      // Initialize health checks (parent will only do this once)
+      onHealthInit(providerList.map(p => p.instance_name))
     } catch (error) {
       console.error("Failed to load providers:", error)
     } finally {
       setLoading(false)
+    }
+  }
+
+  // Load providers without triggering health checks (for refreshes/updates)
+  const loadProvidersOnly = async () => {
+    try {
+      const providerList = await invoke<Provider[]>("list_provider_instances")
+      setProviders(providerList)
+    } catch (error) {
+      console.error("Failed to load providers:", error)
     }
   }
 
@@ -124,19 +158,27 @@ export function ProvidersPanel({
     }
   }
 
-  const checkHealth = async (instanceName: string) => {
+  const loadModels = useCallback(async (instanceName: string) => {
+    setModelsLoading(true)
     try {
-      const status = await invoke<HealthStatus>("check_provider_health", {
-        instanceName,
-      })
-      setHealthStatus((prev) => ({ ...prev, [instanceName]: status }))
+      const modelList = await invoke<ModelInfo[]>("list_provider_models", { instanceName })
+      setModels(modelList)
     } catch (error) {
-      setHealthStatus((prev) => ({
-        ...prev,
-        [instanceName]: { healthy: false, error: "Health check failed" },
-      }))
+      console.error("Failed to load models:", error)
+      setModels([])
+    } finally {
+      setModelsLoading(false)
     }
-  }
+  }, [])
+
+  // Load models when a provider is selected
+  useEffect(() => {
+    if (selectedId) {
+      loadModels(selectedId)
+    } else {
+      setModels([])
+    }
+  }, [selectedId, loadModels])
 
   const handleToggle = async (provider: Provider) => {
     try {
@@ -145,7 +187,7 @@ export function ProvidersPanel({
         updates: { enabled: !provider.enabled },
       })
       toast.success(`Provider ${provider.enabled ? "disabled" : "enabled"}`)
-      loadProviders()
+      loadProvidersOnly()
     } catch (error) {
       toast.error("Failed to update provider")
     }
@@ -161,7 +203,7 @@ export function ProvidersPanel({
       if (selectedId === providerToDelete.instance_name) {
         onSelect(null)
       }
-      loadProviders()
+      loadProvidersOnly()
     } catch (error) {
       toast.error("Failed to delete provider")
     } finally {
@@ -181,8 +223,10 @@ export function ProvidersPanel({
       toast.success("Provider created")
       setCreateDialogOpen(false)
       setSelectedProviderType("")
-      loadProviders()
+      await loadProvidersOnly()
       onSelect(instanceName)
+      // Trigger health check for the new provider
+      onRefreshHealth(instanceName)
     } catch (error) {
       toast.error(`Failed to create provider: ${error}`)
     } finally {
@@ -201,7 +245,7 @@ export function ProvidersPanel({
       toast.success("Provider updated")
       setEditDialogOpen(false)
       setProviderToEdit(null)
-      loadProviders()
+      loadProvidersOnly()
     } catch (error) {
       toast.error(`Failed to update provider: ${error}`)
     } finally {
@@ -258,6 +302,10 @@ export function ProvidersPanel({
                 ) : (
                   filteredProviders.map((provider) => {
                     const health = healthStatus[provider.instance_name]
+                    const formatLatency = (ms?: number) => {
+                      if (!ms) return ""
+                      return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`
+                    }
                     return (
                       <div
                         key={provider.instance_name}
@@ -274,15 +322,33 @@ export function ProvidersPanel({
                           <p className="font-medium truncate">{provider.instance_name}</p>
                           <p className="text-xs text-muted-foreground">{provider.provider_type}</p>
                         </div>
-                        {health && (
-                          <div
-                            className={cn(
-                              "h-2 w-2 rounded-full",
-                              health.healthy ? "bg-green-500" : "bg-red-500"
-                            )}
-                            title={health.healthy ? `${health.latency_ms}ms` : health.error}
-                          />
-                        )}
+                        <div className="flex items-center gap-2">
+                          {health && health.latency_ms && health.status !== "pending" && (
+                            <span className="text-xs text-muted-foreground">
+                              {formatLatency(health.latency_ms)}
+                            </span>
+                          )}
+                          {health?.status === "pending" ? (
+                            <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
+                          ) : (
+                            <div
+                              className={cn(
+                                "h-2 w-2 rounded-full",
+                                !health && "bg-gray-400",
+                                health?.status === "healthy" && "bg-green-500",
+                                health?.status === "degraded" && "bg-yellow-500",
+                                health?.status === "unhealthy" && "bg-red-500"
+                              )}
+                              title={
+                                health?.status === "healthy"
+                                  ? `Healthy (${formatLatency(health.latency_ms)})`
+                                  : health?.status === "degraded"
+                                  ? `Degraded: ${health.error}`
+                                  : health?.error
+                              }
+                            />
+                          )}
+                        </div>
                         {!provider.enabled && (
                           <Badge variant="secondary" className="text-xs">Off</Badge>
                         )}
@@ -319,7 +385,6 @@ export function ProvidersPanel({
                         createToggleAction(selectedProvider.enabled, () =>
                           handleToggle(selectedProvider)
                         ),
-                        commonActions.refresh(() => checkHealth(selectedProvider.instance_name)),
                         commonActions.delete(() => openDeleteDialog(selectedProvider)),
                       ]}
                     />
@@ -327,36 +392,130 @@ export function ProvidersPanel({
                 </div>
 
                 {/* Health Status */}
-                {healthStatus[selectedProvider.instance_name] && (
-                  <Card>
-                    <CardHeader className="pb-3">
+                <Card>
+                  <CardHeader className="pb-3">
+                    <div className="flex items-center justify-between">
                       <CardTitle className="text-sm">Health Status</CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                      {healthStatus[selectedProvider.instance_name].healthy ? (
-                        <div className="flex items-center gap-2 text-green-600">
-                          <CheckCircle className="h-4 w-4" />
-                          <span>Healthy</span>
-                          {healthStatus[selectedProvider.instance_name].latency_ms && (
-                            <span className="text-muted-foreground">
-                              ({healthStatus[selectedProvider.instance_name].latency_ms}ms)
-                            </span>
-                          )}
-                        </div>
-                      ) : (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-6 w-6"
+                        onClick={() => onRefreshHealth(selectedProvider.instance_name)}
+                        disabled={healthStatus[selectedProvider.instance_name]?.status === "pending"}
+                      >
+                        <RefreshCw className={cn(
+                          "h-3 w-3",
+                          healthStatus[selectedProvider.instance_name]?.status === "pending" && "animate-spin"
+                        )} />
+                      </Button>
+                    </div>
+                  </CardHeader>
+                  <CardContent>
+                    {(() => {
+                      const health = healthStatus[selectedProvider.instance_name]
+                      const formatLatency = (ms?: number) => {
+                        if (!ms) return ""
+                        return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`
+                      }
+
+                      if (!health || health.status === "pending") {
+                        return (
+                          <div className="flex items-center gap-2 text-muted-foreground">
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                            <span>Checking health...</span>
+                          </div>
+                        )
+                      }
+
+                      if (health.status === "healthy") {
+                        return (
+                          <div className="flex items-center gap-2 text-green-600">
+                            <CheckCircle className="h-4 w-4" />
+                            <span>Healthy</span>
+                            {health.latency_ms && (
+                              <span className="text-muted-foreground">
+                                ({formatLatency(health.latency_ms)})
+                              </span>
+                            )}
+                          </div>
+                        )
+                      }
+
+                      if (health.status === "degraded") {
+                        return (
+                          <div className="flex items-center gap-2 text-yellow-600">
+                            <AlertCircle className="h-4 w-4" />
+                            <span>Degraded</span>
+                            {health.latency_ms && (
+                              <span className="text-muted-foreground">
+                                ({formatLatency(health.latency_ms)})
+                              </span>
+                            )}
+                            {health.error && (
+                              <span className="text-muted-foreground">- {health.error}</span>
+                            )}
+                          </div>
+                        )
+                      }
+
+                      return (
                         <div className="flex items-center gap-2 text-red-600">
                           <XCircle className="h-4 w-4" />
                           <span>Unhealthy</span>
-                          {healthStatus[selectedProvider.instance_name].error && (
-                            <span className="text-muted-foreground">
-                              ({healthStatus[selectedProvider.instance_name].error})
-                            </span>
+                          {health.error && (
+                            <span className="text-muted-foreground">- {health.error}</span>
                           )}
                         </div>
+                      )
+                    })()}
+                  </CardContent>
+                </Card>
+
+                {/* Models List */}
+                <Card>
+                  <CardHeader className="pb-3">
+                    <CardTitle className="text-sm">
+                      Models {!modelsLoading && models.length > 0 && (
+                        <span className="text-muted-foreground font-normal">({models.length})</span>
                       )}
-                    </CardContent>
-                  </Card>
-                )}
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    {modelsLoading ? (
+                      <div className="flex items-center gap-2 text-muted-foreground">
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        <span>Loading models...</span>
+                      </div>
+                    ) : models.length === 0 ? (
+                      <p className="text-sm text-muted-foreground">No models available</p>
+                    ) : (
+                      <div className="space-y-2">
+                        {models.map((model) => (
+                          <div
+                            key={model.id}
+                            className="flex items-center justify-between p-2 rounded-md bg-muted/50"
+                          >
+                            <div className="min-w-0 flex-1">
+                              <p className="font-medium text-sm truncate">{model.name || model.id}</p>
+                              <p className="text-xs text-muted-foreground truncate">{model.id}</p>
+                            </div>
+                            <div className="flex items-center gap-2 ml-2">
+                              {model.context_window > 0 && (
+                                <Badge variant="secondary" className="text-xs whitespace-nowrap">
+                                  {model.context_window >= 1000000
+                                    ? `${(model.context_window / 1000000).toFixed(1)}M`
+                                    : model.context_window >= 1000
+                                    ? `${Math.round(model.context_window / 1000)}k`
+                                    : model.context_window} ctx
+                                </Badge>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
 
               </div>
             </ScrollArea>
