@@ -63,6 +63,11 @@
   * {
     @apply border-border;
   }
+
+  /* Improve switch/toggle visibility in dark mode when unchecked */
+  .dark [role="switch"][data-state="unchecked"] {
+    background-color: hsl(var(--muted-foreground) / 0.3) !important;
+  }
   html {
     height: 100%;
     overflow: hidden;
