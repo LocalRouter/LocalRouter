@@ -120,11 +120,14 @@ pub struct McpAccessLogger {
 
     /// Optional Tauri app handle for emitting events
     app_handle: Arc<RwLock<Option<tauri::AppHandle>>>,
+
+    /// Whether access logging is enabled
+    enabled: Arc<RwLock<bool>>,
 }
 
 impl McpAccessLogger {
     /// Create a new MCP access logger
-    pub fn new(retention_days: u32) -> AppResult<Self> {
+    pub fn new(retention_days: u32, enabled: bool) -> AppResult<Self> {
         let log_dir = Self::get_log_directory()?;
 
         // Create log directory if it doesn't exist
@@ -133,8 +136,8 @@ impl McpAccessLogger {
         })?;
 
         info!(
-            "MCP access logger initialized with directory: {:?}",
-            log_dir
+            "MCP access logger initialized with directory: {:?}, enabled: {}",
+            log_dir, enabled
         );
 
         Ok(Self {
@@ -143,7 +146,19 @@ impl McpAccessLogger {
             current_date: Arc::new(Mutex::new(String::new())),
             retention_days,
             app_handle: Arc::new(RwLock::new(None)),
+            enabled: Arc::new(RwLock::new(enabled)),
         })
+    }
+
+    /// Check if MCP access logging is enabled
+    pub fn is_enabled(&self) -> bool {
+        *self.enabled.read()
+    }
+
+    /// Set whether MCP access logging is enabled
+    pub fn set_enabled(&self, enabled: bool) {
+        info!("MCP access logging {}", if enabled { "enabled" } else { "disabled" });
+        *self.enabled.write() = enabled;
     }
 
     /// Set the Tauri app handle for event emission
@@ -197,6 +212,17 @@ impl McpAccessLogger {
 
     /// Write an MCP access log entry
     pub fn log(&self, entry: &McpAccessLogEntry) -> AppResult<()> {
+        // Skip logging if disabled (but still emit events for real-time UI)
+        if !self.is_enabled() {
+            // Still emit Tauri event for real-time UI even when file logging is disabled
+            if let Some(handle) = self.app_handle.read().as_ref() {
+                if let Err(e) = handle.emit("mcp-log-entry", entry) {
+                    warn!("Failed to emit MCP log event: {}", e);
+                }
+            }
+            return Ok(());
+        }
+
         self.ensure_log_file()?;
 
         let json = serde_json::to_string(entry)

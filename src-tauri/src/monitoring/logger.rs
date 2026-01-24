@@ -133,18 +133,24 @@ pub struct AccessLogger {
 
     /// Optional Tauri app handle for emitting events
     app_handle: Arc<RwLock<Option<tauri::AppHandle>>>,
+
+    /// Whether access logging is enabled
+    enabled: Arc<RwLock<bool>>,
 }
 
 impl AccessLogger {
     /// Create a new access logger
-    pub fn new(retention_days: u32) -> AppResult<Self> {
+    pub fn new(retention_days: u32, enabled: bool) -> AppResult<Self> {
         let log_dir = Self::get_log_directory()?;
 
         // Create log directory if it doesn't exist
         fs::create_dir_all(&log_dir)
             .map_err(|e| AppError::Internal(format!("Failed to create log directory: {}", e)))?;
 
-        info!("Access logger initialized with directory: {:?}", log_dir);
+        info!(
+            "Access logger initialized with directory: {:?}, enabled: {}",
+            log_dir, enabled
+        );
 
         Ok(Self {
             log_dir,
@@ -152,7 +158,19 @@ impl AccessLogger {
             current_date: Arc::new(Mutex::new(String::new())),
             retention_days,
             app_handle: Arc::new(RwLock::new(None)),
+            enabled: Arc::new(RwLock::new(enabled)),
         })
+    }
+
+    /// Check if access logging is enabled
+    pub fn is_enabled(&self) -> bool {
+        *self.enabled.read()
+    }
+
+    /// Set whether access logging is enabled
+    pub fn set_enabled(&self, enabled: bool) {
+        info!("Access logging {}", if enabled { "enabled" } else { "disabled" });
+        *self.enabled.write() = enabled;
     }
 
     /// Set the Tauri app handle for event emission
@@ -247,6 +265,17 @@ impl AccessLogger {
 
     /// Write an access log entry
     pub fn log(&self, entry: &AccessLogEntry) -> AppResult<()> {
+        // Skip logging if disabled (but still emit events for real-time UI)
+        if !self.is_enabled() {
+            // Still emit Tauri event for real-time UI even when file logging is disabled
+            if let Some(handle) = self.app_handle.read().as_ref() {
+                if let Err(e) = handle.emit("llm-log-entry", entry) {
+                    warn!("Failed to emit LLM log event: {}", e);
+                }
+            }
+            return Ok(());
+        }
+
         self.ensure_log_file()?;
 
         let json = serde_json::to_string(entry)
@@ -398,6 +427,7 @@ mod tests {
             current_date: Arc::new(Mutex::new(String::new())),
             retention_days: 30,
             app_handle: Arc::new(RwLock::new(None)),
+            enabled: Arc::new(RwLock::new(true)),
         };
         (logger, temp_dir)
     }

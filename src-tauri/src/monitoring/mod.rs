@@ -9,5 +9,4 @@ pub mod mcp_graphs;
 pub mod mcp_logger;
 pub mod mcp_metrics;
 pub mod metrics;
-pub mod parser;
 pub mod storage;
