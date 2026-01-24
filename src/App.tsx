@@ -8,6 +8,7 @@ import { ResourcesView } from './views/resources'
 import { McpServersView } from './views/mcp-servers'
 import { TryItOutView } from './views/try-it-out'
 import { SettingsView } from './views/settings'
+import { ClientCreationWizard } from './components/wizard/ClientCreationWizard'
 
 type McpAccessMode = 'none' | 'all' | 'specific'
 
@@ -26,10 +27,40 @@ interface Client {
 function App() {
   const [activeView, setActiveView] = useState<View>('dashboard')
   const [activeSubTab, setActiveSubTab] = useState<string | null>(null)
+  const [showSetupWizard, setShowSetupWizard] = useState(false)
+  const [appReady, setAppReady] = useState(false)
 
   const handleViewChange = (view: View, subTab: string | null = null) => {
     setActiveView(view)
     setActiveSubTab(subTab)
+  }
+
+  // Check if setup wizard should be shown (first-run detection)
+  useEffect(() => {
+    const checkSetupWizard = async () => {
+      try {
+        const shown = await invoke<boolean>('get_setup_wizard_shown')
+        if (!shown) {
+          setShowSetupWizard(true)
+        }
+      } catch (error) {
+        console.error('Failed to check setup wizard status:', error)
+      } finally {
+        setAppReady(true)
+      }
+    }
+    checkSetupWizard()
+  }, [])
+
+  const handleWizardComplete = async (clientId: string) => {
+    try {
+      await invoke('set_setup_wizard_shown')
+    } catch (error) {
+      console.error('Failed to mark setup wizard as shown:', error)
+    }
+    setShowSetupWizard(false)
+    // Navigate to the newly created client
+    handleViewChange('clients', `${clientId}/config`)
   }
 
   useEffect(() => {
@@ -88,7 +119,7 @@ function App() {
   const renderView = () => {
     switch (activeView) {
       case 'dashboard':
-        return <DashboardView />
+        return <DashboardView onViewChange={handleChildViewChange} />
       case 'clients':
         return (
           <ClientsView
@@ -125,18 +156,32 @@ function App() {
           />
         )
       default:
-        return <DashboardView />
+        return <DashboardView onViewChange={handleChildViewChange} />
     }
   }
 
   return (
-    <AppShell
-      activeView={activeView}
-      activeSubTab={activeSubTab}
-      onViewChange={handleViewChange}
-    >
-      {renderView()}
-    </AppShell>
+    <>
+      <AppShell
+        activeView={activeView}
+        activeSubTab={activeSubTab}
+        onViewChange={handleViewChange}
+      >
+        {appReady && renderView()}
+      </AppShell>
+
+      <ClientCreationWizard
+        open={showSetupWizard}
+        onOpenChange={(open) => {
+          if (!open) {
+            // User dismissed wizard without completing - mark as shown anyway
+            invoke('set_setup_wizard_shown').catch(console.error)
+          }
+          setShowSetupWizard(open)
+        }}
+        onComplete={handleWizardComplete}
+      />
+    </>
   )
 }
 

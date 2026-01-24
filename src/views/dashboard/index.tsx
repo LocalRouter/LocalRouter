@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
-import { Activity, DollarSign, Zap, CheckCircle, RefreshCw } from "lucide-react"
+import { Activity, DollarSign, Zap, CheckCircle, RefreshCw, Plus } from "lucide-react"
 import { StatsCard, StatsRow } from "@/components/shared/stats-card"
 import { MetricsChart } from "@/components/shared/metrics-chart"
 import { useMetricsSubscription } from "@/hooks/useMetricsSubscription"
@@ -15,6 +15,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/Select"
+import { ClientCreationWizard } from "@/components/wizard/ClientCreationWizard"
 
 interface AggregateStats {
   total_requests: number
@@ -50,12 +51,17 @@ type McpScope = "global" | "client" | "server"
 // Special value for "All" selection
 const ALL_ENTITIES = "__all__"
 
-export function DashboardView() {
+interface DashboardViewProps {
+  onViewChange?: (view: string, subTab?: string | null) => void
+}
+
+export function DashboardView({ onViewChange }: DashboardViewProps) {
   const metricsRefreshKey = useMetricsSubscription()
   const [manualRefreshKey, setManualRefreshKey] = useState(0)
   const refreshKey = metricsRefreshKey + manualRefreshKey
   const [stats, setStats] = useState<AggregateStats | null>(null)
   const [loading, setLoading] = useState(true)
+  const [wizardOpen, setWizardOpen] = useState(false)
 
   // Active tab
   const [activeTab, setActiveTab] = useState<"llm" | "mcp">("llm")
@@ -147,6 +153,13 @@ export function DashboardView() {
   const llmHasValidSelection = llmScope === "global" || (llmScopeId && llmScopeId !== "")
   const mcpHasValidSelection = mcpScope === "global" || (mcpScopeId && mcpScopeId !== "")
 
+  const handleWizardComplete = (clientId: string) => {
+    setWizardOpen(false)
+    if (onViewChange) {
+      onViewChange("clients", `${clientId}/config`)
+    }
+  }
+
   // Get entities for multiScope when "All" is selected
   const getLlmMultiScope = () => {
     if (llmScope === "client") return clients.map(c => ({ id: c.client_id, label: c.name, scope: "api_key" as const }))
@@ -179,6 +192,20 @@ export function DashboardView() {
 
   return (
     <div className="space-y-6">
+      {/* Header with Create Client button */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">Dashboard</h1>
+          <p className="text-sm text-muted-foreground">
+            Monitor your LLM and MCP usage across all clients.
+          </p>
+        </div>
+        <Button onClick={() => setWizardOpen(true)}>
+          <Plus className="mr-2 h-4 w-4" />
+          Create Client
+        </Button>
+      </div>
+
       {/* Stats Row */}
       <StatsRow>
         <StatsCard
@@ -514,6 +541,12 @@ export function DashboardView() {
           )}
         </TabsContent>
       </Tabs>
+
+      <ClientCreationWizard
+        open={wizardOpen}
+        onOpenChange={setWizardOpen}
+        onComplete={handleWizardComplete}
+      />
     </div>
   )
 }
