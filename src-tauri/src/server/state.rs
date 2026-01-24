@@ -21,6 +21,7 @@ use crate::mcp::{McpGateway, McpServerManager};
 use crate::monitoring::logger::AccessLogger;
 use crate::monitoring::mcp_logger::McpAccessLogger;
 use crate::monitoring::metrics::MetricsCollector;
+use crate::providers::health_cache::HealthCacheManager;
 use crate::providers::registry::ProviderRegistry;
 use crate::router::{RateLimiterManager, Router};
 use crate::ui::tray::TrayGraphManager;
@@ -318,6 +319,9 @@ pub struct AppState {
 
     /// Track which MCP servers have notification handlers registered (to prevent duplicates)
     pub mcp_notification_handlers_registered: Arc<DashMap<String, bool>>,
+
+    /// Centralized health cache for providers and MCP servers
+    pub health_cache: Arc<HealthCacheManager>,
 }
 
 impl AppState {

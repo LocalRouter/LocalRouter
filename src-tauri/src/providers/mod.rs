@@ -22,6 +22,7 @@ pub mod features;
 pub mod gemini;
 pub mod groq;
 pub mod health;
+pub mod health_cache;
 pub mod key_storage;
 pub mod lmstudio;
 pub mod mistral;
