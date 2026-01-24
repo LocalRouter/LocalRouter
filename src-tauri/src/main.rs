@@ -510,6 +510,134 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                     let _ = monitoring::aggregation_task::spawn_aggregation_task(metrics_db).await;
                 });
                 info!("Spawned metrics aggregation task");
+
+                // Initialize health cache with current providers and MCP servers
+                let health_cache = state.health_cache.clone();
+                let provider_names: Vec<String> = provider_registry
+                    .list_providers()
+                    .into_iter()
+                    .map(|p| p.instance_name)
+                    .collect();
+                health_cache.init_providers(provider_names);
+
+                let mcp_configs: Vec<(String, String)> = mcp_server_manager
+                    .list_configs()
+                    .into_iter()
+                    .map(|c| (c.id.clone(), c.name.clone()))
+                    .collect();
+                health_cache.init_mcp_servers(mcp_configs);
+
+                // Set server as running with the configured port
+                let server_port = config_manager.get().server.port;
+                health_cache.update_server_status(true, Some(server_port));
+                info!(
+                    "Health cache initialized with {} providers and {} MCP servers",
+                    provider_registry.list_providers().len(),
+                    mcp_server_manager.list_configs().len()
+                );
+
+                // Start periodic health check task if configured
+                let health_check_config = config_manager.get().health_check.clone();
+                if health_check_config.mode == config::HealthCheckMode::Periodic {
+                    let health_cache_for_task = state.health_cache.clone();
+                    let provider_registry_for_task = provider_registry.clone();
+                    let mcp_server_manager_for_task = mcp_server_manager.clone();
+                    let interval_secs = health_check_config.interval_secs;
+                    let timeout_secs = health_check_config.timeout_secs;
+
+                    tokio::spawn(async move {
+                        let mut interval =
+                            tokio::time::interval(std::time::Duration::from_secs(interval_secs));
+                        // Skip the initial tick (immediate)
+                        interval.tick().await;
+
+                        loop {
+                            interval.tick().await;
+                            info!("Running periodic health checks...");
+
+                            // Check all providers
+                            let providers = provider_registry_for_task.list_providers();
+                            for provider_info in providers {
+                                if let Some(provider) = provider_registry_for_task
+                                    .get_provider(&provider_info.instance_name)
+                                {
+                                    let health = tokio::time::timeout(
+                                        std::time::Duration::from_secs(timeout_secs),
+                                        provider.health_check(),
+                                    )
+                                    .await;
+
+                                    let item_health = match health {
+                                        Ok(h) => {
+                                            use providers::health_cache::ItemHealth;
+                                            use providers::HealthStatus;
+                                            match h.status {
+                                                HealthStatus::Healthy => ItemHealth::healthy(
+                                                    provider_info.instance_name.clone(),
+                                                    h.latency_ms,
+                                                ),
+                                                HealthStatus::Degraded => ItemHealth::degraded(
+                                                    provider_info.instance_name.clone(),
+                                                    h.latency_ms,
+                                                    h.error_message
+                                                        .unwrap_or_else(|| "Degraded".to_string()),
+                                                ),
+                                                HealthStatus::Unhealthy => ItemHealth::unhealthy(
+                                                    provider_info.instance_name.clone(),
+                                                    h.error_message
+                                                        .unwrap_or_else(|| "Unhealthy".to_string()),
+                                                ),
+                                            }
+                                        }
+                                        Err(_) => {
+                                            use providers::health_cache::ItemHealth;
+                                            ItemHealth::unhealthy(
+                                                provider_info.instance_name.clone(),
+                                                format!("Health check timeout ({}s)", timeout_secs),
+                                            )
+                                        }
+                                    };
+                                    health_cache_for_task
+                                        .update_provider(&provider_info.instance_name, item_health);
+                                }
+                            }
+
+                            // Check all MCP servers
+                            let mcp_health = mcp_server_manager_for_task.get_all_health().await;
+                            for mcp_server_health in mcp_health {
+                                use mcp::manager::HealthStatus as McpHealthStatus;
+                                use providers::health_cache::ItemHealth;
+                                let server_id = mcp_server_health.server_id.clone();
+                                let server_name = mcp_server_health.server_name.clone();
+                                let item_health = match mcp_server_health.status {
+                                    McpHealthStatus::Ready => ItemHealth::ready(server_name),
+                                    McpHealthStatus::Healthy => ItemHealth::healthy(
+                                        server_name,
+                                        mcp_server_health.latency_ms,
+                                    ),
+                                    McpHealthStatus::Unhealthy | McpHealthStatus::Unknown => {
+                                        ItemHealth::unhealthy(
+                                            server_name,
+                                            mcp_server_health
+                                                .error
+                                                .unwrap_or_else(|| "Unhealthy".to_string()),
+                                        )
+                                    }
+                                };
+                                health_cache_for_task.update_mcp_server(&server_id, item_health);
+                            }
+
+                            health_cache_for_task.mark_refresh();
+                            info!("Periodic health checks completed");
+                        }
+                    });
+                    info!(
+                        "Started periodic health check task (interval: {}s)",
+                        interval_secs
+                    );
+                } else {
+                    info!("Health check mode is on-failure, skipping periodic task");
+                }
             }
 
             // Refresh model cache for tray menu
@@ -644,6 +772,9 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::get_providers_health,
             ui::commands::start_provider_health_checks,
             ui::commands::check_single_provider_health,
+            // Centralized health cache commands
+            ui::commands::get_health_cache,
+            ui::commands::refresh_all_health,
             ui::commands::list_provider_models,
             ui::commands::list_all_models,
             ui::commands::list_all_models_detailed,

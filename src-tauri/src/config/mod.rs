@@ -249,6 +249,9 @@ impl Default for RouteLLMConfig {
 pub struct AutoModelConfig {
     /// Whether auto-routing is enabled
     pub enabled: bool,
+    /// Custom model name for the auto router (default: "localrouter/auto")
+    #[serde(default = "default_auto_model_name")]
+    pub model_name: String,
     /// Prioritized models list (in order) for fallback
     pub prioritized_models: Vec<(String, String)>,
     /// Available models (out of rotation)
@@ -257,6 +260,10 @@ pub struct AutoModelConfig {
     /// RouteLLM intelligent routing configuration
     #[serde(skip_serializing_if = "Option::is_none")]
     pub routellm_config: Option<RouteLLMConfig>,
+}
+
+fn default_auto_model_name() -> String {
+    "localrouter/auto".to_string()
 }
 
 /// Routing strategy configuration (separate from clients)
@@ -857,7 +864,14 @@ impl McpTransportConfig {
     /// Returns (executable, args, env) or error if parsing fails.
     pub fn parse_stdio_command(
         &self,
-    ) -> Result<(String, Vec<String>, std::collections::HashMap<String, String>), String> {
+    ) -> Result<
+        (
+            String,
+            Vec<String>,
+            std::collections::HashMap<String, String>,
+        ),
+        String,
+    > {
         match self {
             McpTransportConfig::Stdio { command, args, env } => {
                 // If legacy args are provided, use them directly

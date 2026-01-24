@@ -149,8 +149,7 @@ async fn check_provider_health(
     let start = Instant::now();
 
     // Perform the health check with timeout
-    let health_result =
-        tokio::time::timeout(config.check_timeout, provider.health_check()).await;
+    let health_result = tokio::time::timeout(config.check_timeout, provider.health_check()).await;
 
     let latency_ms = start.elapsed().as_millis() as u64;
 

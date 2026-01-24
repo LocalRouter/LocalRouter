@@ -218,7 +218,10 @@ impl HealthCacheManager {
             self.recalculate_aggregate_status(&mut cache);
         }
         self.emit_status_changed();
-        debug!("Health cache updated: provider={}, status={:?}", name, health.status);
+        debug!(
+            "Health cache updated: provider={}, status={:?}",
+            name, health.status
+        );
     }
 
     /// Update MCP server health
@@ -229,27 +232,40 @@ impl HealthCacheManager {
             self.recalculate_aggregate_status(&mut cache);
         }
         self.emit_status_changed();
-        debug!("Health cache updated: mcp_server={}, status={:?}", id, health.status);
+        debug!(
+            "Health cache updated: mcp_server={}, status={:?}",
+            id, health.status
+        );
     }
 
     /// Initialize providers with pending status
     pub fn init_providers(&self, names: Vec<String>) {
         let mut cache = self.cache.write();
         for name in names {
-            cache.providers.insert(name.clone(), ItemHealth::pending(name));
+            cache
+                .providers
+                .insert(name.clone(), ItemHealth::pending(name));
         }
         self.recalculate_aggregate_status(&mut cache);
-        debug!("Health cache initialized {} providers", cache.providers.len());
+        debug!(
+            "Health cache initialized {} providers",
+            cache.providers.len()
+        );
     }
 
     /// Initialize MCP servers with pending status
     pub fn init_mcp_servers(&self, configs: Vec<(String, String)>) {
         let mut cache = self.cache.write();
         for (id, name) in configs {
-            cache.mcp_servers.insert(id.clone(), ItemHealth::pending(name));
+            cache
+                .mcp_servers
+                .insert(id.clone(), ItemHealth::pending(name));
         }
         self.recalculate_aggregate_status(&mut cache);
-        debug!("Health cache initialized {} MCP servers", cache.mcp_servers.len());
+        debug!(
+            "Health cache initialized {} MCP servers",
+            cache.mcp_servers.len()
+        );
     }
 
     /// Remove a provider from the cache
@@ -366,8 +382,14 @@ mod tests {
     fn test_aggregate_status_all_healthy() {
         let manager = HealthCacheManager::new();
         manager.update_server_status(true, Some(3625));
-        manager.update_provider("openai", ItemHealth::healthy("openai".to_string(), Some(100)));
-        manager.update_provider("anthropic", ItemHealth::healthy("anthropic".to_string(), Some(150)));
+        manager.update_provider(
+            "openai",
+            ItemHealth::healthy("openai".to_string(), Some(100)),
+        );
+        manager.update_provider(
+            "anthropic",
+            ItemHealth::healthy("anthropic".to_string(), Some(150)),
+        );
         assert_eq!(manager.aggregate_status(), AggregateHealthStatus::Green);
     }
 
@@ -375,8 +397,14 @@ mod tests {
     fn test_aggregate_status_provider_unhealthy() {
         let manager = HealthCacheManager::new();
         manager.update_server_status(true, Some(3625));
-        manager.update_provider("openai", ItemHealth::healthy("openai".to_string(), Some(100)));
-        manager.update_provider("anthropic", ItemHealth::unhealthy("anthropic".to_string(), "Connection refused".to_string()));
+        manager.update_provider(
+            "openai",
+            ItemHealth::healthy("openai".to_string(), Some(100)),
+        );
+        manager.update_provider(
+            "anthropic",
+            ItemHealth::unhealthy("anthropic".to_string(), "Connection refused".to_string()),
+        );
         assert_eq!(manager.aggregate_status(), AggregateHealthStatus::Yellow);
     }
 
@@ -384,7 +412,14 @@ mod tests {
     fn test_aggregate_status_mcp_degraded() {
         let manager = HealthCacheManager::new();
         manager.update_server_status(true, Some(3625));
-        manager.update_mcp_server("fs-server", ItemHealth::degraded("fs-server".to_string(), Some(3000), "High latency".to_string()));
+        manager.update_mcp_server(
+            "fs-server",
+            ItemHealth::degraded(
+                "fs-server".to_string(),
+                Some(3000),
+                "High latency".to_string(),
+            ),
+        );
         assert_eq!(manager.aggregate_status(), AggregateHealthStatus::Yellow);
     }
 
@@ -394,7 +429,10 @@ mod tests {
         manager.init_providers(vec!["openai".to_string(), "anthropic".to_string()]);
         let state = manager.get();
         assert_eq!(state.providers.len(), 2);
-        assert_eq!(state.providers.get("openai").unwrap().status, ItemHealthStatus::Pending);
+        assert_eq!(
+            state.providers.get("openai").unwrap().status,
+            ItemHealthStatus::Pending
+        );
     }
 
     #[test]
@@ -413,7 +451,10 @@ mod tests {
     fn test_remove_provider() {
         let manager = HealthCacheManager::new();
         manager.update_server_status(true, Some(3625));
-        manager.update_provider("openai", ItemHealth::healthy("openai".to_string(), Some(100)));
+        manager.update_provider(
+            "openai",
+            ItemHealth::healthy("openai".to_string(), Some(100)),
+        );
         assert_eq!(manager.get().providers.len(), 1);
         manager.remove_provider("openai");
         assert_eq!(manager.get().providers.len(), 0);

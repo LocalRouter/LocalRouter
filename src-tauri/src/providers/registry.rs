@@ -661,11 +661,7 @@ impl ProviderRegistry {
 
     /// Get list of all provider names for initiating streaming health checks
     pub fn get_provider_names(&self) -> Vec<String> {
-        self.instances
-            .read()
-            .keys()
-            .cloned()
-            .collect()
+        self.instances.read().keys().cloned().collect()
     }
 
     /// Perform streaming health checks, calling callback as each completes
@@ -673,7 +669,9 @@ impl ProviderRegistry {
     where
         F: FnMut(String, ProviderHealth) + Send,
     {
-        self.health_manager.check_all_health_streaming(on_result).await
+        self.health_manager
+            .check_all_health_streaming(on_result)
+            .await
     }
 
     // ===== CONFIGURATION INTEGRATION =====
