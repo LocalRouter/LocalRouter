@@ -240,12 +240,14 @@ export function ToolsPanel({
                 )}
               >
                 <div className="flex items-center gap-2">
-                  <ChevronRight className="h-3 w-3 text-muted-foreground" />
-                  <span className="font-medium truncate">{tool.name}</span>
+                  <ChevronRight className="h-3 w-3 text-muted-foreground flex-shrink-0" />
+                  <span className="font-medium truncate">
+                    {tool.description || tool.name}
+                  </span>
                 </div>
                 {tool.description && (
-                  <p className="text-xs text-muted-foreground truncate ml-5 mt-0.5">
-                    {tool.description}
+                  <p className="text-xs text-muted-foreground truncate ml-5 mt-0.5 font-mono">
+                    {tool.name}
                   </p>
                 )}
               </button>
@@ -259,10 +261,12 @@ export function ToolsPanel({
         {selectedTool ? (
           <>
             <div className="p-4 border-b">
-              <h3 className="font-semibold">{selectedTool.name}</h3>
+              <h3 className="font-semibold">
+                {selectedTool.description || selectedTool.name}
+              </h3>
               {selectedTool.description && (
-                <p className="text-sm text-muted-foreground mt-1">
-                  {selectedTool.description}
+                <p className="text-xs text-muted-foreground mt-1 font-mono">
+                  {selectedTool.name}
                 </p>
               )}
             </div>

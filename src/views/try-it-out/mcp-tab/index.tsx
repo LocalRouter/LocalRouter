@@ -13,7 +13,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/Select"
-import { Wrench, FileText, MessageSquare, Radio, HelpCircle, RefreshCw, AlertCircle, Server } from "lucide-react"
+import { Wrench, FileText, MessageSquare, Radio, HelpCircle, AlertCircle, Server, X } from "lucide-react"
 import { ToolsPanel } from "./tools-panel"
 import { ResourcesPanel } from "./resources-panel"
 import { PromptsPanel } from "./prompts-panel"
@@ -174,8 +174,8 @@ export function McpTab({ innerPath, onPathChange }: McpTabProps) {
                 Test MCP servers through the unified gateway or individually
               </p>
             </div>
-            <Badge variant={isConnected ? "success" : "secondary"}>
-              {isConnected ? "Connected" : "Disconnected"}
+            <Badge variant={isConnected ? "success" : isConnecting ? "outline" : "secondary"}>
+              {isConnected ? "Connected" : isConnecting ? "Connecting..." : "Disconnected"}
             </Badge>
           </div>
         </CardHeader>
@@ -186,7 +186,7 @@ export function McpTab({ innerPath, onPathChange }: McpTabProps) {
               <Select
                 value={selectedTarget}
                 onValueChange={setSelectedTarget}
-                disabled={isConnected}
+                disabled={isConnected || isConnecting}
               >
                 <SelectTrigger className="w-[280px]">
                   <SelectValue />
@@ -212,19 +212,19 @@ export function McpTab({ innerPath, onPathChange }: McpTabProps) {
                 </code>
               )}
               {!isConnected ? (
-                <Button
-                  onClick={handleConnect}
-                  disabled={isConnecting || !internalTestToken || (mcpServers.length === 0 && !isGatewayTarget)}
-                >
-                  {isConnecting ? (
-                    <>
-                      <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
-                      Connecting...
-                    </>
-                  ) : (
-                    "Connect"
-                  )}
-                </Button>
+                isConnecting ? (
+                  <Button variant="outline" onClick={handleDisconnect}>
+                    <X className="h-4 w-4 mr-1" />
+                    Cancel
+                  </Button>
+                ) : (
+                  <Button
+                    onClick={handleConnect}
+                    disabled={!internalTestToken || (mcpServers.length === 0 && !isGatewayTarget)}
+                  >
+                    Connect
+                  </Button>
+                )
               ) : (
                 <Button variant="outline" onClick={handleDisconnect}>
                   Disconnect

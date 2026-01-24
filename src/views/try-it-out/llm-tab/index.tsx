@@ -295,6 +295,22 @@ export function LlmTab() {
     return selectedModel
   }
 
+  // Get model string with provider prefix for endpoints that don't use routing
+  // (images, embeddings) - these need provider/model format to know which provider to call
+  const getModelWithProvider = () => {
+    // If already in provider/model format (direct mode), use as-is
+    if (mode === "direct" && selectedProvider && selectedModel) {
+      return `${selectedProvider}/${selectedModel}`
+    }
+    // For client/strategy modes, look up the provider from providerModels
+    const modelInfo = providerModels.find(m => m.id === selectedModel)
+    if (modelInfo) {
+      return `${modelInfo.provider}/${modelInfo.id}`
+    }
+    // Fallback to just the model (will error if not dall-e-* or similar)
+    return selectedModel
+  }
+
   return (
     <div className="flex flex-col h-full gap-4">
       {/* Mode Selection */}
@@ -499,7 +515,7 @@ export function LlmTab() {
           <ImagesPanel
             openaiClient={openaiClient}
             isReady={isReady()}
-            selectedModel={getEffectiveModel()}
+            selectedModel={getModelWithProvider()}
           />
         </TabsContent>
 
@@ -507,7 +523,7 @@ export function LlmTab() {
           <EmbeddingsPanel
             openaiClient={openaiClient}
             isReady={isReady()}
-            selectedModel={getEffectiveModel()}
+            selectedModel={getModelWithProvider()}
           />
         </TabsContent>
       </Tabs>

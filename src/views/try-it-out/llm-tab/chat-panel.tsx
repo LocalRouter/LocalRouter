@@ -5,7 +5,6 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card"
 import { Button } from "@/components/ui/Button"
 import { Input } from "@/components/ui/Input"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { Badge } from "@/components/ui/Badge"
 import { cn } from "@/lib/utils"
 import type OpenAI from "openai"
 
@@ -57,7 +56,7 @@ export function ChatPanel({
   const [input, setInput] = useState("")
   const [isLoading, setIsLoading] = useState(false)
   const [attachedImages, setAttachedImages] = useState<ImageAttachment[]>([])
-  const scrollRef = useRef<HTMLDivElement>(null)
+  const messagesEndRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const abortControllerRef = useRef<AbortController | null>(null)
 
@@ -70,11 +69,13 @@ export function ChatPanel({
     }
   }, [])
 
+  // Get the last message content for scroll dependency (to scroll during streaming)
+  const lastMessageContent = messages[messages.length - 1]?.content
+
+  // Auto-scroll to bottom when messages change or content streams in
   useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight
-    }
-  }, [messages])
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
+  }, [messages.length, lastMessageContent])
 
   const handleStop = useCallback(() => {
     if (abortControllerRef.current) {
@@ -303,7 +304,7 @@ export function ChatPanel({
       </CardHeader>
       <CardContent className="flex-1 flex flex-col min-h-0">
         {/* Messages */}
-        <ScrollArea className="flex-1 pr-4" ref={scrollRef}>
+        <ScrollArea className="flex-1 pr-4">
           <div className="space-y-4">
             {messages.length === 0 ? (
               <div className="flex items-center justify-center h-64 text-muted-foreground">
@@ -372,9 +373,9 @@ export function ChatPanel({
                       )}
                     >
                       {message.metadata.model && (
-                        <Badge variant="outline" className="text-xs font-normal">
+                        <span className="text-[10px] opacity-60">
                           {message.metadata.model}
-                        </Badge>
+                        </span>
                       )}
                       {message.metadata.totalTokens !== undefined &&
                         message.metadata.totalTokens > 0 && (
@@ -394,6 +395,7 @@ export function ChatPanel({
                 </div>
               ))
             )}
+            <div ref={messagesEndRef} />
           </div>
         </ScrollArea>
 

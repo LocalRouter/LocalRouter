@@ -15,6 +15,7 @@ export interface McpServerTemplate {
   defaultScopes?: string[]
   setupInstructions?: string
   docsUrl?: string
+  devOnly?: boolean
 }
 
 export const MCP_SERVER_TEMPLATES: McpServerTemplate[] = [
@@ -58,13 +59,14 @@ export const MCP_SERVER_TEMPLATES: McpServerTemplate[] = [
     id: 'everything',
     name: 'Everything MCP Server',
     description: 'All-in-one MCP server with multiple capabilities for testing',
-    icon: '🌟',
+    icon: '🧪',
     transport: 'Stdio',
     command: 'npx',
     args: ['-y', '@modelcontextprotocol/server-everything'],
     authMethod: 'none',
-    setupInstructions: 'No additional setup required',
-    docsUrl: 'https://github.com/modelcontextprotocol/servers',
+    setupInstructions: 'No additional setup required. This server provides prompts, resources, and tools for testing MCP integrations.',
+    docsUrl: 'https://github.com/modelcontextprotocol/servers/tree/main/src/everything',
+    devOnly: true,
   },
   {
     id: 'postgres',
@@ -97,6 +99,9 @@ interface McpServerTemplatesProps {
 }
 
 export const McpServerTemplates: React.FC<McpServerTemplatesProps> = ({ onSelectTemplate }) => {
+  const isDev = import.meta.env.DEV
+  const visibleTemplates = MCP_SERVER_TEMPLATES.filter(t => !t.devOnly || isDev)
+
   return (
     <div className="space-y-4">
       <div>
@@ -106,7 +111,7 @@ export const McpServerTemplates: React.FC<McpServerTemplatesProps> = ({ onSelect
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {MCP_SERVER_TEMPLATES.map((template) => (
+        {visibleTemplates.map((template) => (
           <Card key={template.id} className="hover:border-blue-500 dark:hover:border-blue-400 transition-colors cursor-pointer">
             <div className="p-4" onClick={() => onSelectTemplate(template)}>
               <div className="flex items-start gap-3">
@@ -117,6 +122,11 @@ export const McpServerTemplates: React.FC<McpServerTemplatesProps> = ({ onSelect
                       {template.name}
                     </h4>
                     <div className="flex gap-2">
+                      {template.devOnly && (
+                        <span className="px-2 py-0.5 text-xs rounded-full bg-yellow-200 dark:bg-yellow-900 text-yellow-700 dark:text-yellow-300">
+                          Dev
+                        </span>
+                      )}
                       <span className="px-2 py-0.5 text-xs rounded-full bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300">
                         {template.transport}
                       </span>

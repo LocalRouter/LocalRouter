@@ -58,6 +58,9 @@ export function EmbeddingsPanel({ openaiClient, isReady, selectedModel }: Embedd
       const response = await openaiClient.embeddings.create({
         model: selectedModel,
         input: text.trim(),
+        // Explicitly request float format - the OpenAI SDK defaults to base64
+        // which would fail if our backend returns floats
+        encoding_format: "float",
       })
 
       const embeddingData = response.data[0]

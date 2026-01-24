@@ -200,13 +200,15 @@ export function PromptsPanel({
                 )}
               >
                 <div className="flex items-center gap-2">
-                  <ChevronRight className="h-3 w-3 text-muted-foreground" />
-                  <MessageSquare className="h-3 w-3 text-muted-foreground" />
-                  <span className="font-medium truncate">{prompt.name}</span>
+                  <ChevronRight className="h-3 w-3 text-muted-foreground flex-shrink-0" />
+                  <MessageSquare className="h-3 w-3 text-muted-foreground flex-shrink-0" />
+                  <span className="font-medium truncate">
+                    {prompt.description || prompt.name}
+                  </span>
                 </div>
                 {prompt.description && (
-                  <p className="text-xs text-muted-foreground truncate ml-8 mt-0.5">
-                    {prompt.description}
+                  <p className="text-xs text-muted-foreground truncate ml-8 mt-0.5 font-mono">
+                    {prompt.name}
                   </p>
                 )}
                 {prompt.arguments && prompt.arguments.length > 0 && (
@@ -225,10 +227,12 @@ export function PromptsPanel({
         {selectedPrompt ? (
           <>
             <div className="p-4 border-b">
-              <h3 className="font-semibold">{selectedPrompt.name}</h3>
+              <h3 className="font-semibold">
+                {selectedPrompt.description || selectedPrompt.name}
+              </h3>
               {selectedPrompt.description && (
-                <p className="text-sm text-muted-foreground mt-1">
-                  {selectedPrompt.description}
+                <p className="text-xs text-muted-foreground mt-1 font-mono">
+                  {selectedPrompt.name}
                 </p>
               )}
             </div>

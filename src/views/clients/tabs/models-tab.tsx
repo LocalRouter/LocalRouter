@@ -192,24 +192,6 @@ export function ClientModelsTab({
             </Alert>
           )}
 
-          {/* Current Strategy Info */}
-          {currentStrategy && (
-            <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <span>Currently using:</span>
-              <Badge
-                variant={
-                  currentStrategy.parent === client.id
-                    ? "default"
-                    : "outline"
-                }
-              >
-                {currentStrategy.name}
-              </Badge>
-              {currentStrategy.parent === client.id && (
-                <span className="text-xs">(Personal strategy for this client)</span>
-              )}
-            </div>
-          )}
         </CardContent>
       </Card>
 
