@@ -1,0 +1,15 @@
+#!/bin/bash
+
+# Script to run LocalRouter AI in dev mode without hot reload
+# Uses cargo tauri dev --no-watch
+
+set -e
+
+# Colors for output
+GREEN='\033[0;32m'
+NC='\033[0m' # No Color
+
+echo -e "${GREEN}Starting LocalRouter AI in development mode (no hot reload)...${NC}"
+echo -e "Press Ctrl+C to stop\n"
+
+exec cargo tauri dev --no-watch
