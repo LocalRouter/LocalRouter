@@ -1830,6 +1830,106 @@ pub async fn update_mcp_server_config(
     Ok(())
 }
 
+/// Update an MCP server with partial updates
+///
+/// This command allows updating individual fields without requiring all fields.
+/// Only the fields provided in the `updates` object will be modified.
+///
+/// # Arguments
+/// * `server_id` - The server ID to update
+/// * `updates` - JSON object with optional fields: name, transport_config, auth_config
+///
+/// # Returns
+/// * Ok(()) if successful
+#[tauri::command]
+pub async fn update_mcp_server(
+    server_id: String,
+    updates: serde_json::Value,
+    mcp_manager: State<'_, Arc<McpServerManager>>,
+    config_manager: State<'_, ConfigManager>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    tracing::info!("Updating MCP server with partial updates: {}", server_id);
+    tracing::debug!("Updates JSON: {}", updates);
+
+    let updates_obj = updates.as_object().ok_or("Updates must be a JSON object")?;
+
+    // Extract optional update fields
+    let name_update = updates_obj.get("name").and_then(|v| v.as_str());
+    let transport_config_update = updates_obj.get("transport_config");
+    let auth_config_update = updates_obj.get("auth_config");
+
+    // Validate name if provided
+    if let Some(name) = name_update {
+        if name.trim().is_empty() {
+            return Err("MCP server name cannot be empty".to_string());
+        }
+    }
+
+    // Parse transport config if provided
+    let parsed_transport_config = if let Some(tc) = transport_config_update {
+        Some(
+            serde_json::from_value::<McpTransportConfig>(tc.clone()).map_err(|e| {
+                tracing::error!("Failed to parse transport config: {}", e);
+                format!("Invalid transport config: {}", e)
+            })?,
+        )
+    } else {
+        None
+    };
+
+    // Parse auth config if provided and store secrets in keychain
+    let parsed_auth_config = if auth_config_update.is_some() {
+        process_auth_config(&server_id, auth_config_update.cloned())?
+    } else {
+        None
+    };
+
+    // Update in config file
+    config_manager
+        .update(|cfg| {
+            if let Some(server) = cfg.mcp_servers.iter_mut().find(|s| s.id == server_id) {
+                // Update name if provided
+                if let Some(name) = name_update {
+                    server.name = name.to_string();
+                }
+                // Update transport config if provided
+                if let Some(ref tc) = parsed_transport_config {
+                    server.transport_config = tc.clone();
+                }
+                // Update auth config if provided (even if it's None to clear it)
+                if auth_config_update.is_some() {
+                    server.auth_config = parsed_auth_config.clone();
+                }
+            }
+        })
+        .map_err(|e| e.to_string())?;
+
+    // Update in manager
+    if let Some(config) = config_manager
+        .get()
+        .mcp_servers
+        .iter()
+        .find(|s| s.id == server_id)
+        .cloned()
+    {
+        mcp_manager.add_config(config);
+    }
+
+    // Persist to disk
+    config_manager.save().await.map_err(|e| e.to_string())?;
+
+    // Rebuild tray menu
+    if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
+        tracing::error!("Failed to rebuild tray menu: {}", e);
+    }
+
+    // Notify frontend
+    let _ = app.emit("mcp-servers-changed", ());
+
+    Ok(())
+}
+
 /// Toggle an MCP server's enabled state
 ///
 /// # Arguments

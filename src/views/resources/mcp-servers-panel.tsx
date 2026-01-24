@@ -85,6 +85,10 @@ export function McpServersPanel({
   // Delete confirmation state
   const [serverToDelete, setServerToDelete] = useState<McpServer | null>(null)
 
+  // Edit modal state
+  const [showEditModal, setShowEditModal] = useState(false)
+  const [isEditing, setIsEditing] = useState(false)
+
   // Create modal state
   const [showCreateModal, setShowCreateModal] = useState(false)
   const [selectedTemplate, setSelectedTemplate] = useState<McpServerTemplate | null>(null)
@@ -235,6 +239,128 @@ export function McpServersPanel({
       loadServers()
     } catch (error) {
       toast.error("Failed to update server")
+    }
+  }
+
+  // Populate form from an existing server for editing
+  const populateFormFromServer = (server: McpServer) => {
+    setServerName(server.name)
+    setTransportType(server.transport === "Stdio" ? "Stdio" : "Sse")
+    setSelectedTemplate(null)
+
+    const tc = server.transport_config as Record<string, unknown>
+    if (server.transport === "Stdio") {
+      setCommand((tc.command as string) || "")
+      setArgs(((tc.args as string[]) || []).join("\n"))
+      setEnvVars((tc.env as Record<string, string>) || {})
+      setUrl("")
+      setHeaders({})
+    } else {
+      setUrl((tc.url as string) || "")
+      setHeaders((tc.headers as Record<string, string>) || {})
+      setCommand("")
+      setArgs("")
+      setEnvVars({})
+    }
+
+    // Set auth method based on existing config
+    if (!server.auth_config || server.auth_config.type === "none") {
+      setAuthMethod("none")
+      setBearerToken("")
+    } else if (server.auth_config.type === "bearer_token") {
+      setAuthMethod("bearer")
+      setBearerToken("") // Don't show existing token for security
+    } else if (server.auth_config.type === "oauth_browser") {
+      setAuthMethod("oauth_browser")
+      setBearerToken("")
+    } else {
+      setAuthMethod("none")
+      setBearerToken("")
+    }
+  }
+
+  const handleStartEdit = (server: McpServer) => {
+    populateFormFromServer(server)
+    setShowEditModal(true)
+  }
+
+  const handleEditServer = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!selectedServer) return
+
+    setIsEditing(true)
+
+    try {
+      // Parse transport config based on type
+      let transportConfig
+      if (transportType === "Stdio") {
+        const argsList = args.trim()
+          ? args.split(/[\n,]/).map((a) => a.trim()).filter((a) => a)
+          : []
+
+        transportConfig = {
+          type: "stdio",
+          command,
+          args: argsList,
+          env: envVars,
+        }
+      } else {
+        transportConfig = {
+          type: "http_sse",
+          url,
+          headers: headers,
+        }
+      }
+
+      // Build auth config based on auth method
+      // Only include auth_config in updates if we're changing it
+      let authConfig = null
+      if (authMethod === "bearer" && bearerToken) {
+        // Only update bearer token if a new one is provided
+        authConfig = {
+          type: "bearer_token",
+          token: bearerToken,
+        }
+      } else if (authMethod === "oauth_browser") {
+        // Preserve existing OAuth config - just mark the type
+        authConfig = {
+          type: "oauth_browser",
+        }
+      } else if (authMethod === "none") {
+        // Explicitly clear auth
+        authConfig = null
+      }
+
+      // Build updates object - only include fields that are being updated
+      const updates: Record<string, unknown> = {
+        name: serverName,
+        transport_config: transportConfig,
+      }
+
+      // Only include auth_config if we're explicitly changing it
+      // (bearer with new token, or changing to none)
+      if (authMethod === "bearer" && bearerToken) {
+        updates.auth_config = authConfig
+      } else if (authMethod === "none" && selectedServer.auth_config?.type !== "none" && selectedServer.auth_config !== null) {
+        // Clearing auth config
+        updates.auth_config = null
+      }
+      // If authMethod is oauth_browser, we don't update auth_config here (use OAuth setup flow instead)
+
+      await invoke("update_mcp_server", {
+        serverId: selectedServer.id,
+        updates,
+      })
+
+      toast.success("MCP server updated")
+      await loadServers()
+      setShowEditModal(false)
+      resetForm()
+    } catch (error) {
+      console.error("Failed to update MCP server:", error)
+      toast.error(`Error updating MCP server: ${error}`)
+    } finally {
+      setIsEditing(false)
     }
   }
 
@@ -453,6 +579,7 @@ export function McpServersPanel({
                   </Badge>
                   <EntityActions
                     actions={[
+                      commonActions.edit(() => handleStartEdit(selectedServer)),
                       createToggleAction(selectedServer.enabled, () =>
                         handleToggle(selectedServer)
                       ),
@@ -482,6 +609,67 @@ export function McpServersPanel({
                       <p className="text-sm capitalize">{selectedServer.auth_config?.type.replace(/_/g, " ")}</p>
                     </div>
                   )}
+                </CardContent>
+              </Card>
+
+              {/* Transport Configuration */}
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-sm">Transport Configuration</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  {selectedServer.transport === "Stdio" && (() => {
+                    const tc = selectedServer.transport_config as { command?: string; args?: string[]; env?: Record<string, string> }
+                    return (
+                      <>
+                        <div>
+                          <p className="text-sm text-muted-foreground">Command</p>
+                          <code className="text-sm break-all">{tc.command || "N/A"}</code>
+                        </div>
+                        {tc.args && tc.args.length > 0 && (
+                          <div>
+                            <p className="text-sm text-muted-foreground">Arguments</p>
+                            <code className="text-sm break-all">{tc.args.join(" ")}</code>
+                          </div>
+                        )}
+                        {tc.env && Object.keys(tc.env).length > 0 && (
+                          <div>
+                            <p className="text-sm text-muted-foreground">Environment Variables</p>
+                            <div className="space-y-1">
+                              {Object.entries(tc.env).map(([key, value]) => (
+                                <div key={key} className="text-sm">
+                                  <code>{key}</code>=<code className="text-muted-foreground">{value}</code>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </>
+                    )
+                  })()}
+                  {selectedServer.transport !== "Stdio" && (() => {
+                    const tc = selectedServer.transport_config as { url?: string; headers?: Record<string, string> }
+                    return (
+                      <>
+                        <div>
+                          <p className="text-sm text-muted-foreground">URL</p>
+                          <code className="text-sm break-all">{tc.url || "N/A"}</code>
+                        </div>
+                        {tc.headers && Object.keys(tc.headers).length > 0 && (
+                          <div>
+                            <p className="text-sm text-muted-foreground">Headers</p>
+                            <div className="space-y-1">
+                              {Object.entries(tc.headers).map(([key, value]) => (
+                                <div key={key} className="text-sm">
+                                  <code>{key}</code>: <code className="text-muted-foreground">{value}</code>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </>
+                    )
+                  })()}
                 </CardContent>
               </Card>
 
@@ -878,6 +1066,181 @@ export function McpServersPanel({
             </Button>
           </div>
         </div>
+      </DialogContent>
+    </Dialog>
+
+    {/* Edit MCP Server Modal */}
+    <Dialog
+      open={showEditModal}
+      onOpenChange={(open) => {
+        if (!open) {
+          setShowEditModal(false)
+          resetForm()
+        }
+      }}
+    >
+      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>Edit MCP Server</DialogTitle>
+        </DialogHeader>
+
+        <form onSubmit={handleEditServer} className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium mb-2">Server Name</label>
+            <Input
+              value={serverName}
+              onChange={(e) => setServerName(e.target.value)}
+              placeholder="My MCP Server"
+              required
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium mb-2">Transport Type</label>
+            <LegacySelect
+              value={transportType}
+              onChange={(e) => setTransportType(e.target.value as "Stdio" | "Sse")}
+            >
+              <option value="Stdio">STDIO (Subprocess)</option>
+              <option value="Sse">HTTP-SSE (Server-Sent Events)</option>
+            </LegacySelect>
+          </div>
+
+          {/* STDIO Config */}
+          {transportType === "Stdio" && (
+            <>
+              <div>
+                <label className="block text-sm font-medium mb-2">Command</label>
+                <Input
+                  value={command}
+                  onChange={(e) => setCommand(e.target.value)}
+                  placeholder="npx -y @modelcontextprotocol/server-everything"
+                  required
+                />
+                <p className="text-xs text-muted-foreground mt-1">
+                  Example: npx -y &lt;command&gt;
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium mb-2">
+                  Arguments (one per line)
+                </label>
+                <textarea
+                  value={args}
+                  onChange={(e) => setArgs(e.target.value)}
+                  placeholder={"-y\n@modelcontextprotocol/server-everything"}
+                  className="w-full px-3 py-2 bg-background border border-input rounded-md text-sm min-h-[80px]"
+                  rows={3}
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium mb-2">
+                  Environment Variables
+                </label>
+                <KeyValueInput
+                  value={envVars}
+                  onChange={setEnvVars}
+                  keyPlaceholder="KEY"
+                  valuePlaceholder="VALUE"
+                />
+              </div>
+            </>
+          )}
+
+          {/* HTTP-SSE Config */}
+          {transportType === "Sse" && (
+            <>
+              <div>
+                <label className="block text-sm font-medium mb-2">URL</label>
+                <Input
+                  value={url}
+                  onChange={(e) => setUrl(e.target.value)}
+                  placeholder="https://mcp.example.com/sse"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium mb-2">Headers</label>
+                <KeyValueInput
+                  value={headers}
+                  onChange={setHeaders}
+                  keyPlaceholder="Header Name"
+                  valuePlaceholder="Header Value"
+                />
+              </div>
+            </>
+          )}
+
+          {/* Authentication Configuration */}
+          {transportType === "Sse" && (
+            <div className="border-t pt-4 mt-4">
+              <h3 className="text-md font-semibold mb-3">Authentication</h3>
+              <p className="text-sm text-muted-foreground mb-3">
+                Configure how LocalRouter authenticates to this MCP server
+              </p>
+
+              <div>
+                <label className="block text-sm font-medium mb-2">Authentication Method</label>
+                <LegacySelect
+                  value={authMethod}
+                  onChange={(e) => setAuthMethod(e.target.value as typeof authMethod)}
+                >
+                  <option value="none">None / Via headers</option>
+                  <option value="bearer">Bearer Token</option>
+                  <option value="oauth_browser">OAuth (Browser)</option>
+                </LegacySelect>
+              </div>
+
+              {/* Bearer Token Auth */}
+              {authMethod === "bearer" && (
+                <div className="mt-3">
+                  <label className="block text-sm font-medium mb-2">Bearer Token</label>
+                  <Input
+                    type="password"
+                    value={bearerToken}
+                    onChange={(e) => setBearerToken(e.target.value)}
+                    placeholder="Enter new token to update (leave empty to keep existing)"
+                  />
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Leave empty to keep the existing token. Token will be stored securely in system keychain.
+                  </p>
+                </div>
+              )}
+
+              {/* OAuth Browser Flow */}
+              {authMethod === "oauth_browser" && (
+                <div className="mt-3">
+                  <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-700 rounded p-3">
+                    <p className="text-blue-800 dark:text-blue-200 text-sm">
+                      OAuth settings are managed separately. After saving, use the "Setup OAuth"
+                      button in the detail view to configure OAuth credentials.
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          <div className="flex justify-end gap-2 pt-4">
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => {
+                setShowEditModal(false)
+                resetForm()
+              }}
+              disabled={isEditing}
+            >
+              Cancel
+            </Button>
+            <Button type="submit" disabled={isEditing}>
+              {isEditing ? "Saving..." : "Save Changes"}
+            </Button>
+          </div>
+        </form>
       </DialogContent>
     </Dialog>
 
