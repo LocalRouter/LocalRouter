@@ -1,10 +1,15 @@
+import { lazy, Suspense } from "react"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { ServerTab } from "./server-tab"
 import { RoutingTab } from "./routing-tab"
 import { RouteLLMTab } from "./routellm-tab"
 import { LoggingTab } from "./logging-tab"
 import { UpdatesTab } from "./updates-tab"
-import { DocsTab } from "./docs-tab"
+
+// Lazy load DocsTab only in dev mode to exclude rapidoc (864KB) from production
+const DocsTab = import.meta.env.DEV
+  ? lazy(() => import("./docs-tab").then(m => ({ default: m.DocsTab })))
+  : () => null
 
 interface SettingsViewProps {
   activeSubTab: string | null
@@ -53,7 +58,7 @@ export function SettingsView({ activeSubTab, onTabChange }: SettingsViewProps) {
           <TabsTrigger value="server">Server</TabsTrigger>
           <TabsTrigger value="routing">Routing</TabsTrigger>
           <TabsTrigger value="routellm">RouteLLM</TabsTrigger>
-          <TabsTrigger value="logging">Logging</TabsTrigger>
+          <TabsTrigger value="logs">Logs</TabsTrigger>
           <TabsTrigger value="updates">Updates</TabsTrigger>
           {isDev && <TabsTrigger value="docs">Docs</TabsTrigger>}
         </TabsList>
@@ -73,7 +78,7 @@ export function SettingsView({ activeSubTab, onTabChange }: SettingsViewProps) {
           <RouteLLMTab />
         </TabsContent>
 
-        <TabsContent value="logging">
+        <TabsContent value="logs">
           <LoggingTab />
         </TabsContent>
 
@@ -83,7 +88,16 @@ export function SettingsView({ activeSubTab, onTabChange }: SettingsViewProps) {
 
         {isDev && (
           <TabsContent value="docs">
-            <DocsTab />
+            <Suspense fallback={
+              <div className="flex items-center justify-center h-96">
+                <div className="text-center space-y-4">
+                  <div className="text-6xl animate-spin">⚙️</div>
+                  <p className="text-muted-foreground">Loading API documentation...</p>
+                </div>
+              </div>
+            }>
+              <DocsTab />
+            </Suspense>
           </TabsContent>
         )}
       </Tabs>
