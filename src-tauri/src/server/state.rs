@@ -226,6 +226,9 @@ pub struct AppState {
     /// SSE connection manager for MCP HTTP+SSE transport
     /// Tracks active SSE connections and routes responses to the correct stream
     pub sse_connection_manager: Arc<SseConnectionManager>,
+
+    /// Track which MCP servers have notification handlers registered (to prevent duplicates)
+    pub mcp_notification_handlers_registered: Arc<DashMap<String, bool>>,
 }
 
 impl AppState {
@@ -290,16 +293,18 @@ impl AppState {
             tray_graph_manager: Arc::new(RwLock::new(None)),
             mcp_notification_broadcast: Arc::new(notification_tx),
             sse_connection_manager: Arc::new(SseConnectionManager::new()),
+            mcp_notification_handlers_registered: Arc::new(DashMap::new()),
         }
     }
 
     /// Add MCP manager to the state
     pub fn with_mcp(self, mcp_server_manager: Arc<McpServerManager>) -> Self {
-        // Create gateway with the actual MCP server manager
-        let mcp_gateway = Arc::new(McpGateway::new(
+        // Create gateway with the actual MCP server manager and notification broadcast
+        let mcp_gateway = Arc::new(McpGateway::new_with_broadcast(
             mcp_server_manager.clone(),
             crate::mcp::gateway::GatewayConfig::default(),
             self.router.clone(),
+            Some(self.mcp_notification_broadcast.clone()),
         ));
 
         Self {

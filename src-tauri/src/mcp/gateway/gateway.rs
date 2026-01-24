@@ -708,10 +708,28 @@ impl McpGateway {
             .and_then(|params| params.get("capabilities"))
             .and_then(|caps| serde_json::from_value::<ClientCapabilities>(caps.clone()).ok());
 
+        // Log raw capabilities JSON for debugging (before struct parsing)
+        let raw_capabilities = request
+            .params
+            .as_ref()
+            .and_then(|params| params.get("capabilities"));
+
+        if let Some(raw_caps) = raw_capabilities {
+            tracing::info!(
+                "Gateway received initialize with raw capabilities: {}",
+                raw_caps
+            );
+        }
+
         if let Some(ref caps) = client_capabilities {
-            tracing::debug!("Client capabilities received: {:?}", caps);
+            tracing::info!(
+                "Client capabilities parsed: sampling={}, elicitation={}, roots_listChanged={}",
+                caps.supports_sampling(),
+                caps.supports_elicitation(),
+                caps.roots.as_ref().and_then(|r| r.list_changed).unwrap_or(false)
+            );
         } else {
-            tracing::debug!(
+            tracing::warn!(
                 "Client did not provide capabilities in initialize request (optional per MCP spec)"
             );
         }

@@ -802,6 +802,39 @@ pub async fn mcp_server_handler(
     let start_time = Instant::now();
     let method = request.method.clone();
 
+    // Log detailed info for initialize requests to help debug capability forwarding
+    if method == "initialize" {
+        tracing::info!(
+            "Initialize request to server {}: full_params={}",
+            server_id,
+            serde_json::to_string(&request.params).unwrap_or_else(|_| "null".to_string())
+        );
+        if let Some(params) = &request.params {
+            if let Some(caps) = params.get("capabilities") {
+                let has_sampling = caps.get("sampling").is_some();
+                let has_elicitation = caps.get("elicitation").is_some();
+                let has_roots = caps.get("roots").is_some();
+                tracing::info!(
+                    "Proxying initialize to server {}: sampling={}, elicitation={}, roots={}",
+                    server_id,
+                    has_sampling,
+                    has_elicitation,
+                    has_roots
+                );
+            } else {
+                tracing::warn!(
+                    "Initialize request to server {} has params but NO capabilities field",
+                    server_id
+                );
+            }
+        } else {
+            tracing::warn!(
+                "Initialize request to server {} has NO params at all",
+                server_id
+            );
+        }
+    }
+
     tracing::info!(
         "Proxying JSON-RPC request to server {}: method={}, client={}",
         server_id,
@@ -815,6 +848,18 @@ pub async fn mcp_server_handler(
         .await
     {
         Ok(response) => {
+            // Log detailed info for initialize responses
+            if method == "initialize" {
+                if let Some(result) = &response.result {
+                    if let Some(caps) = result.get("capabilities") {
+                        tracing::info!(
+                            "Backend server {} initialize response - server capabilities: {}",
+                            server_id,
+                            caps
+                        );
+                    }
+                }
+            }
             tracing::info!(
                 "Received response from backend server {}: id={:?}, has_error={}",
                 server_id,
@@ -956,6 +1001,37 @@ pub async fn mcp_server_sse_handler(
             return ApiErrorResponse::bad_gateway(format!("Failed to start MCP server: {}", e))
                 .into_response();
         }
+    }
+
+    // Register notification handler to forward notifications to the broadcast channel
+    // Only register once per server to avoid duplicate notifications
+    if !state
+        .mcp_notification_handlers_registered
+        .contains_key(&server_id)
+    {
+        state
+            .mcp_notification_handlers_registered
+            .insert(server_id.clone(), true);
+
+        let broadcast_tx = state.mcp_notification_broadcast.clone();
+        let server_id_for_handler = server_id.clone();
+        state.mcp_server_manager.on_notification(
+            &server_id,
+            std::sync::Arc::new(move |srv_id, notification| {
+                let payload = (srv_id, notification);
+                if let Err(e) = broadcast_tx.send(payload) {
+                    tracing::trace!(
+                        "No SSE clients subscribed to notifications from server {}: {}",
+                        server_id_for_handler,
+                        e
+                    );
+                }
+            }),
+        );
+        tracing::debug!(
+            "Registered notification handler for MCP server {}",
+            server_id
+        );
     }
 
     // For proxied servers, use a composite key (client_id:server_id) to allow

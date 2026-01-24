@@ -303,6 +303,11 @@ pub struct ClientCapabilities {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sampling: Option<serde_json::Value>,
 
+    /// Elicitation capability - client supports elicitation requests from server
+    /// Can include "form" for form-based elicitation
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub elicitation: Option<ClientElicitationCapability>,
+
     /// Experimental capabilities
     #[serde(skip_serializing_if = "Option::is_none")]
     pub experimental: Option<serde_json::Value>,
@@ -312,6 +317,14 @@ pub struct ClientCapabilities {
 pub struct ClientRootsCapability {
     #[serde(rename = "listChanged", skip_serializing_if = "Option::is_none")]
     pub list_changed: Option<bool>,
+}
+
+/// Client elicitation capability
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClientElicitationCapability {
+    /// Form-based elicitation support
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub form: Option<serde_json::Value>,
 }
 
 impl ClientCapabilities {
@@ -338,6 +351,24 @@ impl ClientCapabilities {
         self.prompts
             .as_ref()
             .and_then(|p| p.list_changed)
+            .unwrap_or(false)
+    }
+
+    /// Check if client declared support for sampling/createMessage requests
+    pub fn supports_sampling(&self) -> bool {
+        self.sampling.is_some()
+    }
+
+    /// Check if client declared support for elicitation (any form)
+    pub fn supports_elicitation(&self) -> bool {
+        self.elicitation.is_some()
+    }
+
+    /// Check if client declared support for form-based elicitation
+    pub fn supports_elicitation_form(&self) -> bool {
+        self.elicitation
+            .as_ref()
+            .map(|e| e.form.is_some())
             .unwrap_or(false)
     }
 }
