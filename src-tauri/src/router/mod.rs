@@ -547,32 +547,6 @@ impl Router {
                 ))
             })?;
 
-        // Check provider health (log warning if unhealthy)
-        let health = provider_instance.health_check().await;
-        match health.status {
-            crate::providers::HealthStatus::Healthy => {
-                debug!(
-                    "Provider '{}' is healthy (latency: {:?}ms)",
-                    provider, health.latency_ms
-                );
-            }
-            crate::providers::HealthStatus::Degraded => {
-                warn!(
-                    "Provider '{}' is degraded: {}",
-                    provider,
-                    health.error_message.as_deref().unwrap_or("unknown")
-                );
-            }
-            crate::providers::HealthStatus::Unhealthy => {
-                warn!(
-                    "Provider '{}' is unhealthy: {}",
-                    provider,
-                    health.error_message.as_deref().unwrap_or("unknown")
-                );
-                // Continue anyway - let the request fail naturally
-            }
-        }
-
         // Modify the request to use just the model name (without provider prefix)
         let mut modified_request = request.clone();
         modified_request.model = model.to_string();
@@ -1319,32 +1293,6 @@ impl Router {
                 ))
             })?;
 
-        // Check provider health (log warning if unhealthy)
-        let health = provider_instance.health_check().await;
-        match health.status {
-            crate::providers::HealthStatus::Healthy => {
-                debug!(
-                    "Provider '{}' is healthy (latency: {:?}ms)",
-                    provider, health.latency_ms
-                );
-            }
-            crate::providers::HealthStatus::Degraded => {
-                warn!(
-                    "Provider '{}' is degraded: {}",
-                    provider,
-                    health.error_message.as_deref().unwrap_or("unknown")
-                );
-            }
-            crate::providers::HealthStatus::Unhealthy => {
-                warn!(
-                    "Provider '{}' is unhealthy: {}",
-                    provider,
-                    health.error_message.as_deref().unwrap_or("unknown")
-                );
-                // Continue anyway - let the request fail naturally
-            }
-        }
-
         // Modify the request to use just the model name (without provider prefix)
         let modified_request = EmbeddingRequest {
             model: model.to_string(),
@@ -1566,7 +1514,6 @@ impl Router {
 mod tests {
     use super::*;
     use crate::config::AppConfig;
-    use crate::providers::health::HealthCheckManager;
 
     #[tokio::test]
     async fn test_router_creation() {
@@ -1575,8 +1522,7 @@ mod tests {
             std::path::PathBuf::from("/tmp/test.yaml"),
         ));
 
-        let health_manager = Arc::new(HealthCheckManager::default());
-        let provider_registry = Arc::new(ProviderRegistry::new(health_manager));
+        let provider_registry = Arc::new(ProviderRegistry::new());
         let rate_limiter = Arc::new(RateLimiterManager::new(None));
 
         // Create test metrics collector
@@ -1606,8 +1552,7 @@ mod tests {
             std::path::PathBuf::from("/tmp/test.yaml"),
         ));
 
-        let health_manager = Arc::new(HealthCheckManager::default());
-        let provider_registry = Arc::new(ProviderRegistry::new(health_manager));
+        let provider_registry = Arc::new(ProviderRegistry::new());
         let rate_limiter = Arc::new(RateLimiterManager::new(None));
 
         // Create test metrics collector

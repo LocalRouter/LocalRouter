@@ -31,7 +31,6 @@ use providers::factory::{
     OpenAIProviderFactory, OpenRouterProviderFactory, PerplexityProviderFactory,
     TogetherAIProviderFactory, XAIProviderFactory,
 };
-use providers::health::HealthCheckManager;
 use providers::registry::ProviderRegistry;
 use server::ServerManager;
 
@@ -187,12 +186,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
 
     // Initialize provider registry
     info!("Initializing provider registry...");
-    let health_manager = Arc::new(HealthCheckManager::default());
-    let provider_registry = Arc::new(ProviderRegistry::new(health_manager.clone()));
-
-    // Start background health check task
-    info!("Starting background health checks...");
-    let _health_task = health_manager.clone().start_background_task();
+    let provider_registry = Arc::new(ProviderRegistry::new());
 
     // Register provider factories
     info!("Registering provider factories...");
@@ -415,7 +409,6 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             app.manage(mcp_oauth_manager.clone());
             app.manage(mcp_oauth_browser_manager.clone());
             app.manage(provider_registry.clone());
-            app.manage(health_manager.clone());
             app.manage(server_manager.clone());
             app.manage(app_router.clone());
             app.manage(rate_limiter.clone());

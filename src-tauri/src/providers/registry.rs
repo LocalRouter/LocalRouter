@@ -120,18 +120,26 @@ impl ProviderRegistry {
     // ===== INITIALIZATION =====
 
     /// Create a new provider registry
-    pub fn new(health_manager: Arc<HealthCheckManager>) -> Self {
+    pub fn new() -> Self {
         info!("Creating new provider registry");
         Self {
             factories: RwLock::new(HashMap::new()),
             instances: RwLock::new(HashMap::new()),
-            health_manager,
+            health_manager: Arc::new(HealthCheckManager::default()),
             cached_models: RwLock::new(Vec::new()),
             model_cache: Arc::new(RwLock::new(HashMap::new())),
             cache_config: Arc::new(RwLock::new(ModelCacheConfig::default())),
         }
     }
+}
 
+impl Default for ProviderRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ProviderRegistry {
     // ===== FACTORY MANAGEMENT (Setup Phase) =====
 
     /// Register a provider factory (called at startup)
@@ -631,20 +639,21 @@ impl ProviderRegistry {
 
     // ===== HEALTH CHECKS =====
 
-    /// Get health status for all provider instances
+    /// Get health status for all provider instances (on-demand)
     ///
-    /// Used by: Health monitoring, UI dashboard
+    /// Performs health checks for all registered providers in parallel.
+    /// Used by: UI dashboard when user views provider health.
     pub async fn get_all_health(&self) -> HashMap<String, ProviderHealth> {
-        self.health_manager.get_all_health().await
+        self.health_manager.check_all_health().await
     }
 
-    /// Get health status for a specific provider
+    /// Get health status for a specific provider (on-demand)
     ///
-    /// Used by: Provider selection in router
+    /// Performs a health check for the specified provider.
     #[allow(dead_code)]
     pub async fn get_provider_health(&self, instance_name: &str) -> Option<ProviderHealth> {
-        if let Some(provider) = self.get_provider_unchecked(instance_name) {
-            self.health_manager.get_health(provider.name()).await
+        if let Some(_provider) = self.get_provider_unchecked(instance_name) {
+            self.health_manager.check_health(instance_name).await
         } else {
             None
         }
@@ -737,8 +746,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_registry_creation() {
-        let health_mgr = Arc::new(HealthCheckManager::default());
-        let registry = ProviderRegistry::new(health_mgr);
+        let registry = ProviderRegistry::new();
 
         assert_eq!(registry.list_providers().len(), 0);
         assert_eq!(registry.list_provider_types().len(), 0);
@@ -746,8 +754,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_register_factory() {
-        let health_mgr = Arc::new(HealthCheckManager::default());
-        let registry = ProviderRegistry::new(health_mgr);
+        let registry = ProviderRegistry::new();
 
         registry.register_factory(Arc::new(OllamaProviderFactory));
 
@@ -758,8 +765,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_provider_instance() {
-        let health_mgr = Arc::new(HealthCheckManager::default());
-        let registry = ProviderRegistry::new(health_mgr);
+        let registry = ProviderRegistry::new();
 
         registry.register_factory(Arc::new(OllamaProviderFactory));
 
@@ -780,8 +786,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_duplicate_instance_name() {
-        let health_mgr = Arc::new(HealthCheckManager::default());
-        let registry = ProviderRegistry::new(health_mgr);
+        let registry = ProviderRegistry::new();
 
         registry.register_factory(Arc::new(OllamaProviderFactory));
 
@@ -801,8 +806,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_provider() {
-        let health_mgr = Arc::new(HealthCheckManager::default());
-        let registry = ProviderRegistry::new(health_mgr);
+        let registry = ProviderRegistry::new();
 
         registry.register_factory(Arc::new(OllamaProviderFactory));
 
@@ -820,8 +824,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_enable_disable_provider() {
-        let health_mgr = Arc::new(HealthCheckManager::default());
-        let registry = ProviderRegistry::new(health_mgr);
+        let registry = ProviderRegistry::new();
 
         registry.register_factory(Arc::new(OllamaProviderFactory));
 
@@ -846,8 +849,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_remove_provider() {
-        let health_mgr = Arc::new(HealthCheckManager::default());
-        let registry = ProviderRegistry::new(health_mgr);
+        let registry = ProviderRegistry::new();
 
         registry.register_factory(Arc::new(OllamaProviderFactory));
 
@@ -884,8 +886,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_cache_config_update() {
-        let health_mgr = Arc::new(HealthCheckManager::default());
-        let registry = ProviderRegistry::new(health_mgr);
+        let registry = ProviderRegistry::new();
 
         let mut new_config = ModelCacheConfig::default();
         new_config.default_ttl_seconds = 7200;
@@ -902,8 +903,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_invalidate_cache() {
-        let health_mgr = Arc::new(HealthCheckManager::default());
-        let registry = ProviderRegistry::new(health_mgr);
+        let registry = ProviderRegistry::new();
 
         // Manually add a cache entry
         registry
@@ -920,8 +920,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_invalidate_all_caches() {
-        let health_mgr = Arc::new(HealthCheckManager::default());
-        let registry = ProviderRegistry::new(health_mgr);
+        let registry = ProviderRegistry::new();
 
         // Manually add cache entries
         registry
