@@ -2,10 +2,10 @@
  * StrategyModelConfiguration Component
  *
  * Main component for configuring model routing for a strategy.
- * Contains three sections:
+ * Contains two sections:
  * 1. Allowed Models - Hierarchical selection of which models are permitted
- * 2. Auto Router - Enable localrouter/auto with prioritized model fallback
- * 3. Strong/Weak Routing - RouteLLM-based intelligent routing
+ * 2. Auto Router - Enable localrouter/auto with prioritized models and optional
+ *    Strong/Weak routing (RouteLLM) displayed side-by-side
  *
  * Used in:
  * - Client -> Models tab
@@ -14,16 +14,17 @@
 
 import {useCallback, useEffect, useRef, useState} from "react"
 import {invoke} from "@tauri-apps/api/core"
+import {listen} from "@tauri-apps/api/event"
 import {Brain, Info, Zap} from "lucide-react"
 import {Card, CardContent, CardDescription, CardHeader, CardTitle,} from "@/components/ui/Card"
 import {Switch} from "@/components/ui/Toggle"
-import {Tooltip, TooltipContent, TooltipProvider, TooltipTrigger,} from "@/components/ui/tooltip"
+import {Input} from "@/components/ui/Input"
+import {Badge} from "@/components/ui/Badge"
 import {cn} from "@/lib/utils"
 import {AllowedModelsSelection, AllowedModelsSelector, Model,} from "./AllowedModelsSelector"
-import {PrioritizedModelSelector} from "./PrioritizedModelSelector"
-import {RouteLLMStatusIndicator} from "@/components/routellm/RouteLLMStatusIndicator"
+import {DragThresholdModelSelector} from "./DragThresholdModelSelector"
 import {ThresholdSlider} from "@/components/routellm/ThresholdSlider"
-import {RouteLLMStatus} from "@/components/routellm/types"
+import {ROUTELLM_REQUIREMENTS, RouteLLMStatus, RouteLLMState, RouteLLMTestResult} from "@/components/routellm/types"
 
 // Strategy configuration types
 export interface AutoModelConfig {
@@ -77,7 +78,12 @@ export function StrategyModelConfiguration({
     const [models, setModels] = useState<Model[]>([])
     const [loading, setLoading] = useState(true)
     const [saving, setSaving] = useState(false)
+
+    // RouteLLM test state
     const [routellmStatus, setRoutellmStatus] = useState<RouteLLMStatus | null>(null)
+    const [testPrompt, setTestPrompt] = useState("")
+    const [isTesting, setIsTesting] = useState(false)
+    const [testResult, setTestResult] = useState<RouteLLMTestResult | null>(null)
 
     // Debounce refs for update operations
     const updateTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -86,7 +92,6 @@ export function StrategyModelConfiguration({
     // Load data on mount
     useEffect(() => {
         loadData()
-        loadRouteLLMStatus()
     }, [strategyId])
 
     // Cleanup debounce timeout on unmount
@@ -97,6 +102,37 @@ export function StrategyModelConfiguration({
             }
         }
     }, [])
+
+    // Load RouteLLM status and listen for updates
+    useEffect(() => {
+        const loadRouteLLMStatus = async () => {
+            try {
+                const status = await invoke<RouteLLMStatus>("routellm_get_status")
+                setRoutellmStatus(status)
+            } catch (error) {
+                console.error("Failed to load RouteLLM status:", error)
+            }
+        }
+
+        loadRouteLLMStatus()
+
+        // Listen for download events to update status
+        const unlistenComplete = listen("routellm-download-complete", () => {
+            loadRouteLLMStatus()
+        })
+
+        // Poll status while testing or initializing
+        const interval = setInterval(() => {
+            if (routellmStatus?.state === 'initializing' || routellmStatus?.state === 'downloading') {
+                loadRouteLLMStatus()
+            }
+        }, 1000)
+
+        return () => {
+            unlistenComplete.then((fn) => fn())
+            clearInterval(interval)
+        }
+    }, [routellmStatus?.state])
 
     const loadData = async () => {
         setLoading(true)
@@ -111,15 +147,6 @@ export function StrategyModelConfiguration({
             console.error("Failed to load strategy:", error)
         } finally {
             setLoading(false)
-        }
-    }
-
-    const loadRouteLLMStatus = async () => {
-        try {
-            const status = await invoke<RouteLLMStatus>("routellm_get_status")
-            setRoutellmStatus(status)
-        } catch (error) {
-            console.error("Failed to load RouteLLM status:", error)
         }
     }
 
@@ -239,6 +266,46 @@ export function StrategyModelConfiguration({
         })
     }
 
+    // Handler for testing a prompt
+    const handleTest = async () => {
+        if (!testPrompt.trim() || !strategy?.auto_config?.routellm_config) return
+
+        setIsTesting(true)
+        setTestResult(null)
+        try {
+            const result = await invoke<RouteLLMTestResult>("routellm_test_prediction", {
+                prompt: testPrompt.trim(),
+                threshold: strategy.auto_config.routellm_config.threshold,
+            })
+            setTestResult(result)
+            // Refresh status after test (it may have loaded the model)
+            const status = await invoke<RouteLLMStatus>("routellm_get_status")
+            setRoutellmStatus(status)
+        } catch (err: any) {
+            console.error("Test failed:", err)
+        } finally {
+            setIsTesting(false)
+        }
+    }
+
+    // Get status display info
+    const getStatusInfo = (state: RouteLLMState) => {
+        switch (state) {
+            case "not_downloaded":
+                return {label: "Not Downloaded", variant: "secondary" as const, icon: "⬇️"}
+            case "downloading":
+                return {label: "Downloading...", variant: "default" as const, icon: "⏳"}
+            case "downloaded_not_running":
+                return {label: "Ready", variant: "outline" as const, icon: "⏸️"}
+            case "initializing":
+                return {label: "Initializing...", variant: "default" as const, icon: "🔄"}
+            case "started":
+                return {label: "Active", variant: "success" as const, icon: "✓"}
+            default:
+                return {label: "Unknown", variant: "secondary" as const, icon: "?"}
+        }
+    }
+
     if (loading) {
         return (
             <div className={cn("space-y-4", className)}>
@@ -277,7 +344,7 @@ export function StrategyModelConfiguration({
                 <CardHeader>
                     <CardTitle className="text-base">Allowed Models</CardTitle>
                     <CardDescription>
-                        Select which models clients using this strategy can access
+                        Select which models client can access
                     </CardDescription>
                 </CardHeader>
                 <CardContent>
@@ -290,180 +357,199 @@ export function StrategyModelConfiguration({
                 </CardContent>
             </Card>
 
-            {/* Section 2: Auto Router */}
-            <Card>
-                <CardHeader>
-                    <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-3">
-                            <div className="p-2 rounded-lg bg-primary/10">
-                                <Zap className="h-4 w-4 text-primary"/>
+            {/* Section 2: Auto Router & Strong/Weak Routing - Side by side */}
+            <div className="grid gap-4 grid-cols-1 lg:grid-cols-2">
+                {/* Left: Auto Router (Strong Models) */}
+                <Card>
+                    <CardHeader>
+                        <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-3">
+                                <div className="p-2 rounded-lg bg-primary/10">
+                                    <Zap className="h-4 w-4 text-primary"/>
+                                </div>
+                                <div>
+                                    <CardTitle className="text-base flex items-center gap-2">
+                                        Auto Router
+                                        <code className="text-xs bg-muted px-1.5 py-0.5 rounded font-mono">
+                                            localrouter/auto
+                                        </code>
+                                    </CardTitle>
+                                    <CardDescription>
+                                        Tries models in order until one succeeds
+                                    </CardDescription>
+                                </div>
                             </div>
-                            <div>
-                                <CardTitle className="text-base flex items-center gap-2">
-                                    Auto Router
-                                    <code className="text-xs bg-muted px-1.5 py-0.5 rounded font-mono">
-                                        localrouter/auto
-                                    </code>
-                                </CardTitle>
-                                <CardDescription>
-                                    Intelligent fallback routing with prioritized models
-                                </CardDescription>
-                            </div>
-                        </div>
-                        <Switch
-                            checked={autoConfig?.enabled ?? false}
-                            onCheckedChange={handleAutoConfigToggle}
-                            disabled={readOnly || saving}
-                        />
-                    </div>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                    {!!autoConfig?.enabled && (
-                        <>
-                            <div className="p-3 rounded-lg bg-blue-500/10 border border-blue-500/20">
-                                <p className="text-sm text-blue-700 dark:text-blue-300">
-                                    <strong>How it works:</strong> When a client uses{" "}
-                                    <code className="bg-blue-500/20 px-1 rounded">localrouter/auto</code>,
-                                    models are tried in priority order. If one fails (rate limited,
-                                    unavailable, etc.), the next model is tried automatically.
-                                </p>
-                            </div>
-
-                            <PrioritizedModelSelector
-                                title="Strong Models (Prioritized)"
-                                description="Models tried in order for complex requests. Add models and drag to reorder."
-                                availableModels={models}
-                                selectedModels={autoConfig.prioritized_models}
-                                onChange={handlePrioritizedModelsChange}
+                            <Switch
+                                checked={autoConfig?.enabled ?? false}
+                                onCheckedChange={handleAutoConfigToggle}
                                 disabled={readOnly || saving}
-                                emptyText="No models configured. Add models to enable auto-routing."
                             />
-                        </>
-                    )}
-                </CardContent>
-            </Card>
-
-            {/* Section 3: Strong/Weak Routing (RouteLLM) */}
-            <Card>
-                <CardHeader>
-                    <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-3">
-                            <div className="p-2 rounded-lg bg-purple-500/10">
-                                <Brain className="h-4 w-4 text-purple-500"/>
-                            </div>
-                            <div>
-                                <CardTitle className="text-base flex items-center gap-2">
-                                    Strong/Weak Routing
-                                    <span
-                                        className="text-xs px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-700 dark:text-purple-300 font-medium">
-                                        EXPERIMENTAL
-                                    </span>
-                                </CardTitle>
-                                <CardDescription>
-                                    ML-powered routing to optimize cost vs quality
-                                </CardDescription>
-                            </div>
                         </div>
-                        <TooltipProvider>
-                            <Tooltip>
-                                <TooltipTrigger asChild>
-                                    <div>
-                                        <Switch
-                                            checked={routellmConfig?.enabled ?? false}
-                                            onCheckedChange={handleRouteLLMToggle}
-                                            disabled={readOnly || saving || !autoConfig?.enabled}
-                                        />
-                                    </div>
-                                </TooltipTrigger>
-                                {!autoConfig?.enabled && (
-                                    <TooltipContent>
-                                        Enable Auto Router first to use Strong/Weak routing
-                                    </TooltipContent>
-                                )}
-                            </Tooltip>
-                        </TooltipProvider>
-                    </div>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                    {!autoConfig?.enabled ? (
-                        <div className="text-center py-4 text-muted-foreground text-sm">
-                            Enable Auto Router first to configure Strong/Weak routing
-                        </div>
-                    ) : !routellmConfig?.enabled ? null : (
-                        <>
-                            {/* RouteLLM Status */}
-                            {routellmStatus && (
-                                <RouteLLMStatusIndicator status={routellmStatus} compact/>
-                            )}
+                    </CardHeader>
+                    <CardContent className="space-y-4">
+                        {!autoConfig?.enabled ? (
+                            <div className="text-center py-8 text-muted-foreground text-sm">
+                                Enable to configure prioritized model fallback
+                            </div>
+                        ) : (
+                            <>
+                                <DragThresholdModelSelector
+                                    availableModels={models}
+                                    enabledModels={autoConfig.prioritized_models}
+                                    onChange={handlePrioritizedModelsChange}
+                                    disabled={readOnly || saving}
+                                />
+                            </>
+                        )}
+                    </CardContent>
+                </Card>
 
-                            {/* Resource Requirements */}
-                            <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/20">
-                                <div className="flex items-start gap-2">
-                                    <Info
-                                        className="h-4 w-4 text-amber-600 dark:text-amber-400 mt-0.5 shrink-0"/>
-                                    <div className="text-xs text-amber-700 dark:text-amber-300">
-                                        <p className="font-medium mb-1">Resource Requirements</p>
-                                        <div className="grid grid-cols-2 gap-x-4 gap-y-1">
-                                            <span>Disk Space:</span>
-                                            <span>1.08 GB</span>
-                                            <span>Memory (loaded):</span>
-                                            <span>~2.65 GB</span>
-                                            <span>Cold Start:</span>
-                                            <span>~1.5s</span>
-                                            <span>Per-request:</span>
-                                            <span>~10ms</span>
+                {/* Right: Strong/Weak Routing (Weak Models) */}
+                <Card>
+                    <CardHeader>
+                        <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-3">
+                                <div className="p-2 rounded-lg bg-purple-500/10">
+                                    <Brain className="h-4 w-4 text-purple-500"/>
+                                </div>
+                                <div>
+                                    <CardTitle className="text-base flex items-center gap-2">
+                                        Weak Model
+                                        <span className="text-xs px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-700 dark:text-purple-300 font-medium">
+                                            EXPERIMENTAL
+                                        </span>
+                                    </CardTitle>
+                                    <CardDescription>
+                                        ML routes easy queries here to save costs
+                                    </CardDescription>
+                                </div>
+                            </div>
+                            <Switch
+                                checked={routellmConfig?.enabled ?? false}
+                                onCheckedChange={handleRouteLLMToggle}
+                                disabled={readOnly || saving || !autoConfig?.enabled}
+                            />
+                        </div>
+                    </CardHeader>
+                    <CardContent className="space-y-4">
+                        {!autoConfig?.enabled ? (
+                            <div className="text-center py-8 text-muted-foreground text-sm">
+                                Enable Auto Router first
+                            </div>
+                        ) : !routellmConfig?.enabled ? (
+                            <div className="space-y-4">
+                                <div className="text-center py-4 text-muted-foreground text-sm">
+                                    Enable to route simple requests to cheaper models
+                                </div>
+                                {/* Resource Requirements - shown when disabled */}
+                                <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/20">
+                                    <div className="flex items-start gap-2">
+                                        <Info className="h-4 w-4 text-amber-600 dark:text-amber-400 mt-0.5 shrink-0"/>
+                                        <div className="text-xs text-amber-700 dark:text-amber-300">
+                                            <p className="font-medium mb-1">Resource Requirements</p>
+                                            <div className="grid grid-cols-2 gap-x-4 gap-y-1">
+                                                <span>Disk Space:</span>
+                                                <span>{ROUTELLM_REQUIREMENTS.DISK_GB} GB</span>
+                                                <span>Memory:</span>
+                                                <span>{ROUTELLM_REQUIREMENTS.MEMORY_GB} GB</span>
+                                                <span>Cold Start:</span>
+                                                <span>{ROUTELLM_REQUIREMENTS.COLD_START_SECS}s</span>
+                                                <span>Per-request:</span>
+                                                <span>{ROUTELLM_REQUIREMENTS.PER_REQUEST_MS}ms</span>
+                                            </div>
                                         </div>
                                     </div>
                                 </div>
                             </div>
+                        ) : (
+                            <>
+                                <DragThresholdModelSelector
+                                    availableModels={models}
+                                    enabledModels={routellmConfig.weak_models}
+                                    onChange={handleWeakModelsChange}
+                                    disabled={readOnly || saving}
+                                />
 
-                            {/* How it works */}
-                            <div className="p-3 rounded-lg bg-purple-500/10 border border-purple-500/20">
-                                <p className="text-sm text-purple-700 dark:text-purple-300">
-                                    <strong>How it works:</strong> Each request is analyzed by an ML model
-                                    to determine if it's "simple" or "complex". Simple requests use{" "}
-                                    <strong>Weak Models</strong> (cheaper), while complex requests use{" "}
-                                    <strong>Strong Models</strong> (the prioritized list above).
-                                </p>
-                            </div>
+                                {/* Threshold Slider */}
+                                <ThresholdSlider
+                                    value={routellmConfig.threshold}
+                                    onChange={handleThresholdChange}
+                                />
 
-                            {/* Threshold Slider */}
-                            <ThresholdSlider
-                                value={routellmConfig.threshold}
-                                onChange={handleThresholdChange}
-                            />
+                                {/* Test It Out Section */}
+                                <div className="mt-4 pt-4 border-t border-border/50">
+                                    <div className="space-y-3">
+                                        <div className="flex items-center justify-between">
+                                            <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                                                Test It Out
+                                            </span>
+                                            {routellmStatus && (
+                                                <div className="flex items-center gap-1.5">
+                                                    <span className="text-sm">{getStatusInfo(routellmStatus.state).icon}</span>
+                                                    <Badge variant={getStatusInfo(routellmStatus.state).variant} className="text-xs">
+                                                        {getStatusInfo(routellmStatus.state).label}
+                                                    </Badge>
+                                                </div>
+                                            )}
+                                        </div>
 
-                            {/* Strong Models Info */}
-                            <div className="p-3 rounded-lg bg-muted/50 border">
-                                <div className="flex items-center gap-2 mb-2">
-                                    <Zap className="h-4 w-4 text-primary"/>
-                                    <span className="text-sm font-medium">Strong Models</span>
+                                        <Input
+                                            value={testPrompt}
+                                            onChange={(e) => setTestPrompt(e.target.value)}
+                                            placeholder="Type a prompt and press Enter..."
+                                            onKeyDown={(e) => e.key === "Enter" && !isTesting && handleTest()}
+                                            disabled={isTesting || routellmStatus?.state === "not_downloaded" || routellmStatus?.state === "downloading"}
+                                            className="text-sm"
+                                        />
+
+                                        {isTesting && (
+                                            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                                                <span className="animate-spin">🔄</span>
+                                                <span>
+                                                    {routellmStatus?.state === "initializing"
+                                                        ? "Loading model..."
+                                                        : "Testing..."}
+                                                </span>
+                                            </div>
+                                        )}
+
+                                        {testResult && !isTesting && (
+                                            <div className="p-3 bg-muted rounded-lg space-y-2">
+                                                <div className="flex items-center justify-between">
+                                                    <span className="text-xs text-muted-foreground">
+                                                        Score:{" "}
+                                                        <span className="font-mono text-primary">
+                                                            {testResult.win_rate.toFixed(3)}
+                                                        </span>
+                                                    </span>
+                                                    <Badge variant={testResult.is_strong ? "default" : "secondary"}>
+                                                        {testResult.is_strong ? "STRONG" : "weak"} model
+                                                    </Badge>
+                                                </div>
+                                                <div className="w-full bg-background rounded h-1.5 overflow-hidden">
+                                                    <div
+                                                        className="h-full bg-gradient-to-r from-green-500 to-orange-500"
+                                                        style={{width: `${testResult.win_rate * 100}%`}}
+                                                    />
+                                                </div>
+                                                <div className="text-xs text-muted-foreground">
+                                                    Latency: {testResult.latency_ms}ms
+                                                </div>
+                                            </div>
+                                        )}
+
+                                        {routellmStatus?.state === "not_downloaded" && (
+                                            <p className="text-xs text-muted-foreground">
+                                                Download the RouteLLM model in Settings → RouteLLM to test predictions.
+                                            </p>
+                                        )}
+                                    </div>
                                 </div>
-                                <p className="text-xs text-muted-foreground">
-                                    Strong models use the same prioritized list from Auto Router above.
-                                    They are used for complex requests that require higher quality responses.
-                                </p>
-                                {autoConfig.prioritized_models.length === 0 && (
-                                    <p className="text-xs text-amber-600 dark:text-amber-400 mt-2">
-                                        No strong models configured. Add models to the prioritized list above.
-                                    </p>
-                                )}
-                            </div>
-
-                            {/* Weak Models */}
-                            <PrioritizedModelSelector
-                                title="Weak Models (Cost Efficient)"
-                                description="Used for simple requests. Typically faster and cheaper models."
-                                availableModels={models}
-                                selectedModels={routellmConfig.weak_models}
-                                onChange={handleWeakModelsChange}
-                                disabled={readOnly || saving}
-                                emptyText="No weak models configured. Add cost-efficient models for simple requests."
-                            />
-                        </>
-                    )}
-                </CardContent>
-            </Card>
+                            </>
+                        )}
+                    </CardContent>
+                </Card>
+            </div>
         </div>
     )
 }
