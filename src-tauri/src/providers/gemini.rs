@@ -774,10 +774,7 @@ impl ModelProvider for GeminiProvider {
             format!("models/{}", request.model)
         };
 
-        let url = format!(
-            "{}/{}:predict?key={}",
-            self.base_url, model, self.api_key
-        );
+        let url = format!("{}/{}:predict?key={}", self.base_url, model, self.api_key);
 
         // Imagen request format
         let instances = vec![serde_json::json!({
@@ -818,7 +815,10 @@ impl ModelProvider for GeminiProvider {
             "parameters": parameters
         });
 
-        debug!("Gemini image generation request to {}: {:?}", url, gemini_request);
+        debug!(
+            "Gemini image generation request to {}: {:?}",
+            url, gemini_request
+        );
 
         let response = self
             .client
@@ -835,7 +835,10 @@ impl ModelProvider for GeminiProvider {
                 .text()
                 .await
                 .unwrap_or_else(|_| "Unknown error".to_string());
-            error!("Gemini image generation failed: {} - {}", status, error_text);
+            error!(
+                "Gemini image generation failed: {} - {}",
+                status, error_text
+            );
             return Err(AppError::Provider(format!(
                 "API error ({}): {}",
                 status, error_text
@@ -851,9 +854,7 @@ impl ModelProvider for GeminiProvider {
 
         // Parse Imagen response format
         let empty_vec = vec![];
-        let predictions = api_response["predictions"]
-            .as_array()
-            .unwrap_or(&empty_vec);
+        let predictions = api_response["predictions"].as_array().unwrap_or(&empty_vec);
 
         let data: Vec<super::GeneratedImage> = predictions
             .iter()
