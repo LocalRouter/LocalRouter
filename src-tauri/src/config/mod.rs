@@ -379,6 +379,10 @@ pub struct AppConfig {
     /// Whether the setup wizard has been shown (first-run detection)
     #[serde(default)]
     pub setup_wizard_shown: bool,
+
+    /// Health check configuration for providers and MCP servers
+    #[serde(default)]
+    pub health_check: HealthCheckConfig,
 }
 
 /// Pricing override for a specific model
@@ -414,6 +418,51 @@ pub enum UpdateMode {
     /// Check for updates automatically on a schedule
     #[default]
     Automatic,
+}
+
+/// Health check mode for providers and MCP servers
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum HealthCheckMode {
+    /// Check health periodically on a schedule
+    #[default]
+    Periodic,
+    /// Only check health when requests fail
+    OnFailure,
+}
+
+/// Health check configuration
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct HealthCheckConfig {
+    /// Health check mode (periodic or on-failure)
+    #[serde(default)]
+    pub mode: HealthCheckMode,
+    /// Interval between health checks (in seconds)
+    /// Default: 600 (10 minutes)
+    #[serde(default = "default_health_check_interval")]
+    pub interval_secs: u64,
+    /// Timeout for each health check (in seconds)
+    /// Default: 5 seconds
+    #[serde(default = "default_health_check_timeout")]
+    pub timeout_secs: u64,
+}
+
+fn default_health_check_interval() -> u64 {
+    600 // 10 minutes
+}
+
+fn default_health_check_timeout() -> u64 {
+    5 // 5 seconds
+}
+
+impl Default for HealthCheckConfig {
+    fn default() -> Self {
+        Self {
+            mode: HealthCheckMode::default(),
+            interval_secs: default_health_check_interval(),
+            timeout_secs: default_health_check_timeout(),
+        }
+    }
 }
 
 /// Update checking configuration
@@ -1568,6 +1617,7 @@ impl Default for AppConfig {
             roots: Vec::new(),
             streaming: StreamingConfig::default(),
             setup_wizard_shown: false,
+            health_check: HealthCheckConfig::default(),
         }
     }
 }
