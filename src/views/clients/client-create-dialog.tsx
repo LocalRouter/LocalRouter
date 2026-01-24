@@ -63,7 +63,7 @@ export function ClientCreateDialog({
             <Label htmlFor="name">Client Name</Label>
             <Input
               id="name"
-              placeholder="e.g., Production, Development, Claude Code"
+              placeholder="e.g., OpenCode, Development, All MCPs"
               value={name}
               onChange={(e) => setName(e.target.value)}
               onKeyDown={(e) => {

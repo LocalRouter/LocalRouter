@@ -41,12 +41,14 @@ interface ModelsTabProps {
   client: Client
   onUpdate: () => void
   initialMode?: "forced" | "multi" | "prioritized" | null
+  onViewChange?: (view: string, subTab?: string | null) => void
 }
 
 export function ClientModelsTab({
   client,
   onUpdate,
   initialMode: _initialMode,
+  onViewChange,
 }: ModelsTabProps) {
   const [strategies, setStrategies] = useState<StrategyConfig[]>([])
   const [loading, setLoading] = useState(true)
@@ -129,47 +131,66 @@ export function ClientModelsTab({
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Route className="h-5 w-5" />
-            Routing Strategy
+            Models
           </CardTitle>
           <CardDescription>
-            Select which routing strategy controls this client's model access and
-            routing behavior
+            Choose which Models are available to the client.
           </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="flex items-center gap-4">
-            <Select
-              value={client.strategy_id}
-              onValueChange={handleStrategyChange}
-            >
-              <SelectTrigger className="flex-1">
-                <SelectValue placeholder="Select a strategy" />
-              </SelectTrigger>
-              <SelectContent className="min-w-[300px]">
-                {strategies.map((strategy) => {
-                  const isOwned = strategy.parent === client.id
+        <CardContent className="space-y-6">
+          {/* Routing Strategy Section */}
+          <div className="space-y-3">
+            <div>
+              <h3 className="text-sm font-medium">Routing Strategy</h3>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Choose an existing strategy or{" "}
+                {onViewChange ? (
+                  <button
+                    onClick={() => onViewChange("resources", "strategies")}
+                    className="text-primary hover:underline"
+                  >
+                    create a new one in Resources
+                  </button>
+                ) : (
+                  "create a new one in Resources"
+                )}
+              </p>
+            </div>
 
-                  return (
-                    <SelectItem key={strategy.id} value={strategy.id}>
-                      <div className="flex items-center gap-2 w-full">
-                        <span className="flex-1">{strategy.name}</span>
-                        {isOwned && (
-                          <Badge variant="outline" className="text-xs shrink-0">
-                            Personal
-                          </Badge>
-                        )}
-                      </div>
-                    </SelectItem>
-                  )
-                })}
-              </SelectContent>
-            </Select>
+            <div className="flex items-center gap-4">
+              <Select
+                value={client.strategy_id}
+                onValueChange={handleStrategyChange}
+              >
+                <SelectTrigger className="flex-1">
+                  <SelectValue placeholder="Select a strategy" />
+                </SelectTrigger>
+                <SelectContent className="min-w-[300px]">
+                  {strategies.map((strategy) => {
+                    const isOwned = strategy.parent === client.id
 
-            {ownedStrategies.length === 0 && (
-              <Button variant="outline" onClick={handleCreatePersonalStrategy}>
-                Create Personal Strategy
-              </Button>
-            )}
+                    return (
+                      <SelectItem key={strategy.id} value={strategy.id}>
+                        <div className="flex items-center gap-2 w-full">
+                          <span className="flex-1">{strategy.name}</span>
+                          {isOwned && (
+                            <Badge variant="outline" className="text-xs shrink-0">
+                              Personal
+                            </Badge>
+                          )}
+                        </div>
+                      </SelectItem>
+                    )
+                  })}
+                </SelectContent>
+              </Select>
+
+              {ownedStrategies.length === 0 && (
+                <Button variant="outline" onClick={handleCreatePersonalStrategy}>
+                  Create Personal Strategy
+                </Button>
+              )}
+            </div>
           </div>
 
           {/* Shared Strategy Warning */}

@@ -93,6 +93,7 @@ export function ClientsView({ activeSubTab, onTabChange }: ClientsViewProps) {
           initialTab={innerTab}
           initialMode={mode as "forced" | "multi" | "prioritized" | null}
           onBack={handleBack}
+          onViewChange={onTabChange}
         />
       )
     }
@@ -105,7 +106,7 @@ export function ClientsView({ activeSubTab, onTabChange }: ClientsViewProps) {
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Clients</h1>
           <p className="text-sm text-muted-foreground">
-            Manage API clients and their permissions
+            Give access to your LLM-powered application by creating a client.
           </p>
         </div>
         <Button onClick={() => setCreateDialogOpen(true)}>

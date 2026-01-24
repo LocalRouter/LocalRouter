@@ -28,10 +28,8 @@ import {
 } from "@/components/ui/alert-dialog"
 import { Switch } from "@/components/ui/Toggle"
 import { ClientConfigTab } from "./tabs/config-tab"
-import { ClientAuthTab } from "./tabs/auth-tab"
 import { ClientModelsTab } from "./tabs/models-tab"
 import { ClientMcpTab } from "./tabs/mcp-tab"
-import { ClientChatTab } from "./tabs/chat-tab"
 
 interface Client {
   id: string
@@ -53,6 +51,7 @@ interface ClientDetailProps {
   initialTab?: string | null
   initialMode?: "forced" | "multi" | "prioritized" | null
   onBack: () => void
+  onViewChange?: (view: string, subTab?: string | null) => void
 }
 
 export function ClientDetail({
@@ -61,6 +60,7 @@ export function ClientDetail({
   initialTab,
   initialMode,
   onBack,
+  onViewChange,
 }: ClientDetailProps) {
   const [client, setClient] = useState<Client | null>(initialClient || null)
   const [loading, setLoading] = useState(!initialClient)
@@ -209,18 +209,12 @@ export function ClientDetail({
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList>
           <TabsTrigger value="config">Config</TabsTrigger>
-          <TabsTrigger value="auth">Auth</TabsTrigger>
           <TabsTrigger value="models">Models</TabsTrigger>
           <TabsTrigger value="mcp">MCP</TabsTrigger>
-          <TabsTrigger value="chat">Chat</TabsTrigger>
         </TabsList>
 
         <TabsContent value="config">
           <ClientConfigTab client={client} onUpdate={loadClient} />
-        </TabsContent>
-
-        <TabsContent value="auth">
-          <ClientAuthTab client={client} onUpdate={loadClient} />
         </TabsContent>
 
         <TabsContent value="models">
@@ -228,15 +222,12 @@ export function ClientDetail({
             client={client}
             onUpdate={loadClient}
             initialMode={initialMode}
+            onViewChange={onViewChange}
           />
         </TabsContent>
 
         <TabsContent value="mcp">
           <ClientMcpTab client={client} onUpdate={loadClient} />
-        </TabsContent>
-
-        <TabsContent value="chat">
-          <ClientChatTab client={client} />
         </TabsContent>
       </Tabs>
 

@@ -2,23 +2,11 @@
 import { useState, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
-import { Info, FlaskConical } from "lucide-react"
+import { Info } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
-import { Badge } from "@/components/ui/Badge"
 import { Switch } from "@/components/ui/Toggle"
-import { Label } from "@/components/ui/label"
 import { Checkbox } from "@/components/ui/checkbox"
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip"
-import {
-  Alert,
-  AlertDescription,
-  AlertTitle,
-} from "@/components/ui/alert"
+import { cn } from "@/lib/utils"
 
 interface Client {
   id: string
@@ -76,20 +64,31 @@ export function ClientMcpTab({ client, onUpdate }: McpTabProps) {
     }
   }
 
-  const handleIncludeAllChange = async (checked: boolean) => {
+  const handleAllServersToggle = async () => {
     try {
       setSaving(true)
-      const mode = checked ? "all" : (selectedServers.size > 0 ? "specific" : "none")
-      const serverIds = checked ? [] : Array.from(selectedServers)
+      const newIncludeAll = !includeAllServers
 
-      await invoke("set_client_mcp_access", {
-        clientId: client.client_id,
-        mode,
-        servers: serverIds,
-      })
-
-      setIncludeAllServers(checked)
-      toast.success(checked ? "All MCP servers enabled" : "Switched to specific server selection")
+      if (newIncludeAll) {
+        // Enable all servers mode
+        await invoke("set_client_mcp_access", {
+          clientId: client.client_id,
+          mode: "all",
+          servers: [],
+        })
+        setIncludeAllServers(true)
+        toast.success("All MCP servers enabled")
+      } else {
+        // Switch to specific mode with current selections
+        const mode = selectedServers.size > 0 ? "specific" : "none"
+        await invoke("set_client_mcp_access", {
+          clientId: client.client_id,
+          mode,
+          servers: Array.from(selectedServers),
+        })
+        setIncludeAllServers(false)
+        toast.success("Switched to specific server selection")
+      }
       onUpdate()
     } catch (error) {
       console.error("Failed to update MCP access:", error)
@@ -100,6 +99,33 @@ export function ClientMcpTab({ client, onUpdate }: McpTabProps) {
   }
 
   const handleServerToggle = async (serverId: string) => {
+    // If includeAllServers is true, we need to demote to specific mode minus this server
+    if (includeAllServers) {
+      try {
+        setSaving(true)
+        const otherServers = servers
+          .filter(s => s.id !== serverId && s.enabled)
+          .map(s => s.id)
+
+        await invoke("set_client_mcp_access", {
+          clientId: client.client_id,
+          mode: otherServers.length > 0 ? "specific" : "none",
+          servers: otherServers,
+        })
+
+        setIncludeAllServers(false)
+        setSelectedServers(new Set(otherServers))
+        toast.success("MCP server access updated")
+        onUpdate()
+      } catch (error) {
+        console.error("Failed to update MCP server:", error)
+        toast.error("Failed to update server access")
+      } finally {
+        setSaving(false)
+      }
+      return
+    }
+
     try {
       setSaving(true)
       const newSelected = new Set(selectedServers)
@@ -110,17 +136,30 @@ export function ClientMcpTab({ client, onUpdate }: McpTabProps) {
         newSelected.add(serverId)
       }
 
-      const mode = newSelected.size > 0 ? "specific" : "none"
-      const serverIds = Array.from(newSelected)
+      // Check if all enabled servers are now selected - promote to "all" mode
+      const enabledServers = servers.filter(s => s.enabled)
+      const allSelected = enabledServers.every(s => newSelected.has(s.id))
 
-      await invoke("set_client_mcp_access", {
-        clientId: client.client_id,
-        mode,
-        servers: serverIds,
-      })
+      if (allSelected && enabledServers.length > 0) {
+        await invoke("set_client_mcp_access", {
+          clientId: client.client_id,
+          mode: "all",
+          servers: [],
+        })
+        setIncludeAllServers(true)
+        setSelectedServers(newSelected)
+        toast.success("All MCP servers enabled")
+      } else {
+        const mode = newSelected.size > 0 ? "specific" : "none"
+        await invoke("set_client_mcp_access", {
+          clientId: client.client_id,
+          mode,
+          servers: Array.from(newSelected),
+        })
+        setSelectedServers(newSelected)
+        toast.success("MCP server access updated")
+      }
 
-      setSelectedServers(newSelected)
-      toast.success("MCP server access updated")
       onUpdate()
     } catch (error) {
       console.error("Failed to update MCP server:", error)
@@ -149,11 +188,19 @@ export function ClientMcpTab({ client, onUpdate }: McpTabProps) {
   }
 
   const enabledServerCount = servers.filter((s) => s.enabled).length
-  const accessibleServerCount = includeAllServers
+  const selectedCount = includeAllServers
     ? enabledServerCount
     : Array.from(selectedServers).filter((id) =>
         servers.find((s) => s.id === id)?.enabled
       ).length
+
+  // Check if indeterminate (some but not all selected)
+  const isIndeterminate = !includeAllServers && selectedCount > 0 && selectedCount < enabledServerCount
+
+  const isServerSelected = (serverId: string): boolean => {
+    if (includeAllServers) return true
+    return selectedServers.has(serverId)
+  }
 
   return (
     <div className="space-y-6">
@@ -165,118 +212,82 @@ export function ClientMcpTab({ client, onUpdate }: McpTabProps) {
             Select which MCP servers this client can access
           </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-6">
-          {/* Include All Servers Toggle */}
-          <div className="flex items-start justify-between gap-4 p-4 rounded-lg border bg-muted/50">
-            <div className="space-y-1">
-              <div className="flex items-center gap-2">
-                <Label htmlFor="include-all" className="font-medium">
-                  Include All Servers
-                </Label>
-                <TooltipProvider>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Info className="h-4 w-4 text-muted-foreground cursor-help" />
-                    </TooltipTrigger>
-                    <TooltipContent className="max-w-xs">
-                      <p>
-                        When enabled, this client will automatically have access to
-                        all MCP servers, including any new servers added in the future.
-                      </p>
-                    </TooltipContent>
-                  </Tooltip>
-                </TooltipProvider>
-              </div>
-              <p className="text-sm text-muted-foreground">
-                Automatically grant access to all current and future MCP servers
-              </p>
+        <CardContent>
+          {loading ? (
+            <div className="p-8 text-center text-muted-foreground text-sm">
+              Loading servers...
             </div>
-            <Switch
-              id="include-all"
-              checked={includeAllServers}
-              onCheckedChange={handleIncludeAllChange}
-              disabled={saving || loading}
-            />
-          </div>
-
-          {/* Server Selection (only shown when Include All is off) */}
-          {!includeAllServers && (
-            <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <Label className="text-sm font-medium">Select Specific Servers</Label>
-                <span className="text-xs text-muted-foreground">
-                  {accessibleServerCount} of {enabledServerCount} servers selected
-                </span>
-              </div>
-
-              {loading ? (
-                <p className="text-sm text-muted-foreground py-4 text-center">
-                  Loading servers...
-                </p>
-              ) : servers.length === 0 ? (
-                <div className="py-8 text-center border rounded-lg bg-muted/30">
-                  <p className="text-sm text-muted-foreground">
-                    No MCP servers configured
-                  </p>
-                  <p className="text-xs text-muted-foreground mt-1">
-                    Add MCP servers in the Resources tab
-                  </p>
+          ) : servers.length === 0 ? (
+            <div className="p-8 text-center text-muted-foreground text-sm">
+              No MCP servers configured. Add MCP servers in the Resources tab.
+            </div>
+          ) : (
+            <div className="border rounded-lg">
+              <div className="max-h-[400px] overflow-y-auto">
+                {/* All MCP Servers row */}
+                <div
+                  className="flex items-center gap-3 px-4 py-3 border-b bg-background sticky top-0 z-10 cursor-pointer hover:bg-muted/50 transition-colors"
+                  onClick={() => !saving && handleAllServersToggle()}
+                >
+                  <Checkbox
+                    checked={includeAllServers || isIndeterminate}
+                    onCheckedChange={handleAllServersToggle}
+                    disabled={saving}
+                    className={cn(
+                      "data-[state=checked]:bg-primary",
+                      isIndeterminate && "data-[state=checked]:bg-primary/60"
+                    )}
+                  />
+                  <span className="font-semibold text-sm">
+                    All MCP Servers
+                  </span>
+                  <span className="text-xs text-muted-foreground ml-auto">
+                    {includeAllServers ? (
+                      <span className="text-primary">All (including future servers)</span>
+                    ) : (
+                      `${selectedCount} / ${enabledServerCount} selected`
+                    )}
+                  </span>
                 </div>
-              ) : (
-                <div className="space-y-2 border rounded-lg divide-y">
-                  {servers.map((server) => {
-                    const isSelected = selectedServers.has(server.id)
-                    const isDisabled = !server.enabled
 
-                    return (
-                      <label
-                        key={server.id}
-                        className={`flex items-center gap-3 p-3 cursor-pointer hover:bg-muted/50 transition-colors first:rounded-t-lg last:rounded-b-lg ${
-                          isDisabled ? "opacity-50 cursor-not-allowed" : ""
-                        }`}
-                      >
-                        <Checkbox
-                          checked={isSelected}
-                          onCheckedChange={() => !isDisabled && handleServerToggle(server.id)}
-                          disabled={saving || isDisabled}
-                        />
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2">
-                            <span className="font-medium truncate">{server.name}</span>
-                            {isDisabled && (
-                              <Badge variant="secondary" className="text-xs">
-                                Disabled
-                              </Badge>
-                            )}
-                          </div>
-                          <code className="text-xs text-muted-foreground block truncate">
-                            {server.proxy_url}
-                          </code>
-                        </div>
-                      </label>
-                    )
-                  })}
-                </div>
-              )}
-            </div>
-          )}
+                {/* Individual server rows */}
+                {servers.map((server) => {
+                  const isSelected = isServerSelected(server.id)
+                  const isDisabled = !server.enabled
+                  // Server row is clickable when all servers mode is not active
+                  const canToggle = !saving && !isDisabled
 
-          {/* Access Summary */}
-          {includeAllServers && (
-            <div className="p-3 rounded-lg border border-green-500/30 bg-green-500/10">
-              <p className="text-sm text-green-600 dark:text-green-400">
-                This client has access to all {enabledServerCount} enabled MCP servers
-                and will automatically gain access to new servers as they are added.
-              </p>
-            </div>
-          )}
-
-          {!includeAllServers && accessibleServerCount === 0 && (
-            <div className="p-3 rounded-lg border border-amber-500/30 bg-amber-500/10">
-              <p className="text-sm text-amber-600 dark:text-amber-400">
-                This client has no MCP server access. Select servers above or enable
-                &quot;Include All Servers&quot; to grant access.
-              </p>
+                  return (
+                    <div
+                      key={server.id}
+                      className={cn(
+                        "flex items-center gap-3 px-4 py-2.5 border-b border-border/50",
+                        "hover:bg-muted/30 transition-colors",
+                        canToggle ? "cursor-pointer" : "",
+                        isDisabled && "opacity-50",
+                        includeAllServers && !isDisabled && "opacity-60"
+                      )}
+                      style={{ paddingLeft: "2rem" }}
+                      onClick={() => canToggle && handleServerToggle(server.id)}
+                    >
+                      <Checkbox
+                        checked={isSelected}
+                        onCheckedChange={() => handleServerToggle(server.id)}
+                        disabled={!canToggle}
+                      />
+                      <div className="flex-1 min-w-0">
+                        <span className="text-sm font-medium">{server.name}</span>
+                        {isDisabled && (
+                          <span className="ml-2 text-xs text-muted-foreground">(Disabled)</span>
+                        )}
+                      </div>
+                      <code className="text-xs text-muted-foreground truncate max-w-[200px]">
+                        {server.proxy_url}
+                      </code>
+                    </div>
+                  )
+                })}
+              </div>
             </div>
           )}
         </CardContent>
@@ -285,92 +296,58 @@ export function ClientMcpTab({ client, onUpdate }: McpTabProps) {
       {/* Deferred Loading */}
       <Card>
         <CardHeader>
-          <div className="flex items-center gap-2">
-            <CardTitle>Deferred Loading</CardTitle>
-            <Badge variant="outline" className="text-xs">
-              <FlaskConical className="h-3 w-3 mr-1" />
-              Experimental
-            </Badge>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <CardTitle className="text-base">Deferred Loading</CardTitle>
+              <span className="text-xs px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-700 dark:text-purple-300 font-medium">
+                EXPERIMENTAL
+              </span>
+            </div>
+            <Switch
+              checked={deferredLoading}
+              onCheckedChange={handleToggleDeferredLoading}
+              disabled={saving}
+            />
           </div>
           <CardDescription>
             Optimize token usage by loading MCP capabilities on-demand
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          {/* Toggle */}
-          <div className="flex items-center justify-between p-4 rounded-lg border">
-            <div className="space-y-0.5">
-              <Label htmlFor="deferred-loading">Enable Deferred Loading</Label>
-              <p className="text-sm text-muted-foreground">
-                Load tool definitions only when needed
-              </p>
+          {/* How it works - Blue info panel */}
+          <div className="p-4 rounded-lg bg-blue-500/10 border border-blue-500/20">
+            <div className="flex items-start gap-3">
+              <Info className="h-5 w-5 text-blue-600 dark:text-blue-400 mt-0.5 shrink-0" />
+              <div className="space-y-2">
+                <p className="text-sm font-medium text-blue-700 dark:text-blue-300">
+                  How Deferred Loading Works
+                </p>
+                <p className="text-sm text-blue-600/90 dark:text-blue-400/90">
+                  Deferred loading reduces the initial token overhead by not sending all
+                  tool definitions upfront. Instead, a single search tool is provided
+                  that allows the LLM to discover and load tools on-demand.
+                </p>
+                <p className="text-sm text-blue-600/90 dark:text-blue-400/90">
+                  If client does not support dynamic tool loading via{" "}
+                  <code className="px-1 py-0.5 rounded bg-blue-500/20 text-xs">
+                    tools/listChanged
+                  </code>, deferred loading is automatically disabled.
+                </p>
+              </div>
             </div>
-            <Switch
-              id="deferred-loading"
-              checked={deferredLoading}
-              onCheckedChange={handleToggleDeferredLoading}
-              disabled={saving}
-            />
           </div>
 
-          {/* Documentation */}
-          <Alert>
-            <Info className="h-4 w-4" />
-            <AlertTitle>How Deferred Loading Works</AlertTitle>
-            <AlertDescription className="space-y-3 mt-2">
-              <p>
-                Deferred loading reduces the initial token overhead by not sending all
-                tool definitions upfront. Instead, a single search tool is provided
-                that allows the LLM to discover and load tools on-demand.
-              </p>
-
-              <div className="space-y-2">
-                <p className="font-medium text-sm">Requirements:</p>
-                <ul className="list-disc list-inside text-sm space-y-1 ml-2">
-                  <li>
-                    Client must support the{" "}
-                    <code className="px-1 py-0.5 rounded bg-muted text-xs">
-                      tools/listChanged
-                    </code>{" "}
-                    notification
-                  </li>
-                  <li>Client must handle dynamic tool list updates mid-session</li>
-                </ul>
-              </div>
-
-              <div className="space-y-2">
-                <p className="font-medium text-sm">Behavior:</p>
-                <ul className="list-disc list-inside text-sm space-y-1 ml-2">
-                  <li>
-                    A <code className="px-1 py-0.5 rounded bg-muted text-xs">search_tools</code>{" "}
-                    tool is provided to discover available tools
-                  </li>
-                  <li>
-                    When tools are searched, a{" "}
-                    <code className="px-1 py-0.5 rounded bg-muted text-xs">
-                      tools/listChanged
-                    </code>{" "}
-                    notification is sent
-                  </li>
-                  <li>Discovered tools remain available for the rest of the session</li>
-                </ul>
-              </div>
-            </AlertDescription>
-          </Alert>
-
           {deferredLoading && (
-            <Alert variant="warning">
-              <FlaskConical className="h-4 w-4" />
-              <AlertTitle>Experimental Feature</AlertTitle>
-              <AlertDescription>
+            <div className="p-3 rounded-lg border border-amber-500/30 bg-amber-500/10">
+              <p className="text-sm text-amber-600 dark:text-amber-400">
                 This feature is experimental and may not work with all clients.
                 Ensure your client properly handles the{" "}
                 <code className="px-1 py-0.5 rounded bg-muted text-xs">
                   tools/listChanged
                 </code>{" "}
                 notification before enabling.
-              </AlertDescription>
-            </Alert>
+              </p>
+            </div>
           )}
         </CardContent>
       </Card>
