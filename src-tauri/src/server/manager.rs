@@ -68,6 +68,7 @@ impl ServerManager {
         }
 
         // Start the new server
+        let host = config.host.clone();
         let (state, handle, actual_port) = start_server(
             config,
             deps.router,
@@ -87,7 +88,7 @@ impl ServerManager {
         *self.actual_port.write() = Some(actual_port);
         *self.status.write() = ServerStatus::Running;
 
-        info!("Server started successfully on port {}", actual_port);
+        info!("Listening on {}:{}", host, actual_port);
         Ok(())
     }
 

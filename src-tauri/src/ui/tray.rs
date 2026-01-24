@@ -364,8 +364,8 @@ fn build_tray_menu<R: Runtime, M: Manager<R>>(app: &M) -> tauri::Result<tauri::m
         }
     }
 
-    // Add "+ Create & copy API Key" button
-    menu_builder = menu_builder.text("create_and_copy_api_key", "➕ Create && copy API Key");
+    // Add "Quick Create & Copy API Key" button (creates with all models, no MCP)
+    menu_builder = menu_builder.text("create_and_copy_api_key", "➕ Quick Create && Copy API Key");
 
     // Add separator before Server section
     menu_builder = menu_builder.separator();
@@ -771,25 +771,29 @@ async fn handle_prioritized_list<R: Runtime>(
 }
 
 /// Handle creating a new client and copying the API key to clipboard
+///
+/// Creates a client with:
+/// - All models allowed (via strategy)
+/// - No MCP access
+/// - No prioritized models
 async fn handle_create_and_copy_api_key<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
-    info!("Creating new client and copying API key from tray");
+    info!("Quick creating new client and copying API key from tray");
 
     // Get managers from state
     let client_manager = app.state::<Arc<ClientManager>>();
     let config_manager = app.state::<ConfigManager>();
 
-    // Create a new client with a default name
-    let (client_id, secret, _config) = client_manager
-        .create_client("App".to_string())
+    // Create client with auto-created strategy (strategy defaults to all models allowed)
+    let (client, _strategy) = config_manager
+        .create_client_with_strategy("App".to_string())
         .map_err(|e| tauri::Error::Anyhow(e.into()))?;
 
-    // Save to config
-    config_manager
-        .update(|cfg| {
-            cfg.clients = client_manager.get_configs();
-        })
+    // Store client secret in keychain and add to client manager
+    let secret = client_manager
+        .add_client_with_secret(client.clone())
         .map_err(|e| tauri::Error::Anyhow(e.into()))?;
 
+    // Persist to disk
     config_manager
         .save()
         .await
@@ -803,7 +807,15 @@ async fn handle_create_and_copy_api_key<R: Runtime>(app: &AppHandle<R>) -> tauri
     // Rebuild tray menu
     rebuild_tray_menu(app)?;
 
-    info!("API key created and copied to clipboard: {}", client_id);
+    // Emit events for UI updates
+    if let Err(e) = app.emit("clients-changed", ()) {
+        error!("Failed to emit clients-changed event: {}", e);
+    }
+    if let Err(e) = app.emit("strategies-changed", ()) {
+        error!("Failed to emit strategies-changed event: {}", e);
+    }
+
+    info!("Quick client created and API key copied to clipboard: {}", client.id);
 
     Ok(())
 }
