@@ -540,9 +540,9 @@ impl ModelProvider for OllamaProvider {
 
     async fn embed(&self, request: super::EmbeddingRequest) -> AppResult<super::EmbeddingResponse> {
         // Convert input to Ollama format
-        let (input, is_multiple) = match request.input {
-            super::EmbeddingInput::Single(text) => (OllamaEmbedInput::Single(text), false),
-            super::EmbeddingInput::Multiple(texts) => (OllamaEmbedInput::Multiple(texts), true),
+        let input = match request.input {
+            super::EmbeddingInput::Single(text) => OllamaEmbedInput::Single(text),
+            super::EmbeddingInput::Multiple(texts) => OllamaEmbedInput::Multiple(texts),
             super::EmbeddingInput::Tokens(_) => {
                 return Err(AppError::Provider(
                     "Ollama embeddings do not support pre-tokenized input".to_string(),
@@ -580,19 +580,14 @@ impl ModelProvider for OllamaProvider {
         })?;
 
         // Convert Ollama response to our generic format
-        let embeddings = if is_multiple {
-            ollama_response
-                .embeddings
-                .ok_or_else(|| AppError::Provider("No embeddings in response".to_string()))?
-        } else {
-            vec![ollama_response
-                .embedding
-                .ok_or_else(|| AppError::Provider("No embedding in response".to_string()))?]
-        };
+        // Ollama's /api/embed endpoint always returns 'embeddings' (plural array)
+        // even for single inputs, so we always look for 'embeddings' first
+        let embeddings = ollama_response
+            .embeddings
+            .or_else(|| ollama_response.embedding.map(|e| vec![e]))
+            .ok_or_else(|| AppError::Provider("No embeddings in response".to_string()))?;
 
-        // Ollama doesn't return token usage, estimate it
-        let estimated_tokens = 10u32; // Rough estimate
-
+        // Ollama's /api/embed endpoint doesn't return token usage
         Ok(super::EmbeddingResponse {
             object: "list".to_string(),
             data: embeddings
@@ -606,8 +601,8 @@ impl ModelProvider for OllamaProvider {
                 .collect(),
             model: request.model,
             usage: super::EmbeddingUsage {
-                prompt_tokens: estimated_tokens,
-                total_tokens: estimated_tokens,
+                prompt_tokens: 0,
+                total_tokens: 0,
             },
         })
     }
