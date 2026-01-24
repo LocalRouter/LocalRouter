@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react"
-import { Search, RefreshCw, ChevronRight, FileText, Eye, Bell, BellOff } from "lucide-react"
+import { Search, RefreshCw, ChevronRight, FileText, Eye, Bell, BellOff, Circle } from "lucide-react"
 import { Button } from "@/components/ui/Button"
 import { Input } from "@/components/ui/Input"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -10,11 +10,21 @@ import type { McpClientWrapper, Resource, ReadResourceResult } from "@/lib/mcp-c
 interface ResourcesPanelProps {
   mcpClient: McpClientWrapper | null
   isConnected: boolean
+  subscribedUris: Set<string>
+  onSubscribedUrisChange: (uris: Set<string>) => void
+  resourceUpdates: Map<string, ReadResourceResult>
+  onResourceUpdate: (uri: string, content: ReadResourceResult) => void
+  onResourceViewed: (uri: string) => void
 }
 
 export function ResourcesPanel({
   mcpClient,
   isConnected,
+  subscribedUris,
+  onSubscribedUrisChange,
+  resourceUpdates,
+  onResourceUpdate,
+  onResourceViewed,
 }: ResourcesPanelProps) {
   const [resources, setResources] = useState<Resource[]>([])
   const [filteredResources, setFilteredResources] = useState<Resource[]>([])
@@ -22,9 +32,9 @@ export function ResourcesPanel({
   const [selectedResource, setSelectedResource] = useState<Resource | null>(null)
   const [isLoading, setIsLoading] = useState(false)
   const [isReading, setIsReading] = useState(false)
+  const [subscribingUris, setSubscribingUris] = useState<Set<string>>(new Set())
   const [content, setContent] = useState<ReadResourceResult | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [subscribedUris, setSubscribedUris] = useState<Set<string>>(new Set())
 
   // Fetch resources list using MCP SDK
   const fetchResources = useCallback(async () => {
@@ -52,7 +62,7 @@ export function ResourcesPanel({
       setFilteredResources([])
       setSelectedResource(null)
       setContent(null)
-      setSubscribedUris(new Set())
+      // Note: subscribedUris is cleared by parent on disconnect
     }
   }, [isConnected, mcpClient, fetchResources])
 
@@ -98,25 +108,35 @@ export function ResourcesPanel({
     const uri = resource.uri
     const isSubscribed = subscribedUris.has(uri)
 
+    // Mark as subscribing
+    setSubscribingUris((prev) => new Set(prev).add(uri))
+
     try {
       if (isSubscribed) {
         await mcpClient.unsubscribeFromResource(uri)
-        setSubscribedUris((prev) => {
-          const newSet = new Set(prev)
-          newSet.delete(uri)
-          return newSet
-        })
+        const newSet = new Set(subscribedUris)
+        newSet.delete(uri)
+        onSubscribedUrisChange(newSet)
       } else {
         await mcpClient.subscribeToResource(uri, (updatedUri, updatedContent) => {
           // Update content if this resource is currently selected
           if (selectedResource?.uri === updatedUri) {
             setContent(updatedContent)
           }
+          // Notify parent about the update (for tab indicator)
+          onResourceUpdate(updatedUri, updatedContent)
         })
-        setSubscribedUris((prev) => new Set(prev).add(uri))
+        onSubscribedUrisChange(new Set(subscribedUris).add(uri))
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to toggle subscription")
+    } finally {
+      // Clear subscribing state
+      setSubscribingUris((prev) => {
+        const newSet = new Set(prev)
+        newSet.delete(uri)
+        return newSet
+      })
     }
   }
 
@@ -124,6 +144,10 @@ export function ResourcesPanel({
     setSelectedResource(resource)
     setContent(null)
     setError(null)
+    // Mark this resource as viewed (clears update indicator)
+    if (resourceUpdates.has(resource.uri)) {
+      onResourceViewed(resource.uri)
+    }
     readResource(resource)
   }
 
@@ -206,9 +230,22 @@ export function ResourcesPanel({
                   <ChevronRight className="h-3 w-3 text-muted-foreground" />
                   <FileText className="h-3 w-3 text-muted-foreground" />
                   <span className="font-medium truncate">{resource.name}</span>
-                  {subscribedUris.has(resource.uri) && (
-                    <Bell className="h-3 w-3 text-primary ml-auto" />
-                  )}
+                  <div className="flex items-center gap-1 ml-auto">
+                    {resourceUpdates.has(resource.uri) && (
+                      <span title="Updated">
+                        <Circle className="h-2 w-2 fill-primary text-primary" />
+                      </span>
+                    )}
+                    {subscribingUris.has(resource.uri) ? (
+                      <span title="Subscribing...">
+                        <RefreshCw className="h-3 w-3 text-muted-foreground animate-spin" />
+                      </span>
+                    ) : subscribedUris.has(resource.uri) ? (
+                      <span title="Subscribed">
+                        <Bell className="h-3 w-3 text-primary" />
+                      </span>
+                    ) : null}
+                  </div>
                 </div>
                 <p className="text-xs text-muted-foreground truncate ml-8 mt-0.5">
                   {resource.uri}
@@ -239,9 +276,15 @@ export function ResourcesPanel({
                     variant="outline"
                     size="sm"
                     onClick={() => toggleSubscription(selectedResource)}
+                    disabled={subscribingUris.has(selectedResource.uri)}
                     title={subscribedUris.has(selectedResource.uri) ? "Unsubscribe" : "Subscribe to updates"}
                   >
-                    {subscribedUris.has(selectedResource.uri) ? (
+                    {subscribingUris.has(selectedResource.uri) ? (
+                      <>
+                        <RefreshCw className="h-4 w-4 mr-1 animate-spin" />
+                        {subscribedUris.has(selectedResource.uri) ? "Unsubscribing..." : "Subscribing..."}
+                      </>
+                    ) : subscribedUris.has(selectedResource.uri) ? (
                       <>
                         <BellOff className="h-4 w-4 mr-1" />
                         Unsubscribe

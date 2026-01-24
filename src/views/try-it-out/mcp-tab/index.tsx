@@ -13,13 +13,45 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/Select"
-import { Wrench, FileText, MessageSquare, Radio, HelpCircle, AlertCircle, Server, X } from "lucide-react"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
+import { Wrench, FileText, MessageSquare, Radio, HelpCircle, AlertCircle, X, Circle, Info } from "lucide-react"
+import { ConnectionInfoPanel } from "./connection-info-panel"
 import { ToolsPanel } from "./tools-panel"
 import { ResourcesPanel } from "./resources-panel"
 import { PromptsPanel } from "./prompts-panel"
 import { SamplingPanel } from "./sampling-panel"
 import { ElicitationPanel } from "./elicitation-panel"
-import { createMcpClient, type McpClientWrapper, type McpConnectionState } from "@/lib/mcp-client"
+import {
+  createMcpClient,
+  type McpClientWrapper,
+  type McpConnectionState,
+  type ReadResourceResult,
+  type CreateMessageRequest,
+  type CreateMessageResult,
+  type ElicitRequest,
+} from "@/lib/mcp-client"
+
+// Types for pending requests that need user action
+export interface PendingSamplingRequest {
+  id: string
+  params: CreateMessageRequest["params"]
+  timestamp: Date
+  resolve: (result: CreateMessageResult) => void
+  reject: (error: Error) => void
+}
+
+export interface PendingElicitationRequest {
+  id: string
+  params: ElicitRequest["params"]
+  timestamp: Date
+  resolve: (result: { action: "accept" | "decline"; content?: Record<string, unknown> }) => void
+  reject: (error: Error) => void
+}
 
 interface McpServer {
   id: string
@@ -58,18 +90,55 @@ export function McpTab({ innerPath, onPathChange }: McpTabProps) {
     error: null,
   })
 
+  // Subscription and notification state (lifted from child components)
+  const [subscribedUris, setSubscribedUris] = useState<Set<string>>(new Set())
+  const [resourceUpdates, setResourceUpdates] = useState<Map<string, ReadResourceResult>>(new Map())
+
+  // Pending sampling and elicitation requests from MCP servers
+  const [pendingSamplingRequests, setPendingSamplingRequests] = useState<PendingSamplingRequest[]>([])
+  const [pendingElicitationRequests, setPendingElicitationRequests] = useState<PendingElicitationRequest[]>([])
+
+  // Counter for generating unique request IDs
+  const requestIdCounter = useRef(0)
+
   // Parse inner path to get subtab
   const parseInnerPath = (path: string | null) => {
-    if (!path) return "tools"
+    if (!path) return "connection"
     const parts = path.split("/")
-    return parts[0] || "tools"
+    return parts[0] || "connection"
   }
 
   const activeSubtab = parseInnerPath(innerPath)
 
   const handleSubtabChange = (tab: string) => {
     onPathChange(tab)
+    // Clear notifications for the tab being viewed
+    if (tab === "resources") {
+      setResourceUpdates(new Map())
+    }
+    // Note: We don't clear pending requests when switching tabs - they need user action
   }
+
+  // Handle resource subscription update (called from mcp-client)
+  const handleResourceUpdate = useCallback((uri: string, content: ReadResourceResult) => {
+    // Only track updates when not viewing resources tab
+    if (activeSubtab !== "resources") {
+      setResourceUpdates(prev => {
+        const next = new Map(prev)
+        next.set(uri, content)
+        return next
+      })
+    }
+  }, [activeSubtab])
+
+  // Handle marking a single resource as viewed
+  const handleResourceViewed = useCallback((uri: string) => {
+    setResourceUpdates(prev => {
+      const next = new Map(prev)
+      next.delete(uri)
+      return next
+    })
+  }, [])
 
   // Determine if target is gateway or a specific server
   const isGatewayTarget = selectedTarget === "gateway"
@@ -115,6 +184,78 @@ export function McpTab({ innerPath, onPathChange }: McpTabProps) {
     setConnectionState(state)
   }, [])
 
+  // Handler for sampling requests from MCP servers
+  const handleSamplingRequest = useCallback(
+    (params: CreateMessageRequest["params"]): Promise<CreateMessageResult> => {
+      return new Promise((resolve, reject) => {
+        const id = `sampling-${++requestIdCounter.current}`
+        const request: PendingSamplingRequest = {
+          id,
+          params,
+          timestamp: new Date(),
+          resolve,
+          reject,
+        }
+        setPendingSamplingRequests((prev) => [...prev, request])
+      })
+    },
+    []
+  )
+
+  // Handler for elicitation requests from MCP servers
+  const handleElicitationRequest = useCallback(
+    (params: ElicitRequest["params"]): Promise<{ action: "accept" | "decline"; content?: Record<string, unknown> }> => {
+      return new Promise((resolve, reject) => {
+        const id = `elicitation-${++requestIdCounter.current}`
+        const request: PendingElicitationRequest = {
+          id,
+          params,
+          timestamp: new Date(),
+          resolve,
+          reject,
+        }
+        setPendingElicitationRequests((prev) => [...prev, request])
+      })
+    },
+    []
+  )
+
+  // Callback to resolve a sampling request
+  const resolveSamplingRequest = useCallback((id: string, result: CreateMessageResult) => {
+    setPendingSamplingRequests((prev) => {
+      const request = prev.find((r) => r.id === id)
+      if (request) {
+        request.resolve(result)
+      }
+      return prev.filter((r) => r.id !== id)
+    })
+  }, [])
+
+  // Callback to reject a sampling request
+  const rejectSamplingRequest = useCallback((id: string, error: string) => {
+    setPendingSamplingRequests((prev) => {
+      const request = prev.find((r) => r.id === id)
+      if (request) {
+        request.reject(new Error(error))
+      }
+      return prev.filter((r) => r.id !== id)
+    })
+  }, [])
+
+  // Callback to resolve an elicitation request
+  const resolveElicitationRequest = useCallback(
+    (id: string, result: { action: "accept" | "decline"; content?: Record<string, unknown> }) => {
+      setPendingElicitationRequests((prev) => {
+        const request = prev.find((r) => r.id === id)
+        if (request) {
+          request.resolve(result)
+        }
+        return prev.filter((r) => r.id !== id)
+      })
+    },
+    []
+  )
+
   const handleConnect = async () => {
     if (!serverPort || !internalTestToken) return
 
@@ -123,7 +264,7 @@ export function McpTab({ innerPath, onPathChange }: McpTabProps) {
       await mcpClientRef.current.disconnect()
     }
 
-    // Create new client
+    // Create new client with sampling/elicitation callbacks
     const client = createMcpClient(
       {
         serverPort,
@@ -131,7 +272,11 @@ export function McpTab({ innerPath, onPathChange }: McpTabProps) {
         serverId: isGatewayTarget ? undefined : selectedServerId,
         transportType: "sse",
       },
-      handleStateChange
+      {
+        onStateChange: handleStateChange,
+        onSamplingRequest: handleSamplingRequest,
+        onElicitationRequest: handleElicitationRequest,
+      }
     )
 
     mcpClientRef.current = client
@@ -145,10 +290,19 @@ export function McpTab({ innerPath, onPathChange }: McpTabProps) {
   }
 
   const handleDisconnect = async () => {
+    // Reject any pending requests before disconnecting
+    pendingSamplingRequests.forEach((r) => r.reject(new Error("Disconnected")))
+    pendingElicitationRequests.forEach((r) => r.reject(new Error("Disconnected")))
+
     if (mcpClientRef.current) {
       await mcpClientRef.current.disconnect()
       mcpClientRef.current = null
     }
+    // Clear subscription state on disconnect
+    setSubscribedUris(new Set())
+    setResourceUpdates(new Map())
+    setPendingSamplingRequests([])
+    setPendingElicitationRequests([])
   }
 
   const getEndpointUrl = () => {
@@ -160,7 +314,7 @@ export function McpTab({ innerPath, onPathChange }: McpTabProps) {
     }
   }
 
-  const { isConnected, isConnecting, error: connectionError, serverInfo, capabilities } = connectionState
+  const { isConnected, isConnecting, error: connectionError, capabilities } = connectionState
 
   return (
     <div className="flex flex-col h-full gap-4">
@@ -239,28 +393,11 @@ export function McpTab({ innerPath, onPathChange }: McpTabProps) {
               {connectionError}
             </div>
           )}
-
-          {/* Server info when connected */}
-          {isConnected && serverInfo && (
-            <div className="flex items-center gap-4 mt-4 pt-4 border-t">
-              <div className="flex items-center gap-2">
-                <Server className="h-4 w-4 text-muted-foreground" />
-                <span className="text-sm font-medium">{serverInfo.name}</span>
-                <Badge variant="outline" className="text-xs">v{serverInfo.version}</Badge>
-              </div>
-              {capabilities && (
-                <div className="flex items-center gap-2">
-                  {capabilities.tools && <Badge variant="secondary" className="text-xs">Tools</Badge>}
-                  {capabilities.resources && <Badge variant="secondary" className="text-xs">Resources</Badge>}
-                  {capabilities.prompts && <Badge variant="secondary" className="text-xs">Prompts</Badge>}
-                </div>
-              )}
-            </div>
-          )}
         </CardContent>
       </Card>
 
-      {/* MCP Subtabs */}
+      {/* MCP Subtabs - only shown when connected */}
+      {isConnected && (
       <Card className="flex flex-col flex-1 min-h-0">
         <Tabs
           value={activeSubtab}
@@ -268,31 +405,89 @@ export function McpTab({ innerPath, onPathChange }: McpTabProps) {
           className="flex flex-col flex-1 min-h-0"
         >
           <CardHeader className="pb-0 flex-shrink-0">
-            <TabsList className="w-fit">
-              <TabsTrigger value="tools" className="flex items-center gap-1">
-                <Wrench className="h-3 w-3" />
-                Tools
-              </TabsTrigger>
-              <TabsTrigger value="resources" className="flex items-center gap-1">
-                <FileText className="h-3 w-3" />
-                Resources
-              </TabsTrigger>
-              <TabsTrigger value="prompts" className="flex items-center gap-1">
-                <MessageSquare className="h-3 w-3" />
-                Prompts
-              </TabsTrigger>
-              <TabsTrigger value="sampling" className="flex items-center gap-1">
-                <Radio className="h-3 w-3" />
-                Sampling
-              </TabsTrigger>
-              <TabsTrigger value="elicitation" className="flex items-center gap-1">
-                <HelpCircle className="h-3 w-3" />
-                Elicitation
-              </TabsTrigger>
-            </TabsList>
+            <TooltipProvider>
+              <TabsList className="w-fit">
+                <TabsTrigger value="connection" className="flex items-center gap-1">
+                  <Info className="h-3 w-3" />
+                  Connection
+                </TabsTrigger>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span>
+                      <TabsTrigger
+                        value="tools"
+                        className="flex items-center gap-1"
+                        disabled={!capabilities?.tools}
+                      >
+                        <Wrench className="h-3 w-3" />
+                        Tools
+                      </TabsTrigger>
+                    </span>
+                  </TooltipTrigger>
+                  {!capabilities?.tools && (
+                    <TooltipContent>Server does not support tools</TooltipContent>
+                  )}
+                </Tooltip>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span className="relative">
+                      <TabsTrigger
+                        value="resources"
+                        className="flex items-center gap-1"
+                        disabled={!capabilities?.resources}
+                      >
+                        <FileText className="h-3 w-3" />
+                        Resources
+                        {resourceUpdates.size > 0 && (
+                          <Circle className="h-2 w-2 fill-primary text-primary absolute -top-0.5 -right-0.5" />
+                        )}
+                      </TabsTrigger>
+                    </span>
+                  </TooltipTrigger>
+                  {!capabilities?.resources && (
+                    <TooltipContent>Server does not support resources</TooltipContent>
+                  )}
+                </Tooltip>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span>
+                      <TabsTrigger
+                        value="prompts"
+                        className="flex items-center gap-1"
+                        disabled={!capabilities?.prompts}
+                      >
+                        <MessageSquare className="h-3 w-3" />
+                        Prompts
+                      </TabsTrigger>
+                    </span>
+                  </TooltipTrigger>
+                  {!capabilities?.prompts && (
+                    <TooltipContent>Server does not support prompts</TooltipContent>
+                  )}
+                </Tooltip>
+                <TabsTrigger value="sampling" className="flex items-center gap-1 relative">
+                  <Radio className="h-3 w-3" />
+                  Sampling
+                  {pendingSamplingRequests.length > 0 && (
+                    <Circle className="h-2 w-2 fill-primary text-primary absolute -top-0.5 -right-0.5" />
+                  )}
+                </TabsTrigger>
+                <TabsTrigger value="elicitation" className="flex items-center gap-1 relative">
+                  <HelpCircle className="h-3 w-3" />
+                  Elicitation
+                  {pendingElicitationRequests.length > 0 && (
+                    <Circle className="h-2 w-2 fill-primary text-primary absolute -top-0.5 -right-0.5" />
+                  )}
+                </TabsTrigger>
+              </TabsList>
+            </TooltipProvider>
           </CardHeader>
 
           <CardContent className="flex-1 min-h-0 pt-4">
+            <TabsContent value="connection" className="h-full m-0">
+              <ConnectionInfoPanel connectionState={connectionState} />
+            </TabsContent>
+
             <TabsContent value="tools" className="h-full m-0">
               <ToolsPanel
                 mcpClient={mcpClientRef.current}
@@ -304,6 +499,11 @@ export function McpTab({ innerPath, onPathChange }: McpTabProps) {
               <ResourcesPanel
                 mcpClient={mcpClientRef.current}
                 isConnected={isConnected}
+                subscribedUris={subscribedUris}
+                onSubscribedUrisChange={setSubscribedUris}
+                resourceUpdates={resourceUpdates}
+                onResourceUpdate={handleResourceUpdate}
+                onResourceViewed={handleResourceViewed}
               />
             </TabsContent>
 
@@ -316,26 +516,24 @@ export function McpTab({ innerPath, onPathChange }: McpTabProps) {
 
             <TabsContent value="sampling" className="h-full m-0">
               <SamplingPanel
-                serverPort={serverPort}
-                clientToken={internalTestToken}
-                isGateway={isGatewayTarget}
-                selectedServer={selectedServerId}
                 isConnected={isConnected}
+                pendingRequests={pendingSamplingRequests}
+                onResolve={resolveSamplingRequest}
+                onReject={rejectSamplingRequest}
               />
             </TabsContent>
 
             <TabsContent value="elicitation" className="h-full m-0">
               <ElicitationPanel
-                serverPort={serverPort}
-                clientToken={internalTestToken}
-                isGateway={isGatewayTarget}
-                selectedServer={selectedServerId}
                 isConnected={isConnected}
+                pendingRequests={pendingElicitationRequests}
+                onResolve={resolveElicitationRequest}
               />
             </TabsContent>
           </CardContent>
         </Tabs>
       </Card>
+      )}
     </div>
   )
 }
