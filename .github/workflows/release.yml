@@ -138,7 +138,6 @@ jobs:
       - name: Build Tauri app (with signing)
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npm run tauri build -- --target ${{ matrix.settings.target }} --bundles ${{ matrix.settings.bundles }}
 

@@ -44,7 +44,7 @@
       "endpoints": [
         "https://github.com/LocalRouter/LocalRouter/releases/latest/download/latest.json"
       ],
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDZDQTVGODU2NDZGNzI4NkIKUldScktQZEdWdmlsYk45bEJ4ZlVBYW1VSHBtTHRMV3ZaU1JUZnNsNGI3Y3kxMHVtb2kvREV4MkMK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEE2OEZGMUYxNTE3ODAwRDIKUldUU0FIaFI4ZkdQcHBuUHpxR20yRC81b2VHaEo2VEhSUWZ2YitNNFIrUnhERDg0dnM3ekVZcFcK",
       "windows": {
         "installMode": "passive"
       }
