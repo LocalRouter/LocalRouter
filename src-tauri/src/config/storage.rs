@@ -2,14 +2,19 @@
 
 use super::{migration, paths, validation, AppConfig};
 use crate::utils::errors::{AppError, AppResult};
-use std::path::Path;
+use chrono::Utc;
+use std::path::{Path, PathBuf};
 use tokio::fs;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
+
+/// Maximum number of timestamped backups to keep
+const MAX_BACKUPS: usize = 10;
 
 /// Load configuration from a file
 ///
 /// If the file doesn't exist, returns a default configuration.
-/// If the file exists but is invalid, returns an error.
+/// If the file exists but is invalid, tries to recover from backups.
+/// Only returns an error if all recovery attempts fail.
 pub async fn load_config(path: &Path) -> AppResult<AppConfig> {
     // Ensure config directory exists
     if let Some(parent) = path.parent() {
@@ -27,6 +32,59 @@ pub async fn load_config(path: &Path) -> AppResult<AppConfig> {
         return Ok(default_config);
     }
 
+    // Try to load from main file
+    match load_config_from_file(path).await {
+        Ok(config) => {
+            info!("Configuration loaded successfully from {:?}", path);
+            Ok(config)
+        }
+        Err(main_error) => {
+            error!(
+                "Failed to load configuration from {:?}: {}",
+                path, main_error
+            );
+
+            // Try to recover from backups
+            if let Some(parent) = path.parent() {
+                let backups = list_backups(parent).await;
+                if !backups.is_empty() {
+                    info!(
+                        "Attempting to recover from {} backup(s)...",
+                        backups.len()
+                    );
+
+                    for backup_path in &backups {
+                        match load_config_from_file(backup_path).await {
+                            Ok(config) => {
+                                warn!(
+                                    "Recovered configuration from backup: {:?}",
+                                    backup_path
+                                );
+                                // Save the recovered config as the main file
+                                // (this also creates a new backup of the corrupted file)
+                                if let Err(e) = save_config(&config, path).await {
+                                    warn!("Failed to save recovered config: {}", e);
+                                }
+                                return Ok(config);
+                            }
+                            Err(e) => {
+                                debug!("Backup {:?} also failed: {}", backup_path, e);
+                            }
+                        }
+                    }
+
+                    error!("All {} backup(s) failed to load", backups.len());
+                }
+            }
+
+            // All recovery attempts failed
+            Err(main_error)
+        }
+    }
+}
+
+/// Load and parse configuration from a specific file
+async fn load_config_from_file(path: &Path) -> AppResult<AppConfig> {
     debug!("Loading configuration from {:?}", path);
 
     // Read file contents
@@ -46,22 +104,18 @@ pub async fn load_config(path: &Path) -> AppResult<AppConfig> {
             super::CONFIG_VERSION
         );
         config = migration::migrate_config(config)?;
-
-        // Save migrated configuration
-        save_config(&config, path).await?;
-        info!("Configuration migrated successfully");
     }
 
     // Validate configuration
     validation::validate_config(&config)?;
 
-    info!("Configuration loaded successfully from {:?}", path);
     Ok(config)
 }
 
 /// Save configuration to a file
 ///
-/// Creates a backup of the existing file before writing.
+/// Creates a timestamped backup of the existing file before writing.
+/// Keeps up to MAX_BACKUPS most recent backups.
 pub async fn save_config(config: &AppConfig, path: &Path) -> AppResult<()> {
     debug!("Saving configuration to {:?}", path);
 
@@ -73,13 +127,20 @@ pub async fn save_config(config: &AppConfig, path: &Path) -> AppResult<()> {
     // Validate before saving
     validation::validate_config(config)?;
 
-    // Create backup of existing file
+    // Create timestamped backup of existing file
     if path.exists() {
-        let backup_path = path.with_extension("yaml.backup");
-        if let Err(e) = fs::copy(path, &backup_path).await {
-            warn!("Failed to create backup: {}", e);
-        } else {
-            debug!("Created backup at {:?}", backup_path);
+        if let Some(parent) = path.parent() {
+            let timestamp = Utc::now().format("%Y%m%d-%H%M%S");
+            let backup_name = format!("settings.yaml.backup.{}", timestamp);
+            let backup_path = parent.join(&backup_name);
+
+            if let Err(e) = fs::copy(path, &backup_path).await {
+                warn!("Failed to create backup: {}", e);
+            } else {
+                debug!("Created timestamped backup at {:?}", backup_path);
+                // Clean up old backups
+                cleanup_old_backups(parent).await;
+            }
         }
     }
 
@@ -101,6 +162,57 @@ pub async fn save_config(config: &AppConfig, path: &Path) -> AppResult<()> {
 
     info!("Configuration saved successfully to {:?}", path);
     Ok(())
+}
+
+/// List available backup files, sorted by most recent first
+async fn list_backups(dir: &Path) -> Vec<PathBuf> {
+    let mut backups = Vec::new();
+
+    // Read directory entries
+    let mut entries = match fs::read_dir(dir).await {
+        Ok(entries) => entries,
+        Err(e) => {
+            debug!("Failed to read backup directory: {}", e);
+            return backups;
+        }
+    };
+
+    // Collect backup files
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let path = entry.path();
+        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+            // Match both old-style .yaml.backup and new timestamped .yaml.backup.YYYYMMDD-HHMMSS
+            if name.starts_with("settings.yaml.backup") {
+                backups.push(path);
+            }
+        }
+    }
+
+    // Sort by filename descending (newer timestamps come first)
+    // Timestamped backups sort naturally: settings.yaml.backup.20260125-120000 > settings.yaml.backup.20260124-120000
+    // Old-style settings.yaml.backup sorts after timestamped ones (no timestamp = older)
+    backups.sort_by(|a, b| {
+        let a_name = a.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let b_name = b.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        b_name.cmp(a_name)
+    });
+
+    backups
+}
+
+/// Clean up old backups, keeping only the most recent MAX_BACKUPS
+async fn cleanup_old_backups(dir: &Path) {
+    let backups = list_backups(dir).await;
+
+    if backups.len() > MAX_BACKUPS {
+        for backup_path in backups.into_iter().skip(MAX_BACKUPS) {
+            if let Err(e) = fs::remove_file(&backup_path).await {
+                debug!("Failed to remove old backup {:?}: {}", backup_path, e);
+            } else {
+                debug!("Removed old backup: {:?}", backup_path);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -156,7 +268,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_save_creates_backup() {
+    async fn test_save_creates_timestamped_backup() {
         let temp_dir = TempDir::new().unwrap();
         let config_path = temp_dir.path().join("settings.yaml");
 
@@ -164,22 +276,71 @@ mod tests {
         let config1 = AppConfig::default();
         save_config(&config1, &config_path).await.unwrap();
 
-        // Save second config (should create backup)
+        // Save second config (should create timestamped backup)
         let mut config2 = AppConfig::default();
         config2.server.port = 9000;
         save_config(&config2, &config_path).await.unwrap();
 
-        // Check backup exists
-        let backup_path = config_path.with_extension("yaml.backup");
-        assert!(backup_path.exists());
+        // Check that a timestamped backup exists
+        let backups = list_backups(temp_dir.path()).await;
+        assert!(!backups.is_empty(), "Should have at least one backup");
 
         // Verify backup contains original config
-        let backup_contents = fs::read_to_string(&backup_path).await.unwrap();
+        let backup_contents = fs::read_to_string(&backups[0]).await.unwrap();
         let backup_config: AppConfig = serde_yaml::from_str(&backup_contents).unwrap();
         #[cfg(debug_assertions)]
         assert_eq!(backup_config.server.port, 33625);
         #[cfg(not(debug_assertions))]
         assert_eq!(backup_config.server.port, 3625);
+    }
+
+    #[tokio::test]
+    async fn test_backup_cleanup() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("settings.yaml");
+
+        // Create more backups than MAX_BACKUPS
+        for i in 0..(MAX_BACKUPS + 5) {
+            let mut config = AppConfig::default();
+            config.server.port = 3000 + i as u16;
+            save_config(&config, &config_path).await.unwrap();
+            // Small delay to ensure different timestamps
+            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        }
+
+        // Check that only MAX_BACKUPS remain
+        let backups = list_backups(temp_dir.path()).await;
+        assert!(
+            backups.len() <= MAX_BACKUPS,
+            "Should have at most {} backups, found {}",
+            MAX_BACKUPS,
+            backups.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_recovery_from_backup() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("settings.yaml");
+
+        // Save a valid config (port 7777)
+        let mut config = AppConfig::default();
+        config.server.port = 7777;
+        save_config(&config, &config_path).await.unwrap();
+
+        // Save again to create a backup of the 7777 config
+        config.server.port = 8888;
+        save_config(&config, &config_path).await.unwrap();
+
+        // Corrupt the main config file (which had port 8888)
+        fs::write(&config_path, "invalid: yaml: content: [")
+            .await
+            .unwrap();
+
+        // Load should recover from backup (which has port 7777)
+        let loaded = load_config(&config_path).await.unwrap();
+        // Backup contains the previous version before the 8888 save
+        assert_eq!(loaded.server.port, 7777);
     }
 
     #[tokio::test]
