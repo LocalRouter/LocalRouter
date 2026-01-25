@@ -17,7 +17,7 @@ use std::sync::Arc;
 use tauri::{
     menu::{MenuBuilder, MenuItem, SubmenuBuilder},
     tray::TrayIconBuilder,
-    App, AppHandle, Emitter, Manager, Runtime,
+    App, AppHandle, Emitter, Listener, Manager, Runtime,
 };
 use tokio::sync::mpsc;
 use tracing::{debug, error, info};
@@ -27,11 +27,17 @@ pub struct UpdateNotificationState {
     pub update_available: Arc<RwLock<bool>>,
 }
 
-impl UpdateNotificationState {
-    pub fn new() -> Self {
+impl Default for UpdateNotificationState {
+    fn default() -> Self {
         Self {
             update_available: Arc::new(RwLock::new(false)),
         }
+    }
+}
+
+impl UpdateNotificationState {
+    pub fn new() -> Self {
+        Self::default()
     }
 
     pub fn set_update_available(&self, available: bool) {
@@ -112,15 +118,7 @@ pub fn setup_tray<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
                         }
                     });
                 }
-                "toggle_tray_graph" => {
-                    info!("Toggle tray graph requested from tray");
-                    let app_clone = app.clone();
-                    tauri::async_runtime::spawn(async move {
-                        if let Err(e) = handle_toggle_tray_graph(&app_clone).await {
-                            error!("Failed to toggle tray graph: {}", e);
-                        }
-                    });
-                }
+                // "toggle_tray_graph" removed - dynamic graph is always enabled
                 "open_updates_tab" => {
                     info!("Open Updates tab requested from tray");
                     // Show the main window and emit event to navigate to Updates tab
@@ -406,17 +404,7 @@ fn build_tray_menu<R: Runtime, M: Manager<R>>(app: &M) -> tauri::Result<tauri::m
     menu_builder = menu_builder.separator();
 
     // Add tray graph toggle
-    let tray_graph_text = if let Some(config_manager) = app.try_state::<ConfigManager>() {
-        let config = config_manager.get();
-        if config.ui.tray_graph_enabled {
-            "✓ Dynamic Graph"
-        } else {
-            "Dynamic Graph"
-        }
-    } else {
-        "Dynamic Graph"
-    };
-    menu_builder = menu_builder.text("toggle_tray_graph", tray_graph_text);
+    // Dynamic tray graph is always enabled, no toggle needed
 
     // Add update notification if available
     if let Some(update_state) = app.try_state::<Arc<UpdateNotificationState>>() {
@@ -917,15 +905,17 @@ async fn handle_add_mcp_to_client<R: Runtime>(
 }
 
 /// Update the tray icon based on server status
+///
+/// Note: When the dynamic tray graph is enabled (always now), "running" status
+/// only updates the tooltip - the graph icon is managed by TrayGraphManager.
 pub fn update_tray_icon<R: Runtime>(app: &AppHandle<R>, status: &str) -> tauri::Result<()> {
     // Embed the tray icons at compile time
     const TRAY_ICON: &[u8] = include_bytes!("../../icons/32x32.png");
-    const TRAY_ICON_ACTIVE: &[u8] = include_bytes!("../../icons/32x32-active.png");
 
     if let Some(tray) = app.tray_by_id("main") {
         match status {
             "stopped" => {
-                // Stopped: Use template icon in template mode (monochrome/dimmed)
+                // Stopped: Use static template icon (dynamic graph shows red dot but server stopped)
                 let icon = tauri::image::Image::from_bytes(TRAY_ICON).map_err(|e| {
                     tauri::Error::Anyhow(anyhow::anyhow!("Failed to load tray icon: {}", e))
                 })?;
@@ -935,36 +925,18 @@ pub fn update_tray_icon<R: Runtime>(app: &AppHandle<R>, status: &str) -> tauri::
                 info!("Tray icon updated: stopped (template mode)");
             }
             "running" => {
-                // Running: Use template icon in template mode (monochrome)
-                let icon = tauri::image::Image::from_bytes(TRAY_ICON).map_err(|e| {
-                    tauri::Error::Anyhow(anyhow::anyhow!("Failed to load tray icon: {}", e))
-                })?;
-                tray.set_icon(Some(icon))?;
-                tray.set_icon_as_template(true)?;
+                // Running: Only update tooltip, don't change icon (graph manager handles it)
+                // The dynamic graph with health dot is always displayed now
                 tray.set_tooltip(Some("LocalRouter AI - Server Running"))?;
-                info!("Tray icon updated: running (template mode)");
-            }
-            "active" => {
-                // Active: Use active icon in non-template mode to show activity
-                let icon = tauri::image::Image::from_bytes(TRAY_ICON_ACTIVE).map_err(|e| {
-                    tauri::Error::Anyhow(anyhow::anyhow!("Failed to load active tray icon: {}", e))
-                })?;
-                tray.set_icon(Some(icon))?;
-                tray.set_icon_as_template(false)?;
-                tray.set_tooltip(Some("LocalRouter AI - Processing Request"))?;
-                info!("Tray icon updated: active (full color)");
-
-                // Schedule a return to "running" state after 2 seconds
-                let app_clone = app.clone();
-                tauri::async_runtime::spawn(async move {
-                    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-                    if let Err(e) = update_tray_icon(&app_clone, "running") {
-                        error!("Failed to reset tray icon to running: {}", e);
-                    }
-                });
+                info!("Tray tooltip updated: running (graph managed by TrayGraphManager)");
             }
             _ => {
-                error!("Unknown tray icon status: {}", status);
+                // Unknown status - just update tooltip
+                info!(
+                    "Unknown tray icon status: {}, updating tooltip only",
+                    status
+                );
+                tray.set_tooltip(Some(&format!("LocalRouter AI - {}", status)))?;
             }
         }
     }
@@ -972,47 +944,7 @@ pub fn update_tray_icon<R: Runtime>(app: &AppHandle<R>, status: &str) -> tauri::
     Ok(())
 }
 
-/// Handle toggling the tray graph feature on/off
-async fn handle_toggle_tray_graph<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
-    info!("Toggling tray graph feature from tray");
-
-    // Get managers from state
-    let config_manager = app.state::<ConfigManager>();
-    let tray_graph_manager = app.state::<Arc<TrayGraphManager>>();
-
-    // Get current state and toggle it
-    let new_enabled = {
-        let config = config_manager.get();
-        !config.ui.tray_graph_enabled
-    };
-
-    // Update configuration
-    config_manager
-        .update(|config| {
-            config.ui.tray_graph_enabled = new_enabled;
-        })
-        .map_err(|e| tauri::Error::Anyhow(e.into()))?;
-
-    // Save to disk
-    config_manager
-        .save()
-        .await
-        .map_err(|e| tauri::Error::Anyhow(e.into()))?;
-
-    // Update tray graph manager
-    let new_config = config_manager.get().ui.clone();
-    tray_graph_manager.update_config(new_config);
-
-    // Rebuild tray menu to show updated checkmark
-    rebuild_tray_menu(app)?;
-
-    info!(
-        "Tray graph feature {} from tray",
-        if new_enabled { "enabled" } else { "disabled" }
-    );
-
-    Ok(())
-}
+// handle_toggle_tray_graph removed - dynamic tray graph is always enabled
 
 /// Copy text to clipboard
 fn copy_to_clipboard(text: &str) -> Result<(), anyhow::Error> {
@@ -1034,9 +966,15 @@ pub struct TrayGraphManager {
     /// UI configuration
     config: Arc<RwLock<UiConfig>>,
 
-    /// Last update timestamp for throttling
+    /// Last update timestamp for throttling visual redraws (1s)
     #[allow(dead_code)]
     last_update: Arc<RwLock<Option<DateTime<Utc>>>>,
+
+    /// Last bucket shift timestamp for controlling graph movement speed
+    /// This is separate from last_update to allow immediate visual updates
+    /// while only shifting buckets at the configured rate
+    #[allow(dead_code)]
+    last_bucket_shift: Arc<RwLock<Option<DateTime<Utc>>>>,
 
     /// Channel for activity notifications
     activity_tx: mpsc::UnboundedSender<()>,
@@ -1052,6 +990,9 @@ pub struct TrayGraphManager {
     /// Accumulated tokens since last update (for Fast/Medium modes)
     /// This receives real-time token counts from completed requests
     accumulated_tokens: Arc<RwLock<u64>>,
+
+    /// Hash of last generated PNG to skip redundant updates
+    last_png_hash: Arc<RwLock<u64>>,
 }
 
 impl TrayGraphManager {
@@ -1066,29 +1007,32 @@ impl TrayGraphManager {
 
         let config = Arc::new(RwLock::new(config));
         let last_update = Arc::new(RwLock::new(None::<DateTime<Utc>>));
+        let last_bucket_shift = Arc::new(RwLock::new(None::<DateTime<Utc>>));
         let last_activity = Arc::new(RwLock::new(Utc::now()));
         let buckets = Arc::new(RwLock::new(vec![0u64; NUM_BUCKETS]));
         let accumulated_tokens = Arc::new(RwLock::new(0u64));
+        let last_png_hash = Arc::new(RwLock::new(0u64));
 
         // Clone for background task
         let app_handle_clone = app_handle.clone();
-        let config_clone = config.clone();
         let last_update_clone = last_update.clone();
+        let last_bucket_shift_clone = last_bucket_shift.clone();
         let last_activity_clone = last_activity.clone();
         let buckets_clone = buckets.clone();
         let accumulated_tokens_clone = accumulated_tokens.clone();
+        let last_png_hash_clone = last_png_hash.clone();
 
         // Spawn background task with idle-aware timer for smooth graph shifting
         tauri::async_runtime::spawn(async move {
             debug!("TrayGraphManager background task started");
 
             const UPDATE_CHECK_INTERVAL_MS: u64 = 500;
-            const UPDATE_THROTTLE_MS: i64 = 1000;
             const IDLE_TIMEOUT_SECS: i64 = 60;
 
             loop {
                 // Wait for activity notification
                 if activity_rx.recv().await.is_none() {
+                    debug!("TrayGraphManager: Channel closed, exiting");
                     break;
                 }
 
@@ -1113,12 +1057,8 @@ impl TrayGraphManager {
 
                     interval.tick().await;
 
-                    // Check if feature is enabled
-                    let enabled = config_clone.read().tray_graph_enabled;
-
-                    if !enabled {
-                        break;
-                    }
+                    // Dynamic tray graph is always enabled
+                    // (Previously had a toggle, now always on)
 
                     // Check if idle (no activity for 60+ seconds)
                     let is_idle = {
@@ -1131,14 +1071,18 @@ impl TrayGraphManager {
                         break;
                     }
 
-                    // Check throttle: has enough time passed since last update?
+                    // Visual updates happen every 1 second for responsiveness
+                    // Bucket shifting is controlled separately in update_tray_graph_impl
+                    const VISUAL_UPDATE_THROTTLE_MS: i64 = 1000;
+
+                    // Check throttle: has enough time passed since last visual update?
                     let should_update = {
                         let last_update_read = last_update_clone.read();
                         match *last_update_read {
                             None => true, // First update
                             Some(last_ts) => {
                                 let elapsed = Utc::now().signed_duration_since(last_ts);
-                                elapsed.num_milliseconds() >= UPDATE_THROTTLE_MS
+                                elapsed.num_milliseconds() >= VISUAL_UPDATE_THROTTLE_MS
                             }
                         }
                     };
@@ -1155,6 +1099,8 @@ impl TrayGraphManager {
                         is_first_update,
                         &buckets_clone,
                         &accumulated_tokens_clone,
+                        &last_png_hash_clone,
+                        &last_bucket_shift_clone,
                     )
                     .await
                     {
@@ -1170,19 +1116,29 @@ impl TrayGraphManager {
         });
 
         let manager = Self {
-            app_handle,
+            app_handle: app_handle.clone(),
             config,
             last_update,
-            activity_tx,
+            last_bucket_shift,
+            activity_tx: activity_tx.clone(),
             last_activity,
             buckets,
             accumulated_tokens,
+            last_png_hash,
         };
 
-        // Trigger initial update if graph is enabled
-        if manager.is_enabled() {
-            manager.notify_activity();
-        }
+        // Subscribe to health status changes to refresh the tray icon
+        // when health status changes (even when idle)
+        let activity_tx_health = activity_tx;
+        app_handle.listen("health-status-changed", move |_event| {
+            debug!("TrayGraphManager: Health status changed, refreshing tray icon");
+            if let Err(e) = activity_tx_health.send(()) {
+                error!("Failed to send health activity notification: {}", e);
+            }
+        });
+
+        // Trigger initial update (always enabled now)
+        manager.notify_activity();
 
         manager
     }
@@ -1220,11 +1176,18 @@ impl TrayGraphManager {
     /// - Fast (1s): Uses real-time token accumulation only (no metrics)
     /// - Medium (10s): Uses metrics for initial load, then real-time accumulation
     /// - Slow (60s): Always uses minute-level metrics (1:1 mapping)
+    ///
+    /// Visual updates happen every 1 second for responsiveness, but bucket shifting
+    /// only occurs at the configured refresh rate (1s/10s/60s).
+    ///
+    /// Skips the update if the generated PNG is identical to the previous one.
     async fn update_tray_graph_impl(
         app_handle: &AppHandle,
         is_first_update: bool,
         buckets: &Arc<RwLock<Vec<u64>>>,
         accumulated_tokens: &Arc<RwLock<u64>>,
+        last_png_hash: &Arc<RwLock<u64>>,
+        last_bucket_shift: &Arc<RwLock<Option<DateTime<Utc>>>>,
     ) -> Result<(), anyhow::Error> {
         // Get config and metrics collector from state
         let config_manager = app_handle
@@ -1241,6 +1204,18 @@ impl TrayGraphManager {
         const NUM_BUCKETS: i64 = 26;
         let now = Utc::now();
 
+        // Check if enough time has passed for a bucket shift
+        let should_shift_buckets = {
+            let last_shift = last_bucket_shift.read();
+            match *last_shift {
+                None => true, // First update always shifts
+                Some(last_ts) => {
+                    let elapsed = now.signed_duration_since(last_ts);
+                    elapsed.num_seconds() >= refresh_rate_secs as i64
+                }
+            }
+        };
+
         let data_points = match refresh_rate_secs {
             // Fast mode: 1 second per bar, 26 second total
             // NO metrics querying - pure real-time tracking
@@ -1251,15 +1226,18 @@ impl TrayGraphManager {
                 if is_first_update {
                     // Start with empty buckets (no historical data)
                     bucket_state.fill(0);
-                } else {
+                    *last_bucket_shift.write() = Some(now);
+                } else if should_shift_buckets {
                     // Shift buckets left (remove first, append 0 at end)
                     bucket_state.rotate_left(1);
                     bucket_state[NUM_BUCKETS as usize - 1] = 0;
+                    *last_bucket_shift.write() = Some(now);
                 }
 
-                // Add accumulated tokens to rightmost bucket (real-time data)
+                // Always add accumulated tokens to rightmost bucket (real-time data)
+                // This happens every visual update, not just on shifts
                 let tokens = *accumulated_tokens.read();
-                bucket_state[NUM_BUCKETS as usize - 1] = tokens;
+                bucket_state[NUM_BUCKETS as usize - 1] += tokens;
 
                 // Reset accumulator for next cycle
                 *accumulated_tokens.write() = 0;
@@ -1278,6 +1256,7 @@ impl TrayGraphManager {
             // Medium mode: 10 seconds per bar, 260 seconds total (~4.3 minutes)
             // Initial load: Interpolate minute data across 6 buckets each
             // Continuous: Maintain buckets in memory, shift left every 10 seconds
+            // Visual updates happen every 1 second to show new tokens immediately
             10 => {
                 let mut bucket_state = buckets.write();
 
@@ -1320,23 +1299,25 @@ impl TrayGraphManager {
                             }
 
                             let bucket_index = (NUM_BUCKETS - 1) - (bucket_age_secs / 10);
-                            let bucket_index = bucket_index.max(0).min(NUM_BUCKETS - 1) as usize;
+                            let bucket_index = bucket_index.clamp(0, NUM_BUCKETS - 1) as usize;
                             bucket_state[bucket_index] += tokens_per_bucket;
                         }
                     }
-                } else {
-                    // Runtime: Use accumulated real-time tokens (NO metrics query)
-                    // Shift buckets left (remove first, append 0 at end)
+                    *last_bucket_shift.write() = Some(now);
+                } else if should_shift_buckets {
+                    // Only shift buckets every 10 seconds
                     bucket_state.rotate_left(1);
                     bucket_state[NUM_BUCKETS as usize - 1] = 0;
-
-                    // Add accumulated tokens to rightmost bucket (real-time data)
-                    let tokens = *accumulated_tokens.read();
-                    bucket_state[NUM_BUCKETS as usize - 1] = tokens;
-
-                    // Reset accumulator for next cycle
-                    *accumulated_tokens.write() = 0;
+                    *last_bucket_shift.write() = Some(now);
                 }
+
+                // Always add accumulated tokens to rightmost bucket (real-time data)
+                // This happens every visual update (1s), so new requests appear immediately
+                let tokens = *accumulated_tokens.read();
+                bucket_state[NUM_BUCKETS as usize - 1] += tokens;
+
+                // Reset accumulator for next cycle
+                *accumulated_tokens.write() = 0;
 
                 // Convert to DataPoints
                 bucket_state
@@ -1351,7 +1332,7 @@ impl TrayGraphManager {
 
             // Slow mode: 1 minute per bar, 26 minute total (1560 seconds)
             // Direct mapping: one minute of metrics → one bar (no bucket management)
-            60 | _ => {
+            _ => {
                 let window_secs = NUM_BUCKETS * 60; // 1560 seconds = 26 minutes
                 let start = now - Duration::seconds(window_secs + 120);
                 let metrics = metrics_collector.get_global_range(start, now);
@@ -1366,7 +1347,7 @@ impl TrayGraphManager {
                     }
 
                     let bucket_index = (NUM_BUCKETS - 1) - (age_secs / 60);
-                    let bucket_index = bucket_index.max(0).min(NUM_BUCKETS - 1) as usize;
+                    let bucket_index = bucket_index.clamp(0, NUM_BUCKETS - 1) as usize;
                     bucket_tokens[bucket_index] += metric.total_tokens;
                 }
 
@@ -1392,6 +1373,21 @@ impl TrayGraphManager {
             crate::ui::tray_graph::generate_graph(&data_points, &graph_config, health_status)
                 .ok_or_else(|| anyhow::anyhow!("Failed to generate graph PNG"))?;
 
+        // Calculate simple hash of PNG bytes to detect changes
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        png_bytes.hash(&mut hasher);
+        let current_hash = hasher.finish();
+
+        // Skip update if PNG is identical to previous
+        {
+            let last_hash = *last_png_hash.read();
+            if last_hash == current_hash && last_hash != 0 {
+                // No change, skip update
+                return Ok(());
+            }
+        }
+
         // Update tray icon
         if let Some(tray) = app_handle.tray_by_id("main") {
             let icon = tauri::image::Image::from_bytes(&png_bytes)
@@ -1400,14 +1396,13 @@ impl TrayGraphManager {
             tray.set_icon(Some(icon))
                 .map_err(|e| anyhow::anyhow!("Failed to set tray icon: {}", e))?;
 
-            // Set template mode based on platform
-            #[cfg(target_os = "macos")]
-            tray.set_icon_as_template(true)
-                .map_err(|e| anyhow::anyhow!("Failed to set template mode: {}", e))?;
-
-            #[cfg(not(target_os = "macos"))]
+            // Disable template mode on all platforms to show colored health dot
+            // Template mode only renders white/black and ignores colors
             tray.set_icon_as_template(false)
-                .map_err(|e| anyhow::anyhow!("Failed to set template mode: {}", e))?;
+                .map_err(|e| anyhow::anyhow!("Failed to disable template mode: {}", e))?;
+
+            // Store the hash for next comparison
+            *last_png_hash.write() = current_hash;
 
             debug!(
                 "Tray icon updated with graph ({} buckets)",
@@ -1424,26 +1419,8 @@ impl TrayGraphManager {
     pub fn update_config(&self, new_config: UiConfig) {
         *self.config.write() = new_config;
 
-        // If enabled, trigger an immediate update
-        if self.config.read().tray_graph_enabled {
-            self.notify_activity();
-        } else {
-            // If disabled, restore static icon
-            self.restore_static_icon();
-        }
-    }
-
-    /// Restore the static tray icon (when feature is disabled)
-    fn restore_static_icon(&self) {
-        const TRAY_ICON: &[u8] = include_bytes!("../../icons/32x32.png");
-
-        if let Some(tray) = self.app_handle.tray_by_id("main") {
-            if let Ok(icon) = tauri::image::Image::from_bytes(TRAY_ICON) {
-                let _ = tray.set_icon(Some(icon));
-                let _ = tray.set_icon_as_template(true);
-                debug!("Restored static tray icon");
-            }
-        }
+        // Always trigger an immediate update (tray graph is always enabled)
+        self.notify_activity();
     }
 
     /// Check if the manager has been idle (no activity for >60 seconds)
@@ -1453,9 +1430,9 @@ impl TrayGraphManager {
         elapsed.num_seconds() > 60
     }
 
-    /// Check if tray graph feature is enabled
+    /// Check if tray graph feature is enabled (always returns true now)
     pub fn is_enabled(&self) -> bool {
-        self.config.read().tray_graph_enabled
+        true // Dynamic tray graph is always enabled
     }
 }
 

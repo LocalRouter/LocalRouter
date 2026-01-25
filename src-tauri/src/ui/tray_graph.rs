@@ -32,12 +32,13 @@ pub struct GraphConfig {
 }
 
 impl GraphConfig {
-    /// Create config for macOS template mode (adaptive to menu bar theme)
-    pub fn macos_template() -> Self {
+    /// Create config for macOS (non-template mode with visible colors)
+    /// Uses transparent background with white foreground
+    pub fn macos() -> Self {
         Self {
-            foreground: Rgba([255, 255, 255, 255]), // White (inverted by macOS)
+            foreground: Rgba([255, 255, 255, 255]), // White
             background: Rgba([0, 0, 0, 0]),         // Transparent
-            template_mode: true,
+            template_mode: false,
         }
     }
 
@@ -47,6 +48,16 @@ impl GraphConfig {
             foreground: Rgba([0, 120, 215, 255]),   // Blue
             background: Rgba([240, 240, 240, 255]), // Light gray
             template_mode: false,
+        }
+    }
+
+    /// Legacy: Create config for macOS template mode (not used anymore)
+    #[allow(dead_code)]
+    pub fn macos_template() -> Self {
+        Self {
+            foreground: Rgba([255, 255, 255, 255]), // White (inverted by macOS)
+            background: Rgba([0, 0, 0, 0]),         // Transparent
+            template_mode: true,
         }
     }
 }
@@ -110,6 +121,135 @@ fn draw_filled_circle(
                 }
             }
         }
+    }
+}
+
+/// Draw a hollow circle (ring) on the image
+fn draw_hollow_circle(
+    img: &mut RgbaImage,
+    center_x: i32,
+    center_y: i32,
+    outer_radius: i32,
+    thickness: i32,
+    color: Rgba<u8>,
+) {
+    let inner_radius = outer_radius - thickness;
+    let inner_radius_sq = inner_radius * inner_radius;
+    let outer_radius_sq = outer_radius * outer_radius;
+    let width = img.width() as i32;
+    let height = img.height() as i32;
+
+    for y in (center_y - outer_radius)..=(center_y + outer_radius) {
+        for x in (center_x - outer_radius)..=(center_x + outer_radius) {
+            if x >= 0 && x < width && y >= 0 && y < height {
+                let dx = x - center_x;
+                let dy = y - center_y;
+                let dist_sq = dx * dx + dy * dy;
+                // Draw if within the ring (between inner and outer radius)
+                if dist_sq <= outer_radius_sq && dist_sq >= inner_radius_sq {
+                    img.put_pixel(x as u32, y as u32, color);
+                }
+            }
+        }
+    }
+}
+
+/// Draw a thick line between two points using Bresenham's algorithm with thickness
+fn draw_thick_line(
+    img: &mut RgbaImage,
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
+    thickness: i32,
+    color: Rgba<u8>,
+) {
+    let width = img.width() as i32;
+    let height = img.height() as i32;
+    let half_t = thickness / 2;
+
+    let dx = (x1 - x0).abs();
+    let dy = (y1 - y0).abs();
+    let sx = if x0 < x1 { 1 } else { -1 };
+    let sy = if y0 < y1 { 1 } else { -1 };
+    let mut err = dx - dy;
+
+    let mut x = x0;
+    let mut y = y0;
+
+    loop {
+        // Draw a filled circle at each point for thickness
+        for ty in -half_t..=half_t {
+            for tx in -half_t..=half_t {
+                if tx * tx + ty * ty <= half_t * half_t {
+                    let px = x + tx;
+                    let py = y + ty;
+                    if px >= 0 && px < width && py >= 0 && py < height {
+                        img.put_pixel(px as u32, py as u32, color);
+                    }
+                }
+            }
+        }
+
+        if x == x1 && y == y1 {
+            break;
+        }
+
+        let e2 = 2 * err;
+        if e2 > -dy {
+            err -= dy;
+            x += sx;
+        }
+        if e2 < dx {
+            err += dx;
+            y += sy;
+        }
+    }
+}
+
+/// Draw the LocalRouter logo (two circles connected by S-curve)
+///
+/// Draws two hollow circles at opposite corners connected by a wavy routing line.
+/// The logo is drawn with low opacity so the graph bars can be seen through it.
+fn draw_logo(img: &mut RgbaImage, base_color: Rgba<u8>) {
+    // Use the base color but with very low alpha for transparency
+    let color = Rgba([base_color[0], base_color[1], base_color[2], 60]); // ~24% opacity
+
+    // Logo fits in the graph area (approximately 3-28 in both dimensions)
+    // Scale from 100x100 viewBox to ~26x26 pixel area
+    // Top-left circle: originally at (20, 20) with r=12 → scaled to (8, 8) with r=4
+    // Bottom-right circle: originally at (80, 80) with r=12 → scaled to (24, 24) with r=4
+
+    // Draw top-left hollow circle
+    draw_hollow_circle(img, 8, 8, 5, 2, color);
+
+    // Draw bottom-right hollow circle
+    draw_hollow_circle(img, 24, 24, 5, 2, color);
+
+    // Draw the S-curve connecting them
+    // Original path: M 32 22 C 75 15, 90 40, 50 50 C 10 60, 25 85, 68 78
+    // Simplified to a series of line segments approximating the curve
+    // Scale factor: 0.26, offset: 3
+
+    // Approximate the bezier curve with line segments
+    // Points along the curve (scaled from 100x100 to 32x32 with offset 3):
+    let curve_points: [(i32, i32); 9] = [
+        (11, 9),  // Start near top-left circle
+        (14, 8),  // Curve up-right
+        (18, 9),  // Continue right
+        (20, 12), // Curve down
+        (16, 16), // Center area
+        (12, 18), // Curve left
+        (10, 21), // Continue down-left
+        (14, 24), // Curve right
+        (20, 23), // End near bottom-right circle
+    ];
+
+    // Draw lines connecting the points
+    for i in 0..curve_points.len() - 1 {
+        let (x0, y0) = curve_points[i];
+        let (x1, y1) = curve_points[i + 1];
+        draw_thick_line(img, x0, y0, x1, y1, 3, color);
     }
 }
 
@@ -231,75 +371,86 @@ pub fn generate_graph(
         }
     }
 
-    // Handle all-zero data
-    if normalized_points.iter().all(|&t| t == 0) {
-        return encode_png(&img);
-    }
+    // Check if we have any data to draw bars
+    let has_data = !normalized_points.iter().all(|&t| t == 0);
 
-    // Scaling configuration: 1 pixel = 5 tokens
-    const TOKENS_PER_PIXEL: u64 = 5;
-    const MAX_BAR_HEIGHT: u32 = GRAPH_HEIGHT; // Full graph height (28 pixels)
-    const MAX_FIXED_SCALE_TOKENS: u64 = TOKENS_PER_PIXEL * MAX_BAR_HEIGHT as u64; // 5 * 28 = 140 tokens
+    // Draw logo FIRST as a background watermark (bars will be drawn on top)
+    draw_logo(&mut img, config.foreground);
 
-    // Calculate P95 (95th percentile) to avoid outliers affecting the scale
-    let mut sorted_points: Vec<u64> = normalized_points
-        .iter()
-        .copied()
-        .filter(|&t| t > 0)
-        .collect();
-    sorted_points.sort_unstable();
+    // Only draw bars if we have data (drawn on top of LR letters)
+    if has_data {
+        // Scaling configuration: 1 pixel = 5 tokens
+        const TOKENS_PER_PIXEL: u64 = 5;
+        const MAX_BAR_HEIGHT: u32 = GRAPH_HEIGHT; // Full graph height (28 pixels)
+        const MAX_FIXED_SCALE_TOKENS: u64 = TOKENS_PER_PIXEL * MAX_BAR_HEIGHT as u64; // 5 * 28 = 140 tokens
 
-    let scale_reference = if sorted_points.is_empty() {
-        1
-    } else {
-        // Use P95 for scaling to prevent outliers from squashing the graph
-        let p95_index =
-            ((sorted_points.len() as f64 * 0.95).ceil() as usize).min(sorted_points.len() - 1);
-        sorted_points[p95_index].max(1)
-    };
+        // Calculate P95 (95th percentile) to avoid outliers affecting the scale
+        let mut sorted_points: Vec<u64> = normalized_points
+            .iter()
+            .copied()
+            .filter(|&t| t > 0)
+            .collect();
+        sorted_points.sort_unstable();
 
-    // Determine if we use fixed scale or auto-scale based on P95
-    let use_fixed_scale = scale_reference <= MAX_FIXED_SCALE_TOKENS;
-
-    // Draw bars (each bar is exactly 1 pixel wide, inside the border)
-    for (i, &token_count) in normalized_points.iter().enumerate() {
-        // Skip empty data points
-        if token_count == 0 {
-            continue;
-        }
-
-        // Calculate bar height based on scaling mode
-        let bar_height = if use_fixed_scale {
-            // Fixed scale: 1 pixel = 5 tokens
-            // Example: 50 tokens = 10px, 145 tokens = 29px
-            let height = (token_count / TOKENS_PER_PIXEL) as u32;
-            height.min(MAX_BAR_HEIGHT).max(1)
+        let scale_reference = if sorted_points.is_empty() {
+            1
         } else {
-            // Auto-scale: fit to P95 value (outliers can extend beyond max height)
-            // Using P95 prevents outliers from squashing all other bars
-            let normalized =
-                (token_count as f64 / scale_reference as f64 * MAX_BAR_HEIGHT as f64) as u32;
-            normalized.min(MAX_BAR_HEIGHT).max(1)
+            // Use P95 for scaling to prevent outliers from squashing the graph
+            let p95_index =
+                ((sorted_points.len() as f64 * 0.95).ceil() as usize).min(sorted_points.len() - 1);
+            sorted_points[p95_index].max(1)
         };
 
-        // Calculate x position (offset by border + margin)
-        let x = GRAPH_OFFSET_X + i as u32;
+        // Determine if we use fixed scale or auto-scale based on P95
+        let use_fixed_scale = scale_reference <= MAX_FIXED_SCALE_TOKENS;
 
-        // Draw filled vertical bar from bottom up (1 pixel wide, with margin from border)
-        // Start from bottom margin and go up by bar_height
-        let start_y = HEIGHT - GRAPH_OFFSET_Y - bar_height;
-        let end_y = HEIGHT - GRAPH_OFFSET_Y;
-        for y in start_y..end_y {
-            img.put_pixel(x, y, config.foreground);
+        // Draw bars (each bar is exactly 1 pixel wide, inside the border)
+        for (i, &token_count) in normalized_points.iter().enumerate() {
+            // Skip empty data points
+            if token_count == 0 {
+                continue;
+            }
+
+            // Calculate bar height based on scaling mode
+            let bar_height = if use_fixed_scale {
+                // Fixed scale: 1 pixel = 5 tokens
+                // Example: 50 tokens = 10px, 145 tokens = 29px
+                let height = (token_count / TOKENS_PER_PIXEL) as u32;
+                height.clamp(1, MAX_BAR_HEIGHT)
+            } else {
+                // Auto-scale: fit to P95 value (outliers can extend beyond max height)
+                // Using P95 prevents outliers from squashing all other bars
+                let normalized =
+                    (token_count as f64 / scale_reference as f64 * MAX_BAR_HEIGHT as f64) as u32;
+                normalized.clamp(1, MAX_BAR_HEIGHT)
+            };
+
+            // Calculate x position (offset by border + margin)
+            let x = GRAPH_OFFSET_X + i as u32;
+
+            // Draw filled vertical bar from bottom up (1 pixel wide, with margin from border)
+            // Start from bottom margin and go up by bar_height
+            let start_y = HEIGHT - GRAPH_OFFSET_Y - bar_height;
+            let end_y = HEIGHT - GRAPH_OFFSET_Y;
+            for y in start_y..end_y {
+                img.put_pixel(x, y, config.foreground);
+            }
         }
     }
 
-    // Draw health status dot if provided
-    // Position: top-left corner, centered at (5, 5) with radius 3
-    // This gives a ~6x6 pixel dot that's clearly visible
+    // Draw health status dot only for warning/error states (yellow/red)
+    // Green (healthy) and unknown states don't show a dot to reduce visual clutter
+    // Position: top-left area, large for visibility
     if let Some(status) = health_status {
-        let dot_color = StatusDotColors::for_status(status);
-        draw_filled_circle(&mut img, 5, 5, 3, dot_color);
+        match status {
+            AggregateHealthStatus::Yellow | AggregateHealthStatus::Red => {
+                let dot_color = StatusDotColors::for_status(status);
+                draw_filled_circle(&mut img, 8, 8, 7, dot_color);
+            }
+            AggregateHealthStatus::Green => {
+                // No dot for healthy status
+            }
+        }
     }
 
     encode_png(&img)
@@ -327,7 +478,7 @@ fn encode_png(img: &RgbaImage) -> Option<Vec<u8>> {
 /// Get platform-specific graph config
 #[cfg(target_os = "macos")]
 pub fn platform_graph_config() -> GraphConfig {
-    GraphConfig::macos_template()
+    GraphConfig::macos()
 }
 
 /// Get platform-specific graph config
@@ -531,5 +682,65 @@ mod tests {
         assert_eq!(StatusDotColors::green(), Rgba([34, 197, 94, 255]));
         assert_eq!(StatusDotColors::yellow(), Rgba([234, 179, 8, 255]));
         assert_eq!(StatusDotColors::red(), Rgba([239, 68, 68, 255]));
+    }
+
+    #[test]
+    fn test_graph_with_lr_letters() {
+        // Test that graph renders with LR letters overlay
+        let config = GraphConfig::macos_template();
+        let data = vec![DataPoint {
+            timestamp: Utc::now(),
+            total_tokens: 100,
+        }];
+        let png = generate_graph(&data, &config, None);
+        assert!(png.is_some());
+        assert!(!png.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_graph_with_all_overlays() {
+        // Test that graph renders with both LR letters and health dot
+        let config = GraphConfig::macos_template();
+        let data = vec![DataPoint {
+            timestamp: Utc::now(),
+            total_tokens: 100,
+        }];
+        let png = generate_graph(&data, &config, Some(AggregateHealthStatus::Green));
+        assert!(png.is_some());
+        assert!(!png.unwrap().is_empty());
+    }
+
+    #[test]
+    #[ignore] // Run with: cargo test write_test_graph -- --ignored
+    fn write_test_graph_to_file() {
+        use std::fs::File;
+        use std::io::Write;
+
+        let now = Utc::now();
+        let mut data = Vec::new();
+        for i in 0..26 {
+            data.push(DataPoint {
+                timestamp: now - Duration::seconds(26 - i),
+                total_tokens: (i as u64 * 5) + 10, // Varying values
+            });
+        }
+
+        // Generate Windows/Linux version with Yellow status (to show outlined dot)
+        let config = GraphConfig::windows_linux();
+        let png = generate_graph(&data, &config, Some(AggregateHealthStatus::Yellow));
+        assert!(png.is_some());
+        let png_bytes = png.unwrap();
+        let mut file = File::create("/tmp/test_tray_graph.png").unwrap();
+        file.write_all(&png_bytes).unwrap();
+        println!("Wrote Windows/Linux graph to /tmp/test_tray_graph.png");
+
+        // Generate macOS version with Yellow status (to show outlined dot)
+        let config_mac = GraphConfig::macos();
+        let png_mac = generate_graph(&data, &config_mac, Some(AggregateHealthStatus::Yellow));
+        assert!(png_mac.is_some());
+        let png_bytes_mac = png_mac.unwrap();
+        let mut file_mac = File::create("/tmp/test_tray_graph_macos.png").unwrap();
+        file_mac.write_all(&png_bytes_mac).unwrap();
+        println!("Wrote macOS graph to /tmp/test_tray_graph_macos.png");
     }
 }
