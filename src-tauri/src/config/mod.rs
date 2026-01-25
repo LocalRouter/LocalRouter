@@ -700,7 +700,11 @@ pub struct Client {
     /// - None: No MCP access (default)
     /// - All: Access to all configured MCP servers
     /// - Specific: Access only to listed server IDs
-    #[serde(default, deserialize_with = "deserialize_mcp_server_access")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_mcp_server_access",
+        serialize_with = "serialize_mcp_server_access"
+    )]
     pub mcp_server_access: McpServerAccess,
 
     /// Enable deferred loading for MCP tools (default: false)
@@ -1545,6 +1549,24 @@ fn default_true() -> bool {
 
 fn default_log_retention() -> u32 {
     31
+}
+
+/// Serializer for McpServerAccess that produces YAML-friendly format
+/// Matches the format expected by deserialize_mcp_server_access
+fn serialize_mcp_server_access<S>(access: &McpServerAccess, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    match access {
+        McpServerAccess::None => serializer.serialize_str("none"),
+        McpServerAccess::All => serializer.serialize_str("all"),
+        McpServerAccess::Specific(servers) => {
+            use serde::ser::SerializeMap;
+            let mut map = serializer.serialize_map(Some(1))?;
+            map.serialize_entry("specific", servers)?;
+            map.end()
+        }
+    }
 }
 
 /// Deserializer for McpServerAccess that supports backward compatibility
