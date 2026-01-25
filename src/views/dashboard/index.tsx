@@ -224,7 +224,7 @@ export function DashboardView({ onViewChange }: DashboardViewProps) {
         />
         <StatsCard
           title="Total Cost"
-          value={loading ? "-" : `$${stats?.total_cost.toFixed(4) ?? "0.00"}`}
+          value={loading ? "-" : `$${stats?.total_cost.toFixed(2) ?? "0.00"}`}
           icon={<DollarSign className="h-5 w-5" />}
           loading={loading}
         />
