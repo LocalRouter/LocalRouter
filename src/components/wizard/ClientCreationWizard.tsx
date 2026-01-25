@@ -153,13 +153,6 @@ export function ClientCreationWizard({
     }
   }
 
-  const handleSkip = () => {
-    if (currentStep === 2) {
-      // Skip MCP and create client
-      createClient()
-    }
-  }
-
   const createClient = async () => {
     try {
       setCreating(true)
@@ -342,11 +335,6 @@ export function ClientCreationWizard({
             )}
           </div>
           <div className="flex gap-2">
-            {currentStep === 2 && state.mcpAccessMode === "none" && (
-              <Button variant="ghost" onClick={handleSkip} disabled={creating}>
-                Skip
-              </Button>
-            )}
             {isCredentialsStep ? (
               <Button onClick={handleComplete}>Done</Button>
             ) : (
