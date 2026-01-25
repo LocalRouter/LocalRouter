@@ -209,31 +209,33 @@ jobs:
       - name: Generate release notes
         id: notes
         run: |
-          cat > release-notes.md << 'EOF'
-## LocalRouter AI v${{ needs.version-bump.outputs.version }}
+          cat > release-notes.md << 'RELEASE_NOTES'
+          ## LocalRouter AI v${{ needs.version-bump.outputs.version }}
 
-### Installation
+          ### Installation
 
-Download the appropriate file for your platform:
+          Download the appropriate file for your platform:
 
-- **macOS (Intel):** `LocalRouter-AI_*_x64.dmg`
-- **macOS (Apple Silicon):** `LocalRouter-AI_*_aarch64.dmg`
-- **Windows:** `LocalRouter-AI_*_x64-setup.exe` or `.msi`
-- **Linux:** `LocalRouter-AI_*_amd64.AppImage` or `.deb`
+          | Platform | File |
+          |----------|------|
+          | macOS (Intel) | `LocalRouter-AI_*_x64.dmg` |
+          | macOS (Apple Silicon) | `LocalRouter-AI_*_aarch64.dmg` |
+          | Windows | `LocalRouter-AI_*_x64-setup.exe` or `.msi` |
+          | Linux | `LocalRouter-AI_*_amd64.AppImage` or `.deb` |
 
-### Auto-Update
+          ### Auto-Update
 
-This release includes cryptographically signed binaries. The app will automatically check for updates weekly (configurable in Preferences → Updates).
+          This release includes cryptographically signed binaries. The app will automatically check for updates weekly (configurable in Preferences → Updates).
 
-### Verification
+          ### Verification
 
-All binaries are signed. The updater will verify signatures before installation.
+          All binaries are signed. The updater will verify signatures before installation.
 
-### Changes
+          ### Changes
 
-See [commit history](https://github.com/${{ github.repository }}/commits/v${{ needs.version-bump.outputs.version }}) for details.
-EOF
-
+          See [commit history](https://github.com/${{ github.repository }}/commits/v${{ needs.version-bump.outputs.version }}) for details.
+          RELEASE_NOTES
+          sed -i 's/^          //' release-notes.md
           echo "Release notes generated"
 
       - name: Create latest.json for updater
