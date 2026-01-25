@@ -184,6 +184,9 @@ async fn run_gui_mode() -> anyhow::Result<()> {
         mcp_oauth_manager.clone(),
     ));
 
+    // Initialize unified OAuth flow manager for inline OAuth flows
+    let oauth_flow_manager = Arc::new(oauth_browser::OAuthFlowManager::new(keychain.clone()));
+
     // Initialize provider registry
     info!("Initializing provider registry...");
     let provider_registry = Arc::new(ProviderRegistry::new());
@@ -323,7 +326,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             Ok(service) => {
                 let service_arc = Arc::new(service);
                 // Start auto-unload background task
-                let _ = service_arc.clone().start_auto_unload_task();
+                tokio::spawn(service_arc.clone().start_auto_unload_task());
                 info!(
                     "RouteLLM service initialized with idle timeout: {}s",
                     idle_timeout
@@ -408,6 +411,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             app.manage(mcp_server_manager.clone());
             app.manage(mcp_oauth_manager.clone());
             app.manage(mcp_oauth_browser_manager.clone());
+            app.manage(oauth_flow_manager.clone());
             app.manage(provider_registry.clone());
             app.manage(server_manager.clone());
             app.manage(app_router.clone());
@@ -438,6 +442,9 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             let metrics_collector_clone = metrics_collector.clone();
             let config_manager_clone = config_manager.clone();
             let app_handle_for_restart = app.handle().clone();
+            // Clone health cache for restart handler
+            let health_cache_for_restart =
+                server_manager.get_state().map(|s| s.health_cache.clone());
 
             app.listen("server-restart-requested", move |_event| {
                 info!("Server restart requested");
@@ -463,16 +470,20 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                 let token_store_clone2 = token_store_clone.clone();
                 let metrics_collector_clone2 = metrics_collector_clone.clone();
                 let app_handle = app_handle_for_restart.clone();
+                let health_cache_clone = health_cache_for_restart.clone();
 
                 tokio::spawn(async move {
                     use tauri::Emitter;
 
-                    // Emit stopped status before restart
+                    // Update health cache and emit stopped status before restart
+                    if let Some(ref health_cache) = health_cache_clone {
+                        health_cache.update_server_status(false, None, None);
+                    }
                     let _ = app_handle.emit("server-status-changed", "stopped");
 
                     match server_manager_clone2
                         .start(
-                            server_config,
+                            server_config.clone(),
                             crate::server::manager::ServerDependencies {
                                 router: app_router_clone2,
                                 mcp_server_manager: mcp_server_manager_clone2,
@@ -488,11 +499,23 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                     {
                         Ok(_) => {
                             info!("Server restarted successfully");
+                            // Update health cache with new server status
+                            if let Some(ref health_cache) = health_cache_clone {
+                                health_cache.update_server_status(
+                                    true,
+                                    Some(server_config.host.clone()),
+                                    Some(server_config.port),
+                                );
+                            }
                             let _ = app_handle.emit("server-status-changed", "running");
                             let _ = app_handle.emit("server-restart-completed", ());
                         }
                         Err(e) => {
                             error!("Failed to restart server: {}", e);
+                            // Keep server status as stopped in health cache
+                            if let Some(ref health_cache) = health_cache_clone {
+                                health_cache.update_server_status(false, None, None);
+                            }
                             let _ = app_handle.emit("server-status-changed", "stopped");
                             let _ = app_handle.emit("server-restart-failed", e.to_string());
                         }
@@ -513,23 +536,47 @@ async fn run_gui_mode() -> anyhow::Result<()> {
 
                 // Initialize health cache with current providers and MCP servers
                 let health_cache = state.health_cache.clone();
-                let provider_names: Vec<String> = provider_registry
-                    .list_providers()
-                    .into_iter()
-                    .map(|p| p.instance_name)
-                    .collect();
-                health_cache.init_providers(provider_names);
+                {
+                    use providers::health_cache::ItemHealth;
 
-                let mcp_configs: Vec<(String, String)> = mcp_server_manager
-                    .list_configs()
-                    .into_iter()
-                    .map(|c| (c.id.clone(), c.name.clone()))
-                    .collect();
-                health_cache.init_mcp_servers(mcp_configs);
+                    // Initialize providers - disabled ones get disabled status
+                    let providers = provider_registry.list_providers();
+                    for provider_info in providers {
+                        if provider_info.enabled {
+                            health_cache.update_provider(
+                                &provider_info.instance_name,
+                                ItemHealth::pending(provider_info.instance_name.clone()),
+                            );
+                        } else {
+                            health_cache.update_provider(
+                                &provider_info.instance_name,
+                                ItemHealth::disabled(provider_info.instance_name.clone()),
+                            );
+                        }
+                    }
 
-                // Set server as running with the configured port
-                let server_port = config_manager.get().server.port;
-                health_cache.update_server_status(true, Some(server_port));
+                    // Initialize MCP servers - disabled ones get disabled status
+                    let mcp_configs = mcp_server_manager.list_configs();
+                    for config in mcp_configs {
+                        if config.enabled {
+                            health_cache.update_mcp_server(
+                                &config.id,
+                                ItemHealth::pending(config.name.clone()),
+                            );
+                        } else {
+                            health_cache
+                                .update_mcp_server(&config.id, ItemHealth::disabled(config.name));
+                        }
+                    }
+                }
+
+                // Set server as running with the configured host and port
+                let server_config = &config_manager.get().server;
+                health_cache.update_server_status(
+                    true,
+                    Some(server_config.host.clone()),
+                    Some(server_config.port),
+                );
                 info!(
                     "Health cache initialized with {} providers and {} MCP servers",
                     provider_registry.list_providers().len(),
@@ -546,10 +593,10 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                     let timeout_secs = health_check_config.timeout_secs;
 
                     tokio::spawn(async move {
+                        use providers::health_cache::ItemHealth;
+
                         let mut interval =
                             tokio::time::interval(std::time::Duration::from_secs(interval_secs));
-                        // Skip the initial tick (immediate)
-                        interval.tick().await;
 
                         loop {
                             interval.tick().await;
@@ -558,6 +605,15 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                             // Check all providers
                             let providers = provider_registry_for_task.list_providers();
                             for provider_info in providers {
+                                // Skip disabled providers - emit disabled status
+                                if !provider_info.enabled {
+                                    health_cache_for_task.update_provider(
+                                        &provider_info.instance_name,
+                                        ItemHealth::disabled(provider_info.instance_name.clone()),
+                                    );
+                                    continue;
+                                }
+
                                 if let Some(provider) = provider_registry_for_task
                                     .get_provider(&provider_info.instance_name)
                                 {
@@ -569,7 +625,6 @@ async fn run_gui_mode() -> anyhow::Result<()> {
 
                                     let item_health = match health {
                                         Ok(h) => {
-                                            use providers::health_cache::ItemHealth;
                                             use providers::HealthStatus;
                                             match h.status {
                                                 HealthStatus::Healthy => ItemHealth::healthy(
@@ -589,13 +644,10 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                                                 ),
                                             }
                                         }
-                                        Err(_) => {
-                                            use providers::health_cache::ItemHealth;
-                                            ItemHealth::unhealthy(
-                                                provider_info.instance_name.clone(),
-                                                format!("Health check timeout ({}s)", timeout_secs),
-                                            )
-                                        }
+                                        Err(_) => ItemHealth::unhealthy(
+                                            provider_info.instance_name.clone(),
+                                            format!("Health check timeout ({}s)", timeout_secs),
+                                        ),
                                     };
                                     health_cache_for_task
                                         .update_provider(&provider_info.instance_name, item_health);
@@ -603,10 +655,21 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                             }
 
                             // Check all MCP servers
-                            let mcp_health = mcp_server_manager_for_task.get_all_health().await;
-                            for mcp_server_health in mcp_health {
+                            let mcp_configs = mcp_server_manager_for_task.list_configs();
+                            for config in mcp_configs {
+                                // Skip disabled MCP servers - emit disabled status
+                                if !config.enabled {
+                                    health_cache_for_task.update_mcp_server(
+                                        &config.id,
+                                        ItemHealth::disabled(config.name),
+                                    );
+                                    continue;
+                                }
+
+                                let mcp_server_health = mcp_server_manager_for_task
+                                    .get_server_health(&config.id)
+                                    .await;
                                 use mcp::manager::HealthStatus as McpHealthStatus;
-                                use providers::health_cache::ItemHealth;
                                 let server_id = mcp_server_health.server_id.clone();
                                 let server_name = mcp_server_health.server_name.clone();
                                 let item_health = match mcp_server_health.status {
@@ -672,15 +735,13 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                     // Make window smaller (800x500)
                     let _ = window.set_size(tauri::LogicalSize::new(800.0, 500.0));
                     // Position in bottom-right corner
-                    if let Ok(monitor) = window.current_monitor() {
-                        if let Some(monitor) = monitor {
-                            let screen_size = monitor.size();
-                            let scale = monitor.scale_factor();
-                            // Position 50px from right and bottom edges
-                            let x = (screen_size.width as f64 / scale) - 800.0 - 50.0;
-                            let y = (screen_size.height as f64 / scale) - 500.0 - 50.0;
-                            let _ = window.set_position(tauri::LogicalPosition::new(x, y));
-                        }
+                    if let Ok(Some(monitor)) = window.current_monitor() {
+                        let screen_size = monitor.size();
+                        let scale = monitor.scale_factor();
+                        // Position 50px from right and bottom edges
+                        let x = (screen_size.width as f64 / scale) - 800.0 - 50.0;
+                        let y = (screen_size.height as f64 / scale) - 500.0 - 50.0;
+                        let _ = window.set_position(tauri::LogicalPosition::new(x, y));
                     }
                     // Minimize the window so it doesn't take focus
                     // User can restore it from taskbar/dock if needed
@@ -812,6 +873,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands_mcp_metrics::get_mcp_latency_percentiles,
             // Network interface commands
             ui::commands::get_network_interfaces,
+            ui::commands::get_executable_path,
             // Server control commands
             ui::commands::get_server_status,
             ui::commands::stop_server,
@@ -856,6 +918,10 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::discover_mcp_oauth_endpoints,
             ui::commands::test_mcp_oauth_connection,
             ui::commands::revoke_mcp_oauth_tokens,
+            // Inline OAuth flow commands (for MCP server creation)
+            ui::commands::start_inline_oauth_flow,
+            ui::commands::poll_inline_oauth_status,
+            ui::commands::cancel_inline_oauth_flow,
             // Unified client management commands
             ui::commands::list_clients,
             ui::commands::create_client,
@@ -906,6 +972,8 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::get_logging_config,
             ui::commands::update_logging_config,
             ui::commands::open_logs_folder,
+            // Connection graph commands
+            ui::commands::get_active_connections,
             // Setup wizard commands
             ui::commands::get_setup_wizard_shown,
             ui::commands::set_setup_wizard_shown,

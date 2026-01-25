@@ -3,6 +3,7 @@
 //! Implements progressive aggregation:
 //! - Per-minute: Last 24 hours (1,440 points)
 //! - Per-hour: Last 7 days (168 points)
+#![allow(dead_code)]
 //! - Per-day: Last 90 days (90 points)
 
 use anyhow::Result;

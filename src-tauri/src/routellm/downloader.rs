@@ -392,7 +392,7 @@ pub async fn download_models(
 
     // Download tokenizer files to temporary location
     info!("Downloading tokenizer files...");
-    let tokenizer_files = vec![
+    let tokenizer_files = [
         "tokenizer.json",
         "tokenizer_config.json",
         "sentencepiece.bpe.model", // XLM-RoBERTa uses SentencePiece

@@ -44,7 +44,7 @@ pub enum RateLimitTimeWindow {
 }
 
 impl RateLimitTimeWindow {
-    pub fn to_seconds(&self) -> i64 {
+    pub fn to_seconds(self) -> i64 {
         match self {
             RateLimitTimeWindow::Minute => 60,
             RateLimitTimeWindow::Hour => 3600,
@@ -862,6 +862,7 @@ impl McpTransportConfig {
     /// 2. Legacy format: Separate command + args fields
     ///
     /// Returns (executable, args, env) or error if parsing fails.
+    #[allow(clippy::type_complexity)]
     pub fn parse_stdio_command(
         &self,
     ) -> Result<
@@ -1667,7 +1668,7 @@ impl Default for LoggingConfig {
 impl Default for UiConfig {
     fn default() -> Self {
         Self {
-            tray_graph_enabled: false, // Disabled by default (opt-in)
+            tray_graph_enabled: true, // Always enabled (dynamic tray icon graph)
             tray_graph_refresh_rate_secs: default_tray_graph_refresh_rate(),
         }
     }

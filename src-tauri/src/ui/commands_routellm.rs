@@ -36,7 +36,7 @@ pub async fn routellm_test_prediction(
     if !threshold.is_finite() {
         return Err("Threshold must be a finite number".to_string());
     }
-    if threshold < 0.0 || threshold > 1.0 {
+    if !(0.0..=1.0).contains(&threshold) {
         return Err("Threshold must be between 0.0 and 1.0".to_string());
     }
 

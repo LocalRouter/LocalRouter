@@ -609,7 +609,7 @@ impl Router {
 
         // Apply feature adapters to response if needed
         if let Some(ref extensions) = request.extensions {
-            for (feature_name, _feature_params) in extensions {
+            for feature_name in extensions.keys() {
                 if provider_instance.supports_feature(feature_name) {
                     if let Some(adapter) = provider_instance.get_feature_adapter(feature_name) {
                         adapter.adapt_response(&mut response)?;

@@ -354,6 +354,7 @@ pub async fn remove_provider_instance(
 pub async fn set_provider_enabled(
     registry: State<'_, Arc<ProviderRegistry>>,
     config_manager: State<'_, ConfigManager>,
+    app_state: State<'_, Arc<crate::server::state::AppState>>,
     app: tauri::AppHandle,
     instance_name: String,
     enabled: bool,
@@ -374,6 +375,60 @@ pub async fn set_provider_enabled(
 
     // Persist to disk
     config_manager.save().await.map_err(|e| e.to_string())?;
+
+    // Update health cache immediately - this recalculates aggregate status and emits event
+    use crate::providers::health_cache::ItemHealth;
+    if enabled {
+        // Set to pending, then trigger a health check for this provider
+        app_state
+            .health_cache
+            .update_provider(&instance_name, ItemHealth::pending(instance_name.clone()));
+
+        // Spawn background health check for this provider
+        let health_cache = app_state.health_cache.clone();
+        let provider_registry = app_state.provider_registry.clone();
+        let timeout_secs = config_manager.get().health_check.timeout_secs;
+        let name = instance_name.clone();
+        tokio::spawn(async move {
+            if let Some(provider) = provider_registry.get_provider(&name) {
+                let health = tokio::time::timeout(
+                    std::time::Duration::from_secs(timeout_secs),
+                    provider.health_check(),
+                )
+                .await;
+
+                let item_health = match health {
+                    Ok(h) => {
+                        use crate::providers::HealthStatus;
+                        match h.status {
+                            HealthStatus::Healthy => {
+                                ItemHealth::healthy(name.clone(), h.latency_ms)
+                            }
+                            HealthStatus::Degraded => ItemHealth::degraded(
+                                name.clone(),
+                                h.latency_ms,
+                                h.error_message.unwrap_or_else(|| "Degraded".to_string()),
+                            ),
+                            HealthStatus::Unhealthy => ItemHealth::unhealthy(
+                                name.clone(),
+                                h.error_message.unwrap_or_else(|| "Unhealthy".to_string()),
+                            ),
+                        }
+                    }
+                    Err(_) => ItemHealth::unhealthy(
+                        name.clone(),
+                        format!("Health check timeout ({}s)", timeout_secs),
+                    ),
+                };
+                health_cache.update_provider(&name, item_health);
+            }
+        });
+    } else {
+        // Set to disabled immediately
+        app_state
+            .health_cache
+            .update_provider(&instance_name, ItemHealth::disabled(instance_name.clone()));
+    }
 
     // Notify frontend that providers and models changed
     let _ = app.emit("providers-changed", ());
@@ -430,6 +485,20 @@ pub async fn start_provider_health_checks(
             let instance_name_clone = instance_name.clone();
 
             let handle = tokio::spawn(async move {
+                // Check if provider is disabled
+                if let Some(enabled) = registry.is_provider_enabled(&instance_name_clone) {
+                    if !enabled {
+                        let result = HealthCheckResult {
+                            provider_name: instance_name_clone,
+                            status: "disabled".to_string(),
+                            latency_ms: None,
+                            error_message: None,
+                        };
+                        let _ = app_handle.emit("provider-health-check", result);
+                        return;
+                    }
+                }
+
                 if let Some(provider) = registry.get_provider_unchecked(&instance_name_clone) {
                     let health = provider.health_check().await;
                     let result = HealthCheckResult {
@@ -468,6 +537,20 @@ pub async fn check_single_provider_health(
 ) -> Result<(), String> {
     let registry = registry.inner().clone();
     let app_handle = app.clone();
+
+    // Check if provider is disabled
+    if let Some(enabled) = registry.is_provider_enabled(&instance_name) {
+        if !enabled {
+            let result = HealthCheckResult {
+                provider_name: instance_name,
+                status: "disabled".to_string(),
+                latency_ms: None,
+                error_message: None,
+            };
+            let _ = app_handle.emit("provider-health-check", result);
+            return Ok(());
+        }
+    }
 
     // Spawn the health check in the background
     tokio::spawn(async move {
@@ -517,7 +600,7 @@ pub async fn get_health_cache(
 /// Returns immediately after starting the refresh.
 #[tauri::command]
 pub async fn refresh_all_health(
-    app: tauri::AppHandle,
+    _app: tauri::AppHandle,
     app_state: State<'_, Arc<crate::server::state::AppState>>,
     config_manager: State<'_, ConfigManager>,
 ) -> Result<(), String> {
@@ -529,10 +612,20 @@ pub async fn refresh_all_health(
     // Spawn the refresh in the background
     tokio::spawn(async move {
         tracing::info!("Manual health refresh triggered...");
+        use crate::providers::health_cache::ItemHealth;
 
         // Check all providers
         let providers = provider_registry.list_providers();
         for provider_info in providers {
+            // Skip disabled providers - emit disabled status
+            if !provider_info.enabled {
+                health_cache.update_provider(
+                    &provider_info.instance_name,
+                    ItemHealth::disabled(provider_info.instance_name.clone()),
+                );
+                continue;
+            }
+
             if let Some(provider) = provider_registry.get_provider(&provider_info.instance_name) {
                 let health = tokio::time::timeout(
                     std::time::Duration::from_secs(timeout_secs),
@@ -542,7 +635,6 @@ pub async fn refresh_all_health(
 
                 let item_health = match health {
                     Ok(h) => {
-                        use crate::providers::health_cache::ItemHealth;
                         use crate::providers::HealthStatus;
                         match h.status {
                             HealthStatus::Healthy => ItemHealth::healthy(
@@ -560,23 +652,26 @@ pub async fn refresh_all_health(
                             ),
                         }
                     }
-                    Err(_) => {
-                        use crate::providers::health_cache::ItemHealth;
-                        ItemHealth::unhealthy(
-                            provider_info.instance_name.clone(),
-                            format!("Health check timeout ({}s)", timeout_secs),
-                        )
-                    }
+                    Err(_) => ItemHealth::unhealthy(
+                        provider_info.instance_name.clone(),
+                        format!("Health check timeout ({}s)", timeout_secs),
+                    ),
                 };
                 health_cache.update_provider(&provider_info.instance_name, item_health);
             }
         }
 
         // Check all MCP servers
-        let mcp_health = mcp_server_manager.get_all_health().await;
-        for mcp_server_health in mcp_health {
+        let mcp_configs = mcp_server_manager.list_configs();
+        for config in mcp_configs {
+            // Skip disabled MCP servers - emit disabled status
+            if !config.enabled {
+                health_cache.update_mcp_server(&config.id, ItemHealth::disabled(config.name));
+                continue;
+            }
+
+            let mcp_server_health = mcp_server_manager.get_server_health(&config.id).await;
             use crate::mcp::manager::HealthStatus as McpHealthStatus;
-            use crate::providers::health_cache::ItemHealth;
             let server_id = mcp_server_health.server_id.clone();
             let server_name = mcp_server_health.server_name.clone();
             let item_health = match mcp_server_health.status {
@@ -961,6 +1056,17 @@ pub async fn get_network_interfaces() -> Result<Vec<NetworkInterface>, String> {
     }
 
     Ok(interfaces)
+}
+
+/// Get the path to the current executable
+///
+/// Returns the full path to the LocalRouter binary, useful for generating
+/// STDIO MCP bridge configuration instructions.
+#[tauri::command]
+pub async fn get_executable_path() -> Result<String, String> {
+    std::env::current_exe()
+        .map(|p| p.to_string_lossy().to_string())
+        .map_err(|e| format!("Failed to get executable path: {}", e))
 }
 
 // ============================================================================
@@ -1690,6 +1796,7 @@ pub async fn list_mcp_servers(
 /// # Returns
 /// * The created server info
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn create_mcp_server(
     name: String,
     transport: String,
@@ -1934,8 +2041,23 @@ pub async fn start_mcp_health_checks(
             let mcp_manager = mcp_manager.clone();
             let app_handle = app_handle.clone();
             let server_id = config.id.clone();
+            let server_name = config.name.clone();
+            let enabled = config.enabled;
 
             let handle = tokio::spawn(async move {
+                // If server is disabled, emit disabled status without running health check
+                if !enabled {
+                    let result = McpHealthCheckResult {
+                        server_id,
+                        server_name,
+                        status: "disabled".to_string(),
+                        latency_ms: None,
+                        error: None,
+                    };
+                    let _ = app_handle.emit("mcp-health-check", result);
+                    return;
+                }
+
                 let health = mcp_manager.get_server_health(&server_id).await;
                 let result = McpHealthCheckResult {
                     server_id: health.server_id,
@@ -1974,6 +2096,23 @@ pub async fn check_single_mcp_health(
 ) -> Result<(), String> {
     let mcp_manager = mcp_manager.inner().clone();
     let app_handle = app.clone();
+
+    // Check if server is disabled
+    let config = mcp_manager
+        .get_config(&server_id)
+        .ok_or_else(|| format!("Server not found: {}", server_id))?;
+
+    if !config.enabled {
+        let result = McpHealthCheckResult {
+            server_id: config.id,
+            server_name: config.name,
+            status: "disabled".to_string(),
+            latency_ms: None,
+            error: None,
+        };
+        let _ = app_handle.emit("mcp-health-check", result);
+        return Ok(());
+    }
 
     tokio::spawn(async move {
         let health = mcp_manager.get_server_health(&server_id).await;
@@ -2248,9 +2387,22 @@ pub async fn update_mcp_server(
 pub async fn toggle_mcp_server_enabled(
     server_id: String,
     enabled: bool,
+    mcp_manager: State<'_, Arc<McpServerManager>>,
     config_manager: State<'_, ConfigManager>,
+    app_state: State<'_, Arc<crate::server::state::AppState>>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
+    // Get server name before updating (needed for health cache)
+    let server_name = mcp_manager
+        .list_configs()
+        .iter()
+        .find(|c| c.id == server_id)
+        .map(|c| c.name.clone())
+        .unwrap_or_else(|| server_id.clone());
+
+    // Update in MCP manager (in-memory)
+    mcp_manager.set_config_enabled(&server_id, enabled);
+
     // Update in config file
     config_manager
         .update(|cfg| {
@@ -2262,6 +2414,43 @@ pub async fn toggle_mcp_server_enabled(
 
     // Persist to disk
     config_manager.save().await.map_err(|e| e.to_string())?;
+
+    // Update health cache immediately - this recalculates aggregate status and emits event
+    use crate::providers::health_cache::ItemHealth;
+    if enabled {
+        // Set to pending, then trigger a health check for this MCP server
+        app_state
+            .health_cache
+            .update_mcp_server(&server_id, ItemHealth::pending(server_name.clone()));
+
+        // Spawn background health check for this MCP server
+        let health_cache = app_state.health_cache.clone();
+        let mcp_manager = app_state.mcp_server_manager.clone();
+        let id = server_id.clone();
+        tokio::spawn(async move {
+            let mcp_server_health = mcp_manager.get_server_health(&id).await;
+            use crate::mcp::manager::HealthStatus as McpHealthStatus;
+            let server_name = mcp_server_health.server_name.clone();
+            let item_health = match mcp_server_health.status {
+                McpHealthStatus::Ready => ItemHealth::ready(server_name),
+                McpHealthStatus::Healthy => {
+                    ItemHealth::healthy(server_name, mcp_server_health.latency_ms)
+                }
+                McpHealthStatus::Unhealthy | McpHealthStatus::Unknown => ItemHealth::unhealthy(
+                    server_name,
+                    mcp_server_health
+                        .error
+                        .unwrap_or_else(|| "Unhealthy".to_string()),
+                ),
+            };
+            health_cache.update_mcp_server(&id, item_health);
+        });
+    } else {
+        // Set to disabled immediately
+        app_state
+            .health_cache
+            .update_mcp_server(&server_id, ItemHealth::disabled(server_name));
+    }
 
     // Rebuild tray menu
     if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
@@ -2807,11 +2996,7 @@ pub async fn get_mcp_token_stats(
 
     // Deferred loading: Only search tool visible (~300 tokens)
     let deferred_tokens = 300;
-    let savings_tokens = if total_tokens > deferred_tokens {
-        total_tokens - deferred_tokens
-    } else {
-        0
-    };
+    let savings_tokens = total_tokens.saturating_sub(deferred_tokens);
     let savings_percent = if total_tokens > 0 {
         (savings_tokens as f64 / total_tokens as f64) * 100.0
     } else {
@@ -3881,9 +4066,9 @@ pub async fn get_llm_logs(
                     // Apply filters
                     let matches = client_name
                         .as_ref()
-                        .map_or(true, |f| entry.api_key_name == *f)
-                        && provider.as_ref().map_or(true, |f| entry.provider == *f)
-                        && model.as_ref().map_or(true, |f| entry.model == *f);
+                        .is_none_or(|f| entry.api_key_name == *f)
+                        && provider.as_ref().is_none_or(|f| entry.provider == *f)
+                        && model.as_ref().is_none_or(|f| entry.model == *f);
 
                     if matches {
                         file_entries.push(entry);
@@ -3981,8 +4166,8 @@ pub async fn get_mcp_logs(
                     serde_json::from_str::<crate::monitoring::mcp_logger::McpAccessLogEntry>(&line)
                 {
                     // Apply filters
-                    let matches = client_id.as_ref().map_or(true, |f| entry.client_id == *f)
-                        && server_id.as_ref().map_or(true, |f| entry.server_id == *f);
+                    let matches = client_id.as_ref().is_none_or(|f| entry.client_id == *f)
+                        && server_id.as_ref().is_none_or(|f| entry.server_id == *f);
 
                     if matches {
                         file_entries.push(entry);
@@ -4180,10 +4365,10 @@ pub fn get_tray_graph_settings(
     })
 }
 
-/// Update tray graph settings
+/// Update tray graph settings (refresh rate only - graph is always enabled)
 #[tauri::command]
 pub async fn update_tray_graph_settings(
-    enabled: bool,
+    enabled: bool, // Kept for backwards compatibility, but ignored (always enabled)
     refresh_rate_secs: u64,
     config_manager: State<'_, ConfigManager>,
     tray_graph_manager: State<'_, Arc<crate::ui::tray::TrayGraphManager>>,
@@ -4193,10 +4378,12 @@ pub async fn update_tray_graph_settings(
         return Err("refresh_rate_secs must be 1 (Fast), 10 (Medium), or 60 (Slow)".to_string());
     }
 
-    // Update configuration
+    let _ = enabled; // Suppress unused warning - kept for API compatibility
+
+    // Update configuration (tray_graph_enabled is always true now)
     config_manager
         .update(|config| {
-            config.ui.tray_graph_enabled = enabled;
+            config.ui.tray_graph_enabled = true; // Always enabled
             config.ui.tray_graph_refresh_rate_secs = refresh_rate_secs;
         })
         .map_err(|e| e.to_string())?;
@@ -4427,6 +4614,194 @@ pub fn revoke_mcp_oauth_tokens(
 }
 
 // ============================================================================
+// Inline OAuth Flow Commands (for MCP server creation)
+// ============================================================================
+
+/// Result of starting an inline OAuth flow
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InlineOAuthFlowResult {
+    /// Unique flow identifier for polling
+    pub flow_id: String,
+    /// Authorization URL to open in browser
+    pub auth_url: String,
+    /// Redirect URI used
+    pub redirect_uri: String,
+    /// CSRF state parameter
+    pub state: String,
+    /// Discovered OAuth endpoints
+    pub discovery: InlineOAuthDiscovery,
+}
+
+/// OAuth discovery information for inline flows
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InlineOAuthDiscovery {
+    pub auth_url: String,
+    pub token_url: String,
+    pub scopes: Vec<String>,
+}
+
+/// Result of polling an inline OAuth flow
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "status")]
+pub enum InlineOAuthFlowStatus {
+    /// Still waiting for user to complete authorization
+    Pending { time_remaining: Option<i64> },
+    /// Exchanging authorization code for tokens
+    ExchangingToken,
+    /// Successfully completed
+    Success {
+        access_token: String,
+        refresh_token: Option<String>,
+        expires_in: Option<i64>,
+    },
+    /// Failed with error
+    Error { message: String },
+    /// Timed out
+    Timeout,
+    /// Cancelled
+    Cancelled,
+}
+
+/// Start an inline OAuth flow for MCP server creation
+///
+/// This combines OAuth discovery and flow start in one call, allowing OAuth
+/// to be completed during server creation before the server exists in config.
+///
+/// # Arguments
+/// * `mcp_url` - The MCP server URL to discover OAuth endpoints from
+/// * `client_id` - Optional OAuth client ID (for public clients, can be empty)
+/// * `client_secret` - Optional OAuth client secret
+///
+/// # Returns
+/// * OAuth flow result with flow_id, auth_url, and discovery info
+#[tauri::command]
+pub async fn start_inline_oauth_flow(
+    mcp_url: String,
+    client_id: Option<String>,
+    client_secret: Option<String>,
+    oauth_manager: State<'_, Arc<crate::mcp::oauth::McpOAuthManager>>,
+    flow_manager: State<'_, Arc<crate::oauth_browser::OAuthFlowManager>>,
+) -> Result<InlineOAuthFlowResult, String> {
+    // Step 1: Discover OAuth endpoints from MCP URL
+    let discovery = oauth_manager
+        .discover_oauth(&mcp_url)
+        .await
+        .map_err(|e| format!("OAuth discovery failed: {}", e))?
+        .ok_or_else(|| "This MCP server does not support OAuth".to_string())?;
+
+    let auth_url = discovery.auth_url.clone();
+    let token_url = discovery.token_endpoint.clone();
+    let scopes = discovery.scopes_supported.clone();
+
+    // Use provided client_id or generate a temporary one for discovery
+    let client_id = client_id.unwrap_or_default();
+    if client_id.is_empty() {
+        return Err("Client ID is required for OAuth flow".to_string());
+    }
+
+    // Generate a temporary flow identifier
+    let temp_account_id = format!("inline_oauth_{}", uuid::Uuid::new_v4());
+
+    // Determine callback port (use 8080 as default)
+    let callback_port = 8080u16;
+    let redirect_uri = format!("http://localhost:{}/callback", callback_port);
+
+    // Create flow config
+    let config = crate::oauth_browser::OAuthFlowConfig {
+        client_id: client_id.clone(),
+        client_secret,
+        auth_url: auth_url.clone(),
+        token_url: token_url.clone(),
+        scopes: scopes.clone(),
+        redirect_uri: redirect_uri.clone(),
+        callback_port,
+        keychain_service: "LocalRouter-InlineOAuth".to_string(),
+        account_id: temp_account_id,
+        extra_auth_params: std::collections::HashMap::new(),
+        extra_token_params: std::collections::HashMap::new(),
+    };
+
+    // Start the OAuth flow
+    let start_result = flow_manager
+        .start_flow(config)
+        .await
+        .map_err(|e| format!("Failed to start OAuth flow: {}", e))?;
+
+    Ok(InlineOAuthFlowResult {
+        flow_id: start_result.flow_id.to_string(),
+        auth_url: start_result.auth_url,
+        redirect_uri: start_result.redirect_uri,
+        state: start_result.state,
+        discovery: InlineOAuthDiscovery {
+            auth_url,
+            token_url,
+            scopes,
+        },
+    })
+}
+
+/// Poll the status of an inline OAuth flow
+///
+/// # Arguments
+/// * `flow_id` - Flow identifier from start_inline_oauth_flow
+///
+/// # Returns
+/// * Current flow status
+#[tauri::command]
+pub fn poll_inline_oauth_status(
+    flow_id: String,
+    flow_manager: State<'_, Arc<crate::oauth_browser::OAuthFlowManager>>,
+) -> Result<InlineOAuthFlowStatus, String> {
+    // Parse flow_id back to FlowId
+    let flow_id_obj = crate::oauth_browser::FlowId::parse(&flow_id)
+        .map_err(|e| format!("Invalid flow ID: {}", e))?;
+
+    let result = flow_manager
+        .poll_status(flow_id_obj)
+        .map_err(|e| e.to_string())?;
+
+    // Convert to InlineOAuthFlowStatus
+    match result {
+        crate::oauth_browser::OAuthFlowResult::Pending { time_remaining } => {
+            Ok(InlineOAuthFlowStatus::Pending { time_remaining })
+        }
+        crate::oauth_browser::OAuthFlowResult::ExchangingToken => {
+            Ok(InlineOAuthFlowStatus::ExchangingToken)
+        }
+        crate::oauth_browser::OAuthFlowResult::Success { tokens } => {
+            Ok(InlineOAuthFlowStatus::Success {
+                access_token: tokens.access_token,
+                refresh_token: tokens.refresh_token,
+                expires_in: tokens.expires_in,
+            })
+        }
+        crate::oauth_browser::OAuthFlowResult::Error { message } => {
+            Ok(InlineOAuthFlowStatus::Error { message })
+        }
+        crate::oauth_browser::OAuthFlowResult::Timeout => Ok(InlineOAuthFlowStatus::Timeout),
+        crate::oauth_browser::OAuthFlowResult::Cancelled => Ok(InlineOAuthFlowStatus::Cancelled),
+    }
+}
+
+/// Cancel an inline OAuth flow
+///
+/// # Arguments
+/// * `flow_id` - Flow identifier from start_inline_oauth_flow
+#[tauri::command]
+pub fn cancel_inline_oauth_flow(
+    flow_id: String,
+    flow_manager: State<'_, Arc<crate::oauth_browser::OAuthFlowManager>>,
+) -> Result<(), String> {
+    // Parse flow_id back to FlowId
+    let flow_id_obj = crate::oauth_browser::FlowId::parse(&flow_id)
+        .map_err(|e| format!("Invalid flow ID: {}", e))?;
+
+    flow_manager
+        .cancel_flow(flow_id_obj)
+        .map_err(|e| e.to_string())
+}
+
+// ============================================================================
 // Logging Configuration Commands
 // ============================================================================
 
@@ -4491,9 +4866,29 @@ pub async fn open_logs_folder(
     }
 
     // Open in system file manager
+    #[allow(deprecated)]
     app.shell()
         .open(log_dir.to_string_lossy().as_ref(), None)
         .map_err(|e| format!("Failed to open logs folder: {}", e))?;
 
     Ok(())
+}
+
+// ============================================================================
+// Connection Graph Commands
+// ============================================================================
+
+/// Get list of active SSE connections (connected apps)
+///
+/// Returns a list of client IDs that currently have active SSE connections.
+/// Used by the Dashboard connection graph to show which apps are connected.
+#[tauri::command]
+pub async fn get_active_connections(
+    server_manager: State<'_, Arc<ServerManager>>,
+) -> Result<Vec<String>, String> {
+    let state = server_manager
+        .get_state()
+        .ok_or_else(|| "Server not started".to_string())?;
+
+    Ok(state.sse_connection_manager.get_active_connections())
 }

@@ -1,6 +1,7 @@
 //! Test mode utilities
 //!
 //! Provides helpers for detecting when the app is running in E2E test mode.
+#![allow(dead_code)]
 
 use std::env;
 
