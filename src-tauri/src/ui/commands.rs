@@ -316,6 +316,7 @@ fn provider_type_str_to_enum(provider_type: &str) -> crate::config::ProviderType
 pub async fn remove_provider_instance(
     registry: State<'_, Arc<ProviderRegistry>>,
     config_manager: State<'_, ConfigManager>,
+    app_state: State<'_, Arc<crate::server::state::AppState>>,
     app: tauri::AppHandle,
     instance_name: String,
 ) -> Result<(), String> {
@@ -333,6 +334,9 @@ pub async fn remove_provider_instance(
 
     // Persist to disk
     config_manager.save().await.map_err(|e| e.to_string())?;
+
+    // Remove from health cache (this emits health-status-changed event)
+    app_state.health_cache.remove_provider(&instance_name);
 
     // Notify frontend that providers and models changed
     let _ = app.emit("providers-changed", ());
@@ -1890,6 +1894,7 @@ pub async fn delete_mcp_server(
     server_id: String,
     mcp_manager: State<'_, Arc<McpServerManager>>,
     config_manager: State<'_, ConfigManager>,
+    app_state: State<'_, Arc<crate::server::state::AppState>>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     tracing::info!("Deleting MCP server: {}", server_id);
@@ -1914,6 +1919,9 @@ pub async fn delete_mcp_server(
 
     // Persist to disk
     config_manager.save().await.map_err(|e| e.to_string())?;
+
+    // Remove from health cache (this emits health-status-changed event)
+    app_state.health_cache.remove_mcp_server(&server_id);
 
     // Rebuild tray menu
     if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
