@@ -66,8 +66,8 @@ export function ClientsView({ activeSubTab, onTabChange }: ClientsViewProps) {
   const handleWizardComplete = (clientId: string) => {
     setWizardOpen(false)
     loadClients()
-    // Navigate to the newly created client
-    onTabChange("clients", `${clientId}/config`)
+    // Navigate to the newly created client (use | separator to match parseSubTab)
+    onTabChange("clients", `${clientId}|config`)
   }
 
   // Parse subTab to get client ID and optional inner tab

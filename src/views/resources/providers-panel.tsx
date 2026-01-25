@@ -54,7 +54,7 @@ interface Provider {
 }
 
 export interface HealthStatus {
-  status: "pending" | "healthy" | "degraded" | "unhealthy"
+  status: "pending" | "healthy" | "degraded" | "unhealthy" | "disabled"
   latency_ms?: number
   error?: string
 }
@@ -182,12 +182,14 @@ export function ProvidersPanel({
 
   const handleToggle = async (provider: Provider) => {
     try {
-      await invoke("update_provider_instance", {
+      await invoke("set_provider_enabled", {
         instanceName: provider.instance_name,
-        updates: { enabled: !provider.enabled },
+        enabled: !provider.enabled,
       })
       toast.success(`Provider ${provider.enabled ? "disabled" : "enabled"}`)
       loadProvidersOnly()
+      // Trigger health check to update status to disabled/enabled
+      onRefreshHealth(provider.instance_name)
     } catch (error) {
       toast.error("Failed to update provider")
     }
@@ -215,7 +217,7 @@ export function ProvidersPanel({
   const handleCreateProvider = async (instanceName: string, config: Record<string, string>) => {
     setIsSubmitting(true)
     try {
-      await invoke("add_provider_instance", {
+      await invoke("create_provider_instance", {
         instanceName,
         providerType: selectedProviderType,
         config,
@@ -337,21 +339,21 @@ export function ProvidersPanel({
                                 !health && "bg-gray-400",
                                 health?.status === "healthy" && "bg-green-500",
                                 health?.status === "degraded" && "bg-yellow-500",
-                                health?.status === "unhealthy" && "bg-red-500"
+                                health?.status === "unhealthy" && "bg-red-500",
+                                health?.status === "disabled" && "bg-gray-400"
                               )}
                               title={
                                 health?.status === "healthy"
                                   ? `Healthy (${formatLatency(health.latency_ms)})`
                                   : health?.status === "degraded"
                                   ? `Degraded: ${health.error}`
+                                  : health?.status === "disabled"
+                                  ? "Disabled"
                                   : health?.error
                               }
                             />
                           )}
                         </div>
-                        {!provider.enabled && (
-                          <Badge variant="secondary" className="text-xs">Off</Badge>
-                        )}
                       </div>
                     )
                   })
@@ -454,6 +456,15 @@ export function ProvidersPanel({
                             {health.error && (
                               <span className="text-muted-foreground">- {health.error}</span>
                             )}
+                          </div>
+                        )
+                      }
+
+                      if (health.status === "disabled") {
+                        return (
+                          <div className="flex items-center gap-2 text-muted-foreground">
+                            <XCircle className="h-4 w-4" />
+                            <span>Disabled</span>
                           </div>
                         )
                       }

@@ -3,14 +3,15 @@
  *
  * Models configuration tab for a client.
  * Features:
- * 1. Strategy selection (default client strategy or shared strategies)
- * 2. Embedded StrategyModelConfiguration for configuring the selected strategy
+ * 1. Routing Strategy section - strategy selection
+ * 2. Rate Limits section - nested under strategy with tree connector
+ * 3. Model configuration - nested under strategy with tree connector
  */
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useCallback, useRef } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
-import { Route, AlertTriangle, ExternalLink } from "lucide-react"
+import { Route, AlertTriangle, Gauge } from "lucide-react"
 import {
   Card,
   CardContent,
@@ -29,6 +30,27 @@ import {
 } from "@/components/ui/Select"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { StrategyModelConfiguration, StrategyConfig } from "@/components/strategy"
+import RateLimitEditor, { StrategyRateLimit } from "@/components/strategies/RateLimitEditor"
+
+// Tree branch connector component
+function TreeBranch({ children, isLast = false }: { children: React.ReactNode; isLast?: boolean }) {
+  return (
+    <div className="flex pt-4">
+      {/* Connector column with L-shaped line */}
+      <div className="w-4 flex flex-col">
+        {/* Vertical line going up and down */}
+        <div className={`border-l border-border ml-auto ${isLast ? 'h-4' : 'flex-1'}`}>
+          {/* Horizontal line at the branch point */}
+          <div className="w-4 border-t border-border" />
+        </div>
+      </div>
+      {/* Content */}
+      <div className="flex-1">
+        {children}
+      </div>
+    </div>
+  )
+}
 
 interface Client {
   id: string
@@ -52,20 +74,37 @@ export function ClientModelsTab({
 }: ModelsTabProps) {
   const [strategies, setStrategies] = useState<StrategyConfig[]>([])
   const [loading, setLoading] = useState(true)
+  const [savingRateLimits, setSavingRateLimits] = useState(false)
+
+  // Debounce ref for rate limit updates
+  const rateLimitTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
     loadStrategies()
   }, [])
 
-  const loadStrategies = async () => {
+  // Cleanup debounce timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (rateLimitTimeoutRef.current) {
+        clearTimeout(rateLimitTimeoutRef.current)
+      }
+    }
+  }, [])
+
+  const loadStrategies = async (showLoading = true) => {
     try {
-      setLoading(true)
+      if (showLoading) {
+        setLoading(true)
+      }
       const strategiesList = await invoke<StrategyConfig[]>("list_strategies")
       setStrategies(strategiesList)
     } catch (error) {
       console.error("Failed to load strategies:", error)
     } finally {
-      setLoading(false)
+      if (showLoading) {
+        setLoading(false)
+      }
     }
   }
 
@@ -88,6 +127,7 @@ export function ClientModelsTab({
       })
       toast.success("Strategy assigned")
       onUpdate()
+      loadStrategies(false)
     } catch (error) {
       console.error("Failed to assign strategy:", error)
       toast.error("Failed to assign strategy")
@@ -103,12 +143,52 @@ export function ClientModelsTab({
       })
       toast.success("Personal strategy created")
       await handleStrategyChange(newStrategy.id)
-      loadStrategies()
+      loadStrategies(false)
     } catch (error) {
       console.error("Failed to create personal strategy:", error)
       toast.error("Failed to create personal strategy")
     }
   }
+
+  // Handle rate limits change with debouncing
+  const handleRateLimitsChange = useCallback((limits: StrategyRateLimit[]) => {
+    if (!currentStrategy) return
+
+    // Update local state immediately for responsive UI
+    setStrategies(prev => prev.map(s =>
+      s.id === currentStrategy.id
+        ? { ...s, rate_limits: limits }
+        : s
+    ))
+
+    // Clear existing timeout
+    if (rateLimitTimeoutRef.current) {
+      clearTimeout(rateLimitTimeoutRef.current)
+    }
+
+    // Debounce the API call
+    rateLimitTimeoutRef.current = setTimeout(async () => {
+      setSavingRateLimits(true)
+      try {
+        await invoke("update_strategy", {
+          strategyId: currentStrategy.id,
+          name: null,
+          allowedModels: null,
+          autoConfig: null,
+          rateLimits: limits,
+        })
+        toast.success("Rate limits updated")
+        onUpdate()
+      } catch (error) {
+        console.error("Failed to update rate limits:", error)
+        toast.error("Failed to update rate limits")
+        // Reload to restore correct state
+        loadStrategies(false)
+      } finally {
+        setSavingRateLimits(false)
+      }
+    }, 500)
+  }, [currentStrategy, onUpdate])
 
   if (loading) {
     return (
@@ -125,72 +205,63 @@ export function ClientModelsTab({
   }
 
   return (
-    <div className="space-y-6">
-      {/* Strategy Selection */}
+    <div>
+      {/* Routing Strategy Section */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Route className="h-5 w-5" />
-            Models
+            Routing Strategy
           </CardTitle>
           <CardDescription>
-            Choose which Models are available to the client.
+            Choose an existing strategy or{" "}
+            {onViewChange ? (
+              <button
+                onClick={() => onViewChange("resources", "strategies")}
+                className="text-primary hover:underline"
+              >
+                create a new one in Resources
+              </button>
+            ) : (
+              "create a new one in Resources"
+            )}
           </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-6">
-          {/* Routing Strategy Section */}
-          <div className="space-y-3">
-            <div>
-              <h3 className="text-sm font-medium">Routing Strategy</h3>
-              <p className="text-xs text-muted-foreground mt-0.5">
-                Choose an existing strategy or{" "}
-                {onViewChange ? (
-                  <button
-                    onClick={() => onViewChange("resources", "strategies")}
-                    className="text-primary hover:underline"
-                  >
-                    create a new one in Resources
-                  </button>
-                ) : (
-                  "create a new one in Resources"
-                )}
-              </p>
-            </div>
+        <CardContent className="space-y-4">
+          {/* Strategy Selector */}
+          <div className="flex items-center gap-4">
+            <Select
+              value={client.strategy_id}
+              onValueChange={handleStrategyChange}
+            >
+              <SelectTrigger className="flex-1">
+                <SelectValue placeholder="Select a strategy" />
+              </SelectTrigger>
+              <SelectContent className="min-w-[300px]">
+                {strategies.map((strategy) => {
+                  const isOwned = strategy.parent === client.id
 
-            <div className="flex items-center gap-4">
-              <Select
-                value={client.strategy_id}
-                onValueChange={handleStrategyChange}
-              >
-                <SelectTrigger className="flex-1">
-                  <SelectValue placeholder="Select a strategy" />
-                </SelectTrigger>
-                <SelectContent className="min-w-[300px]">
-                  {strategies.map((strategy) => {
-                    const isOwned = strategy.parent === client.id
+                  return (
+                    <SelectItem key={strategy.id} value={strategy.id}>
+                      <div className="flex items-center gap-2 w-full">
+                        <span className="flex-1">{strategy.name}</span>
+                        {isOwned && (
+                          <Badge variant="outline" className="text-xs shrink-0">
+                            Personal
+                          </Badge>
+                        )}
+                      </div>
+                    </SelectItem>
+                  )
+                })}
+              </SelectContent>
+            </Select>
 
-                    return (
-                      <SelectItem key={strategy.id} value={strategy.id}>
-                        <div className="flex items-center gap-2 w-full">
-                          <span className="flex-1">{strategy.name}</span>
-                          {isOwned && (
-                            <Badge variant="outline" className="text-xs shrink-0">
-                              Personal
-                            </Badge>
-                          )}
-                        </div>
-                      </SelectItem>
-                    )
-                  })}
-                </SelectContent>
-              </Select>
-
-              {ownedStrategies.length === 0 && (
-                <Button variant="outline" onClick={handleCreatePersonalStrategy}>
-                  Create Personal Strategy
-                </Button>
-              )}
-            </div>
+            {ownedStrategies.length === 0 && (
+              <Button variant="outline" onClick={handleCreatePersonalStrategy}>
+                Create Personal Strategy
+              </Button>
+            )}
           </div>
 
           {/* Shared Strategy Warning */}
@@ -201,28 +272,53 @@ export function ClientModelsTab({
               <AlertDescription>
                 This strategy is shared with other clients. Changes you make here
                 will affect all clients using this strategy.
-                <Button
-                  variant="link"
-                  className="h-auto p-0 ml-1"
-                  onClick={handleCreatePersonalStrategy}
-                >
-                  Create a personal strategy instead
-                  <ExternalLink className="h-3 w-3 ml-1" />
-                </Button>
               </AlertDescription>
             </Alert>
           )}
-
         </CardContent>
       </Card>
 
-      {/* Strategy Configuration */}
+      {/* Nested sections with tree connectors */}
       {client.strategy_id && (
-        <StrategyModelConfiguration
-          strategyId={client.strategy_id}
-          readOnly={false}
-          onSave={onUpdate}
-        />
+        <div className="ml-4">
+          {/* Rate Limits - first branch */}
+          <TreeBranch>
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <Gauge className="h-4 w-4" />
+                  Rate Limits
+                </CardTitle>
+                <CardDescription>
+                  Set usage limits to control costs and prevent abuse
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                {currentStrategy && (
+                  <>
+                    <RateLimitEditor
+                      limits={currentStrategy.rate_limits || []}
+                      onChange={handleRateLimitsChange}
+                      disabled={savingRateLimits}
+                    />
+                  </>
+                )}
+              </CardContent>
+            </Card>
+          </TreeBranch>
+
+          {/* Model Configuration - second branch (last) */}
+          <TreeBranch isLast>
+            <StrategyModelConfiguration
+              strategyId={client.strategy_id}
+              readOnly={false}
+              onSave={() => {
+                onUpdate()
+                loadStrategies(false)
+              }}
+            />
+          </TreeBranch>
+        </div>
       )}
     </div>
   )

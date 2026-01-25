@@ -16,6 +16,7 @@ import {
   SelectValue,
 } from "@/components/ui/Select"
 import { ClientCreationWizard } from "@/components/wizard/ClientCreationWizard"
+import { ConnectionGraph } from "@/components/connection-graph"
 
 interface AggregateStats {
   total_requests: number
@@ -156,7 +157,8 @@ export function DashboardView({ onViewChange }: DashboardViewProps) {
   const handleWizardComplete = (clientId: string) => {
     setWizardOpen(false)
     if (onViewChange) {
-      onViewChange("clients", `${clientId}/config`)
+      // Use | separator to match parseSubTab in ClientsView
+      onViewChange("clients", `${clientId}|config`)
     }
   }
 
@@ -233,6 +235,9 @@ export function DashboardView({ onViewChange }: DashboardViewProps) {
           loading={loading}
         />
       </StatsRow>
+
+      {/* Connection Graph */}
+      <ConnectionGraph />
 
       {/* Metrics Tabs */}
       <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as "llm" | "mcp")}>

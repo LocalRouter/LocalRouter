@@ -13,7 +13,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/Select"
-import { Switch } from "@/components/ui/Toggle"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 
 interface ServerConfig {
@@ -50,11 +49,13 @@ export function ServerTab() {
     refresh_rate_secs: 10,
   })
   const [isUpdatingTrayGraph, setIsUpdatingTrayGraph] = useState(false)
+  const [executablePath, setExecutablePath] = useState<string>("")
 
   useEffect(() => {
     loadConfig()
     loadNetworkInterfaces()
     loadTrayGraphSettings()
+    loadExecutablePath()
   }, [])
 
   useEffect(() => {
@@ -88,6 +89,15 @@ export function ServerTab() {
       setTrayGraphSettings(settings)
     } catch (error) {
       console.error("Failed to load tray graph settings:", error)
+    }
+  }
+
+  const loadExecutablePath = async () => {
+    try {
+      const path = await invoke<string>("get_executable_path")
+      setExecutablePath(path)
+    } catch (error) {
+      console.error("Failed to load executable path:", error)
     }
   }
 
@@ -244,7 +254,7 @@ export function ServerTab() {
 {`{
   "mcpServers": {
     "localrouter": {
-      "command": "/Applications/LocalRouter AI.app/Contents/MacOS/localrouter-ai",
+      "command": "${executablePath || "/path/to/localrouter-ai"}",
       "args": ["--mcp-bridge", "--client-id", "your_client_id"],
       "env": {
         "LOCALROUTER_CLIENT_SECRET": "your_secret_here"
@@ -337,47 +347,33 @@ export function ServerTab() {
           <CardTitle className="text-sm">UI Preferences</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="flex items-center justify-between">
-            <div className="space-y-0.5">
-              <Label>Dynamic Tray Icon Graph</Label>
-              <p className="text-xs text-muted-foreground">
-                Show live token usage sparkline in system tray
-              </p>
-            </div>
-            <Switch
-              checked={trayGraphSettings.enabled}
-              onCheckedChange={(checked) =>
-                setTrayGraphSettings({ ...trayGraphSettings, enabled: checked })
+          <div className="space-y-2">
+            <Label>Tray Icon Graph Refresh Rate</Label>
+            <p className="text-xs text-muted-foreground mb-2">
+              Live token usage sparkline shown in system tray
+            </p>
+            <Select
+              value={trayGraphSettings.refresh_rate_secs.toString()}
+              onValueChange={(value) =>
+                setTrayGraphSettings({
+                  ...trayGraphSettings,
+                  refresh_rate_secs: parseInt(value),
+                })
               }
-            />
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="1">Fast (1s refresh, 30s window)</SelectItem>
+                <SelectItem value="10">Medium (10s refresh, 5m window)</SelectItem>
+                <SelectItem value="60">Slow (60s refresh, 30m window)</SelectItem>
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">
+              Window: {calculateTimeWindow(trayGraphSettings.refresh_rate_secs)}
+            </p>
           </div>
-
-          {trayGraphSettings.enabled && (
-            <div className="space-y-2">
-              <Label>Refresh Rate</Label>
-              <Select
-                value={trayGraphSettings.refresh_rate_secs.toString()}
-                onValueChange={(value) =>
-                  setTrayGraphSettings({
-                    ...trayGraphSettings,
-                    refresh_rate_secs: parseInt(value),
-                  })
-                }
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="1">Fast (1s refresh, 30s window)</SelectItem>
-                  <SelectItem value="10">Medium (10s refresh, 5m window)</SelectItem>
-                  <SelectItem value="60">Slow (60s refresh, 30m window)</SelectItem>
-                </SelectContent>
-              </Select>
-              <p className="text-xs text-muted-foreground">
-                Window: {calculateTimeWindow(trayGraphSettings.refresh_rate_secs)}
-              </p>
-            </div>
-          )}
 
           <Button
             size="sm"

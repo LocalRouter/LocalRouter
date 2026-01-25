@@ -96,9 +96,11 @@ export function StrategiesPanel({
     }
   }, [])
 
-  const loadData = async () => {
+  const loadData = async (showLoading = true) => {
     try {
-      setLoading(true)
+      if (showLoading) {
+        setLoading(true)
+      }
       const [strategiesList, clientsList] = await Promise.all([
         invoke<StrategyConfig[]>("list_strategies"),
         invoke<Client[]>("list_clients"),
@@ -108,7 +110,9 @@ export function StrategiesPanel({
     } catch (error) {
       console.error("Failed to load data:", error)
     } finally {
-      setLoading(false)
+      if (showLoading) {
+        setLoading(false)
+      }
     }
   }
 
@@ -347,7 +351,7 @@ export function StrategiesPanel({
                 <StrategyModelConfiguration
                   strategyId={selectedStrategy.id}
                   readOnly={false}
-                  onSave={loadData}
+                  onSave={() => loadData(false)} // Don't show loading state on refresh to preserve scroll position
                 />
               </div>
             </ScrollArea>

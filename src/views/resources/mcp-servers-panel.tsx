@@ -58,7 +58,7 @@ interface McpServer {
 }
 
 export interface McpHealthStatus {
-  status: "pending" | "healthy" | "ready" | "unhealthy" | "unknown"
+  status: "pending" | "healthy" | "ready" | "unhealthy" | "unknown" | "disabled"
   latency_ms?: number
   error?: string
 }
@@ -124,8 +124,12 @@ export function McpServersPanel({
   const [headers, setHeaders] = useState<Record<string, string>>({})
 
   // Auth config state
-  const [authMethod, setAuthMethod] = useState<"none" | "bearer" | "oauth_browser">("none")
+  const [authMethod, setAuthMethod] = useState<"none" | "bearer" | "oauth_pregenerated" | "oauth_browser">("none")
   const [bearerToken, setBearerToken] = useState("")
+
+  // OAuth credentials state (for pregenerated flow)
+  const [oauthClientId, setOauthClientId] = useState("")
+  const [oauthClientSecret, setOauthClientSecret] = useState("")
 
   useEffect(() => {
     loadServers()
@@ -174,6 +178,8 @@ export function McpServersPanel({
     setHeaders({})
     setAuthMethod("none")
     setBearerToken("")
+    setOauthClientId("")
+    setOauthClientSecret("")
     setSelectedTemplate(null)
     setCreateTab("templates")
   }
@@ -230,9 +236,37 @@ export function McpServersPanel({
           type: "bearer_token",
           token: bearerToken,
         }
+      } else if (authMethod === "oauth_pregenerated") {
+        // Pre-generated OAuth credentials - need to discover endpoints first
+        if (!oauthClientId || !oauthClientSecret) {
+          toast.error("Client ID and Client Secret are required for OAuth")
+          setIsCreating(false)
+          return
+        }
+
+        // Discover OAuth endpoints
+        const discovery = await invoke<{
+          auth_url: string
+          token_url: string
+          scopes_supported: string[]
+        } | null>("discover_mcp_oauth_endpoints", { baseUrl: url })
+
+        if (!discovery) {
+          toast.error("This MCP server does not support OAuth")
+          setIsCreating(false)
+          return
+        }
+
+        authConfig = {
+          type: "oauth",
+          client_id: oauthClientId,
+          client_secret: oauthClientSecret,
+          auth_url: discovery.auth_url,
+          token_url: discovery.token_url,
+          scopes: discovery.scopes_supported,
+        }
       } else if (authMethod === "oauth_browser") {
-        // Just mark as oauth_browser - credentials will be configured on detail page
-        // after OAuth discovery from the MCP server
+        // Just mark as oauth_browser - credentials will be configured in detail view
         authConfig = {
           type: "oauth_browser",
         }
@@ -268,6 +302,8 @@ export function McpServersPanel({
       })
       toast.success(`Server ${server.enabled ? "disabled" : "enabled"}`)
       loadServersOnly()
+      // Trigger health check to update status to disabled/enabled
+      onRefreshHealth(server.id)
     } catch (error) {
       toast.error("Failed to update server")
     }
@@ -300,15 +336,28 @@ export function McpServersPanel({
     if (!server.auth_config || server.auth_config.type === "none") {
       setAuthMethod("none")
       setBearerToken("")
+      setOauthClientId("")
+      setOauthClientSecret("")
     } else if (server.auth_config.type === "bearer_token") {
       setAuthMethod("bearer")
       setBearerToken("") // Don't show existing token for security
+      setOauthClientId("")
+      setOauthClientSecret("")
+    } else if (server.auth_config.type === "oauth") {
+      setAuthMethod("oauth_pregenerated")
+      setBearerToken("")
+      setOauthClientId((server.auth_config as { client_id?: string }).client_id || "")
+      setOauthClientSecret("") // Don't show existing secret for security
     } else if (server.auth_config.type === "oauth_browser") {
       setAuthMethod("oauth_browser")
       setBearerToken("")
+      setOauthClientId((server.auth_config as { client_id?: string }).client_id || "")
+      setOauthClientSecret("") // Don't show existing secret for security
     } else {
       setAuthMethod("none")
       setBearerToken("")
+      setOauthClientId("")
+      setOauthClientSecret("")
     }
   }
 
@@ -459,9 +508,10 @@ export function McpServersPanel({
         return
       }
 
-      // Extract base URL (remove any path)
-      const url = new URL(transportConfig.url)
-      const baseUrl = `${url.protocol}//${url.host}`
+      // Use the full URL (including path) as the protected resource identifier
+      // Per RFC 9728, the well-known URL is constructed by inserting
+      // .well-known/oauth-protected-resource between the host and path
+      const baseUrl = transportConfig.url.replace(/\/+$/, "")
 
       // Discover OAuth endpoints
       const discovery = await invoke<{ auth_url: string; token_url: string; scopes: string[] } | null>(
@@ -595,21 +645,21 @@ export function McpServersPanel({
                             className={cn(
                               "h-2 w-2 rounded-full",
                               (health.status === "healthy" || health.status === "ready") && "bg-green-500",
-                              (health.status === "unhealthy" || health.status === "unknown") && "bg-red-500"
+                              (health.status === "unhealthy" || health.status === "unknown") && "bg-red-500",
+                              health.status === "disabled" && "bg-gray-400"
                             )}
                             title={
                               health.status === "healthy"
                                 ? `Running (${formatLatency(health.latency_ms)})`
                                 : health.status === "ready"
                                 ? "Ready to start"
+                                : health.status === "disabled"
+                                ? "Disabled"
                                 : health.error || "Unhealthy"
                             }
                           />
                         )}
                       </div>
-                      {!server.enabled && (
-                        <Badge variant="secondary" className="text-xs">Off</Badge>
-                      )}
                     </div>
                   )
                 })
@@ -707,6 +757,15 @@ export function McpServersPanel({
                           {health.error && (
                             <span className="text-muted-foreground">- {health.error}</span>
                           )}
+                        </div>
+                      )
+                    }
+
+                    if (health.status === "disabled") {
+                      return (
+                        <div className="flex items-center gap-2 text-muted-foreground">
+                          <XCircle className="h-4 w-4" />
+                          <span>Disabled</span>
                         </div>
                       )
                     }
@@ -1017,32 +1076,20 @@ export function McpServersPanel({
                 </>
               )}
 
-              {/* HTTP-SSE Config */}
+              {/* HTTP-SSE Config - URL first */}
               {transportType === "Sse" && (
-                <>
-                  <div>
-                    <label className="block text-sm font-medium mb-2">URL</label>
-                    <Input
-                      value={url}
-                      onChange={(e) => setUrl(e.target.value)}
-                      placeholder="https://mcp.example.com/sse"
-                      required
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium mb-2">Headers</label>
-                    <KeyValueInput
-                      value={headers}
-                      onChange={setHeaders}
-                      keyPlaceholder="Header Name"
-                      valuePlaceholder="Header Value"
-                    />
-                  </div>
-                </>
+                <div>
+                  <label className="block text-sm font-medium mb-2">URL</label>
+                  <Input
+                    value={url}
+                    onChange={(e) => setUrl(e.target.value)}
+                    placeholder="https://api.example.com/mcp"
+                    required
+                  />
+                </div>
               )}
 
-              {/* Authentication Configuration */}
+              {/* Authentication Configuration - comes BEFORE Headers for HTTP-SSE */}
               {transportType === "Sse" && (
                 <div className="border-t pt-4 mt-4">
                   <h3 className="text-md font-semibold mb-3">Authentication (Optional)</h3>
@@ -1051,14 +1098,16 @@ export function McpServersPanel({
                   </p>
 
                   <div>
-                    <label className="block text-sm font-medium mb-2">Authentication</label>
+                    <label className="block text-sm font-medium mb-2">Authentication Method</label>
                     <LegacySelect
                       value={authMethod}
                       onChange={(e) => setAuthMethod(e.target.value as typeof authMethod)}
                     >
                       <option value="none">None / Via headers</option>
                       <option value="bearer">Bearer Token</option>
-                      <option value="oauth_browser">OAuth (Browser)</option>
+                      <option value="oauth_pregenerated">OAuth (Pre-generated credentials)</option>
+                      {/* TODO: Re-enable when dynamic client registration is implemented */}
+                      {/* <option value="oauth_browser">OAuth (External browser)</option> */}
                     </LegacySelect>
                   </div>
 
@@ -1079,17 +1128,59 @@ export function McpServersPanel({
                     </div>
                   )}
 
-                  {/* OAuth Browser Flow */}
-                  {authMethod === "oauth_browser" && (
-                    <div className="mt-3">
-                      <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-700 rounded p-3">
-                        <p className="text-blue-800 dark:text-blue-200 text-sm">
-                          OAuth will be configured after creation. The app will discover OAuth
-                          endpoints from the MCP server and guide you through authentication.
+                  {/* OAuth Pre-generated credentials */}
+                  {authMethod === "oauth_pregenerated" && (
+                    <div className="mt-3 space-y-3">
+                      <div>
+                        <label className="block text-sm font-medium mb-2">Client ID</label>
+                        <Input
+                          value={oauthClientId}
+                          onChange={(e) => setOauthClientId(e.target.value)}
+                          placeholder="your-oauth-client-id"
+                          required
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium mb-2">Client Secret</label>
+                        <Input
+                          type="password"
+                          value={oauthClientSecret}
+                          onChange={(e) => setOauthClientSecret(e.target.value)}
+                          placeholder="your-oauth-client-secret"
+                          required
+                        />
+                        <p className="text-xs text-muted-foreground mt-1">
+                          Stored securely in system keychain
                         </p>
                       </div>
                     </div>
                   )}
+
+                  {/* OAuth Browser Flow - TODO: Re-enable when dynamic client registration is implemented */}
+                  {/* {authMethod === "oauth_browser" && (
+                    <div className="mt-3">
+                      <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-700 rounded p-3">
+                        <p className="text-blue-800 dark:text-blue-200 text-sm">
+                          After creating the server, you'll be guided through OAuth setup in the
+                          detail view. You'll need to create an OAuth app in your provider's
+                          settings and enter the credentials.
+                        </p>
+                      </div>
+                    </div>
+                  )} */}
+                </div>
+              )}
+
+              {/* Headers - comes AFTER Authentication for HTTP-SSE */}
+              {transportType === "Sse" && (
+                <div>
+                  <label className="block text-sm font-medium mb-2">Headers (Optional)</label>
+                  <KeyValueInput
+                    value={headers}
+                    onChange={setHeaders}
+                    keyPlaceholder="Header Name"
+                    valuePlaceholder="Header Value"
+                  />
                 </div>
               )}
 
@@ -1142,7 +1233,7 @@ export function McpServersPanel({
               <p className="text-xs text-muted-foreground truncate">
                 Token: {oauthDiscovery.token_url}
               </p>
-              {oauthDiscovery.scopes.length > 0 && (
+              {oauthDiscovery.scopes && oauthDiscovery.scopes.length > 0 && (
                 <p className="text-xs text-muted-foreground">
                   Scopes: {oauthDiscovery.scopes.join(", ")}
                 </p>
@@ -1258,32 +1349,20 @@ export function McpServersPanel({
             </>
           )}
 
-          {/* HTTP-SSE Config */}
+          {/* HTTP-SSE Config - URL first */}
           {transportType === "Sse" && (
-            <>
-              <div>
-                <label className="block text-sm font-medium mb-2">URL</label>
-                <Input
-                  value={url}
-                  onChange={(e) => setUrl(e.target.value)}
-                  placeholder="https://mcp.example.com/sse"
-                  required
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium mb-2">Headers</label>
-                <KeyValueInput
-                  value={headers}
-                  onChange={setHeaders}
-                  keyPlaceholder="Header Name"
-                  valuePlaceholder="Header Value"
-                />
-              </div>
-            </>
+            <div>
+              <label className="block text-sm font-medium mb-2">URL</label>
+              <Input
+                value={url}
+                onChange={(e) => setUrl(e.target.value)}
+                placeholder="https://api.example.com/mcp"
+                required
+              />
+            </div>
           )}
 
-          {/* Authentication Configuration */}
+          {/* Authentication Configuration - comes BEFORE Headers */}
           {transportType === "Sse" && (
             <div className="border-t pt-4 mt-4">
               <h3 className="text-md font-semibold mb-3">Authentication</h3>
@@ -1299,7 +1378,9 @@ export function McpServersPanel({
                 >
                   <option value="none">None / Via headers</option>
                   <option value="bearer">Bearer Token</option>
-                  <option value="oauth_browser">OAuth (Browser)</option>
+                  <option value="oauth_pregenerated">OAuth (Pre-generated credentials)</option>
+                  {/* TODO: Re-enable when dynamic client registration is implemented */}
+                  {/* <option value="oauth_browser">OAuth (External browser)</option> */}
                 </LegacySelect>
               </div>
 
@@ -1319,17 +1400,59 @@ export function McpServersPanel({
                 </div>
               )}
 
-              {/* OAuth Browser Flow */}
-              {authMethod === "oauth_browser" && (
-                <div className="mt-3">
-                  <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-700 rounded p-3">
-                    <p className="text-blue-800 dark:text-blue-200 text-sm">
-                      OAuth settings are managed separately. After saving, use the "Setup OAuth"
-                      button in the detail view to configure OAuth credentials.
+              {/* OAuth Pre-generated credentials */}
+              {authMethod === "oauth_pregenerated" && (
+                <div className="mt-3 space-y-3">
+                  <div>
+                    <label className="block text-sm font-medium mb-2">Client ID</label>
+                    <Input
+                      value={oauthClientId}
+                      onChange={(e) => setOauthClientId(e.target.value)}
+                      placeholder="your-oauth-client-id"
+                    />
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Leave empty to keep the existing client ID
+                    </p>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium mb-2">Client Secret</label>
+                    <Input
+                      type="password"
+                      value={oauthClientSecret}
+                      onChange={(e) => setOauthClientSecret(e.target.value)}
+                      placeholder="Enter new secret to update (leave empty to keep existing)"
+                    />
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Leave empty to keep the existing secret. Stored securely in system keychain.
                     </p>
                   </div>
                 </div>
               )}
+
+              {/* OAuth Browser Flow - TODO: Re-enable when dynamic client registration is implemented */}
+              {/* {authMethod === "oauth_browser" && (
+                <div className="mt-3">
+                  <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-700 rounded p-3">
+                    <p className="text-blue-800 dark:text-blue-200 text-sm">
+                      OAuth settings are managed in the detail view. After saving, use the
+                      "Re-authorize" button to complete browser authentication.
+                    </p>
+                  </div>
+                </div>
+              )} */}
+            </div>
+          )}
+
+          {/* Headers - comes AFTER Authentication */}
+          {transportType === "Sse" && (
+            <div>
+              <label className="block text-sm font-medium mb-2">Headers (Optional)</label>
+              <KeyValueInput
+                value={headers}
+                onChange={setHeaders}
+                keyPlaceholder="Header Name"
+                valuePlaceholder="Header Value"
+              />
             </div>
           )}
 
