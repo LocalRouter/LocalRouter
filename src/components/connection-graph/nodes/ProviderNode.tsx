@@ -31,7 +31,8 @@ function ProviderNodeComponent({ data }: NodeProps<ProviderNodeData>) {
       className={cn(
         'relative px-5 py-4 rounded-xl border-2 shadow-md min-w-[220px]',
         'bg-gradient-to-br from-violet-50 to-violet-100 dark:from-violet-950 dark:to-violet-900',
-        'border-violet-300 dark:border-violet-700'
+        'border-violet-300 dark:border-violet-700',
+        'cursor-pointer transition-all hover:scale-[1.02] hover:shadow-lg'
       )}
     >
       {/* Input handle */}
@@ -47,7 +48,10 @@ function ProviderNodeComponent({ data }: NodeProps<ProviderNodeData>) {
           <Cloud className="w-5 h-5" />
         </div>
         <div className="min-w-0 flex-1">
-          <div className="text-base font-semibold text-violet-900 dark:text-violet-100 truncate">
+          <div className="text-xs font-bold tracking-wider text-violet-500 dark:text-violet-400 uppercase">
+            LLM PROVIDER
+          </div>
+          <div className="text-2xl font-semibold text-violet-900 dark:text-violet-100 truncate">
             {name}
           </div>
         </div>

@@ -1,4 +1,4 @@
-import { useMemo, useEffect } from 'react'
+import { useMemo, useEffect, useCallback } from 'react'
 import ReactFlow, {
   Background,
   Controls,
@@ -7,6 +7,7 @@ import ReactFlow, {
   type NodeTypes,
   type Node,
   type Edge,
+  type NodeMouseHandler,
 } from 'reactflow'
 import 'reactflow/dist/style.css'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card'
@@ -29,9 +30,10 @@ const nodeTypes: NodeTypes = {
 // Props for the ConnectionGraph component
 interface ConnectionGraphProps {
   className?: string
+  onViewChange?: (view: string, subTab?: string | null) => void
 }
 
-export function ConnectionGraph({ className }: ConnectionGraphProps) {
+export function ConnectionGraph({ className, onViewChange }: ConnectionGraphProps) {
   const { clients, providers, mcpServers, healthState, activeConnections, loading, error } = useGraphData()
 
   // Build the graph from data
@@ -63,6 +65,25 @@ export function ConnectionGraph({ className }: ConnectionGraphProps) {
 
   // Count connected apps
   const connectedCount = activeConnections.length
+
+  // Handle node click for navigation
+  const handleNodeClick: NodeMouseHandler = useCallback((_event, node) => {
+    if (!onViewChange) return
+
+    const { type, id } = node.data as GraphNodeData
+
+    switch (type) {
+      case 'accessKey':
+        onViewChange('clients', `${id}/config`)
+        break
+      case 'provider':
+        onViewChange('resources', `providers/${id}`)
+        break
+      case 'mcpServer':
+        onViewChange('mcp-servers', id)
+        break
+    }
+  }, [onViewChange])
 
   // Loading state
   if (loading) {
@@ -144,6 +165,7 @@ export function ConnectionGraph({ className }: ConnectionGraphProps) {
             edges={edges}
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
+            onNodeClick={handleNodeClick}
             nodeTypes={nodeTypes}
             fitView
             fitViewOptions={{

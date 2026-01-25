@@ -237,7 +237,7 @@ export function DashboardView({ onViewChange }: DashboardViewProps) {
       </StatsRow>
 
       {/* Connection Graph */}
-      <ConnectionGraph />
+      <ConnectionGraph onViewChange={onViewChange} />
 
       {/* Metrics Tabs */}
       <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as "llm" | "mcp")}>

@@ -12,6 +12,7 @@ function AccessKeyNodeComponent({ data }: NodeProps<AccessKeyNodeData>) {
       className={cn(
         'relative px-5 py-4 rounded-xl border-2 shadow-md min-w-[220px]',
         'bg-gradient-to-br from-blue-50 to-blue-100 dark:from-blue-950 dark:to-blue-900',
+        'cursor-pointer transition-all hover:scale-[1.02] hover:shadow-lg',
         isConnected
           ? 'border-blue-500 shadow-blue-200 dark:shadow-blue-900'
           : 'border-blue-300 dark:border-blue-700'
@@ -28,7 +29,10 @@ function AccessKeyNodeComponent({ data }: NodeProps<AccessKeyNodeData>) {
           <Key className="w-5 h-5" />
         </div>
         <div className="min-w-0 flex-1">
-          <div className="text-base font-semibold text-blue-900 dark:text-blue-100 truncate">
+          <div className="text-xs font-bold tracking-wider text-blue-500 dark:text-blue-400 uppercase">
+            CLIENT
+          </div>
+          <div className="text-2xl font-semibold text-blue-900 dark:text-blue-100 truncate">
             {name}
           </div>
           {isConnected && (

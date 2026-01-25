@@ -31,7 +31,8 @@ function McpServerNodeComponent({ data }: NodeProps<McpServerNodeData>) {
       className={cn(
         'relative px-5 py-4 rounded-xl border-2 shadow-md min-w-[220px]',
         'bg-gradient-to-br from-emerald-50 to-emerald-100 dark:from-emerald-950 dark:to-emerald-900',
-        'border-emerald-300 dark:border-emerald-700'
+        'border-emerald-300 dark:border-emerald-700',
+        'cursor-pointer transition-all hover:scale-[1.02] hover:shadow-lg'
       )}
     >
       {/* Input handle */}
@@ -47,7 +48,10 @@ function McpServerNodeComponent({ data }: NodeProps<McpServerNodeData>) {
           <Server className="w-5 h-5" />
         </div>
         <div className="min-w-0 flex-1">
-          <div className="text-base font-semibold text-emerald-900 dark:text-emerald-100 truncate">
+          <div className="text-xs font-bold tracking-wider text-emerald-500 dark:text-emerald-400 uppercase">
+            MCP SERVER
+          </div>
+          <div className="text-2xl font-semibold text-emerald-900 dark:text-emerald-100 truncate">
             {name}
           </div>
         </div>
