@@ -1,0 +1,176 @@
+import { useMemo, useEffect } from 'react'
+import ReactFlow, {
+  Background,
+  Controls,
+  useNodesState,
+  useEdgesState,
+  type NodeTypes,
+  type Node,
+  type Edge,
+} from 'reactflow'
+import 'reactflow/dist/style.css'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card'
+import { Skeleton } from '@/components/ui/skeleton'
+import { AlertCircle, Network } from 'lucide-react'
+import { useGraphData } from './hooks/useGraphData'
+import { buildGraph } from './utils/buildGraph'
+import { AccessKeyNode } from './nodes/AccessKeyNode'
+import { ProviderNode } from './nodes/ProviderNode'
+import { McpServerNode } from './nodes/McpServerNode'
+import type { GraphNodeData } from './types'
+
+// Register custom node types
+const nodeTypes: NodeTypes = {
+  accessKey: AccessKeyNode,
+  provider: ProviderNode,
+  mcpServer: McpServerNode,
+}
+
+// Props for the ConnectionGraph component
+interface ConnectionGraphProps {
+  className?: string
+}
+
+export function ConnectionGraph({ className }: ConnectionGraphProps) {
+  const { clients, providers, mcpServers, healthState, activeConnections, loading, error } = useGraphData()
+
+  // Build the graph from data
+  const { graphNodes, graphEdges } = useMemo(() => {
+    const { nodes, edges } = buildGraph(
+      clients,
+      providers,
+      mcpServers,
+      healthState,
+      activeConnections
+    )
+    return { graphNodes: nodes as Node<GraphNodeData>[], graphEdges: edges as Edge[] }
+  }, [clients, providers, mcpServers, healthState, activeConnections])
+
+  // React Flow state
+  const [nodes, setNodes, onNodesChange] = useNodesState<GraphNodeData>([])
+  const [edges, setEdges, onEdgesChange] = useEdgesState([])
+
+  // Update nodes and edges when data changes
+  useEffect(() => {
+    setNodes(graphNodes)
+    setEdges(graphEdges)
+  }, [graphNodes, graphEdges, setNodes, setEdges])
+
+  // Calculate if graph is empty
+  const isEmpty = clients.filter(c => c.enabled).length === 0 &&
+    providers.filter(p => p.enabled).length === 0 &&
+    mcpServers.filter(s => s.enabled).length === 0
+
+  // Count connected apps
+  const connectedCount = activeConnections.length
+
+  // Loading state
+  if (loading) {
+    return (
+      <Card className={className}>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-lg flex items-center gap-2">
+            <Network className="w-5 h-5" />
+            Connection Graph
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <Skeleton className="w-full h-[300px] rounded-lg" />
+        </CardContent>
+      </Card>
+    )
+  }
+
+  // Error state
+  if (error) {
+    return (
+      <Card className={className}>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-lg flex items-center gap-2">
+            <Network className="w-5 h-5" />
+            Connection Graph
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="flex items-center justify-center h-[300px] text-muted-foreground">
+            <AlertCircle className="w-5 h-5 mr-2" />
+            <span>Failed to load connection graph</span>
+          </div>
+        </CardContent>
+      </Card>
+    )
+  }
+
+  // Empty state
+  if (isEmpty) {
+    return (
+      <Card className={className}>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-lg flex items-center gap-2">
+            <Network className="w-5 h-5" />
+            Connection Graph
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="flex flex-col items-center justify-center h-[300px] text-muted-foreground">
+            <Network className="w-12 h-12 mb-4 opacity-50" />
+            <p className="text-sm">No enabled clients, providers, or MCP servers</p>
+            <p className="text-xs mt-1">Create a client to see connections here</p>
+          </div>
+        </CardContent>
+      </Card>
+    )
+  }
+
+  return (
+    <Card className={className}>
+      <CardHeader className="pb-2">
+        <div className="flex items-center justify-between">
+          <CardTitle className="text-lg flex items-center gap-2">
+            <Network className="w-5 h-5" />
+            Connection Graph
+          </CardTitle>
+          {connectedCount > 0 && (
+            <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300">
+              {connectedCount} app{connectedCount !== 1 ? 's' : ''} connected
+            </span>
+          )}
+        </div>
+      </CardHeader>
+      <CardContent className="p-0">
+        <div className="h-[350px] w-full rounded-b-lg overflow-hidden">
+          <ReactFlow
+            nodes={nodes}
+            edges={edges}
+            onNodesChange={onNodesChange}
+            onEdgesChange={onEdgesChange}
+            nodeTypes={nodeTypes}
+            fitView
+            fitViewOptions={{
+              padding: 0.2,
+              minZoom: 0.5,
+              maxZoom: 1.5,
+            }}
+            minZoom={0.3}
+            maxZoom={2}
+            nodesDraggable={false}
+            nodesConnectable={false}
+            elementsSelectable={false}
+            panOnDrag={true}
+            zoomOnScroll={true}
+            preventScrolling={false}
+            proOptions={{ hideAttribution: true }}
+          >
+            <Background color="#94a3b8" gap={16} size={1} />
+            <Controls
+              showZoom={true}
+              showFitView={true}
+              showInteractive={false}
+              position="bottom-right"
+            />
+          </ReactFlow>
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
