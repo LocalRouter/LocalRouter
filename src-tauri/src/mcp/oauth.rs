@@ -56,7 +56,56 @@ struct CachedTokenInfo {
     refresh_token: Option<String>,
 }
 
-/// OAuth discovery response from .well-known endpoint
+/// Protected Resource Metadata (RFC 9728)
+///
+/// Response from .well-known/oauth-protected-resource endpoint
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ProtectedResourceMetadata {
+    /// Human-readable name of the resource
+    #[serde(default)]
+    pub resource_name: Option<String>,
+
+    /// Protected resource identifier
+    #[serde(default)]
+    pub resource: Option<String>,
+
+    /// Authorization servers that can issue tokens for this resource
+    #[serde(default)]
+    pub authorization_servers: Vec<String>,
+
+    /// Methods for sending bearer tokens (e.g., "header")
+    #[serde(default)]
+    pub bearer_methods_supported: Vec<String>,
+
+    /// Supported scopes for this resource
+    #[serde(default)]
+    pub scopes_supported: Vec<String>,
+}
+
+/// OAuth Authorization Server Metadata (RFC 8414)
+///
+/// Response from .well-known/oauth-authorization-server endpoint
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AuthorizationServerMetadata {
+    /// Authorization endpoint URL
+    pub authorization_endpoint: String,
+
+    /// Token endpoint URL
+    pub token_endpoint: String,
+
+    /// Supported scopes
+    #[serde(default)]
+    pub scopes_supported: Vec<String>,
+
+    /// Supported grant types
+    #[serde(default)]
+    pub grant_types_supported: Vec<String>,
+}
+
+/// Combined OAuth discovery response
+///
+/// This is the unified response returned by discover_oauth, combining
+/// information from protected resource metadata and authorization server metadata
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct OAuthDiscoveryResponse {
     /// Authorization endpoint URL
@@ -224,6 +273,41 @@ pub fn build_well_known_url(resource_url: &str) -> String {
     } else {
         // Malformed URL, just append (shouldn't happen)
         format!("{}/.well-known/oauth-protected-resource", url)
+    }
+}
+
+/// Build a well-known URL for OAuth Authorization Server Metadata (RFC 8414)
+///
+/// Similar to protected resource metadata, but for authorization servers.
+/// The `.well-known/oauth-authorization-server` segment is inserted between
+/// the host and any path component.
+///
+/// # Arguments
+/// * `auth_server_url` - The authorization server URL
+///
+/// # Returns
+/// * The well-known metadata URL
+///
+/// # Examples
+/// - `https://github.com/login/oauth` → `https://github.com/.well-known/oauth-authorization-server/login/oauth`
+/// - `https://auth.example.com` → `https://auth.example.com/.well-known/oauth-authorization-server`
+pub fn build_authorization_server_metadata_url(auth_server_url: &str) -> String {
+    let url = auth_server_url.trim_end_matches('/');
+
+    if let Some(scheme_end) = url.find("://") {
+        let after_scheme = &url[scheme_end + 3..];
+
+        if let Some(path_start) = after_scheme.find('/') {
+            let host_end = scheme_end + 3 + path_start;
+            let origin = &url[..host_end];
+            let path = &url[host_end..];
+
+            format!("{}/.well-known/oauth-authorization-server{}", origin, path)
+        } else {
+            format!("{}/.well-known/oauth-authorization-server", url)
+        }
+    } else {
+        format!("{}/.well-known/oauth-authorization-server", url)
     }
 }
 
@@ -399,14 +483,12 @@ impl McpOAuthManager {
 
     /// Discover OAuth configuration for an MCP server
     ///
-    /// Constructs the well-known URL according to RFC 8615. When the protected resource
-    /// identifier has a path component, the `/.well-known/oauth-protected-resource`
-    /// segment is inserted between the host and the path.
+    /// Implements the two-step OAuth discovery process per RFC 9728 and RFC 8414:
+    /// 1. Fetch Protected Resource Metadata from `.well-known/oauth-protected-resource`
+    /// 2. Fetch Authorization Server Metadata from each `authorization_servers` entry
     ///
-    /// Examples:
-    /// - `https://api.example.com` → `https://api.example.com/.well-known/oauth-protected-resource`
-    /// - `https://api.example.com/mcp` → `https://api.example.com/.well-known/oauth-protected-resource/mcp`
-    /// - `https://api.example.com/api/v4/mcp` → `https://api.example.com/.well-known/oauth-protected-resource/api/v4/mcp`
+    /// For providers that don't publish authorization server metadata (like GitHub),
+    /// falls back to well-known OAuth endpoints.
     ///
     /// # Arguments
     /// * `base_url` - Base URL of the MCP server (the protected resource identifier)
@@ -417,13 +499,13 @@ impl McpOAuthManager {
         &self,
         base_url: &str,
     ) -> AppResult<Option<OAuthDiscoveryResponse>> {
-        // Construct .well-known URL per RFC 8615
-        // The well-known segment is inserted between the host and the path
+        // Step 1: Fetch Protected Resource Metadata (RFC 9728)
         let discovery_url = build_well_known_url(base_url);
+        tracing::info!(
+            "Discovering protected resource metadata at: {}",
+            discovery_url
+        );
 
-        tracing::info!("Discovering OAuth configuration at: {}", discovery_url);
-
-        // Attempt to fetch discovery document
         let response = match self.client.get(&discovery_url).send().await {
             Ok(resp) => resp,
             Err(e) => {
@@ -435,7 +517,6 @@ impl McpOAuthManager {
             }
         };
 
-        // Check if discovery endpoint exists
         if !response.status().is_success() {
             tracing::debug!(
                 "OAuth discovery returned status {} (server may not require OAuth)",
@@ -444,17 +525,142 @@ impl McpOAuthManager {
             return Ok(None);
         }
 
-        // Parse discovery response
-        let discovery: OAuthDiscoveryResponse = response.json().await.map_err(|e| {
-            AppError::Mcp(format!("Failed to parse OAuth discovery response: {}", e))
+        // Parse protected resource metadata
+        let resource_metadata: ProtectedResourceMetadata = response.json().await.map_err(|e| {
+            AppError::Mcp(format!(
+                "Failed to parse protected resource metadata: {}",
+                e
+            ))
         })?;
 
         tracing::info!(
-            "OAuth discovery successful: token_endpoint={}",
-            discovery.token_endpoint
+            "Protected resource metadata: authorization_servers={:?}, scopes={:?}",
+            resource_metadata.authorization_servers,
+            resource_metadata.scopes_supported
         );
 
-        Ok(Some(discovery))
+        if resource_metadata.authorization_servers.is_empty() {
+            tracing::debug!("No authorization servers found in protected resource metadata");
+            return Ok(None);
+        }
+
+        // Step 2: Try to fetch Authorization Server Metadata (RFC 8414) from each server
+        for auth_server in &resource_metadata.authorization_servers {
+            if let Some(discovery) = self
+                .discover_authorization_server(auth_server, &resource_metadata.scopes_supported)
+                .await?
+            {
+                return Ok(Some(discovery));
+            }
+        }
+
+        tracing::debug!("Could not discover authorization server metadata from any server");
+        Ok(None)
+    }
+
+    /// Discover Authorization Server Metadata (RFC 8414)
+    ///
+    /// Tries to fetch metadata from `.well-known/oauth-authorization-server`.
+    /// Falls back to well-known endpoints for common providers.
+    async fn discover_authorization_server(
+        &self,
+        auth_server_url: &str,
+        resource_scopes: &[String],
+    ) -> AppResult<Option<OAuthDiscoveryResponse>> {
+        // Try standard .well-known/oauth-authorization-server endpoint
+        let metadata_url = build_authorization_server_metadata_url(auth_server_url);
+        tracing::info!("Trying authorization server metadata at: {}", metadata_url);
+
+        let response = self.client.get(&metadata_url).send().await;
+
+        if let Ok(resp) = response {
+            if resp.status().is_success() {
+                if let Ok(metadata) = resp.json::<AuthorizationServerMetadata>().await {
+                    tracing::info!(
+                        "Authorization server metadata found: auth={}, token={}",
+                        metadata.authorization_endpoint,
+                        metadata.token_endpoint
+                    );
+
+                    // Use scopes from auth server if available, otherwise from resource
+                    let scopes = if metadata.scopes_supported.is_empty() {
+                        resource_scopes.to_vec()
+                    } else {
+                        metadata.scopes_supported
+                    };
+
+                    return Ok(Some(OAuthDiscoveryResponse {
+                        auth_url: metadata.authorization_endpoint,
+                        token_endpoint: metadata.token_endpoint,
+                        scopes_supported: scopes,
+                        grant_types_supported: metadata.grant_types_supported,
+                    }));
+                }
+            }
+        }
+
+        // Fall back to well-known endpoints for common providers
+        if let Some(discovery) = self.fallback_endpoints(auth_server_url, resource_scopes) {
+            tracing::info!("Using fallback OAuth endpoints for: {}", auth_server_url);
+            return Ok(Some(discovery));
+        }
+
+        Ok(None)
+    }
+
+    /// Provide fallback OAuth endpoints for well-known providers
+    ///
+    /// Some providers (like GitHub) don't publish RFC 8414 metadata,
+    /// so we provide known endpoints as fallbacks.
+    fn fallback_endpoints(
+        &self,
+        auth_server_url: &str,
+        resource_scopes: &[String],
+    ) -> Option<OAuthDiscoveryResponse> {
+        let url_lower = auth_server_url.to_lowercase();
+
+        // GitHub OAuth
+        if url_lower.contains("github.com") {
+            return Some(OAuthDiscoveryResponse {
+                auth_url: "https://github.com/login/oauth/authorize".to_string(),
+                token_endpoint: "https://github.com/login/oauth/access_token".to_string(),
+                scopes_supported: resource_scopes.to_vec(),
+                grant_types_supported: vec!["authorization_code".to_string()],
+            });
+        }
+
+        // Google OAuth
+        if url_lower.contains("google.com") || url_lower.contains("googleapis.com") {
+            return Some(OAuthDiscoveryResponse {
+                auth_url: "https://accounts.google.com/o/oauth2/v2/auth".to_string(),
+                token_endpoint: "https://oauth2.googleapis.com/token".to_string(),
+                scopes_supported: resource_scopes.to_vec(),
+                grant_types_supported: vec![
+                    "authorization_code".to_string(),
+                    "refresh_token".to_string(),
+                ],
+            });
+        }
+
+        // Microsoft / Azure AD OAuth
+        if url_lower.contains("microsoft.com")
+            || url_lower.contains("microsoftonline.com")
+            || url_lower.contains("live.com")
+        {
+            return Some(OAuthDiscoveryResponse {
+                auth_url: "https://login.microsoftonline.com/common/oauth2/v2.0/authorize"
+                    .to_string(),
+                token_endpoint: "https://login.microsoftonline.com/common/oauth2/v2.0/token"
+                    .to_string(),
+                scopes_supported: resource_scopes.to_vec(),
+                grant_types_supported: vec![
+                    "authorization_code".to_string(),
+                    "refresh_token".to_string(),
+                ],
+            });
+        }
+
+        None
     }
 
     /// Acquire an OAuth token for an MCP server
@@ -1065,6 +1271,34 @@ mod tests {
         assert_eq!(
             build_well_known_url("https://api.example.com:8443/mcp"),
             "https://api.example.com:8443/.well-known/oauth-protected-resource/mcp"
+        );
+    }
+
+    #[test]
+    fn test_build_authorization_server_metadata_url_no_path() {
+        assert_eq!(
+            build_authorization_server_metadata_url("https://auth.example.com"),
+            "https://auth.example.com/.well-known/oauth-authorization-server"
+        );
+
+        assert_eq!(
+            build_authorization_server_metadata_url("https://auth.example.com/"),
+            "https://auth.example.com/.well-known/oauth-authorization-server"
+        );
+    }
+
+    #[test]
+    fn test_build_authorization_server_metadata_url_with_path() {
+        // GitHub-style OAuth URL with path
+        assert_eq!(
+            build_authorization_server_metadata_url("https://github.com/login/oauth"),
+            "https://github.com/.well-known/oauth-authorization-server/login/oauth"
+        );
+
+        // Multi-segment path
+        assert_eq!(
+            build_authorization_server_metadata_url("https://example.com/oauth2/v1"),
+            "https://example.com/.well-known/oauth-authorization-server/oauth2/v1"
         );
     }
 }

@@ -32,6 +32,7 @@ pub struct McpOAuthBrowserManager {
     oauth_manager: Arc<McpOAuthManager>,
 
     /// Map server_id -> flow_id for tracking active flows
+    #[allow(clippy::type_complexity)]
     server_flows: Arc<RwLock<HashMap<String, (FlowId, DateTime<Utc>)>>>,
 }
 

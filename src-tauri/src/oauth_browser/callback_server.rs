@@ -2,6 +2,7 @@
 //!
 //! Manages local HTTP servers for OAuth callback redirects with support for
 //! multiple concurrent flows on different ports or sharing the same port.
+#![allow(dead_code)]
 
 use crate::oauth_browser::FlowId;
 use crate::utils::errors::{AppError, AppResult};

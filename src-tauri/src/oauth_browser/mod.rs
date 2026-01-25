@@ -35,7 +35,7 @@ mod types;
 // Re-export public API
 pub use callback_server::CallbackServerManager;
 pub use flow_manager::OAuthFlowManager;
-pub use pkce::{generate_pkce_challenge, generate_state, PkceChallenge};
+pub use pkce::{generate_pkce_challenge, generate_state};
 pub use token_exchange::TokenExchanger;
 pub use types::{
     FlowId, FlowStatus, OAuthFlowConfig, OAuthFlowResult, OAuthFlowStart, OAuthFlowState,

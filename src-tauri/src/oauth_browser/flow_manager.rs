@@ -1,4 +1,5 @@
 //! OAuth flow manager - orchestrates complete OAuth authorization flows
+#![allow(dead_code)]
 
 use crate::api_keys::CachedKeychain;
 use crate::oauth_browser::{

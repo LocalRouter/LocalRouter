@@ -119,11 +119,9 @@ impl TokenExchanger {
         })?;
 
         // Calculate expiration time (with 5-minute buffer for safety)
-        let expires_at = if let Some(expires_in) = token_response.expires_in {
-            Some(Utc::now() + Duration::seconds(expires_in - 300))
-        } else {
-            None
-        };
+        let expires_at = token_response
+            .expires_in
+            .map(|expires_in| Utc::now() + Duration::seconds(expires_in - 300));
 
         // Create token structure
         let tokens = OAuthTokens {
@@ -209,11 +207,9 @@ impl TokenExchanger {
         })?;
 
         // Calculate expiration time (with 5-minute buffer)
-        let expires_at = if let Some(expires_in) = token_response.expires_in {
-            Some(Utc::now() + Duration::seconds(expires_in - 300))
-        } else {
-            None
-        };
+        let expires_at = token_response
+            .expires_in
+            .map(|expires_in| Utc::now() + Duration::seconds(expires_in - 300));
 
         // Create token structure (preserve original refresh token if not provided)
         let tokens = OAuthTokens {
