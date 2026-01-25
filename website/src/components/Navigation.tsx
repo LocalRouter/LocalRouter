@@ -2,6 +2,7 @@ import { Link } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { Github, Menu, X } from 'lucide-react'
 import { useState } from 'react'
+import Logo from './Logo'
 
 export default function Navigation() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
@@ -12,9 +13,7 @@ export default function Navigation() {
         <div className="flex h-16 items-center justify-between">
           <div className="flex items-center gap-8">
             <Link to="/" className="flex items-center gap-2">
-              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground font-bold text-sm">
-                LR
-              </div>
+              <Logo className="h-8 w-auto text-primary" />
               <span className="text-lg font-semibold">LocalRouter</span>
             </Link>
             <div className="hidden md:flex items-center gap-6">

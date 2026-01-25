@@ -95,7 +95,7 @@ export default function Footer() {
 
           <div className="mt-12 border-t pt-8">
             <p className="text-center text-sm text-muted-foreground">
-              &copy; {new Date().getFullYear()} LocalRouter. Open source software.
+              &copy; {new Date().getFullYear()} LocalRouter. All rights reserved.
             </p>
           </div>
         </div>

@@ -177,67 +177,6 @@ export default function Download() {
         </div>
       </section>
 
-      {/* System Requirements */}
-      <section className="border-t bg-muted/30 py-16 sm:py-24">
-        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-          <div className="mx-auto max-w-3xl text-center">
-            <h2 className="text-2xl font-bold sm:text-3xl">System Requirements</h2>
-          </div>
-
-          <div className="mt-12 grid gap-6 md:grid-cols-3">
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <Apple className="h-5 w-5" />
-                  macOS
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <ul className="space-y-2 text-sm text-muted-foreground">
-                  <li>macOS 11 (Big Sur) or later</li>
-                  <li>Intel or Apple Silicon</li>
-                  <li>4GB RAM minimum</li>
-                  <li>200MB disk space</li>
-                </ul>
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <Monitor className="h-5 w-5" />
-                  Windows
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <ul className="space-y-2 text-sm text-muted-foreground">
-                  <li>Windows 10 or later (64-bit)</li>
-                  <li>4GB RAM minimum</li>
-                  <li>200MB disk space</li>
-                </ul>
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <Terminal className="h-5 w-5" />
-                  Linux
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <ul className="space-y-2 text-sm text-muted-foreground">
-                  <li>Ubuntu 20.04+, Fedora 35+, or equivalent</li>
-                  <li>glibc 2.31 or later</li>
-                  <li>4GB RAM minimum</li>
-                  <li>200MB disk space</li>
-                </ul>
-              </CardContent>
-            </Card>
-          </div>
-        </div>
-      </section>
-
       {/* Help */}
       <section className="border-t py-16 sm:py-24">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
