@@ -47,11 +47,8 @@ fn validate_server_config(config: &AppConfig) -> AppResult<()> {
 
 /// Validate providers
 fn validate_providers(providers: &[ProviderConfig]) -> AppResult<()> {
-    if providers.is_empty() {
-        return Err(AppError::Config(
-            "At least one provider must be configured".to_string(),
-        ));
-    }
+    // Empty providers list is allowed - user may want to start fresh
+    // and add providers later through the UI
 
     // Check for duplicate provider names
     let mut names = HashSet::new();
