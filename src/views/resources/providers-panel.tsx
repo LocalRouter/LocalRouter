@@ -305,7 +305,7 @@ export function ProvidersPanel({
                   filteredProviders.map((provider) => {
                     const health = healthStatus[provider.instance_name]
                     const formatLatency = (ms?: number) => {
-                      if (!ms) return ""
+                      if (ms == null) return ""
                       return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`
                     }
                     return (
@@ -325,7 +325,7 @@ export function ProvidersPanel({
                           <p className="text-xs text-muted-foreground">{provider.provider_type}</p>
                         </div>
                         <div className="flex items-center gap-2">
-                          {health && health.latency_ms && health.status !== "pending" && (
+                          {health && health.latency_ms != null && health.status !== "pending" && (
                             <span className="text-xs text-muted-foreground">
                               {formatLatency(health.latency_ms)}
                             </span>
@@ -344,7 +344,9 @@ export function ProvidersPanel({
                               )}
                               title={
                                 health?.status === "healthy"
-                                  ? `Healthy (${formatLatency(health.latency_ms)})`
+                                  ? health.latency_ms != null
+                                    ? `Healthy (${formatLatency(health.latency_ms)})`
+                                    : "Healthy"
                                   : health?.status === "degraded"
                                   ? `Degraded: ${health.error}`
                                   : health?.status === "disabled"
@@ -434,7 +436,7 @@ export function ProvidersPanel({
                           <div className="flex items-center gap-2 text-green-600">
                             <CheckCircle className="h-4 w-4" />
                             <span>Healthy</span>
-                            {health.latency_ms && (
+                            {health.latency_ms != null && (
                               <span className="text-muted-foreground">
                                 ({formatLatency(health.latency_ms)})
                               </span>
@@ -448,7 +450,7 @@ export function ProvidersPanel({
                           <div className="flex items-center gap-2 text-yellow-600">
                             <AlertCircle className="h-4 w-4" />
                             <span>Degraded</span>
-                            {health.latency_ms && (
+                            {health.latency_ms != null && (
                               <span className="text-muted-foreground">
                                 ({formatLatency(health.latency_ms)})
                               </span>

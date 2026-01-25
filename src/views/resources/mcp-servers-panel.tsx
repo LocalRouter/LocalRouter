@@ -613,7 +613,7 @@ export function McpServersPanel({
                 filteredServers.map((server) => {
                   const health = healthStatus[server.id]
                   const formatLatency = (ms?: number) => {
-                    if (!ms) return ""
+                    if (ms == null) return ""
                     return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`
                   }
                   return (
@@ -633,7 +633,7 @@ export function McpServersPanel({
                         </p>
                       </div>
                       <div className="flex items-center gap-2">
-                        {health && health.latency_ms && health.status !== "pending" && (
+                        {health && health.latency_ms != null && health.status !== "pending" && (
                           <span className="text-xs text-muted-foreground">
                             {formatLatency(health.latency_ms)}
                           </span>
@@ -650,7 +650,9 @@ export function McpServersPanel({
                             )}
                             title={
                               health.status === "healthy"
-                                ? `Running (${formatLatency(health.latency_ms)})`
+                                ? health.latency_ms != null
+                                  ? `Running (${formatLatency(health.latency_ms)})`
+                                  : "Running"
                                 : health.status === "ready"
                                 ? "Ready to start"
                                 : health.status === "disabled"
@@ -740,7 +742,7 @@ export function McpServersPanel({
                         <div className="flex items-center gap-2 text-green-600">
                           <CheckCircle className="h-4 w-4" />
                           <span>Running</span>
-                          {health.latency_ms && (
+                          {health.latency_ms != null && (
                             <span className="text-muted-foreground">
                               ({formatLatency(health.latency_ms)})
                             </span>
