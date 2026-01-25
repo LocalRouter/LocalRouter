@@ -13,7 +13,9 @@
       "Bash(cmd.exe /c \"rustup target add x86_64-pc-windows-gnu && rustup toolchain install stable-x86_64-pc-windows-gnu\")",
       "Bash(cmd.exe /c \"cargo +stable-x86_64-pc-windows-gnu install tauri-cli\")",
       "Bash(cmd.exe /c:*)",
-      "Bash(ls:*)"
+      "Bash(ls:*)",
+      "WebSearch",
+      "WebFetch(domain:github.com)"
     ]
   }
 }
