@@ -63,7 +63,7 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Cargo.toml src-tauri/tauri.conf.json package.json
           git commit -m "chore: bump version to ${{ steps.version.outputs.version }}"
-          git push origin main
+          git push origin master
           echo "Version bump committed and pushed"
 
       - name: Create git tag
@@ -232,7 +232,7 @@ jobs:
 
           ---
 
-          **Full Changelog**: https://github.com/${{ github.repository }}/compare/v${{ needs.version-bump.outputs.version }}...main
+          **Full Changelog**: https://github.com/${{ github.repository }}/compare/v${{ needs.version-bump.outputs.version }}...master
           EOF
 
           echo "Release notes generated"
