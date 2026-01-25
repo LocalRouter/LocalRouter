@@ -36,7 +36,7 @@ impl AggregateHealthStatus {
 }
 
 /// Individual item health status
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ItemHealthStatus {
     /// Item is healthy and operational
@@ -48,13 +48,10 @@ pub enum ItemHealthStatus {
     /// Item is ready (MCP server started, not yet checked)
     Ready,
     /// Item health check is pending (not yet checked)
+    #[default]
     Pending,
-}
-
-impl Default for ItemHealthStatus {
-    fn default() -> Self {
-        Self::Pending
-    }
+    /// Item is disabled (not included in aggregate health)
+    Disabled,
 }
 
 /// Health information for an individual provider or MCP server
@@ -129,6 +126,17 @@ impl ItemHealth {
             last_checked: Utc::now(),
         }
     }
+
+    /// Create a disabled item (not included in aggregate health)
+    pub fn disabled(name: String) -> Self {
+        Self {
+            name,
+            status: ItemHealthStatus::Disabled,
+            latency_ms: None,
+            error: None,
+            last_checked: Utc::now(),
+        }
+    }
 }
 
 /// Cached health state for the entire system
@@ -136,6 +144,9 @@ impl ItemHealth {
 pub struct HealthCacheState {
     /// Whether the server is running
     pub server_running: bool,
+    /// Server host (if running)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server_host: Option<String>,
     /// Server port (if running)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub server_port: Option<u16>,
@@ -154,6 +165,7 @@ impl Default for HealthCacheState {
     fn default() -> Self {
         Self {
             server_running: false,
+            server_host: None,
             server_port: None,
             providers: HashMap::new(),
             mcp_servers: HashMap::new(),
@@ -196,17 +208,18 @@ impl HealthCacheManager {
     }
 
     /// Update server status
-    pub fn update_server_status(&self, running: bool, port: Option<u16>) {
+    pub fn update_server_status(&self, running: bool, host: Option<String>, port: Option<u16>) {
         {
             let mut cache = self.cache.write();
             cache.server_running = running;
+            cache.server_host = host.clone();
             cache.server_port = port;
             self.recalculate_aggregate_status(&mut cache);
         }
         self.emit_status_changed();
         info!(
-            "Health cache updated: server_running={}, port={:?}",
-            running, port
+            "Health cache updated: server_running={}, host={:?}, port={:?}",
+            running, host, port
         );
     }
 
@@ -304,8 +317,8 @@ impl HealthCacheManager {
 
         let mut has_issues = false;
 
-        // Check providers (only count non-pending items)
-        for (_name, health) in &cache.providers {
+        // Check providers (only count non-pending/non-disabled items)
+        for health in cache.providers.values() {
             match health.status {
                 ItemHealthStatus::Unhealthy => {
                     has_issues = true;
@@ -313,14 +326,17 @@ impl HealthCacheManager {
                 ItemHealthStatus::Degraded => {
                     has_issues = true;
                 }
-                ItemHealthStatus::Healthy | ItemHealthStatus::Ready | ItemHealthStatus::Pending => {
-                    // OK or not yet checked
+                ItemHealthStatus::Healthy
+                | ItemHealthStatus::Ready
+                | ItemHealthStatus::Pending
+                | ItemHealthStatus::Disabled => {
+                    // OK, not yet checked, or disabled (skip)
                 }
             }
         }
 
-        // Check MCP servers (only count non-pending items)
-        for (_id, health) in &cache.mcp_servers {
+        // Check MCP servers (only count non-pending/non-disabled items)
+        for health in cache.mcp_servers.values() {
             match health.status {
                 ItemHealthStatus::Unhealthy => {
                     has_issues = true;
@@ -328,8 +344,11 @@ impl HealthCacheManager {
                 ItemHealthStatus::Degraded => {
                     has_issues = true;
                 }
-                ItemHealthStatus::Healthy | ItemHealthStatus::Ready | ItemHealthStatus::Pending => {
-                    // OK or not yet checked
+                ItemHealthStatus::Healthy
+                | ItemHealthStatus::Ready
+                | ItemHealthStatus::Pending
+                | ItemHealthStatus::Disabled => {
+                    // OK, not yet checked, or disabled (skip)
                 }
             }
         }
@@ -374,14 +393,14 @@ mod tests {
     #[test]
     fn test_aggregate_status_server_down() {
         let manager = HealthCacheManager::new();
-        manager.update_server_status(false, None);
+        manager.update_server_status(false, None, None);
         assert_eq!(manager.aggregate_status(), AggregateHealthStatus::Red);
     }
 
     #[test]
     fn test_aggregate_status_all_healthy() {
         let manager = HealthCacheManager::new();
-        manager.update_server_status(true, Some(3625));
+        manager.update_server_status(true, Some("127.0.0.1".to_string()), Some(3625));
         manager.update_provider(
             "openai",
             ItemHealth::healthy("openai".to_string(), Some(100)),
@@ -396,7 +415,7 @@ mod tests {
     #[test]
     fn test_aggregate_status_provider_unhealthy() {
         let manager = HealthCacheManager::new();
-        manager.update_server_status(true, Some(3625));
+        manager.update_server_status(true, Some("127.0.0.1".to_string()), Some(3625));
         manager.update_provider(
             "openai",
             ItemHealth::healthy("openai".to_string(), Some(100)),
@@ -411,7 +430,7 @@ mod tests {
     #[test]
     fn test_aggregate_status_mcp_degraded() {
         let manager = HealthCacheManager::new();
-        manager.update_server_status(true, Some(3625));
+        manager.update_server_status(true, Some("127.0.0.1".to_string()), Some(3625));
         manager.update_mcp_server(
             "fs-server",
             ItemHealth::degraded(
@@ -450,7 +469,7 @@ mod tests {
     #[test]
     fn test_remove_provider() {
         let manager = HealthCacheManager::new();
-        manager.update_server_status(true, Some(3625));
+        manager.update_server_status(true, Some("127.0.0.1".to_string()), Some(3625));
         manager.update_provider(
             "openai",
             ItemHealth::healthy("openai".to_string(), Some(100)),
@@ -458,5 +477,37 @@ mod tests {
         assert_eq!(manager.get().providers.len(), 1);
         manager.remove_provider("openai");
         assert_eq!(manager.get().providers.len(), 0);
+    }
+
+    #[test]
+    fn test_disabled_does_not_affect_aggregate() {
+        let manager = HealthCacheManager::new();
+        manager.update_server_status(true, Some("127.0.0.1".to_string()), Some(3625));
+
+        // Add a disabled provider - should not affect aggregate status
+        manager.update_provider(
+            "disabled_provider",
+            ItemHealth::disabled("disabled_provider".to_string()),
+        );
+
+        // Add a disabled MCP server - should not affect aggregate status
+        manager.update_mcp_server(
+            "disabled_mcp",
+            ItemHealth::disabled("disabled_mcp".to_string()),
+        );
+
+        // Status should be green (disabled items don't count as issues)
+        assert_eq!(manager.aggregate_status(), AggregateHealthStatus::Green);
+
+        // Verify disabled status is correctly stored
+        let state = manager.get();
+        assert_eq!(
+            state.providers.get("disabled_provider").unwrap().status,
+            ItemHealthStatus::Disabled
+        );
+        assert_eq!(
+            state.mcp_servers.get("disabled_mcp").unwrap().status,
+            ItemHealthStatus::Disabled
+        );
     }
 }

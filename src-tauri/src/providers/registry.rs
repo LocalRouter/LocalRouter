@@ -361,15 +361,12 @@ impl ProviderRegistry {
     /// Remove a provider instance
     ///
     /// Used by: UI provider management
+    ///
+    /// This operation is idempotent - removing a non-existent provider succeeds silently.
     pub fn remove_provider(&self, instance_name: &str) -> AppResult<()> {
-        self.instances
-            .write()
-            .remove(instance_name)
-            .ok_or_else(|| {
-                AppError::Config(format!("Provider instance '{}' not found", instance_name))
-            })?;
-
-        info!("Removed provider instance: {}", instance_name);
+        if self.instances.write().remove(instance_name).is_some() {
+            info!("Removed provider instance: {}", instance_name);
+        }
         Ok(())
     }
 
@@ -385,6 +382,16 @@ impl ProviderRegistry {
         instance.enabled = enabled;
         info!("Set provider '{}' enabled: {}", instance_name, enabled);
         Ok(())
+    }
+
+    /// Check if a provider instance is enabled
+    ///
+    /// Returns None if the provider is not found
+    pub fn is_provider_enabled(&self, instance_name: &str) -> Option<bool> {
+        self.instances
+            .read()
+            .get(instance_name)
+            .map(|inst| inst.enabled)
     }
 
     // ===== MODEL CACHE MANAGEMENT =====
@@ -444,7 +451,7 @@ impl ProviderRegistry {
                 };
 
                 ModelInfo {
-                    id: m.id.split('/').last().unwrap_or(&m.id).to_string(),
+                    id: m.id.split('/').next_back().unwrap_or(m.id).to_string(),
                     name: m.name.to_string(),
                     provider: provider_type.to_string(),
                     parameter_count: None,
