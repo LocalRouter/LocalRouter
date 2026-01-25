@@ -144,20 +144,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: artifacts-${{ matrix.settings.target }}
-          path: |
-            src-tauri/target/${{ matrix.settings.target }}/release/bundle/**/*.dmg
-            src-tauri/target/${{ matrix.settings.target }}/release/bundle/**/*.dmg.tar.gz
-            src-tauri/target/${{ matrix.settings.target }}/release/bundle/**/*.dmg.tar.gz.sig
-            src-tauri/target/${{ matrix.settings.target }}/release/bundle/**/*.deb
-            src-tauri/target/${{ matrix.settings.target }}/release/bundle/**/*.AppImage
-            src-tauri/target/${{ matrix.settings.target }}/release/bundle/**/*.AppImage.tar.gz
-            src-tauri/target/${{ matrix.settings.target }}/release/bundle/**/*.AppImage.tar.gz.sig
-            src-tauri/target/${{ matrix.settings.target }}/release/bundle/**/*.msi
-            src-tauri/target/${{ matrix.settings.target }}/release/bundle/**/*.msi.zip
-            src-tauri/target/${{ matrix.settings.target }}/release/bundle/**/*.msi.zip.sig
-            src-tauri/target/${{ matrix.settings.target }}/release/bundle/**/*.exe
-            src-tauri/target/${{ matrix.settings.target }}/release/bundle/**/*.exe.zip
-            src-tauri/target/${{ matrix.settings.target }}/release/bundle/**/*.exe.zip.sig
+          path: src-tauri/target/${{ matrix.settings.target }}/release/bundle
           retention-days: 1
           if-no-files-found: error
 
