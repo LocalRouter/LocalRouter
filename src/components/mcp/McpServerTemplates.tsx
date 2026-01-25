@@ -25,27 +25,27 @@ const HOME_DIR_PLACEHOLDER = '{{HOME_DIR}}'
 export const MCP_SERVER_TEMPLATES: McpServerTemplate[] = [
   {
     id: 'github',
-    name: 'GitHub Copilot MCP Server',
-    description: 'Access GitHub repositories, issues, PRs, and workflows via Copilot',
+    name: 'GitHub MCP Server',
+    description: 'Access GitHub repositories, issues, PRs, and workflows',
     icon: '🐙',
-    transport: 'Sse',
-    url: 'https://api.githubcopilot.com/mcp',
-    authMethod: 'oauth_browser',
-    defaultScopes: ['repo', 'read:user'],
-    setupInstructions: 'Create a GitHub OAuth App at github.com/settings/developers with callback URL: http://localhost:8080/callback',
-    docsUrl: 'https://docs.github.com/en/copilot',
+    transport: 'Stdio',
+    command: 'npx',
+    args: ['-y', '@modelcontextprotocol/server-github'],
+    authMethod: 'bearer',
+    setupInstructions: 'Create a Personal Access Token at github.com/settings/tokens with repo and read:user scopes. Add as GITHUB_PERSONAL_ACCESS_TOKEN environment variable.',
+    docsUrl: 'https://github.com/modelcontextprotocol/servers/tree/main/src/github',
   },
   {
     id: 'gitlab',
     name: 'GitLab MCP Server',
     description: 'Manage GitLab projects, merge requests, and CI/CD pipelines',
     icon: '🦊',
-    transport: 'Sse',
-    url: 'https://gitlab.com/api/v4/mcp',
-    authMethod: 'oauth_browser',
-    defaultScopes: ['api', 'read_user'],
-    setupInstructions: 'Create a GitLab application at gitlab.com/-/profile/applications with callback URL: http://localhost:8080/callback',
-    docsUrl: 'https://docs.gitlab.com/ee/integration/oauth_provider.html',
+    transport: 'Stdio',
+    command: 'npx',
+    args: ['-y', '@modelcontextprotocol/server-gitlab'],
+    authMethod: 'bearer',
+    setupInstructions: 'Create a Personal Access Token at gitlab.com/-/user_settings/personal_access_tokens with api and read_user scopes. Add as GITLAB_PERSONAL_ACCESS_TOKEN environment variable.',
+    docsUrl: 'https://github.com/modelcontextprotocol/servers/tree/main/src/gitlab',
   },
   {
     id: 'filesystem',
@@ -157,6 +157,11 @@ export const McpServerTemplates: React.FC<McpServerTemplatesProps> = ({ onSelect
                       <span className="px-2 py-0.5 text-xs rounded-full bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300">
                         {template.transport}
                       </span>
+                      {template.authMethod === 'bearer' && (
+                        <span className="px-2 py-0.5 text-xs rounded-full bg-amber-200 dark:bg-amber-900 text-amber-700 dark:text-amber-300">
+                          PAT
+                        </span>
+                      )}
                       {template.authMethod === 'oauth_browser' && (
                         <span className="px-2 py-0.5 text-xs rounded-full bg-blue-200 dark:bg-blue-900 text-blue-700 dark:text-blue-300">
                           OAuth

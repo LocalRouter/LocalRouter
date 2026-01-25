@@ -5,11 +5,11 @@ import {
   Users,
   Database,
   Settings,
-  Router,
   FlaskConical,
   ServerCog,
   RefreshCw,
 } from "lucide-react"
+import { Logo } from "@/components/Logo"
 import { cn } from "@/lib/utils"
 import {
   Tooltip,
@@ -19,7 +19,7 @@ import {
 } from "@/components/ui/tooltip"
 
 type AggregateHealthStatus = 'red' | 'yellow' | 'green'
-type ItemHealthStatus = 'healthy' | 'degraded' | 'unhealthy' | 'ready' | 'pending'
+type ItemHealthStatus = 'healthy' | 'degraded' | 'unhealthy' | 'ready' | 'pending' | 'disabled'
 
 interface ItemHealth {
   name: string
@@ -31,6 +31,7 @@ interface ItemHealth {
 
 interface HealthCacheState {
   server_running: boolean
+  server_host?: string
   server_port?: number
   providers: Record<string, ItemHealth>
   mcp_servers: Record<string, ItemHealth>
@@ -128,6 +129,23 @@ export function Sidebar({ activeView, onViewChange }: SidebarProps) {
     }
   }
 
+  // Check if any items are in pending/loading state
+  const hasAnyPending = (): boolean => {
+    if (!healthState) return true // No state yet = loading
+
+    // Check providers
+    for (const health of Object.values(healthState.providers)) {
+      if (health.status === 'pending') return true
+    }
+
+    // Check MCP servers
+    for (const health of Object.values(healthState.mcp_servers)) {
+      if (health.status === 'pending') return true
+    }
+
+    return false
+  }
+
   // Get status color
   const getStatusColor = (status: AggregateHealthStatus | undefined): string => {
     switch (status) {
@@ -146,6 +164,7 @@ export function Sidebar({ activeView, onViewChange }: SidebarProps) {
       case 'degraded': return 'bg-yellow-500'
       case 'unhealthy': return 'bg-red-500'
       case 'pending': return 'bg-gray-400'
+      case 'disabled': return 'bg-gray-400'
       default: return 'bg-gray-400'
     }
   }
@@ -208,7 +227,7 @@ export function Sidebar({ activeView, onViewChange }: SidebarProps) {
                     : "bg-primary/80 text-primary-foreground hover:bg-primary"
                 )}
               >
-                <Router className="h-4 w-4" />
+                <Logo className="h-4 w-4" />
               </button>
             </TooltipTrigger>
             <TooltipContent side="right" sideOffset={8}>
@@ -299,9 +318,9 @@ export function Sidebar({ activeView, onViewChange }: SidebarProps) {
               <button
                 onClick={handleRefresh}
                 className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-accent transition-colors"
-                disabled={isRefreshing}
+                disabled={isRefreshing || hasAnyPending()}
               >
-                {isRefreshing ? (
+                {isRefreshing || hasAnyPending() ? (
                   <RefreshCw className="h-3 w-3 animate-spin text-muted-foreground" />
                 ) : (
                   <div className={cn(
@@ -314,16 +333,19 @@ export function Sidebar({ activeView, onViewChange }: SidebarProps) {
             <TooltipContent side="right" sideOffset={8} className="max-w-xs">
               <div className="space-y-2 text-xs">
                 {/* Server status */}
-                <div className="flex items-center gap-2">
+                <div>
+                  <span className="font-medium text-muted-foreground">LocalRouter LLM & MCP Server</span>
+                </div>
+                <div className="flex items-center gap-2 pl-2">
                   <div className={cn(
-                    "h-2 w-2 rounded-full",
+                    "h-1.5 w-1.5 rounded-full",
                     healthState?.server_running ? "bg-green-500" : "bg-red-500"
                   )} />
-                  <span className="font-medium">Server</span>
-                  <span className="text-muted-foreground ml-auto">
-                    {healthState?.server_running
-                      ? `Port ${healthState.server_port ?? '...'}`
-                      : 'Stopped'}
+                  <span className="truncate flex-1">
+                    {healthState?.server_host ?? '...'}:{healthState?.server_port ?? '...'}
+                  </span>
+                  <span className="text-muted-foreground text-[10px]">
+                    {healthState?.server_running ? 'Running' : 'Stopped'}
                   </span>
                 </div>
 
@@ -371,7 +393,7 @@ export function Sidebar({ activeView, onViewChange }: SidebarProps) {
 
                 {/* Refresh hint */}
                 <div className="border-t pt-2 text-muted-foreground text-[10px]">
-                  Click to refresh health status
+                  Click to refresh
                 </div>
               </div>
             </TooltipContent>

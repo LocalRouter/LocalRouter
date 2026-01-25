@@ -417,226 +417,255 @@ export function StrategyModelConfiguration({
                 </CardContent>
             </Card>
 
-            {/* Section 2: Mode-specific content */}
-            {routingMode === 'allowed' ? (
-                /* Allowed Models mode */
-                <Card>
-                    <CardHeader>
-                        <CardTitle className="text-base">Allowed Models</CardTitle>
-                        <CardDescription>
-                            Select which models the client can access
-                        </CardDescription>
-                    </CardHeader>
-                    <CardContent>
-                        <AllowedModelsSelector
-                            models={models}
-                            value={strategy.allowed_models}
-                            onChange={handleAllowedModelsChange}
-                            disabled={readOnly || saving}
-                        />
-                    </CardContent>
-                </Card>
-            ) : (
-                /* Auto Route mode */
-                <>
-                    {/* Model Name Configuration */}
-                    <Card>
-                        <CardHeader>
-                            <CardTitle className="text-base flex items-center gap-2">
-                                <Bot className="h-4 w-4" />
-                                Auto Router Configuration
-                            </CardTitle>
-                            <CardDescription>
-                                Configure the auto router model that clients will see
-                            </CardDescription>
-                        </CardHeader>
-                        <CardContent className="space-y-4">
-                            <div className="space-y-2">
-                                <Label htmlFor="model-name">Model Name</Label>
-                                <Input
-                                    id="model-name"
-                                    value={autoConfig?.model_name || 'localrouter/auto'}
-                                    onChange={(e) => handleModelNameChange(e.target.value)}
-                                    placeholder="localrouter/auto"
-                                    disabled={readOnly || saving}
-                                    className="font-mono text-sm"
-                                />
-                                <p className="text-xs text-muted-foreground">
-                                    This is the model name clients will see in the models list
-                                </p>
+            {/* Section 2: Mode-specific content with tree connector */}
+            <div className="ml-4">
+                {routingMode === 'allowed' ? (
+                    // Allowed Models mode - single branch
+                    <div className="flex pt-4">
+                        <div className="w-4 flex flex-col">
+                            <div className="border-l border-border ml-auto h-4">
+                                <div className="w-4 border-t border-border" />
                             </div>
-                        </CardContent>
-                    </Card>
-
-                    {/* Prioritized Models - Side by side with Weak Model */}
-                    <div className="grid gap-4 grid-cols-1 lg:grid-cols-2">
-                        {/* Left: Strong/Prioritized Models */}
-                        <Card>
-                            <CardHeader>
-                                <div className="flex items-center gap-3">
-                                    <div className="p-2 rounded-lg bg-primary/10">
-                                        <Bot className="h-4 w-4 text-primary"/>
-                                    </div>
-                                    <div>
-                                        <CardTitle className="text-base">Prioritized Models</CardTitle>
-                                        <CardDescription>
-                                            Models to try in order. Falls back to next on failures (outage, context limit, policy violation).
-                                        </CardDescription>
-                                    </div>
-                                </div>
-                            </CardHeader>
-                            <CardContent className="space-y-4">
-                                <DragThresholdModelSelector
-                                    availableModels={models}
-                                    enabledModels={autoConfig?.prioritized_models || []}
-                                    onChange={handlePrioritizedModelsChange}
-                                    disabled={readOnly || saving}
-                                />
-                            </CardContent>
-                        </Card>
-
-                        {/* Right: Strong/Weak Routing (Weak Models) */}
-                        <Card>
-                            <CardHeader>
-                                <div className="flex items-center justify-between">
-                                    <div className="flex items-center gap-3">
-                                        <div className="p-2 rounded-lg bg-purple-500/10">
-                                            <Brain className="h-4 w-4 text-purple-500"/>
-                                        </div>
-                                        <div>
-                                            <CardTitle className="text-base flex items-center gap-2">
-                                                Weak Model
-                                                <span className="text-xs px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-700 dark:text-purple-300 font-medium">
-                                                    EXPERIMENTAL
-                                                </span>
-                                            </CardTitle>
-                                            <CardDescription>
-                                                Use weaker models for simpler prompts for faster and cheaper results.
-                                            </CardDescription>
-                                        </div>
-                                    </div>
-                                    <Switch
-                                        checked={routellmConfig?.enabled ?? false}
-                                        onCheckedChange={handleRouteLLMToggle}
+                        </div>
+                        <div className="flex-1">
+                            <Card>
+                                <CardHeader>
+                                    <CardTitle className="text-base">Allowed Models</CardTitle>
+                                    <CardDescription>
+                                        Select which models the client can access
+                                    </CardDescription>
+                                </CardHeader>
+                                <CardContent>
+                                    <AllowedModelsSelector
+                                        models={models}
+                                        value={strategy.allowed_models}
+                                        onChange={handleAllowedModelsChange}
                                         disabled={readOnly || saving}
                                     />
-                                </div>
-                            </CardHeader>
-                            <CardContent className="space-y-4">
-                                {!routellmConfig?.enabled ? (
-                                    <div className="space-y-4">
-                                        {/* Resource Requirements - shown when disabled */}
-                                        <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/20">
-                                            <div className="flex items-start gap-2">
-                                                <MessageSquareWarning
-                                                    className="h-4 w-4 text-amber-600 dark:text-amber-400 mt-0.5 shrink-0"/>
-                                                <div className="text-xs text-amber-700 dark:text-amber-300">
-                                                    <p className="font-medium mb-2">Resource Requirements</p>
-                                                    <div className="grid grid-cols-2 gap-x-4 gap-y-1">
-                                                        <span>Disk Space:</span>
-                                                        <span>{ROUTELLM_REQUIREMENTS.DISK_GB} GB</span>
-                                                        <span>Memory:</span>
-                                                        <span>{ROUTELLM_REQUIREMENTS.MEMORY_GB} GB</span>
-                                                        <span>Cold Start:</span>
-                                                        <span>{ROUTELLM_REQUIREMENTS.COLD_START_SECS}s</span>
-                                                        <span>Per-request:</span>
-                                                        <span>{ROUTELLM_REQUIREMENTS.PER_REQUEST_MS}ms</span>
-                                                    </div>
-                                                </div>
-                                            </div>
-                                        </div>
-                                    </div>
-                                ) : (
-                                    <>
-                                        <DragThresholdModelSelector
-                                            availableModels={models}
-                                            enabledModels={routellmConfig.weak_models}
-                                            onChange={handleWeakModelsChange}
-                                            disabled={readOnly || saving}
-                                        />
-
-                                        {/* Threshold Slider */}
-                                        <ThresholdSlider
-                                            value={routellmConfig.threshold}
-                                            onChange={handleThresholdChange}
-                                        />
-
-                                        {/* Test It Out Section */}
-                                        <div className="mt-4 pt-4 border-t border-border/50">
-                                            <div className="space-y-3">
-                                                <div className="flex items-center justify-between">
-                                                    <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                                                        Test It Out
-                                                    </span>
-                                                    {routellmStatus && (
-                                                        <div className="flex items-center gap-1.5">
-                                                            <span className="text-sm">{getStatusInfo(routellmStatus.state).icon}</span>
-                                                            <Badge variant={getStatusInfo(routellmStatus.state).variant} className="text-xs">
-                                                                {getStatusInfo(routellmStatus.state).label}
-                                                            </Badge>
-                                                        </div>
-                                                    )}
-                                                </div>
-
-                                                <Input
-                                                    value={testPrompt}
-                                                    onChange={(e) => setTestPrompt(e.target.value)}
-                                                    placeholder="Type a prompt and press Enter..."
-                                                    onKeyDown={(e) => e.key === "Enter" && !isTesting && handleTest()}
-                                                    disabled={isTesting || routellmStatus?.state === "not_downloaded" || routellmStatus?.state === "downloading"}
-                                                    className="text-sm"
-                                                />
-
-                                                {isTesting && (
-                                                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                                                        <span className="animate-spin">🔄</span>
-                                                        <span>
-                                                            {routellmStatus?.state === "initializing"
-                                                                ? "Loading model..."
-                                                                : "Testing..."}
-                                                        </span>
-                                                    </div>
-                                                )}
-
-                                                {testResult && !isTesting && (
-                                                    <div className="p-3 bg-muted rounded-lg space-y-2">
-                                                        <div className="flex items-center justify-between">
-                                                            <span className="text-xs text-muted-foreground">
-                                                                Score:{" "}
-                                                                <span className="font-mono text-primary">
-                                                                    {testResult.win_rate.toFixed(3)}
-                                                                </span>
-                                                            </span>
-                                                            <Badge variant={testResult.is_strong ? "default" : "secondary"}>
-                                                                {testResult.is_strong ? "STRONG" : "weak"} model
-                                                            </Badge>
-                                                        </div>
-                                                        <div className="w-full bg-background rounded h-1.5 overflow-hidden">
-                                                            <div
-                                                                className="h-full bg-gradient-to-r from-green-500 to-orange-500"
-                                                                style={{width: `${testResult.win_rate * 100}%`}}
-                                                            />
-                                                        </div>
-                                                        <div className="text-xs text-muted-foreground">
-                                                            Latency: {testResult.latency_ms}ms
-                                                        </div>
-                                                    </div>
-                                                )}
-
-                                                {routellmStatus?.state === "not_downloaded" && (
-                                                    <p className="text-xs text-muted-foreground">
-                                                        Download the RouteLLM model in Settings → RouteLLM to test predictions.
-                                                    </p>
-                                                )}
-                                            </div>
-                                        </div>
-                                    </>
-                                )}
-                            </CardContent>
-                        </Card>
+                                </CardContent>
+                            </Card>
+                        </div>
                     </div>
-                </>
-            )}
-        </div>
-    )
-}
+                ) : (
+                    /* Auto Route mode - two branches */
+                    <>
+                        {/* First branch: Auto Router Configuration */}
+                        <div className="flex pt-4">
+                            <div className="w-4 flex flex-col">
+                                <div className="border-l border-border ml-auto flex-1">
+                                    <div className="w-4 border-t border-border" />
+                                </div>
+                            </div>
+                            <div className="flex-1">
+                                <Card>
+                                        <CardHeader>
+                                            <CardTitle className="text-base flex items-center gap-2">
+                                                <Bot className="h-4 w-4" />
+                                                Auto Router Configuration
+                                            </CardTitle>
+                                            <CardDescription>
+                                                Configure the auto router model that clients will see
+                                            </CardDescription>
+                                        </CardHeader>
+                                        <CardContent className="space-y-4">
+                                            <div className="space-y-2">
+                                                <Label htmlFor="model-name">Model Name</Label>
+                                                <Input
+                                                    id="model-name"
+                                                    value={autoConfig?.model_name || 'localrouter/auto'}
+                                                    onChange={(e) => handleModelNameChange(e.target.value)}
+                                                    placeholder="localrouter/auto"
+                                                    disabled={readOnly || saving}
+                                                    className="font-mono text-sm"
+                                                />
+                                                <p className="text-xs text-muted-foreground">
+                                                    This is the model name clients will see in the models list
+                                                </p>
+                                            </div>
+                                        </CardContent>
+                                    </Card>
+                                </div>
+                        </div>
+
+                        {/* Second branch: Prioritized Models Grid */}
+                        <div className="flex pt-4">
+                            <div className="w-4 flex flex-col">
+                                <div className="border-l border-border ml-auto h-4">
+                                    <div className="w-4 border-t border-border" />
+                                </div>
+                            </div>
+                            <div className="flex-1">
+                                <div className="grid gap-4 grid-cols-1 lg:grid-cols-2">
+                                        {/* Left: Strong/Prioritized Models */}
+                                        <Card>
+                                            <CardHeader>
+                                                <div className="flex items-center gap-3">
+                                                    <div className="p-2 rounded-lg bg-primary/10">
+                                                        <Bot className="h-4 w-4 text-primary"/>
+                                                    </div>
+                                                    <div>
+                                                        <CardTitle className="text-base">Prioritized Models</CardTitle>
+                                                        <CardDescription>
+                                                            Models to try in order. Falls back to next on failures (outage, context limit, policy violation).
+                                                        </CardDescription>
+                                                    </div>
+                                                </div>
+                                            </CardHeader>
+                                            <CardContent className="space-y-4">
+                                                <DragThresholdModelSelector
+                                                    availableModels={models}
+                                                    enabledModels={autoConfig?.prioritized_models || []}
+                                                    onChange={handlePrioritizedModelsChange}
+                                                    disabled={readOnly || saving}
+                                                />
+                                            </CardContent>
+                                        </Card>
+
+                                        {/* Right: Strong/Weak Routing (Weak Models) */}
+                                        <Card>
+                                            <CardHeader>
+                                                <div className="flex items-center justify-between">
+                                                    <div className="flex items-center gap-3">
+                                                        <div className="p-2 rounded-lg bg-purple-500/10">
+                                                            <Brain className="h-4 w-4 text-purple-500"/>
+                                                        </div>
+                                                        <div>
+                                                            <CardTitle className="text-base flex items-center gap-2">
+                                                                Weak Model
+                                                                <span className="text-xs px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-700 dark:text-purple-300 font-medium">
+                                                                    EXPERIMENTAL
+                                                                </span>
+                                                            </CardTitle>
+                                                            <CardDescription>
+                                                                Use weaker models for simpler prompts for faster and cheaper results.
+                                                            </CardDescription>
+                                                        </div>
+                                                    </div>
+                                                    <Switch
+                                                        checked={routellmConfig?.enabled ?? false}
+                                                        onCheckedChange={handleRouteLLMToggle}
+                                                        disabled={readOnly || saving}
+                                                    />
+                                                </div>
+                                            </CardHeader>
+                                            <CardContent className="space-y-4">
+                                                {!routellmConfig?.enabled ? (
+                                                    <div className="space-y-4">
+                                                        {/* Resource Requirements - shown when disabled */}
+                                                        <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/20">
+                                                            <div className="flex items-start gap-2">
+                                                                <MessageSquareWarning
+                                                                    className="h-4 w-4 text-amber-600 dark:text-amber-400 mt-0.5 shrink-0"/>
+                                                                <div className="text-xs text-amber-700 dark:text-amber-300">
+                                                                    <p className="font-medium mb-2">Resource Requirements</p>
+                                                                    <div className="grid grid-cols-2 gap-x-4 gap-y-1">
+                                                                        <span>Disk Space:</span>
+                                                                        <span>{ROUTELLM_REQUIREMENTS.DISK_GB} GB</span>
+                                                                        <span>Memory:</span>
+                                                                        <span>{ROUTELLM_REQUIREMENTS.MEMORY_GB} GB</span>
+                                                                        <span>Cold Start:</span>
+                                                                        <span>{ROUTELLM_REQUIREMENTS.COLD_START_SECS}s</span>
+                                                                        <span>Per-request:</span>
+                                                                        <span>{ROUTELLM_REQUIREMENTS.PER_REQUEST_MS}ms</span>
+                                                                    </div>
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                ) : (
+                                                    <>
+                                                        <DragThresholdModelSelector
+                                                            availableModels={models}
+                                                            enabledModels={routellmConfig.weak_models}
+                                                            onChange={handleWeakModelsChange}
+                                                            disabled={readOnly || saving}
+                                                        />
+
+                                                        {/* Threshold Slider */}
+                                                        <ThresholdSlider
+                                                            value={routellmConfig.threshold}
+                                                            onChange={handleThresholdChange}
+                                                        />
+
+                                                        {/* Test It Out Section */}
+                                                        <div className="mt-4 pt-4 border-t border-border/50">
+                                                            <div className="space-y-3">
+                                                                <div className="flex items-center justify-between">
+                                                                    <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                                                                        Test It Out
+                                                                    </span>
+                                                                    {routellmStatus && (
+                                                                        <div className="flex items-center gap-1.5">
+                                                                            <span className="text-sm">{getStatusInfo(routellmStatus.state).icon}</span>
+                                                                            <Badge variant={getStatusInfo(routellmStatus.state).variant} className="text-xs">
+                                                                                {getStatusInfo(routellmStatus.state).label}
+                                                                            </Badge>
+                                                                        </div>
+                                                                    )}
+                                                                </div>
+
+                                                                <Input
+                                                                    value={testPrompt}
+                                                                    onChange={(e) => setTestPrompt(e.target.value)}
+                                                                    placeholder="Type a prompt and press Enter..."
+                                                                    onKeyDown={(e) => e.key === "Enter" && !isTesting && handleTest()}
+                                                                    disabled={isTesting || routellmStatus?.state === "not_downloaded" || routellmStatus?.state === "downloading"}
+                                                                    className="text-sm"
+                                                                />
+
+                                                                {isTesting && (
+                                                                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                                                                        <span className="animate-spin">🔄</span>
+                                                                        <span>
+                                                                            {routellmStatus?.state === "initializing"
+                                                                                ? "Loading model..."
+                                                                                : "Testing..."}
+                                                                        </span>
+                                                                    </div>
+                                                                )}
+
+                                                                {testResult && !isTesting && (
+                                                                    <div className="p-3 bg-muted rounded-lg space-y-2">
+                                                                        <div className="flex items-center justify-between">
+                                                                            <span className="text-xs text-muted-foreground">
+                                                                                Score:{" "}
+                                                                                <span className="font-mono text-primary">
+                                                                                    {testResult.win_rate.toFixed(3)}
+                                                                                </span>
+                                                                            </span>
+                                                                            <Badge variant={testResult.is_strong ? "default" : "secondary"}>
+                                                                                {testResult.is_strong ? "STRONG" : "weak"} model
+                                                                            </Badge>
+                                                                        </div>
+                                                                        <div className="w-full bg-background rounded h-1.5 overflow-hidden">
+                                                                            <div
+                                                                                className="h-full bg-gradient-to-r from-green-500 to-orange-500"
+                                                                                style={{width: `${testResult.win_rate * 100}%`}}
+                                                                            />
+                                                                        </div>
+                                                                        <div className="text-xs text-muted-foreground">
+                                                                            Latency: {testResult.latency_ms}ms
+                                                                        </div>
+                                                                    </div>
+                                                                )}
+
+                                                                {routellmStatus?.state === "not_downloaded" && (
+                                                                    <p className="text-xs text-muted-foreground">
+                                                                        Download the RouteLLM model in Settings → RouteLLM to test predictions.
+                                                                    </p>
+                                                                )}
+                                                            </div>
+                                                        </div>
+                                                    </>
+                                                )}
+                                            </CardContent>
+                                        </Card>
+                                    </div>
+                                </div>
+                            </div>
+                        </>
+                    )}
+                </div>
+            </div>
+        )
+    }

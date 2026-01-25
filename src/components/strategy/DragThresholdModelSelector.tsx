@@ -45,6 +45,8 @@ interface DragThresholdModelSelectorProps {
   title?: string
   description?: string
   className?: string
+  /** Disable DragOverlay - useful in modals/dialogs where transforms cause offset issues */
+  disableDragOverlay?: boolean
 }
 
 // Unique ID for each model
@@ -254,6 +256,7 @@ export function DragThresholdModelSelector({
   title,
   description,
   className,
+  disableDragOverlay = false,
 }: DragThresholdModelSelectorProps) {
   const [activeId, setActiveId] = useState<string | null>(null)
   const [overZone, setOverZone] = useState<string | null>(null)
@@ -488,17 +491,19 @@ export function DragThresholdModelSelector({
           </SortableContext>
         </div>
 
-        {/* Drag overlay */}
-        <DragOverlay>
-          {activeId && activeItem ? (
-            <DragOverlayItem
-              provider={activeItem.provider}
-              modelId={activeItem.modelId}
-              isEnabled={activeIsEnabled}
-              index={activeIndex}
-            />
-          ) : null}
-        </DragOverlay>
+        {/* Drag overlay - disabled in modals/dialogs due to transform offset issues */}
+        {!disableDragOverlay && (
+          <DragOverlay>
+            {activeId && activeItem ? (
+              <DragOverlayItem
+                provider={activeItem.provider}
+                modelId={activeItem.modelId}
+                isEnabled={activeIsEnabled}
+                index={activeIndex}
+              />
+            ) : null}
+          </DragOverlay>
+        )}
       </DndContext>
 
       {/* Help text */}
