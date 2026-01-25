@@ -76,7 +76,7 @@ jobs:
           echo "Tag v${{ steps.version.outputs.version }} created and pushed"
 
   build-binaries:
-    name: Build - ${{ matrix.settings.platform }}
+    name: Build - ${{ matrix.settings.target }}
     needs: version-bump
     strategy:
       fail-fast: false
@@ -116,6 +116,9 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+          shared-key: ${{ matrix.settings.target }}
+          cache-targets: "true"
+          cache-all-crates: "true"
 
       - name: Install Linux dependencies
         if: matrix.settings.platform == 'ubuntu-22.04'
