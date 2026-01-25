@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo tauri dev:*)",
+      "Bash(cargo:*)",
+      "Bash(cmd.exe /c \"cd /d C:\\\\Users\\\\matus\\\\dev\\\\LocalRouter && cargo tauri dev\":*)",
+      "Bash(cmd.exe /c \"cargo install tauri-cli\")",
+      "Bash(powershell.exe -Command \"cd C:\\\\Users\\\\matus\\\\dev\\\\LocalRouter; cargo install tauri-cli\")",
+      "Bash(powershell.exe -Command \"where.exe link.exe\")",
+      "Bash(powershell.exe:*)",
+      "Bash(cmd.exe /c \"\"\"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\2022\\\\Community\\\\VC\\\\Auxiliary\\\\Build\\\\vcvarsall.bat\"\" x64 && cargo install tauri-cli\")",
+      "Bash(cmd.exe /c \"rustup target list --installed\")",
+      "Bash(cmd.exe /c \"rustup target add x86_64-pc-windows-gnu && rustup toolchain install stable-x86_64-pc-windows-gnu\")",
+      "Bash(cmd.exe /c \"cargo +stable-x86_64-pc-windows-gnu install tauri-cli\")",
+      "Bash(cmd.exe /c:*)",
+      "Bash(ls:*)"
+    ]
+  }
+}

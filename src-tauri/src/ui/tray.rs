@@ -104,9 +104,34 @@ pub fn setup_tray<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
                     });
                 }
                 "open_dashboard" => {
+                    info!("Open dashboard requested from tray");
                     if let Some(window) = app.get_webview_window("main") {
+                        info!("Found existing main window, showing it");
                         let _ = window.show();
                         let _ = window.set_focus();
+                    } else {
+                        info!("Main window not found, creating new window");
+                        // Create the window if it doesn't exist
+                        use tauri::WebviewWindowBuilder;
+                        match WebviewWindowBuilder::new(
+                            app,
+                            "main",
+                            tauri::WebviewUrl::App("index.html".into()),
+                        )
+                        .title("LocalRouter AI")
+                        .inner_size(1200.0, 1000.0)
+                        .center()
+                        .visible(true)
+                        .build()
+                        {
+                            Ok(window) => {
+                                info!("Created new main window");
+                                let _ = window.set_focus();
+                            }
+                            Err(e) => {
+                                error!("Failed to create main window: {}", e);
+                            }
+                        }
                     }
                 }
                 "create_and_copy_api_key" => {
