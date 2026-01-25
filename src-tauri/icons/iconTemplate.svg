@@ -1,12 +1,19 @@
-<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+<svg width="512" height="512" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
   <!-- macOS template icon - must be black on transparent -->
-  <!-- Simple design that's clear at 16x16 to 32x32 pixels -->
+  <!-- LocalRouter logo: two circles connected by wavy routing line -->
 
-  <!-- Single circle (router base) -->
-  <circle cx="256" cy="256" r="160" fill="none" stroke="#000000" stroke-width="90"/>
+  <!-- Top-left circle (hollow) -->
+  <circle cx="20" cy="20" r="12" fill="none" stroke="#000000" stroke-width="10"/>
 
-  <!-- Three small routing nodes evenly spaced -->
-  <circle cx="256" cy="120" r="45" fill="#000000"/>
-  <circle cx="170" cy="330" r="45" fill="#000000"/>
-  <circle cx="342" cy="330" r="45" fill="#000000"/>
+  <!-- Bottom-right circle (hollow) -->
+  <circle cx="80" cy="80" r="12" fill="none" stroke="#000000" stroke-width="10"/>
+
+  <!-- Smooth S-curve routing line -->
+  <path
+    d="M 32 22 C 75 15, 90 40, 50 50 C 10 60, 25 85, 68 78"
+    stroke="#000000"
+    stroke-width="10"
+    stroke-linecap="round"
+    fill="none"
+  />
 </svg>
