@@ -238,9 +238,9 @@ impl StdioBridge {
             let text = response.text().await.unwrap_or_default();
 
             return Err(match status.as_u16() {
-                401 => AppError::Mcp(format!(
-                    "Invalid client credentials. Check LOCALROUTER_CLIENT_SECRET or run GUI once to store credentials."
-                )),
+                401 => AppError::Mcp(
+                    "Invalid client credentials. Check LOCALROUTER_CLIENT_SECRET or run GUI once to store credentials.".to_string()
+                ),
                 403 => AppError::Mcp(format!(
                     "Client '{}' is not allowed to access MCP servers. Check 'mcp_server_access' in config.yaml",
                     self.client_id

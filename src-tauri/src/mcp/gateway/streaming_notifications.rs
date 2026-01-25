@@ -1,7 +1,9 @@
-/// Streaming Notifications Module
-///
-/// Handles emission of synthetic notifications for streaming sessions,
-/// particularly for deferred loading tool activation.
+//! Streaming Notifications Module
+//!
+//! Handles emission of synthetic notifications for streaming sessions,
+//! particularly for deferred loading tool activation.
+#![allow(dead_code)]
+
 use crate::mcp::protocol::{JsonRpcNotification, JsonRpcResponse};
 use serde_json::json;
 

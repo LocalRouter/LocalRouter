@@ -238,6 +238,16 @@ impl McpServerManager {
         self.configs.remove(server_id);
     }
 
+    /// Update a specific field in a server configuration
+    pub fn set_config_enabled(&self, server_id: &str, enabled: bool) -> bool {
+        if let Some(mut config) = self.configs.get_mut(server_id) {
+            config.enabled = enabled;
+            true
+        } else {
+            false
+        }
+    }
+
     /// Get a server configuration
     pub fn get_config(&self, server_id: &str) -> Option<McpServerConfig> {
         self.configs.get(server_id).map(|c| c.clone())
@@ -296,7 +306,7 @@ impl McpServerManager {
         let (command, args, mut env) = config
             .transport_config
             .parse_stdio_command()
-            .map_err(|e| AppError::Mcp(e))?;
+            .map_err(AppError::Mcp)?;
 
         // Merge auth config environment variables (if specified)
         if let Some(crate::config::McpAuthConfig::EnvVars { env: auth_env }) = &config.auth_config {
@@ -983,8 +993,8 @@ impl McpServerManager {
     ) -> Result<(), String> {
         use tokio::io::AsyncBufReadExt;
 
-        let stdout_reader = stdout.map(|s| tokio::io::BufReader::new(s));
-        let stderr_reader = stderr.map(|s| tokio::io::BufReader::new(s));
+        let stdout_reader = stdout.map(tokio::io::BufReader::new);
+        let stderr_reader = stderr.map(tokio::io::BufReader::new);
 
         // Track if we got any successful output
         let got_output = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));

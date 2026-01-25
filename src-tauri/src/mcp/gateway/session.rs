@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::time::Instant;
 
 use super::types::*;
@@ -241,11 +241,12 @@ impl GatewaySession {
     /// * `true` if this is a new subscription
     /// * `false` if already subscribed
     pub fn subscribe_resource(&mut self, uri: String, server_id: String) -> bool {
-        if self.subscribed_resources.contains_key(&uri) {
-            false
-        } else {
-            self.subscribed_resources.insert(uri, server_id);
+        use std::collections::hash_map::Entry;
+        if let Entry::Vacant(e) = self.subscribed_resources.entry(uri) {
+            e.insert(server_id);
             true
+        } else {
+            false
         }
     }
 

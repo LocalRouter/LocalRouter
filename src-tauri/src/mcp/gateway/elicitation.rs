@@ -2,6 +2,7 @@
 //!
 //! Enables backend MCP servers to request structured user input during tool execution.
 //! Supports WebSocket notifications (primary) and HTTP callbacks (fallback).
+#![allow(dead_code)]
 
 use dashmap::DashMap;
 use serde_json::{json, Value};

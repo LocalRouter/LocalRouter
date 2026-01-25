@@ -304,6 +304,7 @@ impl SseTransport {
     /// - Notifications → notification callback
     ///
     /// Uses exponential backoff for reconnection with a maximum of 10 attempts.
+    #[allow(clippy::too_many_arguments)]
     async fn sse_stream_task(
         url: String,
         headers: HashMap<String, String>,
