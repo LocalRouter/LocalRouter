@@ -29,13 +29,34 @@ import { StepCredentials } from "./steps/StepCredentials"
 import type { AllowedModelsSelection } from "@/components/strategy/AllowedModelsSelector"
 
 type McpAccessMode = "none" | "all" | "specific"
+type RoutingMode = "allowed" | "auto"
+
+export interface AutoModelConfig {
+  enabled: boolean
+  model_name: string
+  prioritized_models: [string, string][]
+  available_models: [string, string][]
+  routellm_config?: RouteLLMConfig
+}
+
+export interface RouteLLMConfig {
+  enabled: boolean
+  threshold: number
+  weak_models: [string, string][]
+}
 
 interface WizardState {
   // Step 1
   clientName: string
 
   // Step 2 - Models
+  routingMode: RoutingMode
   allowedModels: AllowedModelsSelection
+  autoModelName: string
+  prioritizedModels: [string, string][]
+  routeLLMEnabled: boolean
+  routeLLMThreshold: number
+  weakModels: [string, string][]
 
   // Step 3 - MCP
   mcpAccessMode: McpAccessMode
@@ -43,6 +64,7 @@ interface WizardState {
 
   // After creation
   clientId?: string
+  clientUuid?: string
   clientSecret?: string
 }
 
@@ -82,11 +104,17 @@ export function ClientCreationWizard({
   const [creating, setCreating] = useState(false)
   const [state, setState] = useState<WizardState>({
     clientName: "",
+    routingMode: "allowed",
     allowedModels: {
       selected_all: true,
       selected_providers: [],
       selected_models: [],
     },
+    autoModelName: "localrouter/auto",
+    prioritizedModels: [],
+    routeLLMEnabled: false,
+    routeLLMThreshold: 0.3,
+    weakModels: [],
     mcpAccessMode: "none",
     selectedMcpServers: [],
   })
@@ -141,10 +169,23 @@ export function ClientCreationWizard({
         name: state.clientName.trim(),
       })
 
-      // Step 2: Update strategy allowed models
+      // Step 2: Update strategy with model routing configuration
+      const autoConfig: AutoModelConfig | null = state.routingMode === "auto" ? {
+        enabled: true,
+        model_name: state.autoModelName,
+        prioritized_models: state.prioritizedModels,
+        available_models: [],
+        routellm_config: state.routeLLMEnabled ? {
+          enabled: true,
+          threshold: state.routeLLMThreshold,
+          weak_models: state.weakModels,
+        } : undefined,
+      } : null
+
       await invoke("update_strategy", {
         strategyId: clientInfo.strategy_id,
-        allowedModels: state.allowedModels,
+        allowedModels: state.routingMode === "allowed" ? state.allowedModels : null,
+        autoConfig,
       })
 
       // Step 3: Set MCP access
@@ -157,7 +198,8 @@ export function ClientCreationWizard({
       // Update state with created client info
       setState((prev) => ({
         ...prev,
-        clientId: clientInfo.id,
+        clientId: clientInfo.client_id,
+        clientUuid: clientInfo.id,
         clientSecret: secret,
       }))
 
@@ -172,8 +214,8 @@ export function ClientCreationWizard({
   }
 
   const handleComplete = () => {
-    if (state.clientId) {
-      onComplete(state.clientId)
+    if (state.clientUuid) {
+      onComplete(state.clientUuid)
     }
     handleClose()
   }
@@ -183,11 +225,17 @@ export function ClientCreationWizard({
     setCurrentStep(0)
     setState({
       clientName: "",
+      routingMode: "allowed",
       allowedModels: {
         selected_all: true,
         selected_providers: [],
         selected_models: [],
       },
+      autoModelName: "localrouter/auto",
+      prioritizedModels: [],
+      routeLLMEnabled: false,
+      routeLLMThreshold: 0.3,
+      weakModels: [],
       mcpAccessMode: "none",
       selectedMcpServers: [],
     })
@@ -206,9 +254,33 @@ export function ClientCreationWizard({
       case 1:
         return (
           <StepModels
+            routingMode={state.routingMode}
             allowedModels={state.allowedModels}
-            onChange={(selection) =>
+            autoModelName={state.autoModelName}
+            prioritizedModels={state.prioritizedModels}
+            routeLLMEnabled={state.routeLLMEnabled}
+            routeLLMThreshold={state.routeLLMThreshold}
+            weakModels={state.weakModels}
+            onRoutingModeChange={(mode) =>
+              setState((prev) => ({ ...prev, routingMode: mode }))
+            }
+            onAllowedModelsChange={(selection) =>
               setState((prev) => ({ ...prev, allowedModels: selection }))
+            }
+            onAutoModelNameChange={(name) =>
+              setState((prev) => ({ ...prev, autoModelName: name }))
+            }
+            onPrioritizedModelsChange={(models) =>
+              setState((prev) => ({ ...prev, prioritizedModels: models }))
+            }
+            onRouteLLMEnabledChange={(enabled) =>
+              setState((prev) => ({ ...prev, routeLLMEnabled: enabled }))
+            }
+            onRouteLLMThresholdChange={(threshold) =>
+              setState((prev) => ({ ...prev, routeLLMThreshold: threshold }))
+            }
+            onWeakModelsChange={(models) =>
+              setState((prev) => ({ ...prev, weakModels: models }))
             }
           />
         )
@@ -230,6 +302,7 @@ export function ClientCreationWizard({
         return (
           <StepCredentials
             clientId={state.clientId || ""}
+            clientUuid={state.clientUuid || ""}
             secret={state.clientSecret || null}
           />
         )
@@ -257,7 +330,7 @@ export function ClientCreationWizard({
           <DialogDescription>{STEP_DESCRIPTIONS[currentStep]}</DialogDescription>
         </DialogHeader>
 
-        <div className="py-4 min-h-[300px]">{renderStep()}</div>
+        <div className="py-4 px-1 min-h-[300px] max-h-[60vh] overflow-y-auto">{renderStep()}</div>
 
         <DialogFooter className="flex justify-between sm:justify-between">
           <div>
