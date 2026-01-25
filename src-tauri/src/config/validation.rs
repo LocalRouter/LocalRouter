@@ -3,8 +3,24 @@
 #![allow(deprecated)]
 
 use super::{AppConfig, ProviderConfig};
+use crate::api_keys::keychain_trait::KeychainStorage;
+use crate::api_keys::CachedKeychain;
 use crate::utils::errors::{AppError, AppResult};
 use std::collections::HashSet;
+
+/// Service name for LocalRouter client secrets in keychain
+const CLIENT_SERVICE: &str = "LocalRouter-Clients";
+
+/// LocalRouter client API keys start with this prefix
+const LOCALROUTER_KEY_PREFIX: &str = "lr-";
+/// LocalRouter client API keys are exactly this length
+const LOCALROUTER_KEY_LENGTH: usize = 46;
+
+/// Quick check if an API key looks like a LocalRouter client key format.
+/// Used as a fast filter before checking against actual keychain secrets.
+fn looks_like_localrouter_key(api_key: &str) -> bool {
+    api_key.starts_with(LOCALROUTER_KEY_PREFIX) && api_key.len() == LOCALROUTER_KEY_LENGTH
+}
 
 /// Validate the entire configuration
 pub fn validate_config(config: &AppConfig) -> AppResult<()> {
@@ -13,6 +29,9 @@ pub fn validate_config(config: &AppConfig) -> AppResult<()> {
 
     // Validate providers
     validate_providers(&config.providers)?;
+
+    // Validate providers are not self-referential (pointing back to LocalRouter)
+    validate_providers_not_self_referential(config)?;
 
     // Validate strategies
     validate_strategies(config)?;
@@ -78,6 +97,69 @@ fn validate_providers(providers: &[ProviderConfig]) -> AppResult<()> {
                     provider.name
                 )));
             }
+        }
+    }
+
+    Ok(())
+}
+
+/// Validate that no provider is configured with a LocalRouter client API key.
+/// This prevents accidental self-referential configurations that would cause request loops.
+fn validate_providers_not_self_referential(config: &AppConfig) -> AppResult<()> {
+    // Collect provider API keys that look like LocalRouter keys (fast filter)
+    let suspect_keys: Vec<(&str, &str)> = config
+        .providers
+        .iter()
+        .filter_map(|provider| {
+            let api_key = provider
+                .provider_config
+                .as_ref()
+                .and_then(|c| c.get("api_key"))
+                .and_then(|v| v.as_str())?;
+
+            if looks_like_localrouter_key(api_key) {
+                Some((provider.name.as_str(), api_key))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    // If no suspect keys, we're done
+    if suspect_keys.is_empty() {
+        return Ok(());
+    }
+
+    // Get keychain to check actual client secrets
+    let keychain = match CachedKeychain::auto() {
+        Ok(k) => k,
+        Err(e) => {
+            // If we can't access keychain, log warning but don't fail validation
+            tracing::warn!(
+                "Could not access keychain to validate provider API keys: {}",
+                e
+            );
+            return Ok(());
+        }
+    };
+
+    // Collect actual client secrets from keychain
+    let client_secrets: HashSet<String> = config
+        .clients
+        .iter()
+        .filter_map(|client| {
+            keychain.get(CLIENT_SERVICE, &client.id).ok().flatten()
+        })
+        .collect();
+
+    // Check if any suspect provider key matches an actual client secret
+    for (provider_name, api_key) in suspect_keys {
+        if client_secrets.contains(api_key) {
+            return Err(AppError::Config(format!(
+                "Provider '{}' is configured with a LocalRouter client API key. \
+                 This would create a request loop. Use an external provider's API key instead.",
+                provider_name
+            )));
         }
     }
 
@@ -319,3 +401,122 @@ fn validate_cross_references(config: &AppConfig) -> AppResult<()> {
 //         assert!(validate_config(&config).is_err());
 //     }
 // }
+
+#[cfg(test)]
+mod self_referential_tests {
+    use super::*;
+    use crate::config::ProviderType;
+
+    #[test]
+    fn test_looks_like_localrouter_key_valid() {
+        // Valid LocalRouter key format (lr- prefix + 43 chars = 46 total)
+        assert!(looks_like_localrouter_key(
+            "lr-8xIF-tmewuD4eOm1dxHKRjiCAD57nLAGRLEJISS1K6E"
+        ));
+    }
+
+    #[test]
+    fn test_looks_like_localrouter_key_too_short() {
+        assert!(!looks_like_localrouter_key("lr-short"));
+    }
+
+    #[test]
+    fn test_looks_like_localrouter_key_too_long() {
+        assert!(!looks_like_localrouter_key(
+            "lr-8xIF-tmewuD4eOm1dxHKRjiCAD57nLAGRLEJISS1K6E-extra"
+        ));
+    }
+
+    #[test]
+    fn test_looks_like_localrouter_key_wrong_prefix() {
+        // Same length but wrong prefix
+        assert!(!looks_like_localrouter_key(
+            "sk-8xIF-tmewuD4eOm1dxHKRjiCAD57nLAGRLEJISS1K6E"
+        ));
+    }
+
+    #[test]
+    fn test_looks_like_localrouter_key_openai_format() {
+        // OpenAI key format
+        assert!(!looks_like_localrouter_key(
+            "sk-proj-abcdefghijklmnopqrstuvwxyz123456"
+        ));
+    }
+
+    #[test]
+    fn test_looks_like_localrouter_key_anthropic_format() {
+        // Anthropic key format
+        assert!(!looks_like_localrouter_key(
+            "sk-ant-api03-abcdefghijklmnopqrstuvwxyz"
+        ));
+    }
+
+    #[test]
+    fn test_external_provider_allowed() {
+        // External provider keys (non lr- prefix) should always pass without keychain check
+        let mut config = AppConfig::default();
+        config.providers = vec![ProviderConfig {
+            name: "OpenAI".to_string(),
+            provider_type: ProviderType::OpenAI,
+            enabled: true,
+            provider_config: Some(serde_json::json!({
+                "api_key": "sk-proj-abcdefghijklmnopqrstuvwxyz123456"
+            })),
+            api_key_ref: None,
+        }];
+
+        assert!(validate_providers_not_self_referential(&config).is_ok());
+    }
+
+    #[test]
+    fn test_provider_without_api_key_allowed() {
+        // Provider without api_key (e.g., Ollama) should pass
+        let mut config = AppConfig::default();
+        config.providers = vec![ProviderConfig {
+            name: "Ollama".to_string(),
+            provider_type: ProviderType::Ollama,
+            enabled: true,
+            provider_config: Some(serde_json::json!({
+                "base_url": "http://localhost:11434"
+            })),
+            api_key_ref: None,
+        }];
+
+        assert!(validate_providers_not_self_referential(&config).is_ok());
+    }
+
+    #[test]
+    fn test_provider_without_config_allowed() {
+        // Provider without provider_config should pass
+        let mut config = AppConfig::default();
+        config.providers = vec![ProviderConfig {
+            name: "Default".to_string(),
+            provider_type: ProviderType::Ollama,
+            enabled: true,
+            provider_config: None,
+            api_key_ref: None,
+        }];
+
+        assert!(validate_providers_not_self_referential(&config).is_ok());
+    }
+
+    #[test]
+    fn test_lr_key_passes_when_no_clients() {
+        // An lr- prefixed key should pass if there are no clients configured
+        // (can't be self-referential if no clients exist)
+        let mut config = AppConfig::default();
+        config.clients = vec![]; // No clients
+        config.providers = vec![ProviderConfig {
+            name: "Some Provider".to_string(),
+            provider_type: ProviderType::Custom,
+            enabled: true,
+            provider_config: Some(serde_json::json!({
+                "api_key": "lr-8xIF-tmewuD4eOm1dxHKRjiCAD57nLAGRLEJISS1K6E"
+            })),
+            api_key_ref: None,
+        }];
+
+        // Should pass because no clients exist to match against
+        assert!(validate_providers_not_self_referential(&config).is_ok());
+    }
+}
