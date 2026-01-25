@@ -60,6 +60,9 @@ pub async fn chat_completions(
     // Emit LLM request event to trigger tray icon indicator
     state.emit_event("llm-request", "chat");
 
+    // Record client activity for connection graph
+    state.record_client_activity(&auth.api_key_id);
+
     // Validate request
     validate_request(&request)?;
 
@@ -609,7 +612,7 @@ async fn handle_non_streaming(
     // For chat messages, calculate incremental token count (last message only)
     // instead of cumulative (all conversation history)
     let incremental_prompt_tokens = if let Some(last_msg) = request.messages.last() {
-        estimate_token_count(&[last_msg.clone()]) as u32
+        estimate_token_count(std::slice::from_ref(last_msg)) as u32
     } else {
         response.usage.prompt_tokens
     };
@@ -1006,7 +1009,7 @@ async fn handle_streaming(
         // Estimate tokens for this message only (not the entire conversation)
         // Count only the last user message (the new message that was just sent)
         let last_user_message_tokens = if let Some(last_msg) = request_messages.last() {
-            estimate_token_count(&[last_msg.clone()])
+            estimate_token_count(std::slice::from_ref(last_msg))
         } else {
             0
         };

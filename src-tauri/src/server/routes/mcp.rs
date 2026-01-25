@@ -339,6 +339,9 @@ pub async fn mcp_gateway_handler(
         }
     };
 
+    // Record client activity for connection graph
+    state.record_client_activity(&client_id);
+
     // Check for deferred loading header (used by Try it out UI)
     // Only applies to internal-test client for security - external clients use their config
     // Use lowercase header name as that's how browsers/http2 send it
@@ -1586,7 +1589,7 @@ pub async fn elicitation_response_handler(
         }
         Err(e) => {
             tracing::warn!("Failed to submit elicitation response: {}", e);
-            ApiErrorResponse::bad_request(&format!("Failed to submit response: {}", e))
+            ApiErrorResponse::bad_request(format!("Failed to submit response: {}", e))
                 .into_response()
         }
     }

@@ -53,6 +53,8 @@ pub struct SseConnectionManager {
     /// Map of (client_id, request_id) -> response sender for server-initiated requests
     /// Used to match responses from clients to pending server requests
     pending_server_requests: DashMap<String, tokio::sync::oneshot::Sender<JsonRpcResponse>>,
+    /// Tauri app handle for emitting connection events (optional)
+    app_handle: RwLock<Option<tauri::AppHandle>>,
 }
 
 impl SseConnectionManager {
@@ -60,7 +62,26 @@ impl SseConnectionManager {
         Self {
             connections: DashMap::new(),
             pending_server_requests: DashMap::new(),
+            app_handle: RwLock::new(None),
         }
+    }
+
+    /// Set the Tauri app handle for event emission
+    pub fn set_app_handle(&self, handle: tauri::AppHandle) {
+        *self.app_handle.write() = Some(handle);
+    }
+
+    /// Emit an event if the app handle is available
+    fn emit_event(&self, event: &str, payload: impl serde::Serialize + Clone) {
+        if let Some(handle) = self.app_handle.read().as_ref() {
+            use tauri::Emitter;
+            let _ = handle.emit(event, payload);
+        }
+    }
+
+    /// Get list of all active connection client IDs
+    pub fn get_active_connections(&self) -> Vec<String> {
+        self.connections.iter().map(|e| e.key().clone()).collect()
     }
 
     /// Register an SSE connection for a client
@@ -82,6 +103,10 @@ impl SseConnectionManager {
             client_id,
             active_connections
         );
+
+        // Emit connection opened event
+        self.emit_event("sse-connection-opened", client_id.to_string());
+
         rx
     }
 
@@ -89,6 +114,8 @@ impl SseConnectionManager {
     pub fn unregister(&self, client_id: &str) {
         if self.connections.remove(client_id).is_some() {
             tracing::debug!("Unregistered SSE connection for client {}", client_id);
+            // Emit connection closed event
+            self.emit_event("sse-connection-closed", client_id.to_string());
         }
     }
 
@@ -139,10 +166,7 @@ impl SseConnectionManager {
     /// Send a notification to a client's SSE stream
     pub fn send_notification(&self, client_id: &str, notification: JsonRpcNotification) -> bool {
         if let Some(tx) = self.connections.get(client_id) {
-            match tx.send(SseMessage::Notification(notification)) {
-                Ok(_) => true,
-                Err(_) => false,
-            }
+            tx.send(SseMessage::Notification(notification)).is_ok()
         } else {
             false
         }
@@ -151,10 +175,7 @@ impl SseConnectionManager {
     /// Send endpoint information to a client (sent on initial connection)
     pub fn send_endpoint(&self, client_id: &str, endpoint: String) -> bool {
         if let Some(tx) = self.connections.get(client_id) {
-            match tx.send(SseMessage::Endpoint { endpoint }) {
-                Ok(_) => true,
-                Err(_) => false,
-            }
+            tx.send(SseMessage::Endpoint { endpoint }).is_ok()
         } else {
             false
         }
@@ -423,7 +444,9 @@ impl AppState {
         self.access_logger.set_app_handle(handle.clone());
         self.mcp_access_logger.set_app_handle(handle.clone());
         // Also set app handle on health cache for event emission
-        self.health_cache.set_app_handle(handle);
+        self.health_cache.set_app_handle(handle.clone());
+        // Also set app handle on SSE connection manager for connection events
+        self.sse_connection_manager.set_app_handle(handle);
     }
 
     /// Set the tray graph manager (called after Tauri initialization when it's created)
@@ -445,6 +468,18 @@ impl AppState {
         if let Some(handle) = self.app_handle.read().as_ref() {
             use tauri::Emitter;
             let _ = handle.emit(event, payload);
+        }
+    }
+
+    /// Record client activity (HTTP request, SSE connection, etc.)
+    /// Emits a "client-activity" event with the client ID
+    pub fn record_client_activity(&self, client_id: &str) {
+        if let Some(handle) = self.app_handle.read().as_ref() {
+            use tauri::Emitter;
+            tracing::debug!("Emitting client-activity event for client: {}", client_id);
+            let _ = handle.emit("client-activity", client_id.to_string());
+        } else {
+            tracing::warn!("Cannot emit client-activity: app_handle not set");
         }
     }
 }

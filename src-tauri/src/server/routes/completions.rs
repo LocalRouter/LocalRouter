@@ -58,6 +58,9 @@ pub async fn completions(
     // Emit LLM request event to trigger tray icon indicator
     state.emit_event("llm-request", "completion");
 
+    // Record client activity for connection graph
+    state.record_client_activity(&auth.api_key_id);
+
     // Validate request
     validate_request(&request)?;
 
