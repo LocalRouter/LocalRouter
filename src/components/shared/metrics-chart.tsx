@@ -315,7 +315,10 @@ export function MetricsChart({
     }
   }
 
-  const formatTooltipLabel = (timestamp: number) => {
+  const formatTooltipLabel = (label: unknown) => {
+    if (label === undefined || label === null) return ""
+    const timestamp = typeof label === "string" ? parseInt(label, 10) : Number(label)
+    if (isNaN(timestamp)) return String(label)
     const date = new Date(timestamp)
     return date.toLocaleString("en-US", {
       month: "short",
