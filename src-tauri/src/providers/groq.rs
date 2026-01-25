@@ -169,6 +169,19 @@ struct OpenAIStreamChoice {
     finish_reason: Option<String>,
 }
 
+// Groq Models API response types (OpenAI-compatible)
+#[derive(Debug, Deserialize)]
+struct GroqModelsResponse {
+    data: Vec<GroqModel>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GroqModel {
+    id: String,
+    #[serde(default)]
+    context_window: Option<u32>,
+}
+
 #[async_trait]
 #[allow(dead_code)]
 impl ModelProvider for GroqProvider {
@@ -199,8 +212,47 @@ impl ModelProvider for GroqProvider {
     }
 
     async fn list_models(&self) -> AppResult<Vec<ModelInfo>> {
-        // Return known models (Groq's model list endpoint requires paid tier)
-        Ok(Self::get_known_models())
+        let url = format!("{}/models", self.base_url);
+
+        let response = self
+            .client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .send()
+            .await
+            .map_err(|e| AppError::Provider(format!("Failed to fetch Groq models: {}", e)))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(AppError::Provider(format!(
+                "Groq models API error {}: {}",
+                status, error_text
+            )));
+        }
+
+        let models_response: GroqModelsResponse = response
+            .json()
+            .await
+            .map_err(|e| AppError::Provider(format!("Failed to parse Groq models response: {}", e)))?;
+
+        let models = models_response
+            .data
+            .into_iter()
+            .filter(|m| !m.id.contains("whisper") && !m.id.contains("distil"))
+            .map(|m| ModelInfo {
+                id: m.id.clone(),
+                name: m.id,
+                provider: "groq".to_string(),
+                parameter_count: None,
+                context_window: m.context_window.unwrap_or(8192),
+                supports_streaming: true,
+                capabilities: vec![Capability::Chat, Capability::FunctionCalling],
+                detailed_capabilities: None,
+            })
+            .collect();
+
+        Ok(models)
     }
 
     async fn get_pricing(&self, model: &str) -> AppResult<PricingInfo> {

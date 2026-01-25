@@ -139,26 +139,48 @@ impl ModelProvider for PerplexityProvider {
     async fn health_check(&self) -> ProviderHealth {
         let start = Instant::now();
 
-        match self.list_models().await {
-            Ok(_) => {
+        // Use the async chat completions list endpoint to validate API key
+        // This is a read-only GET request that doesn't consume any tokens
+        let url = format!("{}/async/chat/completions?limit=1", PERPLEXITY_API_BASE);
+
+        match self.client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .send()
+            .await
+        {
+            Ok(response) => {
                 let latency = start.elapsed().as_millis() as u64;
-                ProviderHealth {
-                    status: HealthStatus::Healthy,
-                    latency_ms: Some(latency),
-                    last_checked: Utc::now(),
-                    error_message: None,
+
+                if response.status().is_success() {
+                    ProviderHealth {
+                        status: HealthStatus::Healthy,
+                        latency_ms: Some(latency),
+                        last_checked: Utc::now(),
+                        error_message: None,
+                    }
+                } else {
+                    let error_text = response.text().await.unwrap_or_default();
+                    ProviderHealth {
+                        status: HealthStatus::Unhealthy,
+                        latency_ms: Some(latency),
+                        last_checked: Utc::now(),
+                        error_message: Some(error_text),
+                    }
                 }
             }
             Err(e) => ProviderHealth {
                 status: HealthStatus::Unhealthy,
                 latency_ms: None,
                 last_checked: Utc::now(),
-                error_message: Some(e.to_string()),
+                error_message: Some(format!("Request failed: {}", e)),
             },
         }
     }
 
     async fn list_models(&self) -> AppResult<Vec<ModelInfo>> {
+        // Perplexity doesn't have a public models endpoint
+        // Return known models (health check validates API key separately)
         Ok(Self::get_known_models())
     }
 

@@ -109,6 +109,17 @@ struct OpenAIStreamChoice {
     finish_reason: Option<String>,
 }
 
+// Cerebras Models API response types
+#[derive(Debug, Deserialize)]
+struct CerebrasModelsResponse {
+    data: Vec<CerebrasModel>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CerebrasModel {
+    id: String,
+}
+
 #[async_trait]
 #[allow(dead_code)]
 impl ModelProvider for CerebrasProvider {
@@ -139,7 +150,46 @@ impl ModelProvider for CerebrasProvider {
     }
 
     async fn list_models(&self) -> AppResult<Vec<ModelInfo>> {
-        Ok(Self::get_known_models())
+        let url = format!("{}/models", CEREBRAS_API_BASE);
+
+        let response = self
+            .client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .send()
+            .await
+            .map_err(|e| AppError::Provider(format!("Failed to fetch Cerebras models: {}", e)))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(AppError::Provider(format!(
+                "Cerebras models API error {}: {}",
+                status, error_text
+            )));
+        }
+
+        let models_response: CerebrasModelsResponse = response
+            .json()
+            .await
+            .map_err(|e| AppError::Provider(format!("Failed to parse Cerebras models response: {}", e)))?;
+
+        let models = models_response
+            .data
+            .into_iter()
+            .map(|m| ModelInfo {
+                id: m.id.clone(),
+                name: m.id,
+                provider: "cerebras".to_string(),
+                parameter_count: None,
+                context_window: 128_000,
+                supports_streaming: true,
+                capabilities: vec![Capability::Chat, Capability::FunctionCalling],
+                detailed_capabilities: None,
+            })
+            .collect();
+
+        Ok(models)
     }
 
     async fn get_pricing(&self, model: &str) -> AppResult<PricingInfo> {

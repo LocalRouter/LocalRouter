@@ -139,6 +139,17 @@ struct OpenAIStreamChoice {
     finish_reason: Option<String>,
 }
 
+// DeepInfra Models API response types (OpenAI-compatible)
+#[derive(Debug, Deserialize)]
+struct DeepInfraModelsResponse {
+    data: Vec<DeepInfraModel>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DeepInfraModel {
+    id: String,
+}
+
 #[async_trait]
 #[allow(dead_code)]
 impl ModelProvider for DeepInfraProvider {
@@ -169,11 +180,46 @@ impl ModelProvider for DeepInfraProvider {
     }
 
     async fn list_models(&self) -> AppResult<Vec<ModelInfo>> {
-        // Enrich known models with catalog data using model-only search
-        let models = Self::get_known_models()
+        let url = format!("{}/models", DEEPINFRA_API_BASE);
+
+        let response = self
+            .client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .send()
+            .await
+            .map_err(|e| AppError::Provider(format!("Failed to fetch DeepInfra models: {}", e)))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(AppError::Provider(format!(
+                "DeepInfra models API error {}: {}",
+                status, error_text
+            )));
+        }
+
+        let models_response: DeepInfraModelsResponse = response
+            .json()
+            .await
+            .map_err(|e| AppError::Provider(format!("Failed to parse DeepInfra models response: {}", e)))?;
+
+        let models = models_response
+            .data
             .into_iter()
-            .map(|model| model.enrich_with_catalog_by_name())
+            .filter(|m| !m.id.contains("embed") && !m.id.contains("whisper"))
+            .map(|m| ModelInfo {
+                id: m.id.clone(),
+                name: m.id,
+                provider: "deepinfra".to_string(),
+                parameter_count: None,
+                context_window: 32_000,
+                supports_streaming: true,
+                capabilities: vec![Capability::Chat],
+                detailed_capabilities: None,
+            })
             .collect();
+
         Ok(models)
     }
 

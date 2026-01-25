@@ -139,6 +139,17 @@ struct OpenAIStreamChoice {
     finish_reason: Option<String>,
 }
 
+// Together AI Models API response types
+#[derive(Debug, Deserialize)]
+struct TogetherModel {
+    id: String,
+    #[serde(default)]
+    context_length: Option<u32>,
+    #[serde(rename = "type")]
+    #[serde(default)]
+    model_type: Option<String>,
+}
+
 #[async_trait]
 #[allow(dead_code)]
 impl ModelProvider for TogetherAIProvider {
@@ -169,11 +180,45 @@ impl ModelProvider for TogetherAIProvider {
     }
 
     async fn list_models(&self) -> AppResult<Vec<ModelInfo>> {
-        // Enrich known models with catalog data using model-only search
-        let models = Self::get_known_models()
+        let url = format!("{}/models", TOGETHER_API_BASE);
+
+        let response = self
+            .client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .send()
+            .await
+            .map_err(|e| AppError::Provider(format!("Failed to fetch Together AI models: {}", e)))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(AppError::Provider(format!(
+                "Together AI models API error {}: {}",
+                status, error_text
+            )));
+        }
+
+        let models_list: Vec<TogetherModel> = response
+            .json()
+            .await
+            .map_err(|e| AppError::Provider(format!("Failed to parse Together AI models response: {}", e)))?;
+
+        let models = models_list
             .into_iter()
-            .map(|model| model.enrich_with_catalog_by_name())
+            .filter(|m| m.model_type.as_deref() == Some("chat"))
+            .map(|m| ModelInfo {
+                id: m.id.clone(),
+                name: m.id,
+                provider: "togetherai".to_string(),
+                parameter_count: None,
+                context_window: m.context_length.unwrap_or(32_000),
+                supports_streaming: true,
+                capabilities: vec![Capability::Chat, Capability::FunctionCalling],
+                detailed_capabilities: None,
+            })
             .collect();
+
         Ok(models)
     }
 

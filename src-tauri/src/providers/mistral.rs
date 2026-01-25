@@ -159,6 +159,29 @@ struct OpenAIStreamChoice {
     finish_reason: Option<String>,
 }
 
+// Mistral Models API response types
+#[derive(Debug, Deserialize)]
+struct MistralModelsResponse {
+    data: Vec<MistralModel>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MistralModel {
+    id: String,
+    #[serde(default)]
+    capabilities: Option<MistralModelCapabilities>,
+    #[serde(default)]
+    max_context_length: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MistralModelCapabilities {
+    #[serde(default)]
+    completion_chat: bool,
+    #[serde(default)]
+    function_calling: bool,
+}
+
 #[async_trait]
 #[allow(dead_code)]
 impl ModelProvider for MistralProvider {
@@ -189,8 +212,55 @@ impl ModelProvider for MistralProvider {
     }
 
     async fn list_models(&self) -> AppResult<Vec<ModelInfo>> {
-        // Return known models
-        Ok(Self::get_known_models())
+        let url = format!("{}/models", MISTRAL_API_BASE);
+
+        let response = self
+            .client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .send()
+            .await
+            .map_err(|e| AppError::Provider(format!("Failed to fetch Mistral models: {}", e)))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(AppError::Provider(format!(
+                "Mistral models API error {}: {}",
+                status, error_text
+            )));
+        }
+
+        let models_response: MistralModelsResponse = response
+            .json()
+            .await
+            .map_err(|e| AppError::Provider(format!("Failed to parse Mistral models response: {}", e)))?;
+
+        let models = models_response
+            .data
+            .into_iter()
+            .map(|m| {
+                let mut capabilities = vec![Capability::Chat];
+                if let Some(caps) = &m.capabilities {
+                    if caps.function_calling {
+                        capabilities.push(Capability::FunctionCalling);
+                    }
+                }
+
+                ModelInfo {
+                    id: m.id.clone(),
+                    name: m.id,
+                    provider: "mistral".to_string(),
+                    parameter_count: None,
+                    context_window: m.max_context_length.unwrap_or(32_000),
+                    supports_streaming: true,
+                    capabilities,
+                    detailed_capabilities: None,
+                }
+            })
+            .collect();
+
+        Ok(models)
     }
 
     async fn get_pricing(&self, model: &str) -> AppResult<PricingInfo> {

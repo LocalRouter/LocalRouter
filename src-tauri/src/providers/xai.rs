@@ -119,6 +119,17 @@ struct OpenAIStreamChoice {
     finish_reason: Option<String>,
 }
 
+// xAI Models API response types (OpenAI-compatible)
+#[derive(Debug, Deserialize)]
+struct XAIModelsResponse {
+    data: Vec<XAIModel>,
+}
+
+#[derive(Debug, Deserialize)]
+struct XAIModel {
+    id: String,
+}
+
 #[async_trait]
 #[allow(dead_code)]
 impl ModelProvider for XAIProvider {
@@ -149,7 +160,47 @@ impl ModelProvider for XAIProvider {
     }
 
     async fn list_models(&self) -> AppResult<Vec<ModelInfo>> {
-        Ok(Self::get_known_models())
+        let url = format!("{}/models", XAI_API_BASE);
+
+        let response = self
+            .client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .send()
+            .await
+            .map_err(|e| AppError::Provider(format!("Failed to fetch xAI models: {}", e)))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(AppError::Provider(format!(
+                "xAI models API error {}: {}",
+                status, error_text
+            )));
+        }
+
+        let models_response: XAIModelsResponse = response
+            .json()
+            .await
+            .map_err(|e| AppError::Provider(format!("Failed to parse xAI models response: {}", e)))?;
+
+        let models = models_response
+            .data
+            .into_iter()
+            .filter(|m| !m.id.contains("embedding") && !m.id.contains("image"))
+            .map(|m| ModelInfo {
+                id: m.id.clone(),
+                name: m.id,
+                provider: "xai".to_string(),
+                parameter_count: None,
+                context_window: 131_072,
+                supports_streaming: true,
+                capabilities: vec![Capability::Chat, Capability::FunctionCalling],
+                detailed_capabilities: None,
+            })
+            .collect();
+
+        Ok(models)
     }
 
     async fn get_pricing(&self, model: &str) -> AppResult<PricingInfo> {

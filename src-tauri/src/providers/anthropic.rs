@@ -413,22 +413,38 @@ impl ModelProvider for AnthropicProvider {
     }
 
     async fn list_models(&self) -> AppResult<Vec<ModelInfo>> {
-        // Anthropic doesn't have a public models endpoint yet
-        // Return a static list of known Claude models
-        let models = vec![
-            "claude-opus-4-20250514",
-            "claude-sonnet-4-20250514",
-            "claude-3-5-sonnet-20241022",
-            "claude-3-5-haiku-20241022",
-            "claude-3-opus-20240229",
-            "claude-3-sonnet-20240229",
-            "claude-3-haiku-20240307",
-        ];
+        let url = format!("{}/models", self.base_url);
 
-        Ok(models
+        let response = self
+            .client
+            .get(&url)
+            .header("x-api-key", &self.api_key)
+            .header("anthropic-version", ANTHROPIC_VERSION)
+            .send()
+            .await
+            .map_err(|e| AppError::Provider(format!("Failed to fetch Anthropic models: {}", e)))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(AppError::Provider(format!(
+                "Anthropic models API error {}: {}",
+                status, error_text
+            )));
+        }
+
+        let models_response: AnthropicModelsResponse = response
+            .json()
+            .await
+            .map_err(|e| AppError::Provider(format!("Failed to parse Anthropic models response: {}", e)))?;
+
+        let models = models_response
+            .data
             .into_iter()
-            .filter_map(Self::get_model_info)
-            .collect())
+            .filter_map(|m| Self::get_model_info(&m.id))
+            .collect();
+
+        Ok(models)
     }
 
     async fn get_pricing(&self, model: &str) -> AppResult<PricingInfo> {
@@ -859,6 +875,18 @@ enum AnthropicResponseContent {
 struct AnthropicUsage {
     input_tokens: u32,
     output_tokens: u32,
+}
+
+// Anthropic Models API response types
+#[derive(Debug, Deserialize)]
+struct AnthropicModelsResponse {
+    data: Vec<AnthropicModel>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AnthropicModel {
+    id: String,
+    display_name: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

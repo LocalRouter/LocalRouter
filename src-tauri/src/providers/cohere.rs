@@ -217,6 +217,21 @@ struct CohereEmbeddings {
     float: Option<Vec<Vec<f32>>>,
 }
 
+// Cohere Models API response types (v1 endpoint)
+#[derive(Debug, Deserialize)]
+struct CohereModelsResponse {
+    models: Vec<CohereModel>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CohereModel {
+    name: String,
+    #[serde(default)]
+    endpoints: Vec<String>,
+    #[serde(default)]
+    context_length: Option<u32>,
+}
+
 #[async_trait]
 #[allow(dead_code)]
 impl ModelProvider for CohereProvider {
@@ -247,7 +262,59 @@ impl ModelProvider for CohereProvider {
     }
 
     async fn list_models(&self) -> AppResult<Vec<ModelInfo>> {
-        Ok(Self::get_known_models())
+        // Use v1 models endpoint (not v2) to list available models
+        // This also validates the API key is correct
+        let models_url = "https://api.cohere.com/v1/models";
+
+        let response = self
+            .client
+            .get(models_url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .query(&[("page_size", "100")])
+            .send()
+            .await
+            .map_err(|e| AppError::Provider(format!("Failed to fetch Cohere models: {}", e)))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(AppError::Provider(format!(
+                "Cohere models API error {}: {}",
+                status, error_text
+            )));
+        }
+
+        let models_response: CohereModelsResponse = response
+            .json()
+            .await
+            .map_err(|e| AppError::Provider(format!("Failed to parse Cohere models response: {}", e)))?;
+
+        // Convert Cohere models to our format
+        let models = models_response
+            .models
+            .into_iter()
+            .filter(|m| m.endpoints.contains(&"chat".to_string()))
+            .map(|m| {
+                let capabilities = if m.endpoints.contains(&"embed".to_string()) {
+                    vec![Capability::Chat, Capability::Embedding]
+                } else {
+                    vec![Capability::Chat]
+                };
+
+                ModelInfo {
+                    id: m.name.clone(),
+                    name: m.name,
+                    provider: "cohere".to_string(),
+                    parameter_count: None,
+                    context_window: m.context_length.unwrap_or(128_000_u32),
+                    supports_streaming: true,
+                    capabilities,
+                    detailed_capabilities: None,
+                }
+            })
+            .collect();
+
+        Ok(models)
     }
 
     async fn get_pricing(&self, model: &str) -> AppResult<PricingInfo> {
