@@ -417,18 +417,12 @@ export function StrategyModelConfiguration({
                 </CardContent>
             </Card>
 
-            {/* Section 2: Mode-specific content with tree connector */}
+            {/* Section 2: Mode-specific content */}
             <div className="ml-4">
                 {routingMode === 'allowed' ? (
-                    // Allowed Models mode - single branch
-                    <div className="flex pt-4">
-                        <div className="w-4 flex flex-col">
-                            <div className="border-l border-border ml-auto h-4">
-                                <div className="w-4 border-t border-border" />
-                            </div>
-                        </div>
-                        <div className="flex-1">
-                            <Card>
+                    // Allowed Models mode
+                    <div className="pt-4">
+                        <Card>
                                 <CardHeader>
                                     <CardTitle className="text-base">Allowed Models</CardTitle>
                                     <CardDescription>
@@ -443,21 +437,14 @@ export function StrategyModelConfiguration({
                                         disabled={readOnly || saving}
                                     />
                                 </CardContent>
-                            </Card>
-                        </div>
+                        </Card>
                     </div>
                 ) : (
-                    /* Auto Route mode - two branches */
+                    /* Auto Route mode */
                     <>
-                        {/* First branch: Auto Router Configuration */}
-                        <div className="flex pt-4">
-                            <div className="w-4 flex flex-col">
-                                <div className="border-l border-border ml-auto flex-1">
-                                    <div className="w-4 border-t border-border" />
-                                </div>
-                            </div>
-                            <div className="flex-1">
-                                <Card>
+                        {/* Auto Router Configuration */}
+                        <div className="pt-4">
+                            <Card>
                                         <CardHeader>
                                             <CardTitle className="text-base flex items-center gap-2">
                                                 <Bot className="h-4 w-4" />
@@ -484,18 +471,11 @@ export function StrategyModelConfiguration({
                                             </div>
                                         </CardContent>
                                     </Card>
-                                </div>
                         </div>
 
-                        {/* Second branch: Prioritized Models Grid */}
-                        <div className="flex pt-4">
-                            <div className="w-4 flex flex-col">
-                                <div className="border-l border-border ml-auto h-4">
-                                    <div className="w-4 border-t border-border" />
-                                </div>
-                            </div>
-                            <div className="flex-1">
-                                <div className="grid gap-4 grid-cols-1 lg:grid-cols-2">
+                        {/* Prioritized Models Grid */}
+                        <div className="pt-4">
+                            <div className="grid gap-4 grid-cols-1 lg:grid-cols-2">
                                         {/* Left: Strong/Prioritized Models */}
                                         <Card>
                                             <CardHeader>
@@ -662,10 +642,9 @@ export function StrategyModelConfiguration({
                                         </Card>
                                     </div>
                                 </div>
-                            </div>
-                        </>
-                    )}
+                            </>
+                        )}
+                    </div>
                 </div>
-            </div>
-        )
-    }
+            )
+        }

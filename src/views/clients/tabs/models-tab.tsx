@@ -32,25 +32,6 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { StrategyModelConfiguration, StrategyConfig } from "@/components/strategy"
 import RateLimitEditor, { StrategyRateLimit } from "@/components/strategies/RateLimitEditor"
 
-// Tree branch connector component
-function TreeBranch({ children, isLast = false }: { children: React.ReactNode; isLast?: boolean }) {
-  return (
-    <div className="flex pt-4">
-      {/* Connector column with L-shaped line */}
-      <div className="w-4 flex flex-col">
-        {/* Vertical line going up and down */}
-        <div className={`border-l border-border ml-auto ${isLast ? 'h-4' : 'flex-1'}`}>
-          {/* Horizontal line at the branch point */}
-          <div className="w-4 border-t border-border" />
-        </div>
-      </div>
-      {/* Content */}
-      <div className="flex-1">
-        {children}
-      </div>
-    </div>
-  )
-}
 
 interface Client {
   id: string
@@ -281,8 +262,8 @@ export function ClientModelsTab({
       {/* Nested sections with tree connectors */}
       {client.strategy_id && (
         <div className="ml-4">
-          {/* Rate Limits - first branch */}
-          <TreeBranch>
+          {/* Rate Limits */}
+          <div className="pt-4">
             <Card>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2 text-base">
@@ -295,20 +276,18 @@ export function ClientModelsTab({
               </CardHeader>
               <CardContent>
                 {currentStrategy && (
-                  <>
-                    <RateLimitEditor
-                      limits={currentStrategy.rate_limits || []}
-                      onChange={handleRateLimitsChange}
-                      disabled={savingRateLimits}
-                    />
-                  </>
+                  <RateLimitEditor
+                    limits={currentStrategy.rate_limits || []}
+                    onChange={handleRateLimitsChange}
+                    disabled={savingRateLimits}
+                  />
                 )}
               </CardContent>
             </Card>
-          </TreeBranch>
+          </div>
 
-          {/* Model Configuration - second branch (last) */}
-          <TreeBranch isLast>
+          {/* Model Configuration */}
+          <div className="pt-4">
             <StrategyModelConfiguration
               strategyId={client.strategy_id}
               readOnly={false}
@@ -317,7 +296,7 @@ export function ClientModelsTab({
                 loadStrategies(false)
               }}
             />
-          </TreeBranch>
+          </div>
         </div>
       )}
     </div>
