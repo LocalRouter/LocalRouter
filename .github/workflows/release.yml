@@ -135,12 +135,51 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Install Apple certificate (macOS)
+        if: matrix.settings.platform == 'macos-latest'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          # Create temporary keychain
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+          KEYCHAIN_PASSWORD=$(openssl rand -base64 32)
+
+          # Decode certificate
+          echo "$APPLE_CERTIFICATE" | base64 --decode > $RUNNER_TEMP/certificate.p12
+
+          # Create and configure keychain
+          security create-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+
+          # Import certificate
+          security import $RUNNER_TEMP/certificate.p12 -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security list-keychain -d user -s $KEYCHAIN_PATH
+
+          # Clean up
+          rm $RUNNER_TEMP/certificate.p12
+
       - name: Build Tauri app (with signing)
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Apple code signing (macOS only)
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: npm run tauri build -- --target ${{ matrix.settings.target }} --bundles ${{ matrix.settings.bundles }}
+
+      - name: Cleanup keychain (macOS)
+        if: always() && matrix.settings.platform == 'macos-latest'
+        run: |
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+          if [ -f "$KEYCHAIN_PATH" ]; then
+            security delete-keychain $KEYCHAIN_PATH || true
+          fi
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -192,6 +231,16 @@ jobs:
             -name "*.exe.zip" -o \
             -name "*.exe.zip.sig" \
           \) -exec cp {} release-assets/ \;
+
+          # Create version-agnostic copies for stable download URLs
+          cd release-assets
+          for f in *_aarch64.dmg; do [ -f "$f" ] && cp "$f" "LocalRouter-AI_aarch64.dmg"; done
+          for f in *_x64.dmg; do [ -f "$f" ] && cp "$f" "LocalRouter-AI_x64.dmg"; done
+          for f in *_x64-setup.exe; do [ -f "$f" ] && cp "$f" "LocalRouter-AI_x64-setup.exe"; done
+          for f in *_x64_en-US.msi; do [ -f "$f" ] && cp "$f" "LocalRouter-AI_x64.msi"; done
+          for f in *_amd64.deb; do [ -f "$f" ] && cp "$f" "LocalRouter-AI_amd64.deb"; done
+          for f in *_amd64.AppImage; do [ -f "$f" ] && cp "$f" "LocalRouter-AI_amd64.AppImage"; done
+          cd ..
 
           echo "Release assets prepared:"
           ls -lh release-assets/

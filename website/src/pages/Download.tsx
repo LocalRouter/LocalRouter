@@ -7,25 +7,31 @@ const platforms = [
   {
     name: 'macOS',
     icon: Apple,
-    requirements: ['macOS 11+ (Big Sur)', 'Intel or Apple Silicon', '200MB disk space'],
-    downloadUrl: 'https://github.com/LocalRouter/LocalRouter/releases/latest/download/LocalRouter_macOS.dmg',
-    downloadLabel: 'Download .dmg',
+    requirements: ['macOS 10.15+ (Catalina)', 'Intel or Apple Silicon', '200MB disk space'],
+    downloadUrl: 'https://github.com/LocalRouter/LocalRouter/releases/latest/download/LocalRouter-AI_aarch64.dmg',
+    downloadLabel: 'Download for Apple Silicon',
+    altDownloads: [
+      { label: 'Intel Mac', url: 'https://github.com/LocalRouter/LocalRouter/releases/latest/download/LocalRouter-AI_x64.dmg' },
+    ],
   },
   {
     name: 'Windows',
     icon: Monitor,
     requirements: ['Windows 10+ (64-bit)', '200MB disk space'],
-    downloadUrl: 'https://github.com/LocalRouter/LocalRouter/releases/latest/download/LocalRouter_Windows.msi',
-    downloadLabel: 'Download .msi',
+    downloadUrl: 'https://github.com/LocalRouter/LocalRouter/releases/latest/download/LocalRouter-AI_x64-setup.exe',
+    downloadLabel: 'Download .exe',
+    altDownloads: [
+      { label: '.msi', url: 'https://github.com/LocalRouter/LocalRouter/releases/latest/download/LocalRouter-AI_x64.msi' },
+    ],
   },
   {
     name: 'Linux',
     icon: Terminal,
-    requirements: ['Modern Linux (glibc 2.31+)', 'DEB, RPM, AppImage'],
-    downloadUrl: 'https://github.com/LocalRouter/LocalRouter/releases/latest/download/LocalRouter_Linux.deb',
+    requirements: ['Modern Linux (glibc 2.31+)', 'DEB or AppImage'],
+    downloadUrl: 'https://github.com/LocalRouter/LocalRouter/releases/latest/download/LocalRouter-AI_amd64.deb',
     downloadLabel: 'Download .deb',
     altDownloads: [
-      { label: '.rpm', url: 'https://github.com/LocalRouter/LocalRouter/releases/latest/download/LocalRouter_Linux.rpm' },
+      { label: '.AppImage', url: 'https://github.com/LocalRouter/LocalRouter/releases/latest/download/LocalRouter-AI_amd64.AppImage' },
     ],
   },
 ]
