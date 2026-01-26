@@ -1,7 +1,7 @@
 {
   "name": "localrouter-ai",
   "private": true,
-  "version": "0.0.16",
+  "version": "0.0.20",
   "type": "module",
   "scripts": {
     "dev": "vite",
