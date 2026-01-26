@@ -15,7 +15,9 @@
       "Bash(cmd.exe /c:*)",
       "Bash(ls:*)",
       "WebSearch",
-      "WebFetch(domain:github.com)"
+      "WebFetch(domain:github.com)",
+      "Bash(gh run view:*)",
+      "Bash(gh api:*)"
     ]
   }
 }
