@@ -25,7 +25,8 @@
     "shortDescription": "Intelligent AI model routing",
     "longDescription": "LocalRouter AI provides a local OpenAI-compatible API gateway that intelligently routes requests across multiple AI providers with smart routing, cost optimization, and comprehensive monitoring.",
     "macOS": {
-      "minimumSystemVersion": "10.15"
+      "minimumSystemVersion": "10.15",
+      "signingIdentity": "-"
     },
     "windows": {
       "certificateThumbprint": null,

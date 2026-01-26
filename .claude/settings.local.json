@@ -17,7 +17,9 @@
       "WebSearch",
       "WebFetch(domain:github.com)",
       "Bash(gh run view:*)",
-      "Bash(gh api:*)"
+      "Bash(gh api:*)",
+      "Bash(gh run watch:*)",
+      "Bash(gh release view:*)"
     ]
   }
 }
