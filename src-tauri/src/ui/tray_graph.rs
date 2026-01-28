@@ -154,6 +154,44 @@ fn draw_hollow_circle(
     }
 }
 
+/// Draw a centered exclamation mark on the image
+///
+/// The exclamation mark consists of a vertical bar and a dot below it.
+/// Designed to be clearly visible at 32x32 resolution.
+fn draw_exclamation_mark(img: &mut RgbaImage, color: Rgba<u8>) {
+    let width = img.width() as i32;
+    let height = img.height() as i32;
+    let center_x = width / 2;
+
+    // Exclamation mark dimensions (scaled for 32x32)
+    // Vertical bar: 3 pixels wide, ~12 pixels tall, starting from y=6
+    let bar_width = 3;
+    let bar_top = 6;
+    let bar_bottom = 18;
+
+    // Draw vertical bar (the stem)
+    for y in bar_top..=bar_bottom {
+        for dx in -(bar_width / 2)..=(bar_width / 2) {
+            let x = center_x + dx;
+            if x >= 0 && x < width {
+                img.put_pixel(x as u32, y as u32, color);
+            }
+        }
+    }
+
+    // Draw dot below (at y=22-25, same width)
+    let dot_top = 22;
+    let dot_bottom = 25;
+    for y in dot_top..=dot_bottom {
+        for dx in -(bar_width / 2)..=(bar_width / 2) {
+            let x = center_x + dx;
+            if x >= 0 && x < width {
+                img.put_pixel(x as u32, y as u32, color);
+            }
+        }
+    }
+}
+
 /// Draw a thick line between two points using Bresenham's algorithm with thickness
 fn draw_thick_line(
     img: &mut RgbaImage,
@@ -375,7 +413,8 @@ pub fn generate_graph(
     let has_data = !normalized_points.iter().all(|&t| t == 0);
 
     // Draw logo FIRST as a background watermark (bars will be drawn on top)
-    draw_logo(&mut img, config.foreground);
+    // TODO: Temporarily disabled logo overlay
+    // draw_logo(&mut img, config.foreground);
 
     // Only draw bars if we have data (drawn on top of LR letters)
     if has_data {
@@ -438,17 +477,17 @@ pub fn generate_graph(
         }
     }
 
-    // Draw health status dot only for warning/error states (yellow/red)
-    // Green (healthy) and unknown states don't show a dot to reduce visual clutter
-    // Position: top-left area, large for visibility
+    // Draw health status indicator only for warning/error states (yellow/red)
+    // Green (healthy) and unknown states don't show an indicator to reduce visual clutter
+    // Position: centered exclamation mark for visibility
     if let Some(status) = health_status {
         match status {
             AggregateHealthStatus::Yellow | AggregateHealthStatus::Red => {
-                let dot_color = StatusDotColors::for_status(status);
-                draw_filled_circle(&mut img, 8, 8, 7, dot_color);
+                let status_color = StatusDotColors::for_status(status);
+                draw_exclamation_mark(&mut img, status_color);
             }
             AggregateHealthStatus::Green => {
-                // No dot for healthy status
+                // No indicator for healthy status
             }
         }
     }

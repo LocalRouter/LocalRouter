@@ -5,10 +5,10 @@
 #![allow(dead_code)]
 
 use crate::clients::ClientManager;
-use crate::config::{ConfigManager, McpServerAccess, UiConfig};
+use crate::config::{ConfigManager, UiConfig};
 use crate::mcp::manager::McpServerManager;
 use crate::monitoring::metrics::MetricsCollector;
-use crate::providers::registry::ProviderRegistry;
+use crate::providers::health_cache::{AggregateHealthStatus, ItemHealthStatus};
 use crate::ui::tray_graph::{platform_graph_config, DataPoint};
 use crate::utils::test_mode::is_test_mode;
 use chrono::{DateTime, Duration, Utc};
@@ -85,15 +85,6 @@ pub fn setup_tray<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
             info!("Tray menu event: {}", id);
 
             match id {
-                "toggle_server" => {
-                    info!("Toggle server requested from tray");
-                    let app_clone = app.clone();
-                    tauri::async_runtime::spawn(async move {
-                        if let Err(e) = handle_toggle_server(&app_clone).await {
-                            error!("Failed to toggle server: {}", e);
-                        }
-                    });
-                }
                 "copy_url" => {
                     info!("Copy URL requested from tray");
                     let app_clone = app.clone();
@@ -154,6 +145,13 @@ pub fn setup_tray<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
                     // Emit event to frontend to navigate to Preferences → Updates
                     if let Err(e) = app.emit("open-updates-tab", ()) {
                         error!("Failed to emit open-updates-tab event: {}", e);
+                    }
+                }
+                "update_and_restart" => {
+                    info!("Update and restart requested from tray");
+                    // Emit event to frontend to trigger immediate update
+                    if let Err(e) = app.emit("update-and-restart", ()) {
+                        error!("Failed to emit update-and-restart event: {}", e);
                     }
                 }
                 "quit" => {
@@ -217,6 +215,32 @@ pub fn setup_tray<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
                             });
                         }
                     }
+                    // Handle health issue provider click: health_issue_provider_{provider_name}
+                    else if let Some(provider_name) = id.strip_prefix("health_issue_provider_") {
+                        info!("Health issue clicked for provider: {}", provider_name);
+                        // Show main window and navigate to LLM Resources tab
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                        // Emit event to navigate to Resources page
+                        if let Err(e) = app.emit("open-resources-tab", ()) {
+                            error!("Failed to emit open-resources-tab event: {}", e);
+                        }
+                    }
+                    // Handle health issue MCP click: health_issue_mcp_{server_id}
+                    else if let Some(server_id) = id.strip_prefix("health_issue_mcp_") {
+                        info!("Health issue clicked for MCP server: {}", server_id);
+                        // Show main window and navigate to MCP Servers tab
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                        // Emit event to navigate to MCP Servers page with the specific server
+                        if let Err(e) = app.emit("open-mcp-server", server_id) {
+                            error!("Failed to emit open-mcp-server event: {}", e);
+                        }
+                    }
                     // Handle prioritized list: prioritized_list_<client_id>
                     else if let Some(client_id) = id.strip_prefix("prioritized_list_") {
                         info!("Prioritized list requested for client: {}", client_id);
@@ -228,6 +252,46 @@ pub fn setup_tray<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
                             }
                         });
                     }
+                    // Handle set strategy: set_strategy_<client_id>_<strategy_id>
+                    else if let Some(rest) = id.strip_prefix("set_strategy_") {
+                        if let Some((client_id, strategy_id)) = rest.split_once('_') {
+                            info!(
+                                "Set strategy requested: client={}, strategy={}",
+                                client_id, strategy_id
+                            );
+                            let app_clone = app.clone();
+                            let client_id = client_id.to_string();
+                            let strategy_id = strategy_id.to_string();
+                            tauri::async_runtime::spawn(async move {
+                                if let Err(e) =
+                                    handle_set_client_strategy(&app_clone, &client_id, &strategy_id)
+                                        .await
+                                {
+                                    error!("Failed to set client strategy: {}", e);
+                                }
+                            });
+                        }
+                    }
+                    // Handle toggle MCP: toggle_mcp_<client_id>_<server_id>
+                    else if let Some(rest) = id.strip_prefix("toggle_mcp_") {
+                        if let Some((client_id, server_id)) = rest.split_once('_') {
+                            info!(
+                                "Toggle MCP requested: client={}, server={}",
+                                client_id, server_id
+                            );
+                            let app_clone = app.clone();
+                            let client_id = client_id.to_string();
+                            let server_id = server_id.to_string();
+                            tauri::async_runtime::spawn(async move {
+                                if let Err(e) =
+                                    handle_toggle_mcp_access(&app_clone, &client_id, &server_id)
+                                        .await
+                                {
+                                    error!("Failed to toggle MCP access: {}", e);
+                                }
+                            });
+                        }
+                    }
                     // Other events are for model routing configuration
                     // (force_model_*, toggle_provider_*, toggle_model_*, etc.)
                     // These will be handled by future implementation
@@ -235,6 +299,16 @@ pub fn setup_tray<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
             }
         })
         .build(app)?;
+
+    // Subscribe to health status changes to rebuild the tray menu
+    // This ensures health issues appear in the menu when status changes
+    let app_handle = app.handle().clone();
+    app.listen("health-status-changed", move |_event| {
+        debug!("Health status changed, rebuilding tray menu");
+        if let Err(e) = rebuild_tray_menu(&app_handle) {
+            error!("Failed to rebuild tray menu on health change: {}", e);
+        }
+    });
 
     info!("System tray initialized successfully");
     Ok(())
@@ -244,13 +318,131 @@ pub fn setup_tray<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
 fn build_tray_menu<R: Runtime, M: Manager<R>>(app: &M) -> tauri::Result<tauri::menu::Menu<R>> {
     let mut menu_builder = MenuBuilder::new(app);
 
-    // 1. Open Dashboard at the top
-    menu_builder = menu_builder.text("open_dashboard", "📊 Open Dashboard");
+    // Get server status and config early for header
+    let (host, port, is_server_running) =
+        if let Some(config_manager) = app.try_state::<ConfigManager>() {
+            let config = config_manager.get();
+            let running =
+                if let Some(server_manager) = app.try_state::<Arc<crate::server::ServerManager>>()
+                {
+                    matches!(
+                        server_manager.get_status(),
+                        crate::server::ServerStatus::Running
+                    )
+                } else {
+                    false
+                };
+            (config.server.host.clone(), config.server.port, running)
+        } else {
+            ("127.0.0.1".to_string(), 3625, false)
+        };
 
-    // Add separator
+    // 1. LocalRouter header (shows IP:port when server is running)
+    let header_text = if is_server_running {
+        format!("LocalRouter on {}:{}", host, port)
+    } else {
+        "LocalRouter".to_string()
+    };
+    let app_header = MenuItem::with_id(app, "app_header", &header_text, false, None::<&str>)?;
+    menu_builder = menu_builder.item(&app_header);
+
+    // 2. Open dashboard (immediately after header)
+    menu_builder = menu_builder.text("open_dashboard", "Open...");
+
+    // 3. Copy URL (LLM and MCP)
+    menu_builder = menu_builder.text("copy_url", "Copy URL");
+
+    // 4. Health issues section (only shown when there are issues)
+    if let Some(app_state) = app.try_state::<Arc<crate::server::state::AppState>>() {
+        let health_state = app_state.health_cache.get();
+        debug!(
+            "Tray menu: aggregate_status={:?}, providers={}, mcp_servers={}",
+            health_state.aggregate_status,
+            health_state.providers.len(),
+            health_state.mcp_servers.len()
+        );
+
+        // Only show issues when aggregate status is Yellow or Red
+        if matches!(
+            health_state.aggregate_status,
+            AggregateHealthStatus::Yellow | AggregateHealthStatus::Red
+        ) {
+            // Show unhealthy/degraded providers
+            for (provider_name, health) in &health_state.providers {
+                if matches!(
+                    health.status,
+                    ItemHealthStatus::Unhealthy | ItemHealthStatus::Degraded
+                ) {
+                    let status_emoji = match health.status {
+                        ItemHealthStatus::Unhealthy => "🔴",
+                        ItemHealthStatus::Degraded => "🟡",
+                        _ => "",
+                    };
+                    let label = format!(
+                        "{} Provider '{}' {}",
+                        status_emoji,
+                        provider_name,
+                        match health.status {
+                            ItemHealthStatus::Unhealthy => "unhealthy",
+                            ItemHealthStatus::Degraded => "degraded",
+                            _ => "",
+                        }
+                    );
+                    menu_builder = menu_builder.text(
+                        format!("health_issue_provider_{}", provider_name),
+                        label,
+                    );
+                }
+            }
+
+            // Show unhealthy/degraded MCP servers
+            for (server_id, health) in &health_state.mcp_servers {
+                if matches!(
+                    health.status,
+                    ItemHealthStatus::Unhealthy | ItemHealthStatus::Degraded
+                ) {
+                    let status_emoji = match health.status {
+                        ItemHealthStatus::Unhealthy => "🔴",
+                        ItemHealthStatus::Degraded => "🟡",
+                        _ => "",
+                    };
+                    let display_name = if health.name.is_empty() {
+                        format!("MCP {}", &server_id[..server_id.len().min(8)])
+                    } else {
+                        health.name.clone()
+                    };
+                    let label = format!(
+                        "{} MCP '{}' {}",
+                        status_emoji,
+                        display_name,
+                        match health.status {
+                            ItemHealthStatus::Unhealthy => "unhealthy",
+                            ItemHealthStatus::Degraded => "degraded",
+                            _ => "",
+                        }
+                    );
+                    menu_builder = menu_builder.text(
+                        format!("health_issue_mcp_{}", server_id),
+                        label,
+                    );
+                }
+            }
+        }
+    } else {
+        debug!("Tray menu: AppState not available");
+    }
+
+    // 5. Update section (shown when update is available)
+    if let Some(update_state) = app.try_state::<Arc<UpdateNotificationState>>() {
+        if update_state.is_update_available() {
+            menu_builder = menu_builder.text("update_and_restart", "Update and restart");
+        }
+    }
+
+    // Add separator before clients
     menu_builder = menu_builder.separator();
 
-    // 2. Clients section
+    // 6. Clients section
     let clients_header = MenuItem::with_id(app, "clients_header", "Clients", false, None::<&str>)?;
     menu_builder = menu_builder.item(&clients_header);
 
@@ -258,6 +450,12 @@ fn build_tray_menu<R: Runtime, M: Manager<R>>(app: &M) -> tauri::Result<tauri::m
     if let Some(client_manager) = app.try_state::<Arc<ClientManager>>() {
         let clients = client_manager.list_clients();
         let mcp_server_manager = app.try_state::<Arc<McpServerManager>>();
+        let config_manager = app.try_state::<ConfigManager>();
+
+        // Get all strategies for the strategy selector
+        let all_strategies: Vec<crate::config::Strategy> = config_manager
+            .map(|cm| cm.get().strategies.clone())
+            .unwrap_or_default();
 
         if !clients.is_empty() {
             for client in clients.iter() {
@@ -269,115 +467,96 @@ fn build_tray_menu<R: Runtime, M: Manager<R>>(app: &M) -> tauri::Result<tauri::m
 
                 let mut client_submenu = SubmenuBuilder::new(app, &client_name);
 
-                // Strategy configuration link
-                client_submenu = client_submenu.text(
-                    format!("configure_strategy_{}", client.id),
-                    "Configure Strategy...",
-                );
+                // === Model strategy section ===
+                let strategy_header = MenuItem::with_id(
+                    app,
+                    format!("strategy_header_{}", client.id),
+                    "Model strategy",
+                    false,
+                    None::<&str>,
+                )?;
+                client_submenu = client_submenu.item(&strategy_header);
 
-                // Add separator before Allowed MCPs
+                // List all strategies with checkmark on selected
+                for strategy in &all_strategies {
+                    let is_selected = strategy.id == client.strategy_id;
+                    let label = if is_selected {
+                        format!("✓ {}", strategy.name)
+                    } else {
+                        format!("   {}", strategy.name)
+                    };
+
+                    // Create menu item - disabled if already selected
+                    let strategy_item = MenuItem::with_id(
+                        app,
+                        format!("set_strategy_{}_{}", client.id, strategy.id),
+                        &label,
+                        !is_selected, // enabled only if not selected
+                        None::<&str>,
+                    )?;
+                    client_submenu = client_submenu.item(&strategy_item);
+                }
+
+                // Add separator before MCP Allowlist
                 client_submenu = client_submenu.separator();
 
-                // Allowed MCPs section header
+                // === MCP Allowlist section ===
                 let mcp_header = MenuItem::with_id(
                     app,
                     format!("mcp_header_{}", client.id),
-                    "Allowed MCPs",
+                    "MCP Allowlist",
                     false,
                     None::<&str>,
                 )?;
                 client_submenu = client_submenu.item(&mcp_header);
 
-                // Get MCP servers this client can access
+                // Get all MCP servers
                 if let Some(ref mcp_manager) = mcp_server_manager {
                     let all_mcp_servers = mcp_manager.list_configs();
 
-                    // Get allowed server IDs based on access mode
-                    let allowed_server_ids: Vec<String> = match &client.mcp_server_access {
-                        McpServerAccess::None => vec![],
-                        McpServerAccess::All => {
-                            all_mcp_servers.iter().map(|s| s.id.clone()).collect()
-                        }
-                        McpServerAccess::Specific(servers) => servers.clone(),
-                    };
-
-                    // Show allowed MCP servers
-                    for server_id in allowed_server_ids.iter() {
-                        if let Some(server) = all_mcp_servers.iter().find(|s| &s.id == server_id) {
+                    if all_mcp_servers.is_empty() {
+                        // No MCPs configured - show disabled "No MCPs" item
+                        let no_mcp_item = MenuItem::with_id(
+                            app,
+                            format!("no_mcp_{}", client.id),
+                            "No MCPs",
+                            false,
+                            None::<&str>,
+                        )?;
+                        client_submenu = client_submenu.item(&no_mcp_item);
+                    } else {
+                        // List all MCP servers with checkmarks for allowed ones
+                        for server in &all_mcp_servers {
                             let server_name = if server.name.is_empty() {
-                                format!("MCP {}", &server.id[..8])
+                                format!("MCP {}", &server.id[..server.id.len().min(8)])
                             } else {
                                 server.name.clone()
                             };
 
-                            let mut mcp_submenu = SubmenuBuilder::new(app, &server_name);
-
-                            // Get server URL
-                            let config_manager = app.try_state::<ConfigManager>();
-                            let url = if let Some(cfg_mgr) = config_manager {
-                                let cfg = cfg_mgr.get();
-                                format!(
-                                    "http://{}:{}/mcp/{}",
-                                    cfg.server.host, cfg.server.port, server.id
-                                )
+                            let is_allowed = client.mcp_server_access.can_access(&server.id);
+                            let label = if is_allowed {
+                                format!("✓ {}", server_name)
                             } else {
-                                format!("http://127.0.0.1:3625/mcp/{}", server.id)
+                                format!("   {}", server_name)
                             };
 
-                            // Show URL as disabled item
-                            let url_item = MenuItem::with_id(
-                                app,
-                                format!("mcp_url_display_{}_{}", client.id, server.id),
-                                &url,
-                                false,
-                                None::<&str>,
-                            )?;
-                            mcp_submenu = mcp_submenu.item(&url_item);
-
-                            mcp_submenu = mcp_submenu.text(
-                                format!("copy_mcp_url_{}_{}", client.id, server.id),
-                                "📋 Copy URL",
+                            // Clicking toggles the allowed state
+                            client_submenu = client_submenu.text(
+                                format!("toggle_mcp_{}_{}", client.id, server.id),
+                                label,
                             );
-
-                            mcp_submenu = mcp_submenu.text(
-                                format!("copy_mcp_bearer_{}_{}", client.id, server.id),
-                                "📋 Copy Bearer token",
-                            );
-
-                            let mcp_menu = mcp_submenu.build()?;
-                            client_submenu = client_submenu.item(&mcp_menu);
                         }
                     }
-                }
-
-                // Add "+ Add MCP" submenu with available MCP servers (only in Specific mode)
-                if let Some(ref mcp_manager) = mcp_server_manager {
-                    let all_mcp_servers = mcp_manager.list_configs();
-
-                    // Find MCP servers not yet added to this client (only relevant for Specific mode)
-                    let available_servers: Vec<_> = all_mcp_servers
-                        .iter()
-                        .filter(|s| !client.mcp_server_access.can_access(&s.id))
-                        .collect();
-
-                    if !available_servers.is_empty() {
-                        let mut add_mcp_submenu = SubmenuBuilder::new(app, "➕ Add MCP");
-
-                        for server in available_servers {
-                            let server_name = if server.name.is_empty() {
-                                format!("MCP {}", &server.id[..8])
-                            } else {
-                                server.name.clone()
-                            };
-
-                            add_mcp_submenu = add_mcp_submenu
-                                .text(format!("add_mcp_{}_{}", client.id, server.id), server_name);
-                        }
-
-                        let add_mcp_menu = add_mcp_submenu.build()?;
-                        client_submenu = client_submenu.item(&add_mcp_menu);
-                    }
-                    // If no available servers, just omit the menu item entirely
+                } else {
+                    // MCP manager not available - show disabled "No MCPs" item
+                    let no_mcp_item = MenuItem::with_id(
+                        app,
+                        format!("no_mcp_{}", client.id),
+                        "No MCPs",
+                        false,
+                        None::<&str>,
+                    )?;
+                    client_submenu = client_submenu.item(&no_mcp_item);
                 }
 
                 let client_menu = client_submenu.build()?;
@@ -390,60 +569,11 @@ fn build_tray_menu<R: Runtime, M: Manager<R>>(app: &M) -> tauri::Result<tauri::m
     // Add "Quick Create & Copy API Key" button (creates with all models, no MCP)
     menu_builder = menu_builder.text("create_and_copy_api_key", "➕ Quick Create && Copy API Key");
 
-    // Add separator before Server section
-    menu_builder = menu_builder.separator();
-
-    // Get port and server status
-    let (host, port, server_text) = if let Some(config_manager) = app.try_state::<ConfigManager>() {
-        let config = config_manager.get();
-        let status =
-            if let Some(server_manager) = app.try_state::<Arc<crate::server::ServerManager>>() {
-                match server_manager.get_status() {
-                    crate::server::ServerStatus::Running => "⏹️ Stop Server",
-                    crate::server::ServerStatus::Stopped => "▶️ Start Server",
-                }
-            } else {
-                "▶️ Start Server"
-            };
-        (config.server.host.clone(), config.server.port, status)
-    } else {
-        ("127.0.0.1".to_string(), 3625, "▶️ Start Server")
-    };
-
-    // Add Server section header with IP:Port
-    let server_header = MenuItem::with_id(
-        app,
-        "server_header",
-        format!("Listening on {}:{}", host, port),
-        false,
-        None::<&str>,
-    )?;
-    menu_builder = menu_builder.item(&server_header);
-
-    // Add server-related items
-    menu_builder = menu_builder
-        .text("copy_url", "📋 Copy URL")
-        .text("toggle_server", server_text);
-
-    // Add separator before tray graph toggle
-    menu_builder = menu_builder.separator();
-
-    // Add tray graph toggle
-    // Dynamic tray graph is always enabled, no toggle needed
-
-    // Add update notification if available
-    if let Some(update_state) = app.try_state::<Arc<UpdateNotificationState>>() {
-        if update_state.is_update_available() {
-            menu_builder = menu_builder.separator();
-            menu_builder = menu_builder.text("open_updates_tab", "🔔 Review new update");
-        }
-    }
-
     // Add separator before quit
     menu_builder = menu_builder.separator();
 
     // Add quit option
-    menu_builder = menu_builder.text("quit", "❌ Shut down");
+    menu_builder = menu_builder.text("quit", "Quit");
 
     menu_builder.build()
 }
@@ -479,68 +609,6 @@ async fn handle_copy_url<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     Ok(())
 }
 
-/// Handle toggling the server on/off
-async fn handle_toggle_server<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
-    let server_manager = app.state::<Arc<crate::server::ServerManager>>();
-
-    let status = server_manager.get_status();
-    match status {
-        crate::server::ServerStatus::Running => {
-            info!("Stopping server from tray");
-            server_manager.stop().await;
-            let _ = app.emit("server-status-changed", "stopped");
-        }
-        crate::server::ServerStatus::Stopped => {
-            info!("Starting server from tray");
-
-            // Get dependencies
-            let config_manager = app.state::<ConfigManager>();
-            let router = app.state::<Arc<crate::router::Router>>();
-            let mcp_server_manager = app.state::<Arc<crate::mcp::McpServerManager>>();
-            let rate_limiter = app.state::<Arc<crate::router::RateLimiterManager>>();
-            let provider_registry = app.state::<Arc<ProviderRegistry>>();
-            let client_manager = app.state::<Arc<crate::clients::ClientManager>>();
-            let token_store = app.state::<Arc<crate::clients::TokenStore>>();
-            let metrics_collector =
-                app.state::<Arc<crate::monitoring::metrics::MetricsCollector>>();
-
-            // Get server config
-            let server_config = {
-                let config = config_manager.get();
-                crate::server::ServerConfig {
-                    host: config.server.host.clone(),
-                    port: config.server.port,
-                    enable_cors: config.server.enable_cors,
-                }
-            };
-
-            // Start the server
-            server_manager
-                .start(
-                    server_config,
-                    crate::server::manager::ServerDependencies {
-                        router: router.inner().clone(),
-                        mcp_server_manager: mcp_server_manager.inner().clone(),
-                        rate_limiter: rate_limiter.inner().clone(),
-                        provider_registry: provider_registry.inner().clone(),
-                        config_manager: Arc::new((*config_manager).clone()),
-                        client_manager: client_manager.inner().clone(),
-                        token_store: token_store.inner().clone(),
-                        metrics_collector: metrics_collector.inner().clone(),
-                    },
-                )
-                .await
-                .map_err(tauri::Error::Anyhow)?;
-
-            let _ = app.emit("server-status-changed", "running");
-        }
-    }
-
-    // Rebuild tray menu to update button text
-    rebuild_tray_menu(app)?;
-
-    Ok(())
-}
 // /// Handle generating a new API key from the system tray
 // async fn handle_generate_key_from_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
 //     info!("Generating new API key from tray");
@@ -925,6 +993,114 @@ async fn handle_add_mcp_to_client<R: Runtime>(
     rebuild_tray_menu(app)?;
 
     info!("MCP server {} added to client {}", server_id, client_id);
+
+    Ok(())
+}
+
+/// Handle setting a client's strategy
+async fn handle_set_client_strategy<R: Runtime>(
+    app: &AppHandle<R>,
+    client_id: &str,
+    strategy_id: &str,
+) -> tauri::Result<()> {
+    info!(
+        "Setting strategy {} for client {}",
+        strategy_id, client_id
+    );
+
+    // Get managers from state
+    let client_manager = app.state::<Arc<ClientManager>>();
+    let config_manager = app.state::<ConfigManager>();
+
+    // Update client's strategy in client manager
+    client_manager
+        .set_client_strategy(client_id, strategy_id)
+        .map_err(|e| tauri::Error::Anyhow(e.into()))?;
+
+    // Save to config
+    config_manager
+        .update(|cfg| {
+            cfg.clients = client_manager.get_configs();
+        })
+        .map_err(|e| tauri::Error::Anyhow(e.into()))?;
+
+    config_manager
+        .save()
+        .await
+        .map_err(|e| tauri::Error::Anyhow(e.into()))?;
+
+    // Rebuild tray menu
+    rebuild_tray_menu(app)?;
+
+    // Emit event for UI updates
+    if let Err(e) = app.emit("clients-changed", ()) {
+        error!("Failed to emit clients-changed event: {}", e);
+    }
+
+    info!(
+        "Strategy {} set for client {}",
+        strategy_id, client_id
+    );
+
+    Ok(())
+}
+
+/// Handle toggling MCP server access for a client
+async fn handle_toggle_mcp_access<R: Runtime>(
+    app: &AppHandle<R>,
+    client_id: &str,
+    server_id: &str,
+) -> tauri::Result<()> {
+    info!(
+        "Toggling MCP {} access for client {}",
+        server_id, client_id
+    );
+
+    // Get managers from state
+    let client_manager = app.state::<Arc<ClientManager>>();
+    let config_manager = app.state::<ConfigManager>();
+
+    // Get current access state
+    let current_access = client_manager
+        .get_mcp_server_access(client_id)
+        .ok_or_else(|| tauri::Error::Anyhow(anyhow::anyhow!("Client not found")))?;
+
+    // Check if server is currently allowed and toggle
+    let is_allowed = current_access.can_access(server_id);
+
+    if is_allowed {
+        // Remove MCP server from client's allowed list
+        client_manager
+            .remove_mcp_server(client_id, server_id)
+            .map_err(|e| tauri::Error::Anyhow(e.into()))?;
+        info!("MCP {} removed from client {}", server_id, client_id);
+    } else {
+        // Add MCP server to client's allowed list
+        client_manager
+            .add_mcp_server(client_id, server_id)
+            .map_err(|e| tauri::Error::Anyhow(e.into()))?;
+        info!("MCP {} added to client {}", server_id, client_id);
+    }
+
+    // Save to config
+    config_manager
+        .update(|cfg| {
+            cfg.clients = client_manager.get_configs();
+        })
+        .map_err(|e| tauri::Error::Anyhow(e.into()))?;
+
+    config_manager
+        .save()
+        .await
+        .map_err(|e| tauri::Error::Anyhow(e.into()))?;
+
+    // Rebuild tray menu
+    rebuild_tray_menu(app)?;
+
+    // Emit event for UI updates
+    if let Err(e) = app.emit("clients-changed", ()) {
+        error!("Failed to emit clients-changed event: {}", e);
+    }
 
     Ok(())
 }
