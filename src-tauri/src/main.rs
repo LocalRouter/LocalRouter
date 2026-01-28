@@ -1022,6 +1022,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands_routellm::routellm_unload,
             ui::commands_routellm::routellm_download_models,
             ui::commands_routellm::routellm_update_settings,
+            ui::commands_routellm::open_routellm_folder,
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {

@@ -4464,23 +4464,25 @@ pub async fn mark_update_check_performed(
     crate::updater::save_last_check_timestamp(&config_manager).await
 }
 
-/// Skip a specific version (don't notify about it again)
+/// Skip a specific version (don't notify about it again), or clear skipped version if None
 #[tauri::command]
 pub async fn skip_update_version(
-    version: String,
+    version: Option<String>,
     config_manager: State<'_, ConfigManager>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     config_manager
         .update(|config| {
-            config.update.skipped_version = Some(version.clone());
+            config.update.skipped_version = version.clone();
         })
         .map_err(|e| e.to_string())?;
 
     config_manager.save().await.map_err(|e| e.to_string())?;
 
-    // Clear update notification from tray
-    crate::ui::tray::set_update_available(&app, false).map_err(|e| e.to_string())?;
+    // Only clear tray notification when skipping a version, not when clearing
+    if version.is_some() {
+        crate::ui::tray::set_update_available(&app, false).map_err(|e| e.to_string())?;
+    }
 
     Ok(())
 }

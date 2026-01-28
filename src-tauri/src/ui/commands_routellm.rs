@@ -104,6 +104,30 @@ pub async fn routellm_download_models(
     Ok(())
 }
 
+/// Open the RouteLLM folder in the system file manager
+#[tauri::command]
+pub async fn open_routellm_folder(app: AppHandle) -> Result<(), String> {
+    use tauri_plugin_shell::ShellExt;
+
+    let config_dir = crate::config::paths::config_dir()
+        .map_err(|e| format!("Failed to get config dir: {}", e))?;
+    let routellm_dir = config_dir.join("routellm");
+
+    // Ensure directory exists
+    if !routellm_dir.exists() {
+        std::fs::create_dir_all(&routellm_dir)
+            .map_err(|e| format!("Failed to create routellm directory: {}", e))?;
+    }
+
+    // Open in system file manager
+    #[allow(deprecated)]
+    app.shell()
+        .open(routellm_dir.to_string_lossy().as_ref(), None)
+        .map_err(|e| format!("Failed to open routellm folder: {}", e))?;
+
+    Ok(())
+}
+
 /// Update global RouteLLM settings
 #[tauri::command]
 pub async fn routellm_update_settings(

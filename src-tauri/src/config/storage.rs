@@ -151,14 +151,50 @@ pub async fn save_config(config: &AppConfig, path: &Path) -> AppResult<()> {
 
     // Write to temporary file first
     let temp_path = path.with_extension("yaml.tmp");
-    fs::write(&temp_path, yaml)
-        .await
-        .map_err(|e| AppError::Config(format!("Failed to write configuration file: {}", e)))?;
+
+    // Use explicit file operations with sync to ensure data is written before rename
+    {
+        use tokio::io::AsyncWriteExt;
+        let mut file = fs::File::create(&temp_path).await.map_err(|e| {
+            AppError::Config(format!(
+                "Failed to create temp file '{}': {}",
+                temp_path.display(),
+                e
+            ))
+        })?;
+        file.write_all(yaml.as_bytes()).await.map_err(|e| {
+            AppError::Config(format!(
+                "Failed to write to temp file '{}': {}",
+                temp_path.display(),
+                e
+            ))
+        })?;
+        file.sync_all().await.map_err(|e| {
+            AppError::Config(format!(
+                "Failed to sync temp file '{}': {}",
+                temp_path.display(),
+                e
+            ))
+        })?;
+    }
+
+    // Verify temp file exists before attempting rename
+    if !temp_path.exists() {
+        return Err(AppError::Config(format!(
+            "Temp file '{}' does not exist after write (possible race condition)",
+            temp_path.display()
+        )));
+    }
 
     // Atomically rename temporary file to actual file
-    fs::rename(&temp_path, path)
-        .await
-        .map_err(|e| AppError::Config(format!("Failed to rename configuration file: {}", e)))?;
+    fs::rename(&temp_path, path).await.map_err(|e| {
+        AppError::Config(format!(
+            "Failed to rename '{}' to '{}': {}",
+            temp_path.display(),
+            path.display(),
+            e
+        ))
+    })?;
 
     info!("Configuration saved successfully to {:?}", path);
     Ok(())
