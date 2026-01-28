@@ -142,7 +142,7 @@ impl ModelInfo {
     /// Enrich this model with catalog metadata (pricing, capabilities, etc.)
     ///
     /// This is an optional enrichment step that uses the build-time embedded
-    /// OpenRouter catalog to enhance model information with accurate pricing
+    /// models.dev catalog to enhance model information with accurate pricing
     /// and capability data.
     ///
     /// # Arguments
