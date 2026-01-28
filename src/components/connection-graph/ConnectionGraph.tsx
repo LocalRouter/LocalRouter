@@ -37,15 +37,15 @@ export function ConnectionGraph({ className, onViewChange }: ConnectionGraphProp
   const { clients, providers, mcpServers, healthState, activeConnections, loading, error } = useGraphData()
 
   // Build the graph from data
-  const { graphNodes, graphEdges } = useMemo(() => {
-    const { nodes, edges } = buildGraph(
+  const { graphNodes, graphEdges, graphBounds } = useMemo(() => {
+    const { nodes, edges, bounds } = buildGraph(
       clients,
       providers,
       mcpServers,
       healthState,
       activeConnections
     )
-    return { graphNodes: nodes as Node<GraphNodeData>[], graphEdges: edges as Edge[] }
+    return { graphNodes: nodes as Node<GraphNodeData>[], graphEdges: edges as Edge[], graphBounds: bounds }
   }, [clients, providers, mcpServers, healthState, activeConnections])
 
   // React Flow state
@@ -96,7 +96,7 @@ export function ConnectionGraph({ className, onViewChange }: ConnectionGraphProp
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <Skeleton className="w-full h-[300px] rounded-lg" />
+          <Skeleton className="w-full h-[150px] rounded-lg" />
         </CardContent>
       </Card>
     )
@@ -113,7 +113,7 @@ export function ConnectionGraph({ className, onViewChange }: ConnectionGraphProp
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="flex items-center justify-center h-[300px] text-muted-foreground">
+          <div className="flex items-center justify-center h-[150px] text-muted-foreground">
             <AlertCircle className="w-5 h-5 mr-2" />
             <span>Failed to load connection graph</span>
           </div>
@@ -122,26 +122,13 @@ export function ConnectionGraph({ className, onViewChange }: ConnectionGraphProp
     )
   }
 
-  // Empty state
+  // Empty state - completely hide the graph
   if (isEmpty) {
-    return (
-      <Card className={className}>
-        <CardHeader className="pb-2">
-          <CardTitle className="text-lg flex items-center gap-2">
-            <Network className="w-5 h-5" />
-            Connection Graph
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="flex flex-col items-center justify-center h-[300px] text-muted-foreground">
-            <Network className="w-12 h-12 mb-4 opacity-50" />
-            <p className="text-sm">No enabled clients, providers, or MCP servers</p>
-            <p className="text-xs mt-1">Create a client to see connections here</p>
-          </div>
-        </CardContent>
-      </Card>
-    )
+    return null
   }
+
+  // Calculate container height based on graph bounds (minimum 150px)
+  const containerHeight = Math.max(150, graphBounds.height)
 
   return (
     <Card className={className}>
@@ -159,7 +146,7 @@ export function ConnectionGraph({ className, onViewChange }: ConnectionGraphProp
         </div>
       </CardHeader>
       <CardContent className="p-0">
-        <div className="h-[350px] w-full rounded-b-lg overflow-hidden">
+        <div style={{ height: containerHeight }} className="w-full rounded-b-lg overflow-hidden">
           <ReactFlow
             nodes={nodes}
             edges={edges}
@@ -167,14 +154,9 @@ export function ConnectionGraph({ className, onViewChange }: ConnectionGraphProp
             onEdgesChange={onEdgesChange}
             onNodeClick={handleNodeClick}
             nodeTypes={nodeTypes}
-            fitView
-            fitViewOptions={{
-              padding: 0.2,
-              minZoom: 0.5,
-              maxZoom: 1.5,
-            }}
-            minZoom={0.3}
-            maxZoom={2}
+            defaultViewport={{ x: 0, y: 0, zoom: 1 }}
+            minZoom={0.5}
+            maxZoom={1.5}
             nodesDraggable={false}
             nodesConnectable={false}
             elementsSelectable={false}

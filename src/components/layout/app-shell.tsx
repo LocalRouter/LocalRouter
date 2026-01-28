@@ -20,6 +20,13 @@ interface ProviderInstance {
   enabled: boolean
 }
 
+interface ProviderType {
+  provider_type: string
+  display_name: string
+  category: string
+  description: string
+}
+
 interface McpServer {
   id: string
   name: string
@@ -53,6 +60,7 @@ export function AppShell({
   const [commandOpen, setCommandOpen] = useState(false)
   const [clients, setClients] = useState<Client[]>([])
   const [providers, setProviders] = useState<ProviderInstance[]>([])
+  const [providerTypes, setProviderTypes] = useState<ProviderType[]>([])
   const [mcpServers, setMcpServers] = useState<McpServer[]>([])
   const [models, setModels] = useState<Model[]>([])
   const [strategies, setStrategies] = useState<Strategy[]>([])
@@ -82,6 +90,7 @@ export function AppShell({
     await Promise.all([
       loadClients(),
       loadProviders(),
+      loadProviderTypes(),
       loadMcpServers(),
       loadModels(),
       loadStrategies(),
@@ -103,6 +112,15 @@ export function AppShell({
       setProviders(providerList)
     } catch (err) {
       console.error('Failed to load providers:', err)
+    }
+  }
+
+  const loadProviderTypes = async () => {
+    try {
+      const typeList = await invoke<ProviderType[]>('list_provider_types')
+      setProviderTypes(typeList)
+    } catch (err) {
+      console.error('Failed to load provider types:', err)
     }
   }
 
@@ -137,6 +155,16 @@ export function AppShell({
     onViewChange(view, subTab)
   }
 
+  const handleAddProvider = (providerType: string) => {
+    // Navigate to providers panel with the add provider dialog open for this type
+    onViewChange('resources', `providers/add/${providerType}`)
+  }
+
+  const handleAddMcpServer = (templateId: string) => {
+    // Navigate to MCP servers panel with the add server dialog open for this template
+    onViewChange('mcp-servers', `add/${templateId}`)
+  }
+
   return (
     <div className="flex h-full w-full bg-background overflow-hidden">
       {/* Sidebar */}
@@ -158,8 +186,11 @@ export function AppShell({
         open={commandOpen}
         onOpenChange={setCommandOpen}
         onViewChange={handleViewChange}
+        onAddProvider={handleAddProvider}
+        onAddMcpServer={handleAddMcpServer}
         clients={clients}
         providers={providers}
+        providerTypes={providerTypes}
         models={models}
         mcpServers={mcpServers}
         strategies={strategies}

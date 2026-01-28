@@ -66,15 +66,22 @@ export function ResourcesView({ activeSubTab, onTabChange }: LlmProvidersViewPro
   // Parse subTab to determine which resource type and item is selected
   // Format: "providers", "strategies"
   // Or: "providers/instance-name", "strategies/strategy-id"
+  // Or: "providers/add/provider-type" for opening add dialog
   const parseSubTab = (subTab: string | null) => {
-    if (!subTab) return { resourceType: "providers", itemId: null }
+    if (!subTab) return { resourceType: "providers", itemId: null, addType: null }
     const parts = subTab.split("/")
     const resourceType = parts[0] || "providers"
+
+    // Check for add pattern: "providers/add/OpenAI"
+    if (parts[1] === "add" && parts[2]) {
+      return { resourceType, itemId: null, addType: parts[2] }
+    }
+
     const itemId = parts.slice(1).join("/") || null
-    return { resourceType, itemId }
+    return { resourceType, itemId, addType: null }
   }
 
-  const { resourceType, itemId } = parseSubTab(activeSubTab)
+  const { resourceType, itemId, addType } = parseSubTab(activeSubTab)
 
   const handleResourceChange = (type: string) => {
     onTabChange("resources", type)
@@ -115,6 +122,7 @@ export function ResourcesView({ activeSubTab, onTabChange }: LlmProvidersViewPro
               }
             }}
             onRefreshHealth={refreshHealth}
+            initialAddProviderType={resourceType === "providers" ? addType : null}
           />
         </TabsContent>
 

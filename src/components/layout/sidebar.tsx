@@ -56,7 +56,7 @@ interface NavItem {
 const mainNavItems: NavItem[] = [
   { id: 'clients', icon: Users, label: 'Clients', shortcut: '⌘2' },
   { id: 'resources', icon: Database, label: 'LLM Providers', shortcut: '⌘3' },
-  { id: 'mcp-servers', icon: ServerCog, label: 'MCP Servers', shortcut: '⌘4' },
+  { id: 'mcp-servers', icon: ServerCog, label: 'MCP', shortcut: '⌘4' },
 ]
 
 const bottomNavItems: NavItem[] = [

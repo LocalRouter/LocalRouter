@@ -1,8 +1,8 @@
 import { memo } from 'react'
 import { Handle, Position, type NodeProps } from 'reactflow'
-import { Cloud } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { ProviderNodeData, ItemHealthStatus } from '../types'
+import ProviderIcon from '@/components/ProviderIcon'
 
 // Get health dot color based on status
 function getHealthDotClass(status: ItemHealthStatus): string {
@@ -24,41 +24,38 @@ function getHealthDotClass(status: ItemHealthStatus): string {
 }
 
 function ProviderNodeComponent({ data }: NodeProps<ProviderNodeData>) {
-  const { name, healthStatus } = data
+  const { name, healthStatus, providerType } = data
 
   return (
     <div
       className={cn(
-        'relative px-5 py-4 rounded-xl border-2 shadow-md min-w-[220px]',
+        'relative px-2.5 py-1.5 rounded-lg border shadow-sm min-w-[120px]',
         'bg-gradient-to-br from-violet-50 to-violet-100 dark:from-violet-950 dark:to-violet-900',
         'border-violet-300 dark:border-violet-700',
-        'cursor-pointer transition-all hover:scale-[1.02] hover:shadow-lg'
+        'cursor-pointer transition-all hover:scale-[1.02] hover:shadow-md'
       )}
     >
       {/* Input handle */}
       <Handle
         type="target"
         position={Position.Left}
-        className="!w-3 !h-3 !bg-violet-500 !border-2 !border-white dark:!border-slate-900"
+        className="!w-2 !h-2 !bg-violet-500 !border !border-white dark:!border-slate-900"
       />
 
       {/* Node content */}
-      <div className="flex items-center gap-3">
-        <div className="flex items-center justify-center w-10 h-10 rounded-full bg-violet-200 text-violet-600 dark:bg-violet-800 dark:text-violet-300">
-          <Cloud className="w-5 h-5" />
+      <div className="flex items-center gap-2">
+        <div className="flex items-center justify-center w-6 h-6 rounded-full overflow-hidden">
+          <ProviderIcon providerId={providerType} size={18} />
         </div>
         <div className="min-w-0 flex-1">
-          <div className="text-xs font-bold tracking-wider text-violet-500 dark:text-violet-400 uppercase">
-            LLM PROVIDER
-          </div>
-          <div className="text-2xl font-semibold text-violet-900 dark:text-violet-100 truncate">
+          <div className="text-sm font-medium text-violet-900 dark:text-violet-100 truncate">
             {name}
           </div>
         </div>
         {/* Health indicator dot */}
         <div
           className={cn(
-            'w-4 h-4 rounded-full flex-shrink-0',
+            'w-2.5 h-2.5 rounded-full flex-shrink-0',
             getHealthDotClass(healthStatus)
           )}
         />

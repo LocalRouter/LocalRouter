@@ -2,7 +2,8 @@
  * ClientCreationWizard
  *
  * Multi-step wizard for creating a new client with guided setup.
- * Steps:
+ * Steps (when showWelcome is true, adds Welcome step at the beginning):
+ * 0. Welcome - Introduction to LocalRouter (first launch only)
  * 1. Name - Choose a name for the client
  * 2. Models - Select which models the client can access
  * 3. MCP - Select which MCP servers the client can access (optional)
@@ -22,6 +23,7 @@ import {
   DialogTitle,
 } from "@/components/ui/Modal"
 import { Button } from "@/components/ui/Button"
+import { StepWelcome } from "./steps/StepWelcome"
 import { StepName } from "./steps/StepName"
 import { StepModels } from "./steps/StepModels"
 import { StepMcp } from "./steps/StepMcp"
@@ -72,6 +74,8 @@ interface ClientCreationWizardProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   onComplete: (clientId: string) => void
+  /** Show welcome step on first launch */
+  showWelcome?: boolean
 }
 
 interface ClientInfo {
@@ -81,24 +85,28 @@ interface ClientInfo {
   name: string
 }
 
-const STEP_TITLES = [
+const BASE_STEP_TITLES = [
   "Name Your Client",
   "Select Models",
   "Select MCP Servers",
   "Your Credentials",
 ]
 
-const STEP_DESCRIPTIONS = [
+const BASE_STEP_DESCRIPTIONS = [
   "Choose a descriptive name for your client.",
   "Choose which models this client can access.",
   "Optionally configure MCP server access.",
   "Save your credentials securely.",
 ]
 
+const WELCOME_STEP_TITLE = "Welcome"
+const WELCOME_STEP_DESCRIPTION = "Get started with LocalRouter."
+
 export function ClientCreationWizard({
   open,
   onOpenChange,
   onComplete,
+  showWelcome = false,
 }: ClientCreationWizardProps) {
   const [currentStep, setCurrentStep] = useState(0)
   const [creating, setCreating] = useState(false)
@@ -119,27 +127,48 @@ export function ClientCreationWizard({
     selectedMcpServers: [],
   })
 
+  // Build step arrays based on whether welcome is shown
+  const stepTitles = showWelcome
+    ? [WELCOME_STEP_TITLE, ...BASE_STEP_TITLES]
+    : BASE_STEP_TITLES
+  const stepDescriptions = showWelcome
+    ? [WELCOME_STEP_DESCRIPTION, ...BASE_STEP_DESCRIPTIONS]
+    : BASE_STEP_DESCRIPTIONS
+
+  // Calculate step indices (offset by 1 if welcome is shown)
+  const offset = showWelcome ? 1 : 0
+  const nameStepIndex = 0 + offset
+  const modelsStepIndex = 1 + offset
+  const mcpStepIndex = 2 + offset
+  const credentialsStepIndex = 3 + offset
+
   const isFirstStep = currentStep === 0
-  const isLastStep = currentStep === STEP_TITLES.length - 1
-  const isCredentialsStep = currentStep === 3
+  const isLastStep = currentStep === stepTitles.length - 1
+  const isCredentialsStep = currentStep === credentialsStepIndex
 
   const canProceed = () => {
-    switch (currentStep) {
-      case 0:
-        return state.clientName.trim().length > 0
-      case 1:
-        return true // Models always valid (default is all)
-      case 2:
-        return true // MCP is optional
-      case 3:
-        return true // Can always close from credentials
-      default:
-        return false
+    // Welcome step can always proceed
+    if (showWelcome && currentStep === 0) {
+      return true
     }
+    // Map current step to the logical step for validation
+    if (currentStep === nameStepIndex) {
+      return state.clientName.trim().length > 0
+    }
+    if (currentStep === modelsStepIndex) {
+      return true // Models always valid (default is all)
+    }
+    if (currentStep === mcpStepIndex) {
+      return true // MCP is optional
+    }
+    if (currentStep === credentialsStepIndex) {
+      return true // Can always close from credentials
+    }
+    return false
   }
 
   const handleNext = async () => {
-    if (currentStep === 2) {
+    if (currentStep === mcpStepIndex) {
       // Create client before moving to credentials step
       await createClient()
     } else if (!isLastStep) {
@@ -197,7 +226,7 @@ export function ClientCreationWizard({
       }))
 
       toast.success("Client created successfully")
-      setCurrentStep(3)
+      setCurrentStep(credentialsStepIndex)
     } catch (error) {
       console.error("Failed to create client:", error)
       toast.error(`Failed to create client: ${error}`)
@@ -236,72 +265,78 @@ export function ClientCreationWizard({
   }
 
   const renderStep = () => {
-    switch (currentStep) {
-      case 0:
-        return (
-          <StepName
-            name={state.clientName}
-            onChange={(name) => setState((prev) => ({ ...prev, clientName: name }))}
-          />
-        )
-      case 1:
-        return (
-          <StepModels
-            routingMode={state.routingMode}
-            allowedModels={state.allowedModels}
-            autoModelName={state.autoModelName}
-            prioritizedModels={state.prioritizedModels}
-            routeLLMEnabled={state.routeLLMEnabled}
-            routeLLMThreshold={state.routeLLMThreshold}
-            weakModels={state.weakModels}
-            onRoutingModeChange={(mode) =>
-              setState((prev) => ({ ...prev, routingMode: mode }))
-            }
-            onAllowedModelsChange={(selection) =>
-              setState((prev) => ({ ...prev, allowedModels: selection }))
-            }
-            onAutoModelNameChange={(name) =>
-              setState((prev) => ({ ...prev, autoModelName: name }))
-            }
-            onPrioritizedModelsChange={(models) =>
-              setState((prev) => ({ ...prev, prioritizedModels: models }))
-            }
-            onRouteLLMEnabledChange={(enabled) =>
-              setState((prev) => ({ ...prev, routeLLMEnabled: enabled }))
-            }
-            onRouteLLMThresholdChange={(threshold) =>
-              setState((prev) => ({ ...prev, routeLLMThreshold: threshold }))
-            }
-            onWeakModelsChange={(models) =>
-              setState((prev) => ({ ...prev, weakModels: models }))
-            }
-          />
-        )
-      case 2:
-        return (
-          <StepMcp
-            accessMode={state.mcpAccessMode}
-            selectedServers={state.selectedMcpServers}
-            onChange={(mode, servers) =>
-              setState((prev) => ({
-                ...prev,
-                mcpAccessMode: mode,
-                selectedMcpServers: servers,
-              }))
-            }
-          />
-        )
-      case 3:
-        return (
-          <StepCredentials
-            clientId={state.clientId || ""}
-            clientUuid={state.clientUuid || ""}
-            secret={state.clientSecret || null}
-          />
-        )
-      default:
-        return null
+    // Welcome step (only when showWelcome is true and on step 0)
+    if (showWelcome && currentStep === 0) {
+      return <StepWelcome />
     }
+
+    if (currentStep === nameStepIndex) {
+      return (
+        <StepName
+          name={state.clientName}
+          onChange={(name) => setState((prev) => ({ ...prev, clientName: name }))}
+        />
+      )
+    }
+    if (currentStep === modelsStepIndex) {
+      return (
+        <StepModels
+          routingMode={state.routingMode}
+          allowedModels={state.allowedModels}
+          autoModelName={state.autoModelName}
+          prioritizedModels={state.prioritizedModels}
+          routeLLMEnabled={state.routeLLMEnabled}
+          routeLLMThreshold={state.routeLLMThreshold}
+          weakModels={state.weakModels}
+          onRoutingModeChange={(mode) =>
+            setState((prev) => ({ ...prev, routingMode: mode }))
+          }
+          onAllowedModelsChange={(selection) =>
+            setState((prev) => ({ ...prev, allowedModels: selection }))
+          }
+          onAutoModelNameChange={(name) =>
+            setState((prev) => ({ ...prev, autoModelName: name }))
+          }
+          onPrioritizedModelsChange={(models) =>
+            setState((prev) => ({ ...prev, prioritizedModels: models }))
+          }
+          onRouteLLMEnabledChange={(enabled) =>
+            setState((prev) => ({ ...prev, routeLLMEnabled: enabled }))
+          }
+          onRouteLLMThresholdChange={(threshold) =>
+            setState((prev) => ({ ...prev, routeLLMThreshold: threshold }))
+          }
+          onWeakModelsChange={(models) =>
+            setState((prev) => ({ ...prev, weakModels: models }))
+          }
+        />
+      )
+    }
+    if (currentStep === mcpStepIndex) {
+      return (
+        <StepMcp
+          accessMode={state.mcpAccessMode}
+          selectedServers={state.selectedMcpServers}
+          onChange={(mode, servers) =>
+            setState((prev) => ({
+              ...prev,
+              mcpAccessMode: mode,
+              selectedMcpServers: servers,
+            }))
+          }
+        />
+      )
+    }
+    if (currentStep === credentialsStepIndex) {
+      return (
+        <StepCredentials
+          clientId={state.clientId || ""}
+          clientUuid={state.clientUuid || ""}
+          secret={state.clientSecret || null}
+        />
+      )
+    }
+    return null
   }
 
   return (
@@ -310,17 +345,17 @@ export function ClientCreationWizard({
         <DialogHeader>
           <div className="flex items-center gap-2 mb-1">
             <span className="text-xs font-medium text-muted-foreground">
-              Step {currentStep + 1} of {STEP_TITLES.length}
+              Step {currentStep + 1} of {stepTitles.length}
             </span>
             <div className="flex-1 h-1 bg-muted rounded-full overflow-hidden">
               <div
                 className="h-full bg-primary transition-all duration-300"
-                style={{ width: `${((currentStep + 1) / STEP_TITLES.length) * 100}%` }}
+                style={{ width: `${((currentStep + 1) / stepTitles.length) * 100}%` }}
               />
             </div>
           </div>
-          <DialogTitle>{STEP_TITLES[currentStep]}</DialogTitle>
-          <DialogDescription>{STEP_DESCRIPTIONS[currentStep]}</DialogDescription>
+          <DialogTitle>{stepTitles[currentStep]}</DialogTitle>
+          <DialogDescription>{stepDescriptions[currentStep]}</DialogDescription>
         </DialogHeader>
 
         <div className="py-4 px-1 min-h-[300px] max-h-[60vh] overflow-y-auto">{renderStep()}</div>
@@ -344,7 +379,7 @@ export function ClientCreationWizard({
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                     Creating...
                   </>
-                ) : currentStep === 2 ? (
+                ) : currentStep === mcpStepIndex ? (
                   "Create Client"
                 ) : (
                   <>

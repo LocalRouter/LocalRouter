@@ -9,6 +9,7 @@ import {
   Cpu,
   Route,
   RefreshCw,
+  Plus,
 } from "lucide-react"
 import {
   CommandDialog,
@@ -21,14 +22,25 @@ import {
   CommandShortcut,
 } from "@/components/ui/command"
 import type { View } from "./sidebar"
+import { MCP_SERVER_TEMPLATES } from "@/components/mcp/McpServerTemplates"
+
+interface ProviderType {
+  provider_type: string
+  display_name: string
+  category: string
+  description: string
+}
 
 interface CommandPaletteProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   onViewChange: (view: View, subTab?: string) => void
+  onAddProvider?: (providerType: string) => void
+  onAddMcpServer?: (templateId: string) => void
   // Data for search
   clients?: Array<{ id: string; name: string; client_id: string }>
   providers?: Array<{ instance_name: string; provider_type: string }>
+  providerTypes?: ProviderType[]
   models?: Array<{ id: string; provider: string }>
   mcpServers?: Array<{ id: string; name: string }>
   strategies?: Array<{ id: string; name: string; parent: string | null }>
@@ -38,8 +50,11 @@ export function CommandPalette({
   open,
   onOpenChange,
   onViewChange,
+  onAddProvider,
+  onAddMcpServer,
   clients = [],
   providers = [],
+  providerTypes = [],
   models = [],
   mcpServers = [],
   strategies = [],
@@ -120,10 +135,10 @@ export function CommandPalette({
             <span>Models</span>
           </CommandItem>
           <CommandItem
-            onSelect={() => runCommand(() => onViewChange('resources', 'mcp-servers'))}
+            onSelect={() => runCommand(() => onViewChange('mcp-servers'))}
           >
             <Database className="mr-2 h-4 w-4" />
-            <span>MCP Servers</span>
+            <span>MCP</span>
           </CommandItem>
           <CommandItem
             onSelect={() => runCommand(() => onViewChange('resources', 'oauth-clients'))}
@@ -221,7 +236,7 @@ export function CommandPalette({
                   key={`${model.provider}/${model.id}`}
                   onSelect={() =>
                     runCommand(() =>
-                      onViewChange('resources', `models/${model.provider}/${model.id}`)
+                      onViewChange('resources', `providers/${model.provider}`)
                     )
                   }
                 >
@@ -236,17 +251,17 @@ export function CommandPalette({
           </>
         )}
 
-        {/* MCP Servers search */}
+        {/* MCP search */}
         {mcpServers.length > 0 && (
           <>
             <CommandSeparator />
-            <CommandGroup heading="MCP Servers">
+            <CommandGroup heading="MCP">
               {mcpServers.slice(0, 5).map((server) => (
                 <CommandItem
                   key={server.id}
                   onSelect={() =>
                     runCommand(() =>
-                      onViewChange('resources', `mcp-servers/${server.id}`)
+                      onViewChange('mcp-servers', server.id)
                     )
                   }
                 >
@@ -276,6 +291,52 @@ export function CommandPalette({
                   <span>{strategy.name}</span>
                   <span className="ml-2 text-xs text-muted-foreground">
                     {strategy.parent ? 'Owned' : 'Shared'}
+                  </span>
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </>
+        )}
+
+        {/* Provider Templates (Add Provider) */}
+        {providerTypes.length > 0 && onAddProvider && (
+          <>
+            <CommandSeparator />
+            <CommandGroup heading="Add LLM Provider">
+              {providerTypes.slice(0, 8).map((type) => (
+                <CommandItem
+                  key={type.provider_type}
+                  onSelect={() =>
+                    runCommand(() => onAddProvider(type.provider_type))
+                  }
+                >
+                  <Plus className="mr-2 h-4 w-4" />
+                  <span>{type.display_name}</span>
+                  <span className="ml-2 text-xs text-muted-foreground">
+                    {type.category}
+                  </span>
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </>
+        )}
+
+        {/* MCP Templates (Add MCP) */}
+        {onAddMcpServer && (
+          <>
+            <CommandSeparator />
+            <CommandGroup heading="Add MCP">
+              {MCP_SERVER_TEMPLATES.slice(0, 8).map((template) => (
+                <CommandItem
+                  key={template.id}
+                  onSelect={() =>
+                    runCommand(() => onAddMcpServer(template.id))
+                  }
+                >
+                  <Plus className="mr-2 h-4 w-4" />
+                  <span>{template.name}</span>
+                  <span className="ml-2 text-xs text-muted-foreground">
+                    {template.transport}
                   </span>
                 </CommandItem>
               ))}

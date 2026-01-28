@@ -10,34 +10,31 @@ function AccessKeyNodeComponent({ data }: NodeProps<AccessKeyNodeData>) {
   return (
     <div
       className={cn(
-        'relative px-5 py-4 rounded-xl border-2 shadow-md min-w-[220px]',
+        'relative px-2.5 py-1.5 rounded-lg border shadow-sm min-w-[120px]',
         'bg-gradient-to-br from-blue-50 to-blue-100 dark:from-blue-950 dark:to-blue-900',
-        'cursor-pointer transition-all hover:scale-[1.02] hover:shadow-lg',
+        'cursor-pointer transition-all hover:scale-[1.02] hover:shadow-md',
         isConnected
           ? 'border-blue-500 shadow-blue-200 dark:shadow-blue-900'
           : 'border-blue-300 dark:border-blue-700'
       )}
     >
       {/* Node content */}
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-2">
         <div className={cn(
-          'flex items-center justify-center w-10 h-10 rounded-full',
+          'flex items-center justify-center w-6 h-6 rounded-full',
           isConnected
             ? 'bg-blue-500 text-white'
             : 'bg-blue-200 text-blue-600 dark:bg-blue-800 dark:text-blue-300'
         )}>
-          <Key className="w-5 h-5" />
+          <Key className="w-3 h-3" />
         </div>
         <div className="min-w-0 flex-1">
-          <div className="text-xs font-bold tracking-wider text-blue-500 dark:text-blue-400 uppercase">
-            CLIENT
-          </div>
-          <div className="text-2xl font-semibold text-blue-900 dark:text-blue-100 truncate">
+          <div className="text-sm font-medium text-blue-900 dark:text-blue-100 truncate">
             {name}
           </div>
           {isConnected && (
-            <div className="flex items-center gap-1.5 text-sm text-green-600 dark:text-green-400 font-medium">
-              <Wifi className="w-4 h-4" />
+            <div className="flex items-center gap-1 text-[10px] text-green-600 dark:text-green-400 font-medium">
+              <Wifi className="w-2.5 h-2.5" />
               <span>Connected</span>
             </div>
           )}
@@ -48,7 +45,7 @@ function AccessKeyNodeComponent({ data }: NodeProps<AccessKeyNodeData>) {
       <Handle
         type="source"
         position={Position.Right}
-        className="!w-3 !h-3 !bg-blue-500 !border-2 !border-white dark:!border-slate-900"
+        className="!w-2 !h-2 !bg-blue-500 !border !border-white dark:!border-slate-900"
       />
     </div>
   )
