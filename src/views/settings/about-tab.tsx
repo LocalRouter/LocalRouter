@@ -42,6 +42,12 @@ const inspirations: Inspiration[] = [
     url: "https://notdiamond.ai",
     description: "Inspiration for intelligent model selection and routing strategies.",
   },
+  {
+    name: "models.dev (OpenCode)",
+    license: "MIT",
+    url: "https://models.dev",
+    description: "Community-maintained model catalog providing pricing, capabilities, and metadata for AI models. Embedded at build time.",
+  },
 ]
 
 const rustDependencies: Dependency[] = [

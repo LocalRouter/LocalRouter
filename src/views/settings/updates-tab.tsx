@@ -180,8 +180,9 @@ export function UpdatesTab() {
         await invoke("set_update_notification", { available: false })
       }
     } catch (err: any) {
-      setCheckError(err.message || "Failed to check for updates")
-      toast.error(`Check failed: ${err.message}`)
+      const errorMessage = err?.message || (typeof err === 'string' ? err : JSON.stringify(err)) || "Unknown error"
+      setCheckError(errorMessage)
+      toast.error(`Check failed: ${errorMessage}`)
     } finally {
       setIsChecking(false)
     }

@@ -64,10 +64,11 @@ Get the latest release for your platform:
 
 | Platform | Download |
 |----------|----------|
-| **macOS** (Intel & Apple Silicon) | [LocalRouter.dmg](https://github.com/LocalRouter/LocalRouter/releases/latest/download/LocalRouter_macOS.dmg) |
-| **Windows** (64-bit) | [LocalRouter.msi](https://github.com/LocalRouter/LocalRouter/releases/latest/download/LocalRouter_Windows.msi) |
-| **Linux** (DEB) | [LocalRouter.deb](https://github.com/LocalRouter/LocalRouter/releases/latest/download/LocalRouter_Linux.deb) |
-| **Linux** (RPM) | [LocalRouter.rpm](https://github.com/LocalRouter/LocalRouter/releases/latest/download/LocalRouter_Linux.rpm) |
+| **macOS** (Apple Silicon) | [LocalRouter-AI_aarch64.dmg](https://github.com/LocalRouter/LocalRouter/releases/latest/download/LocalRouter-AI_aarch64.dmg) |
+| **macOS** (Intel) | [LocalRouter-AI_x64.dmg](https://github.com/LocalRouter/LocalRouter/releases/latest/download/LocalRouter-AI_x64.dmg) |
+| **Windows** (64-bit) | [LocalRouter-AI_x64-setup.exe](https://github.com/LocalRouter/LocalRouter/releases/latest/download/LocalRouter-AI_x64-setup.exe) |
+| **Linux** (DEB) | [LocalRouter-AI_amd64.deb](https://github.com/LocalRouter/LocalRouter/releases/latest/download/LocalRouter-AI_amd64.deb) |
+| **Linux** (AppImage) | [LocalRouter-AI_amd64.AppImage](https://github.com/LocalRouter/LocalRouter/releases/latest/download/LocalRouter-AI_amd64.AppImage) |
 
 [View all releases](https://github.com/LocalRouter/LocalRouter/releases)
 
@@ -86,9 +87,11 @@ cargo tauri dev
 
 **1. Launch LocalRouter** &mdash; The app starts and runs an API server at `localhost:3625`
 
-**2. Add a provider** &mdash; Go to Providers tab, add OpenAI/Anthropic/Ollama with your API key
+**2. Add a LLM provider** &mdash; Go to Providers tab, add OpenAI/Anthropic/Ollama with your API key
 
-**3. Create an access key** &mdash; Go to API Keys tab, create a key (starts with `lr-`)
+**2. Add a MCP server** &mdash; Go to MCP tab, connect your MCP servers over STDIO or HTTP
+
+**3. Create an access key** &mdash; Select LLMs and MCPs & copy your API key
 
 **4. Use it** &mdash; Point any OpenAI-compatible app to LocalRouter:
 
@@ -100,38 +103,6 @@ curl http://localhost:3625/v1/chat/completions \
     "model": "gpt-4",
     "messages": [{"role": "user", "content": "Hello!"}]
   }'
-```
-
-### Using with SDKs
-
-```python
-# Python (OpenAI SDK)
-from openai import OpenAI
-
-client = OpenAI(
-    base_url="http://localhost:3625/v1",
-    api_key="lr-your-key-here"
-)
-
-response = client.chat.completions.create(
-    model="gpt-4",
-    messages=[{"role": "user", "content": "Hello!"}]
-)
-```
-
-```typescript
-// TypeScript (OpenAI SDK)
-import OpenAI from 'openai';
-
-const client = new OpenAI({
-  baseURL: 'http://localhost:3625/v1',
-  apiKey: 'lr-your-key-here',
-});
-
-const response = await client.chat.completions.create({
-  model: 'gpt-4',
-  messages: [{ role: 'user', content: 'Hello!' }],
-});
 ```
 
 ---
@@ -164,36 +135,26 @@ Connect once to LocalRouter, access all your MCP tools.
 - **STDIO & SSE transports** &mdash; Works with local processes and remote HTTP servers
 - **OAuth support** &mdash; Auto-discovery and custom auth headers for cloud MCP servers
 
-### Supported Providers
+### Local and Privacy First
 
-| Provider | Chat | Completions | Embeddings | Streaming |
-|----------|:----:|:-----------:|:----------:|:---------:|
-| OpenAI | ✅ | ✅ | ✅ | ✅ |
-| Anthropic | ✅ | ✅ | - | ✅ |
-| Google Gemini | ✅ | ✅ | ✅ | ✅ |
-| Ollama | ✅ | ✅ | ✅ | ✅ |
-| OpenRouter | ✅ | ✅ | ✅ | ✅ |
-| Mistral | ✅ | ✅ | ✅ | ✅ |
-| Cohere | ✅ | - | ✅ | ✅ |
-| Perplexity | ✅ | - | - | ✅ |
-| Groq | ✅ | ✅ | - | ✅ |
-| LM Studio | ✅ | ✅ | ✅ | ✅ |
-| Any OpenAI-compatible | ✅ | ✅ | ✅ | ✅ |
-
-### Privacy First
-
-LocalRouter runs entirely on your machine.
+LocalRouter runs on your machine.
 
 - **No telemetry** &mdash; Zero analytics, crash reporting, or usage tracking
 - **No cloud sync** &mdash; All data stays on your computer
-- **No external assets** &mdash; Everything bundled at build time, no CDN requests
-- **Open source** &mdash; Audit the code yourself
+- **Open source** &mdash; Use the code as you wish (AGPL licensed)
+
+LocalRouter uses the network for:
+
+- **App Update** &mdash; Updates from GitHub releases
+- **External LLM Providers** &mdash; (Optional) Connect to external LLM providers
+- **External MCP Servers** &mdash; (Optional) Connect to external MCP servers
+- **Strong/Weak** &mdash; (Optional) ML model downloaded from HuggingFace; runs offline to determine if prompt should route to strong or weak model
 
 ---
 
 ## API Reference
 
-LocalRouter exposes an OpenAI-compatible API at `http://localhost:3625`.
+LocalRouter exposes both an OpenAI-compatible API and a Unified MCP at `http://localhost:3625`.
 
 | Endpoint | Description |
 |----------|-------------|
@@ -207,42 +168,6 @@ LocalRouter exposes an OpenAI-compatible API at `http://localhost:3625`.
 | `GET /health` | Health check |
 
 Interactive API documentation is available in the app's Documentation tab.
-
----
-
-## Configuration
-
-Configuration is stored in platform-specific directories:
-
-| Platform | Location |
-|----------|----------|
-| macOS | `~/Library/Application Support/LocalRouter/` |
-| Linux | `~/.localrouter/` |
-| Windows | `%APPDATA%\LocalRouter\` |
-
-Most configuration is done through the UI, but you can also edit `config.yaml` directly:
-
-```yaml
-providers:
-  - id: openai-main
-    provider_type: OpenAI
-    name: "OpenAI"
-    api_key_ref: "openai-key"
-    enabled: true
-
-  - id: ollama-local
-    provider_type: Ollama
-    name: "Local Ollama"
-    base_url: "http://localhost:11434"
-    enabled: true
-
-mcp_servers:
-  - id: github
-    name: "GitHub"
-    transport: SSE
-    url: "https://api.github.com/mcp"
-    oauth_provider: github
-```
 
 ---
 
@@ -287,50 +212,6 @@ cargo test
 # Lint and format
 cargo clippy && cargo fmt
 ```
-
-### Development Tips
-
-- Use `LOCALROUTER_KEYCHAIN=file` to avoid macOS keychain prompts during development
-- Dev mode uses `~/.localrouter-dev/` to keep it separate from production
-- Check [plan/2026-01-14-PROGRESS.md](plan/2026-01-14-PROGRESS.md) for available tasks
-
-### Commit Convention
-
-We use [Conventional Commits](https://www.conventionalcommits.org/):
-
-```
-feat(router): add complexity-based routing
-fix(providers): handle rate limit errors gracefully
-docs: update API reference
-```
-
----
-
-## Roadmap
-
-### Completed
-
-- OpenAI-compatible API (chat, completions, embeddings)
-- 10+ provider implementations
-- MCP proxy with STDIO and SSE transports
-- OAuth 2.0 authentication
-- Rate limiting (requests, tokens, cost)
-- Desktop UI with system tray
-- OpenAPI 3.1 documentation
-
-### In Progress
-
-- Smart routing engine (complexity-based, cost optimization)
-- Unified client architecture
-- UI improvements
-
-### Planned
-
-- CLI tool for headless operation
-- Docker container
-- Custom routing strategies
-- Webhook notifications
-- Plugin system for custom providers
 
 ---
 
