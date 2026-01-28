@@ -84,16 +84,16 @@ jobs:
         settings:
           - platform: macos-latest
             target: x86_64-apple-darwin
-            bundles: dmg,updater
+            bundles: app,dmg
           - platform: macos-latest
             target: aarch64-apple-darwin
-            bundles: dmg,updater
+            bundles: app,dmg
           - platform: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
-            bundles: deb,appimage,updater
+            bundles: deb,appimage
           - platform: windows-latest
             target: x86_64-pc-windows-msvc
-            bundles: msi,nsis,updater
+            bundles: msi,nsis
     runs-on: ${{ matrix.settings.platform }}
     steps:
       - name: Checkout repository

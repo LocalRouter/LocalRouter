@@ -90,4 +90,5 @@ opt-level = "z"
 lto = true
 codegen-units = 1
 panic = "abort"
-strip = true
+# Use "debuginfo" instead of true to preserve __TAURI_BUNDLE_TYPE symbol for updater
+strip = "debuginfo"
