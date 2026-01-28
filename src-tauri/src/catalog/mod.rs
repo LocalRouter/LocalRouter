@@ -1,12 +1,12 @@
 // Model catalog module
 //
-// Provides offline-capable model metadata and pricing from OpenRouter.
+// Provides offline-capable model metadata and pricing from models.dev.
 // All data is embedded at build time - no runtime network requests.
 
 pub mod matcher;
 pub mod types;
 
-pub use types::{CatalogMetadata, CatalogModel, CatalogPricing, Modality};
+pub use types::{CatalogCapabilities, CatalogMetadata, CatalogModel, CatalogPricing, Modality};
 
 // Include the generated catalog data
 include!(concat!(env!("CARGO_MANIFEST_DIR"), "/catalog/catalog.rs"));
@@ -45,6 +45,24 @@ pub fn models() -> &'static [CatalogModel] {
     CATALOG_MODELS
 }
 
+/// Get all models for a specific provider from the embedded catalog
+///
+/// This is useful for providers that don't have their own model list API
+/// (like Perplexity) and need to use the catalog as their model source.
+///
+/// # Arguments
+/// * `provider_id` - The models.dev provider ID (e.g., "openai", "anthropic", "google")
+///
+/// # Returns
+/// A vector of references to catalog models that belong to this provider
+pub fn get_provider_models(provider_id: &str) -> Vec<&'static CatalogModel> {
+    let prefix = format!("{}/", provider_id);
+    CATALOG_MODELS
+        .iter()
+        .filter(|m| m.id.starts_with(&prefix))
+        .collect()
+}
+
 #[cfg(test)]
 mod integration_tests {
     use super::*;
@@ -52,11 +70,11 @@ mod integration_tests {
     #[test]
     fn test_catalog_metadata_valid() {
         let meta = metadata();
-        assert_eq!(meta.api_version, "v1");
-        // Model count varies as OpenRouter updates their catalog
+        assert_eq!(meta.source, "models.dev");
+        // Model count varies as models.dev updates their catalog
         assert!(
-            meta.total_models > 300,
-            "Expected at least 300 models, got {}",
+            meta.total_models > 100,
+            "Expected at least 100 models, got {}",
             meta.total_models
         );
         assert!(meta.fetch_timestamp > 0);

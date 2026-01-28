@@ -15,7 +15,7 @@ pub enum Modality {
 #[derive(Debug, Clone, Copy)]
 pub struct CatalogMetadata {
     pub fetch_timestamp: u64,
-    pub api_version: &'static str,
+    pub source: &'static str,
     pub total_models: usize,
 }
 
@@ -28,17 +28,43 @@ impl CatalogMetadata {
     }
 }
 
+/// Model capabilities from models.dev
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CatalogCapabilities {
+    /// Whether the model supports extended reasoning/thinking
+    pub reasoning: bool,
+    /// Whether the model supports tool/function calling
+    pub tool_call: bool,
+    /// Whether the model supports structured output (JSON schema)
+    pub structured_output: bool,
+    /// Whether the model supports image input (vision)
+    pub vision: bool,
+}
+
+impl Default for CatalogCapabilities {
+    fn default() -> Self {
+        Self {
+            reasoning: false,
+            tool_call: false,
+            structured_output: false,
+            vision: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct CatalogModel {
     pub id: &'static str,
     pub aliases: &'static [&'static str],
     pub name: &'static str,
-    pub created: i64,
     pub context_length: u32,
+    pub max_output_tokens: Option<u32>,
     pub modality: Modality,
+    pub capabilities: CatalogCapabilities,
     pub pricing: CatalogPricing,
-    pub supported_parameters: &'static [&'static str],
+    pub knowledge_cutoff: Option<&'static str>,
+    pub open_weights: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -48,11 +74,11 @@ pub struct CatalogPricing {
     pub prompt_per_token: f64,
     /// Cost per token (not per 1K!)
     pub completion_per_token: f64,
-    /// Cost per image token (if applicable)
-    pub image_per_token: Option<f64>,
-    /// Fixed cost per request (if applicable)
-    pub request_cost: Option<f64>,
-    /// Currency code (always "USD" for OpenRouter)
+    /// Cost per token for reading from cache (prompt caching)
+    pub cache_read_per_token: Option<f64>,
+    /// Cost per token for writing to cache (prompt caching)
+    pub cache_write_per_token: Option<f64>,
+    /// Currency code (always "USD")
     pub currency: &'static str,
 }
 
@@ -68,12 +94,53 @@ impl CatalogPricing {
         self.completion_per_token * 1000.0
     }
 
+    /// Get prompt cost per 1M tokens
+    pub fn prompt_cost_per_1m(&self) -> f64 {
+        self.prompt_per_token * 1_000_000.0
+    }
+
+    /// Get completion cost per 1M tokens
+    pub fn completion_cost_per_1m(&self) -> f64 {
+        self.completion_per_token * 1_000_000.0
+    }
+
+    /// Get cache read cost per 1M tokens (if available)
+    pub fn cache_read_cost_per_1m(&self) -> Option<f64> {
+        self.cache_read_per_token.map(|c| c * 1_000_000.0)
+    }
+
+    /// Get cache write cost per 1M tokens (if available)
+    pub fn cache_write_cost_per_1m(&self) -> Option<f64> {
+        self.cache_write_per_token.map(|c| c * 1_000_000.0)
+    }
+
     /// Calculate total cost for a request
     pub fn calculate_cost(&self, prompt_tokens: u32, completion_tokens: u32) -> f64 {
         let prompt_cost = self.prompt_per_token * prompt_tokens as f64;
         let completion_cost = self.completion_per_token * completion_tokens as f64;
-        let request_cost = self.request_cost.unwrap_or(0.0);
 
-        prompt_cost + completion_cost + request_cost
+        prompt_cost + completion_cost
+    }
+
+    /// Calculate total cost for a request with cache hits
+    pub fn calculate_cost_with_cache(
+        &self,
+        prompt_tokens: u32,
+        completion_tokens: u32,
+        cache_read_tokens: u32,
+        cache_write_tokens: u32,
+    ) -> f64 {
+        let prompt_cost = self.prompt_per_token * prompt_tokens as f64;
+        let completion_cost = self.completion_per_token * completion_tokens as f64;
+        let cache_read_cost = self
+            .cache_read_per_token
+            .map(|c| c * cache_read_tokens as f64)
+            .unwrap_or(0.0);
+        let cache_write_cost = self
+            .cache_write_per_token
+            .map(|c| c * cache_write_tokens as f64)
+            .unwrap_or(0.0);
+
+        prompt_cost + completion_cost + cache_read_cost + cache_write_cost
     }
 }

@@ -1,16 +1,16 @@
-// Build-time OpenRouter catalog scraper
+// Build-time models.dev catalog scraper
 //
-// This module fetches the model catalog from OpenRouter API during compilation.
+// This module fetches the model catalog from models.dev API during compilation.
 // PRIVACY: This ONLY runs at build time, never at runtime.
 
-use crate::buildtools::models::{OpenRouterModel, OpenRouterModelsResponse};
+use crate::buildtools::models::{flatten_models, FlattenedModel, ModelsDevResponse};
 use std::fs;
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-const OPENROUTER_MODELS_API: &str = "https://openrouter.ai/api/v1/models";
+const MODELS_DEV_API: &str = "https://models.dev/api.json";
 const CACHE_DIR: &str = "catalog";
-const CACHE_FILE: &str = "catalog/openrouter_raw.json";
+const CACHE_FILE: &str = "catalog/modelsdev_raw.json";
 const TIMESTAMP_FILE: &str = "catalog/.last_fetch";
 const CACHE_DURATION_DAYS: u64 = 7;
 
@@ -29,8 +29,8 @@ impl CatalogFetcher {
         }
     }
 
-    /// Fetch OpenRouter catalog with intelligent caching
-    pub fn fetch(&self) -> Result<Vec<OpenRouterModel>, Box<dyn std::error::Error>> {
+    /// Fetch models.dev catalog with intelligent caching
+    pub fn fetch(&self) -> Result<Vec<FlattenedModel>, Box<dyn std::error::Error>> {
         // Check environment variables
         let force_rebuild = std::env::var("LOCALROUTER_REBUILD_CATALOG").is_ok();
         let skip_fetch = std::env::var("LOCALROUTER_SKIP_CATALOG_FETCH").is_ok();
@@ -48,21 +48,20 @@ impl CatalogFetcher {
         let should_fetch = force_rebuild || self.is_cache_stale()?;
 
         if should_fetch {
-            println!("cargo:warning=Fetching fresh model catalog from OpenRouter...");
+            println!("cargo:warning=Fetching fresh model catalog from models.dev...");
             match self.fetch_from_api() {
                 Ok(models) => {
-                    // Save to cache
-                    self.save_to_cache(&models)?;
+                    // Save raw response to cache
                     self.update_timestamp()?;
                     println!(
-                        "cargo:warning=Successfully fetched {} models from OpenRouter",
+                        "cargo:warning=Successfully fetched {} models from models.dev",
                         models.len()
                     );
                     Ok(models)
                 }
                 Err(e) => {
                     println!(
-                        "cargo:warning=Failed to fetch from OpenRouter: {}. Trying cache...",
+                        "cargo:warning=Failed to fetch from models.dev: {}. Trying cache...",
                         e
                     );
                     self.load_from_cache()
@@ -74,52 +73,50 @@ impl CatalogFetcher {
         }
     }
 
-    /// Fetch fresh data from OpenRouter API
-    fn fetch_from_api(&self) -> Result<Vec<OpenRouterModel>, Box<dyn std::error::Error>> {
+    /// Fetch fresh data from models.dev API
+    fn fetch_from_api(&self) -> Result<Vec<FlattenedModel>, Box<dyn std::error::Error>> {
         // Use blocking reqwest since we're in build.rs context
         let client = reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(30))
             .user_agent("LocalRouter/0.1.0")
             .build()?;
 
-        let response = client.get(OPENROUTER_MODELS_API).send()?;
+        let response = client.get(MODELS_DEV_API).send()?;
 
         if !response.status().is_success() {
-            return Err(format!("OpenRouter API returned status: {}", response.status()).into());
+            return Err(format!("models.dev API returned status: {}", response.status()).into());
         }
 
         let body = response.text()?;
-        let parsed: OpenRouterModelsResponse = serde_json::from_str(&body)?;
 
-        Ok(parsed.data)
+        // Save raw response to cache file
+        fs::write(&self.cache_file, &body)?;
+
+        let parsed: ModelsDevResponse = serde_json::from_str(&body)?;
+
+        // Flatten the nested structure
+        let flattened = flatten_models(parsed);
+
+        Ok(flattened)
     }
 
     /// Load catalog from cache file
-    fn load_from_cache(&self) -> Result<Vec<OpenRouterModel>, Box<dyn std::error::Error>> {
+    fn load_from_cache(&self) -> Result<Vec<FlattenedModel>, Box<dyn std::error::Error>> {
         if !Path::new(&self.cache_file).exists() {
             return Err("Cache file does not exist and fetching is disabled".into());
         }
 
         let content = fs::read_to_string(&self.cache_file)?;
-        let parsed: OpenRouterModelsResponse = serde_json::from_str(&content)?;
+        let parsed: ModelsDevResponse = serde_json::from_str(&content)?;
+
+        // Flatten the nested structure
+        let flattened = flatten_models(parsed);
 
         println!(
             "cargo:warning=Loaded {} models from cache",
-            parsed.data.len()
+            flattened.len()
         );
-        Ok(parsed.data)
-    }
-
-    /// Save catalog to cache file
-    fn save_to_cache(&self, models: &[OpenRouterModel]) -> Result<(), Box<dyn std::error::Error>> {
-        let response = OpenRouterModelsResponse {
-            data: models.to_vec(),
-        };
-
-        let json = serde_json::to_string_pretty(&response)?;
-        fs::write(&self.cache_file, json)?;
-
-        Ok(())
+        Ok(flattened)
     }
 
     /// Check if cache is stale (>7 days old)
@@ -149,7 +146,7 @@ impl CatalogFetcher {
 }
 
 /// Main entry point for build.rs
-pub fn fetch_openrouter_catalog() -> Result<Vec<OpenRouterModel>, Box<dyn std::error::Error>> {
+pub fn fetch_modelsdev_catalog() -> Result<Vec<FlattenedModel>, Box<dyn std::error::Error>> {
     let fetcher = CatalogFetcher::new();
     fetcher.fetch()
 }

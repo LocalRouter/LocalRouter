@@ -1,7 +1,7 @@
 // Build script for LocalRouter AI
 //
 // This script runs at compile time to:
-// 1. Fetch OpenRouter model catalog (with 7-day caching)
+// 1. Fetch models.dev model catalog (with 7-day caching)
 // 2. Generate Rust code with embedded static data
 // 3. Enable offline-capable pricing and model metadata
 //
@@ -14,7 +14,7 @@
 mod buildtools;
 
 fn main() {
-    // Generate model catalog from OpenRouter
+    // Generate model catalog from models.dev
     if let Err(e) = generate_model_catalog() {
         println!("cargo:warning=Failed to generate model catalog: {}", e);
         println!("cargo:warning=Continuing build without fresh catalog data");
@@ -31,7 +31,7 @@ fn generate_model_catalog() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-env-changed=LOCALROUTER_SKIP_CATALOG_FETCH");
 
     // Fetch catalog (uses cache if fresh)
-    let models = buildtools::fetch_openrouter_catalog()?;
+    let models = buildtools::fetch_modelsdev_catalog()?;
 
     // Generate Rust code
     buildtools::generate_catalog_code(&models)?;
