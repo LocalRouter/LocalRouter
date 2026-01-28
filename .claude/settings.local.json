@@ -19,7 +19,15 @@
       "Bash(gh run view:*)",
       "Bash(gh api:*)",
       "Bash(gh run watch:*)",
-      "Bash(gh release view:*)"
+      "Bash(gh release view:*)",
+      "Bash(npx tsc:*)",
+      "Bash(npx eslint:*)",
+      "Bash(pgrep:*)",
+      "Bash(lsof:*)",
+      "Bash(while read name pid)",
+      "WebFetch(domain:models.dev)",
+      "Bash(LOCALROUTER_REBUILD_CATALOG=1 cargo check:*)",
+      "Bash(tree:*)"
     ]
   }
 }
