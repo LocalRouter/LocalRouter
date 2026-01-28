@@ -4,7 +4,7 @@
  * Allows selecting and reordering models for prioritization.
  * Used for:
  * - Auto-routing prioritized models (strong models)
- * - RouteLLM weak models
+ * - Strong/Weak weak models
  *
  * Features:
  * - Select models from available list
@@ -161,7 +161,7 @@ export function PrioritizedModelSelector({
             </p>
             <p className="text-muted-foreground mt-0.5">
               These models are configured but not currently offered by their providers.
-              They will be skipped during routing.
+              They will be skipped during selection.
             </p>
           </div>
         </div>

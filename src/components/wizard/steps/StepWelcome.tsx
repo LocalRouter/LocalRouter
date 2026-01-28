@@ -30,7 +30,7 @@ export function StepWelcome() {
         />
         <FeatureItem
           icon={<Zap className="h-4 w-4" />}
-          title="Smart Routing"
+          title="Smart Selection"
           description="Automatically select the best model or let clients choose from allowed models."
         />
         <FeatureItem

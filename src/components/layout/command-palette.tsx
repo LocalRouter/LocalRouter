@@ -162,13 +162,13 @@ export function CommandPalette({
             onSelect={() => runCommand(() => onViewChange('settings', 'routing'))}
           >
             <Route className="mr-2 h-4 w-4" />
-            <span>Routing & Strategies</span>
+            <span>Strategies</span>
           </CommandItem>
           <CommandItem
             onSelect={() => runCommand(() => onViewChange('settings', 'routellm'))}
           >
             <Cpu className="mr-2 h-4 w-4" />
-            <span>RouteLLM</span>
+            <span>Strong/Weak</span>
           </CommandItem>
           <CommandItem
             onSelect={() => runCommand(() => onViewChange('settings', 'updates'))}

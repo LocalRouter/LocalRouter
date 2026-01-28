@@ -3,7 +3,7 @@
  *
  * Models configuration tab for a client.
  * Features:
- * 1. Routing Strategy section - strategy selection
+ * 1. Strategy section - strategy selection
  * 2. Rate Limits section - nested under strategy with tree connector
  * 3. Model configuration - nested under strategy with tree connector
  */
@@ -187,12 +187,12 @@ export function ClientModelsTab({
 
   return (
     <div>
-      {/* Routing Strategy Section */}
+      {/* Strategy Section */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Route className="h-5 w-5" />
-            Routing Strategy
+            Strategy
           </CardTitle>
           <CardDescription>
             Choose an existing strategy or{" "}

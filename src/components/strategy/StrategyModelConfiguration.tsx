@@ -7,18 +7,18 @@
  * 1. Allowed Models mode - Client sees and can choose from selected models
  * 2. Auto Route mode - Client sees only the auto router model; LocalRouter
  *    selects the best model automatically based on prioritization and optional
- *    Strong/Weak routing (RouteLLM)
+ *    Strong/Weak routing
  *
  * Used in:
  * - Client -> Models tab
- * - Resources -> Model Routing tab
+ * - Resources -> Model Strategies tab
  */
 
 import {useCallback, useEffect, useRef, useState} from "react"
 import {invoke} from "@tauri-apps/api/core"
 import {listen} from "@tauri-apps/api/event"
 import {toast} from "sonner"
-import {Bot, Brain, Download, MessageSquareWarning} from "lucide-react"
+import {Bot, Brain, Download, MessageSquareWarning, Trash2} from "lucide-react"
 import {Card, CardContent, CardDescription, CardHeader, CardTitle,} from "@/components/ui/Card"
 import {Select, SelectContent, SelectItem, SelectTrigger, SelectValue} from "@/components/ui/Select"
 import {Switch} from "@/components/ui/Toggle"
@@ -149,7 +149,7 @@ export function StrategyModelConfiguration({
             setIsDownloading(false)
             setDownloadProgress(100)
             loadRouteLLMStatus()
-            toast.success("RouteLLM model downloaded successfully!")
+            toast.success("Strong/Weak model downloaded successfully!")
         })
 
         // Listen for download failures
@@ -369,6 +369,18 @@ export function StrategyModelConfiguration({
         }
     }
 
+    // Handler for unloading RouteLLM model from memory
+    const handleUnload = async () => {
+        try {
+            await invoke("routellm_unload")
+            const status = await invoke<RouteLLMStatus>("routellm_get_status")
+            setRoutellmStatus(status)
+            toast.success("Strong/Weak model unloaded from memory")
+        } catch (error: any) {
+            toast.error(`Unload failed: ${error.message || error}`)
+        }
+    }
+
     // Check if RouteLLM model is downloaded
     const isRouteLLMDownloaded = routellmStatus?.state !== 'not_downloaded' && routellmStatus?.state !== 'downloading' && !isDownloading
 
@@ -423,10 +435,10 @@ export function StrategyModelConfiguration({
 
     return (
         <div className={cn("space-y-4", className)}>
-            {/* Section 1: Routing Mode Selector */}
+            {/* Section 1: Model Selection Mode */}
             <Card>
                 <CardHeader>
-                    <CardTitle className="text-base">Model Routing Mode</CardTitle>
+                    <CardTitle className="text-base">Model Selection Mode</CardTitle>
                     <CardDescription>
                         Choose how clients see and select models
                     </CardDescription>
@@ -438,7 +450,7 @@ export function StrategyModelConfiguration({
                         disabled={readOnly || saving}
                     >
                         <SelectTrigger className="w-full sm:w-[280px]">
-                            <SelectValue placeholder="Select routing mode" />
+                            <SelectValue placeholder="Select model mode" />
                         </SelectTrigger>
                         <SelectContent>
                             <SelectItem value="allowed">
@@ -546,7 +558,7 @@ export function StrategyModelConfiguration({
                                             </CardContent>
                                         </Card>
 
-                                        {/* Right: Strong/Weak Routing (Weak Models) */}
+                                        {/* Right: Strong/Weak (Weak Models) */}
                                         <Card>
                                             <CardHeader>
                                                 <div className="flex items-center justify-between">
@@ -603,7 +615,7 @@ export function StrategyModelConfiguration({
                                                                 {isDownloading ? (
                                                                     <div className="space-y-2">
                                                                         <div className="flex justify-between text-xs text-muted-foreground">
-                                                                            <span>Downloading RouteLLM model...</span>
+                                                                            <span>Downloading Strong/Weak model...</span>
                                                                             <span>{downloadProgress.toFixed(0)}%</span>
                                                                         </div>
                                                                         <Progress value={downloadProgress} className="h-1.5" />
@@ -611,7 +623,7 @@ export function StrategyModelConfiguration({
                                                                 ) : (
                                                                     <>
                                                                         <p className="text-xs text-muted-foreground">
-                                                                            Download the RouteLLM model to enable intelligent routing between strong and weak models.
+                                                                            Download the Strong/Weak model to enable intelligent selection between strong and weak models.
                                                                         </p>
                                                                         <Button
                                                                             onClick={handleDownload}
@@ -647,7 +659,7 @@ export function StrategyModelConfiguration({
                                                             <div className="space-y-3">
                                                                 <div className="flex items-center justify-between">
                                                                     <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                                                                        Test It Out
+                                                                        Try it out
                                                                     </span>
                                                                     {routellmStatus && (
                                                                         <div className="flex items-center gap-1.5">
@@ -655,6 +667,16 @@ export function StrategyModelConfiguration({
                                                                             <Badge variant={getStatusInfo(routellmStatus.state).variant} className="text-xs">
                                                                                 {getStatusInfo(routellmStatus.state).label}
                                                                             </Badge>
+                                                                            {routellmStatus.state === "started" && (
+                                                                                <Button
+                                                                                    variant="ghost"
+                                                                                    size="sm"
+                                                                                    className="h-5 px-1.5 text-xs"
+                                                                                    onClick={handleUnload}
+                                                                                >
+                                                                                    <Trash2 className="h-3 w-3" />
+                                                                                </Button>
+                                                                            )}
                                                                         </div>
                                                                     )}
                                                                 </div>

@@ -132,7 +132,7 @@ export default function PrioritizedModelList({
           title="No offline models selected"
           message={
             <>
-              Your current routing strategy only includes cloud-based models.
+              Your current strategy only includes cloud-based models.
               Internet connectivity issues may interrupt your workflow.
             </>
           }

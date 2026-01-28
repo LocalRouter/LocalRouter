@@ -174,7 +174,7 @@ export default function Sidebar({ activeTab, activeSubTab, onTabChange }: Sideba
     { id: 'providers' as MainTab, label: 'Providers', hasSubTabs: true },
     { id: 'models' as MainTab, label: 'Models', hasSubTabs: true },
     { id: 'mcp-servers' as MainTab, label: 'MCP Servers', hasSubTabs: true },
-    { id: 'routing' as MainTab, label: 'Routing', hasSubTabs: true },
+    { id: 'routing' as MainTab, label: 'Strategies', hasSubTabs: true },
     { id: 'logs' as MainTab, label: 'Logs' },
     { id: 'settings' as MainTab, label: 'Settings' },
     { id: 'documentation' as MainTab, label: 'Documentation' },
@@ -185,7 +185,7 @@ export default function Sidebar({ activeTab, activeSubTab, onTabChange }: Sideba
       {/* Header Section */}
       <div className="bg-gradient-to-r from-indigo-500 to-purple-600 dark:from-indigo-700 dark:to-purple-800 text-white px-6 py-4">
         <h1 className="text-xl font-bold mb-1">LocalRouter AI</h1>
-        <p className="text-xs opacity-90">Intelligent AI Model Routing</p>
+        <p className="text-xs opacity-90">Intelligent AI Model Selection</p>
       </div>
 
       {/* Navigation Tabs */}
@@ -340,7 +340,7 @@ export default function Sidebar({ activeTab, activeSubTab, onTabChange }: Sideba
             </div>
           )}
 
-          {/* Sub Tabs for Routing Strategies */}
+          {/* Sub Tabs for Strategies */}
           {tab.id === 'routing' && expandedSections.has('routing') && (
             <div className="bg-gray-50 dark:bg-gray-900/50">
               {strategies.map((strategy) => (

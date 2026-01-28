@@ -308,7 +308,7 @@ export const ContextualChat: React.FC<ContextualChatProps> = ({ context, disable
               />
             </svg>
             <span className="font-medium">
-              Routing enabled - The actual model used may differ based on your routing rules
+              Selection enabled - The actual model used may differ based on your strategy rules
             </span>
           </div>
         </div>

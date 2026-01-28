@@ -45,7 +45,7 @@ export function SettingsView({ activeSubTab, onTabChange }: SettingsViewProps) {
       <div>
         <h1 className="text-2xl font-bold tracking-tight">Settings</h1>
         <p className="text-sm text-muted-foreground">
-          Configure server, routing, and application preferences
+          Configure server, strategies, and application preferences
         </p>
       </div>
 
@@ -56,8 +56,8 @@ export function SettingsView({ activeSubTab, onTabChange }: SettingsViewProps) {
       >
         <TabsList>
           <TabsTrigger value="server">Server</TabsTrigger>
-          <TabsTrigger value="routing">Routing</TabsTrigger>
-          <TabsTrigger value="routellm">RouteLLM</TabsTrigger>
+          <TabsTrigger value="routing">Strategies</TabsTrigger>
+          <TabsTrigger value="routellm">Strong/Weak</TabsTrigger>
           <TabsTrigger value="logs">Logs</TabsTrigger>
           <TabsTrigger value="updates">Updates</TabsTrigger>
           {isDev && <TabsTrigger value="docs">Docs</TabsTrigger>}

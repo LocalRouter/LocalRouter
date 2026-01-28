@@ -1,7 +1,7 @@
 /**
  * Step 2: Select Models
  *
- * Model routing configuration with two modes:
+ * Model selection configuration with two modes:
  * - Allowed Models: Client sees and chooses from selected models
  * - Auto Route: Client sees only the auto router model, LocalRouter picks the best
  *
@@ -229,15 +229,15 @@ export function StepModels({
 
   return (
     <div className="space-y-4">
-      {/* Routing Mode Selector */}
+      {/* Model Selection Mode */}
       <div className="space-y-2">
-        <Label>Model Routing Mode</Label>
+        <Label>Model Selection Mode</Label>
         <Select
           value={routingMode}
           onValueChange={(value) => onRoutingModeChange(value as RoutingMode)}
         >
           <SelectTrigger>
-            <SelectValue placeholder="Select routing mode" />
+            <SelectValue placeholder="Select model mode" />
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="allowed">
@@ -317,7 +317,7 @@ export function StepModels({
             />
           </div>
 
-          {/* Weak Model (RouteLLM) */}
+          {/* Weak Model (Strong/Weak) */}
           <div className="space-y-3 rounded-lg border p-4">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">

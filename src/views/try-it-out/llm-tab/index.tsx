@@ -259,11 +259,11 @@ export function LlmTab() {
   const getModeDescription = () => {
     switch (mode) {
       case "client":
-        return "Test requests using a client's credentials through the full routing pipeline"
+        return "Test requests using a client's credentials through the full strategy pipeline"
       case "strategy":
-        return "Test requests with a specific routing strategy applied"
+        return "Test requests with a specific strategy applied"
       case "direct":
-        return "Send requests directly to a provider, bypassing routing"
+        return "Send requests directly to a provider, bypassing strategy selection"
     }
   }
 

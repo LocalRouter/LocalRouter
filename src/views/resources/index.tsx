@@ -96,7 +96,7 @@ export function ResourcesView({ activeSubTab, onTabChange }: LlmProvidersViewPro
       <div className="flex-shrink-0 pb-4">
         <h1 className="text-2xl font-bold tracking-tight">LLM Providers</h1>
         <p className="text-sm text-muted-foreground">
-          Manage providers and routing strategies
+          Manage providers and strategies
         </p>
       </div>
 
@@ -107,7 +107,7 @@ export function ResourcesView({ activeSubTab, onTabChange }: LlmProvidersViewPro
       >
         <TabsList className="flex-shrink-0 w-fit">
           <TabsTrigger value="providers">Providers</TabsTrigger>
-          <TabsTrigger value="strategies">Model Routing</TabsTrigger>
+          <TabsTrigger value="strategies">Model Strategies</TabsTrigger>
         </TabsList>
 
         <TabsContent value="providers" className="flex-1 min-h-0 mt-4">
