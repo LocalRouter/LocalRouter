@@ -63,7 +63,7 @@ export const ThresholdSlider: React.FC<ThresholdSliderProps> = ({
       <div className="space-y-1">
         <div className="flex items-center justify-between">
           <label className="text-sm font-medium text-foreground">
-            Routing Threshold
+            Selection Threshold
           </label>
           <span className="font-mono text-xs text-muted-foreground">
             {value.toFixed(2)}

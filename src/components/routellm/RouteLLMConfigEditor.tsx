@@ -111,10 +111,10 @@ export const RouteLLMConfigEditor: React.FC<RouteLLMConfigEditorProps> = ({
       <div className="flex items-center justify-between p-4 bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700">
         <div>
           <label className="text-sm font-medium text-gray-900 dark:text-gray-100">
-            Enable RouteLLM Intelligent Routing
+            Enable Strong/Weak Intelligent Routing
           </label>
           <p className="text-xs text-gray-600 dark:text-gray-400 mt-1">
-            Use ML-based routing to optimize costs while maintaining quality
+            Use ML-based selection to optimize costs while maintaining quality
           </p>
         </div>
         <button
@@ -140,7 +140,7 @@ export const RouteLLMConfigEditor: React.FC<RouteLLMConfigEditorProps> = ({
                 Models Required
               </h4>
               <p className="text-sm text-yellow-800 dark:text-yellow-200 mb-3">
-                RouteLLM requires downloading model files ({ROUTELLM_REQUIREMENTS.DISK_GB} GB) before it can be used.
+                Strong/Weak requires downloading model files ({ROUTELLM_REQUIREMENTS.DISK_GB} GB) before it can be used.
               </p>
               <button
                 onClick={handleDownload}
@@ -188,7 +188,7 @@ export const RouteLLMConfigEditor: React.FC<RouteLLMConfigEditorProps> = ({
           <div className="space-y-4">
             <div className="p-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-700 rounded-lg">
               <p className="text-sm text-blue-800 dark:text-blue-200">
-                <strong>Strong models:</strong> Prioritized models from Auto-Routing are used when prompts are complex.
+                <strong>Strong models:</strong> Prioritized models from Auto Selection are used when prompts are complex.
               </p>
             </div>
 

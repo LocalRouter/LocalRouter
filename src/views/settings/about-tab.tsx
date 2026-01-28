@@ -29,7 +29,7 @@ const inspirations: Inspiration[] = [
     name: "RouteLLM",
     license: "Apache-2.0",
     url: "https://github.com/lm-sys/RouteLLM",
-    description: "ML-based intelligent routing framework. LocalRouter's RouteLLM feature is a Rust reimplementation of their approach.",
+    description: "ML-based intelligent routing framework. LocalRouter's Strong/Weak feature is a Rust reimplementation of their approach.",
   },
   {
     name: "Microsoft MCP Gateway",
@@ -40,7 +40,7 @@ const inspirations: Inspiration[] = [
   {
     name: "NotDiamond",
     url: "https://notdiamond.ai",
-    description: "Inspiration for intelligent model selection and routing strategies.",
+    description: "Inspiration for intelligent model selection and strategy configurations.",
   },
   {
     name: "models.dev (OpenCode)",
@@ -116,7 +116,7 @@ export function AboutTab() {
                 Version {appVersion || "0.0.1"} • Licensed under AGPL-3.0-or-later
               </p>
               <p className="text-xs text-muted-foreground mt-1">
-                Intelligent AI model routing with OpenAI-compatible API
+                Intelligent AI model selection with OpenAI-compatible API
               </p>
             </div>
           </div>
@@ -165,15 +165,15 @@ export function AboutTab() {
         </CardContent>
       </Card>
 
-      {/* RouteLLM Model Licenses */}
+      {/* Strong/Weak Model Licenses */}
       <Card>
         <CardHeader className="pb-3">
           <CardTitle className="text-sm flex items-center gap-2">
             <Cpu className="h-4 w-4" />
-            RouteLLM Model Licenses
+            Strong/Weak Model Licenses
           </CardTitle>
           <CardDescription>
-            When using RouteLLM intelligent routing, the following model weights are downloaded.
+            When using Strong/Weak intelligent routing, the following model weights are downloaded.
           </CardDescription>
         </CardHeader>
         <CardContent>
