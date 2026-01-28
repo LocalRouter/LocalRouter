@@ -74,7 +74,7 @@ export function ConnectionGraph({ className, onViewChange }: ConnectionGraphProp
 
     switch (type) {
       case 'accessKey':
-        onViewChange('clients', `${id}/config`)
+        onViewChange('clients', `${id}|config`)
         break
       case 'provider':
         onViewChange('resources', `providers/${id}`)
