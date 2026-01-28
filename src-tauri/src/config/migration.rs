@@ -94,7 +94,8 @@ fn migrate_oauth_client_to_client(
         })?;
 
     // Create new client with preserved client_id
-    let mut client = Client::new(oauth_client.name.clone());
+    // Note: strategy_id would need to be created/assigned separately
+    let mut client = Client::new_with_strategy(oauth_client.name.clone(), String::new());
 
     // Store secret in new keychain location
     let new_service = "LocalRouter-Clients";

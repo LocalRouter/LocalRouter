@@ -8,7 +8,7 @@ use tokio::fs;
 use tracing::{debug, error, info, warn};
 
 /// Maximum number of timestamped backups to keep
-const MAX_BACKUPS: usize = 10;
+const MAX_BACKUPS: usize = 3;
 
 /// Load configuration from a file
 ///

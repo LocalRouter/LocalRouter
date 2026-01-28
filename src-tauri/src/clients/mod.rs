@@ -59,17 +59,18 @@ impl ClientManager {
     ///
     /// # Arguments
     /// * `name` - Human-readable name for the client
+    /// * `strategy_id` - The ID of the strategy this client should use
     ///
     /// # Returns
     /// Returns (client_id, secret, client_config) tuple
     /// The secret is also stored in the keychain automatically
-    pub fn create_client(&self, name: String) -> AppResult<(String, String, Client)> {
+    pub fn create_client(&self, name: String, strategy_id: String) -> AppResult<(String, String, Client)> {
         // Generate secret (same format as API keys)
         let secret = crypto::generate_api_key()
             .map_err(|e| AppError::Config(format!("Failed to generate client secret: {}", e)))?;
 
         // Create client config
-        let client = Client::new(name);
+        let client = Client::new_with_strategy(name, strategy_id);
 
         // Store secret in keychain
         self.keychain
@@ -409,6 +410,20 @@ impl ClientManager {
             .ok_or_else(|| AppError::Config(format!("Client not found: {}", client_id)))?;
 
         client.enabled = false;
+
+        Ok(())
+    }
+
+    /// Set the strategy for a client
+    pub fn set_client_strategy(&self, client_id: &str, strategy_id: &str) -> AppResult<()> {
+        let mut clients = self.clients.write();
+
+        let client = clients
+            .iter_mut()
+            .find(|c| c.id == client_id)
+            .ok_or_else(|| AppError::Config(format!("Client not found: {}", client_id)))?;
+
+        client.strategy_id = strategy_id.to_string();
 
         Ok(())
     }

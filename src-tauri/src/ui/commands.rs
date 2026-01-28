@@ -287,6 +287,7 @@ pub async fn update_provider_instance(
 fn provider_type_str_to_enum(provider_type: &str) -> crate::config::ProviderType {
     match provider_type {
         "ollama" => crate::config::ProviderType::Ollama,
+        "lmstudio" => crate::config::ProviderType::LMStudio,
         "openai" => crate::config::ProviderType::OpenAI,
         "anthropic" => crate::config::ProviderType::Anthropic,
         "gemini" => crate::config::ProviderType::Gemini,
@@ -738,7 +739,7 @@ pub async fn list_all_models(
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PricingSource {
-    /// Pricing from OpenRouter catalog (embedded at build time)
+    /// Pricing from models.dev catalog (embedded at build time)
     Catalog,
     /// User-provided pricing override
     Override,
@@ -3943,19 +3944,17 @@ pub async fn create_test_client_for_strategy(
             .ok_or_else(|| "Failed to retrieve test client secret".to_string());
     }
 
-    // Create a new test client
-    let (client_id, secret, _) = client_manager
-        .create_client(test_client_name)
+    // Create a new test client with the specified strategy
+    let (_client_id, secret, client) = client_manager
+        .create_client(test_client_name, strategy_id)
         .map_err(|e| e.to_string())?;
 
-    // Assign the strategy to this client using ConfigManager
+    // Save client to config
     config_manager
-        .assign_client_strategy(&client_id, &strategy_id)
+        .update(|cfg| {
+            cfg.clients.push(client);
+        })
         .map_err(|e| e.to_string())?;
-
-    // Sync the client manager with updated config
-    let updated_config = config_manager.get();
-    client_manager.sync_clients(updated_config.clients);
 
     Ok(secret)
 }
@@ -4219,7 +4218,7 @@ fn get_log_directory() -> Result<PathBuf, crate::utils::errors::AppError> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CatalogMetadata {
     pub fetch_date: String,
-    pub api_version: String,
+    pub source: String,
     pub total_models: usize,
 }
 
@@ -4240,7 +4239,7 @@ pub fn get_catalog_metadata() -> CatalogMetadata {
     let meta = catalog::metadata();
     CatalogMetadata {
         fetch_date: meta.fetch_date().to_rfc3339(),
-        api_version: meta.api_version.to_string(),
+        source: meta.source.to_string(),
         total_models: meta.total_models,
     }
 }

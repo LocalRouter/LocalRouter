@@ -21,15 +21,16 @@ mod utils;
 use std::sync::Arc;
 
 use tauri::{Listener, Manager};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use providers::factory::{
     AnthropicProviderFactory, CerebrasProviderFactory, CohereProviderFactory,
-    DeepInfraProviderFactory, GeminiProviderFactory, GroqProviderFactory, LMStudioProviderFactory,
-    MistralProviderFactory, OllamaProviderFactory, OpenAICompatibleProviderFactory,
-    OpenAIProviderFactory, OpenRouterProviderFactory, PerplexityProviderFactory,
-    TogetherAIProviderFactory, XAIProviderFactory,
+    DeepInfraProviderFactory, GeminiProviderFactory, GitHubCopilotProviderFactory,
+    GroqProviderFactory, LMStudioProviderFactory, MistralProviderFactory, OllamaProviderFactory,
+    OpenAICodexProviderFactory, OpenAICompatibleProviderFactory, OpenAIProviderFactory,
+    OpenRouterProviderFactory, PerplexityProviderFactory, TogetherAIProviderFactory,
+    XAIProviderFactory,
 };
 use providers::registry::ProviderRegistry;
 use server::ServerManager;
@@ -208,7 +209,44 @@ async fn run_gui_mode() -> anyhow::Result<()> {
     provider_registry.register_factory(Arc::new(CerebrasProviderFactory));
     provider_registry.register_factory(Arc::new(XAIProviderFactory));
     provider_registry.register_factory(Arc::new(LMStudioProviderFactory));
-    info!("Registered 15 provider factories");
+    // Subscription providers (OAuth-based)
+    provider_registry.register_factory(Arc::new(GitHubCopilotProviderFactory));
+    provider_registry.register_factory(Arc::new(OpenAICodexProviderFactory));
+    info!(
+        "Registered {} provider factories",
+        provider_registry.list_provider_types().len()
+    );
+
+    // On first startup, discover local LLM providers (Ollama, LM Studio)
+    {
+        let config = config_manager.get();
+        if !config.setup_wizard_shown && config.providers.is_empty() {
+            info!("First startup detected, discovering local LLM providers...");
+            let discovered = providers::factory::discover_local_providers().await;
+
+            if !discovered.is_empty() {
+                info!("Discovered {} local provider(s)", discovered.len());
+                if let Err(e) = config_manager.update(|cfg| {
+                    for provider in &discovered {
+                        let provider_config = match provider.provider_type.as_str() {
+                            "ollama" => config::ProviderConfig::default_ollama(),
+                            "lmstudio" => config::ProviderConfig::default_lmstudio(),
+                            _ => continue,
+                        };
+                        info!(
+                            "Auto-configuring discovered provider: {}",
+                            provider.instance_name
+                        );
+                        cfg.providers.push(provider_config);
+                    }
+                }) {
+                    warn!("Failed to save discovered providers to config: {}", e);
+                }
+            } else {
+                info!("No local LLM providers discovered");
+            }
+        }
+    }
 
     // Load provider instances from configuration
     info!("Loading provider instances from configuration...");
@@ -216,6 +254,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
     for provider_config in providers {
         let provider_type = match provider_config.provider_type {
             config::ProviderType::Ollama => "ollama",
+            config::ProviderType::LMStudio => "lmstudio",
             config::ProviderType::OpenAI => "openai",
             config::ProviderType::Anthropic => "anthropic",
             config::ProviderType::Gemini => "gemini",

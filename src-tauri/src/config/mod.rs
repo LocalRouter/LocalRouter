@@ -512,7 +512,7 @@ pub struct ModelCacheConfig {
     #[serde(default)]
     pub provider_ttl_overrides: std::collections::HashMap<String, u64>,
 
-    /// Whether to use OpenRouter catalog as fallback
+    /// Whether to use models.dev catalog as fallback
     #[serde(default = "default_true")]
     pub use_catalog_fallback: bool,
 }
@@ -1131,6 +1131,9 @@ pub struct ProviderConfig {
 pub enum ProviderType {
     /// Local Ollama instance
     Ollama,
+    /// Local LM Studio instance
+    #[serde(rename = "lmstudio")]
+    LMStudio,
     /// OpenAI API
     OpenAI,
     /// OpenRouter proxy
@@ -1640,7 +1643,7 @@ impl Default for AppConfig {
         Self {
             version: CONFIG_VERSION,
             server: ServerConfig::default(),
-            providers: vec![ProviderConfig::default_ollama()],
+            providers: Vec::new(), // Empty by default, discovered on first startup
             logging: LoggingConfig::default(),
             oauth_clients: Vec::new(),
             mcp_servers: Vec::new(),
@@ -1720,6 +1723,19 @@ impl ProviderConfig {
             api_key_ref: None,
         }
     }
+
+    /// Create default LM Studio provider configuration
+    pub fn default_lmstudio() -> Self {
+        Self {
+            name: "LM Studio".to_string(),
+            provider_type: ProviderType::LMStudio,
+            enabled: true,
+            provider_config: Some(serde_json::json!({
+                "base_url": "http://localhost:1234/v1"
+            })),
+            api_key_ref: None,
+        }
+    }
 }
 
 impl OAuthClientConfig {
@@ -1738,12 +1754,12 @@ impl OAuthClientConfig {
 }
 
 impl Client {
-    /// Create a new client with auto-generated client_id
+    /// Create a new client with auto-generated client_id and explicit strategy
     /// The secret must be stored separately in the keychain
-    pub fn new(name: String) -> Self {
+    pub fn new_with_strategy(name: String, strategy_id: String) -> Self {
         let id = Uuid::new_v4().to_string();
         Self {
-            id: id.clone(),
+            id,
             name,
             enabled: true,
             allowed_llm_providers: Vec::new(),
@@ -1751,7 +1767,7 @@ impl Client {
             mcp_deferred_loading: false,
             created_at: Utc::now(),
             last_used: None,
-            strategy_id: "default".to_string(),
+            strategy_id,
             roots: None,
             mcp_sampling_enabled: false,
             mcp_sampling_requires_approval: true,
@@ -1961,7 +1977,7 @@ mod tests {
 
     #[test]
     fn test_client_with_roots_override() {
-        let mut client = Client::new("Test Client".to_string());
+        let mut client = Client::new_with_strategy("Test Client".to_string(), "test-strategy".to_string());
         client.roots = Some(vec![RootConfig {
             uri: "file:///custom/path".to_string(),
             name: Some("Custom".to_string()),
@@ -1981,7 +1997,7 @@ mod tests {
 
     #[test]
     fn test_client_sampling_config_defaults() {
-        let client = Client::new("Test Client".to_string());
+        let client = Client::new_with_strategy("Test Client".to_string(), "test-strategy".to_string());
 
         // Sampling disabled by default
         assert!(!client.mcp_sampling_enabled);
@@ -1996,7 +2012,7 @@ mod tests {
 
     #[test]
     fn test_client_with_sampling_enabled() {
-        let mut client = Client::new("Test Client".to_string());
+        let mut client = Client::new_with_strategy("Test Client".to_string(), "test-strategy".to_string());
         client.mcp_sampling_enabled = true;
         client.mcp_sampling_requires_approval = false;
         client.mcp_sampling_max_tokens = Some(2000);

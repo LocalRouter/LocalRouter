@@ -120,7 +120,7 @@ async fn test_catalog_fallback() {
     match models {
         Ok(m) => {
             println!(
-                "✅ Catalog fallback: Got {} models from OpenRouter catalog",
+                "✅ Catalog fallback: Got {} models from models.dev catalog",
                 m.len()
             );
             assert!(!m.is_empty(), "Should have models from catalog");
