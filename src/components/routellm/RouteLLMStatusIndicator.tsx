@@ -11,6 +11,9 @@ interface RouteLLMStatusIndicatorProps {
   compact?: boolean;
   modelPath?: string;
   onOpenFolder?: () => void;
+  onDownload?: () => void;
+  onUnload?: () => void;
+  isDownloading?: boolean;
 }
 
 interface StatusConfig {
@@ -72,6 +75,9 @@ export const RouteLLMStatusIndicator: React.FC<RouteLLMStatusIndicatorProps> = (
   compact = false,
   modelPath,
   onOpenFolder,
+  onDownload,
+  onUnload,
+  isDownloading = false,
 }) => {
   const config = getStatusConfig(status.state);
 
@@ -84,6 +90,22 @@ export const RouteLLMStatusIndicator: React.FC<RouteLLMStatusIndicatorProps> = (
           <span>{config.icon}</span>
           <span>{config.label}</span>
         </span>
+        {status.state === 'not_downloaded' && onDownload && !isDownloading && (
+          <button
+            onClick={onDownload}
+            className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300 hover:bg-blue-200 dark:hover:bg-blue-900/50 transition-colors"
+          >
+            Download
+          </button>
+        )}
+        {status.state === 'started' && onUnload && (
+          <button
+            onClick={onUnload}
+            className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
+          >
+            Unload
+          </button>
+        )}
         <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-300">
           EXPERIMENTAL
         </span>
@@ -128,6 +150,28 @@ export const RouteLLMStatusIndicator: React.FC<RouteLLMStatusIndicatorProps> = (
               <code className="bg-gray-200 dark:bg-gray-700 px-1 py-0.5 rounded">
                 {modelPath}
               </code>
+            )}
+          </div>
+        )}
+
+        {/* Action buttons */}
+        {(onDownload || onUnload) && (
+          <div className="mt-3 flex gap-2">
+            {status.state === 'not_downloaded' && onDownload && !isDownloading && (
+              <button
+                onClick={onDownload}
+                className="px-3 py-1.5 text-sm font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition-colors"
+              >
+                Download
+              </button>
+            )}
+            {status.state === 'started' && onUnload && (
+              <button
+                onClick={onUnload}
+                className="px-3 py-1.5 text-sm font-medium rounded-md bg-gray-200 text-gray-700 dark:bg-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors"
+              >
+                Unload
+              </button>
             )}
           </div>
         )}
