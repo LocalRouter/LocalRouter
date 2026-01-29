@@ -1,10 +1,10 @@
 #!/bin/bash
-# LocalRouter AI Icon Generator
+# LocalRouter Icon Generator
 # Generates all required icon formats from a simple network router design
 
 set -e
 
-echo "🎨 Generating LocalRouter AI icons..."
+echo "🎨 Generating LocalRouter icons..."
 
 # Check if icon.svg exists
 if [ ! -f "icon.svg" ]; then

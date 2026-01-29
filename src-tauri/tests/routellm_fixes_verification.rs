@@ -7,7 +7,7 @@ use std::path::PathBuf;
 #[tokio::test]
 async fn test_fix_1_path_handling_no_panic() {
     // Bug #1: Path with no parent should not panic
-    use localrouter_ai::routellm::downloader;
+    use localrouter::routellm::downloader;
 
     let result = downloader::download_models(
         std::path::Path::new("/"), // Root has no parent
@@ -29,7 +29,7 @@ async fn test_fix_1_path_handling_no_panic() {
 #[tokio::test]
 async fn test_fix_2_initialization_race_condition() {
     // Bug #2: Multiple concurrent predictions should not cause multiple initializations
-    use localrouter_ai::routellm::RouteLLMService;
+    use localrouter::routellm::RouteLLMService;
     use std::sync::Arc;
 
     let home = dirs::home_dir().expect("Could not determine home directory");
@@ -77,7 +77,7 @@ async fn test_fix_2_initialization_race_condition() {
 #[tokio::test]
 async fn test_fix_3_download_concurrency_protection() {
     // Bug #3: Concurrent downloads should be prevented
-    use localrouter_ai::routellm::downloader;
+    use localrouter::routellm::downloader;
 
     let temp_dir = std::env::temp_dir();
     let model_path = temp_dir.join("test_concurrent_dl_model");
@@ -127,7 +127,7 @@ async fn test_fix_3_download_concurrency_protection() {
 #[tokio::test]
 async fn test_fix_6_initializing_state() {
     // Bug #6: Should show Initializing state during model loading
-    use localrouter_ai::routellm::{RouteLLMService, RouteLLMState};
+    use localrouter::routellm::{RouteLLMService, RouteLLMState};
 
     let home = dirs::home_dir().expect("Could not determine home directory");
     let service = std::sync::Arc::new(RouteLLMService::new(
@@ -183,7 +183,7 @@ async fn test_fix_6_initializing_state() {
 #[test]
 fn test_patched_model_detection() {
     // Verify the fix for detecting patched model files
-    use localrouter_ai::routellm::downloader::get_download_status;
+    use localrouter::routellm::downloader::get_download_status;
 
     let home = dirs::home_dir().expect("Could not determine home directory");
     let model_path = home.join(".localrouter-dev/routellm/model");
@@ -199,13 +199,13 @@ fn test_patched_model_detection() {
     if (model_file.exists() || patched_file.exists()) && tokenizer_file.exists() {
         assert_eq!(
             status.state,
-            localrouter_ai::config::RouteLLMDownloadState::Downloaded
+            localrouter::config::RouteLLMDownloadState::Downloaded
         );
         println!("✓ Correctly detected downloaded models (original or patched)");
     } else {
         assert_eq!(
             status.state,
-            localrouter_ai::config::RouteLLMDownloadState::NotDownloaded
+            localrouter::config::RouteLLMDownloadState::NotDownloaded
         );
         println!("⏩ Models not downloaded");
     }

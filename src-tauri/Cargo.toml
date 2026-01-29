@@ -1,14 +1,14 @@
 [package]
-name = "localrouter-ai"
+name = "localrouter"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "LocalRouter AI - Intelligent AI model routing with OpenAI-compatible API"
+description = "LocalRouter - Intelligent AI model routing with OpenAI-compatible API"
 
 [lib]
-name = "localrouter_ai"
+name = "localrouter"
 path = "src/lib.rs"
 
 [build-dependencies]
@@ -45,6 +45,7 @@ dirs = { workspace = true }
 keyring = { workspace = true }
 oauth2 = { workspace = true }
 tauri = { workspace = true }
+tauri-plugin-process = "2"
 tauri-plugin-shell = { workspace = true }
 tauri-plugin-updater = "2.9"
 notify = { workspace = true }

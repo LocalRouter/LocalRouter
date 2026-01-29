@@ -12,7 +12,7 @@ use std::time::Duration;
 #[tokio::test]
 async fn test_disk_space_check() {
     // Test that disk space check works and doesn't panic
-    use localrouter_ai::routellm::downloader::get_download_status;
+    use localrouter::routellm::downloader::get_download_status;
 
     let home = dirs::home_dir().expect("Could not determine home directory");
     let model_path = home.join(".localrouter-dev/routellm/model");
@@ -30,7 +30,7 @@ async fn test_disk_space_check() {
 #[tokio::test]
 async fn test_auto_unload_timeout_update() {
     // Test that idle timeout can be updated at runtime
-    use localrouter_ai::routellm::RouteLLMService;
+    use localrouter::routellm::RouteLLMService;
     use std::sync::Arc;
 
     let home = dirs::home_dir().expect("Could not determine home directory");
@@ -57,7 +57,7 @@ async fn test_auto_unload_timeout_update() {
 #[tokio::test]
 async fn test_auto_unload_zero_timeout() {
     // Test that timeout=0 disables auto-unload
-    use localrouter_ai::routellm::RouteLLMService;
+    use localrouter::routellm::RouteLLMService;
     use std::sync::Arc;
 
     let home = dirs::home_dir().expect("Could not determine home directory");
@@ -77,7 +77,7 @@ async fn test_auto_unload_zero_timeout() {
 #[ignore] // Requires internet and takes time
 async fn test_download_retry_simulation() {
     // This test simulates retry logic by attempting download with timeout
-    use localrouter_ai::routellm::downloader;
+    use localrouter::routellm::downloader;
 
     let temp_dir = std::env::temp_dir();
     let model_path = temp_dir.join("test_retry_model");
@@ -117,7 +117,7 @@ async fn test_download_retry_simulation() {
 #[tokio::test]
 async fn test_timeout_values() {
     // Test that timeout constants are reasonable
-    use localrouter_ai::routellm::downloader;
+    use localrouter::routellm::downloader;
 
     // Can't access constants directly, but we can verify behavior through documentation
     // The constants are:
@@ -133,7 +133,7 @@ async fn test_timeout_values() {
 #[tokio::test]
 async fn test_concurrent_timeout_updates() {
     // Test that concurrent timeout updates work correctly
-    use localrouter_ai::routellm::RouteLLMService;
+    use localrouter::routellm::RouteLLMService;
     use std::sync::Arc;
 
     let home = dirs::home_dir().expect("Could not determine home directory");

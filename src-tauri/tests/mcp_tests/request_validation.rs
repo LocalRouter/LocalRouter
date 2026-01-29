@@ -3,7 +3,7 @@
 //! Provides assertion functions for validating JSON-RPC 2.0 messages
 //! in MCP tests.
 
-use localrouter_ai::mcp::protocol::{JsonRpcError, JsonRpcRequest, JsonRpcResponse};
+use localrouter::mcp::protocol::{JsonRpcError, JsonRpcRequest, JsonRpcResponse};
 use serde_json::Value;
 
 /// Assert that a JSON-RPC response is valid according to the spec

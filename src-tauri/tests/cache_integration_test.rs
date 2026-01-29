@@ -5,9 +5,9 @@
 //! 2. Cache miss (fetch from API)
 //! 3. API failure (fallback to catalog)
 
-use localrouter_ai::config::ModelCacheConfig;
-use localrouter_ai::providers::health::HealthCheckManager;
-use localrouter_ai::providers::registry::ProviderRegistry;
+use localrouter::config::ModelCacheConfig;
+use localrouter::providers::health::HealthCheckManager;
+use localrouter::providers::registry::ProviderRegistry;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -24,7 +24,7 @@ async fn test_model_caching_with_ollama() {
 
     // Register Ollama provider (no auth needed)
     registry.register_factory(Arc::new(
-        localrouter_ai::providers::factory::OllamaProviderFactory,
+        localrouter::providers::factory::OllamaProviderFactory,
     ));
 
     // Create Ollama instance
@@ -97,7 +97,7 @@ async fn test_catalog_fallback() {
 
     // Register Anthropic provider
     registry.register_factory(Arc::new(
-        localrouter_ai::providers::factory::AnthropicProviderFactory,
+        localrouter::providers::factory::AnthropicProviderFactory,
     ));
 
     // Create Anthropic instance with invalid key (should fail API call)
@@ -153,7 +153,7 @@ async fn test_cache_invalidation() {
 
     // Register Ollama provider
     registry.register_factory(Arc::new(
-        localrouter_ai::providers::factory::OllamaProviderFactory,
+        localrouter::providers::factory::OllamaProviderFactory,
     ));
 
     let mut config = HashMap::new();

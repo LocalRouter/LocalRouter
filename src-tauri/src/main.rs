@@ -59,7 +59,7 @@ fn init_logging() {
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "localrouter_ai=info".into()),
+                .unwrap_or_else(|_| "localrouter=info".into()),
         )
         .with(
             tracing_subscriber::fmt::layer().with_writer(std::io::stderr), // Always to stderr
@@ -80,7 +80,7 @@ fn init_logging() {
 /// Ok on clean shutdown, Err on fatal errors
 async fn run_bridge_mode(client_id: Option<String>) -> anyhow::Result<()> {
     eprintln!("==========================================================");
-    eprintln!("LocalRouter AI - MCP Bridge Mode");
+    eprintln!("LocalRouter - MCP Bridge Mode");
     eprintln!("==========================================================");
     eprintln!();
     eprintln!("Connecting to LocalRouter server at http://localhost:3625");
@@ -115,7 +115,7 @@ async fn run_bridge_mode(client_id: Option<String>) -> anyhow::Result<()> {
 /// This is the default mode that starts the HTTP server, managers,
 /// and Tauri desktop window.
 async fn run_gui_mode() -> anyhow::Result<()> {
-    info!("Starting LocalRouter AI...");
+    info!("Starting LocalRouter...");
 
     // Log configuration directory
     let config_dir =
@@ -425,6 +425,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
         .await?;
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(move |app| {
@@ -770,7 +771,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                 info!("Running in TEST MODE - configuring window for testing");
                 if let Some(window) = app.get_webview_window("main") {
                     // Add [TEST] to window title
-                    let _ = window.set_title("LocalRouter AI [TEST]");
+                    let _ = window.set_title("LocalRouter [TEST]");
                     // Make window smaller (800x500)
                     let _ = window.set_size(tauri::LogicalSize::new(800.0, 500.0));
                     // Position in bottom-right corner

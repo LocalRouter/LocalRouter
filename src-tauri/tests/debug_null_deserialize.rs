@@ -1,6 +1,6 @@
 //! Debug test for null deserialization
 
-use localrouter_ai::mcp::protocol::JsonRpcResponse;
+use localrouter::mcp::protocol::JsonRpcResponse;
 
 #[test]
 fn test_null_result_deserialization() {

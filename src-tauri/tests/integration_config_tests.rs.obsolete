@@ -11,9 +11,9 @@
 
 #![allow(deprecated)]
 
-use localrouter_ai::api_keys::keychain_trait::{KeychainStorage, MockKeychain, SystemKeychain};
-use localrouter_ai::api_keys::ApiKeyManager;
-use localrouter_ai::config::{AppConfig, ConfigManager, LogLevel, ModelSelection};
+use localrouter::api_keys::keychain_trait::{KeychainStorage, MockKeychain, SystemKeychain};
+use localrouter::api_keys::ApiKeyManager;
+use localrouter::config::{AppConfig, ConfigManager, LogLevel, ModelSelection};
 use serial_test::serial;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -58,13 +58,13 @@ async fn test_config_save_and_load() {
     config.server.port = 9999;
     config.logging.level = LogLevel::Debug;
 
-    localrouter_ai::config::save_config(&config, &config_path)
+    localrouter::config::save_config(&config, &config_path)
         .await
         .expect("Failed to save config");
 
     assert!(config_path.exists());
 
-    let loaded_config = localrouter_ai::config::load_config(&config_path)
+    let loaded_config = localrouter::config::load_config(&config_path)
         .await
         .expect("Failed to load config");
 
@@ -78,7 +78,7 @@ async fn test_config_manager_update_and_save() {
     let config_path = test_config_path(&temp_dir);
 
     let config = AppConfig::default();
-    localrouter_ai::config::save_config(&config, &config_path)
+    localrouter::config::save_config(&config, &config_path)
         .await
         .expect("Failed to save initial config");
 
@@ -95,7 +95,7 @@ async fn test_config_manager_update_and_save() {
 
     manager.save().await.expect("Failed to save config");
 
-    let reloaded = localrouter_ai::config::load_config(&config_path)
+    let reloaded = localrouter::config::load_config(&config_path)
         .await
         .expect("Failed to reload config");
 
@@ -109,7 +109,7 @@ async fn test_config_reload() {
     let config_path = test_config_path(&temp_dir);
 
     let config = AppConfig::default();
-    localrouter_ai::config::save_config(&config, &config_path)
+    localrouter::config::save_config(&config, &config_path)
         .await
         .expect("Failed to save initial config");
 
@@ -119,7 +119,7 @@ async fn test_config_reload() {
 
     let mut modified_config = config;
     modified_config.server.port = 5555;
-    localrouter_ai::config::save_config(&modified_config, &config_path)
+    localrouter::config::save_config(&modified_config, &config_path)
         .await
         .expect("Failed to save modified config");
 
@@ -364,7 +364,7 @@ async fn test_config_with_api_keys_persistence() {
     let mock_keychain = Arc::new(MockKeychain::new());
 
     let config = AppConfig::default();
-    localrouter_ai::config::save_config(&config, &config_path)
+    localrouter::config::save_config(&config, &config_path)
         .await
         .expect("Failed to save initial config");
 
@@ -390,7 +390,7 @@ async fn test_config_with_api_keys_persistence() {
         .await
         .expect("Failed to save config");
 
-    let reloaded = localrouter_ai::config::load_config(&config_path)
+    let reloaded = localrouter::config::load_config(&config_path)
         .await
         .expect("Failed to reload config");
 
@@ -414,7 +414,7 @@ async fn test_multiple_api_keys_with_config() {
     let mock_keychain = Arc::new(MockKeychain::new());
 
     let config = AppConfig::default();
-    localrouter_ai::config::save_config(&config, &config_path)
+    localrouter::config::save_config(&config, &config_path)
         .await
         .expect("Failed to save config");
 
@@ -442,7 +442,7 @@ async fn test_multiple_api_keys_with_config() {
         .await
         .expect("Failed to save config");
 
-    let reloaded = localrouter_ai::config::load_config(&config_path)
+    let reloaded = localrouter::config::load_config(&config_path)
         .await
         .expect("Failed to reload config");
 
@@ -469,7 +469,7 @@ async fn test_api_key_deletion_updates_config() {
     let mock_keychain = Arc::new(MockKeychain::new());
 
     let config = AppConfig::default();
-    localrouter_ai::config::save_config(&config, &config_path)
+    localrouter::config::save_config(&config, &config_path)
         .await
         .expect("Failed to save config");
 
@@ -516,7 +516,7 @@ async fn test_api_key_deletion_updates_config() {
         .await
         .expect("Failed to save config");
 
-    let reloaded = localrouter_ai::config::load_config(&config_path)
+    let reloaded = localrouter::config::load_config(&config_path)
         .await
         .expect("Failed to reload config");
 
@@ -532,7 +532,7 @@ async fn test_full_workflow_integration() {
 
     // 1. Create initial config
     let config = AppConfig::default();
-    localrouter_ai::config::save_config(&config, &config_path)
+    localrouter::config::save_config(&config, &config_path)
         .await
         .expect("Failed to save config");
 
@@ -577,7 +577,7 @@ async fn test_full_workflow_integration() {
         .expect("Failed to save config");
 
     // 7. Reload and verify everything
-    let reloaded_config = localrouter_ai::config::load_config(&config_path)
+    let reloaded_config = localrouter::config::load_config(&config_path)
         .await
         .expect("Failed to reload config");
 
@@ -619,7 +619,7 @@ async fn test_full_workflow_integration() {
         .await
         .expect("Failed to save after delete");
 
-    let final_config = localrouter_ai::config::load_config(&config_path)
+    let final_config = localrouter::config::load_config(&config_path)
         .await
         .expect("Failed to load final config");
     assert_eq!(final_config.api_keys.len(), 1);
@@ -640,19 +640,19 @@ async fn test_config_isolation() {
     let mut config2 = AppConfig::default();
     config2.server.port = 2222;
 
-    localrouter_ai::config::save_config(&config1, &config_path1)
+    localrouter::config::save_config(&config1, &config_path1)
         .await
         .expect("Failed to save config1");
 
-    localrouter_ai::config::save_config(&config2, &config_path2)
+    localrouter::config::save_config(&config2, &config_path2)
         .await
         .expect("Failed to save config2");
 
-    let loaded1 = localrouter_ai::config::load_config(&config_path1)
+    let loaded1 = localrouter::config::load_config(&config_path1)
         .await
         .expect("Failed to load config1");
 
-    let loaded2 = localrouter_ai::config::load_config(&config_path2)
+    let loaded2 = localrouter::config::load_config(&config_path2)
         .await
         .expect("Failed to load config2");
 
@@ -820,7 +820,7 @@ async fn test_real_keychain_with_config_persistence() {
 
     // Create config
     let config = AppConfig::default();
-    localrouter_ai::config::save_config(&config, &config_path)
+    localrouter::config::save_config(&config, &config_path)
         .await
         .expect("Failed to save config");
 
@@ -852,7 +852,7 @@ async fn test_real_keychain_with_config_persistence() {
         .expect("Failed to save config");
 
     // Reload config
-    let reloaded = localrouter_ai::config::load_config(&config_path)
+    let reloaded = localrouter::config::load_config(&config_path)
         .await
         .expect("Failed to reload config");
 

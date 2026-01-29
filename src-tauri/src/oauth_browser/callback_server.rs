@@ -170,7 +170,7 @@ impl CallbackServerManager {
                                         <h1>❌ Authorization Failed</h1>
                                         <p>Error: {}</p>
                                         <p>Description: {}</p>
-                                        <p>You can close this window and return to LocalRouter AI.</p>
+                                        <p>You can close this window and return to LocalRouter.</p>
                                     </body>
                                 </html>
                                 "#,
@@ -250,7 +250,7 @@ impl CallbackServerManager {
                                         <body style="font-family: sans-serif; text-align: center; padding: 50px;">
                                             <h1>✅ Authorization Successful!</h1>
                                             <p>You have successfully authorized the application.</p>
-                                            <p>You can close this window and return to LocalRouter AI.</p>
+                                            <p>You can close this window and return to LocalRouter.</p>
                                             <script>
                                                 setTimeout(function() { window.close(); }, 3000);
                                             </script>

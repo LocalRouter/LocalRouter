@@ -41,8 +41,8 @@ impl OpenRouterProvider {
         Self {
             client: Client::new(),
             api_key,
-            app_name: Some("LocalRouter AI".to_string()),
-            app_url: Some("https://github.com/localrouter/localrouter-ai".to_string()),
+            app_name: Some("LocalRouter".to_string()),
+            app_url: Some("https://github.com/localrouter/localrouter".to_string()),
             base_url: base_url.trim_end_matches('/').to_string(),
         }
     }

@@ -538,21 +538,27 @@ pub async fn start_provider_health_checks(
 pub async fn check_single_provider_health(
     app: tauri::AppHandle,
     registry: State<'_, Arc<ProviderRegistry>>,
+    app_state: State<'_, Arc<crate::server::state::AppState>>,
     instance_name: String,
 ) -> Result<(), String> {
     let registry = registry.inner().clone();
+    let health_cache = app_state.health_cache.clone();
     let app_handle = app.clone();
 
     // Check if provider is disabled
     if let Some(enabled) = registry.is_provider_enabled(&instance_name) {
         if !enabled {
             let result = HealthCheckResult {
-                provider_name: instance_name,
+                provider_name: instance_name.clone(),
                 status: "disabled".to_string(),
                 latency_ms: None,
                 error_message: None,
             };
             let _ = app_handle.emit("provider-health-check", result);
+            health_cache.update_provider(
+                &instance_name,
+                crate::providers::health_cache::ItemHealth::disabled(instance_name.clone()),
+            );
             return Ok(());
         }
     }
@@ -563,16 +569,39 @@ pub async fn check_single_provider_health(
         if let Some(provider) = registry.get_provider_unchecked(&instance_name) {
             let health = provider.health_check().await;
             let result = HealthCheckResult {
-                provider_name: instance_name,
-                status: match health.status {
+                provider_name: instance_name.clone(),
+                status: match &health.status {
                     crate::providers::HealthStatus::Healthy => "healthy".to_string(),
                     crate::providers::HealthStatus::Degraded => "degraded".to_string(),
                     crate::providers::HealthStatus::Unhealthy => "unhealthy".to_string(),
                 },
                 latency_ms: health.latency_ms,
-                error_message: health.error_message,
+                error_message: health.error_message.clone(),
             };
             let _ = app_handle.emit("provider-health-check", result);
+
+            // Update centralized health cache so aggregate status (tray + sidebar) recalculates
+            use crate::providers::health_cache::ItemHealth;
+            use crate::providers::HealthStatus;
+            let item_health = match health.status {
+                HealthStatus::Healthy => {
+                    ItemHealth::healthy(instance_name.clone(), health.latency_ms)
+                }
+                HealthStatus::Degraded => ItemHealth::degraded(
+                    instance_name.clone(),
+                    health.latency_ms,
+                    health
+                        .error_message
+                        .unwrap_or_else(|| "Degraded".to_string()),
+                ),
+                HealthStatus::Unhealthy => ItemHealth::unhealthy(
+                    instance_name.clone(),
+                    health
+                        .error_message
+                        .unwrap_or_else(|| "Unhealthy".to_string()),
+                ),
+            };
+            health_cache.update_provider(&instance_name, item_health);
         }
     });
 
@@ -2101,9 +2130,11 @@ pub async fn start_mcp_health_checks(
 pub async fn check_single_mcp_health(
     app: tauri::AppHandle,
     mcp_manager: State<'_, Arc<McpServerManager>>,
+    app_state: State<'_, Arc<crate::server::state::AppState>>,
     server_id: String,
 ) -> Result<(), String> {
     let mcp_manager = mcp_manager.inner().clone();
+    let health_cache = app_state.health_cache.clone();
     let app_handle = app.clone();
 
     // Check if server is disabled
@@ -2113,21 +2144,25 @@ pub async fn check_single_mcp_health(
 
     if !config.enabled {
         let result = McpHealthCheckResult {
-            server_id: config.id,
-            server_name: config.name,
+            server_id: config.id.clone(),
+            server_name: config.name.clone(),
             status: "disabled".to_string(),
             latency_ms: None,
             error: None,
         };
         let _ = app_handle.emit("mcp-health-check", result);
+        health_cache.update_mcp_server(
+            &config.id,
+            crate::providers::health_cache::ItemHealth::disabled(config.name),
+        );
         return Ok(());
     }
 
     tokio::spawn(async move {
         let health = mcp_manager.get_server_health(&server_id).await;
         let result = McpHealthCheckResult {
-            server_id: health.server_id,
-            server_name: health.server_name,
+            server_id: health.server_id.clone(),
+            server_name: health.server_name.clone(),
             status: match health.status {
                 crate::mcp::manager::HealthStatus::Healthy => "healthy".to_string(),
                 crate::mcp::manager::HealthStatus::Ready => "ready".to_string(),
@@ -2135,9 +2170,29 @@ pub async fn check_single_mcp_health(
                 crate::mcp::manager::HealthStatus::Unknown => "unknown".to_string(),
             },
             latency_ms: health.latency_ms,
-            error: health.error,
+            error: health.error.clone(),
         };
         let _ = app_handle.emit("mcp-health-check", result);
+
+        // Update centralized health cache so aggregate status (tray + sidebar) recalculates
+        use crate::providers::health_cache::ItemHealth;
+        let item_health = match health.status {
+            crate::mcp::manager::HealthStatus::Healthy => {
+                ItemHealth::healthy(health.server_name, health.latency_ms)
+            }
+            crate::mcp::manager::HealthStatus::Ready => ItemHealth::ready(health.server_name),
+            crate::mcp::manager::HealthStatus::Unhealthy => ItemHealth::unhealthy(
+                health.server_name,
+                health.error.unwrap_or_else(|| "Unhealthy".to_string()),
+            ),
+            crate::mcp::manager::HealthStatus::Unknown => ItemHealth::unhealthy(
+                health.server_name,
+                health
+                    .error
+                    .unwrap_or_else(|| "Unknown status".to_string()),
+            ),
+        };
+        health_cache.update_mcp_server(&health.server_id, item_health);
     });
 
     Ok(())

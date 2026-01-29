@@ -6,17 +6,17 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use localrouter_ai::clients::{ClientManager, TokenStore};
-use localrouter_ai::config::{AppConfig, ConfigManager};
-use localrouter_ai::mcp::gateway::{GatewayConfig, McpGateway};
-use localrouter_ai::mcp::manager::McpServerManager;
-use localrouter_ai::mcp::protocol::{JsonRpcNotification, JsonRpcRequest};
-use localrouter_ai::monitoring::metrics::MetricsCollector;
-use localrouter_ai::monitoring::storage::MetricsDatabase;
-use localrouter_ai::providers::health::HealthCheckManager;
-use localrouter_ai::providers::registry::ProviderRegistry;
-use localrouter_ai::router::{RateLimiterManager, Router};
-use localrouter_ai::server::state::AppState;
+use localrouter::clients::{ClientManager, TokenStore};
+use localrouter::config::{AppConfig, ConfigManager};
+use localrouter::mcp::gateway::{GatewayConfig, McpGateway};
+use localrouter::mcp::manager::McpServerManager;
+use localrouter::mcp::protocol::{JsonRpcNotification, JsonRpcRequest};
+use localrouter::monitoring::metrics::MetricsCollector;
+use localrouter::monitoring::storage::MetricsDatabase;
+use localrouter::providers::health::HealthCheckManager;
+use localrouter::providers::registry::ProviderRegistry;
+use localrouter::router::{RateLimiterManager, Router};
+use localrouter::server::state::AppState;
 
 /// Helper to create a minimal test router for gateway tests
 fn create_test_router() -> Arc<Router> {

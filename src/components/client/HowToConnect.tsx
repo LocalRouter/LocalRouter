@@ -179,7 +179,7 @@ export function HowToConnect({
   const baseUrl = `http://${host}:${port}`
 
   // Binary path from the running executable
-  const binaryPath = executablePath || "/path/to/localrouter-ai"
+  const binaryPath = executablePath || "/path/to/localrouter"
   // Quoted version for shell usage (handles spaces in path)
   const quotedBinaryPath = `"${binaryPath}"`
 

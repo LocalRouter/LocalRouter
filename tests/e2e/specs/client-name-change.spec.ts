@@ -26,7 +26,7 @@ async function waitForHealth(timeout: number = 60000): Promise<void> {
 async function startTauriApp(): Promise<ChildProcess> {
   console.log('Starting Tauri app...');
 
-  const proc = spawn('./target/debug/localrouter-ai', [], {
+  const proc = spawn('./target/debug/localrouter', [], {
     cwd: process.cwd(),
     env: {
       ...process.env,

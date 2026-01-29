@@ -101,7 +101,7 @@ pub async fn mcp_gateway_get_handler(
         return (
             axum::http::StatusCode::OK,
             [(header::CONTENT_TYPE, "text/plain")],
-            "LocalRouter AI - Unified MCP Gateway\n\
+            "LocalRouter - Unified MCP Gateway\n\
              \n\
              This endpoint supports both SSE and JSON-RPC:\n\
                GET  / (Accept: text/event-stream) - SSE notification stream\n\

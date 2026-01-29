@@ -7,7 +7,7 @@
 //! 4. Can be serialized to both JSON and YAML
 //! 5. Includes all necessary components
 
-use localrouter_ai::server::openapi;
+use localrouter::server::openapi;
 use serde_json::Value;
 
 #[test]
@@ -24,7 +24,7 @@ fn test_openapi_spec_validity() {
     );
 
     // Validate info section
-    assert_eq!(spec["info"]["title"].as_str(), Some("LocalRouter AI API"));
+    assert_eq!(spec["info"]["title"].as_str(), Some("LocalRouter API"));
     assert_eq!(spec["info"]["version"].as_str(), Some("0.1.0"));
     assert!(
         spec["info"]["description"].as_str().is_some(),
@@ -245,7 +245,7 @@ fn test_yaml_serialization() {
         "YAML should contain OpenAPI version"
     );
     assert!(
-        spec_yaml.contains("title: LocalRouter AI API"),
+        spec_yaml.contains("title: LocalRouter API"),
         "YAML should contain API title"
     );
 

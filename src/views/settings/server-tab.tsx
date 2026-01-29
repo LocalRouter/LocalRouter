@@ -254,7 +254,7 @@ export function ServerTab() {
 {`{
   "mcpServers": {
     "localrouter": {
-      "command": "${executablePath || "/path/to/localrouter-ai"}",
+      "command": "${executablePath || "/path/to/localrouter"}",
       "args": ["--mcp-bridge", "--client-id", "your_client_id"],
       "env": {
         "LOCALROUTER_CLIENT_SECRET": "your_secret_here"

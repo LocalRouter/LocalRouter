@@ -6,8 +6,8 @@
 //! - Concurrent flow handling
 //! - Provider integration (Anthropic, OpenAI)
 
-use localrouter_ai::api_keys::CachedKeychain;
-use localrouter_ai::oauth_browser::{
+use localrouter::api_keys::CachedKeychain;
+use localrouter::oauth_browser::{
     generate_pkce_challenge, generate_state, FlowId, OAuthFlowConfig, OAuthFlowManager,
     OAuthFlowResult,
 };
@@ -184,7 +184,7 @@ fn test_flow_result_is_complete() {
 #[test]
 fn test_flow_result_extract_tokens() {
     use chrono::Utc;
-    use localrouter_ai::oauth_browser::OAuthTokens;
+    use localrouter::oauth_browser::OAuthTokens;
 
     let tokens = OAuthTokens {
         access_token: "test_token".to_string(),
@@ -222,22 +222,22 @@ async fn test_flow_cleanup() {
 
 #[test]
 fn test_anthropic_oauth_constants() {
-    use localrouter_ai::providers::oauth::anthropic_claude::CALLBACK_PORT;
+    use localrouter::providers::oauth::anthropic_claude::CALLBACK_PORT;
 
     assert_eq!(CALLBACK_PORT, 1456);
 }
 
 #[test]
 fn test_openai_oauth_constants() {
-    use localrouter_ai::providers::oauth::openai_codex::CALLBACK_PORT;
+    use localrouter::providers::oauth::openai_codex::CALLBACK_PORT;
 
     assert_eq!(CALLBACK_PORT, 1455);
 }
 
 #[test]
 fn test_provider_oauth_port_uniqueness() {
-    use localrouter_ai::providers::oauth::anthropic_claude::CALLBACK_PORT as ANTHROPIC_PORT;
-    use localrouter_ai::providers::oauth::openai_codex::CALLBACK_PORT as OPENAI_PORT;
+    use localrouter::providers::oauth::anthropic_claude::CALLBACK_PORT as ANTHROPIC_PORT;
+    use localrouter::providers::oauth::openai_codex::CALLBACK_PORT as OPENAI_PORT;
 
     // Verify different providers use different ports
     assert_ne!(ANTHROPIC_PORT, OPENAI_PORT);
@@ -246,7 +246,7 @@ fn test_provider_oauth_port_uniqueness() {
 #[cfg(test)]
 mod provider_oauth_integration {
     use super::*;
-    use localrouter_ai::providers::oauth::{
+    use localrouter::providers::oauth::{
         anthropic_claude::AnthropicClaudeOAuthProvider, openai_codex::OpenAICodexOAuthProvider,
         OAuthProvider,
     };
@@ -288,7 +288,7 @@ mod keychain_integration {
 #[cfg(test)]
 mod mcp_oauth_integration {
     use super::*;
-    use localrouter_ai::mcp::oauth_browser::{McpOAuthBrowserManager, OAuthBrowserFlowStatus};
+    use localrouter::mcp::oauth_browser::{McpOAuthBrowserManager, OAuthBrowserFlowStatus};
 
     #[test]
     fn test_mcp_oauth_status_serialization() {

@@ -2,10 +2,10 @@
 //!
 //! Tests that clients can only access authorized LLM providers and MCP servers.
 
-use localrouter_ai::clients::ClientManager;
-use localrouter_ai::config::{McpServerConfig, McpTransportConfig, McpTransportType};
-use localrouter_ai::mcp::McpServerManager;
-use localrouter_ai::utils::errors::AppResult;
+use localrouter::clients::ClientManager;
+use localrouter::config::{McpServerConfig, McpTransportConfig, McpTransportType};
+use localrouter::mcp::McpServerManager;
+use localrouter::utils::errors::AppResult;
 use std::collections::HashMap;
 
 #[test]

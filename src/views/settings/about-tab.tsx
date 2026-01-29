@@ -111,7 +111,7 @@ export function AboutTab() {
           <div className="flex items-center gap-4">
             <div className="text-4xl">🚀</div>
             <div>
-              <h3 className="text-lg font-bold">LocalRouter AI</h3>
+              <h3 className="text-lg font-bold">LocalRouter</h3>
               <p className="text-sm text-muted-foreground">
                 Version {appVersion || "0.0.1"} • Licensed under AGPL-3.0-or-later
               </p>
@@ -254,7 +254,7 @@ export function AboutTab() {
       {/* Footer */}
       <div className="pt-4 border-t">
         <p className="text-xs text-muted-foreground text-center">
-          LocalRouter AI is open source software. View the full source code and contribute on{" "}
+          LocalRouter is open source software. View the full source code and contribute on{" "}
           <button
             onClick={() => handleOpenUrl("https://github.com/mfaro-io/localrouterai")}
             className="text-primary hover:underline"

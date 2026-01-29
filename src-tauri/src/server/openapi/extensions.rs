@@ -1,6 +1,6 @@
 //! Feature adapter schemas for OpenAPI documentation
 //!
-//! This module defines schemas for the 7 advanced feature adapters supported by LocalRouter AI.
+//! This module defines schemas for the 7 advanced feature adapters supported by LocalRouter.
 //! These are provider-specific extensions that go beyond the standard OpenAI API.
 
 use serde::{Deserialize, Serialize};

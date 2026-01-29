@@ -5,8 +5,8 @@
 #![allow(deprecated)]
 
 use chrono::{Duration, Utc};
-use localrouter_ai::monitoring::graphs::{GraphGenerator, MetricType};
-use localrouter_ai::monitoring::metrics::{MetricsCollector, RequestMetrics};
+use localrouter::monitoring::graphs::{GraphGenerator, MetricType};
+use localrouter::monitoring::metrics::{MetricsCollector, RequestMetrics};
 use std::sync::Arc;
 
 /// Test helper: Create MetricsCollector and record sample data
@@ -647,7 +647,7 @@ fn test_token_breakdown_graph() {
 #[test]
 #[should_panic(expected = "interval_minutes must be positive")]
 fn test_fill_gaps_rejects_zero_interval() {
-    use localrouter_ai::monitoring::metrics::MetricDataPoint;
+    use localrouter::monitoring::metrics::MetricDataPoint;
 
     let now = Utc::now();
     let points = vec![MetricDataPoint {
@@ -673,7 +673,7 @@ fn test_fill_gaps_rejects_zero_interval() {
 #[test]
 #[should_panic(expected = "interval_minutes must be positive")]
 fn test_fill_gaps_rejects_negative_interval() {
-    use localrouter_ai::monitoring::metrics::MetricDataPoint;
+    use localrouter::monitoring::metrics::MetricDataPoint;
 
     let now = Utc::now();
     let points = vec![MetricDataPoint {

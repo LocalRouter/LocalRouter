@@ -4,7 +4,7 @@
 
 use super::common::*;
 use futures::StreamExt;
-use localrouter_ai::providers::{gemini::GeminiProvider, ModelProvider};
+use localrouter::providers::{gemini::GeminiProvider, ModelProvider};
 
 #[tokio::test]
 async fn test_gemini_with_custom_base_url() {

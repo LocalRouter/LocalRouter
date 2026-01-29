@@ -1,4 +1,4 @@
-//! CLI argument parsing for LocalRouter AI
+//! CLI argument parsing for LocalRouter
 //!
 //! Supports two modes:
 //! - GUI mode (default): Full desktop application
@@ -6,9 +6,9 @@
 
 use clap::Parser;
 
-/// LocalRouter AI - Intelligent AI model routing with OpenAI-compatible API
+/// LocalRouter - Intelligent AI model routing with OpenAI-compatible API
 #[derive(Parser, Debug)]
-#[command(name = "localrouter-ai")]
+#[command(name = "localrouter")]
 #[command(version, about, long_about = None)]
 pub struct Cli {
     /// Run in MCP bridge mode (STDIO ↔ HTTP proxy)
@@ -21,7 +21,7 @@ pub struct Cli {
     /// This allows external MCP clients (Claude Desktop, Cursor, VS Code)
     /// to connect to LocalRouter's unified MCP gateway.
     ///
-    /// Example: localrouter-ai --mcp-bridge --client-id claude_desktop
+    /// Example: localrouter --mcp-bridge --client-id claude_desktop
     #[arg(long)]
     pub mcp_bridge: bool,
 
@@ -53,20 +53,20 @@ mod tests {
     #[test]
     fn test_cli_help() {
         // Verify CLI can be parsed
-        let cli = Cli::try_parse_from(["localrouter-ai", "--help"]);
+        let cli = Cli::try_parse_from(["localrouter", "--help"]);
         assert!(cli.is_err()); // --help exits with error (clap behavior)
     }
 
     #[test]
     fn test_cli_default_mode() {
-        let cli = Cli::try_parse_from(["localrouter-ai"]).unwrap();
+        let cli = Cli::try_parse_from(["localrouter"]).unwrap();
         assert!(!cli.mcp_bridge);
         assert!(cli.client_id.is_none());
     }
 
     #[test]
     fn test_cli_bridge_mode() {
-        let cli = Cli::try_parse_from(["localrouter-ai", "--mcp-bridge"]).unwrap();
+        let cli = Cli::try_parse_from(["localrouter", "--mcp-bridge"]).unwrap();
         assert!(cli.mcp_bridge);
         assert!(cli.client_id.is_none());
     }
@@ -74,7 +74,7 @@ mod tests {
     #[test]
     fn test_cli_bridge_mode_with_client_id() {
         let cli = Cli::try_parse_from([
-            "localrouter-ai",
+            "localrouter",
             "--mcp-bridge",
             "--client-id",
             "test_client",
@@ -87,7 +87,7 @@ mod tests {
     #[test]
     fn test_cli_client_id_requires_bridge_mode() {
         // --client-id requires --mcp-bridge
-        let cli = Cli::try_parse_from(["localrouter-ai", "--client-id", "test_client"]);
+        let cli = Cli::try_parse_from(["localrouter", "--client-id", "test_client"]);
         assert!(cli.is_err());
     }
 }

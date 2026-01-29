@@ -2,8 +2,8 @@
 //!
 //! Tests client creation, authentication, and access control.
 
-use localrouter_ai::clients::{ClientManager, TokenStore};
-use localrouter_ai::utils::errors::AppResult;
+use localrouter::clients::{ClientManager, TokenStore};
+use localrouter::utils::errors::AppResult;
 
 #[test]
 fn test_client_creation() -> AppResult<()> {

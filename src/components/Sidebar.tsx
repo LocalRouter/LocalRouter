@@ -184,7 +184,7 @@ export default function Sidebar({ activeTab, activeSubTab, onTabChange }: Sideba
     <nav className="w-[240px] bg-white dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700 shadow-sm flex flex-col overflow-hidden">
       {/* Header Section */}
       <div className="bg-gradient-to-r from-indigo-500 to-purple-600 dark:from-indigo-700 dark:to-purple-800 text-white px-6 py-4">
-        <h1 className="text-xl font-bold mb-1">LocalRouter AI</h1>
+        <h1 className="text-xl font-bold mb-1">LocalRouter</h1>
         <p className="text-xs opacity-90">Intelligent AI Model Selection</p>
       </div>
 

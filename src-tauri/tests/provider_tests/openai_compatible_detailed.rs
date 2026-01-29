@@ -5,7 +5,7 @@
 use super::common::*;
 use super::request_validation::*;
 use futures::StreamExt;
-use localrouter_ai::providers::{
+use localrouter::providers::{
     lmstudio::LMStudioProvider, openai_compatible::OpenAICompatibleProvider, ModelProvider,
 };
 use serde_json::json;

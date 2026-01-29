@@ -2,8 +2,8 @@
 //!
 //! Simulates calling Tauri commands directly (without Tauri runtime).
 
-use localrouter_ai::monitoring::graphs::{GraphData, GraphGenerator, MetricType, TimeRange};
-use localrouter_ai::monitoring::metrics::{MetricsCollector, RequestMetrics};
+use localrouter::monitoring::graphs::{GraphData, GraphGenerator, MetricType, TimeRange};
+use localrouter::monitoring::metrics::{MetricsCollector, RequestMetrics};
 use std::sync::Arc;
 
 /// Simulate get_global_metrics command

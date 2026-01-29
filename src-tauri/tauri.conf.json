@@ -1,5 +1,5 @@
 {
-  "productName": "LocalRouter AI",
+  "productName": "LocalRouter",
   "version": "0.0.34",
   "identifier": "ai.localrouter.app",
   "build": {
@@ -20,10 +20,10 @@
       "icons/icon.ico"
     ],
     "resources": ["icons/32x32-active.png"],
-    "copyright": "Copyright (c) 2026 LocalRouter AI",
+    "copyright": "Copyright (c) 2026 LocalRouter",
     "category": "DeveloperTool",
     "shortDescription": "Intelligent AI model routing",
-    "longDescription": "LocalRouter AI provides a local OpenAI-compatible API gateway that intelligently routes requests across multiple AI providers with smart routing, cost optimization, and comprehensive monitoring.",
+    "longDescription": "LocalRouter provides a local OpenAI-compatible API gateway that intelligently routes requests across multiple AI providers with smart routing, cost optimization, and comprehensive monitoring.",
     "macOS": {
       "minimumSystemVersion": "10.15",
       "signingIdentity": "-"
@@ -54,7 +54,7 @@
   "app": {
     "windows": [
       {
-        "title": "LocalRouter AI",
+        "title": "LocalRouter",
         "width": 1200,
         "height": 1000,
         "resizable": true,

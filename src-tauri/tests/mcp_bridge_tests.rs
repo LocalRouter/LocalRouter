@@ -4,9 +4,9 @@
 //! to the LocalRouter HTTP server and returns responses.
 
 use chrono::Utc;
-use localrouter_ai::config::{AppConfig, Client, McpServerAccess};
-use localrouter_ai::mcp::bridge::StdioBridge;
-use localrouter_ai::mcp::protocol::{JsonRpcRequest, JsonRpcResponse};
+use localrouter::config::{AppConfig, Client, McpServerAccess};
+use localrouter::mcp::bridge::StdioBridge;
+use localrouter::mcp::protocol::{JsonRpcRequest, JsonRpcResponse};
 use serde_json::{json, Value};
 
 /// Helper to create a test configuration
@@ -162,7 +162,7 @@ fn test_client_auto_detection() {
 /// Test JSON-RPC error response
 #[test]
 fn test_jsonrpc_error_response() {
-    use localrouter_ai::mcp::protocol::JsonRpcError;
+    use localrouter::mcp::protocol::JsonRpcError;
 
     let error_response = JsonRpcResponse {
         jsonrpc: "2.0".to_string(),

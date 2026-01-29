@@ -8,7 +8,7 @@
 //!
 //! These tests verify end-to-end functionality with realistic scenarios.
 
-use localrouter_ai::providers::{
+use localrouter::providers::{
     features::{
         json_mode::JsonModeAdapter, logprobs::LogprobsAdapter,
         prompt_caching::PromptCachingAdapter, structured_outputs::StructuredOutputsAdapter,

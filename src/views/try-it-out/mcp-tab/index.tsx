@@ -469,29 +469,30 @@ export function McpTab({ innerPath, onPathChange }: McpTabProps) {
 
             {/* Deferred Loading toggle - only for unified gateway */}
             {isGatewayTarget && (
-              <TooltipProvider>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <div className="flex items-center gap-2">
-                      <Checkbox
-                        id="deferred-loading"
-                        checked={deferredLoading}
-                        onCheckedChange={(checked) => setDeferredLoading(checked === true)}
-                        disabled={isConnected || isConnecting}
-                      />
-                      <Label htmlFor="deferred-loading" className="text-sm cursor-pointer">
-                        Deferred Loading
-                      </Label>
-                    </div>
-                  </TooltipTrigger>
-                  <TooltipContent side="bottom" className="max-w-[300px]">
-                    <p>
-                      When enabled, tools and resources are loaded on-demand via search
-                      instead of all at once. Reduces token consumption for large catalogs.
-                    </p>
-                  </TooltipContent>
-                </Tooltip>
-              </TooltipProvider>
+              <div className="flex items-center gap-2">
+                <Checkbox
+                  id="deferred-loading"
+                  checked={deferredLoading}
+                  onCheckedChange={(checked) => setDeferredLoading(checked === true)}
+                  disabled={isConnected || isConnecting}
+                />
+                <Label htmlFor="deferred-loading" className="text-sm cursor-pointer">
+                  Deferred Loading
+                </Label>
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Info className="h-3.5 w-3.5 text-muted-foreground cursor-help" />
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom" className="max-w-[300px]">
+                      <p>
+                        When enabled, tools and resources are loaded on-demand via search
+                        instead of all at once. Reduces token consumption for large catalogs.
+                      </p>
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              </div>
             )}
 
             {/* Connection buttons */}

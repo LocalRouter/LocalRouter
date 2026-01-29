@@ -95,7 +95,7 @@ async function globalSetup(): Promise<void> {
   console.log('Building Tauri app (debug mode)...');
   try {
     // Use cargo build from the workspace root - the binary ends up in target/debug/
-    execSync('cargo build -p localrouter-ai', {
+    execSync('cargo build -p localrouter', {
       cwd: process.cwd(),
       stdio: 'inherit',
       env: {

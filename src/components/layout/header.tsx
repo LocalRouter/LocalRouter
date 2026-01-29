@@ -19,7 +19,7 @@ export function Header({ onOpenCommandPalette }: HeaderProps) {
     <header className="flex h-12 items-center justify-between border-b px-4">
       {/* Left side - Title (could show breadcrumbs/view name) */}
       <div className="flex items-center gap-2">
-        <h1 className="text-sm font-semibold">LocalRouter AI</h1>
+        <h1 className="text-sm font-semibold">LocalRouter</h1>
       </div>
 
       {/* Right side - Search and actions */}

@@ -2,7 +2,7 @@
 //!
 //! Tests for tool calling request/response structures.
 
-use localrouter_ai::providers::{
+use localrouter::providers::{
     ChatMessage, ChatMessageContent, CompletionRequest, FunctionCall, FunctionDefinition, Tool,
     ToolCall, ToolChoice,
 };

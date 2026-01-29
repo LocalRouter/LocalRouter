@@ -1,4 +1,4 @@
-# LocalRouter AI - Project Guide
+# LocalRouter - Project Guide
 
 Local OpenAI-compatible API gateway with intelligent routing, multi-provider support, and MCP integration.
 

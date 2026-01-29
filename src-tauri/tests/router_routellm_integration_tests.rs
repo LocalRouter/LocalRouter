@@ -2,7 +2,7 @@
 ///!
 ///! These tests verify that RouteLLM configuration structs are properly defined
 ///! and that the routing logic works as expected.
-use localrouter_ai::config::{AutoModelConfig, RouteLLMConfig, RouteLLMGlobalSettings};
+use localrouter::config::{AutoModelConfig, RouteLLMConfig, RouteLLMGlobalSettings};
 
 #[cfg(test)]
 mod config_tests {

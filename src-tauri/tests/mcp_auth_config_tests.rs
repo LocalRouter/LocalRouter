@@ -2,11 +2,11 @@
 //!
 //! Tests MCP server authentication methods and configuration.
 
-use localrouter_ai::config::{
+use localrouter::config::{
     McpAuthConfig, McpServerConfig, McpTransportConfig, McpTransportType,
 };
-use localrouter_ai::mcp::McpServerManager;
-use localrouter_ai::utils::errors::AppResult;
+use localrouter::mcp::McpServerManager;
+use localrouter::utils::errors::AppResult;
 use std::collections::HashMap;
 
 #[test]

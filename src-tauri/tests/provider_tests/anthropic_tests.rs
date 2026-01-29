@@ -4,7 +4,7 @@
 
 use super::common::*;
 use futures::StreamExt;
-use localrouter_ai::providers::{anthropic::AnthropicProvider, ModelProvider};
+use localrouter::providers::{anthropic::AnthropicProvider, ModelProvider};
 
 #[tokio::test]
 async fn test_anthropic_list_models() {

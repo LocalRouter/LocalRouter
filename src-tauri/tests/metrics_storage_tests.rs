@@ -1,8 +1,8 @@
 //! Integration tests for metrics storage and aggregation
 
 use chrono::{DateTime, DurationRound, Utc};
-use localrouter_ai::monitoring::metrics::{MetricsCollector, RequestMetrics};
-use localrouter_ai::monitoring::storage::{Granularity, MetricRow, MetricsDatabase};
+use localrouter::monitoring::metrics::{MetricsCollector, RequestMetrics};
+use localrouter::monitoring::storage::{Granularity, MetricRow, MetricsDatabase};
 use std::sync::Arc;
 use tempfile::tempdir;
 

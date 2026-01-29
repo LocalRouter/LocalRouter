@@ -69,9 +69,9 @@ pub fn setup_tray<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
     // Create the tray icon
     // In test mode, add a visual indicator to the tooltip
     let tooltip = if is_test_mode() {
-        "🧪 LocalRouter AI [TEST MODE]"
+        "🧪 LocalRouter [TEST MODE]"
     } else {
-        "LocalRouter AI"
+        "LocalRouter"
     };
 
     let _tray = TrayIconBuilder::with_id("main")
@@ -109,7 +109,7 @@ pub fn setup_tray<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
                             "main",
                             tauri::WebviewUrl::App("index.html".into()),
                         )
-                        .title("LocalRouter AI")
+                        .title("LocalRouter")
                         .inner_size(1200.0, 1000.0)
                         .center()
                         .visible(true)
@@ -1122,13 +1122,13 @@ pub fn update_tray_icon<R: Runtime>(app: &AppHandle<R>, status: &str) -> tauri::
                 })?;
                 tray.set_icon(Some(icon))?;
                 tray.set_icon_as_template(true)?;
-                tray.set_tooltip(Some("LocalRouter AI - Server Stopped"))?;
+                tray.set_tooltip(Some("LocalRouter - Server Stopped"))?;
                 info!("Tray icon updated: stopped (template mode)");
             }
             "running" => {
                 // Running: Only update tooltip, don't change icon (graph manager handles it)
                 // The dynamic graph with health dot is always displayed now
-                tray.set_tooltip(Some("LocalRouter AI - Server Running"))?;
+                tray.set_tooltip(Some("LocalRouter - Server Running"))?;
                 info!("Tray tooltip updated: running (graph managed by TrayGraphManager)");
             }
             _ => {
@@ -1137,7 +1137,7 @@ pub fn update_tray_icon<R: Runtime>(app: &AppHandle<R>, status: &str) -> tauri::
                     "Unknown tray icon status: {}, updating tooltip only",
                     status
                 );
-                tray.set_tooltip(Some(&format!("LocalRouter AI - {}", status)))?;
+                tray.set_tooltip(Some(&format!("LocalRouter - {}", status)))?;
             }
         }
     }

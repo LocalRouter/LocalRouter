@@ -1,4 +1,4 @@
-// Build script for LocalRouter AI
+// Build script for LocalRouter
 //
 // This script runs at compile time to:
 // 1. Fetch models.dev model catalog (with 7-day caching)

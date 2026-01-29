@@ -669,7 +669,7 @@ export function UpdatesTab() {
       {/* Footer */}
       <div className="pt-4 border-t">
         <p className="text-xs text-muted-foreground text-center">
-          LocalRouter AI is open source software licensed under AGPL-3.0-or-later. View the full source code on{" "}
+          LocalRouter is open source software licensed under AGPL-3.0-or-later. View the full source code on{" "}
           <button
             onClick={() => handleOpenUrl("https://github.com/mfaro-io/localrouterai")}
             className="text-primary hover:underline"

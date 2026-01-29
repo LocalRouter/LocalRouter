@@ -27,7 +27,10 @@
       "Bash(while read name pid)",
       "WebFetch(domain:models.dev)",
       "Bash(LOCALROUTER_REBUILD_CATALOG=1 cargo check:*)",
-      "Bash(tree:*)"
+      "Bash(tree:*)",
+      "Bash(gh run:*)",
+      "Bash(gh release list:*)",
+      "Bash(gh release download:*)"
     ]
   }
 }
