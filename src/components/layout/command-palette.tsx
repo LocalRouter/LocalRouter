@@ -2,7 +2,6 @@ import * as React from "react"
 import {
   LayoutDashboard,
   Users,
-  Database,
   Settings,
   Server,
   Key,
@@ -11,6 +10,7 @@ import {
   RefreshCw,
   Plus,
 } from "lucide-react"
+import { ProvidersIcon, McpIcon } from "@/components/icons/category-icons"
 import {
   CommandDialog,
   CommandEmpty,
@@ -105,7 +105,7 @@ export function CommandPalette({
           <CommandItem
             onSelect={() => runCommand(() => onViewChange('resources'))}
           >
-            <Database className="mr-2 h-4 w-4" />
+            <ProvidersIcon className="mr-2 h-4 w-4" />
             <span>Resources</span>
             <CommandShortcut>⌘3</CommandShortcut>
           </CommandItem>
@@ -125,7 +125,7 @@ export function CommandPalette({
           <CommandItem
             onSelect={() => runCommand(() => onViewChange('resources', 'providers'))}
           >
-            <Server className="mr-2 h-4 w-4" />
+            <ProvidersIcon className="mr-2 h-4 w-4" />
             <span>Providers</span>
           </CommandItem>
           <CommandItem
@@ -137,7 +137,7 @@ export function CommandPalette({
           <CommandItem
             onSelect={() => runCommand(() => onViewChange('mcp-servers'))}
           >
-            <Database className="mr-2 h-4 w-4" />
+            <McpIcon className="mr-2 h-4 w-4" />
             <span>MCP</span>
           </CommandItem>
           <CommandItem
@@ -215,7 +215,7 @@ export function CommandPalette({
                     )
                   }
                 >
-                  <Server className="mr-2 h-4 w-4" />
+                  <ProvidersIcon className="mr-2 h-4 w-4" />
                   <span>{provider.instance_name}</span>
                   <span className="ml-2 text-xs text-muted-foreground">
                     {provider.provider_type}
@@ -265,7 +265,7 @@ export function CommandPalette({
                     )
                   }
                 >
-                  <Database className="mr-2 h-4 w-4" />
+                  <McpIcon className="mr-2 h-4 w-4" />
                   <span>{server.name}</span>
                 </CommandItem>
               ))}

@@ -2,7 +2,8 @@ import { useState, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
 import { toast } from "sonner"
-import { Database, Plus, CheckCircle, XCircle, Loader2, RefreshCw } from "lucide-react"
+import { Plus, CheckCircle, XCircle, Loader2, RefreshCw } from "lucide-react"
+import McpServerIcon from "@/components/McpServerIcon"
 import { Badge } from "@/components/ui/Badge"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card"
@@ -646,7 +647,7 @@ export function McpServersPanel({
                         selectedId === server.id ? "bg-accent" : "hover:bg-muted"
                       )}
                     >
-                      <Database className="h-4 w-4 text-muted-foreground" />
+                      <McpServerIcon serverName={server.name} size={20} />
                       <div className="flex-1 min-w-0">
                         <p className="font-medium truncate">{server.name}</p>
                         <p className="text-xs text-muted-foreground capitalize">

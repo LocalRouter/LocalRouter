@@ -2,7 +2,8 @@ import { useState, useEffect, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
 import { toast } from "sonner"
-import { Server, CheckCircle, XCircle, AlertCircle, Plus, Loader2, RefreshCw } from "lucide-react"
+import { CheckCircle, XCircle, AlertCircle, Plus, Loader2, RefreshCw } from "lucide-react"
+import { ProvidersIcon } from "@/components/icons/category-icons"
 import { Badge } from "@/components/ui/Badge"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card"
@@ -325,7 +326,7 @@ export function ProvidersPanel({
                             : "hover:bg-muted"
                         )}
                       >
-                        <Server className="h-4 w-4 text-muted-foreground" />
+                        <ProviderIcon providerId={provider.provider_type.toLowerCase()} size={20} />
                         <div className="flex-1 min-w-0">
                           <p className="font-medium truncate">{provider.instance_name}</p>
                           <p className="text-xs text-muted-foreground">{provider.provider_type}</p>
@@ -540,7 +541,7 @@ export function ProvidersPanel({
             </ScrollArea>
           ) : (
             <div className="flex flex-col items-center justify-center h-full text-muted-foreground gap-4">
-              <Server className="h-12 w-12 opacity-30" />
+              <ProvidersIcon className="h-12 w-12 opacity-30" />
               <div className="text-center">
                 <p className="font-medium">Select a provider to view details</p>
                 <p className="text-sm">
