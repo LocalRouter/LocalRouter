@@ -19,3 +19,9 @@ parking_lot = { workspace = true }
 rusqlite = { workspace = true }
 image = { workspace = true }
 anyhow = { workspace = true }
+tauri = { workspace = true }
+dashmap = { workspace = true }
+uuid = { workspace = true }
+dirs = { workspace = true }
+
+tempfile = "3.8"

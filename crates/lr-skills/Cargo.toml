@@ -22,3 +22,7 @@ sha2 = { workspace = true }
 zip = { workspace = true }
 anyhow = { workspace = true }
 tauri = { workspace = true }
+dashmap = { workspace = true }
+serde_yaml = { workspace = true }
+
+tempfile = "3.8"

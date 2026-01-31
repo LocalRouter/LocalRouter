@@ -17,3 +17,6 @@ parking_lot = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 dirs = { workspace = true }
+
+tempfile = "3.8"
+serial_test = { workspace = true }

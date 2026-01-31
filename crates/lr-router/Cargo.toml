@@ -23,3 +23,6 @@ dashmap = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
 anyhow = { workspace = true }
+
+tempfile = "3.8"
+uuid = { workspace = true }

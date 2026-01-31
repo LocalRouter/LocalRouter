@@ -13,93 +13,59 @@ path = "src/lib.rs"
 
 [build-dependencies]
 tauri-build = { version = "2.2", features = [] }
-serde = { workspace = true }
-serde_json = { workspace = true }
-chrono = { workspace = true }
-reqwest = { workspace = true, features = ["blocking"] }
 
 [dependencies]
-# Workspace dependencies
+# Internal crates
+lr-types = { workspace = true }
+lr-utils = { workspace = true }
+lr-catalog = { workspace = true }
+lr-config = { workspace = true }
+lr-api-keys = { workspace = true }
+lr-oauth = { workspace = true }
+lr-clients = { workspace = true }
+lr-providers = { workspace = true }
+lr-routellm = { workspace = true }
+lr-monitoring = { workspace = true }
+lr-mcp = { workspace = true }
+lr-skills = { workspace = true }
+lr-router = { workspace = true }
+lr-server = { workspace = true }
+
+# External dependencies still needed by src-tauri (main.rs, ui/, updater/)
 tokio = { workspace = true }
-tokio-util = { workspace = true }
-axum = { workspace = true }
-tower = { workspace = true }
-tower-http = { workspace = true }
-reqwest = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
-serde_yaml = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 anyhow = { workspace = true }
-thiserror = { workspace = true }
-bcrypt = { workspace = true }
-ring = { workspace = true }
-base64 = { workspace = true }
-uuid = { workspace = true }
-chrono = { workspace = true }
-async-trait = { workspace = true }
-async-stream = { workspace = true }
-config = { workspace = true }
-dirs = { workspace = true }
-keyring = { workspace = true }
-oauth2 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 tauri = { workspace = true }
 tauri-plugin-process = "2"
 tauri-plugin-shell = { workspace = true }
 tauri-plugin-updater = "2.9"
-notify = { workspace = true }
-if-addrs = { workspace = true }
-arboard = { workspace = true }
-sha2 = { workspace = true }
-rand = { workspace = true }
-urlencoding = { workspace = true }
 clap = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+parking_lot = { workspace = true }
 
-# Additional dependencies
-futures = "0.3"
-futures-util = "0.3"
-tokio-tungstenite = "0.21"
-parking_lot = "0.12"
-dashmap = "6.1"
-hex = { workspace = true }
-machine-uid = { workspace = true }
-ollama-rs = { workspace = true }
-jsonschema = "0.18"  # JSON Schema validation for structured outputs
-rusqlite = { version = "0.32", features = ["bundled"] }  # SQLite for metrics storage
-once_cell = "1.20"  # Lazy static initialization for catalog
-image = { version = "0.25", default-features = false, features = ["png"] }  # PNG generation for tray icon graphs
-shell-words = "1.1"  # POSIX shell-like command parsing for MCP STDIO
-zip = { version = "2.2", default-features = false, features = ["deflate"] }  # ZIP extraction for .skill files
-
-# OpenAPI documentation
-utoipa = { version = "5", features = ["axum_extras", "chrono", "uuid"] }
-utoipa-axum = "0.2"
-utoipa-scalar = { version = "0.2", features = ["axum"] }
-
-# RouteLLM intelligent routing - Candle-based (pure Rust)
-tokenizers = "0.22"
-hf-hub = { version = "0.3", features = ["tokio"] }
-safetensors = "0.4"
-
-# Platform-specific GPU acceleration:
-# - macOS: Metal (Apple Silicon GPU)
-# - Linux/Windows: CPU by default, CUDA optional (requires CUDA installation)
-[target.'cfg(target_os = "macos")'.dependencies]
-candle-core = { version = "0.8", features = ["metal"] }
-candle-nn = { version = "0.8", features = ["metal"] }
-candle-transformers = { version = "0.8", features = ["metal"] }
-
-[target.'cfg(not(target_os = "macos"))'.dependencies]
-candle-core = "0.8"
-candle-nn = "0.8"
-candle-transformers = "0.8"
+# These may still be needed by ui/ commands and updater
+reqwest = { workspace = true }
+image = { workspace = true }
+arboard = { workspace = true }
+if-addrs = { workspace = true }
+dirs = { workspace = true }
+dashmap = { workspace = true }
+serde_yaml = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3.8"
 serial_test = { workspace = true }
 wiremock = "0.6"
 regex = "1.10"
+base64 = { workspace = true }
+futures = { workspace = true }
+futures-util = { workspace = true }
+tokio-tungstenite = { workspace = true }
+keyring = { workspace = true }
 
 [features]
 # This feature is used for production builds or when a dev server is not specified, DO NOT REMOVE!!

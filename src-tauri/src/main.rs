@@ -1,23 +1,9 @@
 // Prevents additional console window on Windows in release
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod api_keys;
-mod catalog;
 mod cli;
-mod clients;
-mod config;
-mod mcp;
-mod monitoring;
-mod oauth_browser;
-mod oauth_clients;
-mod providers;
-mod routellm;
-mod router;
-mod server;
-mod skills;
 mod ui;
 mod updater;
-mod utils;
 
 use std::sync::Arc;
 
@@ -25,7 +11,13 @@ use tauri::{Listener, Manager};
 use tracing::{error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use providers::factory::{
+// Re-exported crate aliases from lib.rs
+use localrouter::{
+    api_keys, clients, config, mcp, monitoring, oauth_browser, oauth_clients, providers,
+    routellm, router, server, skills, utils,
+};
+
+use lr_providers::factory::{
     AnthropicProviderFactory, CerebrasProviderFactory, CohereProviderFactory,
     DeepInfraProviderFactory, GeminiProviderFactory, GitHubCopilotProviderFactory,
     GroqProviderFactory, LMStudioProviderFactory, MistralProviderFactory, OllamaProviderFactory,
@@ -33,8 +25,8 @@ use providers::factory::{
     OpenRouterProviderFactory, PerplexityProviderFactory, TogetherAIProviderFactory,
     XAIProviderFactory,
 };
-use providers::registry::ProviderRegistry;
-use server::ServerManager;
+use lr_providers::registry::ProviderRegistry;
+use lr_server::ServerManager;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -120,7 +112,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
 
     // Log configuration directory
     let config_dir =
-        config::paths::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("unknown"));
+        lr_utils::paths::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("unknown"));
     #[cfg(debug_assertions)]
     info!("Running in DEVELOPMENT mode");
     #[cfg(not(debug_assertions))]
@@ -132,7 +124,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
         tracing::warn!("Failed to load config, using defaults: {}", e);
         config::ConfigManager::new(
             config::AppConfig::default(),
-            config::paths::config_file().unwrap(),
+            lr_utils::paths::config_file().unwrap(),
         )
     });
 
@@ -316,7 +308,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
 
     // Initialize OAuth manager for subscription-based providers
     info!("Initializing OAuth manager...");
-    let oauth_storage_path = config::paths::config_dir()
+    let oauth_storage_path = lr_utils::paths::config_dir()
         .expect("Failed to get config directory")
         .join("oauth_credentials.json");
     let oauth_storage = Arc::new(
@@ -345,7 +337,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
 
     // Initialize metrics collector
     info!("Initializing metrics collector...");
-    let metrics_db_path = config::paths::config_dir()
+    let metrics_db_path = lr_utils::paths::config_dir()
         .unwrap_or_else(|_| std::path::PathBuf::from("."))
         .join("metrics.db");
     let metrics_db = Arc::new(

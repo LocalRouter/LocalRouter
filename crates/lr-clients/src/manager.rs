@@ -11,8 +11,6 @@
 
 #![allow(dead_code)]
 
-pub mod token_store;
-
 use lr_api_keys::keychain_trait::KeychainStorage;
 use lr_api_keys::CachedKeychain;
 use lr_config::{Client, McpServerAccess};
@@ -20,7 +18,6 @@ use lr_utils::crypto;
 use lr_types::{AppError, AppResult};
 use parking_lot::RwLock;
 use std::sync::Arc;
-pub use token_store::TokenStore;
 
 const CLIENT_SERVICE: &str = "LocalRouter-Clients";
 

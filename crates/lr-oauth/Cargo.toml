@@ -11,6 +11,7 @@ description = "OAuth browser flow and client management for LocalRouter"
 lr-types = { workspace = true }
 lr-config = { workspace = true }
 lr-api-keys = { workspace = true }
+lr-utils = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }

@@ -90,7 +90,7 @@ impl SseTransport {
     /// Parse SSE response and extract JSON data
     ///
     /// SSE responses have the format:
-    /// ```
+    /// ```text
     /// event: message
     /// data: {"jsonrpc":"2.0",...}
     /// ```
@@ -127,7 +127,7 @@ impl SseTransport {
     /// Parse SSE event and extract event type and data
     ///
     /// SSE events have the format:
-    /// ```
+    /// ```text
     /// event: endpoint
     /// data: /messages
     /// ```

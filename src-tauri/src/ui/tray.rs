@@ -1879,6 +1879,12 @@ impl TrayGraphManager {
     }
 }
 
+impl lr_types::TokenRecorder for TrayGraphManager {
+    fn record_tokens(&self, tokens: u64) {
+        self.record_tokens(tokens);
+    }
+}
+
 /// Set update notification state and rebuild tray menu
 pub fn set_update_available<R: Runtime>(app: &AppHandle<R>, available: bool) -> tauri::Result<()> {
     info!("Setting update notification state: {}", available);

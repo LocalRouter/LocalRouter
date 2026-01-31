@@ -24,7 +24,7 @@ use lr_monitoring::metrics::MetricsCollector;
 use lr_providers::health_cache::HealthCacheManager;
 use lr_providers::registry::ProviderRegistry;
 use lr_router::{RateLimiterManager, Router};
-use crate::ui::tray::TrayGraphManager;
+use lr_types::TokenRecorder;
 
 use super::types::{CostDetails, GenerationDetailsResponse, ProviderHealthSnapshot, TokenUsage};
 
@@ -323,7 +323,7 @@ pub struct AppState {
 
     /// Tray graph manager for real-time token visualization (optional, only in UI mode)
     /// Behind RwLock to allow setting it after AppState creation during Tauri setup
-    pub tray_graph_manager: Arc<RwLock<Option<Arc<TrayGraphManager>>>>,
+    pub tray_graph_manager: Arc<RwLock<Option<Arc<dyn TokenRecorder>>>>,
 
     /// Broadcast channel for MCP server notifications
     /// Allows multiple clients to subscribe to real-time notifications from MCP servers
@@ -450,7 +450,7 @@ impl AppState {
     }
 
     /// Set the tray graph manager (called after Tauri initialization when it's created)
-    pub fn set_tray_graph_manager(&self, manager: Arc<TrayGraphManager>) {
+    pub fn set_tray_graph_manager(&self, manager: Arc<dyn TokenRecorder>) {
         *self.tray_graph_manager.write() = Some(manager);
     }
 

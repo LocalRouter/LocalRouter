@@ -34,3 +34,10 @@ oauth2 = { workspace = true }
 urlencoding = { workspace = true }
 keyring = { workspace = true }
 axum = { workspace = true }
+lr-oauth = { workspace = true }
+lr-skills = { workspace = true }
+lr-router = { workspace = true }
+lr-providers = { workspace = true }
+once_cell = { workspace = true }
+utoipa = { workspace = true }
+async-stream = { workspace = true }
