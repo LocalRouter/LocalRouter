@@ -412,7 +412,7 @@ mod auto_unload_tests {
 #[cfg(test)]
 mod downloader_tests {
     use super::*;
-    use lr_routellm::downloader;
+    use crate::downloader;
 
     #[tokio::test]
     #[ignore] // Requires internet connection and downloads ~440 MB - run manually with: cargo test test_download_and_verify -- --ignored
@@ -489,7 +489,7 @@ mod downloader_tests {
 
         // Test that we can load the full model
         println!("\n🤖 Testing model loading...");
-        use lr_routellm::candle_router::CandleRouter;
+        use crate::candle_router::CandleRouter;
         let router_result = CandleRouter::new(&model_path, &tokenizer_path);
 
         if let Err(ref e) = router_result {

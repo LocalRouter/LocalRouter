@@ -6,9 +6,9 @@
 
 use lr_api_keys::keychain_trait::KeychainStorage;
 use lr_config::{McpServerConfig, McpTransportConfig, McpTransportType};
-use lr_mcp::oauth::McpOAuthManager;
-use lr_mcp::protocol::{JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, StreamingChunk};
-use lr_mcp::transport::{SseTransport, StdioTransport, Transport, WebSocketTransport};
+use crate::oauth::McpOAuthManager;
+use crate::protocol::{JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, StreamingChunk};
+use crate::transport::{SseTransport, StdioTransport, Transport, WebSocketTransport};
 use lr_types::{AppError, AppResult};
 use dashmap::DashMap;
 use futures_util::stream::Stream;
@@ -129,7 +129,7 @@ impl McpServerManager {
     pub fn set_request_callback(
         &self,
         server_id: &str,
-        callback: lr_mcp::transport::StdioRequestCallback,
+        callback: crate::transport::StdioRequestCallback,
     ) -> bool {
         if let Some(transport) = self.stdio_transports.get(server_id) {
             transport.set_request_callback(callback);

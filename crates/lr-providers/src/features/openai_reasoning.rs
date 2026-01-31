@@ -12,7 +12,7 @@
 use serde_json::{json, Value};
 
 use super::{FeatureAdapter, FeatureData, FeatureParams};
-use lr_providers::{CompletionRequest, CompletionResponse};
+use crate::{CompletionRequest, CompletionResponse};
 use lr_types::errors::AppResult;
 
 /// Feature adapter for OpenAI reasoning tokens (o1 series models)
@@ -149,7 +149,7 @@ mod tests {
             model: "o1-preview".to_string(),
             provider: "openai".to_string(),
             choices: vec![],
-            usage: lr_providers::TokenUsage {
+            usage: crate::TokenUsage {
                 prompt_tokens: 100,
                 completion_tokens: 50,
                 total_tokens: 150,
@@ -180,7 +180,7 @@ mod tests {
             model: "gpt-4".to_string(),
             provider: "openai".to_string(),
             choices: vec![],
-            usage: lr_providers::TokenUsage {
+            usage: crate::TokenUsage {
                 prompt_tokens: 100,
                 completion_tokens: 50,
                 total_tokens: 150,

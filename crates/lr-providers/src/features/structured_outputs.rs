@@ -32,7 +32,7 @@ use jsonschema::{Draft, JSONSchema};
 use serde_json::{json, Value};
 
 use super::{FeatureAdapter, FeatureData, FeatureParams};
-use lr_providers::{CompletionRequest, CompletionResponse};
+use crate::{CompletionRequest, CompletionResponse};
 use lr_types::{AppError, AppResult};
 
 /// Maximum schema size in bytes (1MB)
@@ -178,9 +178,9 @@ impl FeatureAdapter for StructuredOutputsAdapter {
                 let schema_prompt = Self::format_for_anthropic(&schema)?;
 
                 // Add to beginning of messages as a system message
-                let system_message = lr_providers::ChatMessage {
+                let system_message = crate::ChatMessage {
                     role: "system".to_string(),
-                    content: lr_providers::ChatMessageContent::Text(schema_prompt),
+                    content: crate::ChatMessageContent::Text(schema_prompt),
                     tool_calls: None,
                     tool_call_id: None,
                     name: None,
@@ -490,11 +490,11 @@ mod tests {
             created: 1234567890,
             model: "gpt-4".to_string(),
             provider: "openai".to_string(),
-            choices: vec![lr_providers::CompletionChoice {
+            choices: vec![crate::CompletionChoice {
                 index: 0,
-                message: lr_providers::ChatMessage {
+                message: crate::ChatMessage {
                     role: "assistant".to_string(),
-                    content: lr_providers::ChatMessageContent::Text(
+                    content: crate::ChatMessageContent::Text(
                         r#"{"result": "success"}"#.to_string(),
                     ),
                     tool_calls: None,
@@ -504,7 +504,7 @@ mod tests {
                 finish_reason: Some("stop".to_string()),
                 logprobs: None,
             }],
-            usage: lr_providers::TokenUsage {
+            usage: crate::TokenUsage {
                 prompt_tokens: 100,
                 completion_tokens: 50,
                 total_tokens: 150,
@@ -547,11 +547,11 @@ mod tests {
             created: 1234567890,
             model: "gpt-4".to_string(),
             provider: "openai".to_string(),
-            choices: vec![lr_providers::CompletionChoice {
+            choices: vec![crate::CompletionChoice {
                 index: 0,
-                message: lr_providers::ChatMessage {
+                message: crate::ChatMessage {
                     role: "assistant".to_string(),
-                    content: lr_providers::ChatMessageContent::Text(
+                    content: crate::ChatMessageContent::Text(
                         r#"{"wrong_field": "value"}"#.to_string(),
                     ),
                     tool_calls: None,
@@ -561,7 +561,7 @@ mod tests {
                 finish_reason: Some("stop".to_string()),
                 logprobs: None,
             }],
-            usage: lr_providers::TokenUsage {
+            usage: crate::TokenUsage {
                 prompt_tokens: 100,
                 completion_tokens: 50,
                 total_tokens: 150,

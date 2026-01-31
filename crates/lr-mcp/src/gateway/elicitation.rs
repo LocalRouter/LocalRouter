@@ -12,7 +12,7 @@ use tokio::sync::oneshot;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-use lr_mcp::protocol::{ElicitationRequest, ElicitationResponse, JsonRpcNotification};
+use crate::protocol::{ElicitationRequest, ElicitationResponse, JsonRpcNotification};
 use lr_types::{AppError, AppResult};
 
 /// Pending elicitation session

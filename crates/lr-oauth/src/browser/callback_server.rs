@@ -4,7 +4,7 @@
 //! multiple concurrent flows on different ports or sharing the same port.
 #![allow(dead_code)]
 
-use lr_oauth::browser::FlowId;
+use crate::browser::FlowId;
 use lr_types::{AppError, AppResult};
 use axum::{
     extract::Query,

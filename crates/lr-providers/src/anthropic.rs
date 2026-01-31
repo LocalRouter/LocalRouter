@@ -764,19 +764,19 @@ impl ModelProvider for AnthropicProvider {
     fn get_feature_adapter(
         &self,
         feature: &str,
-    ) -> Option<Box<dyn lr_providers::features::FeatureAdapter>> {
+    ) -> Option<Box<dyn crate::features::FeatureAdapter>> {
         match feature {
             "extended_thinking" => Some(Box::new(
-                lr_providers::features::anthropic_thinking::AnthropicThinkingAdapter,
+                crate::features::anthropic_thinking::AnthropicThinkingAdapter,
             )),
             "structured_outputs" => Some(Box::new(
-                lr_providers::features::structured_outputs::StructuredOutputsAdapter,
+                crate::features::structured_outputs::StructuredOutputsAdapter,
             )),
             "prompt_caching" => Some(Box::new(
-                lr_providers::features::prompt_caching::PromptCachingAdapter,
+                crate::features::prompt_caching::PromptCachingAdapter,
             )),
             "json_mode" => Some(Box::new(
-                lr_providers::features::json_mode::JsonModeAdapter,
+                crate::features::json_mode::JsonModeAdapter,
             )),
             _ => None,
         }
@@ -908,7 +908,7 @@ struct AnthropicDelta {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lr_providers::{ChatMessageContent, FunctionCall, ToolCall};
+    use crate::{ChatMessageContent, FunctionCall, ToolCall};
 
     #[test]
     fn test_convert_messages_with_system() {

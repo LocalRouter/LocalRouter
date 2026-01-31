@@ -2,8 +2,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::timeout;
 
-use lr_mcp::manager::McpServerManager;
-use lr_mcp::protocol::JsonRpcRequest;
+use crate::manager::McpServerManager;
+use crate::protocol::JsonRpcRequest;
 use lr_types::errors::AppError;
 use serde_json::Value;
 

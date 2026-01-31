@@ -18,7 +18,6 @@ use tracing::{debug, error, info};
 use uuid::Uuid;
 
 mod migration;
-pub mod paths;
 mod storage;
 mod validation;
 
@@ -1392,7 +1391,7 @@ impl ConfigManager {
 
     /// Load configuration from default location
     pub async fn load() -> AppResult<Self> {
-        let config_path = paths::config_file()?;
+        let config_path = lr_utils::paths::config_file()?;
         let config = load_config(&config_path).await?;
         Ok(Self::new(config, config_path))
     }

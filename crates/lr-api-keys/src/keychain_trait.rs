@@ -284,7 +284,7 @@ impl CachedKeychain {
         match std::env::var("LOCALROUTER_KEYCHAIN").as_deref() {
             Ok("file") => {
                 warn!("Using file-based keychain storage (env var override)");
-                let secrets_path = lr_config::paths::secrets_file()?;
+                let secrets_path = lr_utils::paths::secrets_file()?;
                 return Self::file(secrets_path);
             }
             Ok("system") => {
@@ -298,7 +298,7 @@ impl CachedKeychain {
         #[cfg(debug_assertions)]
         {
             warn!("Using file-based keychain storage (DEVELOPMENT MODE)");
-            let secrets_path = lr_config::paths::secrets_file()?;
+            let secrets_path = lr_utils::paths::secrets_file()?;
             Self::file(secrets_path)
         }
 

@@ -111,7 +111,7 @@ pub trait ModelProvider: Send + Sync {
     fn get_feature_adapter(
         &self,
         _feature: &str,
-    ) -> Option<Box<dyn lr_providers::features::FeatureAdapter>> {
+    ) -> Option<Box<dyn crate::features::FeatureAdapter>> {
         None
     }
 }

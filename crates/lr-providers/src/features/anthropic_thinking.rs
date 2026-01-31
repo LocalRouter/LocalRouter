@@ -6,7 +6,7 @@
 use async_trait::async_trait;
 
 use super::{FeatureAdapter, FeatureData, FeatureParams};
-use lr_providers::{CompletionRequest, CompletionResponse};
+use crate::{CompletionRequest, CompletionResponse};
 use lr_types::{AppError, AppResult};
 
 /// Adapter for Anthropic's extended thinking feature

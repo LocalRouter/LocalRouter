@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use super::types::*;
-use lr_mcp::protocol::Root;
+use crate::protocol::Root;
 
 /// Gateway session (one per client)
 #[derive(Debug)]

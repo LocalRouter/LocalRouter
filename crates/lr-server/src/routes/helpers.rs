@@ -3,8 +3,8 @@
 //! Provides common validation and lookup functions used across multiple endpoints.
 
 use lr_config::{Client, Strategy};
-use lr_server::middleware::error::ApiErrorResponse;
-use lr_server::state::AppState;
+use crate::middleware::error::ApiErrorResponse;
+use crate::state::AppState;
 
 /// Result type for helper functions
 pub type HelperResult<T> = Result<T, ApiErrorResponse>;

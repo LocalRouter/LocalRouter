@@ -10,6 +10,7 @@ description = "Configuration management for LocalRouter"
 [dependencies]
 lr-types = { workspace = true }
 lr-utils = { workspace = true }
+lr-api-keys = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }

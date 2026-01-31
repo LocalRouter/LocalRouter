@@ -2,7 +2,7 @@
 #![allow(dead_code)]
 
 use lr_api_keys::CachedKeychain;
-use lr_oauth::browser::{
+use crate::browser::{
     generate_pkce_challenge, generate_state, CallbackServerManager, FlowId, FlowStatus,
     OAuthFlowConfig, OAuthFlowResult, OAuthFlowStart, OAuthFlowState, TokenExchanger,
 };
@@ -162,7 +162,7 @@ impl OAuthFlowManager {
     async fn handle_callback(
         flow_id: FlowId,
         callback_rx: tokio::sync::oneshot::Receiver<
-            AppResult<lr_oauth::browser::callback_server::CallbackResult>,
+            AppResult<crate::browser::callback_server::CallbackResult>,
         >,
         flows: Arc<RwLock<HashMap<FlowId, OAuthFlowState>>>,
         callback_manager: Arc<CallbackServerManager>,

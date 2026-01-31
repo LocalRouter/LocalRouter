@@ -206,7 +206,7 @@ mod tests {
     use futures::Stream;
     use std::pin::Pin;
 
-    use lr_providers::{
+    use crate::{
         CompletionChunk, CompletionRequest, CompletionResponse, ModelInfo, PricingInfo,
     };
     use lr_types::errors::AppResult;

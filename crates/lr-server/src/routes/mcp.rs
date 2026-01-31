@@ -20,9 +20,9 @@ use super::helpers::get_enabled_client_from_manager;
 use lr_config::{McpServerAccess, RootConfig};
 use lr_mcp::protocol::{JsonRpcRequest, JsonRpcResponse, Root};
 use lr_monitoring::mcp_metrics::McpRequestMetrics;
-use lr_server::middleware::client_auth::ClientAuthContext;
-use lr_server::middleware::error::ApiErrorResponse;
-use lr_server::state::{AppState, SseConnectionManager, SseMessage};
+use crate::middleware::client_auth::ClientAuthContext;
+use crate::middleware::error::ApiErrorResponse;
+use crate::state::{AppState, SseConnectionManager, SseMessage};
 
 /// Send a JSON-RPC response via SSE stream (preferred) or HTTP body (fallback)
 ///
@@ -79,8 +79,8 @@ fn send_response(
     tag = "mcp",
     responses(
         (status = 200, description = "SSE event stream or API info", content_type = "text/event-stream"),
-        (status = 401, description = "Unauthorized", body = lr_server::types::ErrorResponse),
-        (status = 403, description = "Forbidden - no MCP server access", body = lr_server::types::ErrorResponse)
+        (status = 401, description = "Unauthorized", body = crate::types::ErrorResponse),
+        (status = 403, description = "Forbidden - no MCP server access", body = crate::types::ErrorResponse)
     ),
     security(("bearer" = []))
 )]
@@ -316,9 +316,9 @@ pub async fn mcp_gateway_get_handler(
     request_body = lr_mcp::protocol::JsonRpcRequest,
     responses(
         (status = 200, description = "JSON-RPC response", body = lr_mcp::protocol::JsonRpcResponse),
-        (status = 401, description = "Unauthorized", body = lr_server::types::ErrorResponse),
-        (status = 403, description = "Forbidden - no MCP server access", body = lr_server::types::ErrorResponse),
-        (status = 500, description = "Internal server error", body = lr_server::types::ErrorResponse)
+        (status = 401, description = "Unauthorized", body = crate::types::ErrorResponse),
+        (status = 403, description = "Forbidden - no MCP server access", body = crate::types::ErrorResponse),
+        (status = 500, description = "Internal server error", body = crate::types::ErrorResponse)
     ),
     security(
         ("bearer" = [])
@@ -581,10 +581,10 @@ pub async fn mcp_gateway_handler(
     request_body = lr_mcp::protocol::JsonRpcRequest,
     responses(
         (status = 200, description = "JSON-RPC response", body = lr_mcp::protocol::JsonRpcResponse),
-        (status = 401, description = "Unauthorized", body = lr_server::types::ErrorResponse),
-        (status = 403, description = "Forbidden - no access to server", body = lr_server::types::ErrorResponse),
-        (status = 502, description = "Bad gateway - MCP server error", body = lr_server::types::ErrorResponse),
-        (status = 500, description = "Internal server error", body = lr_server::types::ErrorResponse)
+        (status = 401, description = "Unauthorized", body = crate::types::ErrorResponse),
+        (status = 403, description = "Forbidden - no access to server", body = crate::types::ErrorResponse),
+        (status = 502, description = "Bad gateway - MCP server error", body = crate::types::ErrorResponse),
+        (status = 500, description = "Internal server error", body = crate::types::ErrorResponse)
     ),
     security(
         ("bearer" = [])
@@ -1060,9 +1060,9 @@ pub async fn mcp_server_handler(
     ),
     responses(
         (status = 200, description = "SSE event stream", content_type = "text/event-stream"),
-        (status = 401, description = "Unauthorized", body = lr_server::types::ErrorResponse),
-        (status = 403, description = "Forbidden - no access to server", body = lr_server::types::ErrorResponse),
-        (status = 502, description = "Bad gateway - MCP server error", body = lr_server::types::ErrorResponse)
+        (status = 401, description = "Unauthorized", body = crate::types::ErrorResponse),
+        (status = 403, description = "Forbidden - no access to server", body = crate::types::ErrorResponse),
+        (status = 502, description = "Bad gateway - MCP server error", body = crate::types::ErrorResponse)
     ),
     security(("bearer" = []))
 )]
@@ -1391,11 +1391,11 @@ pub async fn mcp_server_sse_handler(
     request_body = lr_mcp::protocol::JsonRpcRequest,
     responses(
         (status = 200, description = "SSE stream of chunks", content_type = "text/event-stream"),
-        (status = 401, description = "Unauthorized", body = lr_server::types::ErrorResponse),
-        (status = 403, description = "Forbidden - no access to server", body = lr_server::types::ErrorResponse),
-        (status = 400, description = "Bad request - streaming not supported", body = lr_server::types::ErrorResponse),
-        (status = 502, description = "Bad gateway - MCP server error", body = lr_server::types::ErrorResponse),
-        (status = 500, description = "Internal server error", body = lr_server::types::ErrorResponse)
+        (status = 401, description = "Unauthorized", body = crate::types::ErrorResponse),
+        (status = 403, description = "Forbidden - no access to server", body = crate::types::ErrorResponse),
+        (status = 400, description = "Bad request - streaming not supported", body = crate::types::ErrorResponse),
+        (status = 502, description = "Bad gateway - MCP server error", body = crate::types::ErrorResponse),
+        (status = 500, description = "Internal server error", body = crate::types::ErrorResponse)
     ),
     security(
         ("bearer" = [])
@@ -1555,9 +1555,9 @@ fn merge_roots(global_roots: &[RootConfig], client_roots: Option<&Vec<RootConfig
     tag = "mcp",
     request_body = lr_mcp::protocol::ElicitationResponse,
     responses(
-        (status = 200, description = "Response submitted successfully", body = lr_server::types::MessageResponse),
-        (status = 400, description = "Invalid request or request not found", body = lr_server::types::ErrorResponse),
-        (status = 401, description = "Unauthorized", body = lr_server::types::ErrorResponse),
+        (status = 200, description = "Response submitted successfully", body = crate::types::MessageResponse),
+        (status = 400, description = "Invalid request or request not found", body = crate::types::ErrorResponse),
+        (status = 401, description = "Unauthorized", body = crate::types::ErrorResponse),
     ),
     security(
         ("bearer" = [])
@@ -1582,7 +1582,7 @@ pub async fn elicitation_response_handler(
     {
         Ok(()) => {
             tracing::info!("Elicitation response submitted for request {}", request_id);
-            Json(lr_server::types::MessageResponse {
+            Json(crate::types::MessageResponse {
                 message: "Response submitted successfully".to_string(),
             })
             .into_response()

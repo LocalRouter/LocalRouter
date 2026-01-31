@@ -662,13 +662,13 @@ impl ModelProvider for GeminiProvider {
     fn get_feature_adapter(
         &self,
         feature: &str,
-    ) -> Option<Box<dyn lr_providers::features::FeatureAdapter>> {
+    ) -> Option<Box<dyn crate::features::FeatureAdapter>> {
         match feature {
             "thinking_level" => Some(Box::new(
-                lr_providers::features::gemini_thinking::GeminiThinkingAdapter,
+                crate::features::gemini_thinking::GeminiThinkingAdapter,
             )),
             "json_mode" => Some(Box::new(
-                lr_providers::features::json_mode::JsonModeAdapter,
+                crate::features::json_mode::JsonModeAdapter,
             )),
             _ => None,
         }
@@ -998,7 +998,7 @@ struct GeminiUsageMetadata {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lr_providers::{ChatMessageContent, FunctionCall, ToolCall};
+    use crate::{ChatMessageContent, FunctionCall, ToolCall};
 
     #[test]
     fn test_provider_name() {

@@ -9,9 +9,9 @@ use axum::{
 use serde::Deserialize;
 use utoipa::{IntoParams, ToSchema};
 
-use lr_server::middleware::error::{ApiErrorResponse, ApiResult};
-use lr_server::state::AppState;
-use lr_server::types::GenerationDetailsResponse;
+use crate::middleware::error::{ApiErrorResponse, ApiResult};
+use crate::state::AppState;
+use crate::types::GenerationDetailsResponse;
 
 #[derive(Debug, Deserialize, IntoParams, ToSchema)]
 pub struct GenerationQuery {
@@ -28,8 +28,8 @@ pub struct GenerationQuery {
     params(GenerationQuery),
     responses(
         (status = 200, description = "Generation details", body = GenerationDetailsResponse),
-        (status = 404, description = "Generation not found", body = lr_server::types::ErrorResponse),
-        (status = 500, description = "Internal server error", body = lr_server::types::ErrorResponse)
+        (status = 404, description = "Generation not found", body = crate::types::ErrorResponse),
+        (status = 500, description = "Internal server error", body = crate::types::ErrorResponse)
     )
 )]
 pub async fn get_generation(

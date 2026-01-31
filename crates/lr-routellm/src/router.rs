@@ -3,8 +3,8 @@
 //! This module provides a thin wrapper around the CandleRouter
 //! to integrate with LocalRouter's architecture.
 
-use lr_routellm::candle_router::CandleRouter;
-use lr_routellm::errors::RouteLLMResult;
+use crate::candle_router::CandleRouter;
+use crate::errors::RouteLLMResult;
 use std::path::Path;
 
 /// Wrapper around CandleRouter (Candle-based BERT classifier)

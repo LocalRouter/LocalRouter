@@ -9,7 +9,7 @@
 
 #[cfg(test)]
 mod edge_case_tests {
-    use lr_routellm::{RouteLLMService, RouteLLMState};
+    use crate::{RouteLLMService, RouteLLMState};
     use std::path::PathBuf;
     use std::time::Duration;
     use tokio::time::timeout;
@@ -106,7 +106,7 @@ mod edge_case_tests {
     #[tokio::test]
     #[ignore] // Requires internet connection
     async fn test_concurrent_downloads() {
-        use lr_routellm::downloader;
+        use crate::downloader;
 
         let temp_dir = std::env::temp_dir();
         let model_path = temp_dir.join("test_concurrent_model");
@@ -316,7 +316,7 @@ mod edge_case_tests {
     /// Test download with invalid paths
     #[tokio::test]
     async fn test_download_with_invalid_paths() {
-        use lr_routellm::downloader;
+        use crate::downloader;
 
         // Root path has no parent
         let result = downloader::download_models(
@@ -334,7 +334,7 @@ mod edge_case_tests {
     #[tokio::test]
     #[ignore] // Requires slow network or mock
     async fn test_download_timeout() {
-        use lr_routellm::downloader;
+        use crate::downloader;
 
         let temp_dir = std::env::temp_dir();
         let model_path = temp_dir.join("test_timeout_model");

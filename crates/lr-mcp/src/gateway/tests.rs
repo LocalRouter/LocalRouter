@@ -2,7 +2,7 @@
 #[allow(clippy::module_inception)]
 mod tests {
     use super::super::*;
-    use lr_mcp::protocol::{McpPrompt, McpResource, McpTool};
+    use crate::protocol::{McpPrompt, McpResource, McpTool};
     use serde_json::json;
 
     #[test]

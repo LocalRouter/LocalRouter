@@ -824,19 +824,19 @@ impl ModelProvider for OpenAIProvider {
     fn get_feature_adapter(
         &self,
         feature: &str,
-    ) -> Option<Box<dyn lr_providers::features::FeatureAdapter>> {
+    ) -> Option<Box<dyn crate::features::FeatureAdapter>> {
         match feature {
             "reasoning_tokens" => Some(Box::new(
-                lr_providers::features::openai_reasoning::OpenAIReasoningAdapter,
+                crate::features::openai_reasoning::OpenAIReasoningAdapter,
             )),
             "structured_outputs" => Some(Box::new(
-                lr_providers::features::structured_outputs::StructuredOutputsAdapter,
+                crate::features::structured_outputs::StructuredOutputsAdapter,
             )),
             "logprobs" => Some(Box::new(
-                lr_providers::features::logprobs::LogprobsAdapter,
+                crate::features::logprobs::LogprobsAdapter,
             )),
             "json_mode" => Some(Box::new(
-                lr_providers::features::json_mode::JsonModeAdapter,
+                crate::features::json_mode::JsonModeAdapter,
             )),
             _ => None,
         }

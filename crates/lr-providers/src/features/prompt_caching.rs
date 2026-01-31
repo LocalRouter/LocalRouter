@@ -35,7 +35,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 
 use super::{FeatureAdapter, FeatureData, FeatureParams};
-use lr_providers::{CompletionRequest, CompletionResponse};
+use crate::{CompletionRequest, CompletionResponse};
 use lr_types::{AppError, AppResult};
 
 /// Feature adapter for prompt caching
@@ -243,7 +243,7 @@ impl FeatureAdapter for PromptCachingAdapter {
 
         // Add cache details to TokenUsage
         if response.usage.prompt_tokens_details.is_none() {
-            response.usage.prompt_tokens_details = Some(lr_providers::PromptTokensDetails {
+            response.usage.prompt_tokens_details = Some(crate::PromptTokensDetails {
                 cached_tokens: None,
                 cache_creation_tokens: Some(metrics.cache_creation_input_tokens),
                 cache_read_tokens: Some(metrics.cache_read_input_tokens),
@@ -280,7 +280,7 @@ impl FeatureAdapter for PromptCachingAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lr_providers::ChatMessageContent;
+    use crate::ChatMessageContent;
 
     #[test]
     fn test_feature_name() {
@@ -325,14 +325,14 @@ mod tests {
         let request = CompletionRequest {
             model: "claude-3-opus".to_string(),
             messages: vec![
-                lr_providers::ChatMessage {
+                crate::ChatMessage {
                     role: "system".to_string(),
                     content: ChatMessageContent::Text("You are a helpful assistant.".to_string()),
                     tool_calls: None,
                     tool_call_id: None,
                     name: None,
                 },
-                lr_providers::ChatMessage {
+                crate::ChatMessage {
                     role: "user".to_string(),
                     content: ChatMessageContent::Text("Hello".to_string()),
                     tool_calls: None,
@@ -367,28 +367,28 @@ mod tests {
         let request = CompletionRequest {
             model: "claude-3-opus".to_string(),
             messages: vec![
-                lr_providers::ChatMessage {
+                crate::ChatMessage {
                     role: "system".to_string(),
                     content: ChatMessageContent::Text("System prompt".to_string()),
                     tool_calls: None,
                     tool_call_id: None,
                     name: None,
                 },
-                lr_providers::ChatMessage {
+                crate::ChatMessage {
                     role: "user".to_string(),
                     content: ChatMessageContent::Text("Message 1".to_string()),
                     tool_calls: None,
                     tool_call_id: None,
                     name: None,
                 },
-                lr_providers::ChatMessage {
+                crate::ChatMessage {
                     role: "assistant".to_string(),
                     content: ChatMessageContent::Text("Response 1".to_string()),
                     tool_calls: None,
                     tool_call_id: None,
                     name: None,
                 },
-                lr_providers::ChatMessage {
+                crate::ChatMessage {
                     role: "user".to_string(),
                     content: ChatMessageContent::Text("Message 2".to_string()),
                     tool_calls: None,
@@ -457,14 +457,14 @@ mod tests {
         let mut request = CompletionRequest {
             model: "claude-3-opus".to_string(),
             messages: vec![
-                lr_providers::ChatMessage {
+                crate::ChatMessage {
                     role: "system".to_string(),
                     content: ChatMessageContent::Text("System prompt".to_string()),
                     tool_calls: None,
                     tool_call_id: None,
                     name: None,
                 },
-                lr_providers::ChatMessage {
+                crate::ChatMessage {
                     role: "user".to_string(),
                     content: ChatMessageContent::Text("User message".to_string()),
                     tool_calls: None,
@@ -505,7 +505,7 @@ mod tests {
         let adapter = PromptCachingAdapter;
         let mut request = CompletionRequest {
             model: "gpt-4".to_string(),
-            messages: vec![lr_providers::ChatMessage {
+            messages: vec![crate::ChatMessage {
                 role: "user".to_string(),
                 content: ChatMessageContent::Text("Hello".to_string()),
                 tool_calls: None,
@@ -575,7 +575,7 @@ mod tests {
             model: "claude-3-opus".to_string(),
             provider: "anthropic".to_string(),
             choices: vec![],
-            usage: lr_providers::TokenUsage {
+            usage: crate::TokenUsage {
                 prompt_tokens: 1100,
                 completion_tokens: 50,
                 total_tokens: 1150,
@@ -614,7 +614,7 @@ mod tests {
             model: "claude-3-opus".to_string(),
             provider: "anthropic".to_string(),
             choices: vec![],
-            usage: lr_providers::TokenUsage {
+            usage: crate::TokenUsage {
                 prompt_tokens: 100,
                 completion_tokens: 50,
                 total_tokens: 150,

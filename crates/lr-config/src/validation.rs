@@ -405,7 +405,7 @@ fn validate_cross_references(config: &AppConfig) -> AppResult<()> {
 #[cfg(test)]
 mod self_referential_tests {
     use super::*;
-    use lr_config::ProviderType;
+    use crate::ProviderType;
 
     #[test]
     fn test_looks_like_localrouter_key_valid() {

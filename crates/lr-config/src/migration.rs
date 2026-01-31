@@ -90,7 +90,7 @@ fn migrate_oauth_client_to_client(
     oauth_client: &super::OAuthClientConfig,
     keychain: &dyn lr_api_keys::keychain_trait::KeychainStorage,
 ) -> AppResult<(super::Client, String)> {
-    use lr_config::Client;
+    use crate::Client;
 
     // Retrieve the old OAuth client secret from keychain
     let old_service = "LocalRouter-OAuthClients";
@@ -122,9 +122,9 @@ fn migrate_oauth_client_to_client(
 
     // Copy linked server IDs to mcp_server_access
     client.mcp_server_access = if oauth_client.linked_server_ids.is_empty() {
-        lr_config::McpServerAccess::None
+        crate::McpServerAccess::None
     } else {
-        lr_config::McpServerAccess::Specific(oauth_client.linked_server_ids.clone())
+        crate::McpServerAccess::Specific(oauth_client.linked_server_ids.clone())
     };
 
     // OAuth clients don't have LLM provider access by default

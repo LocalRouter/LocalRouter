@@ -1,7 +1,7 @@
 //! OAuth token exchange and refresh logic
 
 use lr_api_keys::{keychain_trait::KeychainStorage, CachedKeychain};
-use lr_oauth::browser::{OAuthFlowConfig, OAuthTokens};
+use crate::browser::{OAuthFlowConfig, OAuthTokens};
 use lr_types::{AppError, AppResult};
 use chrono::{Duration, Utc};
 use reqwest::Client;

@@ -3,7 +3,7 @@
 //! This module implements a pure Rust BERT classifier using the Candle framework.
 //! It loads SafeTensors models directly from HuggingFace without requiring conversion.
 
-use lr_routellm::errors::{RouteLLMError, RouteLLMResult};
+use crate::errors::{RouteLLMError, RouteLLMResult};
 use candle_core::{Device, Module, Tensor};
 use candle_nn::{linear, Linear, VarBuilder};
 use candle_transformers::models::bert::{BertModel, Config, HiddenAct, DTYPE};

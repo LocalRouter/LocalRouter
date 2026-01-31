@@ -8,7 +8,7 @@
 
 use lr_api_keys::keychain_trait::{CachedKeychain, KeychainStorage};
 use lr_config::{AppConfig, Client, ConfigManager, McpServerAccess};
-use lr_mcp::protocol::{JsonRpcError, JsonRpcRequest, JsonRpcResponse};
+use crate::protocol::{JsonRpcError, JsonRpcRequest, JsonRpcResponse};
 use lr_types::{AppError, AppResult};
 use serde_json::Value;
 use std::path::PathBuf;

@@ -20,9 +20,9 @@ pub mod router;
 pub mod status;
 
 use lr_config::paths;
-use lr_routellm::errors::{RouteLLMError, RouteLLMResult};
-use lr_routellm::router::RouterWrapper;
-pub use lr_routellm::status::{RouteLLMState, RouteLLMStatus, RouteLLMTestResult};
+use crate::errors::{RouteLLMError, RouteLLMResult};
+use crate::router::RouterWrapper;
+pub use crate::status::{RouteLLMState, RouteLLMStatus, RouteLLMTestResult};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;

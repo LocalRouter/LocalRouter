@@ -14,7 +14,7 @@
 use serde_json::json;
 
 use super::{FeatureAdapter, FeatureData, FeatureParams};
-use lr_providers::{CompletionRequest, CompletionResponse};
+use crate::{CompletionRequest, CompletionResponse};
 use lr_types::{AppError, AppResult};
 
 /// Feature adapter for Gemini thinking_level parameter
@@ -203,7 +203,7 @@ mod tests {
             model: "gemini-3-flash".to_string(),
             provider: "gemini".to_string(),
             choices: vec![],
-            usage: lr_providers::TokenUsage {
+            usage: crate::TokenUsage {
                 prompt_tokens: 100,
                 completion_tokens: 50,
                 total_tokens: 150,

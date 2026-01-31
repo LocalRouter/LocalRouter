@@ -5,7 +5,7 @@
 
 #![allow(dead_code)]
 
-use lr_mcp::protocol::{SamplingContent, SamplingMessage, SamplingRequest, SamplingResponse};
+use crate::protocol::{SamplingContent, SamplingMessage, SamplingRequest, SamplingResponse};
 use lr_providers::{ChatMessage, ChatMessageContent, CompletionRequest, CompletionResponse};
 use lr_types::{AppError, AppResult};
 
@@ -124,7 +124,7 @@ pub fn convert_chat_to_sampling_response(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lr_mcp::protocol::{ModelHint, ModelPreferences};
+    use crate::protocol::{ModelHint, ModelPreferences};
     use serde_json::json;
 
     #[test]

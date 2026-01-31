@@ -9,7 +9,7 @@
 
 use lr_api_keys::CachedKeychain;
 use lr_config::McpAuthConfig;
-use lr_mcp::oauth::McpOAuthManager;
+use crate::oauth::McpOAuthManager;
 use lr_oauth::browser::{FlowId, OAuthFlowConfig, OAuthFlowManager, OAuthFlowResult};
 use lr_types::{AppError, AppResult};
 use chrono::{DateTime, Duration, Utc};

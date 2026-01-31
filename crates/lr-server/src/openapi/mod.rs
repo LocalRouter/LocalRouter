@@ -23,96 +23,96 @@ use utoipa::OpenApi;
     ),
     paths(
         // Chat endpoints
-        lr_server::routes::chat::chat_completions,
+        crate::routes::chat::chat_completions,
 
         // Completions endpoints
-        lr_server::routes::completions::completions,
+        crate::routes::completions::completions,
 
         // Embeddings endpoints
-        lr_server::routes::embeddings::embeddings,
+        crate::routes::embeddings::embeddings,
 
         // Models endpoints
-        lr_server::routes::models::list_models,
-        lr_server::routes::models::get_model,
-        lr_server::routes::models::get_model_pricing,
+        crate::routes::models::list_models,
+        crate::routes::models::get_model,
+        crate::routes::models::get_model_pricing,
 
         // Generation tracking
-        lr_server::routes::generation::get_generation,
+        crate::routes::generation::get_generation,
 
         // MCP endpoints
-        lr_server::routes::mcp::mcp_gateway_get_handler,
-        lr_server::routes::mcp::mcp_gateway_handler,
-        lr_server::routes::mcp::mcp_server_handler,
-        lr_server::routes::mcp::mcp_server_sse_handler,
-        lr_server::routes::mcp::mcp_server_streaming_handler,
-        lr_server::routes::mcp::elicitation_response_handler,
+        crate::routes::mcp::mcp_gateway_get_handler,
+        crate::routes::mcp::mcp_gateway_handler,
+        crate::routes::mcp::mcp_server_handler,
+        crate::routes::mcp::mcp_server_sse_handler,
+        crate::routes::mcp::mcp_server_streaming_handler,
+        crate::routes::mcp::elicitation_response_handler,
 
         // OAuth endpoints
-        lr_server::routes::oauth::token_endpoint,
+        crate::routes::oauth::token_endpoint,
 
         // System endpoints
-        lr_server::health_check,
-        lr_server::serve_openapi_json,
-        lr_server::serve_openapi_yaml
+        crate::health_check,
+        crate::serve_openapi_json,
+        crate::serve_openapi_yaml
     ),
     components(
         schemas(
             // Request types
-            lr_server::types::ChatCompletionRequest,
-            lr_server::types::CompletionRequest,
-            lr_server::types::EmbeddingRequest,
+            crate::types::ChatCompletionRequest,
+            crate::types::CompletionRequest,
+            crate::types::EmbeddingRequest,
 
             // Response types
-            lr_server::types::ChatCompletionResponse,
-            lr_server::types::ChatCompletionChunk,
-            lr_server::types::CompletionResponse,
-            lr_server::types::EmbeddingResponse,
-            lr_server::types::ModelsResponse,
-            lr_server::types::ModelData,
-            lr_server::types::ModelPricing,
-            lr_server::types::CatalogInfo,
-            lr_server::types::PricingSource,
-            lr_server::types::GenerationDetailsResponse,
-            lr_server::types::ErrorResponse,
-            lr_server::types::ApiError,
+            crate::types::ChatCompletionResponse,
+            crate::types::ChatCompletionChunk,
+            crate::types::CompletionResponse,
+            crate::types::EmbeddingResponse,
+            crate::types::ModelsResponse,
+            crate::types::ModelData,
+            crate::types::ModelPricing,
+            crate::types::CatalogInfo,
+            crate::types::PricingSource,
+            crate::types::GenerationDetailsResponse,
+            crate::types::ErrorResponse,
+            crate::types::ApiError,
 
             // Message types
-            lr_server::types::ChatMessage,
-            lr_server::types::MessageContent,
-            lr_server::types::ContentPart,
-            lr_server::types::ImageUrl,
+            crate::types::ChatMessage,
+            crate::types::MessageContent,
+            crate::types::ContentPart,
+            crate::types::ImageUrl,
 
             // Tool types (request)
-            lr_server::types::Tool,
-            lr_server::types::ToolChoice,
-            lr_server::types::FunctionDefinition,
-            lr_server::types::FunctionName,
+            crate::types::Tool,
+            crate::types::ToolChoice,
+            crate::types::FunctionDefinition,
+            crate::types::FunctionName,
 
             // Tool types (response)
-            lr_server::types::ToolCall,
-            lr_server::types::FunctionCall,
-            lr_server::types::ToolCallDelta,
-            lr_server::types::FunctionCallDelta,
+            crate::types::ToolCall,
+            crate::types::FunctionCall,
+            crate::types::ToolCallDelta,
+            crate::types::FunctionCallDelta,
 
             // Token usage types
-            lr_server::types::TokenUsage,
+            crate::types::TokenUsage,
             lr_providers::PromptTokensDetails,
             lr_providers::CompletionTokensDetails,
 
             // Configuration types
-            lr_server::types::ResponseFormat,
+            crate::types::ResponseFormat,
 
             // Choice types
-            lr_server::types::ChatCompletionChoice,
-            lr_server::types::CompletionChoice,
-            lr_server::types::ChatCompletionChunkChoice,
-            lr_server::types::CompletionChunkChoice,
-            lr_server::types::ChunkDelta,
+            crate::types::ChatCompletionChoice,
+            crate::types::CompletionChoice,
+            crate::types::ChatCompletionChunkChoice,
+            crate::types::CompletionChunkChoice,
+            crate::types::ChunkDelta,
 
             // Embedding types
-            lr_server::types::EmbeddingData,
-            lr_server::types::EmbeddingVector,
-            lr_server::types::EmbeddingUsage,
+            crate::types::EmbeddingData,
+            crate::types::EmbeddingVector,
+            crate::types::EmbeddingUsage,
 
             // Provider types (for model capabilities and metrics)
             lr_providers::ModelCapabilities,
@@ -122,26 +122,26 @@ use utoipa::OpenApi;
             lr_mcp::protocol::JsonRpcRequest,
             lr_mcp::protocol::JsonRpcResponse,
             lr_mcp::protocol::ElicitationResponse,
-            lr_server::types::MessageResponse,
+            crate::types::MessageResponse,
 
             // OAuth types
-            lr_server::routes::oauth::TokenRequest,
-            lr_server::routes::oauth::TokenResponse,
-            lr_server::routes::oauth::TokenErrorResponse,
+            crate::routes::oauth::TokenRequest,
+            crate::routes::oauth::TokenResponse,
+            crate::routes::oauth::TokenErrorResponse,
 
             // Generation tracking
-            lr_server::routes::generation::GenerationQuery,
+            crate::routes::generation::GenerationQuery,
 
             // Feature adapter extension schemas
-            lr_server::openapi::extensions::ExtendedThinkingParams,
-            lr_server::openapi::extensions::ReasoningTokensParams,
-            lr_server::openapi::extensions::ThinkingLevelParams,
-            lr_server::openapi::extensions::StructuredOutputsParams,
-            lr_server::openapi::extensions::PromptCachingParams,
-            lr_server::openapi::extensions::CacheControl,
-            lr_server::openapi::extensions::LogprobsParams,
-            lr_server::openapi::extensions::JsonModeParams,
-            lr_server::openapi::extensions::FeatureAdapterExtensions,
+            crate::openapi::extensions::ExtendedThinkingParams,
+            crate::openapi::extensions::ReasoningTokensParams,
+            crate::openapi::extensions::ThinkingLevelParams,
+            crate::openapi::extensions::StructuredOutputsParams,
+            crate::openapi::extensions::PromptCachingParams,
+            crate::openapi::extensions::CacheControl,
+            crate::openapi::extensions::LogprobsParams,
+            crate::openapi::extensions::JsonModeParams,
+            crate::openapi::extensions::FeatureAdapterExtensions,
         )
     ),
     tags(

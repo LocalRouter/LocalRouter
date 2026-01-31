@@ -1,6 +1,7 @@
 //! Configuration storage - loading and saving YAML files
 
-use super::{migration, paths, validation, AppConfig};
+use super::{migration, validation, AppConfig};
+use lr_utils::paths;
 use lr_types::{AppError, AppResult};
 use chrono::Utc;
 use std::path::{Path, PathBuf};
@@ -260,7 +261,7 @@ async fn cleanup_old_backups(dir: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lr_config::{LogLevel, LoggingConfig, ServerConfig};
+    use crate::{LogLevel, LoggingConfig, ServerConfig};
     use tempfile::TempDir;
 
     #[tokio::test]

@@ -6,7 +6,7 @@ use axum::{
     Json,
 };
 
-use lr_server::types::ErrorResponse;
+use crate::types::ErrorResponse;
 use lr_types::errors::AppError;
 
 /// Application error that can be converted to HTTP response

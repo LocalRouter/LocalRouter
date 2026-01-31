@@ -9,8 +9,11 @@ description = "API key and keychain storage for LocalRouter"
 
 [dependencies]
 lr-types = { workspace = true }
+lr-utils = { workspace = true }
 anyhow = { workspace = true }
 keyring = { workspace = true }
 tracing = { workspace = true }
 parking_lot = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
+dirs = { workspace = true }

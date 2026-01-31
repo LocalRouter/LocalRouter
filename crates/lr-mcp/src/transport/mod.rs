@@ -15,7 +15,7 @@ pub use sse::SseTransport;
 pub use stdio::{StdioRequestCallback, StdioTransport};
 pub use websocket::WebSocketTransport;
 
-use lr_mcp::protocol::{JsonRpcRequest, JsonRpcResponse, StreamingChunk};
+use crate::protocol::{JsonRpcRequest, JsonRpcResponse, StreamingChunk};
 use lr_types::errors::AppResult;
 use async_trait::async_trait;
 use futures_util::stream::Stream;

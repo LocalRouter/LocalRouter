@@ -15,9 +15,9 @@ use serde_json::json;
 
 use super::helpers::get_enabled_client_from_manager;
 use lr_config::McpServerAccess;
-use lr_server::middleware::client_auth::ClientAuthContext;
-use lr_server::middleware::error::ApiErrorResponse;
-use lr_server::state::AppState;
+use crate::middleware::client_auth::ClientAuthContext;
+use crate::middleware::error::ApiErrorResponse;
+use crate::state::AppState;
 
 /// WebSocket upgrade handler for MCP notifications
 ///
@@ -49,8 +49,8 @@ use lr_server::state::AppState;
     tag = "mcp",
     responses(
         (status = 101, description = "WebSocket upgrade successful"),
-        (status = 401, description = "Unauthorized", body = lr_server::types::ErrorResponse),
-        (status = 403, description = "Forbidden - no MCP server access", body = lr_server::types::ErrorResponse)
+        (status = 401, description = "Unauthorized", body = crate::types::ErrorResponse),
+        (status = 403, description = "Forbidden - no MCP server access", body = crate::types::ErrorResponse)
     ),
     security(
         ("bearer" = [])

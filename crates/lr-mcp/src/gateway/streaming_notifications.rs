@@ -4,7 +4,7 @@
 //! particularly for deferred loading tool activation.
 #![allow(dead_code)]
 
-use lr_mcp::protocol::{JsonRpcNotification, JsonRpcResponse};
+use crate::protocol::{JsonRpcNotification, JsonRpcResponse};
 use serde_json::json;
 
 /// Notification types that can be emitted through the streaming session

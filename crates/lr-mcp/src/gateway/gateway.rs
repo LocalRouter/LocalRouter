@@ -6,8 +6,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
 
-use lr_mcp::manager::McpServerManager;
-use lr_mcp::protocol::{
+use crate::manager::McpServerManager;
+use crate::protocol::{
     JsonRpcError, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, McpPrompt, McpResource,
     McpTool,
 };
@@ -130,7 +130,7 @@ impl McpGateway {
         client_id: &str,
         allowed_servers: Vec<String>,
         enable_deferred_loading: bool,
-        roots: Vec<lr_mcp::protocol::Root>,
+        roots: Vec<crate::protocol::Root>,
         request: JsonRpcRequest,
     ) -> AppResult<JsonRpcResponse> {
         self.handle_request_with_skills(
@@ -150,7 +150,7 @@ impl McpGateway {
         client_id: &str,
         allowed_servers: Vec<String>,
         enable_deferred_loading: bool,
-        roots: Vec<lr_mcp::protocol::Root>,
+        roots: Vec<crate::protocol::Root>,
         skills_access: lr_config::SkillsAccess,
         request: JsonRpcRequest,
     ) -> AppResult<JsonRpcResponse> {
@@ -220,7 +220,7 @@ impl McpGateway {
         client_id: &str,
         allowed_servers: Vec<String>,
         enable_deferred_loading: bool,
-        roots: Vec<lr_mcp::protocol::Root>,
+        roots: Vec<crate::protocol::Root>,
     ) -> AppResult<Arc<RwLock<GatewaySession>>> {
         // Check if session exists
         if let Some(session) = self.sessions.get(client_id) {
@@ -704,7 +704,7 @@ impl McpGateway {
         request: JsonRpcRequest,
     ) -> AppResult<JsonRpcResponse> {
         // Parse elicitation request from params
-        let elicitation_req: lr_mcp::protocol::ElicitationRequest =
+        let elicitation_req: crate::protocol::ElicitationRequest =
             match request.params.as_ref() {
                 Some(params) => serde_json::from_value(params.clone()).map_err(|e| {
                     AppError::InvalidParams(format!("Invalid elicitation request: {}", e))

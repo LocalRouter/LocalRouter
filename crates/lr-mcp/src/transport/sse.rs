@@ -6,10 +6,10 @@
 //!
 //! This provides bidirectional communication using HTTP + SSE.
 
-use lr_mcp::protocol::{
+use crate::protocol::{
     JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, StreamingChunk,
 };
-use lr_mcp::transport::Transport;
+use crate::transport::Transport;
 use lr_types::{AppError, AppResult};
 use async_trait::async_trait;
 use futures_util::{Stream, StreamExt};

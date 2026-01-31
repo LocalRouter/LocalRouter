@@ -3,7 +3,7 @@
 #![allow(dead_code)]
 
 use lr_config::RouteLLMDownloadStatus;
-use lr_routellm::errors::{RouteLLMError, RouteLLMResult};
+use crate::errors::{RouteLLMError, RouteLLMResult};
 use hf_hub::api::tokio::Api;
 use std::path::Path;
 use std::sync::Arc;
@@ -564,7 +564,7 @@ pub async fn download_models(
 ///
 /// This runs a quick test to ensure the model files are not corrupted
 async fn verify_model_loads(model_path: &Path, tokenizer_path: &Path) -> RouteLLMResult<()> {
-    use lr_routellm::candle_router::CandleRouter;
+    use crate::candle_router::CandleRouter;
 
     info!("Testing model loading from temp location...");
 

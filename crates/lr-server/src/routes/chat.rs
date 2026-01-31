@@ -23,10 +23,10 @@ use lr_providers::{
     ImageUrl as ProviderImageUrl,
 };
 use lr_router::UsageInfo;
-use lr_server::middleware::client_auth::ClientAuthContext;
-use lr_server::middleware::error::{ApiErrorResponse, ApiResult};
-use lr_server::state::{AppState, AuthContext, GenerationDetails};
-use lr_server::types::{
+use crate::middleware::client_auth::ClientAuthContext;
+use crate::middleware::error::{ApiErrorResponse, ApiResult};
+use crate::state::{AppState, AuthContext, GenerationDetails};
+use crate::types::{
     ChatCompletionChoice, ChatCompletionChunk, ChatCompletionChunkChoice, ChatCompletionLogprobs,
     ChatCompletionRequest, ChatCompletionResponse, ChatCompletionTokenLogprob, ChatMessage,
     ChunkDelta, MessageContent, TokenUsage, TopLogprob,
@@ -42,10 +42,10 @@ use lr_server::types::{
     responses(
         (status = 200, description = "Successful response (non-streaming)", body = ChatCompletionResponse),
         (status = 200, description = "Successful response (streaming)", content_type = "text/event-stream"),
-        (status = 400, description = "Bad request", body = lr_server::types::ErrorResponse),
-        (status = 401, description = "Unauthorized", body = lr_server::types::ErrorResponse),
-        (status = 429, description = "Rate limit exceeded", body = lr_server::types::ErrorResponse),
-        (status = 500, description = "Internal server error", body = lr_server::types::ErrorResponse)
+        (status = 400, description = "Bad request", body = crate::types::ErrorResponse),
+        (status = 401, description = "Unauthorized", body = crate::types::ErrorResponse),
+        (status = 429, description = "Rate limit exceeded", body = crate::types::ErrorResponse),
+        (status = 500, description = "Internal server error", body = crate::types::ErrorResponse)
     ),
     security(
         ("bearer_auth" = [])
@@ -223,7 +223,7 @@ fn validate_request(request: &ChatCompletionRequest) -> ApiResult<()> {
     // Validate response_format if present
     if let Some(ref format) = request.response_format {
         match format {
-            lr_server::types::ResponseFormat::JsonObject { r#type } => {
+            crate::types::ResponseFormat::JsonObject { r#type } => {
                 if r#type != "json_object" {
                     return Err(ApiErrorResponse::bad_request(
                         "response_format type must be 'json_object'",
@@ -231,7 +231,7 @@ fn validate_request(request: &ChatCompletionRequest) -> ApiResult<()> {
                     .with_param("response_format"));
                 }
             }
-            lr_server::types::ResponseFormat::JsonSchema { r#type, schema } => {
+            crate::types::ResponseFormat::JsonSchema { r#type, schema } => {
                 if r#type != "json_schema" {
                     return Err(ApiErrorResponse::bad_request(
                         "response_format type must be 'json_schema'",
@@ -443,10 +443,10 @@ fn convert_to_provider_request(
                     let provider_parts: Vec<ProviderContentPart> = parts
                         .iter()
                         .map(|part| match part {
-                            lr_server::types::ContentPart::Text { text } => {
+                            crate::types::ContentPart::Text { text } => {
                                 ProviderContentPart::Text { text: text.clone() }
                             }
-                            lr_server::types::ContentPart::ImageUrl { image_url } => {
+                            crate::types::ContentPart::ImageUrl { image_url } => {
                                 ProviderContentPart::ImageUrl {
                                     image_url: ProviderImageUrl {
                                         url: image_url.url.clone(),
@@ -491,8 +491,8 @@ fn convert_to_provider_request(
 
     // Convert tool_choice from server types to provider types
     let tool_choice = request.tool_choice.as_ref().map(|choice| match choice {
-        lr_server::types::ToolChoice::Auto(s) => lr_providers::ToolChoice::Auto(s.clone()),
-        lr_server::types::ToolChoice::Specific {
+        crate::types::ToolChoice::Auto(s) => lr_providers::ToolChoice::Auto(s.clone()),
+        crate::types::ToolChoice::Specific {
             tool_type,
             function,
         } => lr_providers::ToolChoice::Specific {
@@ -505,12 +505,12 @@ fn convert_to_provider_request(
 
     // Convert response_format from server types to provider types (Bug #7 fix)
     let response_format = request.response_format.as_ref().map(|format| match format {
-        lr_server::types::ResponseFormat::JsonObject { r#type } => {
+        crate::types::ResponseFormat::JsonObject { r#type } => {
             lr_providers::ResponseFormat::JsonObject {
                 format_type: r#type.clone(),
             }
         }
-        lr_server::types::ResponseFormat::JsonSchema { r#type, schema } => {
+        crate::types::ResponseFormat::JsonSchema { r#type, schema } => {
             lr_providers::ResponseFormat::JsonSchema {
                 format_type: r#type.clone(),
                 schema: schema.clone(),
@@ -528,8 +528,8 @@ fn convert_to_provider_request(
         frequency_penalty: request.frequency_penalty,
         presence_penalty: request.presence_penalty,
         stop: request.stop.as_ref().map(|s| match s {
-            lr_server::types::StopSequence::Single(s) => vec![s.clone()],
-            lr_server::types::StopSequence::Multiple(v) => v.clone(),
+            crate::types::StopSequence::Single(s) => vec![s.clone()],
+            crate::types::StopSequence::Multiple(v) => v.clone(),
         }),
         // Extended parameters
         top_k: request.top_k,
@@ -699,15 +699,15 @@ async fn handle_non_streaming(
                     }
                     lr_providers::ChatMessageContent::Parts(parts) => {
                         // Convert provider parts to server parts
-                        let server_parts: Vec<lr_server::types::ContentPart> = parts
+                        let server_parts: Vec<crate::types::ContentPart> = parts
                             .into_iter()
                             .map(|part| match part {
                                 lr_providers::ContentPart::Text { text } => {
-                                    lr_server::types::ContentPart::Text { text }
+                                    crate::types::ContentPart::Text { text }
                                 }
                                 lr_providers::ContentPart::ImageUrl { image_url } => {
-                                    lr_server::types::ContentPart::ImageUrl {
-                                        image_url: lr_server::types::ImageUrl {
+                                    crate::types::ContentPart::ImageUrl {
+                                        image_url: crate::types::ImageUrl {
                                             url: image_url.url,
                                             detail: image_url.detail,
                                         },
@@ -723,10 +723,10 @@ async fn handle_non_streaming(
                 let tool_calls = choice.message.tool_calls.map(|provider_tools| {
                     provider_tools
                         .into_iter()
-                        .map(|tool_call| lr_server::types::ToolCall {
+                        .map(|tool_call| crate::types::ToolCall {
                             id: tool_call.id,
                             tool_type: tool_call.tool_type,
-                            function: lr_server::types::FunctionCall {
+                            function: crate::types::FunctionCall {
                                 name: tool_call.function.name,
                                 arguments: tool_call.function.arguments,
                             },
@@ -792,7 +792,7 @@ async fn handle_non_streaming(
             .and_then(|c| c.finish_reason.clone())
             .unwrap_or_else(|| "unknown".to_string()),
         tokens: api_response.usage.clone(),
-        cost: Some(lr_server::types::CostDetails {
+        cost: Some(crate::types::CostDetails {
             prompt_cost: (incremental_prompt_tokens as f64 / 1000.0) * pricing.input_cost_per_1k,
             completion_cost: (response.usage.completion_tokens as f64 / 1000.0)
                 * pricing.output_cost_per_1k,
@@ -939,12 +939,12 @@ async fn handle_streaming(
                                 let tool_calls = choice.delta.tool_calls.map(|provider_deltas| {
                                     provider_deltas
                                         .into_iter()
-                                        .map(|delta| lr_server::types::ToolCallDelta {
+                                        .map(|delta| crate::types::ToolCallDelta {
                                             index: delta.index,
                                             id: delta.id,
                                             tool_type: delta.tool_type,
                                             function: delta.function.map(|f| {
-                                                lr_server::types::FunctionCallDelta {
+                                                crate::types::FunctionCallDelta {
                                                     name: f.name,
                                                     arguments: f.arguments,
                                                 }
@@ -1100,7 +1100,7 @@ async fn handle_streaming(
                 prompt_tokens_details: None,
                 completion_tokens_details: None,
             },
-            cost: Some(lr_server::types::CostDetails {
+            cost: Some(crate::types::CostDetails {
                 prompt_cost: (prompt_tokens as f64 / 1000.0) * pricing.input_cost_per_1k,
                 completion_cost: (completion_tokens as f64 / 1000.0) * pricing.output_cost_per_1k,
                 total_cost: cost,
@@ -1146,7 +1146,7 @@ fn estimate_token_count(messages: &[ChatMessage]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lr_server::types::ResponseFormat;
+    use crate::types::ResponseFormat;
     use serde_json::json;
 
     #[test]

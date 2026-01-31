@@ -447,11 +447,11 @@ impl ProviderRegistry {
                 let capabilities = match m.modality {
                     lr_catalog::Modality::Multimodal => {
                         vec![
-                            lr_providers::Capability::Chat,
-                            lr_providers::Capability::Vision,
+                            crate::Capability::Chat,
+                            crate::Capability::Vision,
                         ]
                     }
-                    _ => vec![lr_providers::Capability::Chat],
+                    _ => vec![crate::Capability::Chat],
                 };
 
                 ModelInfo {
@@ -768,7 +768,7 @@ pub struct SimpleProviderConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lr_providers::factory::OllamaProviderFactory;
+    use crate::factory::OllamaProviderFactory;
 
     #[tokio::test]
     async fn test_registry_creation() {

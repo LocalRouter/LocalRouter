@@ -9,9 +9,9 @@ use axum::{
 };
 use std::time::Instant;
 
-use lr_server::middleware::error::{ApiErrorResponse, ApiResult};
-use lr_server::state::{AppState, AuthContext};
-use lr_server::types::{ImageData, ImageGenerationRequest, ImageGenerationResponse};
+use crate::middleware::error::{ApiErrorResponse, ApiResult};
+use crate::state::{AppState, AuthContext};
+use crate::types::{ImageData, ImageGenerationRequest, ImageGenerationResponse};
 
 /// POST /v1/images/generations
 /// Generate images from a text prompt
@@ -22,10 +22,10 @@ use lr_server::types::{ImageData, ImageGenerationRequest, ImageGenerationRespons
     request_body = ImageGenerationRequest,
     responses(
         (status = 200, description = "Successful response", body = ImageGenerationResponse),
-        (status = 400, description = "Bad request", body = lr_server::types::ErrorResponse),
-        (status = 401, description = "Unauthorized", body = lr_server::types::ErrorResponse),
-        (status = 502, description = "Provider error", body = lr_server::types::ErrorResponse),
-        (status = 500, description = "Internal server error", body = lr_server::types::ErrorResponse)
+        (status = 400, description = "Bad request", body = crate::types::ErrorResponse),
+        (status = 401, description = "Unauthorized", body = crate::types::ErrorResponse),
+        (status = 502, description = "Provider error", body = crate::types::ErrorResponse),
+        (status = 500, description = "Internal server error", body = crate::types::ErrorResponse)
     ),
     security(
         ("bearer_auth" = [])

@@ -12,10 +12,10 @@ use uuid::Uuid;
 
 use super::helpers::{get_enabled_client, get_enabled_client_from_manager};
 use lr_router::UsageInfo;
-use lr_server::middleware::client_auth::ClientAuthContext;
-use lr_server::middleware::error::{ApiErrorResponse, ApiResult};
-use lr_server::state::{AppState, AuthContext};
-use lr_server::types::{
+use crate::middleware::client_auth::ClientAuthContext;
+use crate::middleware::error::{ApiErrorResponse, ApiResult};
+use crate::state::{AppState, AuthContext};
+use crate::types::{
     EmbeddingData, EmbeddingInput, EmbeddingRequest, EmbeddingResponse, EmbeddingVector,
 };
 
@@ -27,11 +27,11 @@ use lr_server::types::{
     tag = "embeddings",
     request_body = EmbeddingRequest,
     responses(
-        (status = 200, description = "Successful response", body = lr_server::types::EmbeddingResponse),
-        (status = 400, description = "Bad request", body = lr_server::types::ErrorResponse),
-        (status = 401, description = "Unauthorized", body = lr_server::types::ErrorResponse),
-        (status = 501, description = "Not implemented yet", body = lr_server::types::ErrorResponse),
-        (status = 500, description = "Internal server error", body = lr_server::types::ErrorResponse)
+        (status = 200, description = "Successful response", body = crate::types::EmbeddingResponse),
+        (status = 400, description = "Bad request", body = crate::types::ErrorResponse),
+        (status = 401, description = "Unauthorized", body = crate::types::ErrorResponse),
+        (status = 501, description = "Not implemented yet", body = crate::types::ErrorResponse),
+        (status = 500, description = "Internal server error", body = crate::types::ErrorResponse)
     ),
     security(
         ("bearer_auth" = [])
@@ -79,10 +79,10 @@ pub async fn embeddings(
 
     // Convert server EmbeddingInput to provider EmbeddingInput
     let provider_input = match request.input.clone() {
-        lr_server::types::EmbeddingInput::Single(s) => {
+        crate::types::EmbeddingInput::Single(s) => {
             lr_providers::EmbeddingInput::Single(s)
         }
-        lr_server::types::EmbeddingInput::Multiple(v) => {
+        crate::types::EmbeddingInput::Multiple(v) => {
             lr_providers::EmbeddingInput::Multiple(v)
         }
     };
@@ -210,7 +210,7 @@ pub async fn embeddings(
             })
             .collect(),
         model: response.model,
-        usage: lr_server::types::EmbeddingUsage {
+        usage: crate::types::EmbeddingUsage {
             prompt_tokens: response.usage.prompt_tokens,
             total_tokens: response.usage.total_tokens,
         },
