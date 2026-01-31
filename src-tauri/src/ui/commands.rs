@@ -9,7 +9,7 @@ use std::sync::Arc;
 use crate::api_keys::keychain_trait::KeychainStorage;
 use crate::config::{
     client_strategy_name, ConfigManager, McpAuthConfig, McpServerAccess, McpServerConfig,
-    McpTransportConfig, McpTransportType,
+    McpTransportConfig, McpTransportType, SkillsAccess, SkillsConfig,
 };
 use crate::mcp::McpServerManager;
 use crate::monitoring::logger::AccessLogger;
@@ -17,7 +17,7 @@ use crate::oauth_clients::OAuthClientManager;
 use crate::providers::registry::ProviderRegistry;
 use crate::server::ServerManager;
 use serde::{Deserialize, Serialize};
-use tauri::{Emitter, State};
+use tauri::{Emitter, Manager, State};
 
 /// Get current configuration
 #[tauri::command]
@@ -470,12 +470,14 @@ pub struct HealthCheckResult {
 pub async fn start_provider_health_checks(
     app: tauri::AppHandle,
     registry: State<'_, Arc<ProviderRegistry>>,
+    app_state: State<'_, Arc<crate::server::state::AppState>>,
 ) -> Result<Vec<String>, String> {
     let provider_names = registry.get_provider_names();
 
     // Clone what we need for the spawned task
     let registry = registry.inner().clone();
     let app_handle = app.clone();
+    let health_cache = app_state.health_cache.clone();
 
     // Spawn health checks for each provider instance in parallel
     // We check each instance directly (not via HealthCheckManager) to ensure
@@ -487,6 +489,7 @@ pub async fn start_provider_health_checks(
         for instance_name in instance_names {
             let registry = registry.clone();
             let app_handle = app_handle.clone();
+            let health_cache = health_cache.clone();
             let instance_name_clone = instance_name.clone();
 
             let handle = tokio::spawn(async move {
@@ -494,12 +497,18 @@ pub async fn start_provider_health_checks(
                 if let Some(enabled) = registry.is_provider_enabled(&instance_name_clone) {
                     if !enabled {
                         let result = HealthCheckResult {
-                            provider_name: instance_name_clone,
+                            provider_name: instance_name_clone.clone(),
                             status: "disabled".to_string(),
                             latency_ms: None,
                             error_message: None,
                         };
                         let _ = app_handle.emit("provider-health-check", result);
+                        health_cache.update_provider(
+                            &instance_name_clone,
+                            crate::providers::health_cache::ItemHealth::disabled(
+                                instance_name_clone.clone(),
+                            ),
+                        );
                         return;
                     }
                 }
@@ -507,16 +516,39 @@ pub async fn start_provider_health_checks(
                 if let Some(provider) = registry.get_provider_unchecked(&instance_name_clone) {
                     let health = provider.health_check().await;
                     let result = HealthCheckResult {
-                        provider_name: instance_name_clone,
-                        status: match health.status {
+                        provider_name: instance_name_clone.clone(),
+                        status: match &health.status {
                             crate::providers::HealthStatus::Healthy => "healthy".to_string(),
                             crate::providers::HealthStatus::Degraded => "degraded".to_string(),
                             crate::providers::HealthStatus::Unhealthy => "unhealthy".to_string(),
                         },
                         latency_ms: health.latency_ms,
-                        error_message: health.error_message,
+                        error_message: health.error_message.clone(),
                     };
                     let _ = app_handle.emit("provider-health-check", result);
+
+                    // Update centralized health cache so aggregate status (tray + sidebar) recalculates
+                    use crate::providers::health_cache::ItemHealth;
+                    use crate::providers::HealthStatus;
+                    let item_health = match health.status {
+                        HealthStatus::Healthy => {
+                            ItemHealth::healthy(instance_name_clone.clone(), health.latency_ms)
+                        }
+                        HealthStatus::Degraded => ItemHealth::degraded(
+                            instance_name_clone.clone(),
+                            health.latency_ms,
+                            health
+                                .error_message
+                                .unwrap_or_else(|| "Degraded".to_string()),
+                        ),
+                        HealthStatus::Unhealthy => ItemHealth::unhealthy(
+                            instance_name_clone.clone(),
+                            health
+                                .error_message
+                                .unwrap_or_else(|| "Unhealthy".to_string()),
+                        ),
+                    };
+                    health_cache.update_provider(&instance_name_clone, item_health);
                 }
             });
             handles.push(handle);
@@ -3115,8 +3147,33 @@ pub struct ClientInfo {
     /// List of specific MCP server IDs (only relevant when mcp_access_mode is "specific")
     pub mcp_servers: Vec<String>,
     pub mcp_deferred_loading: bool,
+    /// Skills access mode: "none", "all", or "specific"
+    pub skills_access_mode: SkillsAccessMode,
+    /// List of specific source paths (only relevant when skills_access_mode is "specific")
+    pub skills_paths: Vec<String>,
     pub created_at: String,
     pub last_used: Option<String>,
+}
+
+/// Skills access mode for the UI
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillsAccessMode {
+    /// No skills access
+    None,
+    /// Access to all discovered skills
+    All,
+    /// Access to specific skills only
+    Specific,
+}
+
+/// Convert SkillsAccess to UI representation
+fn skills_access_to_ui(access: &SkillsAccess) -> (SkillsAccessMode, Vec<String>) {
+    match access {
+        SkillsAccess::None => (SkillsAccessMode::None, vec![]),
+        SkillsAccess::All => (SkillsAccessMode::All, vec![]),
+        SkillsAccess::Specific(paths) => (SkillsAccessMode::Specific, paths.clone()),
+    }
 }
 
 /// Convert McpServerAccess to UI representation
@@ -3138,6 +3195,7 @@ pub async fn list_clients(
         .into_iter()
         .map(|c| {
             let (mcp_access_mode, mcp_servers) = mcp_access_to_ui(&c.mcp_server_access);
+            let (skills_access_mode, skills_paths) = skills_access_to_ui(&c.skills_access);
             ClientInfo {
                 id: c.id.clone(),
                 name: c.name.clone(),
@@ -3148,6 +3206,8 @@ pub async fn list_clients(
                 mcp_access_mode,
                 mcp_servers,
                 mcp_deferred_loading: c.mcp_deferred_loading,
+                skills_access_mode,
+                skills_paths,
                 created_at: c.created_at.to_rfc3339(),
                 last_used: c.last_used.map(|t| t.to_rfc3339()),
             }
@@ -3194,6 +3254,7 @@ pub async fn create_client(
     }
 
     let (mcp_access_mode, mcp_servers) = mcp_access_to_ui(&client.mcp_server_access);
+    let (skills_access_mode, skills_paths) = skills_access_to_ui(&client.skills_access);
     let client_info = ClientInfo {
         id: client.id.clone(),
         name: client.name.clone(),
@@ -3204,6 +3265,8 @@ pub async fn create_client(
         mcp_access_mode,
         mcp_servers,
         mcp_deferred_loading: client.mcp_deferred_loading,
+        skills_access_mode,
+        skills_paths,
         created_at: client.created_at.to_rfc3339(),
         last_used: client.last_used.map(|t| t.to_rfc3339()),
     };
@@ -4955,4 +5018,196 @@ pub async fn get_active_connections(
         .ok_or_else(|| "Server not started".to_string())?;
 
     Ok(state.sse_connection_manager.get_active_connections())
+}
+
+// ============================================================================
+// Skills Commands
+// ============================================================================
+
+/// List all discovered skills
+#[tauri::command]
+pub async fn list_skills(
+    skill_manager: State<'_, Arc<crate::skills::SkillManager>>,
+) -> Result<Vec<crate::skills::SkillInfo>, String> {
+    Ok(skill_manager.list())
+}
+
+/// Get a specific skill by name
+#[tauri::command]
+pub async fn get_skill(
+    skill_name: String,
+    skill_manager: State<'_, Arc<crate::skills::SkillManager>>,
+) -> Result<crate::skills::SkillDefinition, String> {
+    skill_manager
+        .get(&skill_name)
+        .ok_or_else(|| format!("Skill '{}' not found", skill_name))
+}
+
+/// Get skills configuration
+#[tauri::command]
+pub async fn get_skills_config(
+    config_manager: State<'_, ConfigManager>,
+) -> Result<SkillsConfig, String> {
+    Ok(config_manager.get().skills)
+}
+
+/// Add a skill source path (directory, zip, or .skill file)
+#[tauri::command]
+pub async fn add_skill_source(
+    path: String,
+    config_manager: State<'_, ConfigManager>,
+    skill_manager: State<'_, Arc<crate::skills::SkillManager>>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    config_manager
+        .update(|cfg| {
+            if !cfg.skills.paths.contains(&path) {
+                cfg.skills.paths.push(path.clone());
+            }
+        })
+        .map_err(|e| e.to_string())?;
+
+    config_manager.save().await.map_err(|e| e.to_string())?;
+
+    // Rescan skills
+    let config = config_manager.get();
+    skill_manager.rescan(&config.skills.paths, &config.skills.disabled_skills);
+
+    // Notify watcher if available
+    if let Some(watcher) = app.try_state::<Arc<crate::skills::SkillWatcher>>() {
+        watcher.inner().add_path(path);
+    }
+
+    if let Err(e) = app.emit("skills-changed", ()) {
+        tracing::error!("Failed to emit skills-changed event: {}", e);
+    }
+
+    Ok(())
+}
+
+/// Remove a skill source path
+#[tauri::command]
+pub async fn remove_skill_source(
+    path: String,
+    config_manager: State<'_, ConfigManager>,
+    skill_manager: State<'_, Arc<crate::skills::SkillManager>>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    config_manager
+        .update(|cfg| {
+            cfg.skills.paths.retain(|p| p != &path);
+        })
+        .map_err(|e| e.to_string())?;
+
+    config_manager.save().await.map_err(|e| e.to_string())?;
+
+    let config = config_manager.get();
+    skill_manager.rescan(&config.skills.paths, &config.skills.disabled_skills);
+
+    // Notify watcher if available
+    if let Some(watcher) = app.try_state::<Arc<crate::skills::SkillWatcher>>() {
+        watcher.inner().remove_path(path);
+    }
+
+    if let Err(e) = app.emit("skills-changed", ()) {
+        tracing::error!("Failed to emit skills-changed event: {}", e);
+    }
+
+    Ok(())
+}
+
+/// Toggle a skill's global enabled state
+#[tauri::command]
+pub async fn set_skill_enabled(
+    skill_name: String,
+    enabled: bool,
+    config_manager: State<'_, ConfigManager>,
+    skill_manager: State<'_, Arc<crate::skills::SkillManager>>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    // Update disabled_skills in config
+    config_manager
+        .update(|cfg| {
+            if enabled {
+                cfg.skills.disabled_skills.retain(|n| n != &skill_name);
+            } else if !cfg.skills.disabled_skills.contains(&skill_name) {
+                cfg.skills.disabled_skills.push(skill_name.clone());
+            }
+        })
+        .map_err(|e| e.to_string())?;
+
+    config_manager.save().await.map_err(|e| e.to_string())?;
+
+    // Update in-memory manager
+    skill_manager.set_skill_enabled(&skill_name, enabled);
+
+    if let Err(e) = app.emit("skills-changed", ()) {
+        tracing::error!("Failed to emit skills-changed event: {}", e);
+    }
+
+    Ok(())
+}
+
+/// Rescan all skill paths
+#[tauri::command]
+pub async fn rescan_skills(
+    config_manager: State<'_, ConfigManager>,
+    skill_manager: State<'_, Arc<crate::skills::SkillManager>>,
+    app: tauri::AppHandle,
+) -> Result<Vec<crate::skills::SkillInfo>, String> {
+    let config = config_manager.get();
+    let skills = skill_manager.rescan(
+        &config.skills.paths,
+        &config.skills.disabled_skills,
+    );
+
+    if let Err(e) = app.emit("skills-changed", ()) {
+        tracing::error!("Failed to emit skills-changed event: {}", e);
+    }
+
+    Ok(skills)
+}
+
+/// Set skills access for a client
+#[tauri::command]
+pub async fn set_client_skills_access(
+    client_id: String,
+    mode: SkillsAccessMode,
+    paths: Vec<String>,
+    config_manager: State<'_, ConfigManager>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    let access = match mode {
+        SkillsAccessMode::None => SkillsAccess::None,
+        SkillsAccessMode::All => SkillsAccess::All,
+        SkillsAccessMode::Specific => SkillsAccess::Specific(paths),
+    };
+
+    tracing::info!(
+        "Setting skills access for client {} to {:?}",
+        client_id,
+        access
+    );
+
+    let mut found = false;
+    config_manager
+        .update(|cfg| {
+            if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
+                client.set_skills_access(access.clone());
+                found = true;
+            }
+        })
+        .map_err(|e| e.to_string())?;
+
+    if !found {
+        return Err(format!("Client not found: {}", client_id));
+    }
+
+    config_manager.save().await.map_err(|e| e.to_string())?;
+
+    if let Err(e) = app.emit("clients-changed", ()) {
+        tracing::error!("Failed to emit clients-changed event: {}", e);
+    }
+
+    Ok(())
 }

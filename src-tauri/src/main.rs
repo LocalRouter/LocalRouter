@@ -14,6 +14,7 @@ mod providers;
 mod routellm;
 mod router;
 mod server;
+mod skills;
 mod ui;
 mod updater;
 mod utils;
@@ -458,6 +459,45 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             app.manage(rate_limiter.clone());
             app.manage(oauth_manager.clone());
             app.manage(metrics_collector.clone());
+
+            // Initialize skill manager and script executor
+            let mut skill_manager = skills::SkillManager::new();
+            skill_manager.set_app_handle(app.handle().clone());
+            let skills_config = config_manager.get().skills.clone();
+            skill_manager.initial_scan(
+                &skills_config.paths,
+                &skills_config.disabled_skills,
+            );
+            skill_manager.start_cleanup_task();
+            let skill_manager = Arc::new(skill_manager);
+            let script_executor = Arc::new(skills::executor::ScriptExecutor::new());
+
+            // Start file watcher for skill sources
+            let skill_manager_for_watcher = skill_manager.clone();
+            let config_manager_for_watcher = config_manager.clone();
+            let watcher_paths = skills_config.paths.clone();
+            match skills::SkillWatcher::start(
+                watcher_paths,
+                Arc::new(move |_affected_paths| {
+                    let config = config_manager_for_watcher.get();
+                    skill_manager_for_watcher.rescan(
+                        &config.skills.paths,
+                        &config.skills.disabled_skills,
+                    );
+                }),
+            ) {
+                Ok(watcher) => {
+                    app.manage(Arc::new(watcher));
+                    info!("Skills file watcher started");
+                }
+                Err(e) => {
+                    warn!("Failed to start skills file watcher: {}", e);
+                }
+            }
+
+            app.manage(skill_manager.clone());
+            app.manage(script_executor.clone());
+            info!("Skills system initialized");
 
             // Get AppState from server manager and manage it for Tauri commands
             if let Some(app_state) = server_manager.get_state() {
@@ -1024,6 +1064,15 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands_routellm::routellm_download_models,
             ui::commands_routellm::routellm_update_settings,
             ui::commands_routellm::open_routellm_folder,
+            // Skills commands
+            ui::commands::list_skills,
+            ui::commands::get_skill,
+            ui::commands::get_skills_config,
+            ui::commands::add_skill_source,
+            ui::commands::remove_skill_source,
+            ui::commands::set_skill_enabled,
+            ui::commands::rescan_skills,
+            ui::commands::set_client_skills_access,
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {

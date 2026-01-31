@@ -292,6 +292,46 @@ pub fn setup_tray<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
                             });
                         }
                     }
+                    // Handle toggle skill: toggle_skill_<client_id>_<skill_name>
+                    else if let Some(rest) = id.strip_prefix("toggle_skill_") {
+                        if let Some((client_id, skill_name)) = rest.split_once('_') {
+                            info!(
+                                "Toggle skill requested: client={}, skill={}",
+                                client_id, skill_name
+                            );
+                            let app_clone = app.clone();
+                            let client_id = client_id.to_string();
+                            let skill_name = skill_name.to_string();
+                            tauri::async_runtime::spawn(async move {
+                                if let Err(e) =
+                                    handle_toggle_skill_access(&app_clone, &client_id, &skill_name)
+                                        .await
+                                {
+                                    error!("Failed to toggle skill access: {}", e);
+                                }
+                            });
+                        }
+                    }
+                    // Handle copy client ID: copy_client_id_<client_id>
+                    else if let Some(client_id) = id.strip_prefix("copy_client_id_") {
+                        info!("Copy client ID requested: {}", client_id);
+                        if let Err(e) = copy_to_clipboard(client_id) {
+                            error!("Failed to copy client ID to clipboard: {}", e);
+                        }
+                    }
+                    // Handle copy client secret: copy_client_secret_<client_id>
+                    else if let Some(client_id) = id.strip_prefix("copy_client_secret_") {
+                        info!("Copy client secret requested: {}", client_id);
+                        let app_clone = app.clone();
+                        let client_id = client_id.to_string();
+                        tauri::async_runtime::spawn(async move {
+                            if let Err(e) =
+                                handle_copy_mcp_bearer(&app_clone, &client_id).await
+                            {
+                                error!("Failed to copy client secret: {}", e);
+                            }
+                        });
+                    }
                     // Other events are for model routing configuration
                     // (force_model_*, toggle_provider_*, toggle_model_*, etc.)
                     // These will be handled by future implementation
@@ -313,6 +353,17 @@ pub fn setup_tray<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
     info!("System tray initialized successfully");
     Ok(())
 }
+
+/// Indent prefix for tray menu items without an icon.
+/// Aligns text with items that have a leading emoji/icon character.
+/// Uses an em-space (\u{2003}) plus two thin spaces (\u{2009}).
+const TRAY_INDENT: &str = "\u{2003}\u{2009}\u{2009}";
+
+/// Padding on each side of narrow (text-style) icons like ⌘ and ⧉
+/// so they occupy the same visual width as full-width emoji icons (❕, ＋).
+/// Applied before and after the icon character.
+/// Uses two thin spaces (\u{2009}) per side.
+const ICON_PAD: &str = "\u{2009}\u{2009}";
 
 /// Build the system tray menu
 fn build_tray_menu<R: Runtime, M: Manager<R>>(app: &M) -> tauri::Result<tauri::menu::Menu<R>> {
@@ -347,10 +398,10 @@ fn build_tray_menu<R: Runtime, M: Manager<R>>(app: &M) -> tauri::Result<tauri::m
     menu_builder = menu_builder.item(&app_header);
 
     // 2. Open dashboard (immediately after header)
-    menu_builder = menu_builder.text("open_dashboard", "Open...");
+    menu_builder = menu_builder.text("open_dashboard", &format!("{ICON_PAD}⌘{ICON_PAD} Settings..."));
 
     // 3. Copy URL (LLM and MCP)
-    menu_builder = menu_builder.text("copy_url", "Copy URL");
+    menu_builder = menu_builder.text("copy_url", &format!("{ICON_PAD}⧉{ICON_PAD} Copy URL"));
 
     // 4. Health issues section (only shown when there are issues)
     if let Some(app_state) = app.try_state::<Arc<crate::server::state::AppState>>() {
@@ -373,14 +424,8 @@ fn build_tray_menu<R: Runtime, M: Manager<R>>(app: &M) -> tauri::Result<tauri::m
                     health.status,
                     ItemHealthStatus::Unhealthy | ItemHealthStatus::Degraded
                 ) {
-                    let status_emoji = match health.status {
-                        ItemHealthStatus::Unhealthy => "🔴",
-                        ItemHealthStatus::Degraded => "🟡",
-                        _ => "",
-                    };
                     let label = format!(
-                        "{} Provider '{}' {}",
-                        status_emoji,
+                        "❕ Provider '{}' {}",
                         provider_name,
                         match health.status {
                             ItemHealthStatus::Unhealthy => "unhealthy",
@@ -401,19 +446,13 @@ fn build_tray_menu<R: Runtime, M: Manager<R>>(app: &M) -> tauri::Result<tauri::m
                     health.status,
                     ItemHealthStatus::Unhealthy | ItemHealthStatus::Degraded
                 ) {
-                    let status_emoji = match health.status {
-                        ItemHealthStatus::Unhealthy => "🔴",
-                        ItemHealthStatus::Degraded => "🟡",
-                        _ => "",
-                    };
                     let display_name = if health.name.is_empty() {
                         format!("MCP {}", &server_id[..server_id.len().min(8)])
                     } else {
                         health.name.clone()
                     };
                     let label = format!(
-                        "{} MCP '{}' {}",
-                        status_emoji,
+                        "❕ MCP '{}' {}",
                         display_name,
                         match health.status {
                             ItemHealthStatus::Unhealthy => "unhealthy",
@@ -435,7 +474,7 @@ fn build_tray_menu<R: Runtime, M: Manager<R>>(app: &M) -> tauri::Result<tauri::m
     // 5. Update section (shown when update is available)
     if let Some(update_state) = app.try_state::<Arc<UpdateNotificationState>>() {
         if update_state.is_update_available() {
-            menu_builder = menu_builder.text("update_and_restart", "Update and restart");
+            menu_builder = menu_builder.text("update_and_restart", &format!("{ICON_PAD}↓{ICON_PAD} Update and restart"));
         }
     }
 
@@ -465,7 +504,29 @@ fn build_tray_menu<R: Runtime, M: Manager<R>>(app: &M) -> tauri::Result<tauri::m
                     client.name.clone()
                 };
 
-                let mut client_submenu = SubmenuBuilder::new(app, &client_name);
+                let mut client_submenu =
+                    SubmenuBuilder::new(app, format!("{}{}", TRAY_INDENT, client_name));
+
+                // === Client identity section ===
+                let client_name_header = MenuItem::with_id(
+                    app,
+                    format!("client_name_header_{}", client.id),
+                    &client_name,
+                    false,
+                    None::<&str>,
+                )?;
+                client_submenu = client_submenu.item(&client_name_header);
+
+                client_submenu = client_submenu.text(
+                    format!("copy_client_id_{}", client.id),
+                    format!("{ICON_PAD}⧉{ICON_PAD} Copy Client ID (OAuth)"),
+                );
+                client_submenu = client_submenu.text(
+                    format!("copy_client_secret_{}", client.id),
+                    format!("{ICON_PAD}⧉{ICON_PAD} Copy API Key / Client Secret (Bearer, OAuth)"),
+                );
+
+                client_submenu = client_submenu.separator();
 
                 // === Model strategy section ===
                 let strategy_header = MenuItem::with_id(
@@ -481,9 +542,9 @@ fn build_tray_menu<R: Runtime, M: Manager<R>>(app: &M) -> tauri::Result<tauri::m
                 for strategy in &all_strategies {
                     let is_selected = strategy.id == client.strategy_id;
                     let label = if is_selected {
-                        format!("✓ {}", strategy.name)
+                        format!("✓  {}", strategy.name)
                     } else {
-                        format!("   {}", strategy.name)
+                        format!("{}{}", TRAY_INDENT, strategy.name)
                     };
 
                     // Create menu item - disabled if already selected
@@ -515,11 +576,12 @@ fn build_tray_menu<R: Runtime, M: Manager<R>>(app: &M) -> tauri::Result<tauri::m
                     let all_mcp_servers = mcp_manager.list_configs();
 
                     if all_mcp_servers.is_empty() {
-                        // No MCPs configured - show disabled "No MCPs" item
+                        // No MCPs configured - show disabled item
+                        let no_mcp_label = format!("{}No MCPs configured", TRAY_INDENT);
                         let no_mcp_item = MenuItem::with_id(
                             app,
                             format!("no_mcp_{}", client.id),
-                            "No MCPs",
+                            &no_mcp_label,
                             false,
                             None::<&str>,
                         )?;
@@ -535,9 +597,9 @@ fn build_tray_menu<R: Runtime, M: Manager<R>>(app: &M) -> tauri::Result<tauri::m
 
                             let is_allowed = client.mcp_server_access.can_access(&server.id);
                             let label = if is_allowed {
-                                format!("✓ {}", server_name)
+                                format!("✓  {}", server_name)
                             } else {
-                                format!("   {}", server_name)
+                                format!("{}{}", TRAY_INDENT, server_name)
                             };
 
                             // Clicking toggles the allowed state
@@ -548,15 +610,71 @@ fn build_tray_menu<R: Runtime, M: Manager<R>>(app: &M) -> tauri::Result<tauri::m
                         }
                     }
                 } else {
-                    // MCP manager not available - show disabled "No MCPs" item
+                    // MCP manager not available - show disabled item
+                    let no_mcp_label = format!("{}No MCPs configured", TRAY_INDENT);
                     let no_mcp_item = MenuItem::with_id(
                         app,
                         format!("no_mcp_{}", client.id),
-                        "No MCPs",
+                        &no_mcp_label,
                         false,
                         None::<&str>,
                     )?;
                     client_submenu = client_submenu.item(&no_mcp_item);
+                }
+
+                // === Skills Allowlist section ===
+                client_submenu = client_submenu.separator();
+
+                let skills_header = MenuItem::with_id(
+                    app,
+                    format!("skills_header_{}", client.id),
+                    "Skills Allowlist",
+                    false,
+                    None::<&str>,
+                )?;
+                client_submenu = client_submenu.item(&skills_header);
+
+                // Get all discovered skills via skill manager
+                if let Some(skill_manager) = app.try_state::<Arc<crate::skills::SkillManager>>() {
+                    let all_skills = skill_manager.list();
+
+                    if all_skills.is_empty() {
+                        let no_skills_label = format!("{}No skills discovered", TRAY_INDENT);
+                        let no_skills_item = MenuItem::with_id(
+                            app,
+                            format!("no_skills_{}", client.id),
+                            &no_skills_label,
+                            false,
+                            None::<&str>,
+                        )?;
+                        client_submenu = client_submenu.item(&no_skills_item);
+                    } else {
+                        for skill_info in &all_skills {
+                            let is_allowed = skill_info.enabled && client.skills_access.can_access_by_source(&skill_info.source_path);
+                            let label = if !skill_info.enabled {
+                                format!("{}{} (disabled)", TRAY_INDENT, skill_info.name)
+                            } else if is_allowed {
+                                format!("✓  {}", skill_info.name)
+                            } else {
+                                format!("{}{}", TRAY_INDENT, skill_info.name)
+                            };
+
+                            client_submenu = client_submenu.text(
+                                format!("toggle_skill_{}_{}", client.id, skill_info.name),
+                                label,
+                            );
+                        }
+                    }
+                } else {
+                    let no_skills_label = format!("{}No skills discovered", TRAY_INDENT);
+                    let no_skills_item = MenuItem::with_id(
+                        app,
+                        format!("no_skills_{}", client.id),
+                        &no_skills_label,
+                        false,
+                        None::<&str>,
+                    )?;
+                    client_submenu = client_submenu.item(&no_skills_item);
                 }
 
                 let client_menu = client_submenu.build()?;
@@ -567,13 +685,13 @@ fn build_tray_menu<R: Runtime, M: Manager<R>>(app: &M) -> tauri::Result<tauri::m
     }
 
     // Add "Quick Create & Copy API Key" button (creates with all models, no MCP)
-    menu_builder = menu_builder.text("create_and_copy_api_key", "➕ Quick Create && Copy API Key");
+    menu_builder = menu_builder.text("create_and_copy_api_key", "＋ Add && Copy Key");
 
     // Add separator before quit
     menu_builder = menu_builder.separator();
 
     // Add quit option
-    menu_builder = menu_builder.text("quit", "Quit");
+    menu_builder = menu_builder.text("quit", &format!("{ICON_PAD}⏻{ICON_PAD} Quit"));
 
     menu_builder.build()
 }
@@ -1105,6 +1223,107 @@ async fn handle_toggle_mcp_access<R: Runtime>(
     Ok(())
 }
 
+/// Toggle skill access for a client from tray menu
+async fn handle_toggle_skill_access<R: Runtime>(
+    app: &AppHandle<R>,
+    client_id: &str,
+    skill_name: &str,
+) -> tauri::Result<()> {
+    info!(
+        "Toggling skill {} access for client {}",
+        skill_name, client_id
+    );
+
+    // Look up the skill's source_path from the skill manager
+    let source_path = app
+        .try_state::<Arc<crate::skills::SkillManager>>()
+        .and_then(|manager| {
+            manager
+                .list()
+                .into_iter()
+                .find(|s| s.name == skill_name)
+                .map(|s| s.source_path)
+        })
+        .ok_or_else(|| tauri::Error::Anyhow(anyhow::anyhow!("Skill '{}' not found", skill_name)))?;
+
+    let config_manager = app.state::<ConfigManager>();
+
+    // Read current access and toggle by source path
+    let mut found = false;
+    config_manager
+        .update(|cfg| {
+            if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
+                let is_allowed = client.skills_access.can_access_by_source(&source_path);
+                if is_allowed {
+                    // Remove source path
+                    match &client.skills_access {
+                        crate::config::SkillsAccess::All => {
+                            // Switching from All: better UX handled by frontend
+                            client.set_skills_access(crate::config::SkillsAccess::None);
+                        }
+                        crate::config::SkillsAccess::Specific(paths) => {
+                            let new_paths: Vec<String> = paths
+                                .iter()
+                                .filter(|s| s.as_str() != source_path)
+                                .cloned()
+                                .collect();
+                            if new_paths.is_empty() {
+                                client.set_skills_access(crate::config::SkillsAccess::None);
+                            } else {
+                                client.set_skills_access(crate::config::SkillsAccess::Specific(
+                                    new_paths,
+                                ));
+                            }
+                        }
+                        crate::config::SkillsAccess::None => {} // Already none
+                    }
+                    info!("Skill {} (source: {}) removed from client {}", skill_name, source_path, client_id);
+                } else {
+                    // Add source path
+                    match &client.skills_access {
+                        crate::config::SkillsAccess::None => {
+                            client.set_skills_access(crate::config::SkillsAccess::Specific(vec![
+                                source_path.clone(),
+                            ]));
+                        }
+                        crate::config::SkillsAccess::Specific(paths) => {
+                            if !paths.contains(&source_path) {
+                                let mut new_paths = paths.clone();
+                                new_paths.push(source_path.clone());
+                                client.set_skills_access(crate::config::SkillsAccess::Specific(
+                                    new_paths,
+                                ));
+                            }
+                        }
+                        crate::config::SkillsAccess::All => {} // Already all
+                    }
+                    info!("Skill {} (source: {}) added to client {}", skill_name, source_path, client_id);
+                }
+                found = true;
+            }
+        })
+        .map_err(|e| tauri::Error::Anyhow(e.into()))?;
+
+    if !found {
+        return Err(tauri::Error::Anyhow(anyhow::anyhow!("Client not found")));
+    }
+
+    config_manager
+        .save()
+        .await
+        .map_err(|e| tauri::Error::Anyhow(e.into()))?;
+
+    // Rebuild tray menu
+    rebuild_tray_menu(app)?;
+
+    // Emit event for UI updates
+    if let Err(e) = app.emit("clients-changed", ()) {
+        error!("Failed to emit clients-changed event: {}", e);
+    }
+
+    Ok(())
+}
+
 /// Update the tray icon based on server status
 ///
 /// Note: When the dynamic tray graph is enabled (always now), "running" status
@@ -1563,15 +1782,38 @@ impl TrayGraphManager {
             }
         };
 
-        // Get health status from health cache (if available)
-        let health_status = app_handle
-            .try_state::<Arc<crate::server::state::AppState>>()
-            .map(|state| state.health_cache.aggregate_status());
+        // Determine overlay: Warning/Error health > UpdateAvailable > None
+        let overlay = {
+            use crate::providers::health_cache::AggregateHealthStatus;
+            use crate::ui::tray_graph::{StatusDotColors, TrayOverlay};
 
-        // Generate graph PNG with health status dot overlay
+            let health_status = app_handle
+                .try_state::<Arc<crate::server::state::AppState>>()
+                .map(|state| state.health_cache.aggregate_status());
+
+            match health_status {
+                Some(AggregateHealthStatus::Yellow) | Some(AggregateHealthStatus::Red) => {
+                    let status = health_status.unwrap();
+                    TrayOverlay::Warning(StatusDotColors::for_status(status))
+                }
+                _ => {
+                    // Check if an update is available
+                    let update_available = app_handle
+                        .try_state::<Arc<UpdateNotificationState>>()
+                        .is_some_and(|state| state.is_update_available());
+                    if update_available {
+                        TrayOverlay::UpdateAvailable
+                    } else {
+                        TrayOverlay::None
+                    }
+                }
+            }
+        };
+
+        // Generate graph PNG with overlay
         let graph_config = platform_graph_config();
         let png_bytes =
-            crate::ui::tray_graph::generate_graph(&data_points, &graph_config, health_status)
+            crate::ui::tray_graph::generate_graph(&data_points, &graph_config, overlay)
                 .ok_or_else(|| anyhow::anyhow!("Failed to generate graph PNG"))?;
 
         // Calculate simple hash of PNG bytes to detect changes
