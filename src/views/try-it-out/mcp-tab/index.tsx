@@ -131,7 +131,26 @@ interface McpServer {
   status?: string
 }
 
+interface SkillInfo {
+  name: string
+  description: string | null
+  enabled: boolean
+}
+
 type McpTestMode = "client" | "all" | "direct"
+
+// Direct target can be an MCP server or a skill (skills connect via gateway)
+type DirectTarget = { type: "server"; id: string } | { type: "skill"; name: string }
+
+function encodeDirectTarget(target: DirectTarget): string {
+  return target.type === "server" ? `server:${target.id}` : `skill:${target.name}`
+}
+
+function decodeDirectTarget(value: string): DirectTarget | null {
+  if (value.startsWith("server:")) return { type: "server", id: value.slice(7) }
+  if (value.startsWith("skill:")) return { type: "skill", name: value.slice(6) }
+  return null
+}
 
 interface ServerConfig {
   host: string
@@ -147,11 +166,12 @@ interface McpTabProps {
 
 export function McpTab({ innerPath, onPathChange }: McpTabProps) {
   const [mcpServers, setMcpServers] = useState<McpServer[]>([])
+  const [skills, setSkills] = useState<SkillInfo[]>([])
   const [mode, setMode] = useState<McpTestMode>("all")
   const [clients, setClients] = useState<McpClient[]>([])
   const [selectedClientId, setSelectedClientId] = useState<string>("")
   const [clientApiKey, setClientApiKey] = useState<string | null>(null)
-  const [selectedServerId, setSelectedServerId] = useState<string>("")
+  const [selectedDirectTarget, setSelectedDirectTarget] = useState<string>("")
   const [serverPort, setServerPort] = useState<number | null>(null)
   const [internalTestToken, setInternalTestToken] = useState<string | null>(null)
 
@@ -258,8 +278,10 @@ export function McpTab({ innerPath, onPathChange }: McpTabProps) {
     })
   }, [])
 
-  // Determine if target is gateway or a specific server
-  const isGatewayTarget = mode === "client" || mode === "all"
+  // Determine if target connects via gateway (client, all, or direct-skill)
+  const directTarget = decodeDirectTarget(selectedDirectTarget)
+  const isDirectServer = mode === "direct" && directTarget?.type === "server"
+  const isGatewayTarget = !isDirectServer
 
   // Fetch client API key when client selection changes
   useEffect(() => {
@@ -281,18 +303,24 @@ export function McpTab({ innerPath, onPathChange }: McpTabProps) {
   useEffect(() => {
     const init = async () => {
       try {
-        const [config, servers, testToken, clientsList] = await Promise.all([
+        const [config, servers, testToken, clientsList, skillsList] = await Promise.all([
           invoke<ServerConfig>("get_server_config"),
           invoke<McpServer[]>("list_mcp_servers"),
           invoke<string>("get_internal_test_token"),
           invoke<McpClient[]>("list_clients"),
+          invoke<SkillInfo[]>("list_skills"),
         ])
 
         setServerPort(config.actual_port ?? config.port)
         const enabledServers = servers.filter((s) => s.enabled)
         setMcpServers(enabledServers)
+        const enabledSkills = skillsList.filter(s => s.enabled)
+        setSkills(enabledSkills)
+        // Default direct target to first server, or first skill if no servers
         if (enabledServers.length > 0) {
-          setSelectedServerId(enabledServers[0].id)
+          setSelectedDirectTarget(encodeDirectTarget({ type: "server", id: enabledServers[0].id }))
+        } else if (enabledSkills.length > 0) {
+          setSelectedDirectTarget(encodeDirectTarget({ type: "skill", name: enabledSkills[0].name }))
         }
         setInternalTestToken(testToken)
         const enabledClients = clientsList.filter(c => c.enabled)
@@ -306,15 +334,21 @@ export function McpTab({ innerPath, onPathChange }: McpTabProps) {
     }
     init()
 
-    // Listen for MCP server status changes
-    const unsubscribe = listen("mcp-servers-changed", () => {
+    // Listen for MCP server and skills status changes
+    const unsubServers = listen("mcp-servers-changed", () => {
       invoke<McpServer[]>("list_mcp_servers").then((servers) => {
         setMcpServers(servers.filter((s) => s.enabled))
       })
     })
+    const unsubSkills = listen("skills-changed", () => {
+      invoke<SkillInfo[]>("list_skills").then((skillsList) => {
+        setSkills(skillsList.filter(s => s.enabled))
+      })
+    })
 
     return () => {
-      unsubscribe.then((fn) => fn())
+      unsubServers.then((fn) => fn())
+      unsubSkills.then((fn) => fn())
       // Cleanup: disconnect client on unmount
       if (mcpClientRef.current) {
         mcpClientRef.current.disconnect()
@@ -416,9 +450,10 @@ export function McpTab({ innerPath, onPathChange }: McpTabProps) {
       {
         serverPort,
         clientToken: token,
-        serverId: mode === "direct" ? selectedServerId : undefined,
+        // Only pass serverId for direct MCP server connections
+        serverId: isDirectServer ? directTarget.id : undefined,
         transportType: "sse",
-        // Only enable deferred loading for gateway modes (all / client)
+        // Only enable deferred loading for gateway modes
         deferredLoading: isGatewayTarget ? deferredLoading : undefined,
       },
       {
@@ -456,8 +491,8 @@ export function McpTab({ innerPath, onPathChange }: McpTabProps) {
 
   const getEndpointUrl = () => {
     if (!serverPort) return null
-    if (mode === "direct") {
-      return `http://localhost:${serverPort}/mcp/${selectedServerId}`
+    if (isDirectServer) {
+      return `http://localhost:${serverPort}/mcp/${directTarget.id}`
     }
     return `http://localhost:${serverPort}/`
   }
@@ -532,16 +567,31 @@ export function McpTab({ innerPath, onPathChange }: McpTabProps) {
               )}
 
               {mode === "direct" && (
-                <Select value={selectedServerId} onValueChange={setSelectedServerId} disabled={isConnected || isConnecting}>
+                <Select value={selectedDirectTarget} onValueChange={setSelectedDirectTarget} disabled={isConnected || isConnecting}>
                   <SelectTrigger className="w-[280px]">
-                    <SelectValue placeholder="Select a server" />
+                    <SelectValue placeholder="Select a server or skill" />
                   </SelectTrigger>
                   <SelectContent>
-                    {mcpServers.map((server) => (
-                      <SelectItem key={server.id} value={server.id}>
-                        {server.name} ({server.transport_type})
-                      </SelectItem>
-                    ))}
+                    {mcpServers.length > 0 && (
+                      <>
+                        <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">MCP Servers</div>
+                        {mcpServers.map((server) => (
+                          <SelectItem key={`server:${server.id}`} value={`server:${server.id}`}>
+                            {server.name} ({server.transport_type})
+                          </SelectItem>
+                        ))}
+                      </>
+                    )}
+                    {skills.length > 0 && (
+                      <>
+                        <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">Skills</div>
+                        {skills.map((skill) => (
+                          <SelectItem key={`skill:${skill.name}`} value={`skill:${skill.name}`}>
+                            {skill.name}
+                          </SelectItem>
+                        ))}
+                      </>
+                    )}
                   </SelectContent>
                 </Select>
               )}
@@ -593,7 +643,7 @@ export function McpTab({ innerPath, onPathChange }: McpTabProps) {
                       disabled={
                         (mode === "client" && (!selectedClientId || !clientApiKey)) ||
                         (mode === "all" && !internalTestToken) ||
-                        (mode === "direct" && (!internalTestToken || !selectedServerId || mcpServers.length === 0))
+                        (mode === "direct" && (!internalTestToken || !selectedDirectTarget))
                       }
                     >
                       Connect
