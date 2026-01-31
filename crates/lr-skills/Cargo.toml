@@ -1,0 +1,24 @@
+[package]
+name = "lr-skills"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Skills management and execution for LocalRouter"
+
+[dependencies]
+lr-types = { workspace = true }
+lr-config = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+parking_lot = { workspace = true }
+notify = { workspace = true }
+uuid = { workspace = true }
+sha2 = { workspace = true }
+zip = { workspace = true }
+anyhow = { workspace = true }
+tauri = { workspace = true }

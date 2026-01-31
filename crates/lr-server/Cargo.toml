@@ -1,0 +1,39 @@
+[package]
+name = "lr-server"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Axum HTTP server, routes, middleware, and OpenAPI for LocalRouter"
+
+[dependencies]
+lr-types = { workspace = true }
+lr-config = { workspace = true }
+lr-router = { workspace = true }
+lr-providers = { workspace = true }
+lr-mcp = { workspace = true }
+lr-clients = { workspace = true }
+lr-monitoring = { workspace = true }
+lr-skills = { workspace = true }
+lr-catalog = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+futures = { workspace = true }
+futures-util = { workspace = true }
+parking_lot = { workspace = true }
+dashmap = { workspace = true }
+async-trait = { workspace = true }
+async-stream = { workspace = true }
+utoipa = { workspace = true }
+utoipa-axum = { workspace = true }
+utoipa-scalar = { workspace = true }
+anyhow = { workspace = true }
+if-addrs = { workspace = true }

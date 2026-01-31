@@ -1,0 +1,16 @@
+[package]
+name = "lr-api-keys"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "API key and keychain storage for LocalRouter"
+
+[dependencies]
+lr-types = { workspace = true }
+anyhow = { workspace = true }
+keyring = { workspace = true }
+tracing = { workspace = true }
+parking_lot = { workspace = true }
+serde = { workspace = true }

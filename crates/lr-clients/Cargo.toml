@@ -1,0 +1,22 @@
+[package]
+name = "lr-clients"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Unified client management for LocalRouter"
+
+[dependencies]
+lr-types = { workspace = true }
+lr-config = { workspace = true }
+lr-api-keys = { workspace = true }
+lr-utils = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true }
+parking_lot = { workspace = true }
+dashmap = { workspace = true }
+anyhow = { workspace = true }

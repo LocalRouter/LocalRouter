@@ -1,0 +1,26 @@
+[package]
+name = "lr-config"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Configuration management for LocalRouter"
+
+[dependencies]
+lr-types = { workspace = true }
+lr-utils = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true }
+parking_lot = { workspace = true }
+tokio = { workspace = true }
+notify = { workspace = true }
+dirs = { workspace = true }
+tauri = { workspace = true }
+shell-words = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }

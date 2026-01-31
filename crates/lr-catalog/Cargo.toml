@@ -1,0 +1,22 @@
+[package]
+name = "lr-catalog"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Model catalog with build-time data from models.dev"
+
+[build-dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+reqwest = { workspace = true, features = ["blocking"] }
+
+[dependencies]
+lr-types = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+once_cell = { workspace = true }
+tracing = { workspace = true }

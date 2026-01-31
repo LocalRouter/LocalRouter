@@ -1,0 +1,31 @@
+[package]
+name = "lr-routellm"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Candle-based ML routing for LocalRouter"
+
+[dependencies]
+lr-types = { workspace = true }
+lr-config = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+parking_lot = { workspace = true }
+tokenizers = { workspace = true }
+hf-hub = { workspace = true }
+safetensors = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+candle-core = { version = "0.8", features = ["metal"] }
+candle-nn = { version = "0.8", features = ["metal"] }
+candle-transformers = { version = "0.8", features = ["metal"] }
+
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+candle-core = "0.8"
+candle-nn = "0.8"
+candle-transformers = "0.8"

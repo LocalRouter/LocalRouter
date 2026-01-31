@@ -1,5 +1,21 @@
 [workspace]
-members = ["src-tauri"]
+members = [
+    "src-tauri",
+    "crates/lr-types",
+    "crates/lr-utils",
+    "crates/lr-catalog",
+    "crates/lr-config",
+    "crates/lr-api-keys",
+    "crates/lr-oauth",
+    "crates/lr-clients",
+    "crates/lr-providers",
+    "crates/lr-routellm",
+    "crates/lr-monitoring",
+    "crates/lr-mcp",
+    "crates/lr-skills",
+    "crates/lr-router",
+    "crates/lr-server",
+]
 resolver = "2"
 
 [workspace.package]
@@ -10,6 +26,22 @@ license = "AGPL-3.0-or-later"
 repository = "https://github.com/LocalRouter/LocalRouter"
 
 [workspace.dependencies]
+# Internal crates
+lr-types = { path = "crates/lr-types" }
+lr-utils = { path = "crates/lr-utils" }
+lr-catalog = { path = "crates/lr-catalog" }
+lr-config = { path = "crates/lr-config" }
+lr-api-keys = { path = "crates/lr-api-keys" }
+lr-oauth = { path = "crates/lr-oauth" }
+lr-clients = { path = "crates/lr-clients" }
+lr-providers = { path = "crates/lr-providers" }
+lr-routellm = { path = "crates/lr-routellm" }
+lr-monitoring = { path = "crates/lr-monitoring" }
+lr-mcp = { path = "crates/lr-mcp" }
+lr-skills = { path = "crates/lr-skills" }
+lr-router = { path = "crates/lr-router" }
+lr-server = { path = "crates/lr-server" }
+
 # Async runtime
 tokio = { version = "1.42", features = ["full"] }
 tokio-util = "0.7"
@@ -84,6 +116,43 @@ arboard = "3.4"
 
 # CLI parsing
 clap = { version = "4.5", features = ["derive"] }
+
+# Concurrency
+futures = "0.3"
+futures-util = "0.3"
+parking_lot = "0.12"
+dashmap = "6.1"
+
+# WebSocket
+tokio-tungstenite = "0.21"
+
+# Database
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# Lazy initialization
+once_cell = "1.20"
+
+# Image processing
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+# Shell command parsing
+shell-words = "1.1"
+
+# ZIP extraction
+zip = { version = "2.2", default-features = false, features = ["deflate"] }
+
+# OpenAPI documentation
+utoipa = { version = "5", features = ["axum_extras", "chrono", "uuid"] }
+utoipa-axum = "0.2"
+utoipa-scalar = { version = "0.2", features = ["axum"] }
+
+# JSON Schema validation
+jsonschema = "0.18"
+
+# ML - RouteLLM
+tokenizers = "0.22"
+hf-hub = { version = "0.3", features = ["tokio"] }
+safetensors = "0.4"
 
 [profile.release]
 opt-level = "z"

@@ -1,0 +1,28 @@
+[package]
+name = "lr-oauth"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "OAuth browser flow and client management for LocalRouter"
+
+[dependencies]
+lr-types = { workspace = true }
+lr-config = { workspace = true }
+lr-api-keys = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+reqwest = { workspace = true }
+oauth2 = { workspace = true }
+urlencoding = { workspace = true }
+parking_lot = { workspace = true }
+anyhow = { workspace = true }
+sha2 = { workspace = true }
+base64 = { workspace = true }
+rand = { workspace = true }
+axum = { workspace = true }

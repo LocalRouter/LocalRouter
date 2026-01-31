@@ -1,0 +1,36 @@
+[package]
+name = "lr-providers"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "AI model provider implementations for LocalRouter"
+
+[dependencies]
+lr-types = { workspace = true }
+lr-catalog = { workspace = true }
+lr-utils = { workspace = true }
+lr-api-keys = { workspace = true }
+lr-config = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+reqwest = { workspace = true }
+async-trait = { workspace = true }
+async-stream = { workspace = true }
+futures = { workspace = true }
+futures-util = { workspace = true }
+parking_lot = { workspace = true }
+dashmap = { workspace = true }
+base64 = { workspace = true }
+utoipa = { workspace = true }
+ollama-rs = { workspace = true }
+keyring = { workspace = true }
+anyhow = { workspace = true }
+sha2 = { workspace = true }
+jsonschema = { workspace = true }
+image = { workspace = true }
