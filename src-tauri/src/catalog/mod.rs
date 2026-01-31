@@ -47,22 +47,6 @@ pub fn models() -> &'static [CatalogModel] {
 
 /// Get all models for a specific provider from the embedded catalog
 ///
-/// This is useful for providers that don't have their own model list API
-/// (like Perplexity) and need to use the catalog as their model source.
-///
-/// # Arguments
-/// * `provider_id` - The models.dev provider ID (e.g., "openai", "anthropic", "google")
-///
-/// # Returns
-/// A vector of references to catalog models that belong to this provider
-pub fn get_provider_models(provider_id: &str) -> Vec<&'static CatalogModel> {
-    let prefix = format!("{}/", provider_id);
-    CATALOG_MODELS
-        .iter()
-        .filter(|m| m.id.starts_with(&prefix))
-        .collect()
-}
-
 #[cfg(test)]
 mod integration_tests {
     use super::*;
