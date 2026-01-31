@@ -149,8 +149,12 @@ pub async fn save_config(config: &AppConfig, path: &Path) -> AppResult<()> {
         AppError::Config(format!("Failed to serialize configuration to YAML: {}", e))
     })?;
 
-    // Write to temporary file first
-    let temp_path = path.with_extension("yaml.tmp");
+    // Write to temporary file first (use unique name to avoid races between concurrent saves)
+    let unique_id = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let temp_path = path.with_extension(format!("yaml.tmp.{}", unique_id));
 
     // Use explicit file operations with sync to ensure data is written before rename
     {
@@ -187,14 +191,16 @@ pub async fn save_config(config: &AppConfig, path: &Path) -> AppResult<()> {
     }
 
     // Atomically rename temporary file to actual file
-    fs::rename(&temp_path, path).await.map_err(|e| {
-        AppError::Config(format!(
+    if let Err(e) = fs::rename(&temp_path, path).await {
+        // Clean up the temp file on failure
+        let _ = fs::remove_file(&temp_path).await;
+        return Err(AppError::Config(format!(
             "Failed to rename '{}' to '{}': {}",
             temp_path.display(),
             path.display(),
             e
-        ))
-    })?;
+        )));
+    }
 
     info!("Configuration saved successfully to {:?}", path);
     Ok(())
