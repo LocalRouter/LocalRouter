@@ -16,6 +16,7 @@ export default defineConfig({
   clearScreen: false,
 
   server: {
+    host: '127.0.0.1', // Bind to IPv4 for WebView2 compatibility on Windows
     port: 1420,
     strictPort: false, // Allow automatic port selection if 1420 is in use
     watch: {
