@@ -106,7 +106,7 @@ async fn test_skills_e2e_all_tool_commands() {
 
     // SkillManager: discover the test skill
     let skill_manager = Arc::new(SkillManager::new());
-    skill_manager.initial_scan(&[], &[skill_dir.to_string_lossy().to_string()]);
+    skill_manager.initial_scan(&[skill_dir.to_string_lossy().to_string()], &[]);
 
     // Verify skill was discovered
     let skills = skill_manager.list();
@@ -119,12 +119,12 @@ async fn test_skills_e2e_all_tool_commands() {
     // McpServerManager + Gateway
     let server_manager = Arc::new(McpServerManager::new());
     let router = create_test_router();
-    let mut gateway = McpGateway::new(server_manager, GatewayConfig::default(), router);
+    let gateway = McpGateway::new(server_manager, GatewayConfig::default(), router);
     gateway.set_skill_support(skill_manager, script_executor);
     let gateway = Arc::new(gateway);
 
     let client_id = "test-skills-client";
-    let skills_access = SkillsAccess::Specific(vec!["get-current-time".to_string()]);
+    let skills_access = SkillsAccess::Specific(vec![skill_dir.to_string_lossy().to_string()]);
 
     // ── Step 1: tools/list ─────────────────────────────────────────
     let tools_list_req = JsonRpcRequest::with_id(1, "tools/list".to_string(), Some(json!({})));
@@ -450,12 +450,12 @@ async fn setup_gateway_with_skill() -> (Arc<McpGateway>, TempDir) {
     let skill_dir = create_test_skill(&temp_dir);
 
     let skill_manager = Arc::new(SkillManager::new());
-    skill_manager.initial_scan(&[], &[skill_dir.to_string_lossy().to_string()]);
+    skill_manager.initial_scan(&[skill_dir.to_string_lossy().to_string()], &[]);
 
     let script_executor = Arc::new(ScriptExecutor::new());
     let server_manager = Arc::new(McpServerManager::new());
     let router = create_test_router();
-    let mut gateway = McpGateway::new(server_manager, GatewayConfig::default(), router);
+    let gateway = McpGateway::new(server_manager, GatewayConfig::default(), router);
     gateway.set_skill_support(skill_manager, script_executor);
 
     (Arc::new(gateway), temp_dir)
@@ -524,10 +524,11 @@ async fn test_no_skill_tools_when_no_skills_configured() {
 /// Test: Skill tools must survive the tools/list cache (second call must still include them)
 #[tokio::test]
 async fn test_skill_tools_present_after_cache_hit() {
-    let (gateway, _temp_dir) = setup_gateway_with_skill().await;
+    let (gateway, temp_dir) = setup_gateway_with_skill().await;
 
     let client_id = "cache-test-client";
-    let skills_access = SkillsAccess::Specific(vec!["get-current-time".to_string()]);
+    let skill_dir = temp_dir.path().join("get-current-time");
+    let skills_access = SkillsAccess::Specific(vec![skill_dir.to_string_lossy().to_string()]);
 
     // First call: populates cache
     let req = JsonRpcRequest::with_id(1, "tools/list".to_string(), Some(json!({})));
@@ -590,10 +591,11 @@ async fn test_skill_tools_present_after_cache_hit() {
 /// Test: Skill tools must be present even when deferred loading is enabled
 #[tokio::test]
 async fn test_skill_tools_present_with_deferred_loading() {
-    let (gateway, _temp_dir) = setup_gateway_with_skill().await;
+    let (gateway, temp_dir) = setup_gateway_with_skill().await;
 
     let client_id = "deferred-test-client";
-    let skills_access = SkillsAccess::Specific(vec!["get-current-time".to_string()]);
+    let skill_dir = temp_dir.path().join("get-current-time");
+    let skills_access = SkillsAccess::Specific(vec![skill_dir.to_string_lossy().to_string()]);
 
     // First call to create the session and set allowed_skills
     let req = JsonRpcRequest::with_id(1, "tools/list".to_string(), Some(json!({})));

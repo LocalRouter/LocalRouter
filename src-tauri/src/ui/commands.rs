@@ -5211,3 +5211,93 @@ pub async fn set_client_skills_access(
 
     Ok(())
 }
+
+/// Get files for a specific skill with content previews
+#[tauri::command]
+pub async fn get_skill_files(
+    skill_name: String,
+    skill_manager: State<'_, Arc<lr_skills::SkillManager>>,
+) -> Result<Vec<SkillFileInfo>, String> {
+    let skill = skill_manager
+        .get(&skill_name)
+        .ok_or_else(|| format!("Skill '{}' not found", skill_name))?;
+
+    let mut files = Vec::new();
+
+    for script in &skill.scripts {
+        let preview = read_file_preview(&skill.skill_dir.join("scripts").join(script));
+        files.push(SkillFileInfo {
+            name: script.clone(),
+            category: "script".to_string(),
+            content_preview: preview,
+        });
+    }
+
+    for reference in &skill.references {
+        let preview = read_file_preview(&skill.skill_dir.join("references").join(reference));
+        files.push(SkillFileInfo {
+            name: reference.clone(),
+            category: "reference".to_string(),
+            content_preview: preview,
+        });
+    }
+
+    for asset in &skill.assets {
+        let path = skill.skill_dir.join("assets").join(asset);
+        let preview = if is_text_file(&path) {
+            read_file_preview(&path)
+        } else {
+            None
+        };
+        files.push(SkillFileInfo {
+            name: asset.clone(),
+            category: "asset".to_string(),
+            content_preview: preview,
+        });
+    }
+
+    Ok(files)
+}
+
+#[derive(serde::Serialize)]
+pub struct SkillFileInfo {
+    pub name: String,
+    pub category: String,
+    pub content_preview: Option<String>,
+}
+
+fn read_file_preview(path: &std::path::Path) -> Option<String> {
+    std::fs::read_to_string(path).ok().map(|content| {
+        if content.len() > 500 {
+            let truncated: String = content.chars().take(500).collect();
+            format!("{}...", truncated)
+        } else {
+            content
+        }
+    })
+}
+
+fn is_text_file(path: &std::path::Path) -> bool {
+    match path.extension().and_then(|e| e.to_str()) {
+        Some(ext) => matches!(
+            ext.to_lowercase().as_str(),
+            "txt"
+                | "md"
+                | "json"
+                | "yaml"
+                | "yml"
+                | "toml"
+                | "xml"
+                | "csv"
+                | "html"
+                | "css"
+                | "js"
+                | "ts"
+                | "py"
+                | "rs"
+                | "sh"
+                | "bash"
+        ),
+        None => false,
+    }
+}

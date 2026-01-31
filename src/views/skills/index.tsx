@@ -1,8 +1,10 @@
 import { useState, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
+import { open as openDialog } from "@tauri-apps/plugin-dialog"
+import { open as openShell } from "@tauri-apps/plugin-shell"
 import { toast } from "sonner"
-import { Plus, FolderOpen, RefreshCw, Trash2 } from "lucide-react"
+import { Plus, FolderOpen, RefreshCw, Trash2, ExternalLink, ChevronDown, ChevronRight, FileText, FileCode, Image } from "lucide-react"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Switch } from "@/components/ui/switch"
@@ -25,6 +27,12 @@ interface SkillsConfig {
   disabled_skills: string[]
 }
 
+interface SkillFile {
+  name: string
+  category: string
+  content_preview: string | null
+}
+
 interface SkillsViewProps {
   activeSubTab: string | null
   onTabChange: (view: string, subTab?: string | null) => void
@@ -38,6 +46,9 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
   const [selectedSkill, setSelectedSkill] = useState<string | null>(activeSubTab)
   const [addMode, setAddMode] = useState(false)
   const [newPath, setNewPath] = useState("")
+  const [skillFiles, setSkillFiles] = useState<SkillFile[]>([])
+  const [loadingFiles, setLoadingFiles] = useState(false)
+  const [expandedFiles, setExpandedFiles] = useState<Set<string>>(new Set())
 
   useEffect(() => {
     loadData()
@@ -54,6 +65,15 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
   useEffect(() => {
     setSelectedSkill(activeSubTab)
   }, [activeSubTab])
+
+  useEffect(() => {
+    if (selectedSkill) {
+      loadSkillFiles(selectedSkill)
+    } else {
+      setSkillFiles([])
+      setExpandedFiles(new Set())
+    }
+  }, [selectedSkill])
 
   const loadData = async () => {
     try {
@@ -97,6 +117,67 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
     } catch (error) {
       console.error("Failed to add path:", error)
       toast.error(`Failed to add source: ${error}`)
+    }
+  }
+
+  const handleAddFolder = async () => {
+    try {
+      const selected = await openDialog({
+        directory: true,
+        multiple: false,
+        title: "Select skill source directory",
+      })
+      if (selected) {
+        await invoke("add_skill_source", { path: selected })
+        toast.success("Skill source added")
+        loadData()
+      }
+    } catch (error) {
+      console.error("Failed to open folder picker:", error)
+      toast.error(`Failed to add source: ${error}`)
+    }
+  }
+
+  const handleOpenPath = async (path: string) => {
+    try {
+      await openShell(path)
+    } catch (error) {
+      console.error("Failed to open path:", error)
+      toast.error("Failed to open in file explorer")
+    }
+  }
+
+  const loadSkillFiles = async (skillName: string) => {
+    setLoadingFiles(true)
+    try {
+      const files = await invoke<SkillFile[]>("get_skill_files", { skillName })
+      setSkillFiles(files)
+    } catch (error) {
+      console.error("Failed to load skill files:", error)
+      setSkillFiles([])
+    } finally {
+      setLoadingFiles(false)
+    }
+  }
+
+  const toggleFileExpanded = (fileName: string) => {
+    setExpandedFiles(prev => {
+      const next = new Set(prev)
+      if (next.has(fileName)) {
+        next.delete(fileName)
+      } else {
+        next.add(fileName)
+      }
+      return next
+    })
+  }
+
+  const getCategoryIcon = (category: string) => {
+    switch (category) {
+      case "script": return <FileCode className="h-3.5 w-3.5 text-blue-500" />
+      case "reference": return <FileText className="h-3.5 w-3.5 text-green-500" />
+      case "asset": return <Image className="h-3.5 w-3.5 text-purple-500" />
+      default: return <FileText className="h-3.5 w-3.5 text-muted-foreground" />
     }
   }
 
@@ -160,7 +241,11 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
             <RefreshCw className={`h-4 w-4 mr-2 ${rescanning ? "animate-spin" : ""}`} />
             Rescan
           </Button>
-          <Button size="sm" onClick={() => { setAddMode(true); setNewPath("") }}>
+          <Button size="sm" variant="outline" onClick={() => { setAddMode(true); setNewPath("") }}>
+            <FileText className="h-4 w-4 mr-2" />
+            Manual Path...
+          </Button>
+          <Button size="sm" onClick={handleAddFolder}>
             <Plus className="h-4 w-4 mr-2" />
             Add Skill Source
           </Button>
@@ -210,10 +295,15 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
               <CardContent className="space-y-2">
                 {config.paths.map((p) => (
                   <div key={p} className="flex items-center justify-between text-xs group">
-                    <div className="flex items-center gap-1.5 min-w-0">
+                    <button
+                      className="flex items-center gap-1.5 min-w-0 hover:text-foreground transition-colors"
+                      onClick={() => handleOpenPath(p)}
+                      title={`Open ${p} in file explorer`}
+                    >
                       <FolderOpen className="h-3 w-3 text-muted-foreground shrink-0" />
-                      <span className="truncate text-muted-foreground" title={p}>{p}</span>
-                    </div>
+                      <span className="truncate text-muted-foreground hover:text-foreground">{p}</span>
+                      <ExternalLink className="h-2.5 w-2.5 text-muted-foreground opacity-0 group-hover:opacity-100 shrink-0" />
+                    </button>
                     <Button
                       variant="ghost"
                       size="icon"
@@ -349,9 +439,63 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
                   )}
                 </div>
 
+                {/* Files */}
+                {loadingFiles ? (
+                  <div className="text-xs text-muted-foreground border-t pt-3">
+                    Loading files...
+                  </div>
+                ) : skillFiles.length > 0 && (
+                  <div className="border-t pt-3 space-y-1">
+                    <h4 className="text-xs font-medium text-muted-foreground mb-2">Files</h4>
+                    {["script", "reference", "asset"].map(category => {
+                      const categoryFiles = skillFiles.filter(f => f.category === category)
+                      if (categoryFiles.length === 0) return null
+                      return (
+                        <div key={category} className="space-y-0.5">
+                          <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium px-1">
+                            {category}s ({categoryFiles.length})
+                          </div>
+                          {categoryFiles.map(file => (
+                            <div key={file.name} className="rounded-md border border-border/50">
+                              <button
+                                className="w-full flex items-center gap-2 px-2 py-1.5 text-xs hover:bg-muted/50 transition-colors"
+                                onClick={() => file.content_preview && toggleFileExpanded(file.name)}
+                              >
+                                {file.content_preview ? (
+                                  expandedFiles.has(file.name)
+                                    ? <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" />
+                                    : <ChevronRight className="h-3 w-3 shrink-0 text-muted-foreground" />
+                                ) : <div className="w-3" />}
+                                {getCategoryIcon(file.category)}
+                                <span className="truncate">{file.name}</span>
+                              </button>
+                              {expandedFiles.has(file.name) && file.content_preview && (
+                                <pre className="px-3 py-2 text-[10px] leading-relaxed bg-muted/30 border-t border-border/50 overflow-x-auto max-h-48 whitespace-pre-wrap break-words">
+                                  {file.content_preview}
+                                </pre>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+
                 {/* Source path */}
-                <div className="text-xs text-muted-foreground border-t pt-3">
-                  Source: {selectedSkillInfo.source_path}
+                <div className="flex items-center justify-between text-xs text-muted-foreground border-t pt-3">
+                  <span className="truncate" title={selectedSkillInfo.source_path}>
+                    Source: {selectedSkillInfo.source_path}
+                  </span>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-6 text-xs shrink-0"
+                    onClick={() => handleOpenPath(selectedSkillInfo.source_path)}
+                  >
+                    <ExternalLink className="h-3 w-3 mr-1" />
+                    Open folder
+                  </Button>
                 </div>
               </CardContent>
             </Card>

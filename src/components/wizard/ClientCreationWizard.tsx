@@ -7,7 +7,8 @@
  * 1. Name - Choose a name for the client
  * 2. Models - Select which models the client can access
  * 3. MCP - Select which MCP servers the client can access (optional)
- * 4. Credentials - View and copy the generated credentials
+ * 4. Skills - Select which skills the client can access (optional)
+ * 5. Credentials - View and copy the generated credentials
  */
 
 import { useState } from "react"
@@ -27,10 +28,12 @@ import { StepWelcome } from "./steps/StepWelcome"
 import { StepName } from "./steps/StepName"
 import { StepModels } from "./steps/StepModels"
 import { StepMcp } from "./steps/StepMcp"
+import { StepSkills } from "./steps/StepSkills"
 import { StepCredentials } from "./steps/StepCredentials"
 import type { AllowedModelsSelection } from "@/components/strategy/AllowedModelsSelector"
 
 type McpAccessMode = "none" | "all" | "specific"
+type SkillsAccessMode = "none" | "all" | "specific"
 type RoutingMode = "allowed" | "auto"
 
 export interface AutoModelConfig {
@@ -64,6 +67,10 @@ interface WizardState {
   mcpAccessMode: McpAccessMode
   selectedMcpServers: string[]
 
+  // Step 4 - Skills
+  skillsAccessMode: SkillsAccessMode
+  selectedSkillPaths: string[]
+
   // After creation
   clientId?: string
   clientUuid?: string
@@ -89,6 +96,7 @@ const BASE_STEP_TITLES = [
   "Name Your Client",
   "Select Models",
   "Select MCP Servers",
+  "Select Skills",
   "Your Credentials",
 ]
 
@@ -96,6 +104,7 @@ const BASE_STEP_DESCRIPTIONS = [
   "Choose a descriptive name for your client.",
   "Choose which models this client can access.",
   "Optionally configure MCP server access.",
+  "Optionally configure skills access.",
   "Save your credentials securely.",
 ]
 
@@ -125,6 +134,8 @@ export function ClientCreationWizard({
     weakModels: [],
     mcpAccessMode: "none",
     selectedMcpServers: [],
+    skillsAccessMode: "none",
+    selectedSkillPaths: [],
   })
 
   // Build step arrays based on whether welcome is shown
@@ -140,7 +151,8 @@ export function ClientCreationWizard({
   const nameStepIndex = 0 + offset
   const modelsStepIndex = 1 + offset
   const mcpStepIndex = 2 + offset
-  const credentialsStepIndex = 3 + offset
+  const skillsStepIndex = 3 + offset
+  const credentialsStepIndex = 4 + offset
 
   const isFirstStep = currentStep === 0
   const isLastStep = currentStep === stepTitles.length - 1
@@ -161,6 +173,9 @@ export function ClientCreationWizard({
     if (currentStep === mcpStepIndex) {
       return true // MCP is optional
     }
+    if (currentStep === skillsStepIndex) {
+      return true // Skills are optional
+    }
     if (currentStep === credentialsStepIndex) {
       return true // Can always close from credentials
     }
@@ -168,7 +183,7 @@ export function ClientCreationWizard({
   }
 
   const handleNext = async () => {
-    if (currentStep === mcpStepIndex) {
+    if (currentStep === skillsStepIndex) {
       // Create client before moving to credentials step
       await createClient()
     } else if (!isLastStep) {
@@ -217,6 +232,15 @@ export function ClientCreationWizard({
         servers: state.selectedMcpServers,
       })
 
+      // Step 4: Set skills access
+      if (state.skillsAccessMode !== "none") {
+        await invoke("set_client_skills_access", {
+          clientId: clientInfo.client_id,
+          mode: state.skillsAccessMode,
+          paths: state.selectedSkillPaths,
+        })
+      }
+
       // Update state with created client info
       setState((prev) => ({
         ...prev,
@@ -260,6 +284,8 @@ export function ClientCreationWizard({
       weakModels: [],
       mcpAccessMode: "none",
       selectedMcpServers: [],
+      skillsAccessMode: "none",
+      selectedSkillPaths: [],
     })
     onOpenChange(false)
   }
@@ -327,6 +353,21 @@ export function ClientCreationWizard({
         />
       )
     }
+    if (currentStep === skillsStepIndex) {
+      return (
+        <StepSkills
+          accessMode={state.skillsAccessMode}
+          selectedPaths={state.selectedSkillPaths}
+          onChange={(mode, paths) =>
+            setState((prev) => ({
+              ...prev,
+              skillsAccessMode: mode,
+              selectedSkillPaths: paths,
+            }))
+          }
+        />
+      )
+    }
     if (currentStep === credentialsStepIndex) {
       return (
         <StepCredentials
@@ -379,7 +420,7 @@ export function ClientCreationWizard({
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                     Creating...
                   </>
-                ) : currentStep === mcpStepIndex ? (
+                ) : currentStep === skillsStepIndex ? (
                   "Create Client"
                 ) : (
                   <>

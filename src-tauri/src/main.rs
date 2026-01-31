@@ -418,6 +418,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
         .await?;
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -494,6 +495,13 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             // Get AppState from server manager and manage it for Tauri commands
             if let Some(app_state) = server_manager.get_state() {
                 info!("Managing AppState for Tauri commands");
+
+                // Wire skill support into MCP gateway (uses OnceLock, so &self is fine)
+                app_state.mcp_gateway.set_skill_support(
+                    skill_manager.clone(),
+                    script_executor.clone(),
+                );
+                info!("Skills wired to MCP gateway");
 
                 // Set app handle on AppState for event emission
                 app_state.set_app_handle(app.handle().clone());
@@ -1065,6 +1073,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::set_skill_enabled,
             ui::commands::rescan_skills,
             ui::commands::set_client_skills_access,
+            ui::commands::get_skill_files,
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {

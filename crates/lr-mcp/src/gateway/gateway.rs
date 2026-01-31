@@ -2,7 +2,7 @@
 
 use dashmap::DashMap;
 use serde_json::{json, Value};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::sync::RwLock;
 
@@ -50,10 +50,11 @@ pub struct McpGateway {
     elicitation_manager: Arc<ElicitationManager>,
 
     /// Skill manager (optional, for AgentSkills.io support)
-    skill_manager: Option<Arc<SkillManager>>,
+    /// Uses OnceLock so it can be set after Arc construction via &self
+    skill_manager: OnceLock<Arc<SkillManager>>,
 
     /// Script executor for running skill scripts (optional)
-    script_executor: Option<Arc<ScriptExecutor>>,
+    script_executor: OnceLock<Arc<ScriptExecutor>>,
 }
 
 impl McpGateway {
@@ -92,19 +93,25 @@ impl McpGateway {
             notification_broadcast,
             router,
             elicitation_manager,
-            skill_manager: None,
-            script_executor: None,
+            skill_manager: OnceLock::new(),
+            script_executor: OnceLock::new(),
         }
     }
 
-    /// Set skill manager and script executor for AgentSkills.io support
+    /// Set skill manager and script executor for AgentSkills.io support.
+    /// Uses OnceLock so this can be called on `&self` (gateway is behind Arc).
     pub fn set_skill_support(
-        &mut self,
+        &self,
         skill_manager: Arc<SkillManager>,
         script_executor: Arc<ScriptExecutor>,
     ) {
-        self.skill_manager = Some(skill_manager);
-        self.script_executor = Some(script_executor);
+        let _ = self.skill_manager.set(skill_manager);
+        let _ = self.script_executor.set(script_executor);
+    }
+
+    /// Check if skill support has been configured
+    fn has_skill_support(&self) -> bool {
+        self.skill_manager.get().is_some() && self.script_executor.get().is_some()
     }
 
     /// Build a mapping from server ID (UUID) to human-readable server name
@@ -704,20 +711,19 @@ impl McpGateway {
         request: JsonRpcRequest,
     ) -> AppResult<JsonRpcResponse> {
         // Parse elicitation request from params
-        let elicitation_req: crate::protocol::ElicitationRequest =
-            match request.params.as_ref() {
-                Some(params) => serde_json::from_value(params.clone()).map_err(|e| {
-                    AppError::InvalidParams(format!("Invalid elicitation request: {}", e))
-                })?,
-                None => {
-                    return Ok(JsonRpcResponse::error(
-                        request.id.unwrap_or(Value::Null),
-                        JsonRpcError::invalid_params(
-                            "Missing params for elicitation request".to_string(),
-                        ),
-                    ));
-                }
-            };
+        let elicitation_req: crate::protocol::ElicitationRequest = match request.params.as_ref() {
+            Some(params) => serde_json::from_value(params.clone()).map_err(|e| {
+                AppError::InvalidParams(format!("Invalid elicitation request: {}", e))
+            })?,
+            None => {
+                return Ok(JsonRpcResponse::error(
+                    request.id.unwrap_or(Value::Null),
+                    JsonRpcError::invalid_params(
+                        "Missing params for elicitation request".to_string(),
+                    ),
+                ));
+            }
+        };
 
         // Get the server ID that initiated this request
         // Note: In the MCP spec, elicitation/requestInput is sent BY servers TO clients,
@@ -834,8 +840,59 @@ impl McpGateway {
             }
         }
 
-        // If no servers could be started, fail immediately
+        // If no servers could be started, check if skills are available as fallback
         if started_servers.is_empty() {
+            // Check if this session has skills access and the gateway has skill support
+            let session_read = session.read().await;
+            let has_skills =
+                session_read.skills_access.has_any_access() && self.has_skill_support();
+            drop(session_read);
+
+            if has_skills {
+                tracing::info!(
+                    "No MCP servers available, but skills are configured — proceeding in skills-only mode"
+                );
+
+                let merged = MergedCapabilities {
+                    protocol_version: "2024-11-05".to_string(),
+                    capabilities: ServerCapabilities {
+                        tools: Some(ToolsCapability {
+                            list_changed: Some(true),
+                        }),
+                        resources: None,
+                        prompts: None,
+                        logging: None,
+                    },
+                    server_info: ServerInfo {
+                        name: "LocalRouter MCP Gateway (skills-only)".to_string(),
+                        version: env!("CARGO_PKG_VERSION").to_string(),
+                        description: None,
+                    },
+                    failures: start_failures,
+                };
+
+                let response_value = json!({
+                    "protocolVersion": merged.protocol_version,
+                    "capabilities": {
+                        "tools": { "listChanged": true }
+                    },
+                    "serverInfo": {
+                        "name": merged.server_info.name,
+                        "version": merged.server_info.version
+                    }
+                });
+
+                {
+                    let mut session_write = session.write().await;
+                    session_write.merged_capabilities = Some(merged);
+                }
+
+                return Ok(JsonRpcResponse::success(
+                    request.id.unwrap_or(Value::Null),
+                    response_value,
+                ));
+            }
+
             let error_summary = start_failures
                 .iter()
                 .map(|f| format!("{}: {}", f.server_id, f.error))
@@ -896,8 +953,58 @@ impl McpGateway {
             })
             .collect();
 
-        // If all servers failed, return error
+        // If all servers failed, check if skills can serve as fallback
         if init_results.is_empty() && !failures.is_empty() {
+            let session_read = session.read().await;
+            let has_skills =
+                session_read.skills_access.has_any_access() && self.has_skill_support();
+            drop(session_read);
+
+            if has_skills {
+                tracing::info!(
+                    "All MCP servers failed to initialize, but skills are configured — proceeding in skills-only mode"
+                );
+
+                let merged = MergedCapabilities {
+                    protocol_version: "2024-11-05".to_string(),
+                    capabilities: ServerCapabilities {
+                        tools: Some(ToolsCapability {
+                            list_changed: Some(true),
+                        }),
+                        resources: None,
+                        prompts: None,
+                        logging: None,
+                    },
+                    server_info: ServerInfo {
+                        name: "LocalRouter MCP Gateway (skills-only)".to_string(),
+                        version: env!("CARGO_PKG_VERSION").to_string(),
+                        description: None,
+                    },
+                    failures,
+                };
+
+                let response_value = json!({
+                    "protocolVersion": merged.protocol_version,
+                    "capabilities": {
+                        "tools": { "listChanged": true }
+                    },
+                    "serverInfo": {
+                        "name": merged.server_info.name,
+                        "version": merged.server_info.version
+                    }
+                });
+
+                {
+                    let mut session_write = session.write().await;
+                    session_write.merged_capabilities = Some(merged);
+                }
+
+                return Ok(JsonRpcResponse::success(
+                    request.id.unwrap_or(Value::Null),
+                    response_value,
+                ));
+            }
+
             let error_summary = failures
                 .iter()
                 .map(|f| format!("{}: {}", f.server_id, f.error))
@@ -1917,9 +2024,13 @@ impl McpGateway {
     }
 
     /// Append skill tools to a tools list if the client has skills access
-    fn append_skill_tools(&self, tools: &mut Vec<serde_json::Value>, access: &lr_config::SkillsAccess) {
+    fn append_skill_tools(
+        &self,
+        tools: &mut Vec<serde_json::Value>,
+        access: &lr_config::SkillsAccess,
+    ) {
         if access.has_any_access() {
-            if let Some(ref sm) = self.skill_manager {
+            if let Some(sm) = self.skill_manager.get() {
                 let skill_tools = lr_skills::mcp_tools::build_skill_tools(sm, access);
                 for st in skill_tools {
                     tools.push(serde_json::to_value(&st).unwrap_or_default());
@@ -1944,7 +2055,7 @@ impl McpGateway {
         request: JsonRpcRequest,
     ) -> AppResult<JsonRpcResponse> {
         let (skill_manager, script_executor) =
-            match (self.skill_manager.as_ref(), self.script_executor.as_ref()) {
+            match (self.skill_manager.get(), self.script_executor.get()) {
                 (Some(sm), Some(se)) => (sm, se),
                 _ => {
                     return Ok(JsonRpcResponse::error(
@@ -2002,10 +2113,7 @@ impl McpGateway {
     }
 
     /// Get a session by client ID
-    pub fn get_session(
-        &self,
-        client_id: &str,
-    ) -> Option<Arc<RwLock<GatewaySession>>> {
+    pub fn get_session(&self, client_id: &str) -> Option<Arc<RwLock<GatewaySession>>> {
         self.sessions.get(client_id).map(|s| s.clone())
     }
 }

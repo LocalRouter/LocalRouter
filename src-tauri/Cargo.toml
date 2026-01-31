@@ -39,6 +39,7 @@ anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tauri = { workspace = true }
+tauri-plugin-dialog = { workspace = true }
 tauri-plugin-process = "2"
 tauri-plugin-shell = { workspace = true }
 tauri-plugin-updater = "2.9"

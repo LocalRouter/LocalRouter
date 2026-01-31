@@ -88,6 +88,7 @@
     "core:webview:default",
     "core:webview:allow-print",
     "process:default",
+    "dialog:allow-open",
     "shell:allow-open",
     "updater:default"
   ]
