@@ -3,7 +3,7 @@
 //! Cohere uses a custom API v2 format
 
 use super::common::*;
-use localrouter_ai::providers::{cohere::CohereProvider, ModelProvider};
+use localrouter::providers::{cohere::CohereProvider, ModelProvider};
 
 #[tokio::test]
 async fn test_cohere_list_models() {

@@ -13,7 +13,24 @@
       "Bash(cmd.exe /c \"rustup target add x86_64-pc-windows-gnu && rustup toolchain install stable-x86_64-pc-windows-gnu\")",
       "Bash(cmd.exe /c \"cargo +stable-x86_64-pc-windows-gnu install tauri-cli\")",
       "Bash(cmd.exe /c:*)",
-      "Bash(ls:*)"
+      "Bash(ls:*)",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "Bash(gh run view:*)",
+      "Bash(gh api:*)",
+      "Bash(gh run watch:*)",
+      "Bash(gh release view:*)",
+      "Bash(npx tsc:*)",
+      "Bash(npx eslint:*)",
+      "Bash(pgrep:*)",
+      "Bash(lsof:*)",
+      "Bash(while read name pid)",
+      "WebFetch(domain:models.dev)",
+      "Bash(LOCALROUTER_REBUILD_CATALOG=1 cargo check:*)",
+      "Bash(tree:*)",
+      "Bash(gh run:*)",
+      "Bash(gh release list:*)",
+      "Bash(gh release download:*)"
     ]
   }
 }

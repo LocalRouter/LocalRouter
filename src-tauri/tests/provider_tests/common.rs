@@ -5,7 +5,7 @@
 //! - Standard test requests and expected responses
 //! - Assertion helpers
 
-use localrouter_ai::providers::{
+use localrouter::providers::{
     ChatMessage, ChatMessageContent, CompletionRequest, CompletionResponse, TokenUsage,
 };
 use serde_json::json;

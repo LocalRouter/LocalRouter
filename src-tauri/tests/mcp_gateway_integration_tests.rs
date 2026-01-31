@@ -2,15 +2,15 @@
 //!
 //! Tests the complete flow from HTTP request → gateway → backend servers → response
 
-use localrouter_ai::config::{AppConfig, ConfigManager};
-use localrouter_ai::mcp::gateway::{GatewayConfig, McpGateway};
-use localrouter_ai::mcp::protocol::{JsonRpcRequest, JsonRpcResponse};
-use localrouter_ai::mcp::McpServerManager;
-use localrouter_ai::monitoring::metrics::MetricsCollector;
-use localrouter_ai::monitoring::storage::MetricsDatabase;
-use localrouter_ai::providers::health::HealthCheckManager;
-use localrouter_ai::providers::registry::ProviderRegistry;
-use localrouter_ai::router::{RateLimiterManager, Router};
+use localrouter::config::{AppConfig, ConfigManager};
+use localrouter::mcp::gateway::{GatewayConfig, McpGateway};
+use localrouter::mcp::protocol::{JsonRpcRequest, JsonRpcResponse};
+use localrouter::mcp::McpServerManager;
+use localrouter::monitoring::metrics::MetricsCollector;
+use localrouter::monitoring::storage::MetricsDatabase;
+use localrouter::providers::health::HealthCheckManager;
+use localrouter::providers::registry::ProviderRegistry;
+use localrouter::router::{RateLimiterManager, Router};
 use serde_json::json;
 use std::sync::Arc;
 
@@ -67,7 +67,7 @@ async fn test_gateway_session_creation() {
 
 #[tokio::test]
 async fn test_gateway_namespace_parsing() {
-    use localrouter_ai::mcp::gateway::types::{apply_namespace, parse_namespace};
+    use localrouter::mcp::gateway::types::{apply_namespace, parse_namespace};
 
     // Test namespace application
     let namespaced = apply_namespace("filesystem", "read_file");
@@ -115,7 +115,7 @@ async fn test_gateway_config_defaults() {
 
 #[tokio::test]
 async fn test_gateway_session_expiration() {
-    use localrouter_ai::mcp::gateway::session::GatewaySession;
+    use localrouter::mcp::gateway::session::GatewaySession;
     use std::time::Duration;
 
     let session = GatewaySession::new(
@@ -168,7 +168,7 @@ async fn test_gateway_concurrent_requests() {
 
 #[tokio::test]
 async fn test_search_tool_creation() {
-    use localrouter_ai::mcp::gateway::deferred::create_search_tool;
+    use localrouter::mcp::gateway::deferred::create_search_tool;
 
     let search_tool = create_search_tool();
 
@@ -189,7 +189,7 @@ async fn test_search_tool_creation() {
 
 #[tokio::test]
 async fn test_gateway_method_routing() {
-    use localrouter_ai::mcp::gateway::router::should_broadcast;
+    use localrouter::mcp::gateway::router::should_broadcast;
 
     // Broadcast methods
     assert!(should_broadcast("initialize"));
@@ -207,7 +207,7 @@ async fn test_gateway_method_routing() {
 
 #[tokio::test]
 async fn test_cached_list_validity() {
-    use localrouter_ai::mcp::gateway::types::CachedList;
+    use localrouter::mcp::gateway::types::CachedList;
     use std::time::Duration;
 
     let cached = CachedList::new(
@@ -249,8 +249,8 @@ async fn test_gateway_cleanup_expired_sessions() {
 
 #[tokio::test]
 async fn test_deferred_loading_search_relevance() {
-    use localrouter_ai::mcp::gateway::deferred::search_tools;
-    use localrouter_ai::mcp::gateway::types::NamespacedTool;
+    use localrouter::mcp::gateway::deferred::search_tools;
+    use localrouter::mcp::gateway::types::NamespacedTool;
     use serde_json::json;
 
     let tools = vec![

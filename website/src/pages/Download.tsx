@@ -7,49 +7,32 @@ const platforms = [
   {
     name: 'macOS',
     icon: Apple,
-    requirements: ['macOS 11+ (Big Sur)', 'Intel or Apple Silicon', '200MB disk space'],
-    downloadUrl: 'https://github.com/LocalRouter/LocalRouter/releases/latest/download/LocalRouter_macOS.dmg',
-    downloadLabel: 'Download .dmg',
+    requirements: ['macOS 10.15+ (Catalina)', 'Intel or Apple Silicon', '200MB disk space'],
+    downloadUrl: 'https://github.com/LocalRouter/LocalRouter/releases/latest/download/LocalRouter-AI_aarch64.dmg',
+    downloadLabel: 'Download for Apple Silicon',
+    altDownloads: [
+      { label: 'Intel Mac', url: 'https://github.com/LocalRouter/LocalRouter/releases/latest/download/LocalRouter-AI_x64.dmg' },
+    ],
   },
   {
     name: 'Windows',
     icon: Monitor,
     requirements: ['Windows 10+ (64-bit)', '200MB disk space'],
-    downloadUrl: 'https://github.com/LocalRouter/LocalRouter/releases/latest/download/LocalRouter_Windows.msi',
-    downloadLabel: 'Download .msi',
+    downloadUrl: 'https://github.com/LocalRouter/LocalRouter/releases/latest/download/LocalRouter-AI_x64-setup.exe',
+    downloadLabel: 'Download .exe',
+    altDownloads: [
+      { label: '.msi', url: 'https://github.com/LocalRouter/LocalRouter/releases/latest/download/LocalRouter-AI_x64.msi' },
+    ],
   },
   {
     name: 'Linux',
     icon: Terminal,
-    requirements: ['Modern Linux (glibc 2.31+)', 'DEB, RPM, AppImage'],
-    downloadUrl: 'https://github.com/LocalRouter/LocalRouter/releases/latest/download/LocalRouter_Linux.deb',
+    requirements: ['Modern Linux (glibc 2.31+)', 'DEB or AppImage'],
+    downloadUrl: 'https://github.com/LocalRouter/LocalRouter/releases/latest/download/LocalRouter-AI_amd64.deb',
     downloadLabel: 'Download .deb',
     altDownloads: [
-      { label: '.rpm', url: 'https://github.com/LocalRouter/LocalRouter/releases/latest/download/LocalRouter_Linux.rpm' },
+      { label: '.AppImage', url: 'https://github.com/LocalRouter/LocalRouter/releases/latest/download/LocalRouter-AI_amd64.AppImage' },
     ],
-  },
-]
-
-const steps = [
-  {
-    number: '1',
-    title: 'Download & Install',
-    description: 'Download the installer for your platform and run it. LocalRouter installs like any other app.',
-  },
-  {
-    number: '2',
-    title: 'Add Providers',
-    description: 'Open LocalRouter and add your AI providers. Enter API keys for OpenAI, Anthropic, or configure local Ollama.',
-  },
-  {
-    number: '3',
-    title: 'Create an API Key',
-    description: 'Create an API key in LocalRouter. Configure routing rules for cost, privacy, or performance.',
-  },
-  {
-    number: '4',
-    title: 'Start Using',
-    description: 'Point your apps to localhost:3625. Use your LocalRouter API key instead of provider keys.',
   },
 ]
 
@@ -119,60 +102,6 @@ export default function Download() {
               View all releases on GitHub
               <ExternalLink className="h-4 w-4" />
             </a>
-          </div>
-        </div>
-      </section>
-
-      {/* Quick Start */}
-      <section className="border-t bg-muted/30 py-16 sm:py-24">
-        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-          <div className="mx-auto max-w-3xl text-center">
-            <h2 className="text-2xl font-bold sm:text-3xl">Quick Start</h2>
-            <p className="mt-4 text-muted-foreground">
-              Get up and running in under 5 minutes.
-            </p>
-          </div>
-
-          <div className="mt-12 grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
-            {steps.map((step) => (
-              <div key={step.number} className="relative">
-                <div className="flex items-center gap-4">
-                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground font-bold">
-                    {step.number}
-                  </div>
-                  <h3 className="font-semibold">{step.title}</h3>
-                </div>
-                <p className="mt-4 text-sm text-muted-foreground pl-14">
-                  {step.description}
-                </p>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      {/* Code Example */}
-      <section className="border-t py-16 sm:py-24">
-        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-          <div className="mx-auto max-w-3xl text-center">
-            <h2 className="text-2xl font-bold sm:text-3xl">Test Your Setup</h2>
-            <p className="mt-4 text-muted-foreground">
-              After installation, test with a simple curl command.
-            </p>
-          </div>
-
-          <div className="mt-12 mx-auto max-w-2xl">
-            <div className="rounded-lg border bg-zinc-950 p-4 text-sm">
-              <pre className="overflow-x-auto text-zinc-100 font-mono">
-                <code>{`curl http://localhost:3625/v1/chat/completions \\
-  -H "Content-Type: application/json" \\
-  -H "Authorization: Bearer lr-your-api-key" \\
-  -d '{
-    "model": "gpt-4",
-    "messages": [{"role": "user", "content": "Hello!"}]
-  }'`}</code>
-              </pre>
-            </div>
           </div>
         </div>
       </section>

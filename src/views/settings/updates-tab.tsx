@@ -5,7 +5,7 @@ import { check, Update } from "@tauri-apps/plugin-updater"
 import { relaunch } from "@tauri-apps/plugin-process"
 import { open } from "@tauri-apps/plugin-shell"
 import { toast } from "sonner"
-import { RefreshCw, Download, SkipForward, Info, Heart, Code, Cpu, ChevronDown, ChevronRight, ExternalLink } from "lucide-react"
+import { RefreshCw, Download, SkipForward, Info, Heart, Code, Cpu, ChevronDown, ChevronRight, ExternalLink, Settings } from "lucide-react"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Badge } from "@/components/ui/Badge"
@@ -24,6 +24,14 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog"
 import ReactMarkdown from "react-markdown"
 
 interface Inspiration {
@@ -44,7 +52,7 @@ const inspirations: Inspiration[] = [
     name: "RouteLLM",
     license: "Apache-2.0",
     url: "https://github.com/lm-sys/RouteLLM",
-    description: "ML-based intelligent routing framework. LocalRouter's RouteLLM feature is a Rust reimplementation of their approach.",
+    description: "ML-based intelligent routing framework. LocalRouter's Strong/Weak feature is a Rust reimplementation of their approach.",
   },
   {
     name: "Microsoft MCP Gateway",
@@ -102,9 +110,13 @@ export function UpdatesTab() {
   const [isChecking, setIsChecking] = useState(false)
   const [checkError, setCheckError] = useState<string | null>(null)
   const [updateAvailable, setUpdateAvailable] = useState<Update | null>(null)
+  const [skippedUpdate, setSkippedUpdate] = useState<Update | null>(null)
   const [isDownloading, setIsDownloading] = useState(false)
   const [downloadProgress, setDownloadProgress] = useState(0)
-  const [licensesExpanded, setLicensesExpanded] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [inspirationsExpanded, setInspirationsExpanded] = useState(false)
+  const [routellmExpanded, setRoutellmExpanded] = useState(false)
+  const [dependenciesExpanded, setDependenciesExpanded] = useState(false)
 
   const handleOpenUrl = (url: string) => {
     open(url)
@@ -166,22 +178,26 @@ export function UpdatesTab() {
 
       if (update?.available) {
         if (updateConfig.skipped_version === update.version) {
-          toast.success("Already up to date (skipped version ignored)")
+          toast.success("Update available (previously skipped)")
           setUpdateAvailable(null)
+          setSkippedUpdate(update)
           await invoke("set_update_notification", { available: false })
         } else {
           setUpdateAvailable(update)
+          setSkippedUpdate(null)
           toast.success(`New version ${update.version} available!`)
           await invoke("set_update_notification", { available: true })
         }
       } else {
         setUpdateAvailable(null)
+        setSkippedUpdate(null)
         toast.success("Already up to date")
         await invoke("set_update_notification", { available: false })
       }
     } catch (err: any) {
-      setCheckError(err.message || "Failed to check for updates")
-      toast.error(`Check failed: ${err.message}`)
+      const errorMessage = err?.message || (typeof err === 'string' ? err : JSON.stringify(err)) || "Unknown error"
+      setCheckError(errorMessage)
+      toast.error(`Check failed: ${errorMessage}`)
     } finally {
       setIsChecking(false)
     }
@@ -214,7 +230,8 @@ export function UpdatesTab() {
         await relaunch()
       }, 2000)
     } catch (err: any) {
-      toast.error(`Update failed: ${err.message}`)
+      const errorMessage = err?.message || (typeof err === 'string' ? err : JSON.stringify(err)) || "Unknown error"
+      toast.error(`Update failed: ${errorMessage}`)
       setIsDownloading(false)
     }
   }
@@ -224,11 +241,62 @@ export function UpdatesTab() {
 
     try {
       await invoke("skip_update_version", { version: updateAvailable.version })
+      setSkippedUpdate(updateAvailable)
       setUpdateAvailable(null)
       toast.success(`Skipped version ${updateAvailable.version}`)
       loadUpdateConfig()
     } catch (err: any) {
-      toast.error(`Failed to skip version: ${err.message}`)
+      const errorMessage = err?.message || (typeof err === 'string' ? err : JSON.stringify(err)) || "Unknown error"
+      toast.error(`Failed to skip version: ${errorMessage}`)
+    }
+  }
+
+  const handleInstallSkippedVersion = async () => {
+    if (!skippedUpdate) return
+
+    // Clear the skipped version in config
+    try {
+      await invoke("skip_update_version", { version: null })
+      await loadUpdateConfig()
+    } catch (err: any) {
+      const errorMessage = err?.message || (typeof err === 'string' ? err : JSON.stringify(err)) || "Unknown error"
+      toast.error(`Failed to clear skipped version: ${errorMessage}`)
+      return
+    }
+
+    // Move skipped update to regular update and start install
+    setUpdateAvailable(skippedUpdate)
+    setSkippedUpdate(null)
+    await invoke("set_update_notification", { available: true })
+
+    // Start the download immediately
+    setIsDownloading(true)
+
+    try {
+      await skippedUpdate.downloadAndInstall((event) => {
+        switch (event.event) {
+          case "Started":
+            setDownloadProgress(0)
+            break
+          case "Progress":
+            setDownloadProgress((prev) => Math.min(prev + 5, 95))
+            break
+          case "Finished":
+            setDownloadProgress(100)
+            break
+        }
+      })
+
+      toast.success("Update installed! Restarting...")
+      await invoke("set_update_notification", { available: false })
+
+      setTimeout(async () => {
+        await relaunch()
+      }, 2000)
+    } catch (err: any) {
+      const errorMessage = err?.message || (typeof err === 'string' ? err : JSON.stringify(err)) || "Unknown error"
+      toast.error(`Update failed: ${errorMessage}`)
+      setIsDownloading(false)
     }
   }
 
@@ -243,7 +311,8 @@ export function UpdatesTab() {
       setUpdateConfig(newConfig)
       toast.success("Settings saved")
     } catch (err: any) {
-      toast.error(`Failed to save settings: ${err.message}`)
+      const errorMessage = err?.message || (typeof err === 'string' ? err : JSON.stringify(err)) || "Unknown error"
+      toast.error(`Failed to save settings: ${errorMessage}`)
     }
   }
 
@@ -272,10 +341,73 @@ export function UpdatesTab() {
 
   return (
     <div className="space-y-6">
-      {/* Version Info */}
+      {/* Version Info & Updates */}
       <Card>
         <CardHeader className="pb-3">
-          <CardTitle className="text-sm">App Version</CardTitle>
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-sm">App Version</CardTitle>
+            <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
+              <DialogTrigger asChild>
+                <Button variant="ghost" size="sm">
+                  <Settings className="h-3 w-3 mr-1" />
+                  Configure
+                </Button>
+              </DialogTrigger>
+              <DialogContent>
+                <DialogHeader>
+                  <DialogTitle>Update Settings</DialogTitle>
+                  <DialogDescription>
+                    Configure how LocalRouter checks for updates
+                  </DialogDescription>
+                </DialogHeader>
+                <div className="space-y-4 pt-4">
+                  <div className="flex items-center justify-between">
+                    <div className="space-y-0.5">
+                      <Label>Automatically check for updates</Label>
+                      <p className="text-xs text-muted-foreground">
+                        Check for new versions in the background
+                      </p>
+                    </div>
+                    <Switch
+                      checked={updateConfig.mode === "automatic"}
+                      onCheckedChange={(checked) =>
+                        handleUpdateConfig({ mode: checked ? "automatic" : "manual" })
+                      }
+                    />
+                  </div>
+
+                  {updateConfig.mode === "automatic" && (
+                    <div className="space-y-2">
+                      <Label>Check Interval</Label>
+                      <Select
+                        value={updateConfig.check_interval_days.toString()}
+                        onValueChange={(value) =>
+                          handleUpdateConfig({ check_interval_days: parseInt(value) })
+                        }
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="1">1 day</SelectItem>
+                          <SelectItem value="7">7 days (recommended)</SelectItem>
+                          <SelectItem value="14">14 days</SelectItem>
+                          <SelectItem value="30">30 days</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  )}
+
+                  <div className="p-3 bg-muted rounded-lg flex items-center gap-2">
+                    <Info className="h-4 w-4 text-muted-foreground flex-shrink-0" />
+                    <p className="text-xs text-muted-foreground">
+                      Last checked: {formatLastCheck(updateConfig.last_check)}
+                    </p>
+                  </div>
+                </div>
+              </DialogContent>
+            </Dialog>
+          </div>
         </CardHeader>
         <CardContent>
           <div className="flex items-center justify-between">
@@ -345,6 +477,39 @@ export function UpdatesTab() {
         </Card>
       )}
 
+      {/* Skipped Update Available */}
+      {skippedUpdate && !updateAvailable && !isDownloading && (
+        <Card className="border-amber-500/50">
+          <CardHeader className="pb-3">
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-sm text-amber-600 dark:text-amber-500">
+                Skipped Update: {skippedUpdate.version}
+              </CardTitle>
+              {skippedUpdate.date && (
+                <Badge variant="outline">
+                  {new Date(skippedUpdate.date).toLocaleDateString()}
+                </Badge>
+              )}
+            </div>
+            <CardDescription>
+              You previously skipped this version. You can still install it now.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {skippedUpdate.body && (
+              <div className="prose prose-sm dark:prose-invert max-w-none p-3 bg-muted rounded-lg max-h-48 overflow-y-auto">
+                <ReactMarkdown>{skippedUpdate.body}</ReactMarkdown>
+              </div>
+            )}
+
+            <Button onClick={handleInstallSkippedVersion}>
+              <Download className="h-4 w-4 mr-2" />
+              Install Anyway
+            </Button>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Download Progress */}
       {isDownloading && (
         <Card>
@@ -360,148 +525,108 @@ export function UpdatesTab() {
         </Card>
       )}
 
-      {/* Update Settings */}
+      {/* Licenses & Credits */}
       <Card>
         <CardHeader className="pb-3">
-          <CardTitle className="text-sm">Update Settings</CardTitle>
+          <CardTitle className="text-sm">Licenses & Credits</CardTitle>
           <CardDescription>
-            Configure how LocalRouter checks for updates
+            Open source projects and dependencies used in LocalRouter
           </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="flex items-center justify-between">
-            <div className="space-y-0.5">
-              <Label>Automatically check for updates</Label>
-              <p className="text-xs text-muted-foreground">
-                Check for new versions in the background
-              </p>
-            </div>
-            <Switch
-              checked={updateConfig.mode === "automatic"}
-              onCheckedChange={(checked) =>
-                handleUpdateConfig({ mode: checked ? "automatic" : "manual" })
-              }
-            />
-          </div>
-
-          {updateConfig.mode === "automatic" && (
-            <div className="space-y-2">
-              <Label>Check Interval</Label>
-              <Select
-                value={updateConfig.check_interval_days.toString()}
-                onValueChange={(value) =>
-                  handleUpdateConfig({ check_interval_days: parseInt(value) })
-                }
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="1">1 day</SelectItem>
-                  <SelectItem value="7">7 days (recommended)</SelectItem>
-                  <SelectItem value="14">14 days</SelectItem>
-                  <SelectItem value="30">30 days</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-          )}
-
-          <div className="p-3 bg-muted rounded-lg flex items-center gap-2">
-            <Info className="h-4 w-4 text-muted-foreground flex-shrink-0" />
-            <p className="text-xs text-muted-foreground">
-              Last checked: {formatLastCheck(updateConfig.last_check)}
-            </p>
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Inspirations & Credits */}
-      <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="text-sm flex items-center gap-2">
-            <Heart className="h-4 w-4" />
-            Inspirations & Credits
-          </CardTitle>
-          <CardDescription>
-            This project was inspired by the following projects. No code was directly used, but their ideas influenced the design.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          {inspirations.map((inspiration) => (
-            <div
-              key={inspiration.name}
-              className="p-3 bg-muted/50 rounded-lg border"
-            >
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <span className="font-medium text-sm">{inspiration.name}</span>
-                  <Badge variant="secondary" className="text-xs">
-                    {inspiration.license}
-                  </Badge>
-                </div>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => handleOpenUrl(inspiration.url)}
-                >
-                  <ExternalLink className="h-3 w-3" />
-                </Button>
+        <CardContent className="space-y-2">
+          {/* Inspirations & Credits */}
+          <Collapsible open={inspirationsExpanded} onOpenChange={setInspirationsExpanded}>
+            <CollapsibleTrigger className="flex items-center justify-between w-full p-3 bg-muted/50 rounded-lg hover:bg-muted transition-colors">
+              <div className="flex items-center gap-2">
+                <Heart className="h-4 w-4" />
+                <span className="text-sm font-medium">Inspirations & Credits</span>
               </div>
-              <p className="text-xs text-muted-foreground mt-1">
-                {inspiration.description}
-              </p>
-            </div>
-          ))}
-        </CardContent>
-      </Card>
-
-      {/* RouteLLM Model Licenses */}
-      <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="text-sm flex items-center gap-2">
-            <Cpu className="h-4 w-4" />
-            RouteLLM Model Licenses
-          </CardTitle>
-          <CardDescription>
-            When using RouteLLM intelligent routing, the following model weights are downloaded.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="p-3 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-lg">
-            <div className="flex items-center gap-2 mb-2">
-              <span className="font-medium text-sm">routellm/mf_gpt4_augmented</span>
-              <Badge variant="outline" className="text-xs bg-amber-100 dark:bg-amber-900/50">
-                Apache-2.0
-              </Badge>
-            </div>
-            <p className="text-xs text-muted-foreground">
-              Matrix factorization router model trained on GPT-4 preference data. Hosted on Hugging Face.
-            </p>
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Open Source Dependencies */}
-      <Card>
-        <Collapsible open={licensesExpanded} onOpenChange={setLicensesExpanded}>
-          <CardHeader className="pb-3">
-            <CollapsibleTrigger className="flex items-center justify-between w-full">
-              <CardTitle className="text-sm flex items-center gap-2">
-                <Code className="h-4 w-4" />
-                Open Source Dependencies
-              </CardTitle>
-              {licensesExpanded ? (
+              {inspirationsExpanded ? (
                 <ChevronDown className="h-4 w-4 text-muted-foreground" />
               ) : (
                 <ChevronRight className="h-4 w-4 text-muted-foreground" />
               )}
             </CollapsibleTrigger>
-          </CardHeader>
-          <CollapsibleContent>
-            <CardContent className="space-y-4">
+            <CollapsibleContent className="pt-2 space-y-2">
+              <p className="text-xs text-muted-foreground px-1">
+                This project was inspired by the following projects. No code was directly used, but their ideas influenced the design.
+              </p>
+              {inspirations.map((inspiration) => (
+                <div
+                  key={inspiration.name}
+                  className="p-3 bg-muted/30 rounded-lg border"
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className="font-medium text-sm">{inspiration.name}</span>
+                      <Badge variant="secondary" className="text-xs">
+                        {inspiration.license}
+                      </Badge>
+                    </div>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => handleOpenUrl(inspiration.url)}
+                    >
+                      <ExternalLink className="h-3 w-3" />
+                    </Button>
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    {inspiration.description}
+                  </p>
+                </div>
+              ))}
+            </CollapsibleContent>
+          </Collapsible>
+
+          {/* Strong/Weak Model Licenses */}
+          <Collapsible open={routellmExpanded} onOpenChange={setRoutellmExpanded}>
+            <CollapsibleTrigger className="flex items-center justify-between w-full p-3 bg-muted/50 rounded-lg hover:bg-muted transition-colors">
+              <div className="flex items-center gap-2">
+                <Cpu className="h-4 w-4" />
+                <span className="text-sm font-medium">Strong/Weak Model Licenses</span>
+              </div>
+              {routellmExpanded ? (
+                <ChevronDown className="h-4 w-4 text-muted-foreground" />
+              ) : (
+                <ChevronRight className="h-4 w-4 text-muted-foreground" />
+              )}
+            </CollapsibleTrigger>
+            <CollapsibleContent className="pt-2">
+              <p className="text-xs text-muted-foreground px-1 mb-2">
+                When using Strong/Weak intelligent routing, the following model weights are downloaded.
+              </p>
+              <div className="p-3 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-lg">
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="font-medium text-sm">routellm/mf_gpt4_augmented</span>
+                  <Badge variant="outline" className="text-xs bg-amber-100 dark:bg-amber-900/50">
+                    Apache-2.0
+                  </Badge>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Matrix factorization router model trained on GPT-4 preference data. Hosted on Hugging Face.
+                </p>
+              </div>
+            </CollapsibleContent>
+          </Collapsible>
+
+          {/* Open Source Dependencies */}
+          <Collapsible open={dependenciesExpanded} onOpenChange={setDependenciesExpanded}>
+            <CollapsibleTrigger className="flex items-center justify-between w-full p-3 bg-muted/50 rounded-lg hover:bg-muted transition-colors">
+              <div className="flex items-center gap-2">
+                <Code className="h-4 w-4" />
+                <span className="text-sm font-medium">Open Source Dependencies</span>
+              </div>
+              {dependenciesExpanded ? (
+                <ChevronDown className="h-4 w-4 text-muted-foreground" />
+              ) : (
+                <ChevronRight className="h-4 w-4 text-muted-foreground" />
+              )}
+            </CollapsibleTrigger>
+            <CollapsibleContent className="pt-2 space-y-4">
               {/* Rust Dependencies */}
               <div>
-                <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">
+                <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2 px-1">
                   Backend (Rust)
                 </h4>
                 <div className="grid grid-cols-2 gap-2">
@@ -520,7 +645,7 @@ export function UpdatesTab() {
 
               {/* Frontend Dependencies */}
               <div>
-                <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">
+                <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2 px-1">
                   Frontend (TypeScript/React)
                 </h4>
                 <div className="grid grid-cols-2 gap-2">
@@ -536,15 +661,15 @@ export function UpdatesTab() {
                   ))}
                 </div>
               </div>
-            </CardContent>
-          </CollapsibleContent>
-        </Collapsible>
+            </CollapsibleContent>
+          </Collapsible>
+        </CardContent>
       </Card>
 
       {/* Footer */}
       <div className="pt-4 border-t">
         <p className="text-xs text-muted-foreground text-center">
-          LocalRouter AI is open source software licensed under AGPL-3.0-or-later. View the full source code on{" "}
+          LocalRouter is open source software licensed under AGPL-3.0-or-later. View the full source code on{" "}
           <button
             onClick={() => handleOpenUrl("https://github.com/mfaro-io/localrouterai")}
             className="text-primary hover:underline"

@@ -4,8 +4,8 @@
 
 use super::common::*;
 use futures::StreamExt;
-use localrouter_ai::providers::{openai_compatible::OpenAICompatibleProvider, ModelProvider};
-use localrouter_ai::utils::errors::AppError;
+use localrouter::providers::{openai_compatible::OpenAICompatibleProvider, ModelProvider};
+use localrouter::utils::errors::AppError;
 use wiremock::{
     matchers::{method, path},
     Mock, MockServer, ResponseTemplate,

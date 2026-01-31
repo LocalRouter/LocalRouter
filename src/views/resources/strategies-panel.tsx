@@ -1,7 +1,7 @@
 /**
  * StrategiesPanel Component
  *
- * Panel for managing routing strategies in LLM Providers -> Model Routing tab.
+ * Panel for managing strategies in LLM Providers -> Model Strategies tab.
  * Shows list of strategies with detail view for configuration.
  */
 
@@ -301,7 +301,7 @@ export function StrategiesPanel({
                     <p className="text-sm text-muted-foreground mt-1">
                       {selectedStrategy.parent
                         ? "Client-owned strategy"
-                        : "Shared routing strategy"}
+                        : "Shared strategy"}
                     </p>
                   </div>
                   <EntityActions
@@ -375,7 +375,7 @@ export function StrategiesPanel({
           <DialogHeader>
             <DialogTitle>Create New Strategy</DialogTitle>
             <DialogDescription>
-              Create a reusable routing strategy that can be assigned to multiple clients.
+              Create a reusable strategy that can be assigned to multiple clients.
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 py-4">
@@ -409,7 +409,7 @@ export function StrategiesPanel({
           <DialogHeader>
             <DialogTitle>Edit Strategy</DialogTitle>
             <DialogDescription>
-              Update the strategy name. Use the configuration panel below to modify allowed models and routing settings.
+              Update the strategy name. Use the configuration panel below to modify allowed models and strategy settings.
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 py-4">

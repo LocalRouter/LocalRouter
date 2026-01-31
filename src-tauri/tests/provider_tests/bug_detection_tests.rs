@@ -4,7 +4,7 @@
 
 use super::common::*;
 use futures::StreamExt;
-use localrouter_ai::providers::{openai_compatible::OpenAICompatibleProvider, ModelProvider};
+use localrouter::providers::{openai_compatible::OpenAICompatibleProvider, ModelProvider};
 use serde_json::json;
 use wiremock::{
     matchers::{method, path},

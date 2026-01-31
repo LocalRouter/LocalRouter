@@ -2,7 +2,7 @@
 //!
 //! Verifies that Rust types serialize correctly for JavaScript/TypeScript consumption.
 
-use localrouter_ai::monitoring::graphs::{MetricType, TimeRange};
+use localrouter::monitoring::graphs::{MetricType, TimeRange};
 use serde_json::json;
 
 #[test]

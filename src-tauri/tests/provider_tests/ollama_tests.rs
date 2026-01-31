@@ -4,7 +4,7 @@
 
 use super::common::*;
 use futures::StreamExt;
-use localrouter_ai::providers::{ollama::OllamaProvider, ModelProvider};
+use localrouter::providers::{ollama::OllamaProvider, ModelProvider};
 
 #[tokio::test]
 async fn test_ollama_health_check() {
@@ -16,7 +16,7 @@ async fn test_ollama_health_check() {
 
     assert_eq!(
         health.status,
-        localrouter_ai::providers::HealthStatus::Healthy
+        localrouter::providers::HealthStatus::Healthy
     );
     assert!(health.latency_ms.is_some());
     assert!(health.last_checked > chrono::Utc::now() - chrono::Duration::seconds(5));

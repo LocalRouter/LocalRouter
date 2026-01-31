@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Script to run LocalRouter AI in debug mode
+# Script to run LocalRouter in debug mode
 # Starts both frontend dev server and backend binary
 
 set -e
@@ -36,11 +36,11 @@ cleanup() {
 # Set up trap to catch Ctrl+C and other termination signals
 trap cleanup SIGINT SIGTERM
 
-echo -e "${GREEN}Starting LocalRouter AI in debug mode...${NC}"
+echo -e "${GREEN}Starting LocalRouter in debug mode...${NC}"
 
 # Check if binary exists
-if [ ! -f "./target/debug/localrouter-ai" ]; then
-    echo -e "${RED}Error: ./target/debug/localrouter-ai not found${NC}"
+if [ ! -f "./target/debug/localrouter" ]; then
+    echo -e "${RED}Error: ./target/debug/localrouter not found${NC}"
     echo "Please run 'cargo build' first"
     exit 1
 fi
@@ -56,11 +56,11 @@ sleep 3
 
 # Start backend
 echo -e "${BLUE}Starting backend...${NC}"
-./target/debug/localrouter-ai &
+./target/debug/localrouter &
 BACKEND_PID=$!
 echo -e "${GREEN}Backend started (PID: $BACKEND_PID)${NC}"
 
-echo -e "\n${GREEN}LocalRouter AI is running!${NC}"
+echo -e "\n${GREEN}LocalRouter is running!${NC}"
 echo -e "Frontend: http://localhost:1420"
 echo -e "API: http://localhost:3625"
 echo -e "\nPress ${RED}Ctrl+C${NC} to stop both processes\n"

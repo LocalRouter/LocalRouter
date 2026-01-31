@@ -2,7 +2,8 @@ import { useState, useEffect, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
 import { toast } from "sonner"
-import { Server, CheckCircle, XCircle, AlertCircle, Plus, Loader2, RefreshCw } from "lucide-react"
+import { CheckCircle, XCircle, AlertCircle, Plus, Loader2, RefreshCw } from "lucide-react"
+import { ProvidersIcon } from "@/components/icons/category-icons"
 import { Badge } from "@/components/ui/Badge"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card"
@@ -30,19 +31,12 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/Select"
-import { Label } from "@/components/ui/label"
-import {
   EntityActions,
   commonActions,
   createToggleAction,
 } from "@/components/shared/entity-actions"
 import ProviderForm, { ProviderType } from "@/components/ProviderForm"
+import ProviderIcon from "@/components/ProviderIcon"
 import { cn } from "@/lib/utils"
 
 interface Provider {
@@ -82,6 +76,7 @@ interface ProvidersPanelProps {
   healthStatus: Record<string, HealthStatus>
   onHealthInit: (providerNames: string[]) => void
   onRefreshHealth: (instanceName: string) => Promise<void>
+  initialAddProviderType?: string | null
 }
 
 export function ProvidersPanel({
@@ -90,6 +85,7 @@ export function ProvidersPanel({
   healthStatus,
   onHealthInit,
   onRefreshHealth,
+  initialAddProviderType,
 }: ProvidersPanelProps) {
   const [providers, setProviders] = useState<Provider[]>([])
   const [providerTypes, setProviderTypes] = useState<ProviderType[]>([])
@@ -108,6 +104,17 @@ export function ProvidersPanel({
   // Create form state
   const [selectedProviderType, setSelectedProviderType] = useState<string>("")
   const [isSubmitting, setIsSubmitting] = useState(false)
+
+  // Handle initial add provider type from navigation
+  useEffect(() => {
+    if (initialAddProviderType && providerTypes.length > 0) {
+      const typeExists = providerTypes.some(t => t.provider_type === initialAddProviderType)
+      if (typeExists) {
+        setSelectedProviderType(initialAddProviderType)
+        setCreateDialogOpen(true)
+      }
+    }
+  }, [initialAddProviderType, providerTypes])
 
   useEffect(() => {
     loadProviders()
@@ -319,7 +326,7 @@ export function ProvidersPanel({
                             : "hover:bg-muted"
                         )}
                       >
-                        <Server className="h-4 w-4 text-muted-foreground" />
+                        <ProviderIcon providerId={provider.provider_type.toLowerCase()} size={20} />
                         <div className="flex-1 min-w-0">
                           <p className="font-medium truncate">{provider.instance_name}</p>
                           <p className="text-xs text-muted-foreground">{provider.provider_type}</p>
@@ -534,7 +541,7 @@ export function ProvidersPanel({
             </ScrollArea>
           ) : (
             <div className="flex flex-col items-center justify-center h-full text-muted-foreground gap-4">
-              <Server className="h-12 w-12 opacity-30" />
+              <ProvidersIcon className="h-12 w-12 opacity-30" />
               <div className="text-center">
                 <p className="font-medium">Select a provider to view details</p>
                 <p className="text-sm">
@@ -548,32 +555,94 @@ export function ProvidersPanel({
 
       {/* Create Provider Dialog */}
       <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
-        <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
+        <DialogContent className={cn(
+          "max-h-[90vh] overflow-y-auto",
+          !selectedProviderType ? "max-w-2xl" : "max-w-lg"
+        )}>
           <DialogHeader>
             <DialogTitle>Add Provider</DialogTitle>
           </DialogHeader>
 
           {!selectedProviderType ? (
-            <div className="space-y-4">
-              <div className="space-y-2">
-                <Label>Provider Type</Label>
-                <Select value={selectedProviderType} onValueChange={setSelectedProviderType}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select a provider type..." />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {providerTypes.map((type) => (
-                      <SelectItem key={type.provider_type} value={type.provider_type}>
-                        <div className="flex flex-col">
-                          <span className="font-medium">{type.provider_type}</span>
-                          <span className="text-xs text-muted-foreground">{type.description}</span>
-                        </div>
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
+            (() => {
+              // Group providers by category from backend
+              const genericProviders = providerTypes.filter(t => t.category === 'generic')
+              const localProviders = providerTypes.filter(t => t.category === 'local')
+              const subscriptionProviders = providerTypes.filter(t => t.category === 'subscription')
+              const firstPartyProviders = providerTypes.filter(t => t.category === 'first_party')
+              const thirdPartyProviders = providerTypes.filter(t => t.category === 'third_party')
+
+              const ProviderButton = ({ type }: { type: ProviderType }) => (
+                <button
+                  key={type.provider_type}
+                  onClick={() => setSelectedProviderType(type.provider_type)}
+                  className={cn(
+                    "flex flex-col items-center gap-2 p-4 rounded-lg border-2 border-muted",
+                    "hover:border-primary hover:bg-accent transition-colors",
+                    "focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+                  )}
+                >
+                  <ProviderIcon providerId={type.provider_type.toLowerCase()} size={40} />
+                  <div className="text-center">
+                    <p className="font-medium text-sm">{type.display_name}</p>
+                    <p className="text-xs text-muted-foreground line-clamp-2 mt-0.5">
+                      {type.description}
+                    </p>
+                  </div>
+                </button>
+              )
+
+              const ProviderSection = ({ title, description, providers }: {
+                title: string
+                description: string
+                providers: ProviderType[]
+              }) => {
+                if (providers.length === 0) return null
+                return (
+                  <div className="space-y-3">
+                    <div>
+                      <h3 className="text-sm font-semibold">{title}</h3>
+                      <p className="text-xs text-muted-foreground">{description}</p>
+                    </div>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                      {providers.map((type) => (
+                        <ProviderButton key={type.provider_type} type={type} />
+                      ))}
+                    </div>
+                  </div>
+                )
+              }
+
+              return (
+                <div className="space-y-6">
+                  <ProviderSection
+                    title="Generic / Custom"
+                    description="Connect to any OpenAI-compatible API endpoint"
+                    providers={genericProviders}
+                  />
+                  <ProviderSection
+                    title="Local Providers"
+                    description="Connect to models running on your machine"
+                    providers={localProviders}
+                  />
+                  <ProviderSection
+                    title="Subscription Cloud Providers"
+                    description="Connect using your existing subscription (OAuth)"
+                    providers={subscriptionProviders}
+                  />
+                  <ProviderSection
+                    title="First-Party Cloud Providers"
+                    description="Direct API access to model creators"
+                    providers={firstPartyProviders}
+                  />
+                  <ProviderSection
+                    title="Third-Party Hosting"
+                    description="Platforms hosting models from multiple sources"
+                    providers={thirdPartyProviders}
+                  />
+                </div>
+              )
+            })()
           ) : selectedTypeForCreate ? (
             <ProviderForm
               mode="create"

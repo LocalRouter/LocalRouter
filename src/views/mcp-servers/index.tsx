@@ -15,8 +15,17 @@ interface McpServersViewProps {
 }
 
 export function McpServersView({ activeSubTab, onTabChange }: McpServersViewProps) {
-  // Parse subTab to get selected server ID
-  const selectedId = activeSubTab || null
+  // Parse subTab to get selected server ID or add template
+  // Format: "server-id" or "add/template-id"
+  const parseSubTab = (subTab: string | null) => {
+    if (!subTab) return { selectedId: null, addTemplateId: null }
+    if (subTab.startsWith("add/")) {
+      return { selectedId: null, addTemplateId: subTab.slice(4) }
+    }
+    return { selectedId: subTab, addTemplateId: null }
+  }
+
+  const { selectedId, addTemplateId } = parseSubTab(activeSubTab)
 
   // Lifted health status state - persists across interactions
   const [healthStatus, setHealthStatus] = useState<Record<string, McpHealthStatus>>({})
@@ -77,7 +86,7 @@ export function McpServersView({ activeSubTab, onTabChange }: McpServersViewProp
   return (
     <div className="flex flex-col h-full min-h-0">
       <div className="flex-shrink-0 pb-4">
-        <h1 className="text-2xl font-bold tracking-tight">MCP Servers</h1>
+        <h1 className="text-2xl font-bold tracking-tight">MCP</h1>
         <p className="text-sm text-muted-foreground">
           Manage Model Context Protocol server connections
         </p>
@@ -95,6 +104,7 @@ export function McpServersView({ activeSubTab, onTabChange }: McpServersViewProp
             }
           }}
           onRefreshHealth={refreshHealth}
+          initialAddTemplateId={addTemplateId}
         />
       </div>
     </div>

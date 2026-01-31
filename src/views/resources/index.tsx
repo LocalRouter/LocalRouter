@@ -66,15 +66,22 @@ export function ResourcesView({ activeSubTab, onTabChange }: LlmProvidersViewPro
   // Parse subTab to determine which resource type and item is selected
   // Format: "providers", "strategies"
   // Or: "providers/instance-name", "strategies/strategy-id"
+  // Or: "providers/add/provider-type" for opening add dialog
   const parseSubTab = (subTab: string | null) => {
-    if (!subTab) return { resourceType: "providers", itemId: null }
+    if (!subTab) return { resourceType: "providers", itemId: null, addType: null }
     const parts = subTab.split("/")
     const resourceType = parts[0] || "providers"
+
+    // Check for add pattern: "providers/add/OpenAI"
+    if (parts[1] === "add" && parts[2]) {
+      return { resourceType, itemId: null, addType: parts[2] }
+    }
+
     const itemId = parts.slice(1).join("/") || null
-    return { resourceType, itemId }
+    return { resourceType, itemId, addType: null }
   }
 
-  const { resourceType, itemId } = parseSubTab(activeSubTab)
+  const { resourceType, itemId, addType } = parseSubTab(activeSubTab)
 
   const handleResourceChange = (type: string) => {
     onTabChange("resources", type)
@@ -89,7 +96,7 @@ export function ResourcesView({ activeSubTab, onTabChange }: LlmProvidersViewPro
       <div className="flex-shrink-0 pb-4">
         <h1 className="text-2xl font-bold tracking-tight">LLM Providers</h1>
         <p className="text-sm text-muted-foreground">
-          Manage providers and routing strategies
+          Manage providers and strategies
         </p>
       </div>
 
@@ -100,7 +107,7 @@ export function ResourcesView({ activeSubTab, onTabChange }: LlmProvidersViewPro
       >
         <TabsList className="flex-shrink-0 w-fit">
           <TabsTrigger value="providers">Providers</TabsTrigger>
-          <TabsTrigger value="strategies">Model Routing</TabsTrigger>
+          <TabsTrigger value="strategies">Model Strategies</TabsTrigger>
         </TabsList>
 
         <TabsContent value="providers" className="flex-1 min-h-0 mt-4">
@@ -115,6 +122,7 @@ export function ResourcesView({ activeSubTab, onTabChange }: LlmProvidersViewPro
               }
             }}
             onRefreshHealth={refreshHealth}
+            initialAddProviderType={resourceType === "providers" ? addType : null}
           />
         </TabsContent>
 

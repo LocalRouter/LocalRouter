@@ -5,17 +5,17 @@
 use std::sync::Arc;
 
 use chrono::Utc;
-use localrouter_ai::clients::{ClientManager, TokenStore};
-use localrouter_ai::config::{AppConfig, Client, ConfigManager, McpServerAccess, Strategy};
-use localrouter_ai::monitoring::metrics::MetricsCollector;
-use localrouter_ai::monitoring::storage::MetricsDatabase;
-use localrouter_ai::providers::health::HealthCheckManager;
-use localrouter_ai::providers::registry::ProviderRegistry;
-use localrouter_ai::router::{RateLimiterManager, Router};
-use localrouter_ai::server::routes::helpers::{
+use localrouter::clients::{ClientManager, TokenStore};
+use localrouter::config::{AppConfig, Client, ConfigManager, McpServerAccess, Strategy};
+use localrouter::monitoring::metrics::MetricsCollector;
+use localrouter::monitoring::storage::MetricsDatabase;
+use localrouter::providers::health::HealthCheckManager;
+use localrouter::providers::registry::ProviderRegistry;
+use localrouter::router::{RateLimiterManager, Router};
+use localrouter::server::routes::helpers::{
     get_client_with_strategy, get_enabled_client, get_enabled_client_from_manager,
 };
-use localrouter_ai::server::state::AppState;
+use localrouter::server::state::AppState;
 
 /// Create a test client with minimal required fields
 fn create_test_client(id: &str, name: &str, enabled: bool, strategy_id: &str) -> Client {

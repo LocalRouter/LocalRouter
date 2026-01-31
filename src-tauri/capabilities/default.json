@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Default capabilities for LocalRouter AI",
+  "description": "Default capabilities for LocalRouter",
   "windows": ["main"],
   "permissions": [
     "core:default",
@@ -87,6 +87,8 @@
     "core:menu:allow-set-icon",
     "core:webview:default",
     "core:webview:allow-print",
-    "shell:allow-open"
+    "process:default",
+    "shell:allow-open",
+    "updater:default"
   ]
 }

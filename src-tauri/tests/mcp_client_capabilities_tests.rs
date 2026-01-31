@@ -2,8 +2,8 @@
 //!
 //! Tests roots/list, sampling/createMessage, and elicitation/requestInput
 
-use localrouter_ai::config::{Client, RootConfig};
-use localrouter_ai::mcp::protocol::{JsonRpcRequest, JsonRpcResponse, Root};
+use localrouter::config::{Client, RootConfig};
+use localrouter::mcp::protocol::{JsonRpcRequest, JsonRpcResponse, Root};
 use serde_json::json;
 
 #[test]
@@ -120,7 +120,7 @@ fn test_client_roots_configuration() {
 #[test]
 fn test_sampling_request_error_format() {
     // Test that sampling/createMessage returns proper "not implemented" error
-    let error = localrouter_ai::mcp::protocol::JsonRpcError::custom(
+    let error = localrouter::mcp::protocol::JsonRpcError::custom(
         -32601,
         "sampling/createMessage not yet fully implemented".to_string(),
         Some(json!({
@@ -142,7 +142,7 @@ fn test_sampling_request_error_format() {
 #[test]
 fn test_elicitation_request_error_format() {
     // Test that elicitation/requestInput returns proper "not implemented" error
-    let error = localrouter_ai::mcp::protocol::JsonRpcError::custom(
+    let error = localrouter::mcp::protocol::JsonRpcError::custom(
         -32601,
         "elicitation/requestInput not yet implemented".to_string(),
         Some(json!({

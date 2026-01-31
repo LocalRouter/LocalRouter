@@ -3,15 +3,15 @@
 //! Tests the unified API surface where MCP and OpenAI endpoints coexist
 //! under the same base URL with no path conflicts.
 
-use localrouter_ai::clients::{ClientManager, TokenStore};
-use localrouter_ai::config::AppConfig;
-use localrouter_ai::mcp::McpServerManager;
-use localrouter_ai::monitoring::metrics::MetricsCollector;
-use localrouter_ai::monitoring::storage::MetricsDatabase;
-use localrouter_ai::providers::health::HealthCheckManager;
-use localrouter_ai::providers::registry::ProviderRegistry;
-use localrouter_ai::router::{RateLimiterManager, Router};
-use localrouter_ai::server;
+use localrouter::clients::{ClientManager, TokenStore};
+use localrouter::config::AppConfig;
+use localrouter::mcp::McpServerManager;
+use localrouter::monitoring::metrics::MetricsCollector;
+use localrouter::monitoring::storage::MetricsDatabase;
+use localrouter::providers::health::HealthCheckManager;
+use localrouter::providers::registry::ProviderRegistry;
+use localrouter::router::{RateLimiterManager, Router};
+use localrouter::server;
 use std::sync::Arc;
 use tokio::time::{sleep, Duration};
 
@@ -19,7 +19,7 @@ use tokio::time::{sleep, Duration};
 async fn start_test_server() -> (String, tokio::task::JoinHandle<()>) {
     // Create test configuration
     let config = AppConfig::default();
-    let config_manager = Arc::new(localrouter_ai::config::ConfigManager::new(
+    let config_manager = Arc::new(localrouter::config::ConfigManager::new(
         config.clone(),
         std::path::PathBuf::from("/tmp/test_unified_api.yaml"),
     ));
@@ -86,7 +86,7 @@ async fn test_root_get_returns_documentation() {
     let body = response.text().await.expect("Failed to read body");
 
     // Should contain API documentation
-    assert!(body.contains("LocalRouter AI"));
+    assert!(body.contains("LocalRouter"));
     assert!(body.contains("MCP Endpoints"));
     assert!(body.contains("OpenAI Endpoints"));
 }
@@ -141,7 +141,7 @@ async fn test_openapi_json_endpoint() {
 
     let body: serde_json::Value = response.json().await.expect("Invalid JSON");
     assert_eq!(body["openapi"], "3.1.0");
-    assert_eq!(body["info"]["title"], "LocalRouter AI API");
+    assert_eq!(body["info"]["title"], "LocalRouter API");
 }
 
 #[tokio::test]
@@ -159,7 +159,7 @@ async fn test_openapi_yaml_endpoint() {
     let body = response.text().await.expect("Failed to read body");
 
     assert!(body.contains("openapi: 3.1.0"));
-    assert!(body.contains("title: LocalRouter AI API"));
+    assert!(body.contains("title: LocalRouter API"));
 }
 
 #[tokio::test]
@@ -243,7 +243,7 @@ async fn test_no_path_conflicts_get_vs_post_root() {
     let get_response = client.get(&base_url).send().await.expect("Failed to GET /");
     assert_eq!(get_response.status(), 200);
     let get_body = get_response.text().await.expect("Failed to read body");
-    assert!(get_body.contains("LocalRouter AI"));
+    assert!(get_body.contains("LocalRouter"));
 
     // POST / should route to MCP gateway (with auth error)
     let post_response = client

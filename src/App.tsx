@@ -1,11 +1,15 @@
 import { useState, useEffect } from 'react'
 import { listen } from '@tauri-apps/api/event'
 import { invoke } from '@tauri-apps/api/core'
+import { check } from '@tauri-apps/plugin-updater'
+import { relaunch } from '@tauri-apps/plugin-process'
+import { toast } from 'sonner'
 import { AppShell, type View } from './components/layout'
 import { DashboardView } from './views/dashboard'
 import { ClientsView } from './views/clients'
 import { ResourcesView } from './views/resources'
 import { McpServersView } from './views/mcp-servers'
+import { SkillsView } from './views/skills'
 import { TryItOutView } from './views/try-it-out'
 import { SettingsView } from './views/settings'
 import { ClientCreationWizard } from './components/wizard/ClientCreationWizard'
@@ -103,11 +107,49 @@ function App() {
       setActiveSubTab('updates')
     })
 
+    // Subscribe to open-resources-tab event from tray menu (for provider health issues)
+    const unsubscribeResourcesTab = listen('open-resources-tab', () => {
+      console.log('Opening Resources tab from tray menu')
+      setActiveView('resources')
+      setActiveSubTab('providers')
+    })
+
+    // Subscribe to open-mcp-server event from tray menu (for MCP health issues)
+    const unsubscribeMcpServer = listen<string>('open-mcp-server', (event) => {
+      const serverId = event.payload
+      console.log('Opening MCP server from tray menu:', serverId)
+      setActiveView('mcp-servers')
+      setActiveSubTab(serverId)
+    })
+
+    // Subscribe to update-and-restart event from tray menu
+    const unsubscribeUpdateAndRestart = listen('update-and-restart', async () => {
+      console.log('Update and restart requested from tray menu')
+      try {
+        const update = await check()
+        if (update?.available) {
+          toast.info(`Installing update ${update.version}...`)
+          await update.downloadAndInstall()
+          await invoke('set_update_notification', { available: false })
+          await relaunch()
+        } else {
+          toast.info('No update available')
+        }
+      } catch (err: any) {
+        const errorMessage = err?.message || (typeof err === 'string' ? err : JSON.stringify(err)) || 'Unknown error'
+        console.error('Update failed:', errorMessage)
+        toast.error(`Update failed: ${errorMessage}`)
+      }
+    })
+
     return () => {
       unsubscribeConfig.then((fn: any) => fn())
       unsubscribeClients.then((fn: any) => fn())
       unsubscribePrioritized.then((fn: any) => fn())
       unsubscribeUpdatesTab.then((fn: any) => fn())
+      unsubscribeResourcesTab.then((fn: any) => fn())
+      unsubscribeMcpServer.then((fn: any) => fn())
+      unsubscribeUpdateAndRestart.then((fn: any) => fn())
     }
   }, [])
 
@@ -137,6 +179,13 @@ function App() {
       case 'mcp-servers':
         return (
           <McpServersView
+            activeSubTab={activeSubTab}
+            onTabChange={handleChildViewChange}
+          />
+        )
+      case 'skills':
+        return (
+          <SkillsView
             activeSubTab={activeSubTab}
             onTabChange={handleChildViewChange}
           />
@@ -180,6 +229,7 @@ function App() {
           setShowSetupWizard(open)
         }}
         onComplete={handleWizardComplete}
+        showWelcome={true}
       />
     </>
   )

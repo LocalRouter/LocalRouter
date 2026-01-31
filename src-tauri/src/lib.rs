@@ -1,6 +1,6 @@
-//! LocalRouter AI Library
+//! LocalRouter Library
 //!
-//! Core functionality for the LocalRouter AI application.
+//! Core functionality for the LocalRouter application.
 
 pub mod api_keys;
 pub mod catalog;
@@ -15,6 +15,7 @@ pub mod providers;
 pub mod routellm;
 pub mod router;
 pub mod server;
+pub mod skills;
 pub mod ui;
 pub mod updater;
 pub mod utils;

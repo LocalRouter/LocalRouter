@@ -135,7 +135,7 @@ fn normalize_id(id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::catalog::types::{CatalogModel, CatalogPricing, Modality};
+    use crate::catalog::types::{CatalogCapabilities, CatalogModel, CatalogPricing, Modality};
 
     fn create_test_models() -> Vec<CatalogModel> {
         vec![
@@ -143,33 +143,47 @@ mod tests {
                 id: "openai/gpt-4",
                 aliases: &["gpt-4", "gpt4"],
                 name: "GPT-4",
-                created: 0,
                 context_length: 8192,
+                max_output_tokens: Some(4096),
                 modality: Modality::Text,
+                capabilities: CatalogCapabilities {
+                    reasoning: false,
+                    tool_call: true,
+                    structured_output: true,
+                    vision: false,
+                },
                 pricing: CatalogPricing {
                     prompt_per_token: 0.00003,
                     completion_per_token: 0.00006,
-                    image_per_token: None,
-                    request_cost: None,
+                    cache_read_per_token: None,
+                    cache_write_per_token: None,
                     currency: "USD",
                 },
-                supported_parameters: &[],
+                knowledge_cutoff: Some("2023-12"),
+                open_weights: false,
             },
             CatalogModel {
                 id: "anthropic/claude-opus-4-20250514",
                 aliases: &["claude-opus-4", "opus"],
                 name: "Claude Opus 4",
-                created: 0,
                 context_length: 200000,
-                modality: Modality::Text,
+                max_output_tokens: Some(64000),
+                modality: Modality::Multimodal,
+                capabilities: CatalogCapabilities {
+                    reasoning: true,
+                    tool_call: true,
+                    structured_output: true,
+                    vision: true,
+                },
                 pricing: CatalogPricing {
                     prompt_per_token: 0.000015,
                     completion_per_token: 0.000075,
-                    image_per_token: None,
-                    request_cost: None,
+                    cache_read_per_token: Some(0.0000015),
+                    cache_write_per_token: Some(0.00001875),
                     currency: "USD",
                 },
-                supported_parameters: &[],
+                knowledge_cutoff: Some("2025-03"),
+                open_weights: false,
             },
         ]
     }

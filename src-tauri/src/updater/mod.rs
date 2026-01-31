@@ -104,14 +104,11 @@ pub async fn start_update_timer(app: AppHandle, config_manager: Arc<ConfigManage
 
         // Trigger update check by emitting event to frontend
         // Frontend will use @tauri-apps/plugin-updater to actually check
+        // The frontend calls mark_update_check_performed after the check completes,
+        // which saves the timestamp — no need to save here too.
         info!("Emitting check-for-updates event to frontend");
         if let Err(e) = app.emit("check-for-updates", ()) {
             error!("Failed to emit check-for-updates event: {}", e);
-        }
-
-        // Save timestamp after triggering check
-        if let Err(e) = save_last_check_timestamp(&config_manager).await {
-            error!("Failed to save timestamp after update check: {}", e);
         }
     }
 }

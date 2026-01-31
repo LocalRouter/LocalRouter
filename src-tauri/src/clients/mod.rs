@@ -59,17 +59,18 @@ impl ClientManager {
     ///
     /// # Arguments
     /// * `name` - Human-readable name for the client
+    /// * `strategy_id` - The ID of the strategy this client should use
     ///
     /// # Returns
     /// Returns (client_id, secret, client_config) tuple
     /// The secret is also stored in the keychain automatically
-    pub fn create_client(&self, name: String) -> AppResult<(String, String, Client)> {
+    pub fn create_client(&self, name: String, strategy_id: String) -> AppResult<(String, String, Client)> {
         // Generate secret (same format as API keys)
         let secret = crypto::generate_api_key()
             .map_err(|e| AppError::Config(format!("Failed to generate client secret: {}", e)))?;
 
         // Create client config
-        let client = Client::new(name);
+        let client = Client::new_with_strategy(name, strategy_id);
 
         // Store secret in keychain
         self.keychain
@@ -413,6 +414,20 @@ impl ClientManager {
         Ok(())
     }
 
+    /// Set the strategy for a client
+    pub fn set_client_strategy(&self, client_id: &str, strategy_id: &str) -> AppResult<()> {
+        let mut clients = self.clients.write();
+
+        let client = clients
+            .iter_mut()
+            .find(|c| c.id == client_id)
+            .ok_or_else(|| AppError::Config(format!("Client not found: {}", client_id)))?;
+
+        client.strategy_id = strategy_id.to_string();
+
+        Ok(())
+    }
+
     /// Get a client by client_id
     pub fn get_client(&self, client_id: &str) -> Option<Client> {
         let clients = self.clients.read();
@@ -562,7 +577,7 @@ mod tests {
         let manager = ClientManager::with_keychain(vec![], mock_keychain.clone());
 
         let (client_id, secret, config) = manager
-            .create_client("Test Client".to_string())
+            .create_client("Test Client".to_string(), "default".to_string())
             .expect("Failed to create client");
 
         // Verify client_id is a valid UUID
@@ -589,7 +604,7 @@ mod tests {
         let manager = ClientManager::with_keychain(vec![], mock_keychain.clone());
 
         let (client_id, secret, _) = manager
-            .create_client("Test Client".to_string())
+            .create_client("Test Client".to_string(), "default".to_string())
             .expect("Failed to create client");
 
         // Verify with correct credentials
@@ -607,7 +622,7 @@ mod tests {
         let manager = ClientManager::with_keychain(vec![], mock_keychain.clone());
 
         let (client_id, _, _) = manager
-            .create_client("Test Client".to_string())
+            .create_client("Test Client".to_string(), "default".to_string())
             .expect("Failed to create client");
 
         // Verify with wrong secret
@@ -629,7 +644,7 @@ mod tests {
         let manager = ClientManager::with_keychain(vec![], mock_keychain.clone());
 
         let (_, secret, config) = manager
-            .create_client("Test Client".to_string())
+            .create_client("Test Client".to_string(), "default".to_string())
             .expect("Failed to create client");
 
         // Verify with correct secret
@@ -651,7 +666,7 @@ mod tests {
         let manager = ClientManager::with_keychain(vec![], mock_keychain.clone());
 
         let (client_id, secret, _) = manager
-            .create_client("Test Client".to_string())
+            .create_client("Test Client".to_string(), "default".to_string())
             .expect("Failed to create client");
 
         // Disable client
@@ -676,7 +691,7 @@ mod tests {
         let manager = ClientManager::with_keychain(vec![], mock_keychain.clone());
 
         let (client_id, _, config) = manager
-            .create_client("Test Client".to_string())
+            .create_client("Test Client".to_string(), "default".to_string())
             .expect("Failed to create client");
 
         // Delete client
@@ -698,7 +713,7 @@ mod tests {
         let manager = ClientManager::with_keychain(vec![], mock_keychain.clone());
 
         let (client_id, _, _) = manager
-            .create_client("Test Client".to_string())
+            .create_client("Test Client".to_string(), "default".to_string())
             .expect("Failed to create client");
 
         // Empty allowed list means access to all
@@ -730,7 +745,7 @@ mod tests {
         let manager = ClientManager::with_keychain(vec![], mock_keychain.clone());
 
         let (client_id, _, _) = manager
-            .create_client("Test Client".to_string())
+            .create_client("Test Client".to_string(), "default".to_string())
             .expect("Failed to create client");
 
         // Default is McpServerAccess::None - no access to any MCP servers
@@ -762,7 +777,7 @@ mod tests {
         let manager = ClientManager::with_keychain(vec![], mock_keychain.clone());
 
         let (client_id, _, _) = manager
-            .create_client("Test Client".to_string())
+            .create_client("Test Client".to_string(), "default".to_string())
             .expect("Failed to create client");
 
         // Client is enabled by default

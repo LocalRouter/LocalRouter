@@ -2,7 +2,6 @@
 import { useState, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
-import { open } from "@tauri-apps/plugin-shell"
 import { toast } from "sonner"
 import { Download, FolderOpen, Cpu, Trash2 } from "lucide-react"
 import { Button } from "@/components/ui/Button"
@@ -76,7 +75,7 @@ export function RouteLLMTab() {
       setIsDownloading(false)
       setDownloadProgress(100)
       loadStatus()
-      toast.success("RouteLLM models downloaded successfully!")
+      toast.success("Strong/Weak models downloaded successfully!")
     })
 
     const unlistenFailed = listen("routellm-download-failed", (event: any) => {
@@ -117,7 +116,7 @@ export function RouteLLMTab() {
     try {
       await invoke("routellm_unload")
       await loadStatus()
-      toast.success("RouteLLM models unloaded from memory")
+      toast.success("Strong/Weak models unloaded from memory")
     } catch (error: any) {
       toast.error(`Unload failed: ${error.message || error}`)
     }
@@ -128,7 +127,7 @@ export function RouteLLMTab() {
       await invoke("routellm_update_settings", {
         idleTimeoutSecs: idleTimeout,
       })
-      toast.success("RouteLLM settings updated")
+      toast.success("Strong/Weak settings updated")
     } catch (error: any) {
       toast.error(`Failed to update: ${error.message || error}`)
     }
@@ -136,10 +135,10 @@ export function RouteLLMTab() {
 
   const openFolder = async () => {
     try {
-      const homeDir = await invoke<string>("get_home_dir")
-      await open(`${homeDir}/.localrouter/routellm`)
+      await invoke("open_routellm_folder")
     } catch (error) {
       console.error("Failed to open folder:", error)
+      toast.error("Failed to open folder")
     }
   }
 
@@ -175,15 +174,15 @@ export function RouteLLMTab() {
       case "not_downloaded":
         return { label: "Not Downloaded", variant: "secondary" as const, icon: "⬇️" }
       case "downloading":
-        return { label: "Downloading...", variant: "default" as const, icon: "⏳" }
+        return { label: "Downloading...", variant: "default" as const, icon: "⏬️" }
       case "downloaded_not_running":
-        return { label: "Ready (Not Loaded)", variant: "outline" as const, icon: "⏸️" }
+        return { label: "Inactive", variant: "outline" as const, icon: "⏸️" }
       case "initializing":
-        return { label: "Initializing...", variant: "default" as const, icon: "🔄" }
+        return { label: "Activating...", variant: "default" as const, icon: "🔄" }
       case "started":
-        return { label: "Active in Memory", variant: "success" as const, icon: "✓" }
+        return { label: "Active", variant: "success" as const, icon: "▶️" }
       default:
-        return { label: "Unknown", variant: "secondary" as const, icon: "?" }
+        return { label: "Unknown", variant: "secondary" as const, icon: "❓" }
     }
   }
 
@@ -199,9 +198,9 @@ export function RouteLLMTab() {
             <div className="flex items-center gap-3">
               <Cpu className="h-5 w-5" />
               <div>
-                <CardTitle className="text-sm">RouteLLM Intelligent Routing</CardTitle>
+                <CardTitle className="text-sm">Strong/Weak Intelligent Routing</CardTitle>
                 <CardDescription>
-                  ML-based routing to optimize costs while maintaining quality
+                  ML-based selection to optimize costs while maintaining quality
                 </CardDescription>
               </div>
             </div>
@@ -227,6 +226,12 @@ export function RouteLLMTab() {
                 </div>
               </div>
               <div className="flex gap-2">
+                {status.state === "not_downloaded" && !isDownloading && (
+                  <Button variant="outline" size="sm" onClick={handleDownload}>
+                    <Download className="h-3 w-3 mr-1" />
+                    Download
+                  </Button>
+                )}
                 {status.state === "started" && (
                   <Button variant="outline" size="sm" onClick={handleUnload}>
                     <Trash2 className="h-3 w-3 mr-1" />
@@ -249,7 +254,7 @@ export function RouteLLMTab() {
           <CardHeader className="pb-3">
             <CardTitle className="text-sm">Download Models</CardTitle>
             <CardDescription>
-              RouteLLM uses machine learning to analyze prompts and route to the most
+              Strong/Weak uses machine learning to analyze prompts and select the most
               cost-effective model while maintaining quality.
             </CardDescription>
           </CardHeader>
@@ -265,7 +270,7 @@ export function RouteLLMTab() {
               </div>
               <div className="p-3 bg-purple-500/10 rounded-lg">
                 <p className="text-lg font-bold text-purple-600">{ROUTELLM_REQUIREMENTS.PER_REQUEST_MS}ms</p>
-                <p className="text-xs text-muted-foreground">Routing Time</p>
+                <p className="text-xs text-muted-foreground">Selection Time</p>
               </div>
             </div>
 
@@ -290,7 +295,7 @@ export function RouteLLMTab() {
           <CardContent className="pt-6">
             <div className="space-y-2">
               <div className="flex justify-between text-sm">
-                <span>Downloading RouteLLM Models...</span>
+                <span>Downloading Strong/Weak Models...</span>
                 <span>{downloadProgress.toFixed(0)}%</span>
               </div>
               <Progress value={downloadProgress} />
@@ -302,6 +307,33 @@ export function RouteLLMTab() {
       {/* Settings - Only when downloaded */}
       {isReady && (
         <>
+          {/* Resource Info */}
+          <Card className="border-yellow-500/30 bg-yellow-500/5">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-sm text-yellow-700 dark:text-yellow-400">Resource Requirements</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-2 gap-4 text-sm">
+                <div>
+                  <span className="text-muted-foreground">Cold Start:</span>{" "}
+                  <span className="font-medium">{ROUTELLM_REQUIREMENTS.COLD_START_SECS}s</span>
+                </div>
+                <div>
+                  <span className="text-muted-foreground">Disk Space:</span>{" "}
+                  <span className="font-medium">{ROUTELLM_REQUIREMENTS.DISK_GB} GB</span>
+                </div>
+                <div>
+                  <span className="text-muted-foreground">Latency:</span>{" "}
+                  <span className="font-medium">{ROUTELLM_REQUIREMENTS.PER_REQUEST_MS}ms per request</span>
+                </div>
+                <div>
+                  <span className="text-muted-foreground">Memory:</span>{" "}
+                  <span className="font-medium">{ROUTELLM_REQUIREMENTS.MEMORY_GB} GB (when loaded)</span>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
           <Card>
             <CardHeader className="pb-3">
               <CardTitle className="text-sm">Memory Management</CardTitle>
@@ -335,39 +367,12 @@ export function RouteLLMTab() {
             </CardContent>
           </Card>
 
-          {/* Resource Info */}
+          {/* Try it out */}
           <Card>
             <CardHeader className="pb-3">
-              <CardTitle className="text-sm">Resource Requirements</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="grid grid-cols-2 gap-4 text-sm">
-                <div>
-                  <span className="text-muted-foreground">Cold Start:</span>{" "}
-                  <span className="font-medium">{ROUTELLM_REQUIREMENTS.COLD_START_SECS}s</span>
-                </div>
-                <div>
-                  <span className="text-muted-foreground">Disk Space:</span>{" "}
-                  <span className="font-medium">{ROUTELLM_REQUIREMENTS.DISK_GB} GB</span>
-                </div>
-                <div>
-                  <span className="text-muted-foreground">Latency:</span>{" "}
-                  <span className="font-medium">{ROUTELLM_REQUIREMENTS.PER_REQUEST_MS}ms per request</span>
-                </div>
-                <div>
-                  <span className="text-muted-foreground">Memory:</span>{" "}
-                  <span className="font-medium">{ROUTELLM_REQUIREMENTS.MEMORY_GB} GB (when loaded)</span>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* Threshold Testing */}
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="text-sm">Threshold Testing</CardTitle>
+              <CardTitle className="text-sm">Try it out</CardTitle>
               <CardDescription>
-                Test prompts to see routing decisions and confidence scores
+                Test prompts to see selection decisions and confidence scores
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">

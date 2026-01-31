@@ -102,6 +102,8 @@ pub struct ProviderInstance {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderTypeInfo {
     pub provider_type: String,
+    pub display_name: String,
+    pub category: super::factory::ProviderCategory,
     pub description: String,
     pub setup_parameters: Vec<SetupParameter>,
 }
@@ -163,6 +165,8 @@ impl ProviderRegistry {
             .values()
             .map(|factory| ProviderTypeInfo {
                 provider_type: factory.provider_type().to_string(),
+                display_name: factory.display_name().to_string(),
+                category: factory.category(),
                 description: factory.description().to_string(),
                 setup_parameters: factory.setup_parameters(),
             })
@@ -434,7 +438,7 @@ impl ProviderRegistry {
         );
     }
 
-    /// Get models from OpenRouter catalog for a provider type
+    /// Get models from models.dev catalog for a provider type
     fn get_models_from_catalog(&self, provider_type: &str) -> Vec<ModelInfo> {
         crate::catalog::models()
             .iter()
@@ -473,11 +477,11 @@ impl ProviderRegistry {
         let config = self.cache_config.read();
 
         if config.use_catalog_fallback {
-            // Try OpenRouter catalog
+            // Try models.dev catalog
             let catalog_models = self.get_models_from_catalog(provider_type);
             if !catalog_models.is_empty() {
                 info!(
-                    "Using OpenRouter catalog fallback for '{}' ({} models)",
+                    "Using models.dev catalog fallback for '{}' ({} models)",
                     instance_name,
                     catalog_models.len()
                 );

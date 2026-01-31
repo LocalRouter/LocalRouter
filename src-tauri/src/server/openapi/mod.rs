@@ -13,7 +13,7 @@ use utoipa::OpenApi;
 #[derive(OpenApi)]
 #[openapi(
     info(
-        title = "LocalRouter AI API",
+        title = "LocalRouter API",
         version = "0.1.0",
         description = "OpenAI-compatible API gateway with intelligent routing, multi-provider support, and advanced features"
     ),
@@ -222,7 +222,7 @@ mod tests {
         // We trust utoipa to use the correct version (3.1.0)
 
         // Validate info
-        assert_eq!(spec.info.title, "LocalRouter AI API");
+        assert_eq!(spec.info.title, "LocalRouter API");
         assert_eq!(spec.info.version, "0.1.0");
 
         // Validate paths exist
@@ -254,7 +254,7 @@ mod tests {
 
         let json_str = json.unwrap();
         assert!(json_str.contains("\"openapi\": \"3.1.0\""));
-        assert!(json_str.contains("LocalRouter AI API"));
+        assert!(json_str.contains("LocalRouter API"));
     }
 
     #[test]
@@ -264,6 +264,6 @@ mod tests {
 
         let yaml_str = yaml.unwrap();
         assert!(yaml_str.contains("openapi: 3.1.0"));
-        assert!(yaml_str.contains("LocalRouter AI API"));
+        assert!(yaml_str.contains("LocalRouter API"));
     }
 }

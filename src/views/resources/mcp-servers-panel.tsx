@@ -2,7 +2,8 @@ import { useState, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
 import { toast } from "sonner"
-import { Database, Plus, CheckCircle, XCircle, Loader2, RefreshCw } from "lucide-react"
+import { Plus, CheckCircle, XCircle, Loader2, RefreshCw } from "lucide-react"
+import McpServerIcon from "@/components/McpServerIcon"
 import { Badge } from "@/components/ui/Badge"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card"
@@ -29,7 +30,6 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import LegacySelect from "@/components/ui/Select"
 import KeyValueInput from "@/components/ui/KeyValueInput"
 import {
@@ -77,6 +77,7 @@ interface McpServersPanelProps {
   healthStatus: Record<string, McpHealthStatus>
   onHealthInit: (serverIds: string[]) => void
   onRefreshHealth: (serverId: string) => Promise<void>
+  initialAddTemplateId?: string | null
 }
 
 export function McpServersPanel({
@@ -85,6 +86,7 @@ export function McpServersPanel({
   healthStatus,
   onHealthInit,
   onRefreshHealth,
+  initialAddTemplateId,
 }: McpServersPanelProps) {
   const [servers, setServers] = useState<McpServer[]>([])
   const [loading, setLoading] = useState(true)
@@ -113,7 +115,6 @@ export function McpServersPanel({
   const [showCreateModal, setShowCreateModal] = useState(false)
   const [selectedTemplate, setSelectedTemplate] = useState<McpServerTemplate | null>(null)
   const [isCreating, setIsCreating] = useState(false)
-  const [createTab, setCreateTab] = useState<"templates" | "manual">("templates")
 
   // Form state
   const [serverName, setServerName] = useState("")
@@ -142,6 +143,28 @@ export function McpServersPanel({
       unsubscribe.then((fn) => fn())
     }
   }, [])
+
+  // Handle initial add template from navigation
+  useEffect(() => {
+    if (initialAddTemplateId) {
+      const { MCP_SERVER_TEMPLATES } = require("@/components/mcp/McpServerTemplates")
+      const template = MCP_SERVER_TEMPLATES.find((t: McpServerTemplate) => t.id === initialAddTemplateId)
+      if (template) {
+        setShowCreateModal(true)
+        setSelectedTemplate(template)
+        setServerName(template.name)
+        setTransportType(template.transport)
+        if (template.transport === "Stdio") {
+          setCommand([template.command, ...(template.args || [])].join(" "))
+          setUrl("")
+        } else {
+          setUrl(template.url || "")
+          setCommand("")
+        }
+        setAuthMethod(template.authMethod)
+      }
+    }
+  }, [initialAddTemplateId])
 
   // Load servers and initialize health checks (only on first load)
   const loadServers = async () => {
@@ -181,7 +204,6 @@ export function McpServersPanel({
     setOauthClientId("")
     setOauthClientSecret("")
     setSelectedTemplate(null)
-    setCreateTab("templates")
   }
 
   const handleSelectTemplate = (template: McpServerTemplate) => {
@@ -589,7 +611,7 @@ export function McpServersPanel({
           <div className="p-4 border-b">
             <div className="flex gap-2">
               <Input
-                placeholder="Search MCP servers..."
+                placeholder="Search MCP..."
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 className="flex-1"
@@ -597,7 +619,7 @@ export function McpServersPanel({
               <Button
                 size="icon"
                 onClick={() => setShowCreateModal(true)}
-                title="Add MCP Server"
+                title="Add MCP"
               >
                 <Plus className="h-4 w-4" />
               </Button>
@@ -608,7 +630,7 @@ export function McpServersPanel({
               {loading ? (
                 <p className="text-sm text-muted-foreground p-4">Loading...</p>
               ) : filteredServers.length === 0 ? (
-                <p className="text-sm text-muted-foreground p-4">No MCP servers found</p>
+                <p className="text-sm text-muted-foreground p-4">No MCP found</p>
               ) : (
                 filteredServers.map((server) => {
                   const health = healthStatus[server.id]
@@ -625,7 +647,7 @@ export function McpServersPanel({
                         selectedId === server.id ? "bg-accent" : "hover:bg-muted"
                       )}
                     >
-                      <Database className="h-4 w-4 text-muted-foreground" />
+                      <McpServerIcon serverName={server.name} size={20} />
                       <div className="flex-1 min-w-0">
                         <p className="font-medium truncate">{server.name}</p>
                         <p className="text-xs text-muted-foreground capitalize">
@@ -949,13 +971,13 @@ export function McpServersPanel({
           </ScrollArea>
         ) : (
           <div className="flex items-center justify-center h-full text-muted-foreground">
-            <p>Select an MCP server to view details</p>
+            <p>Select an MCP to view details</p>
           </div>
         )}
       </ResizablePanel>
     </ResizablePanelGroup>
 
-    {/* Create MCP Server Modal */}
+    {/* Create MCP Modal */}
     <Dialog
       open={showCreateModal}
       onOpenChange={(open) => {
@@ -965,246 +987,191 @@ export function McpServersPanel({
         }
       }}
     >
-      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+      <DialogContent className={cn(
+        "max-h-[90vh] overflow-y-auto",
+        !selectedTemplate ? "max-w-2xl" : "max-w-lg"
+      )}>
         <DialogHeader>
-          <DialogTitle>Add MCP Server</DialogTitle>
+          <DialogTitle>Add MCP</DialogTitle>
         </DialogHeader>
 
-        <Tabs value={createTab} onValueChange={(v) => setCreateTab(v as "templates" | "manual")}>
-          <TabsList className="grid w-full grid-cols-2">
-            <TabsTrigger value="templates">Templates</TabsTrigger>
-            <TabsTrigger value="manual">Manual</TabsTrigger>
-          </TabsList>
+        {!selectedTemplate ? (
+          <McpServerTemplates onSelectTemplate={handleSelectTemplate} />
+        ) : (
+          <form onSubmit={handleCreateServer} className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium mb-2">Server Name</label>
+              <Input
+                value={serverName}
+                onChange={(e) => setServerName(e.target.value)}
+                placeholder="My MCP Server"
+                required
+              />
+            </div>
 
-          {/* Templates Tab */}
-          <TabsContent value="templates" className="mt-4">
-            <McpServerTemplates
-              onSelectTemplate={(template) => {
-                handleSelectTemplate(template)
-                setCreateTab("manual")
-              }}
-            />
-          </TabsContent>
+            <div>
+              <label className="block text-sm font-medium mb-2">Transport Type</label>
+              <LegacySelect
+                value={transportType}
+                onChange={(e) => setTransportType(e.target.value as "Stdio" | "Sse")}
+              >
+                <option value="Stdio">STDIO (Subprocess)</option>
+                <option value="Sse">HTTP-SSE (Server-Sent Events)</option>
+              </LegacySelect>
+            </div>
 
-          {/* Manual Tab */}
-          <TabsContent value="manual" className="mt-4">
-            <form onSubmit={handleCreateServer} className="space-y-4">
-              {/* Show selected template info */}
-              {selectedTemplate && (
-                <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded p-3">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <span className="text-2xl">{selectedTemplate.icon}</span>
-                      <div>
-                        <p className="text-sm font-medium text-blue-900 dark:text-blue-100">
-                          Using template: {selectedTemplate.name}
-                        </p>
-                        <p className="text-xs text-blue-700 dark:text-blue-300">
-                          Customize the settings below
-                        </p>
-                      </div>
-                    </div>
-                    <Button
-                      type="button"
-                      variant="secondary"
-                      size="sm"
-                      onClick={() => {
-                        setSelectedTemplate(null)
-                        setServerName("")
-                        setCommand("")
-                        setUrl("")
-                        setAuthMethod("none")
-                      }}
-                    >
-                      Clear
-                    </Button>
-                  </div>
-                  {selectedTemplate.setupInstructions && (
-                    <p className="text-xs text-blue-700 dark:text-blue-300 mt-2">
-                      {selectedTemplate.setupInstructions}
-                    </p>
-                  )}
+            {/* STDIO Config */}
+            {transportType === "Stdio" && (
+              <>
+                <div>
+                  <label className="block text-sm font-medium mb-2">Command</label>
+                  <Input
+                    value={command}
+                    onChange={(e) => setCommand(e.target.value)}
+                    placeholder="npx -y @modelcontextprotocol/server-everything"
+                    required
+                  />
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Full command with arguments (e.g., npx -y @modelcontextprotocol/server-filesystem /tmp)
+                  </p>
                 </div>
-              )}
 
+                <div>
+                  <label className="block text-sm font-medium mb-2">
+                    Environment Variables
+                  </label>
+                  <KeyValueInput
+                    value={envVars}
+                    onChange={setEnvVars}
+                    keyPlaceholder="KEY"
+                    valuePlaceholder="VALUE"
+                  />
+                </div>
+              </>
+            )}
+
+            {/* HTTP-SSE Config - URL first */}
+            {transportType === "Sse" && (
               <div>
-                <label className="block text-sm font-medium mb-2">Server Name</label>
+                <label className="block text-sm font-medium mb-2">URL</label>
                 <Input
-                  value={serverName}
-                  onChange={(e) => setServerName(e.target.value)}
-                  placeholder="My MCP Server"
+                  value={url}
+                  onChange={(e) => setUrl(e.target.value)}
+                  placeholder="https://api.example.com/mcp"
                   required
                 />
               </div>
+            )}
 
-              <div>
-                <label className="block text-sm font-medium mb-2">Transport Type</label>
-                <LegacySelect
-                  value={transportType}
-                  onChange={(e) => setTransportType(e.target.value as "Stdio" | "Sse")}
-                >
-                  <option value="Stdio">STDIO (Subprocess)</option>
-                  <option value="Sse">HTTP-SSE (Server-Sent Events)</option>
-                </LegacySelect>
-              </div>
+            {/* Authentication Configuration - comes BEFORE Headers for HTTP-SSE */}
+            {transportType === "Sse" && (
+              <div className="border-t pt-4 mt-4">
+                <h3 className="text-md font-semibold mb-3">Authentication (Optional)</h3>
+                <p className="text-sm text-muted-foreground mb-3">
+                  Configure how LocalRouter authenticates to this MCP server
+                </p>
 
-              {/* STDIO Config */}
-              {transportType === "Stdio" && (
-                <>
-                  <div>
-                    <label className="block text-sm font-medium mb-2">Command</label>
+                <div>
+                  <label className="block text-sm font-medium mb-2">Authentication Method</label>
+                  <LegacySelect
+                    value={authMethod}
+                    onChange={(e) => setAuthMethod(e.target.value as typeof authMethod)}
+                  >
+                    <option value="none">None / Via headers</option>
+                    <option value="bearer">Bearer Token</option>
+                    <option value="oauth_pregenerated">OAuth (Pre-generated credentials)</option>
+                  </LegacySelect>
+                </div>
+
+                {/* Bearer Token Auth */}
+                {authMethod === "bearer" && (
+                  <div className="mt-3">
+                    <label className="block text-sm font-medium mb-2">Bearer Token</label>
                     <Input
-                      value={command}
-                      onChange={(e) => setCommand(e.target.value)}
-                      placeholder="npx -y @modelcontextprotocol/server-everything"
+                      type="password"
+                      value={bearerToken}
+                      onChange={(e) => setBearerToken(e.target.value)}
+                      placeholder="your-bearer-token"
                       required
                     />
                     <p className="text-xs text-muted-foreground mt-1">
-                      Full command with arguments (e.g., npx -y @modelcontextprotocol/server-filesystem /tmp)
+                      Token will be stored securely in system keychain
                     </p>
                   </div>
+                )}
 
-                  <div>
-                    <label className="block text-sm font-medium mb-2">
-                      Environment Variables
-                    </label>
-                    <KeyValueInput
-                      value={envVars}
-                      onChange={setEnvVars}
-                      keyPlaceholder="KEY"
-                      valuePlaceholder="VALUE"
-                    />
-                  </div>
-                </>
-              )}
-
-              {/* HTTP-SSE Config - URL first */}
-              {transportType === "Sse" && (
-                <div>
-                  <label className="block text-sm font-medium mb-2">URL</label>
-                  <Input
-                    value={url}
-                    onChange={(e) => setUrl(e.target.value)}
-                    placeholder="https://api.example.com/mcp"
-                    required
-                  />
-                </div>
-              )}
-
-              {/* Authentication Configuration - comes BEFORE Headers for HTTP-SSE */}
-              {transportType === "Sse" && (
-                <div className="border-t pt-4 mt-4">
-                  <h3 className="text-md font-semibold mb-3">Authentication (Optional)</h3>
-                  <p className="text-sm text-muted-foreground mb-3">
-                    Configure how LocalRouter authenticates to this MCP server
-                  </p>
-
-                  <div>
-                    <label className="block text-sm font-medium mb-2">Authentication Method</label>
-                    <LegacySelect
-                      value={authMethod}
-                      onChange={(e) => setAuthMethod(e.target.value as typeof authMethod)}
-                    >
-                      <option value="none">None / Via headers</option>
-                      <option value="bearer">Bearer Token</option>
-                      <option value="oauth_pregenerated">OAuth (Pre-generated credentials)</option>
-                      {/* TODO: Re-enable when dynamic client registration is implemented */}
-                      {/* <option value="oauth_browser">OAuth (External browser)</option> */}
-                    </LegacySelect>
-                  </div>
-
-                  {/* Bearer Token Auth */}
-                  {authMethod === "bearer" && (
-                    <div className="mt-3">
-                      <label className="block text-sm font-medium mb-2">Bearer Token</label>
+                {/* OAuth Pre-generated credentials */}
+                {authMethod === "oauth_pregenerated" && (
+                  <div className="mt-3 space-y-3">
+                    <div>
+                      <label className="block text-sm font-medium mb-2">Client ID</label>
+                      <Input
+                        value={oauthClientId}
+                        onChange={(e) => setOauthClientId(e.target.value)}
+                        placeholder="your-oauth-client-id"
+                        required
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium mb-2">Client Secret</label>
                       <Input
                         type="password"
-                        value={bearerToken}
-                        onChange={(e) => setBearerToken(e.target.value)}
-                        placeholder="your-bearer-token"
+                        value={oauthClientSecret}
+                        onChange={(e) => setOauthClientSecret(e.target.value)}
+                        placeholder="your-oauth-client-secret"
                         required
                       />
                       <p className="text-xs text-muted-foreground mt-1">
-                        Token will be stored securely in system keychain
+                        Stored securely in system keychain
                       </p>
                     </div>
-                  )}
-
-                  {/* OAuth Pre-generated credentials */}
-                  {authMethod === "oauth_pregenerated" && (
-                    <div className="mt-3 space-y-3">
-                      <div>
-                        <label className="block text-sm font-medium mb-2">Client ID</label>
-                        <Input
-                          value={oauthClientId}
-                          onChange={(e) => setOauthClientId(e.target.value)}
-                          placeholder="your-oauth-client-id"
-                          required
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-sm font-medium mb-2">Client Secret</label>
-                        <Input
-                          type="password"
-                          value={oauthClientSecret}
-                          onChange={(e) => setOauthClientSecret(e.target.value)}
-                          placeholder="your-oauth-client-secret"
-                          required
-                        />
-                        <p className="text-xs text-muted-foreground mt-1">
-                          Stored securely in system keychain
-                        </p>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* OAuth Browser Flow - TODO: Re-enable when dynamic client registration is implemented */}
-                  {/* {authMethod === "oauth_browser" && (
-                    <div className="mt-3">
-                      <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-700 rounded p-3">
-                        <p className="text-blue-800 dark:text-blue-200 text-sm">
-                          After creating the server, you'll be guided through OAuth setup in the
-                          detail view. You'll need to create an OAuth app in your provider's
-                          settings and enter the credentials.
-                        </p>
-                      </div>
-                    </div>
-                  )} */}
-                </div>
-              )}
-
-              {/* Headers - comes AFTER Authentication for HTTP-SSE */}
-              {transportType === "Sse" && (
-                <div>
-                  <label className="block text-sm font-medium mb-2">Headers (Optional)</label>
-                  <KeyValueInput
-                    value={headers}
-                    onChange={setHeaders}
-                    keyPlaceholder="Header Name"
-                    valuePlaceholder="Header Value"
-                  />
-                </div>
-              )}
-
-              <div className="flex justify-end gap-2 pt-4">
-                <Button
-                  type="button"
-                  variant="secondary"
-                  onClick={() => {
-                    setShowCreateModal(false)
-                    resetForm()
-                  }}
-                  disabled={isCreating}
-                >
-                  Cancel
-                </Button>
-                <Button type="submit" disabled={isCreating}>
-                  {isCreating ? "Creating..." : "Create Server"}
-                </Button>
+                  </div>
+                )}
               </div>
-            </form>
-          </TabsContent>
-        </Tabs>
+            )}
+
+            {/* Headers - comes AFTER Authentication for HTTP-SSE */}
+            {transportType === "Sse" && (
+              <div>
+                <label className="block text-sm font-medium mb-2">Headers (Optional)</label>
+                <KeyValueInput
+                  value={headers}
+                  onChange={setHeaders}
+                  keyPlaceholder="Header Name"
+                  valuePlaceholder="Header Value"
+                />
+              </div>
+            )}
+
+            <div className="flex justify-end gap-2 pt-4">
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => {
+                  setShowCreateModal(false)
+                  resetForm()
+                }}
+                disabled={isCreating}
+              >
+                Cancel
+              </Button>
+              <Button type="submit" disabled={isCreating}>
+                {isCreating ? "Creating..." : "Create"}
+              </Button>
+            </div>
+          </form>
+        )}
+
+        {selectedTemplate && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setSelectedTemplate(null)}
+            className="mt-2"
+          >
+            Back to template selection
+          </Button>
+        )}
       </DialogContent>
     </Dialog>
 

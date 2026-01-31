@@ -386,6 +386,7 @@ mod tests {
                 mcp_sampling_requires_approval: true,
                 mcp_sampling_max_tokens: None,
                 mcp_sampling_rate_limit: None,
+                skills_access: crate::config::SkillsAccess::None,
             },
             Client {
                 id: "disabled_client".to_string(),
@@ -402,6 +403,7 @@ mod tests {
                 mcp_sampling_requires_approval: true,
                 mcp_sampling_max_tokens: None,
                 mcp_sampling_rate_limit: None,
+                skills_access: crate::config::SkillsAccess::None,
             },
             Client {
                 id: "no_mcp_client".to_string(),
@@ -418,6 +420,7 @@ mod tests {
                 mcp_sampling_requires_approval: true,
                 mcp_sampling_max_tokens: None,
                 mcp_sampling_rate_limit: None,
+                skills_access: crate::config::SkillsAccess::None,
             },
         ];
         config

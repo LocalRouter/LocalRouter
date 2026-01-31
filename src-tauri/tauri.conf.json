@@ -1,6 +1,6 @@
 {
-  "productName": "LocalRouter AI",
-  "version": "0.0.8",
+  "productName": "LocalRouter",
+  "version": "0.0.36",
   "identifier": "ai.localrouter.app",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -20,12 +20,13 @@
       "icons/icon.ico"
     ],
     "resources": ["icons/32x32-active.png"],
-    "copyright": "Copyright (c) 2026 LocalRouter AI",
+    "copyright": "Copyright (c) 2026 LocalRouter",
     "category": "DeveloperTool",
     "shortDescription": "Intelligent AI model routing",
-    "longDescription": "LocalRouter AI provides a local OpenAI-compatible API gateway that intelligently routes requests across multiple AI providers with smart routing, cost optimization, and comprehensive monitoring.",
+    "longDescription": "LocalRouter provides a local OpenAI-compatible API gateway that intelligently routes requests across multiple AI providers with smart routing, cost optimization, and comprehensive monitoring.",
     "macOS": {
-      "minimumSystemVersion": "10.15"
+      "minimumSystemVersion": "10.15",
+      "signingIdentity": "-"
     },
     "windows": {
       "certificateThumbprint": null,
@@ -44,7 +45,7 @@
       "endpoints": [
         "https://github.com/LocalRouter/LocalRouter/releases/latest/download/latest.json"
       ],
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDZDQTVGODU2NDZGNzI4NkIKUldScktQZEdWdmlsYk45bEJ4ZlVBYW1VSHBtTHRMV3ZaU1JUZnNsNGI3Y3kxMHVtb2kvREV4MkMK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDE3MDEzRTM2M0QyMTgwOEMKUldTTWdDRTlOajRCRjJ1a044bEJPeitXZDAyM2lqeDE0Q0V0S1M2bFQ0K2FRZTJGK1V0Mkw1L1oK",
       "windows": {
         "installMode": "passive"
       }
@@ -53,7 +54,7 @@
   "app": {
     "windows": [
       {
-        "title": "LocalRouter AI",
+        "title": "LocalRouter",
         "width": 1200,
         "height": 1000,
         "resizable": true,

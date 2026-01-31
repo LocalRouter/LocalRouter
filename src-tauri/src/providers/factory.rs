@@ -19,11 +19,45 @@ use super::{
 };
 use crate::utils::errors::{AppError, AppResult};
 
+/// Provider category for UI grouping
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderCategory {
+    /// Generic/custom OpenAI-compatible providers
+    Generic,
+    /// Local providers running on user's machine
+    Local,
+    /// Subscription-based providers using OAuth
+    Subscription,
+    /// First-party cloud providers (model creators)
+    FirstParty,
+    /// Third-party hosting platforms
+    ThirdParty,
+}
+
+/// Where a provider gets its model list from
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelListSource {
+    /// Use provider's API, fall back to catalog if API fails/empty
+    ApiWithCatalogFallback,
+    /// Use catalog as primary source (no API available)
+    CatalogOnly,
+    /// Use provider's API only, no catalog fallback
+    ApiOnly,
+}
+
 /// Factory for creating provider instances
 #[async_trait]
 pub trait ProviderFactory: Send + Sync {
     /// Provider type identifier (e.g., "ollama", "openai", "anthropic")
     fn provider_type(&self) -> &str;
+
+    /// Human-readable display name (e.g., "OpenAI", "Google Gemini")
+    fn display_name(&self) -> &str;
+
+    /// Provider category for UI grouping
+    fn category(&self) -> ProviderCategory;
 
     /// Human-readable description of the provider
     fn description(&self) -> &str;
@@ -49,6 +83,43 @@ pub trait ProviderFactory: Send + Sync {
     ///
     /// Checks that all required parameters are present and valid
     fn validate_config(&self, config: &HashMap<String, String>) -> AppResult<()>;
+
+    /// models.dev provider ID for catalog matching
+    ///
+    /// Returns the provider ID used in models.dev (e.g., "google" for Gemini).
+    /// Returns None if this provider has no catalog mapping (local providers).
+    ///
+    /// Default implementation returns the same as provider_type().
+    fn catalog_provider_id(&self) -> Option<&str> {
+        Some(self.provider_type())
+    }
+
+    /// How this provider gets its model list
+    ///
+    /// Default: Use provider's API, fall back to catalog if API fails/empty
+    fn model_list_source(&self) -> ModelListSource {
+        ModelListSource::ApiWithCatalogFallback
+    }
+}
+
+/// Trait for providers that can be automatically discovered on the local system
+///
+/// This is implemented by local providers (Ollama, LM Studio) that run on
+/// the user's machine and can be detected by checking their default endpoints.
+#[async_trait]
+pub trait DiscoverableProvider: ProviderFactory {
+    /// Check if this provider is available on the local system
+    ///
+    /// Returns true if the provider's service is running and responding
+    async fn is_available(&self) -> bool;
+
+    /// Get the default base URL for this provider
+    fn default_base_url(&self) -> &str;
+
+    /// Get the default display name for discovered instances
+    fn default_instance_name(&self) -> &str {
+        self.display_name()
+    }
 }
 
 /// A parameter required for provider setup
@@ -129,6 +200,9 @@ pub enum ParameterType {
     Number,
     /// Boolean parameter
     Boolean,
+    /// OAuth authentication (triggers OAuth flow in UI)
+    #[serde(rename = "oauth")]
+    OAuth,
 }
 
 // ==================== FACTORY IMPLEMENTATIONS ====================
@@ -139,6 +213,14 @@ pub struct OllamaProviderFactory;
 impl ProviderFactory for OllamaProviderFactory {
     fn provider_type(&self) -> &str {
         "ollama"
+    }
+
+    fn display_name(&self) -> &str {
+        "Ollama"
+    }
+
+    fn category(&self) -> ProviderCategory {
+        ProviderCategory::Local
     }
 
     fn description(&self) -> &str {
@@ -180,6 +262,35 @@ impl ProviderFactory for OllamaProviderFactory {
         }
         Ok(())
     }
+
+    fn catalog_provider_id(&self) -> Option<&str> {
+        None // Local provider, no catalog mapping
+    }
+
+    fn model_list_source(&self) -> ModelListSource {
+        ModelListSource::ApiOnly // Local models, catalog irrelevant
+    }
+}
+
+#[async_trait]
+impl DiscoverableProvider for OllamaProviderFactory {
+    async fn is_available(&self) -> bool {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(2))
+            .build()
+            .unwrap_or_default();
+
+        let url = format!("{}/api/tags", self.default_base_url());
+        client.get(&url).send().await.is_ok()
+    }
+
+    fn default_base_url(&self) -> &str {
+        "http://localhost:11434"
+    }
+
+    fn default_instance_name(&self) -> &str {
+        "Ollama"
+    }
 }
 
 /// Factory for OpenAI providers
@@ -188,6 +299,14 @@ pub struct OpenAIProviderFactory;
 impl ProviderFactory for OpenAIProviderFactory {
     fn provider_type(&self) -> &str {
         "openai"
+    }
+
+    fn display_name(&self) -> &str {
+        "OpenAI"
+    }
+
+    fn category(&self) -> ProviderCategory {
+        ProviderCategory::FirstParty
     }
 
     fn description(&self) -> &str {
@@ -243,6 +362,14 @@ impl ProviderFactory for AnthropicProviderFactory {
         "anthropic"
     }
 
+    fn display_name(&self) -> &str {
+        "Anthropic"
+    }
+
+    fn category(&self) -> ProviderCategory {
+        ProviderCategory::FirstParty
+    }
+
     fn description(&self) -> &str {
         "Anthropic Claude API for advanced reasoning models"
     }
@@ -287,6 +414,14 @@ impl ProviderFactory for GeminiProviderFactory {
         "gemini"
     }
 
+    fn display_name(&self) -> &str {
+        "Google Gemini"
+    }
+
+    fn category(&self) -> ProviderCategory {
+        ProviderCategory::FirstParty
+    }
+
     fn description(&self) -> &str {
         "Google Gemini API for multimodal AI models"
     }
@@ -321,6 +456,10 @@ impl ProviderFactory for GeminiProviderFactory {
         }
         Ok(())
     }
+
+    fn catalog_provider_id(&self) -> Option<&str> {
+        Some("google") // models.dev uses "google" not "gemini"
+    }
 }
 
 /// Factory for OpenRouter providers
@@ -329,6 +468,14 @@ pub struct OpenRouterProviderFactory;
 impl ProviderFactory for OpenRouterProviderFactory {
     fn provider_type(&self) -> &str {
         "openrouter"
+    }
+
+    fn display_name(&self) -> &str {
+        "OpenRouter"
+    }
+
+    fn category(&self) -> ProviderCategory {
+        ProviderCategory::ThirdParty
     }
 
     fn description(&self) -> &str {
@@ -386,6 +533,10 @@ impl ProviderFactory for OpenRouterProviderFactory {
         }
         Ok(())
     }
+
+    fn catalog_provider_id(&self) -> Option<&str> {
+        None // Aggregator, uses name-based matching instead
+    }
 }
 
 /// Factory for generic OpenAI-compatible providers
@@ -394,6 +545,14 @@ pub struct OpenAICompatibleProviderFactory;
 impl ProviderFactory for OpenAICompatibleProviderFactory {
     fn provider_type(&self) -> &str {
         "openai_compatible"
+    }
+
+    fn display_name(&self) -> &str {
+        "OpenAI Compatible"
+    }
+
+    fn category(&self) -> ProviderCategory {
+        ProviderCategory::Generic
     }
 
     fn description(&self) -> &str {
@@ -455,6 +614,14 @@ impl ProviderFactory for OpenAICompatibleProviderFactory {
 
         Ok(())
     }
+
+    fn catalog_provider_id(&self) -> Option<&str> {
+        None // Generic provider, no catalog mapping
+    }
+
+    fn model_list_source(&self) -> ModelListSource {
+        ModelListSource::ApiOnly // Generic provider, catalog irrelevant
+    }
 }
 
 /// Factory for Groq providers
@@ -463,6 +630,14 @@ pub struct GroqProviderFactory;
 impl ProviderFactory for GroqProviderFactory {
     fn provider_type(&self) -> &str {
         "groq"
+    }
+
+    fn display_name(&self) -> &str {
+        "Groq"
+    }
+
+    fn category(&self) -> ProviderCategory {
+        ProviderCategory::FirstParty
     }
 
     fn description(&self) -> &str {
@@ -509,6 +684,14 @@ impl ProviderFactory for MistralProviderFactory {
         "mistral"
     }
 
+    fn display_name(&self) -> &str {
+        "Mistral AI"
+    }
+
+    fn category(&self) -> ProviderCategory {
+        ProviderCategory::FirstParty
+    }
+
     fn description(&self) -> &str {
         "Mistral AI models including Mistral Large and Codestral"
     }
@@ -551,6 +734,14 @@ pub struct CohereProviderFactory;
 impl ProviderFactory for CohereProviderFactory {
     fn provider_type(&self) -> &str {
         "cohere"
+    }
+
+    fn display_name(&self) -> &str {
+        "Cohere"
+    }
+
+    fn category(&self) -> ProviderCategory {
+        ProviderCategory::FirstParty
     }
 
     fn description(&self) -> &str {
@@ -597,6 +788,14 @@ impl ProviderFactory for TogetherAIProviderFactory {
         "togetherai"
     }
 
+    fn display_name(&self) -> &str {
+        "Together AI"
+    }
+
+    fn category(&self) -> ProviderCategory {
+        ProviderCategory::ThirdParty
+    }
+
     fn description(&self) -> &str {
         "Together AI platform for open-source models"
     }
@@ -631,6 +830,10 @@ impl ProviderFactory for TogetherAIProviderFactory {
         }
         Ok(())
     }
+
+    fn catalog_provider_id(&self) -> Option<&str> {
+        Some("together") // models.dev uses "together" not "togetherai"
+    }
 }
 
 /// Factory for Perplexity providers
@@ -639,6 +842,14 @@ pub struct PerplexityProviderFactory;
 impl ProviderFactory for PerplexityProviderFactory {
     fn provider_type(&self) -> &str {
         "perplexity"
+    }
+
+    fn display_name(&self) -> &str {
+        "Perplexity"
+    }
+
+    fn category(&self) -> ProviderCategory {
+        ProviderCategory::FirstParty
     }
 
     fn description(&self) -> &str {
@@ -675,6 +886,10 @@ impl ProviderFactory for PerplexityProviderFactory {
         }
         Ok(())
     }
+
+    fn model_list_source(&self) -> ModelListSource {
+        ModelListSource::CatalogOnly // Perplexity has no public /models endpoint
+    }
 }
 
 /// Factory for DeepInfra providers
@@ -683,6 +898,14 @@ pub struct DeepInfraProviderFactory;
 impl ProviderFactory for DeepInfraProviderFactory {
     fn provider_type(&self) -> &str {
         "deepinfra"
+    }
+
+    fn display_name(&self) -> &str {
+        "DeepInfra"
+    }
+
+    fn category(&self) -> ProviderCategory {
+        ProviderCategory::ThirdParty
     }
 
     fn description(&self) -> &str {
@@ -729,6 +952,14 @@ impl ProviderFactory for CerebrasProviderFactory {
         "cerebras"
     }
 
+    fn display_name(&self) -> &str {
+        "Cerebras"
+    }
+
+    fn category(&self) -> ProviderCategory {
+        ProviderCategory::FirstParty
+    }
+
     fn description(&self) -> &str {
         "Cerebras ultra-fast inference platform"
     }
@@ -773,6 +1004,14 @@ impl ProviderFactory for XAIProviderFactory {
         "xai"
     }
 
+    fn display_name(&self) -> &str {
+        "xAI"
+    }
+
+    fn category(&self) -> ProviderCategory {
+        ProviderCategory::FirstParty
+    }
+
     fn description(&self) -> &str {
         "xAI Grok models with real-time knowledge access"
     }
@@ -815,6 +1054,14 @@ pub struct LMStudioProviderFactory;
 impl ProviderFactory for LMStudioProviderFactory {
     fn provider_type(&self) -> &str {
         "lmstudio"
+    }
+
+    fn display_name(&self) -> &str {
+        "LM Studio"
+    }
+
+    fn category(&self) -> ProviderCategory {
+        ProviderCategory::Local
     }
 
     fn description(&self) -> &str {
@@ -870,6 +1117,192 @@ impl ProviderFactory for LMStudioProviderFactory {
         }
         Ok(())
     }
+
+    fn catalog_provider_id(&self) -> Option<&str> {
+        None // Local provider, no catalog mapping
+    }
+
+    fn model_list_source(&self) -> ModelListSource {
+        ModelListSource::ApiOnly // Local models, catalog irrelevant
+    }
+}
+
+#[async_trait]
+impl DiscoverableProvider for LMStudioProviderFactory {
+    async fn is_available(&self) -> bool {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(2))
+            .build()
+            .unwrap_or_default();
+
+        let url = format!("{}/models", self.default_base_url());
+        client.get(&url).send().await.is_ok()
+    }
+
+    fn default_base_url(&self) -> &str {
+        "http://localhost:1234/v1"
+    }
+
+    fn default_instance_name(&self) -> &str {
+        "LM Studio"
+    }
+}
+
+// ==================== SUBSCRIPTION PROVIDER FACTORIES ====================
+
+/// Factory for GitHub Copilot (OAuth subscription)
+pub struct GitHubCopilotProviderFactory;
+
+impl ProviderFactory for GitHubCopilotProviderFactory {
+    fn provider_type(&self) -> &str {
+        "github-copilot"
+    }
+
+    fn display_name(&self) -> &str {
+        "GitHub Copilot"
+    }
+
+    fn category(&self) -> ProviderCategory {
+        ProviderCategory::Subscription
+    }
+
+    fn description(&self) -> &str {
+        "Use your GitHub Copilot subscription for AI completions"
+    }
+
+    fn setup_parameters(&self) -> Vec<SetupParameter> {
+        vec![SetupParameter {
+            key: "oauth".to_string(),
+            param_type: ParameterType::OAuth,
+            required: true,
+            description: "Authenticate with your GitHub account".to_string(),
+            default_value: None,
+            sensitive: false,
+        }]
+    }
+
+    fn create(
+        &self,
+        _instance_name: String,
+        _config: HashMap<String, String>,
+    ) -> AppResult<Arc<dyn ModelProvider>> {
+        // GitHub Copilot uses a custom API, create OpenAI-compatible provider
+        // with the OAuth token from keychain
+        use crate::api_keys::{keychain_trait::KeychainStorage, CachedKeychain};
+
+        let keychain = CachedKeychain::system();
+        let access_token = keychain
+            .get("LocalRouter-ProviderTokens", "github-copilot_access_token")?
+            .ok_or_else(|| {
+                AppError::Config(
+                    "No GitHub Copilot OAuth credentials found. Please authenticate first."
+                        .to_string(),
+                )
+            })?;
+
+        // GitHub Copilot uses a custom endpoint
+        Ok(Arc::new(OpenAICompatibleProvider::new(
+            "github-copilot".to_string(),
+            "https://api.githubcopilot.com".to_string(),
+            Some(access_token),
+        )))
+    }
+
+    fn validate_config(&self, _config: &HashMap<String, String>) -> AppResult<()> {
+        // OAuth validation is handled by the OAuth flow
+        Ok(())
+    }
+}
+
+/// Factory for OpenAI ChatGPT Plus (OAuth subscription)
+pub struct OpenAICodexProviderFactory;
+
+impl ProviderFactory for OpenAICodexProviderFactory {
+    fn provider_type(&self) -> &str {
+        "openai-chatgpt-plus"
+    }
+
+    fn display_name(&self) -> &str {
+        "ChatGPT Plus"
+    }
+
+    fn category(&self) -> ProviderCategory {
+        ProviderCategory::Subscription
+    }
+
+    fn description(&self) -> &str {
+        "Use your ChatGPT Plus subscription for OpenAI models"
+    }
+
+    fn setup_parameters(&self) -> Vec<SetupParameter> {
+        vec![SetupParameter {
+            key: "oauth".to_string(),
+            param_type: ParameterType::OAuth,
+            required: true,
+            description: "Authenticate with your OpenAI account".to_string(),
+            default_value: None,
+            sensitive: false,
+        }]
+    }
+
+    fn create(
+        &self,
+        _instance_name: String,
+        _config: HashMap<String, String>,
+    ) -> AppResult<Arc<dyn ModelProvider>> {
+        // Use OAuth-first provider creation
+        OpenAIProvider::from_oauth_or_key(None).map(|p| Arc::new(p) as Arc<dyn ModelProvider>)
+    }
+
+    fn validate_config(&self, _config: &HashMap<String, String>) -> AppResult<()> {
+        // OAuth validation is handled by the OAuth flow
+        Ok(())
+    }
+}
+
+// ==================== LOCAL PROVIDER DISCOVERY ====================
+
+/// Discovered local provider information
+#[derive(Debug, Clone)]
+pub struct DiscoveredProvider {
+    /// Provider type identifier
+    pub provider_type: String,
+    /// Display name for the provider instance
+    pub instance_name: String,
+    /// Base URL where the provider was found
+    pub base_url: String,
+}
+
+/// Discover available local LLM providers (Ollama, LM Studio)
+///
+/// Checks if local providers are running at their default endpoints.
+/// Returns a list of discovered providers that can be auto-configured.
+pub async fn discover_local_providers() -> Vec<DiscoveredProvider> {
+    let mut discovered = Vec::new();
+
+    // Check Ollama
+    let ollama_factory = OllamaProviderFactory;
+    if ollama_factory.is_available().await {
+        tracing::info!("Discovered local Ollama instance");
+        discovered.push(DiscoveredProvider {
+            provider_type: ollama_factory.provider_type().to_string(),
+            instance_name: ollama_factory.default_instance_name().to_string(),
+            base_url: ollama_factory.default_base_url().to_string(),
+        });
+    }
+
+    // Check LM Studio
+    let lmstudio_factory = LMStudioProviderFactory;
+    if lmstudio_factory.is_available().await {
+        tracing::info!("Discovered local LM Studio instance");
+        discovered.push(DiscoveredProvider {
+            provider_type: lmstudio_factory.provider_type().to_string(),
+            instance_name: lmstudio_factory.default_instance_name().to_string(),
+            base_url: lmstudio_factory.default_base_url().to_string(),
+        });
+    }
+
+    discovered
 }
 
 #[cfg(test)]

@@ -3,11 +3,11 @@ members = ["src-tauri"]
 resolver = "2"
 
 [workspace.package]
-version = "0.0.8"
+version = "0.0.36"
 edition = "2021"
-authors = ["LocalRouter AI Team"]
+authors = ["Matus Faro"]
 license = "AGPL-3.0-or-later"
-repository = "https://github.com/yourusername/localrouterai"
+repository = "https://github.com/LocalRouter/LocalRouter"
 
 [workspace.dependencies]
 # Async runtime
@@ -90,4 +90,5 @@ opt-level = "z"
 lto = true
 codegen-units = 1
 panic = "abort"
-strip = true
+# Use "debuginfo" instead of true to preserve __TAURI_BUNDLE_TYPE symbol for updater
+strip = "debuginfo"

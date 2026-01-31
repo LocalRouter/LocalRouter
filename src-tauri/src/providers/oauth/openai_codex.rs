@@ -126,7 +126,7 @@ impl OAuthProvider for OpenAICodexOAuthProvider {
         Ok(OAuthFlowResult::Pending {
             user_code: None,
             verification_url: start_result.auth_url,
-            instructions: "Click the link to authorize with your OpenAI account. You will be redirected back to LocalRouter AI.".to_string(),
+            instructions: "Click the link to authorize with your OpenAI account. You will be redirected back to LocalRouter.".to_string(),
         })
     }
 

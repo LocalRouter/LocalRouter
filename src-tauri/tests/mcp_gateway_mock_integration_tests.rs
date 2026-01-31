@@ -7,17 +7,17 @@
 mod mcp_tests;
 
 use chrono::Utc;
-use localrouter_ai::config::{
+use localrouter::config::{
     AppConfig, ConfigManager, McpServerConfig, McpTransportConfig, McpTransportType,
 };
-use localrouter_ai::mcp::gateway::{GatewayConfig, McpGateway};
-use localrouter_ai::mcp::protocol::{JsonRpcRequest, JsonRpcResponse};
-use localrouter_ai::mcp::McpServerManager;
-use localrouter_ai::monitoring::metrics::MetricsCollector;
-use localrouter_ai::monitoring::storage::MetricsDatabase;
-use localrouter_ai::providers::health::HealthCheckManager;
-use localrouter_ai::providers::registry::ProviderRegistry;
-use localrouter_ai::router::{RateLimiterManager, Router};
+use localrouter::mcp::gateway::{GatewayConfig, McpGateway};
+use localrouter::mcp::protocol::{JsonRpcRequest, JsonRpcResponse};
+use localrouter::mcp::McpServerManager;
+use localrouter::monitoring::metrics::MetricsCollector;
+use localrouter::monitoring::storage::MetricsDatabase;
+use localrouter::providers::health::HealthCheckManager;
+use localrouter::providers::registry::ProviderRegistry;
+use localrouter::router::{RateLimiterManager, Router};
 use mcp_tests::common::request_with_params;
 use serde_json::json;
 use std::sync::Arc;

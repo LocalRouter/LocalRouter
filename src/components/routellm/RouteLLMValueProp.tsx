@@ -19,7 +19,7 @@ export const RouteLLMValueProp: React.FC = () => {
       </div>
 
       <p className="text-sm text-blue-800 dark:text-blue-200 mb-3">
-        RouteLLM uses machine learning to analyze each prompt and automatically route to the
+        Strong/Weak uses machine learning to analyze each prompt and automatically select the
         most cost-effective model while maintaining quality. Based on research from UC Berkeley.
       </p>
 
@@ -34,7 +34,7 @@ export const RouteLLMValueProp: React.FC = () => {
         </div>
         <div className="bg-white dark:bg-gray-800 p-2 rounded border border-blue-100 dark:border-blue-800">
           <div className="font-semibold text-purple-600 dark:text-purple-400">{ROUTELLM_REQUIREMENTS.PER_REQUEST_MS}ms</div>
-          <div className="text-gray-600 dark:text-gray-400">Routing Time</div>
+          <div className="text-gray-600 dark:text-gray-400">Selection Time</div>
         </div>
       </div>
 

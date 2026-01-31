@@ -12,6 +12,7 @@ use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
+use tokio::sync::Mutex as AsyncMutex;
 use tauri::{AppHandle, Emitter};
 use tracing::{debug, error, info};
 use uuid::Uuid;
@@ -24,7 +25,7 @@ mod validation;
 pub use storage::{load_config, save_config};
 // RateLimitType is now defined locally in this module (see line 610)
 
-const CONFIG_VERSION: u32 = 2;
+const CONFIG_VERSION: u32 = 4;
 
 /// Suffix for auto-generated client strategy names
 pub const CLIENT_STRATEGY_NAME_SUFFIX: &str = "'s strategy";
@@ -390,6 +391,10 @@ pub struct AppConfig {
     /// Health check configuration for providers and MCP servers
     #[serde(default)]
     pub health_check: HealthCheckConfig,
+
+    /// Skills configuration (AgentSkills.io)
+    #[serde(default)]
+    pub skills: SkillsConfig,
 }
 
 /// Pricing override for a specific model
@@ -512,7 +517,7 @@ pub struct ModelCacheConfig {
     #[serde(default)]
     pub provider_ttl_overrides: std::collections::HashMap<String, u64>,
 
-    /// Whether to use OpenRouter catalog as fallback
+    /// Whether to use models.dev catalog as fallback
     #[serde(default = "default_true")]
     pub use_catalog_fallback: bool,
 }
@@ -673,6 +678,135 @@ impl McpServerAccess {
     }
 }
 
+/// Skills access control configuration
+///
+/// Defines which skills a client can access:
+/// - `None`: No skills access (default)
+/// - `All`: Access to all discovered skills
+/// - `Specific`: Access only to skills from listed source paths
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillsAccess {
+    /// No skills access (default for new clients)
+    #[default]
+    None,
+    /// Access to all discovered skills
+    All,
+    /// Access only to skills from specific source paths
+    Specific(Vec<String>),
+}
+
+impl SkillsAccess {
+    /// Check if a skill is accessible by its source path
+    pub fn can_access_by_source(&self, source_path: &str) -> bool {
+        match self {
+            SkillsAccess::None => false,
+            SkillsAccess::All => true,
+            SkillsAccess::Specific(paths) => paths.iter().any(|p| p == source_path),
+        }
+    }
+
+    /// Check if any skills access is granted
+    pub fn has_any_access(&self) -> bool {
+        !matches!(self, SkillsAccess::None)
+    }
+
+    /// Get the list of source paths (for Specific mode)
+    pub fn specific_paths(&self) -> Option<&Vec<String>> {
+        match self {
+            SkillsAccess::Specific(paths) => Some(paths),
+            _ => None,
+        }
+    }
+}
+
+/// Skills configuration
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct SkillsConfig {
+    /// Unified list of skill source paths (directories, zip files, .skill files)
+    #[serde(default)]
+    pub paths: Vec<String>,
+
+    /// Globally disabled skill names
+    #[serde(default)]
+    pub disabled_skills: Vec<String>,
+
+    /// Migration shim: old auto_scan_directories (deserialize only)
+    #[serde(default, skip_serializing)]
+    pub auto_scan_directories: Vec<String>,
+
+    /// Migration shim: old skill_paths (deserialize only)
+    #[serde(default, skip_serializing)]
+    pub skill_paths: Vec<String>,
+}
+
+/// Serializer for SkillsAccess that produces YAML-friendly format
+fn serialize_skills_access<S>(access: &SkillsAccess, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    match access {
+        SkillsAccess::None => serializer.serialize_str("none"),
+        SkillsAccess::All => serializer.serialize_str("all"),
+        SkillsAccess::Specific(skills) => {
+            use serde::ser::SerializeMap;
+            let mut map = serializer.serialize_map(Some(1))?;
+            map.serialize_entry("specific", skills)?;
+            map.end()
+        }
+    }
+}
+
+/// Deserializer for SkillsAccess
+fn deserialize_skills_access<'de, D>(deserializer: D) -> Result<SkillsAccess, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::{self, Visitor};
+
+    struct SkillsAccessVisitor;
+
+    impl<'de> Visitor<'de> for SkillsAccessVisitor {
+        type Value = SkillsAccess;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("'none', 'all', or an object with 'specific' key containing source paths")
+        }
+
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+            match v {
+                "none" => Ok(SkillsAccess::None),
+                "all" => Ok(SkillsAccess::All),
+                _ => Err(E::custom(format!("unknown variant: {}", v))),
+            }
+        }
+
+        fn visit_map<A: de::MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+            let mut specific: Option<Vec<String>> = None;
+            while let Some(key) = map.next_key::<String>()? {
+                match key.as_str() {
+                    "specific" | "Specific" => {
+                        specific = Some(map.next_value()?);
+                    }
+                    _ => {
+                        let _: serde::de::IgnoredAny = map.next_value()?;
+                    }
+                }
+            }
+            match specific {
+                Some(skills) => Ok(SkillsAccess::Specific(skills)),
+                None => Err(de::Error::custom("expected 'specific' key in map")),
+            }
+        }
+
+        fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(SkillsAccess::None)
+        }
+    }
+
+    deserializer.deserialize_any(SkillsAccessVisitor)
+}
+
 /// Unified client configuration (replaces ApiKeyConfig and OAuthClientConfig)
 ///
 /// A client can access both LLM routing and MCP servers using a single secret.
@@ -712,6 +846,17 @@ pub struct Client {
     /// through search queries, dramatically reducing token consumption for large catalogs.
     #[serde(default)]
     pub mcp_deferred_loading: bool,
+
+    /// Skills access control
+    /// - None: No skills access (default)
+    /// - All: Access to all discovered skills
+    /// - Specific: Access only to listed skill names
+    #[serde(
+        default,
+        deserialize_with = "deserialize_skills_access",
+        serialize_with = "serialize_skills_access"
+    )]
+    pub skills_access: SkillsAccess,
 
     /// When this client was created
     pub created_at: DateTime<Utc>,
@@ -1131,6 +1276,9 @@ pub struct ProviderConfig {
 pub enum ProviderType {
     /// Local Ollama instance
     Ollama,
+    /// Local LM Studio instance
+    #[serde(rename = "lmstudio")]
+    LMStudio,
     /// OpenAI API
     OpenAI,
     /// OpenRouter proxy
@@ -1200,6 +1348,8 @@ pub struct ConfigManager {
     app_handle: Option<AppHandle>,
     /// Optional callback to sync clients to ClientManager when config changes
     client_sync_callback: Option<ClientSyncCallback>,
+    /// Mutex to serialize disk writes, preventing concurrent save races
+    save_mutex: Arc<AsyncMutex<()>>,
 }
 
 // Manual Debug implementation since AppHandle doesn't implement Debug
@@ -1210,6 +1360,7 @@ impl std::fmt::Debug for ConfigManager {
             .field("config_path", &self.config_path)
             .field("app_handle", &self.app_handle.is_some())
             .field("client_sync_callback", &self.client_sync_callback.is_some())
+            .field("save_mutex", &"AsyncMutex<()>")
             .finish()
     }
 }
@@ -1222,6 +1373,7 @@ impl Clone for ConfigManager {
             config_path: self.config_path.clone(),
             app_handle: self.app_handle.clone(),
             client_sync_callback: self.client_sync_callback.clone(),
+            save_mutex: self.save_mutex.clone(),
         }
     }
 }
@@ -1234,6 +1386,7 @@ impl ConfigManager {
             config_path,
             app_handle: None,
             client_sync_callback: None,
+            save_mutex: Arc::new(AsyncMutex::new(())),
         }
     }
 
@@ -1385,11 +1538,14 @@ impl ConfigManager {
     /// Save configuration to disk
     ///
     /// Writes the current in-memory configuration to the config file.
+    /// Serialized by a mutex to prevent concurrent disk writes from racing.
     /// Does NOT emit event (file watcher will handle that).
     pub async fn save(&self) -> AppResult<()> {
+        // Serialize saves: if another save is in progress, wait for it to finish.
+        // After acquiring the lock, we clone the latest in-memory config so that
+        // queued saves always write the most up-to-date state.
+        let _guard = self.save_mutex.lock().await;
         let config = self.config.read().clone();
-        // TODO: DELETE THIS DEBUG LOG LATER
-        tracing::warn!("💾 SAVE_TO_DISK: {} clients", config.clients.len());
         save_config(&config, &self.config_path).await
     }
 
@@ -1447,6 +1603,7 @@ impl ConfigManager {
             allowed_llm_providers: Vec::new(),
             mcp_server_access: McpServerAccess::None,
             mcp_deferred_loading: false,
+            skills_access: SkillsAccess::None,
             created_at: Utc::now(),
             last_used: None,
             roots: None,
@@ -1640,7 +1797,7 @@ impl Default for AppConfig {
         Self {
             version: CONFIG_VERSION,
             server: ServerConfig::default(),
-            providers: vec![ProviderConfig::default_ollama()],
+            providers: Vec::new(), // Empty by default, discovered on first startup
             logging: LoggingConfig::default(),
             oauth_clients: Vec::new(),
             mcp_servers: Vec::new(),
@@ -1655,6 +1812,7 @@ impl Default for AppConfig {
             streaming: StreamingConfig::default(),
             setup_wizard_shown: false,
             health_check: HealthCheckConfig::default(),
+            skills: SkillsConfig::default(),
         }
     }
 }
@@ -1720,6 +1878,19 @@ impl ProviderConfig {
             api_key_ref: None,
         }
     }
+
+    /// Create default LM Studio provider configuration
+    pub fn default_lmstudio() -> Self {
+        Self {
+            name: "LM Studio".to_string(),
+            provider_type: ProviderType::LMStudio,
+            enabled: true,
+            provider_config: Some(serde_json::json!({
+                "base_url": "http://localhost:1234/v1"
+            })),
+            api_key_ref: None,
+        }
+    }
 }
 
 impl OAuthClientConfig {
@@ -1738,20 +1909,21 @@ impl OAuthClientConfig {
 }
 
 impl Client {
-    /// Create a new client with auto-generated client_id
+    /// Create a new client with auto-generated client_id and explicit strategy
     /// The secret must be stored separately in the keychain
-    pub fn new(name: String) -> Self {
+    pub fn new_with_strategy(name: String, strategy_id: String) -> Self {
         let id = Uuid::new_v4().to_string();
         Self {
-            id: id.clone(),
+            id,
             name,
             enabled: true,
             allowed_llm_providers: Vec::new(),
             mcp_server_access: McpServerAccess::None,
             mcp_deferred_loading: false,
+            skills_access: SkillsAccess::None,
             created_at: Utc::now(),
             last_used: None,
-            strategy_id: "default".to_string(),
+            strategy_id,
             roots: None,
             mcp_sampling_enabled: false,
             mcp_sampling_requires_approval: true,
@@ -1849,6 +2021,21 @@ impl Client {
     /// Get MCP server access mode
     pub fn mcp_server_access(&self) -> &McpServerAccess {
         &self.mcp_server_access
+    }
+
+    /// Check if this client can access skills from a specific source path
+    pub fn can_access_skill_source(&self, source_path: &str) -> bool {
+        self.enabled && self.skills_access.can_access_by_source(source_path)
+    }
+
+    /// Set skills access mode
+    pub fn set_skills_access(&mut self, access: SkillsAccess) {
+        self.skills_access = access;
+    }
+
+    /// Get skills access mode
+    pub fn skills_access(&self) -> &SkillsAccess {
+        &self.skills_access
     }
 }
 
@@ -1961,7 +2148,7 @@ mod tests {
 
     #[test]
     fn test_client_with_roots_override() {
-        let mut client = Client::new("Test Client".to_string());
+        let mut client = Client::new_with_strategy("Test Client".to_string(), "test-strategy".to_string());
         client.roots = Some(vec![RootConfig {
             uri: "file:///custom/path".to_string(),
             name: Some("Custom".to_string()),
@@ -1981,7 +2168,7 @@ mod tests {
 
     #[test]
     fn test_client_sampling_config_defaults() {
-        let client = Client::new("Test Client".to_string());
+        let client = Client::new_with_strategy("Test Client".to_string(), "test-strategy".to_string());
 
         // Sampling disabled by default
         assert!(!client.mcp_sampling_enabled);
@@ -1996,7 +2183,7 @@ mod tests {
 
     #[test]
     fn test_client_with_sampling_enabled() {
-        let mut client = Client::new("Test Client".to_string());
+        let mut client = Client::new_with_strategy("Test Client".to_string(), "test-strategy".to_string());
         client.mcp_sampling_enabled = true;
         client.mcp_sampling_requires_approval = false;
         client.mcp_sampling_max_tokens = Some(2000);

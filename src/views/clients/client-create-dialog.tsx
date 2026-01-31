@@ -54,7 +54,7 @@ export function ClientCreateDialog({
         <DialogHeader>
           <DialogTitle>Create New Client</DialogTitle>
           <DialogDescription>
-            Create a new API client for accessing LocalRouter AI services.
+            Create a new API client for accessing LocalRouter services.
           </DialogDescription>
         </DialogHeader>
 

@@ -30,6 +30,7 @@ import { Switch } from "@/components/ui/Toggle"
 import { ClientConfigTab } from "./tabs/config-tab"
 import { ClientModelsTab } from "./tabs/models-tab"
 import { ClientMcpTab } from "./tabs/mcp-tab"
+import { ClientSkillsTab } from "./tabs/skills-tab"
 
 interface Client {
   id: string
@@ -41,6 +42,8 @@ interface Client {
   mcp_access_mode: "none" | "all" | "specific"
   mcp_servers: string[]
   mcp_deferred_loading: boolean
+  skills_access_mode: "none" | "all" | "specific"
+  skills_paths: string[]
   created_at: string
   last_used: string | null
 }
@@ -211,6 +214,7 @@ export function ClientDetail({
           <TabsTrigger value="config">Config</TabsTrigger>
           <TabsTrigger value="models">Models</TabsTrigger>
           <TabsTrigger value="mcp">MCP</TabsTrigger>
+          <TabsTrigger value="skills">Skills</TabsTrigger>
         </TabsList>
 
         <TabsContent value="config">
@@ -228,6 +232,10 @@ export function ClientDetail({
 
         <TabsContent value="mcp">
           <ClientMcpTab client={client} onUpdate={loadClient} />
+        </TabsContent>
+
+        <TabsContent value="skills">
+          <ClientSkillsTab client={client} onUpdate={loadClient} />
         </TabsContent>
       </Tabs>
 

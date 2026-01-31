@@ -14,6 +14,7 @@ mod providers;
 mod routellm;
 mod router;
 mod server;
+mod skills;
 mod ui;
 mod updater;
 mod utils;
@@ -21,15 +22,16 @@ mod utils;
 use std::sync::Arc;
 
 use tauri::{Listener, Manager};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use providers::factory::{
     AnthropicProviderFactory, CerebrasProviderFactory, CohereProviderFactory,
-    DeepInfraProviderFactory, GeminiProviderFactory, GroqProviderFactory, LMStudioProviderFactory,
-    MistralProviderFactory, OllamaProviderFactory, OpenAICompatibleProviderFactory,
-    OpenAIProviderFactory, OpenRouterProviderFactory, PerplexityProviderFactory,
-    TogetherAIProviderFactory, XAIProviderFactory,
+    DeepInfraProviderFactory, GeminiProviderFactory, GitHubCopilotProviderFactory,
+    GroqProviderFactory, LMStudioProviderFactory, MistralProviderFactory, OllamaProviderFactory,
+    OpenAICodexProviderFactory, OpenAICompatibleProviderFactory, OpenAIProviderFactory,
+    OpenRouterProviderFactory, PerplexityProviderFactory, TogetherAIProviderFactory,
+    XAIProviderFactory,
 };
 use providers::registry::ProviderRegistry;
 use server::ServerManager;
@@ -58,7 +60,7 @@ fn init_logging() {
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "localrouter_ai=info".into()),
+                .unwrap_or_else(|_| "localrouter=info".into()),
         )
         .with(
             tracing_subscriber::fmt::layer().with_writer(std::io::stderr), // Always to stderr
@@ -79,7 +81,7 @@ fn init_logging() {
 /// Ok on clean shutdown, Err on fatal errors
 async fn run_bridge_mode(client_id: Option<String>) -> anyhow::Result<()> {
     eprintln!("==========================================================");
-    eprintln!("LocalRouter AI - MCP Bridge Mode");
+    eprintln!("LocalRouter - MCP Bridge Mode");
     eprintln!("==========================================================");
     eprintln!();
     eprintln!("Connecting to LocalRouter server at http://localhost:3625");
@@ -114,7 +116,7 @@ async fn run_bridge_mode(client_id: Option<String>) -> anyhow::Result<()> {
 /// This is the default mode that starts the HTTP server, managers,
 /// and Tauri desktop window.
 async fn run_gui_mode() -> anyhow::Result<()> {
-    info!("Starting LocalRouter AI...");
+    info!("Starting LocalRouter...");
 
     // Log configuration directory
     let config_dir =
@@ -208,7 +210,44 @@ async fn run_gui_mode() -> anyhow::Result<()> {
     provider_registry.register_factory(Arc::new(CerebrasProviderFactory));
     provider_registry.register_factory(Arc::new(XAIProviderFactory));
     provider_registry.register_factory(Arc::new(LMStudioProviderFactory));
-    info!("Registered 15 provider factories");
+    // Subscription providers (OAuth-based)
+    provider_registry.register_factory(Arc::new(GitHubCopilotProviderFactory));
+    provider_registry.register_factory(Arc::new(OpenAICodexProviderFactory));
+    info!(
+        "Registered {} provider factories",
+        provider_registry.list_provider_types().len()
+    );
+
+    // On first startup, discover local LLM providers (Ollama, LM Studio)
+    {
+        let config = config_manager.get();
+        if !config.setup_wizard_shown && config.providers.is_empty() {
+            info!("First startup detected, discovering local LLM providers...");
+            let discovered = providers::factory::discover_local_providers().await;
+
+            if !discovered.is_empty() {
+                info!("Discovered {} local provider(s)", discovered.len());
+                if let Err(e) = config_manager.update(|cfg| {
+                    for provider in &discovered {
+                        let provider_config = match provider.provider_type.as_str() {
+                            "ollama" => config::ProviderConfig::default_ollama(),
+                            "lmstudio" => config::ProviderConfig::default_lmstudio(),
+                            _ => continue,
+                        };
+                        info!(
+                            "Auto-configuring discovered provider: {}",
+                            provider.instance_name
+                        );
+                        cfg.providers.push(provider_config);
+                    }
+                }) {
+                    warn!("Failed to save discovered providers to config: {}", e);
+                }
+            } else {
+                info!("No local LLM providers discovered");
+            }
+        }
+    }
 
     // Load provider instances from configuration
     info!("Loading provider instances from configuration...");
@@ -216,6 +255,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
     for provider_config in providers {
         let provider_type = match provider_config.provider_type {
             config::ProviderType::Ollama => "ollama",
+            config::ProviderType::LMStudio => "lmstudio",
             config::ProviderType::OpenAI => "openai",
             config::ProviderType::Anthropic => "anthropic",
             config::ProviderType::Gemini => "gemini",
@@ -386,6 +426,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
         .await?;
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(move |app| {
@@ -418,6 +459,45 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             app.manage(rate_limiter.clone());
             app.manage(oauth_manager.clone());
             app.manage(metrics_collector.clone());
+
+            // Initialize skill manager and script executor
+            let mut skill_manager = skills::SkillManager::new();
+            skill_manager.set_app_handle(app.handle().clone());
+            let skills_config = config_manager.get().skills.clone();
+            skill_manager.initial_scan(
+                &skills_config.paths,
+                &skills_config.disabled_skills,
+            );
+            skill_manager.start_cleanup_task();
+            let skill_manager = Arc::new(skill_manager);
+            let script_executor = Arc::new(skills::executor::ScriptExecutor::new());
+
+            // Start file watcher for skill sources
+            let skill_manager_for_watcher = skill_manager.clone();
+            let config_manager_for_watcher = config_manager.clone();
+            let watcher_paths = skills_config.paths.clone();
+            match skills::SkillWatcher::start(
+                watcher_paths,
+                Arc::new(move |_affected_paths| {
+                    let config = config_manager_for_watcher.get();
+                    skill_manager_for_watcher.rescan(
+                        &config.skills.paths,
+                        &config.skills.disabled_skills,
+                    );
+                }),
+            ) {
+                Ok(watcher) => {
+                    app.manage(Arc::new(watcher));
+                    info!("Skills file watcher started");
+                }
+                Err(e) => {
+                    warn!("Failed to start skills file watcher: {}", e);
+                }
+            }
+
+            app.manage(skill_manager.clone());
+            app.manage(script_executor.clone());
+            info!("Skills system initialized");
 
             // Get AppState from server manager and manage it for Tauri commands
             if let Some(app_state) = server_manager.get_state() {
@@ -731,7 +811,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                 info!("Running in TEST MODE - configuring window for testing");
                 if let Some(window) = app.get_webview_window("main") {
                     // Add [TEST] to window title
-                    let _ = window.set_title("LocalRouter AI [TEST]");
+                    let _ = window.set_title("LocalRouter [TEST]");
                     // Make window smaller (800x500)
                     let _ = window.set_size(tauri::LogicalSize::new(800.0, 500.0));
                     // Position in bottom-right corner
@@ -983,6 +1063,16 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands_routellm::routellm_unload,
             ui::commands_routellm::routellm_download_models,
             ui::commands_routellm::routellm_update_settings,
+            ui::commands_routellm::open_routellm_folder,
+            // Skills commands
+            ui::commands::list_skills,
+            ui::commands::get_skill,
+            ui::commands::get_skills_config,
+            ui::commands::add_skill_source,
+            ui::commands::remove_skill_source,
+            ui::commands::set_skill_enabled,
+            ui::commands::rescan_skills,
+            ui::commands::set_client_skills_access,
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {

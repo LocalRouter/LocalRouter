@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Script to run LocalRouter AI in dev mode with hot reload
+# Script to run LocalRouter in dev mode with hot reload
 # Uses cargo tauri dev
 
 set -e
@@ -9,7 +9,7 @@ set -e
 GREEN='\033[0;32m'
 NC='\033[0m' # No Color
 
-echo -e "${GREEN}Starting LocalRouter AI in development mode with hot reload...${NC}"
+echo -e "${GREEN}Starting LocalRouter in development mode with hot reload...${NC}"
 echo -e "Press Ctrl+C to stop\n"
 
 exec cargo tauri dev

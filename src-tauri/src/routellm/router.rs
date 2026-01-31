@@ -1,7 +1,7 @@
 //! RouteLLM Router wrapper
 //!
 //! This module provides a thin wrapper around the CandleRouter
-//! to integrate with LocalRouter AI's architecture.
+//! to integrate with LocalRouter's architecture.
 
 use crate::routellm::candle_router::CandleRouter;
 use crate::routellm::errors::RouteLLMResult;

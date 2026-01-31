@@ -6,11 +6,11 @@
 //! - Standard test request builders
 
 // Re-export MockKeychain from the main crate
-pub use localrouter_ai::api_keys::keychain_trait::MockKeychain;
+pub use localrouter::api_keys::keychain_trait::MockKeychain;
 
 use futures_util::{SinkExt, StreamExt};
-use localrouter_ai::mcp::protocol::{JsonRpcError, JsonRpcRequest, JsonRpcResponse};
-use localrouter_ai::utils::errors::AppResult;
+use localrouter::mcp::protocol::{JsonRpcError, JsonRpcRequest, JsonRpcResponse};
+use localrouter::utils::errors::AppResult;
 use parking_lot::RwLock;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -392,14 +392,14 @@ impl WebSocketMockServer {
         errors: Arc<RwLock<HashMap<String, (i32, String)>>>,
     ) -> AppResult<()> {
         let ws_stream = accept_async(stream).await.map_err(|e| {
-            localrouter_ai::utils::errors::AppError::Mcp(format!("WebSocket accept failed: {}", e))
+            localrouter::utils::errors::AppError::Mcp(format!("WebSocket accept failed: {}", e))
         })?;
 
         let (mut write, mut read) = ws_stream.split();
 
         while let Some(msg) = read.next().await {
             let msg = msg.map_err(|e| {
-                localrouter_ai::utils::errors::AppError::Mcp(format!("WebSocket read error: {}", e))
+                localrouter::utils::errors::AppError::Mcp(format!("WebSocket read error: {}", e))
             })?;
 
             if let Message::Text(text) = msg {
@@ -448,7 +448,7 @@ impl WebSocketMockServer {
                         .send(Message::Text(response_text))
                         .await
                         .map_err(|e| {
-                            localrouter_ai::utils::errors::AppError::Mcp(format!(
+                            localrouter::utils::errors::AppError::Mcp(format!(
                                 "WebSocket write error: {}",
                                 e
                             ))
@@ -457,7 +457,7 @@ impl WebSocketMockServer {
             } else if let Message::Ping(data) = msg {
                 // Respond to ping
                 write.send(Message::Pong(data)).await.map_err(|e| {
-                    localrouter_ai::utils::errors::AppError::Mcp(format!(
+                    localrouter::utils::errors::AppError::Mcp(format!(
                         "WebSocket pong error: {}",
                         e
                     ))

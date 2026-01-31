@@ -34,7 +34,7 @@ fn main() {
     println!("✓ Loading RouteLLM model...\n");
 
     // Load the model
-    use localrouter_ai::routellm::candle_router::CandleRouter;
+    use localrouter::routellm::candle_router::CandleRouter;
     let router = match CandleRouter::new(&model_path, &tokenizer_path) {
         Ok(r) => {
             println!("✓ Model loaded successfully!\n");
@@ -49,21 +49,21 @@ fn main() {
     // Test cases - create owned strings to avoid lifetime issues
     let medium_text = "a".repeat(500);
     let very_long_text = "a".repeat(10_000);
-    let long_text = "2026-01-21T04:22:37.434492Z  INFO localrouter_ai: Initializing rate limiter...\n\
-                     2026-01-21T04:22:37.434546Z  INFO localrouter_ai: Initializing metrics collector...\n\
-                     2026-01-21T04:22:37.438532Z  INFO localrouter_ai: Initializing RouteLLM service...\n\
-                     2026-01-21T04:22:37.438781Z  INFO localrouter_ai: RouteLLM service initialized with idle timeout: 600s\n\
-                     2026-01-21T04:22:37.438795Z  INFO localrouter_ai: Initializing router...\n\
-                     2026-01-21T04:22:37.438872Z  INFO localrouter_ai: Initializing web server...\n\
-                     2026-01-21T04:22:37.439066Z  INFO localrouter_ai::server: Starting web server on 127.0.0.1:33625\n\
-                     2026-01-21T04:22:37.439108Z  INFO localrouter_ai::server::state: Generated transient internal test bearer token for UI model testing\n\
-                     2026-01-21T04:22:37.439409Z  INFO localrouter_ai::monitoring::logger: Access logger initialized with directory: \"/Users/matus/Library/Logs/LocalRouter\"\n\
-                     2026-01-21T04:22:37.439446Z  INFO localrouter_ai::monitoring::mcp_logger: MCP access logger initialized with directory: \"/Users/matus/Library/Logs/LocalRouter\"\n\
-                     2026-01-21T04:22:37.439479Z  WARN localrouter_ai::api_keys::keychain_trait: Using file-based keychain storage (DEVELOPMENT MODE)\n\
-                     2026-01-21T04:22:37.444840Z  INFO localrouter_ai::server: Web server listening on http://127.0.0.1:33625\n\
-                     2026-01-21T04:22:37.444852Z  INFO localrouter_ai::server: OpenAI-compatible endpoints available at:\n\
-                     2026-01-21T04:22:37.445062Z  INFO localrouter_ai::server::manager: Server started successfully on port 33625\n\
-                     2026-01-21T04:22:37.698310Z  INFO localrouter_ai: Tauri app initialized\n";
+    let long_text = "2026-01-21T04:22:37.434492Z  INFO localrouter: Initializing rate limiter...\n\
+                     2026-01-21T04:22:37.434546Z  INFO localrouter: Initializing metrics collector...\n\
+                     2026-01-21T04:22:37.438532Z  INFO localrouter: Initializing RouteLLM service...\n\
+                     2026-01-21T04:22:37.438781Z  INFO localrouter: RouteLLM service initialized with idle timeout: 600s\n\
+                     2026-01-21T04:22:37.438795Z  INFO localrouter: Initializing router...\n\
+                     2026-01-21T04:22:37.438872Z  INFO localrouter: Initializing web server...\n\
+                     2026-01-21T04:22:37.439066Z  INFO localrouter::server: Starting web server on 127.0.0.1:33625\n\
+                     2026-01-21T04:22:37.439108Z  INFO localrouter::server::state: Generated transient internal test bearer token for UI model testing\n\
+                     2026-01-21T04:22:37.439409Z  INFO localrouter::monitoring::logger: Access logger initialized with directory: \"/Users/matus/Library/Logs/LocalRouter\"\n\
+                     2026-01-21T04:22:37.439446Z  INFO localrouter::monitoring::mcp_logger: MCP access logger initialized with directory: \"/Users/matus/Library/Logs/LocalRouter\"\n\
+                     2026-01-21T04:22:37.439479Z  WARN localrouter::api_keys::keychain_trait: Using file-based keychain storage (DEVELOPMENT MODE)\n\
+                     2026-01-21T04:22:37.444840Z  INFO localrouter::server: Web server listening on http://127.0.0.1:33625\n\
+                     2026-01-21T04:22:37.444852Z  INFO localrouter::server: OpenAI-compatible endpoints available at:\n\
+                     2026-01-21T04:22:37.445062Z  INFO localrouter::server::manager: Server started successfully on port 33625\n\
+                     2026-01-21T04:22:37.698310Z  INFO localrouter: Tauri app initialized\n";
 
     let test_cases = vec![
         ("Short text", "What is 2+2?"),

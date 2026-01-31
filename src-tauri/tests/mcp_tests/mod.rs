@@ -1,7 +1,7 @@
 //! MCP Integration Test Suite
 //!
 //! This module provides comprehensive testing for the Model Context Protocol (MCP)
-//! implementation in LocalRouter AI.
+//! implementation in LocalRouter.
 //!
 //! ## Test Organization
 //!

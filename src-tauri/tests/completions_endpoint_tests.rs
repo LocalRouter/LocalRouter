@@ -8,7 +8,7 @@
 //! - Format conversion (chat to completion format)
 
 use futures::StreamExt;
-use localrouter_ai::providers::{
+use localrouter::providers::{
     openai_compatible::OpenAICompatibleProvider, ChatMessageContent, ModelProvider,
 };
 use serde_json::json;
@@ -25,10 +25,10 @@ fn create_test_provider(base_url: String) -> OpenAICompatibleProvider {
     OpenAICompatibleProvider::new("test".to_string(), base_url, Some("test-key".to_string()))
 }
 
-fn standard_completion_request() -> localrouter_ai::providers::CompletionRequest {
-    localrouter_ai::providers::CompletionRequest {
+fn standard_completion_request() -> localrouter::providers::CompletionRequest {
+    localrouter::providers::CompletionRequest {
         model: "test-model".to_string(),
-        messages: vec![localrouter_ai::providers::ChatMessage {
+        messages: vec![localrouter::providers::ChatMessage {
             role: "user".to_string(),
             content: ChatMessageContent::Text("Say hello".to_string()),
             tool_calls: None,
@@ -54,7 +54,7 @@ fn standard_completion_request() -> localrouter_ai::providers::CompletionRequest
     }
 }
 
-fn streaming_completion_request() -> localrouter_ai::providers::CompletionRequest {
+fn streaming_completion_request() -> localrouter::providers::CompletionRequest {
     let mut req = standard_completion_request();
     req.stream = true;
     req

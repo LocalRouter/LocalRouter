@@ -14,7 +14,7 @@
 
 use super::common::*;
 use futures::StreamExt;
-use localrouter_ai::providers::{
+use localrouter::providers::{
     groq::GroqProvider, lmstudio::LMStudioProvider, openai_compatible::OpenAICompatibleProvider,
     openrouter::OpenRouterProvider, ModelProvider,
 };
@@ -58,7 +58,7 @@ async fn test_openai_compatible_health_check() {
 
     assert_eq!(
         health.status,
-        localrouter_ai::providers::HealthStatus::Healthy
+        localrouter::providers::HealthStatus::Healthy
     );
     assert!(health.latency_ms.is_some());
     assert!(health.error_message.is_none());
@@ -207,7 +207,7 @@ async fn test_lmstudio_health_check() {
 
     assert_eq!(
         health.status,
-        localrouter_ai::providers::HealthStatus::Healthy
+        localrouter::providers::HealthStatus::Healthy
     );
 }
 

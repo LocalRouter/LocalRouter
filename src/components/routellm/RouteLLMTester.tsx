@@ -1,6 +1,6 @@
 /**
  * RouteLLM Tester Component
- * Allows users to test routing predictions with custom prompts
+ * Allows users to test selection predictions with custom prompts
  */
 
 import React, { useState } from 'react';
@@ -58,7 +58,7 @@ export const RouteLLMTester: React.FC<RouteLLMTesterProps> = ({ threshold }) => 
         <textarea
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
-          placeholder="Enter a prompt to test routing..."
+          placeholder="Enter a prompt to test selection..."
           className="w-full p-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none"
           rows={3}
         />
@@ -82,7 +82,7 @@ export const RouteLLMTester: React.FC<RouteLLMTesterProps> = ({ threshold }) => 
         disabled={!prompt.trim() || loading}
         className="w-full px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 dark:bg-blue-600 dark:hover:bg-blue-700 disabled:bg-gray-400 dark:disabled:bg-gray-600 disabled:cursor-not-allowed transition-colors font-medium"
       >
-        {loading ? 'Testing...' : 'Test Routing'}
+        {loading ? 'Testing...' : 'Test Selection'}
       </button>
 
       {error && (
@@ -95,7 +95,7 @@ export const RouteLLMTester: React.FC<RouteLLMTesterProps> = ({ threshold }) => 
         <div className="p-4 bg-gray-50 dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 space-y-3">
           <div className="flex items-center justify-between">
             <span className="font-semibold text-gray-900 dark:text-gray-100">
-              Routing Decision:
+              Selection Decision:
             </span>
             <span
               className={`inline-flex items-center px-3 py-1 rounded-md text-sm font-medium ${

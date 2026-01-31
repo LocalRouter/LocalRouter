@@ -8,18 +8,18 @@
 //! - Parent lifecycle management
 //! - Strategy metrics tracking
 
-use localrouter_ai::config::ConfigManager;
-use localrouter_ai::config::{
+use localrouter::config::ConfigManager;
+use localrouter::config::{
     AppConfig, AutoModelConfig, AvailableModelsSelection, Client, McpServerAccess,
     RateLimitTimeWindow, RateLimitType, Strategy, StrategyRateLimit,
 };
-use localrouter_ai::monitoring::metrics::MetricsCollector;
-use localrouter_ai::monitoring::storage::MetricsDatabase;
-use localrouter_ai::providers::health::HealthCheckManager;
-use localrouter_ai::providers::registry::ProviderRegistry;
-use localrouter_ai::providers::{ChatMessage, ChatMessageContent, CompletionRequest};
-use localrouter_ai::router::{RateLimiterManager, Router};
-use localrouter_ai::utils::errors::AppError;
+use localrouter::monitoring::metrics::MetricsCollector;
+use localrouter::monitoring::storage::MetricsDatabase;
+use localrouter::providers::health::HealthCheckManager;
+use localrouter::providers::registry::ProviderRegistry;
+use localrouter::providers::{ChatMessage, ChatMessageContent, CompletionRequest};
+use localrouter::router::{RateLimiterManager, Router};
+use localrouter::utils::errors::AppError;
 use std::sync::Arc;
 
 /// Helper to create a test config with client and strategy
@@ -314,7 +314,7 @@ async fn test_auto_routing_without_config() {
 #[test]
 fn test_error_classification_rate_limited() {
     let error = AppError::RateLimitExceeded;
-    let router_error = localrouter_ai::router::RouterError::classify(&error, "openai", "gpt-4");
+    let router_error = localrouter::router::RouterError::classify(&error, "openai", "gpt-4");
 
     assert!(router_error.should_retry());
     assert!(router_error.to_log_string().contains("RATE_LIMITED"));
@@ -323,7 +323,7 @@ fn test_error_classification_rate_limited() {
 #[test]
 fn test_error_classification_policy_violation() {
     let error = AppError::Provider("content_policy violation".to_string());
-    let router_error = localrouter_ai::router::RouterError::classify(&error, "openai", "gpt-4");
+    let router_error = localrouter::router::RouterError::classify(&error, "openai", "gpt-4");
 
     assert!(router_error.should_retry());
     assert!(router_error.to_log_string().contains("POLICY_VIOLATION"));
@@ -332,7 +332,7 @@ fn test_error_classification_policy_violation() {
 #[test]
 fn test_error_classification_context_length() {
     let error = AppError::Provider("context length exceeded".to_string());
-    let router_error = localrouter_ai::router::RouterError::classify(&error, "openai", "gpt-4");
+    let router_error = localrouter::router::RouterError::classify(&error, "openai", "gpt-4");
 
     assert!(router_error.should_retry());
     assert!(router_error
@@ -343,7 +343,7 @@ fn test_error_classification_context_length() {
 #[test]
 fn test_error_classification_unreachable() {
     let error = AppError::Provider("connection timeout".to_string());
-    let router_error = localrouter_ai::router::RouterError::classify(&error, "openai", "gpt-4");
+    let router_error = localrouter::router::RouterError::classify(&error, "openai", "gpt-4");
 
     assert!(router_error.should_retry());
     assert!(router_error.to_log_string().contains("UNREACHABLE"));
@@ -355,7 +355,7 @@ fn test_error_classification_io_error() {
         std::io::ErrorKind::ConnectionRefused,
         "connection refused",
     ));
-    let router_error = localrouter_ai::router::RouterError::classify(&error, "openai", "gpt-4");
+    let router_error = localrouter::router::RouterError::classify(&error, "openai", "gpt-4");
 
     assert!(router_error.should_retry());
     assert!(router_error.to_log_string().contains("UNREACHABLE"));
@@ -364,7 +364,7 @@ fn test_error_classification_io_error() {
 #[test]
 fn test_error_classification_other_non_retryable() {
     let error = AppError::Config("Invalid request".to_string());
-    let router_error = localrouter_ai::router::RouterError::classify(&error, "openai", "gpt-4");
+    let router_error = localrouter::router::RouterError::classify(&error, "openai", "gpt-4");
 
     assert!(!router_error.should_retry());
     assert!(router_error.to_log_string().contains("ERROR"));
@@ -941,8 +941,8 @@ async fn test_auto_routing_strategy_rate_limits_checked_per_model() {
     // Verify that strategy rate limits are checked for each model attempt
     // This prevents the first model from being tried if its rate limit is exceeded
 
-    use localrouter_ai::config::RateLimitTimeWindow;
-    use localrouter_ai::config::RateLimitType;
+    use localrouter::config::RateLimitTimeWindow;
+    use localrouter::config::RateLimitType;
 
     let auto_config = AutoModelConfig {
         enabled: true,
@@ -961,7 +961,7 @@ async fn test_auto_routing_strategy_rate_limits_checked_per_model() {
     };
 
     // Set an impossible rate limit (0 requests per minute)
-    let rate_limits = vec![localrouter_ai::config::StrategyRateLimit {
+    let rate_limits = vec![localrouter::config::StrategyRateLimit {
         limit_type: RateLimitType::Requests,
         value: 0.0, // Zero requests allowed
         time_window: RateLimitTimeWindow::Minute,
@@ -995,7 +995,7 @@ async fn test_auto_routing_strategy_rate_limits_checked_per_model() {
 #[test]
 fn test_router_error_should_retry_logic() {
     // Verify that retryable errors are correctly classified
-    use localrouter_ai::router::RouterError;
+    use localrouter::router::RouterError;
 
     let retryable_errors = vec![
         RouterError::RateLimited {

@@ -5,7 +5,7 @@
 
 use super::common::*;
 use super::request_validation::*;
-use localrouter_ai::mcp::transport::{StdioTransport, Transport};
+use localrouter::mcp::transport::{StdioTransport, Transport};
 use serde_json::json;
 use std::collections::HashMap;
 use std::time::Duration;

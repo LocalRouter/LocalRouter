@@ -101,7 +101,7 @@ pub async fn mcp_gateway_get_handler(
         return (
             axum::http::StatusCode::OK,
             [(header::CONTENT_TYPE, "text/plain")],
-            "LocalRouter AI - Unified MCP Gateway\n\
+            "LocalRouter - Unified MCP Gateway\n\
              \n\
              This endpoint supports both SSE and JSON-RPC:\n\
                GET  / (Accept: text/event-stream) - SSE notification stream\n\
@@ -363,7 +363,7 @@ pub async fn mcp_gateway_handler(
     // Handle internal test client specially (for UI testing)
     let (client, allowed_servers) = if client_id == "internal-test" {
         // Create a synthetic client with full MCP access for testing
-        let mut test_client = crate::config::Client::new("Internal Test Client".to_string());
+        let mut test_client = crate::config::Client::new_with_strategy("Internal Test Client".to_string(), "internal-test".to_string());
         test_client.id = "internal-test".to_string();
         test_client.mcp_server_access = McpServerAccess::All;
         test_client.mcp_sampling_enabled = true;
@@ -660,7 +660,7 @@ pub async fn mcp_server_handler(
     // Handle internal test client specially (for UI testing)
     let client = if client_id == "internal-test" {
         // Create a synthetic client with full MCP access for testing
-        let mut test_client = crate::config::Client::new("Internal Test Client".to_string());
+        let mut test_client = crate::config::Client::new_with_strategy("Internal Test Client".to_string(), "internal-test".to_string());
         test_client.id = "internal-test".to_string();
         test_client.mcp_server_access = McpServerAccess::All;
         test_client.mcp_sampling_enabled = true;
@@ -1086,7 +1086,7 @@ pub async fn mcp_server_sse_handler(
             "Internal test client establishing SSE connection to MCP server {}",
             server_id
         );
-        let mut test_client = crate::config::Client::new("Internal Test Client".to_string());
+        let mut test_client = crate::config::Client::new_with_strategy("Internal Test Client".to_string(), "internal-test".to_string());
         test_client.id = "internal-test".to_string();
         test_client.mcp_server_access = McpServerAccess::All;
         test_client.mcp_sampling_enabled = true;
@@ -1418,7 +1418,7 @@ pub async fn mcp_server_streaming_handler(
 
     // Handle internal test client specially (for UI testing)
     let client = if client_id == "internal-test" {
-        let mut test_client = crate::config::Client::new("Internal Test Client".to_string());
+        let mut test_client = crate::config::Client::new_with_strategy("Internal Test Client".to_string(), "internal-test".to_string());
         test_client.id = "internal-test".to_string();
         test_client.mcp_server_access = McpServerAccess::All;
         test_client.mcp_sampling_enabled = true;

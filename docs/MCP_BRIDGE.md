@@ -1,6 +1,6 @@
 # MCP Bridge Mode
 
-LocalRouter AI can run in **bridge mode**, acting as a lightweight STDIO ↔ HTTP proxy that allows external MCP clients (Claude Desktop, Cursor, VS Code, etc.) to connect to LocalRouter's unified MCP gateway.
+LocalRouter can run in **bridge mode**, acting as a lightweight STDIO ↔ HTTP proxy that allows external MCP clients (Claude Desktop, Cursor, VS Code, etc.) to connect to LocalRouter's unified MCP gateway.
 
 ## Overview
 
@@ -54,7 +54,7 @@ The bridge requires the LocalRouter GUI to be running (to provide the HTTP serve
 open /Applications/LocalRouter\ AI.app
 
 # Or via command line
-localrouter-ai
+localrouter
 ```
 
 ### Step 3: Configure External MCP Client
@@ -76,7 +76,7 @@ export LOCALROUTER_CLIENT_SECRET=lr_your_secret_here
 Then invoke bridge mode:
 
 ```bash
-localrouter-ai --mcp-bridge --client-id claude_desktop
+localrouter --mcp-bridge --client-id claude_desktop
 ```
 
 ### 2. Auto-Detection (Simplest)
@@ -84,7 +84,7 @@ localrouter-ai --mcp-bridge --client-id claude_desktop
 If you've run the LocalRouter GUI at least once, client secrets are stored in your OS keychain. Simply invoke:
 
 ```bash
-localrouter-ai --mcp-bridge --client-id claude_desktop
+localrouter --mcp-bridge --client-id claude_desktop
 ```
 
 The bridge will automatically load the secret from the keychain.
@@ -94,7 +94,7 @@ The bridge will automatically load the secret from the keychain.
 If you don't specify `--client-id`, the bridge auto-detects the first enabled client with MCP servers:
 
 ```bash
-localrouter-ai --mcp-bridge
+localrouter --mcp-bridge
 ```
 
 ## Usage
@@ -103,20 +103,20 @@ localrouter-ai --mcp-bridge
 
 ```bash
 # Auto-detect first enabled client with MCP servers
-localrouter-ai --mcp-bridge
+localrouter --mcp-bridge
 
 # Specify client ID explicitly
-localrouter-ai --mcp-bridge --client-id claude_desktop
+localrouter --mcp-bridge --client-id claude_desktop
 
 # With client secret via environment variable
-LOCALROUTER_CLIENT_SECRET=lr_secret localrouter-ai --mcp-bridge --client-id claude_desktop
+LOCALROUTER_CLIENT_SECRET=lr_secret localrouter --mcp-bridge --client-id claude_desktop
 ```
 
 ### Environment Variables
 
 - `LOCALROUTER_CLIENT_SECRET`: Client secret for authentication (overrides keychain)
 - `LOCALROUTER_KEYCHAIN`: Force keychain type (`file` or `system`)
-- `RUST_LOG`: Logging level (e.g., `localrouter_ai=debug`)
+- `RUST_LOG`: Logging level (e.g., `localrouter=debug`)
 
 ## Integration Examples
 
@@ -128,7 +128,7 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) o
 {
   "mcpServers": {
     "localrouter": {
-      "command": "/Applications/LocalRouter AI.app/Contents/MacOS/localrouter-ai",
+      "command": "/Applications/LocalRouter.app/Contents/MacOS/localrouter",
       "args": ["--mcp-bridge", "--client-id", "claude_desktop"],
       "env": {
         "LOCALROUTER_CLIENT_SECRET": "lr_your_secret_here"
@@ -140,10 +140,10 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) o
 
 **Note**: Replace the `command` path with the actual path to your LocalRouter binary:
 
-- macOS app: `/Applications/LocalRouter AI.app/Contents/MacOS/localrouter-ai`
-- macOS Homebrew: `/usr/local/bin/localrouter-ai`
-- Linux: `/usr/bin/localrouter-ai` or `~/.local/bin/localrouter-ai`
-- Windows: `C:\Program Files\LocalRouter AI\localrouter-ai.exe`
+- macOS app: `/Applications/LocalRouter.app/Contents/MacOS/localrouter`
+- macOS Homebrew: `/usr/local/bin/localrouter`
+- Linux: `/usr/bin/localrouter` or `~/.local/bin/localrouter`
+- Windows: `C:\Program Files\LocalRouter\localrouter.exe`
 
 Get your client secret from the LocalRouter GUI (Clients tab → Create/View Client).
 
@@ -155,7 +155,7 @@ Edit `~/.cursor/mcp.json`:
 {
   "mcpServers": {
     "localrouter": {
-      "command": "/path/to/localrouter-ai",
+      "command": "/path/to/localrouter",
       "args": ["--mcp-bridge", "--client-id", "cursor"],
       "env": {
         "LOCALROUTER_CLIENT_SECRET": "lr_your_secret_here"
@@ -173,7 +173,7 @@ Edit `.vscode/mcp.json` in your workspace:
 {
   "servers": {
     "localrouter": {
-      "command": "/path/to/localrouter-ai",
+      "command": "/path/to/localrouter",
       "args": ["--mcp-bridge", "--client-id", "vscode"],
       "env": {
         "LOCALROUTER_CLIENT_SECRET": "lr_your_secret_here"
@@ -252,7 +252,7 @@ When enabled:
 
 **Error**: `HTTP 404 error`
 
-**Solution**: Update to the latest version of LocalRouter AI. The MCP endpoint may be missing.
+**Solution**: Update to the latest version of LocalRouter. The MCP endpoint may be missing.
 
 ### No Tools Visible
 
@@ -285,7 +285,7 @@ Bridge mode logs to **stderr only** (stdout is reserved for JSON-RPC responses).
 When running from terminal:
 
 ```bash
-localrouter-ai --mcp-bridge 2>&1 | tee bridge.log
+localrouter --mcp-bridge 2>&1 | tee bridge.log
 ```
 
 When configured in external client, check the client's log files:
@@ -297,7 +297,7 @@ When configured in external client, check the client's log files:
 ### Adjust Log Level
 
 ```bash
-RUST_LOG=localrouter_ai=debug localrouter-ai --mcp-bridge
+RUST_LOG=localrouter=debug localrouter --mcp-bridge
 ```
 
 Log levels: `error`, `warn`, `info`, `debug`, `trace`
@@ -331,10 +331,10 @@ Run multiple bridge instances for different clients:
 
 ```bash
 # Terminal 1: Claude Desktop
-LOCALROUTER_CLIENT_SECRET=lr_secret1 localrouter-ai --mcp-bridge --client-id claude_desktop
+LOCALROUTER_CLIENT_SECRET=lr_secret1 localrouter --mcp-bridge --client-id claude_desktop
 
 # Terminal 2: Cursor
-LOCALROUTER_CLIENT_SECRET=lr_secret2 localrouter-ai --mcp-bridge --client-id cursor
+LOCALROUTER_CLIENT_SECRET=lr_secret2 localrouter --mcp-bridge --client-id cursor
 ```
 
 Each bridge instance is isolated and uses its own client configuration.
@@ -352,7 +352,7 @@ server_url: "http://custom-host:custom-port/mcp".to_string(),
 For development, use file-based keychain to avoid macOS keychain prompts:
 
 ```bash
-LOCALROUTER_KEYCHAIN=file localrouter-ai --mcp-bridge
+LOCALROUTER_KEYCHAIN=file localrouter --mcp-bridge
 ```
 
 **WARNING**: File-based keychain stores secrets in **plain text**. Only use for development with test credentials.
@@ -444,7 +444,7 @@ Clients consume tools from MCP servers via LocalRouter's unified gateway.
 **A**:
 
 1. Check stderr output (all logs go there)
-2. Set `RUST_LOG=localrouter_ai=debug` for verbose logs
+2. Set `RUST_LOG=localrouter=debug` for verbose logs
 3. Check LocalRouter GUI logs (Help → View Logs)
 4. Check external client logs (see Logging section)
 
@@ -458,4 +458,4 @@ For issues, questions, or feature requests:
 
 ## License
 
-LocalRouter AI is licensed under the AGPL-3.0-or-later license. See LICENSE file for details.
+LocalRouter is licensed under the AGPL-3.0-or-later license. See LICENSE file for details.

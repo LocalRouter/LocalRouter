@@ -12,6 +12,8 @@ use crate::mcp::protocol::{
     McpTool,
 };
 use crate::router::Router;
+use crate::skills::executor::ScriptExecutor;
+use crate::skills::manager::SkillManager;
 use crate::utils::errors::{AppError, AppResult};
 
 use super::deferred::{create_search_tool, search_prompts, search_resources, search_tools};
@@ -46,6 +48,12 @@ pub struct McpGateway {
 
     /// Elicitation manager for handling structured user input requests
     elicitation_manager: Arc<ElicitationManager>,
+
+    /// Skill manager (optional, for AgentSkills.io support)
+    skill_manager: Option<Arc<SkillManager>>,
+
+    /// Script executor for running skill scripts (optional)
+    script_executor: Option<Arc<ScriptExecutor>>,
 }
 
 impl McpGateway {
@@ -84,7 +92,19 @@ impl McpGateway {
             notification_broadcast,
             router,
             elicitation_manager,
+            skill_manager: None,
+            script_executor: None,
         }
+    }
+
+    /// Set skill manager and script executor for AgentSkills.io support
+    pub fn set_skill_support(
+        &mut self,
+        skill_manager: Arc<SkillManager>,
+        script_executor: Arc<ScriptExecutor>,
+    ) {
+        self.skill_manager = Some(skill_manager);
+        self.script_executor = Some(script_executor);
     }
 
     /// Build a mapping from server ID (UUID) to human-readable server name
@@ -113,6 +133,27 @@ impl McpGateway {
         roots: Vec<crate::mcp::protocol::Root>,
         request: JsonRpcRequest,
     ) -> AppResult<JsonRpcResponse> {
+        self.handle_request_with_skills(
+            client_id,
+            allowed_servers,
+            enable_deferred_loading,
+            roots,
+            crate::config::SkillsAccess::None,
+            request,
+        )
+        .await
+    }
+
+    /// Handle an MCP gateway request with skill access
+    pub async fn handle_request_with_skills(
+        &self,
+        client_id: &str,
+        allowed_servers: Vec<String>,
+        enable_deferred_loading: bool,
+        roots: Vec<crate::mcp::protocol::Root>,
+        skills_access: crate::config::SkillsAccess,
+        request: JsonRpcRequest,
+    ) -> AppResult<JsonRpcResponse> {
         let method = request.method.clone();
         let request_id = request.id.clone();
         let is_broadcast = should_broadcast(&method);
@@ -130,6 +171,12 @@ impl McpGateway {
         let session: Arc<RwLock<GatewaySession>> = self
             .get_or_create_session(client_id, allowed_servers, enable_deferred_loading, roots)
             .await?;
+
+        // Update skills access on session
+        if skills_access.has_any_access() {
+            let mut session_write = session.write().await;
+            session_write.skills_access = skills_access;
+        }
 
         // Update last activity
         {
@@ -1008,17 +1055,21 @@ impl McpGateway {
         // Check for deferred loading
         if let Some(deferred) = &session_read.deferred_loading {
             if deferred.enabled {
-                // Return only search tool + activated tools
-                let mut tools = vec![create_search_tool()];
+                // Return only search tool + activated tools + skill tools
+                let mut tools: Vec<serde_json::Value> =
+                    vec![serde_json::to_value(create_search_tool()).unwrap_or_default()];
 
                 for tool_name in &deferred.activated_tools {
                     if let Some(tool) = deferred.full_catalog.iter().find(|t| t.name == *tool_name)
                     {
-                        tools.push(tool.clone());
+                        tools.push(serde_json::to_value(tool).unwrap_or_default());
                     }
                 }
 
+                let skills_access = session_read.skills_access.clone();
                 drop(session_read);
+
+                self.append_skill_tools(&mut tools, &skills_access);
 
                 return Ok(JsonRpcResponse::success(
                     request.id.unwrap_or(Value::Null),
@@ -1030,8 +1081,16 @@ impl McpGateway {
         // Check cache
         if let Some(cached) = &session_read.cached_tools {
             if cached.is_valid() {
-                let tools = cached.data.clone();
+                let mut tools: Vec<serde_json::Value> = cached
+                    .data
+                    .iter()
+                    .map(|t| serde_json::to_value(t).unwrap_or_default())
+                    .collect();
+
+                let skills_access = session_read.skills_access.clone();
                 drop(session_read);
+
+                self.append_skill_tools(&mut tools, &skills_access);
 
                 return Ok(JsonRpcResponse::success(
                     request.id.unwrap_or(Value::Null),
@@ -1066,9 +1125,17 @@ impl McpGateway {
         } else {
             None
         };
+        let skills_access = session_read.skills_access.clone();
         drop(session_read);
 
-        let mut result = json!({"tools": tools});
+        let mut all_tools: Vec<serde_json::Value> = tools
+            .iter()
+            .map(|t| serde_json::to_value(t).unwrap_or_default())
+            .collect();
+
+        self.append_skill_tools(&mut all_tools, &skills_access);
+
+        let mut result = json!({"tools": all_tools});
         if let Some(failures) = failures {
             result["_meta"] = json!({
                 "partial_failure": true,
@@ -1381,7 +1448,7 @@ impl McpGateway {
             .and_then(|p| p.get("name"))
             .and_then(|n| n.as_str())
         {
-            Some(name) => name,
+            Some(name) => name.to_string(),
             None => {
                 return Ok(JsonRpcResponse::error(
                     request.id.unwrap_or(Value::Null),
@@ -1395,17 +1462,24 @@ impl McpGateway {
             return self.handle_search_tool(session, request).await;
         }
 
+        // Check if it's a skill tool
+        if self.is_skill_tool(&tool_name) {
+            return self
+                .handle_skill_tool_call(session, &tool_name, request)
+                .await;
+        }
+
         // Look up tool in session mapping to get server_id (UUID) and original_name
         // The mapping stores: namespaced_name -> (server_id, original_name)
         // where namespaced_name uses human-readable server name but server_id is the UUID for routing
         let session_read = session.read().await;
-        let (server_id, original_name) = match session_read.tool_mapping.get(tool_name) {
+        let (server_id, original_name) = match session_read.tool_mapping.get(&tool_name) {
             Some((id, name)) => (id.clone(), name.clone()),
             None => {
                 drop(session_read);
                 return Ok(JsonRpcResponse::error(
                     request.id.unwrap_or(Value::Null),
-                    JsonRpcError::tool_not_found(tool_name),
+                    JsonRpcError::tool_not_found(&tool_name),
                 ));
             }
         };
@@ -1840,5 +1914,98 @@ impl McpGateway {
     /// Get the elicitation manager (for submitting responses from external clients)
     pub fn get_elicitation_manager(&self) -> Arc<ElicitationManager> {
         self.elicitation_manager.clone()
+    }
+
+    /// Append skill tools to a tools list if the client has skills access
+    fn append_skill_tools(&self, tools: &mut Vec<serde_json::Value>, access: &crate::config::SkillsAccess) {
+        if access.has_any_access() {
+            if let Some(ref sm) = self.skill_manager {
+                let skill_tools = crate::skills::mcp_tools::build_skill_tools(sm, access);
+                for st in skill_tools {
+                    tools.push(serde_json::to_value(&st).unwrap_or_default());
+                }
+            }
+        }
+    }
+
+    /// Check if a tool name matches a skill tool pattern
+    fn is_skill_tool(&self, tool_name: &str) -> bool {
+        tool_name.starts_with("show-skill_")
+            || tool_name == "get-skill-resource"
+            || tool_name == "run-skill-script"
+            || tool_name == "get-skill-script-run"
+    }
+
+    /// Handle a skill tool call
+    async fn handle_skill_tool_call(
+        &self,
+        session: Arc<RwLock<GatewaySession>>,
+        tool_name: &str,
+        request: JsonRpcRequest,
+    ) -> AppResult<JsonRpcResponse> {
+        let (skill_manager, script_executor) =
+            match (self.skill_manager.as_ref(), self.script_executor.as_ref()) {
+                (Some(sm), Some(se)) => (sm, se),
+                _ => {
+                    return Ok(JsonRpcResponse::error(
+                        request.id.unwrap_or(Value::Null),
+                        JsonRpcError::custom(
+                            -32601,
+                            "Skills support is not configured".to_string(),
+                            None,
+                        ),
+                    ));
+                }
+            };
+
+        // Get skills access from session
+        let session_read = session.read().await;
+        let skills_access = session_read.skills_access.clone();
+        drop(session_read);
+
+        // Extract arguments from params
+        let arguments = request
+            .params
+            .as_ref()
+            .and_then(|p| p.get("arguments"))
+            .cloned()
+            .unwrap_or(json!({}));
+
+        match crate::skills::mcp_tools::handle_skill_tool_call(
+            tool_name,
+            &arguments,
+            skill_manager,
+            script_executor,
+            &skills_access,
+        )
+        .await
+        {
+            Ok(Some(response)) => Ok(JsonRpcResponse::success(
+                request.id.unwrap_or(Value::Null),
+                response,
+            )),
+            Ok(None) => Ok(JsonRpcResponse::error(
+                request.id.unwrap_or(Value::Null),
+                JsonRpcError::tool_not_found(tool_name),
+            )),
+            Err(e) => Ok(JsonRpcResponse::success(
+                request.id.unwrap_or(Value::Null),
+                json!({
+                    "content": [{
+                        "type": "text",
+                        "text": format!("Error: {}", e)
+                    }],
+                    "isError": true
+                }),
+            )),
+        }
+    }
+
+    /// Get a session by client ID
+    pub fn get_session(
+        &self,
+        client_id: &str,
+    ) -> Option<Arc<RwLock<GatewaySession>>> {
+        self.sessions.get(client_id).map(|s| s.clone())
     }
 }

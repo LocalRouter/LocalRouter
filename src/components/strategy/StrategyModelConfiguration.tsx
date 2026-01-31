@@ -7,22 +7,25 @@
  * 1. Allowed Models mode - Client sees and can choose from selected models
  * 2. Auto Route mode - Client sees only the auto router model; LocalRouter
  *    selects the best model automatically based on prioritization and optional
- *    Strong/Weak routing (RouteLLM)
+ *    Strong/Weak routing
  *
  * Used in:
  * - Client -> Models tab
- * - Resources -> Model Routing tab
+ * - Resources -> Model Strategies tab
  */
 
 import {useCallback, useEffect, useRef, useState} from "react"
 import {invoke} from "@tauri-apps/api/core"
 import {listen} from "@tauri-apps/api/event"
-import {Bot, Brain, MessageSquareWarning} from "lucide-react"
+import {toast} from "sonner"
+import {Bot, Brain, Download, MessageSquareWarning, Trash2} from "lucide-react"
 import {Card, CardContent, CardDescription, CardHeader, CardTitle,} from "@/components/ui/Card"
 import {Select, SelectContent, SelectItem, SelectTrigger, SelectValue} from "@/components/ui/Select"
 import {Switch} from "@/components/ui/Toggle"
 import {Input} from "@/components/ui/Input"
 import {Badge} from "@/components/ui/Badge"
+import {Button} from "@/components/ui/Button"
+import {Progress} from "@/components/ui/progress"
 import {Label} from "@/components/ui/label"
 import {cn} from "@/lib/utils"
 import {AllowedModelsSelection, AllowedModelsSelector, Model,} from "./AllowedModelsSelector"
@@ -96,6 +99,10 @@ export function StrategyModelConfiguration({
     const [isTesting, setIsTesting] = useState(false)
     const [testResult, setTestResult] = useState<RouteLLMTestResult | null>(null)
 
+    // RouteLLM download state
+    const [isDownloading, setIsDownloading] = useState(false)
+    const [downloadProgress, setDownloadProgress] = useState(0)
+
     // Debounce refs for update operations
     const updateTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
     const pendingUpdatesRef = useRef<Partial<StrategyConfig> | null>(null)
@@ -120,6 +127,10 @@ export function StrategyModelConfiguration({
             try {
                 const status = await invoke<RouteLLMStatus>("routellm_get_status")
                 setRoutellmStatus(status)
+                // Sync downloading state
+                if (status.state === 'downloading') {
+                    setIsDownloading(true)
+                }
             } catch (error) {
                 console.error("Failed to load RouteLLM status:", error)
             }
@@ -127,9 +138,24 @@ export function StrategyModelConfiguration({
 
         loadRouteLLMStatus()
 
+        // Listen for download progress events
+        const unlistenProgress = listen("routellm-download-progress", (event: any) => {
+            const { progress } = event.payload
+            setDownloadProgress(progress * 100)
+        })
+
         // Listen for download events to update status
         const unlistenComplete = listen("routellm-download-complete", () => {
+            setIsDownloading(false)
+            setDownloadProgress(100)
             loadRouteLLMStatus()
+            toast.success("Strong/Weak model downloaded successfully!")
+        })
+
+        // Listen for download failures
+        const unlistenFailed = listen("routellm-download-failed", (event: any) => {
+            setIsDownloading(false)
+            toast.error(`Download failed: ${event.payload.error}`)
         })
 
         // Poll status while testing or initializing
@@ -140,7 +166,9 @@ export function StrategyModelConfiguration({
         }, 1000)
 
         return () => {
+            unlistenProgress.then((fn) => fn())
             unlistenComplete.then((fn) => fn())
+            unlistenFailed.then((fn) => fn())
             clearInterval(interval)
         }
     }, [routellmStatus?.state])
@@ -327,6 +355,35 @@ export function StrategyModelConfiguration({
         }
     }
 
+    // Handler for downloading RouteLLM model
+    const handleDownload = async () => {
+        setIsDownloading(true)
+        setDownloadProgress(0)
+
+        try {
+            await invoke("routellm_download_models")
+        } catch (error: any) {
+            console.error("Failed to start download:", error)
+            toast.error(`Download failed: ${error.message || error}`)
+            setIsDownloading(false)
+        }
+    }
+
+    // Handler for unloading RouteLLM model from memory
+    const handleUnload = async () => {
+        try {
+            await invoke("routellm_unload")
+            const status = await invoke<RouteLLMStatus>("routellm_get_status")
+            setRoutellmStatus(status)
+            toast.success("Strong/Weak model unloaded from memory")
+        } catch (error: any) {
+            toast.error(`Unload failed: ${error.message || error}`)
+        }
+    }
+
+    // Check if RouteLLM model is downloaded
+    const isRouteLLMDownloaded = routellmStatus?.state !== 'not_downloaded' && routellmStatus?.state !== 'downloading' && !isDownloading
+
     // Get status display info
     const getStatusInfo = (state: RouteLLMState) => {
         switch (state) {
@@ -378,10 +435,10 @@ export function StrategyModelConfiguration({
 
     return (
         <div className={cn("space-y-4", className)}>
-            {/* Section 1: Routing Mode Selector */}
+            {/* Section 1: Model Selection Mode */}
             <Card>
                 <CardHeader>
-                    <CardTitle className="text-base">Model Routing Mode</CardTitle>
+                    <CardTitle className="text-base">Model Selection Mode</CardTitle>
                     <CardDescription>
                         Choose how clients see and select models
                     </CardDescription>
@@ -393,7 +450,7 @@ export function StrategyModelConfiguration({
                         disabled={readOnly || saving}
                     >
                         <SelectTrigger className="w-full sm:w-[280px]">
-                            <SelectValue placeholder="Select routing mode" />
+                            <SelectValue placeholder="Select model mode" />
                         </SelectTrigger>
                         <SelectContent>
                             <SelectItem value="allowed">
@@ -501,7 +558,7 @@ export function StrategyModelConfiguration({
                                             </CardContent>
                                         </Card>
 
-                                        {/* Right: Strong/Weak Routing (Weak Models) */}
+                                        {/* Right: Strong/Weak (Weak Models) */}
                                         <Card>
                                             <CardHeader>
                                                 <div className="flex items-center justify-between">
@@ -524,7 +581,7 @@ export function StrategyModelConfiguration({
                                                     <Switch
                                                         checked={routellmConfig?.enabled ?? false}
                                                         onCheckedChange={handleRouteLLMToggle}
-                                                        disabled={readOnly || saving}
+                                                        disabled={readOnly || saving || !isRouteLLMDownloaded}
                                                     />
                                                 </div>
                                             </CardHeader>
@@ -551,6 +608,36 @@ export function StrategyModelConfiguration({
                                                                 </div>
                                                             </div>
                                                         </div>
+
+                                                        {/* Download section - shown when model not downloaded */}
+                                                        {!isRouteLLMDownloaded && (
+                                                            <div className="space-y-3">
+                                                                {isDownloading ? (
+                                                                    <div className="space-y-2">
+                                                                        <div className="flex justify-between text-xs text-muted-foreground">
+                                                                            <span>Downloading Strong/Weak model...</span>
+                                                                            <span>{downloadProgress.toFixed(0)}%</span>
+                                                                        </div>
+                                                                        <Progress value={downloadProgress} className="h-1.5" />
+                                                                    </div>
+                                                                ) : (
+                                                                    <>
+                                                                        <p className="text-xs text-muted-foreground">
+                                                                            Download the Strong/Weak model to enable intelligent selection between strong and weak models.
+                                                                        </p>
+                                                                        <Button
+                                                                            onClick={handleDownload}
+                                                                            size="sm"
+                                                                            variant="outline"
+                                                                            className="w-full"
+                                                                        >
+                                                                            <Download className="h-3 w-3 mr-2" />
+                                                                            Download Model ({ROUTELLM_REQUIREMENTS.DISK_GB} GB)
+                                                                        </Button>
+                                                                    </>
+                                                                )}
+                                                            </div>
+                                                        )}
                                                     </div>
                                                 ) : (
                                                     <>
@@ -572,7 +659,7 @@ export function StrategyModelConfiguration({
                                                             <div className="space-y-3">
                                                                 <div className="flex items-center justify-between">
                                                                     <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                                                                        Test It Out
+                                                                        Try it out
                                                                     </span>
                                                                     {routellmStatus && (
                                                                         <div className="flex items-center gap-1.5">
@@ -580,6 +667,16 @@ export function StrategyModelConfiguration({
                                                                             <Badge variant={getStatusInfo(routellmStatus.state).variant} className="text-xs">
                                                                                 {getStatusInfo(routellmStatus.state).label}
                                                                             </Badge>
+                                                                            {routellmStatus.state === "started" && (
+                                                                                <Button
+                                                                                    variant="ghost"
+                                                                                    size="sm"
+                                                                                    className="h-5 px-1.5 text-xs"
+                                                                                    onClick={handleUnload}
+                                                                                >
+                                                                                    <Trash2 className="h-3 w-3" />
+                                                                                </Button>
+                                                                            )}
                                                                         </div>
                                                                     )}
                                                                 </div>
@@ -629,11 +726,6 @@ export function StrategyModelConfiguration({
                                                                     </div>
                                                                 )}
 
-                                                                {routellmStatus?.state === "not_downloaded" && (
-                                                                    <p className="text-xs text-muted-foreground">
-                                                                        Download the RouteLLM model in Settings → RouteLLM to test predictions.
-                                                                    </p>
-                                                                )}
                                                             </div>
                                                         </div>
                                                     </>

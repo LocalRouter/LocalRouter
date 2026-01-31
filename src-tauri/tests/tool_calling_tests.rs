@@ -2,7 +2,7 @@
 //!
 //! Tests for OpenAI-compatible function calling (tools) across providers.
 
-use localrouter_ai::providers::{
+use localrouter::providers::{
     ChatMessage, ChatMessageContent, CompletionRequest, FunctionDefinition, Tool, ToolChoice,
 };
 use serde_json::json;
@@ -96,10 +96,10 @@ fn test_completion_request_with_tools() {
 
 #[test]
 fn test_chat_message_with_tool_calls() {
-    let tool_call = localrouter_ai::providers::ToolCall {
+    let tool_call = localrouter::providers::ToolCall {
         id: "call_abc123".to_string(),
         tool_type: "function".to_string(),
-        function: localrouter_ai::providers::FunctionCall {
+        function: localrouter::providers::FunctionCall {
             name: "get_weather".to_string(),
             arguments: r#"{"location":"San Francisco, CA","unit":"fahrenheit"}"#.to_string(),
         },
@@ -141,26 +141,26 @@ fn test_tool_response_message() {
 fn test_parallel_tool_calls() {
     // Test that multiple tool calls can be made in a single response
     let tool_calls = vec![
-        localrouter_ai::providers::ToolCall {
+        localrouter::providers::ToolCall {
             id: "call_001".to_string(),
             tool_type: "function".to_string(),
-            function: localrouter_ai::providers::FunctionCall {
+            function: localrouter::providers::FunctionCall {
                 name: "get_weather".to_string(),
                 arguments: r#"{"location":"San Francisco, CA"}"#.to_string(),
             },
         },
-        localrouter_ai::providers::ToolCall {
+        localrouter::providers::ToolCall {
             id: "call_002".to_string(),
             tool_type: "function".to_string(),
-            function: localrouter_ai::providers::FunctionCall {
+            function: localrouter::providers::FunctionCall {
                 name: "get_weather".to_string(),
                 arguments: r#"{"location":"New York, NY"}"#.to_string(),
             },
         },
-        localrouter_ai::providers::ToolCall {
+        localrouter::providers::ToolCall {
             id: "call_003".to_string(),
             tool_type: "function".to_string(),
-            function: localrouter_ai::providers::FunctionCall {
+            function: localrouter::providers::FunctionCall {
                 name: "get_current_time".to_string(),
                 arguments: r#"{"timezone":"America/Los_Angeles"}"#.to_string(),
             },

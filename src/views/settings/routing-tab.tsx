@@ -75,7 +75,7 @@ export function RoutingTab({ selectedStrategyId, onSelectStrategy }: RoutingTabP
       setClients(clientsData)
     } catch (error) {
       console.error("Failed to load routing data:", error)
-      toast.error("Failed to load routing data")
+      toast.error("Failed to load strategy data")
     } finally {
       setLoading(false)
     }
@@ -159,9 +159,9 @@ export function RoutingTab({ selectedStrategyId, onSelectStrategy }: RoutingTabP
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-lg font-semibold">Routing Strategies</h2>
+          <h2 className="text-lg font-semibold">Strategies</h2>
           <p className="text-sm text-muted-foreground">
-            Manage reusable routing configurations with auto-routing and rate limits
+            Manage reusable strategy configurations with auto-selection and rate limits
           </p>
         </div>
         <Dialog open={isCreateOpen} onOpenChange={setIsCreateOpen}>
@@ -175,7 +175,7 @@ export function RoutingTab({ selectedStrategyId, onSelectStrategy }: RoutingTabP
             <DialogHeader>
               <DialogTitle>Create Strategy</DialogTitle>
               <DialogDescription>
-                Create a new routing strategy that can be assigned to clients
+                Create a new strategy that can be assigned to clients
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-4 py-4">
@@ -216,7 +216,7 @@ export function RoutingTab({ selectedStrategyId, onSelectStrategy }: RoutingTabP
                 <TableRow>
                   <TableHead>Name</TableHead>
                   <TableHead>Clients</TableHead>
-                  <TableHead>Auto Routing</TableHead>
+                  <TableHead>Auto Selection</TableHead>
                   <TableHead>Rate Limits</TableHead>
                   <TableHead>Type</TableHead>
                 </TableRow>
@@ -362,7 +362,7 @@ function StrategyDetail({
                 <p className="text-2xl font-bold">
                   {strategy.auto_config?.enabled ? "On" : "Off"}
                 </p>
-                <p className="text-xs text-muted-foreground">Auto Routing</p>
+                <p className="text-xs text-muted-foreground">Auto Selection</p>
               </div>
             </div>
           </CardContent>
@@ -410,7 +410,7 @@ function StrategyDetail({
 
           {strategy.auto_config && (
             <div className="p-4 bg-muted rounded-lg space-y-2">
-              <p className="text-sm font-medium">Auto Routing Configuration</p>
+              <p className="text-sm font-medium">Auto Selection Configuration</p>
               <div className="grid gap-2 text-sm">
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Status</span>

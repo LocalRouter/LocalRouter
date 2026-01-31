@@ -3,12 +3,11 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import {
   Users,
-  Database,
   Settings,
   FlaskConical,
-  ServerCog,
   RefreshCw,
 } from "lucide-react"
+import { ProvidersIcon, McpIcon, SkillsIcon } from "@/components/icons/category-icons"
 import { Logo } from "@/components/Logo"
 import { cn } from "@/lib/utils"
 import {
@@ -39,7 +38,7 @@ interface HealthCacheState {
   aggregate_status: AggregateHealthStatus
 }
 
-export type View = 'dashboard' | 'clients' | 'resources' | 'mcp-servers' | 'settings' | 'try-it-out'
+export type View = 'dashboard' | 'clients' | 'resources' | 'mcp-servers' | 'skills' | 'settings' | 'try-it-out'
 
 interface SidebarProps {
   activeView: View
@@ -55,13 +54,14 @@ interface NavItem {
 
 const mainNavItems: NavItem[] = [
   { id: 'clients', icon: Users, label: 'Clients', shortcut: '⌘2' },
-  { id: 'resources', icon: Database, label: 'LLM Providers', shortcut: '⌘3' },
-  { id: 'mcp-servers', icon: ServerCog, label: 'MCP Servers', shortcut: '⌘4' },
+  { id: 'resources', icon: ProvidersIcon, label: 'LLM Providers', shortcut: '⌘3' },
+  { id: 'mcp-servers', icon: McpIcon, label: 'MCP', shortcut: '⌘4' },
+  { id: 'skills', icon: SkillsIcon, label: 'Skills', shortcut: '⌘5' },
 ]
 
 const bottomNavItems: NavItem[] = [
-  { id: 'try-it-out', icon: FlaskConical, label: 'Try It Out', shortcut: '⌘5' },
-  { id: 'settings', icon: Settings, label: 'Settings', shortcut: '⌘6' },
+  { id: 'try-it-out', icon: FlaskConical, label: 'Try It Out', shortcut: '⌘6' },
+  { id: 'settings', icon: Settings, label: 'Settings', shortcut: '⌘7' },
 ]
 
 export function Sidebar({ activeView, onViewChange }: SidebarProps) {
@@ -197,9 +197,13 @@ export function Sidebar({ activeView, onViewChange }: SidebarProps) {
             break
           case '5':
             e.preventDefault()
-            onViewChange('try-it-out')
+            onViewChange('skills')
             break
           case '6':
+            e.preventDefault()
+            onViewChange('try-it-out')
+            break
+          case '7':
             e.preventDefault()
             onViewChange('settings')
             break

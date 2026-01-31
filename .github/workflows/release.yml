@@ -84,10 +84,10 @@ jobs:
         settings:
           - platform: macos-latest
             target: x86_64-apple-darwin
-            bundles: dmg
+            bundles: app,dmg
           - platform: macos-latest
             target: aarch64-apple-darwin
-            bundles: dmg
+            bundles: app,dmg
           - platform: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             bundles: deb,appimage
@@ -115,10 +115,10 @@ jobs:
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri
           shared-key: ${{ matrix.settings.target }}
           cache-targets: "true"
           cache-all-crates: "true"
+          save-if: "true"
 
       - name: Install Linux dependencies
         if: matrix.settings.platform == 'ubuntu-22.04'
@@ -134,17 +134,57 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Install Apple certificate (macOS)
+        if: matrix.settings.platform == 'macos-latest'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          # Create temporary keychain
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+          KEYCHAIN_PASSWORD=$(openssl rand -base64 32)
+
+          # Decode certificate
+          echo "$APPLE_CERTIFICATE" | base64 --decode > $RUNNER_TEMP/certificate.p12
+
+          # Create and configure keychain
+          security create-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+
+          # Import certificate
+          security import $RUNNER_TEMP/certificate.p12 -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security list-keychain -d user -s $KEYCHAIN_PATH
+
+          # Clean up
+          rm $RUNNER_TEMP/certificate.p12
+
       - name: Build Tauri app (with signing)
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Apple code signing (macOS only)
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: npm run tauri build -- --target ${{ matrix.settings.target }} --bundles ${{ matrix.settings.bundles }}
+
+      - name: Cleanup keychain (macOS)
+        if: always() && matrix.settings.platform == 'macos-latest'
+        run: |
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+          if [ -f "$KEYCHAIN_PATH" ]; then
+            security delete-keychain $KEYCHAIN_PATH || true
+          fi
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: artifacts-${{ matrix.settings.target }}
-          path: src-tauri/target/${{ matrix.settings.target }}/release/bundle
+          path: target/${{ matrix.settings.target }}/release/bundle
           retention-days: 1
           if-no-files-found: error
 
@@ -171,25 +211,80 @@ jobs:
       - name: Prepare release assets
         id: prepare
         run: |
+          VERSION="${{ needs.version-bump.outputs.version }}"
           mkdir -p release-assets
 
-          # Find and copy all artifacts to release-assets directory
-          # This includes .dmg, .AppImage, .msi, .exe, .deb and their .sig files
-          find artifacts -type f \( \
-            -name "*.dmg" -o \
-            -name "*.dmg.tar.gz" -o \
-            -name "*.dmg.tar.gz.sig" -o \
-            -name "*.AppImage" -o \
-            -name "*.AppImage.tar.gz" -o \
-            -name "*.AppImage.tar.gz.sig" -o \
-            -name "*.deb" -o \
-            -name "*.msi" -o \
-            -name "*.msi.zip" -o \
-            -name "*.msi.zip.sig" -o \
-            -name "*.exe" -o \
-            -name "*.exe.zip" -o \
-            -name "*.exe.zip.sig" \
-          \) -exec cp {} release-assets/ \;
+          # Tauri uses productName for file naming (spaces become dots, e.g. "LocalRouter AI" -> "LocalRouter.AI")
+          # To avoid depending on the exact productName, we rename all updater artifacts to a consistent
+          # "LocalRouter_${VERSION}_<arch>.<ext>" pattern based on which target artifact directory they came from.
+
+          # --- macOS ---
+          for arch_dir in artifacts/artifacts-x86_64-apple-darwin artifacts/artifacts-aarch64-apple-darwin; do
+            if [ ! -d "$arch_dir" ]; then continue; fi
+            if echo "$arch_dir" | grep -q "x86_64"; then ARCH="x64"; else ARCH="aarch64"; fi
+
+            # Installers (.dmg)
+            find "$arch_dir" -type f -name "*.dmg" | while read f; do
+              cp "$f" "release-assets/LocalRouter_${VERSION}_${ARCH}.dmg"
+            done
+            # Updater bundles (.app.tar.gz + .sig)
+            find "$arch_dir" -type f -name "*.app.tar.gz" ! -name "*.sig" | while read f; do
+              cp "$f" "release-assets/LocalRouter_${VERSION}_${ARCH}.app.tar.gz"
+            done
+            find "$arch_dir" -type f -name "*.app.tar.gz.sig" | while read f; do
+              cp "$f" "release-assets/LocalRouter_${VERSION}_${ARCH}.app.tar.gz.sig"
+            done
+          done
+
+          # --- Linux ---
+          LINUX_DIR="artifacts/artifacts-x86_64-unknown-linux-gnu"
+          if [ -d "$LINUX_DIR" ]; then
+            find "$LINUX_DIR" -type f -name "*.AppImage" ! -name "*.tar.gz" | while read f; do
+              cp "$f" "release-assets/LocalRouter_${VERSION}_amd64.AppImage"
+            done
+            find "$LINUX_DIR" -type f -name "*.deb" | while read f; do
+              cp "$f" "release-assets/LocalRouter_${VERSION}_amd64.deb"
+            done
+            find "$LINUX_DIR" -type f -name "*.AppImage.tar.gz" ! -name "*.sig" | while read f; do
+              cp "$f" "release-assets/LocalRouter_${VERSION}_amd64.AppImage.tar.gz"
+            done
+            find "$LINUX_DIR" -type f -name "*.AppImage.tar.gz.sig" | while read f; do
+              cp "$f" "release-assets/LocalRouter_${VERSION}_amd64.AppImage.tar.gz.sig"
+            done
+          fi
+
+          # --- Windows ---
+          WIN_DIR="artifacts/artifacts-x86_64-pc-windows-msvc"
+          if [ -d "$WIN_DIR" ]; then
+            find "$WIN_DIR" -type f -name "*.msi" ! -name "*.zip" | while read f; do
+              cp "$f" "release-assets/LocalRouter_${VERSION}_x64_en-US.msi"
+            done
+            find "$WIN_DIR" -type f -name "*-setup.exe" | while read f; do
+              cp "$f" "release-assets/LocalRouter_${VERSION}_x64-setup.exe"
+            done
+            find "$WIN_DIR" -type f -name "*.msi.zip" ! -name "*.sig" | while read f; do
+              cp "$f" "release-assets/LocalRouter_${VERSION}_x64_en-US.msi.zip"
+            done
+            find "$WIN_DIR" -type f -name "*.msi.zip.sig" | while read f; do
+              cp "$f" "release-assets/LocalRouter_${VERSION}_x64_en-US.msi.zip.sig"
+            done
+            find "$WIN_DIR" -type f -name "*.nsis.zip" ! -name "*.sig" | while read f; do
+              cp "$f" "release-assets/LocalRouter_${VERSION}_x64-setup.nsis.zip"
+            done
+            find "$WIN_DIR" -type f -name "*.nsis.zip.sig" | while read f; do
+              cp "$f" "release-assets/LocalRouter_${VERSION}_x64-setup.nsis.zip.sig"
+            done
+          fi
+
+          # Create version-agnostic copies for stable download URLs
+          cd release-assets
+          for f in *_aarch64.dmg; do [ -f "$f" ] && cp "$f" "LocalRouter_aarch64.dmg"; done
+          for f in *_x64.dmg; do [ -f "$f" ] && cp "$f" "LocalRouter_x64.dmg"; done
+          for f in *_x64-setup.exe; do [ -f "$f" ] && cp "$f" "LocalRouter_x64-setup.exe"; done
+          for f in *_x64_en-US.msi; do [ -f "$f" ] && cp "$f" "LocalRouter_x64.msi"; done
+          for f in *_amd64.deb; do [ -f "$f" ] && cp "$f" "LocalRouter_amd64.deb"; done
+          for f in *_amd64.AppImage; do [ -f "$f" ] && cp "$f" "LocalRouter_amd64.AppImage"; done
+          cd ..
 
           echo "Release assets prepared:"
           ls -lh release-assets/
@@ -198,7 +293,7 @@ jobs:
         id: notes
         run: |
           cat > release-notes.md << 'RELEASE_NOTES'
-          ## LocalRouter AI v${{ needs.version-bump.outputs.version }}
+          ## LocalRouter v${{ needs.version-bump.outputs.version }}
 
           ### Installation
 
@@ -206,10 +301,10 @@ jobs:
 
           | Platform | File |
           |----------|------|
-          | macOS (Intel) | `LocalRouter-AI_*_x64.dmg` |
-          | macOS (Apple Silicon) | `LocalRouter-AI_*_aarch64.dmg` |
-          | Windows | `LocalRouter-AI_*_x64-setup.exe` or `.msi` |
-          | Linux | `LocalRouter-AI_*_amd64.AppImage` or `.deb` |
+          | macOS (Intel) | `LocalRouter_*_x64.dmg` |
+          | macOS (Apple Silicon) | `LocalRouter_*_aarch64.dmg` |
+          | Windows | `LocalRouter_*_x64-setup.exe` or `.msi` |
+          | Linux | `LocalRouter_*_amd64.AppImage` or `.deb` |
 
           ### Auto-Update
 
@@ -228,16 +323,62 @@ jobs:
 
       - name: Create latest.json for updater
         run: |
-          # Tauri's build process should have created this, but we'll ensure it exists
-          # The updater looks for this file at the release endpoint
-          echo "Checking for latest.json..."
-          find artifacts -name "latest.json" -exec cp {} release-assets/ \; || echo "No latest.json found (will be auto-generated by Tauri)"
+          VERSION="${{ needs.version-bump.outputs.version }}"
+          REPO="${{ github.repository }}"
+          BASE_URL="https://github.com/${REPO}/releases/download/v${VERSION}"
+          NOTES="See release notes at https://github.com/${REPO}/releases/tag/v${VERSION}"
+          PUB_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          # Read signature files - all renamed to consistent pattern in prepare step
+          get_sig() {
+            local sig_file="release-assets/$1"
+            if [ -f "$sig_file" ]; then
+              cat "$sig_file"
+            else
+              echo ""
+            fi
+          }
+
+          MACOS_X64_SIG=$(get_sig "LocalRouter_${VERSION}_x64.app.tar.gz.sig")
+          MACOS_AARCH64_SIG=$(get_sig "LocalRouter_${VERSION}_aarch64.app.tar.gz.sig")
+          LINUX_SIG=$(get_sig "LocalRouter_${VERSION}_amd64.AppImage.tar.gz.sig")
+          WINDOWS_MSI_SIG=$(get_sig "LocalRouter_${VERSION}_x64_en-US.msi.zip.sig")
+
+          cat > release-assets/latest.json << EOF
+          {
+            "version": "v${VERSION}",
+            "notes": "${NOTES}",
+            "pub_date": "${PUB_DATE}",
+            "platforms": {
+              "darwin-x86_64": {
+                "signature": "${MACOS_X64_SIG}",
+                "url": "${BASE_URL}/LocalRouter_${VERSION}_x64.app.tar.gz"
+              },
+              "darwin-aarch64": {
+                "signature": "${MACOS_AARCH64_SIG}",
+                "url": "${BASE_URL}/LocalRouter_${VERSION}_aarch64.app.tar.gz"
+              },
+              "linux-x86_64": {
+                "signature": "${LINUX_SIG}",
+                "url": "${BASE_URL}/LocalRouter_${VERSION}_amd64.AppImage.tar.gz"
+              },
+              "windows-x86_64": {
+                "signature": "${WINDOWS_MSI_SIG}",
+                "url": "${BASE_URL}/LocalRouter_${VERSION}_x64_en-US.msi.zip"
+              }
+            }
+          }
+          EOF
+          # Remove leading whitespace from heredoc
+          sed -i 's/^          //' release-assets/latest.json
+          echo "Created latest.json:"
+          cat release-assets/latest.json
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
           tag_name: v${{ needs.version-bump.outputs.version }}
-          name: LocalRouter AI v${{ needs.version-bump.outputs.version }}
+          name: LocalRouter v${{ needs.version-bump.outputs.version }}
           body_path: release-notes.md
           files: release-assets/*
           prerelease: ${{ github.event.inputs.prerelease }}

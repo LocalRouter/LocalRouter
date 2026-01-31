@@ -14,8 +14,8 @@ import type {
 } from '../types'
 
 // Node dimensions for layout calculation
-const NODE_WIDTH = 240
-const NODE_HEIGHT = 60
+const NODE_WIDTH = 140
+const NODE_HEIGHT = 36
 
 // Get health status for a provider
 function getProviderHealth(
@@ -184,10 +184,10 @@ function applyDagreLayout(nodes: Node[], edges: Edge[]): Node[] {
   const g = new dagre.graphlib.Graph()
   g.setGraph({
     rankdir: 'LR', // Left to right
-    nodesep: 50,
-    ranksep: 150,
-    marginx: 20,
-    marginy: 20,
+    nodesep: 25,
+    ranksep: 80,
+    marginx: 15,
+    marginy: 15,
   })
   g.setDefaultEdgeLabel(() => ({}))
 
@@ -219,6 +219,26 @@ function applyDagreLayout(nodes: Node[], edges: Edge[]): Node[] {
   })
 }
 
+// Calculate bounding box of laid out nodes
+function calculateBounds(nodes: Node[]): { width: number; height: number } {
+  if (nodes.length === 0) return { width: 0, height: 0 }
+
+  let maxX = -Infinity
+  let maxY = -Infinity
+
+  nodes.forEach((node) => {
+    maxX = Math.max(maxX, node.position.x + NODE_WIDTH)
+    maxY = Math.max(maxY, node.position.y + NODE_HEIGHT)
+  })
+
+  // Add padding for controls and breathing room
+  const padding = 40
+  return {
+    width: maxX + padding,
+    height: maxY + padding,
+  }
+}
+
 // Main function to build the complete graph
 export function buildGraph(
   clients: Client[],
@@ -226,13 +246,15 @@ export function buildGraph(
   mcpServers: McpServer[],
   healthState: HealthCacheState | null,
   activeConnections: string[]
-): { nodes: GraphNode[]; edges: GraphEdge[] } {
+): { nodes: GraphNode[]; edges: GraphEdge[]; bounds: { width: number; height: number } } {
   const nodes = buildNodes(clients, providers, mcpServers, healthState, activeConnections)
   const edges = buildEdges(clients, providers, mcpServers, activeConnections)
   const layoutedNodes = applyDagreLayout(nodes, edges)
+  const bounds = calculateBounds(layoutedNodes)
 
   return {
     nodes: layoutedNodes as GraphNode[],
     edges,
+    bounds,
   }
 }

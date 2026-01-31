@@ -423,7 +423,7 @@ pub async fn start_callback_server(
                             <body>
                                 <h1>Authorization Successful!</h1>
                                 <p>You have successfully authorized the application.</p>
-                                <p>You can close this window and return to LocalRouter AI.</p>
+                                <p>You can close this window and return to LocalRouter.</p>
                                 <script>
                                     setTimeout(function() { window.close(); }, 3000);
                                 </script>

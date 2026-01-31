@@ -11,6 +11,17 @@ use tracing::error;
 
 use crate::providers::health_cache::AggregateHealthStatus;
 
+/// Overlay icon to render in the top-left corner of the tray graph
+#[derive(Debug, Clone, PartialEq)]
+pub enum TrayOverlay {
+    /// No overlay — normal rounded rect corner
+    None,
+    /// Exclamation mark in the given status color (for warning/error health)
+    Warning(Rgba<u8>),
+    /// Down-arrow in foreground color (update available)
+    UpdateAvailable,
+}
+
 /// Data point for graph rendering
 #[derive(Debug, Clone)]
 pub struct DataPoint {
@@ -154,6 +165,55 @@ fn draw_hollow_circle(
     }
 }
 
+/// Draw a bold exclamation mark in the top-left corner cutout area
+///
+/// The exclamation mark has a 4px-wide stem and a 4x4 dot below it.
+/// Total extent: x=4..7, y=0..12 — center at roughly (6, 6).
+fn draw_exclamation_mark(img: &mut RgbaImage, color: Rgba<u8>) {
+    // Stem: 4px wide (x=5,6,7,8), from y=0 to y=6
+    for y in 0u32..=6 {
+        for x in 5u32..=8 {
+            img.put_pixel(x, y, color);
+        }
+    }
+
+    // Dot: 4x4 block matching stem width at y=9..12 (round appearance)
+    for y in 9u32..=12 {
+        for x in 5u32..=8 {
+            img.put_pixel(x, y, color);
+        }
+    }
+}
+
+/// Draw a down-arrow in the top-left corner cutout area
+///
+/// Downward-pointing arrow for "update available" indicator.
+/// Sized to fill roughly 1/3 of the 32x32 icon (~11px tall, ~9px wide).
+fn draw_down_arrow(img: &mut RgbaImage, color: Rgba<u8>) {
+    // Vertical stem: 2px wide (x=6..7), from y=1 to y=6
+    for y in 1u32..=6 {
+        img.put_pixel(6, y, color);
+        img.put_pixel(7, y, color);
+    }
+
+    // Arrow head: widening chevron pointing down
+    // Row y=7: x=3..10 (8px wide)
+    for x in 3u32..=10 {
+        img.put_pixel(x, 7, color);
+    }
+    // Row y=8: x=4..9 (6px wide)
+    for x in 4u32..=9 {
+        img.put_pixel(x, 8, color);
+    }
+    // Row y=9: x=5..8 (4px wide)
+    for x in 5u32..=8 {
+        img.put_pixel(x, 9, color);
+    }
+    // Row y=10: x=6..7 (2px wide)
+    img.put_pixel(6, 10, color);
+    img.put_pixel(7, 10, color);
+}
+
 /// Draw a thick line between two points using Bresenham's algorithm with thickness
 fn draw_thick_line(
     img: &mut RgbaImage,
@@ -259,19 +319,20 @@ fn draw_logo(img: &mut RgbaImage, base_color: Rgba<u8>) {
 /// Automatically normalizes values to fit the 32px height.
 /// Always renders exactly 32 bars (one per pixel width), padding with zeros if needed.
 /// Includes a 1-pixel border around the graph.
-/// Optionally includes a health status dot in the top-left corner.
+/// When an overlay is present, the top-left corner is carved out with a concave arc
+/// and the overlay icon is drawn in that area.
 ///
 /// # Arguments
 /// * `data_points` - Time-series data points (sorted by timestamp, oldest to newest)
 /// * `config` - Rendering configuration (colors, template mode)
-/// * `health_status` - Optional aggregate health status for status dot overlay
+/// * `overlay` - Overlay icon for the top-left corner
 ///
 /// # Returns
 /// PNG-encoded image as bytes, or None if generation fails
 pub fn generate_graph(
     data_points: &[DataPoint],
     config: &GraphConfig,
-    health_status: Option<AggregateHealthStatus>,
+    overlay: TrayOverlay,
 ) -> Option<Vec<u8>> {
     const WIDTH: u32 = 32;
     const HEIGHT: u32 = 32;
@@ -289,16 +350,29 @@ pub fn generate_graph(
     // Using a 6-pixel radius for smoother corners
     const CORNER_RADIUS: u32 = 6;
 
-    // Top border (skip corner regions)
-    for x in CORNER_RADIUS..(WIDTH - CORNER_RADIUS) {
+    // Cutout: quarter-circle notch centered on the overlay icon center (6, 6)
+    // with radius 9. The arc meets the top edge at x≈13 and the left edge at y≈13.
+    const CUTOUT_CX: i32 = 6;
+    const CUTOUT_CY: i32 = 6;
+    const CUTOUT_R: i32 = 9;
+    const CUTOUT_R_SQ: i32 = CUTOUT_R * CUTOUT_R; // 81
+    // Where the arc intersects the image edges — borders start here
+    const CUTOUT_SIZE: u32 = 13;
+
+    let has_overlay = overlay != TrayOverlay::None;
+
+    // Top border (skip corner regions; wider skip at top-left when overlay present)
+    let top_left_border_start = if has_overlay { CUTOUT_SIZE } else { CORNER_RADIUS };
+    for x in top_left_border_start..(WIDTH - CORNER_RADIUS) {
         img.put_pixel(x, 0, config.foreground);
     }
     // Bottom border (skip corner regions)
     for x in CORNER_RADIUS..(WIDTH - CORNER_RADIUS) {
         img.put_pixel(x, HEIGHT - 1, config.foreground);
     }
-    // Left border (skip corner regions)
-    for y in CORNER_RADIUS..(HEIGHT - CORNER_RADIUS) {
+    // Left border (skip corner regions; wider skip at top-left when overlay present)
+    let left_top_border_start = if has_overlay { CUTOUT_SIZE } else { CORNER_RADIUS };
+    for y in left_top_border_start..(HEIGHT - CORNER_RADIUS) {
         img.put_pixel(0, y, config.foreground);
     }
     // Right border (skip corner regions)
@@ -307,16 +381,62 @@ pub fn generate_graph(
     }
 
     // Draw rounded corners (6-pixel radius)
-    // Top-left corner
-    img.put_pixel(1, 2, config.foreground);
-    img.put_pixel(1, 3, config.foreground);
-    img.put_pixel(1, 4, config.foreground);
-    img.put_pixel(1, 5, config.foreground);
-    img.put_pixel(2, 1, config.foreground);
-    img.put_pixel(3, 1, config.foreground);
-    img.put_pixel(4, 1, config.foreground);
-    img.put_pixel(5, 1, config.foreground);
-    img.put_pixel(2, 2, config.foreground);
+    // Top-left corner: normal convex arc when no overlay, concave cutout when overlay present
+    if has_overlay {
+        // Quarter-circle notch centered on the overlay icon at (CX, CY).
+        // The arc has radius R and sweeps the portion visible in the
+        // top-left corner, from the top edge to the left edge.
+        // Everything inside the circle is cleared to background.
+
+        // Clear all pixels inside the circle that are in the top-left region
+        let max_clear_x = (CUTOUT_CX + CUTOUT_R).min(WIDTH as i32 - 1);
+        let max_clear_y = (CUTOUT_CY + CUTOUT_R).min(HEIGHT as i32 - 1);
+        for y in 0..=max_clear_y {
+            for x in 0..=max_clear_x {
+                let dx = x - CUTOUT_CX;
+                let dy = y - CUTOUT_CY;
+                if dx * dx + dy * dy < CUTOUT_R_SQ {
+                    img.put_pixel(x as u32, y as u32, config.background);
+                }
+            }
+        }
+
+        // Draw the arc border — sweep the full circle and only plot
+        // pixels that land on screen and outside the box interior
+        // (i.e. in the top-left cutout region, up to where the
+        // straight borders begin).
+        for step in 0..=400 {
+            let angle =
+                2.0 * std::f64::consts::PI * (step as f64 / 400.0);
+            let px = CUTOUT_CX as f64 + CUTOUT_R as f64 * angle.cos();
+            let py = CUTOUT_CY as f64 + CUTOUT_R as f64 * angle.sin();
+            // Skip points that are mathematically off-screen but round onto (0,0)
+            if px < 0.0 && py < 0.0 {
+                continue;
+            }
+            let ix = px.round() as i32;
+            let iy = py.round() as i32;
+            if ix >= 0
+                && ix < WIDTH as i32
+                && iy >= 0
+                && iy < HEIGHT as i32
+                && (ix <= CUTOUT_SIZE as i32 || iy <= CUTOUT_SIZE as i32)
+            {
+                img.put_pixel(ix as u32, iy as u32, config.foreground);
+            }
+        }
+    } else {
+        // Normal convex top-left corner (6px radius)
+        img.put_pixel(1, 2, config.foreground);
+        img.put_pixel(1, 3, config.foreground);
+        img.put_pixel(1, 4, config.foreground);
+        img.put_pixel(1, 5, config.foreground);
+        img.put_pixel(2, 1, config.foreground);
+        img.put_pixel(3, 1, config.foreground);
+        img.put_pixel(4, 1, config.foreground);
+        img.put_pixel(5, 1, config.foreground);
+        img.put_pixel(2, 2, config.foreground);
+    }
 
     // Top-right corner
     img.put_pixel(WIDTH - 2, 2, config.foreground);
@@ -375,7 +495,8 @@ pub fn generate_graph(
     let has_data = !normalized_points.iter().all(|&t| t == 0);
 
     // Draw logo FIRST as a background watermark (bars will be drawn on top)
-    draw_logo(&mut img, config.foreground);
+    // TODO: Temporarily disabled logo overlay
+    // draw_logo(&mut img, config.foreground);
 
     // Only draw bars if we have data (drawn on top of LR letters)
     if has_data {
@@ -433,23 +554,27 @@ pub fn generate_graph(
             let start_y = HEIGHT - GRAPH_OFFSET_Y - bar_height;
             let end_y = HEIGHT - GRAPH_OFFSET_Y;
             for y in start_y..end_y {
+                // Skip pixels inside the circle cutout
+                if has_overlay {
+                    let dx = x as i32 - CUTOUT_CX;
+                    let dy = y as i32 - CUTOUT_CY;
+                    if dx * dx + dy * dy < CUTOUT_R_SQ {
+                        continue;
+                    }
+                }
                 img.put_pixel(x, y, config.foreground);
             }
         }
     }
 
-    // Draw health status dot only for warning/error states (yellow/red)
-    // Green (healthy) and unknown states don't show a dot to reduce visual clutter
-    // Position: top-left area, large for visibility
-    if let Some(status) = health_status {
-        match status {
-            AggregateHealthStatus::Yellow | AggregateHealthStatus::Red => {
-                let dot_color = StatusDotColors::for_status(status);
-                draw_filled_circle(&mut img, 8, 8, 7, dot_color);
-            }
-            AggregateHealthStatus::Green => {
-                // No dot for healthy status
-            }
+    // Draw overlay icon in the carved-out top-left corner
+    match &overlay {
+        TrayOverlay::None => {}
+        TrayOverlay::Warning(color) => {
+            draw_exclamation_mark(&mut img, *color);
+        }
+        TrayOverlay::UpdateAvailable => {
+            draw_down_arrow(&mut img, config.foreground);
         }
     }
 
@@ -495,7 +620,7 @@ mod tests {
     #[test]
     fn test_generate_empty_graph() {
         let config = GraphConfig::macos_template();
-        let png = generate_graph(&[], &config, None);
+        let png = generate_graph(&[], &config, TrayOverlay::None);
         assert!(png.is_some());
         assert!(!png.unwrap().is_empty());
     }
@@ -507,7 +632,7 @@ mod tests {
             timestamp: Utc::now(),
             total_tokens: 1000,
         }];
-        let png = generate_graph(&data, &config, None);
+        let png = generate_graph(&data, &config, TrayOverlay::None);
         assert!(png.is_some());
         assert!(!png.unwrap().is_empty());
     }
@@ -526,7 +651,7 @@ mod tests {
             });
         }
 
-        let png = generate_graph(&data, &config, None);
+        let png = generate_graph(&data, &config, TrayOverlay::None);
         assert!(png.is_some());
         assert!(!png.unwrap().is_empty());
     }
@@ -552,7 +677,7 @@ mod tests {
             },
         ];
 
-        let png = generate_graph(&data, &config, None);
+        let png = generate_graph(&data, &config, TrayOverlay::None);
         assert!(png.is_some());
         assert!(!png.unwrap().is_empty());
     }
@@ -578,7 +703,7 @@ mod tests {
             },
         ];
 
-        let png = generate_graph(&data, &config, None);
+        let png = generate_graph(&data, &config, TrayOverlay::None);
         assert!(png.is_some());
         assert!(!png.unwrap().is_empty());
     }
@@ -624,7 +749,7 @@ mod tests {
             total_tokens: 1000,
         });
 
-        let png = generate_graph(&data, &config, None);
+        let png = generate_graph(&data, &config, TrayOverlay::None);
         assert!(png.is_some());
         assert!(!png.unwrap().is_empty());
 
@@ -646,7 +771,7 @@ mod tests {
             });
         }
 
-        let png = generate_graph(&data, &config, None);
+        let png = generate_graph(&data, &config, TrayOverlay::None);
         assert!(png.is_some());
         assert!(!png.unwrap().is_empty());
 
@@ -654,25 +779,37 @@ mod tests {
     }
 
     #[test]
-    fn test_health_status_dot_green() {
+    fn test_overlay_none() {
         let config = GraphConfig::macos_template();
-        let png = generate_graph(&[], &config, Some(AggregateHealthStatus::Green));
+        let png = generate_graph(&[], &config, TrayOverlay::None);
         assert!(png.is_some());
         assert!(!png.unwrap().is_empty());
     }
 
     #[test]
-    fn test_health_status_dot_yellow() {
+    fn test_overlay_warning_yellow() {
         let config = GraphConfig::macos_template();
-        let png = generate_graph(&[], &config, Some(AggregateHealthStatus::Yellow));
+        let png = generate_graph(
+            &[],
+            &config,
+            TrayOverlay::Warning(StatusDotColors::yellow()),
+        );
         assert!(png.is_some());
         assert!(!png.unwrap().is_empty());
     }
 
     #[test]
-    fn test_health_status_dot_red() {
+    fn test_overlay_warning_red() {
         let config = GraphConfig::macos_template();
-        let png = generate_graph(&[], &config, Some(AggregateHealthStatus::Red));
+        let png = generate_graph(&[], &config, TrayOverlay::Warning(StatusDotColors::red()));
+        assert!(png.is_some());
+        assert!(!png.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_overlay_update_available() {
+        let config = GraphConfig::macos_template();
+        let png = generate_graph(&[], &config, TrayOverlay::UpdateAvailable);
         assert!(png.is_some());
         assert!(!png.unwrap().is_empty());
     }
@@ -692,20 +829,24 @@ mod tests {
             timestamp: Utc::now(),
             total_tokens: 100,
         }];
-        let png = generate_graph(&data, &config, None);
+        let png = generate_graph(&data, &config, TrayOverlay::None);
         assert!(png.is_some());
         assert!(!png.unwrap().is_empty());
     }
 
     #[test]
-    fn test_graph_with_all_overlays() {
-        // Test that graph renders with both LR letters and health dot
+    fn test_graph_with_warning_overlay() {
+        // Test that graph renders with warning overlay
         let config = GraphConfig::macos_template();
         let data = vec![DataPoint {
             timestamp: Utc::now(),
             total_tokens: 100,
         }];
-        let png = generate_graph(&data, &config, Some(AggregateHealthStatus::Green));
+        let png = generate_graph(
+            &data,
+            &config,
+            TrayOverlay::Warning(StatusDotColors::yellow()),
+        );
         assert!(png.is_some());
         assert!(!png.unwrap().is_empty());
     }
@@ -725,22 +866,47 @@ mod tests {
             });
         }
 
-        // Generate Windows/Linux version with Yellow status (to show outlined dot)
+        // Generate Windows/Linux version with Warning overlay
         let config = GraphConfig::windows_linux();
-        let png = generate_graph(&data, &config, Some(AggregateHealthStatus::Yellow));
+        let png = generate_graph(
+            &data,
+            &config,
+            TrayOverlay::Warning(StatusDotColors::yellow()),
+        );
         assert!(png.is_some());
         let png_bytes = png.unwrap();
         let mut file = File::create("/tmp/test_tray_graph.png").unwrap();
         file.write_all(&png_bytes).unwrap();
-        println!("Wrote Windows/Linux graph to /tmp/test_tray_graph.png");
+        println!("Wrote Windows/Linux graph (warning) to /tmp/test_tray_graph.png");
 
-        // Generate macOS version with Yellow status (to show outlined dot)
+        // Generate macOS version with Warning overlay
         let config_mac = GraphConfig::macos();
-        let png_mac = generate_graph(&data, &config_mac, Some(AggregateHealthStatus::Yellow));
+        let png_mac = generate_graph(
+            &data,
+            &config_mac,
+            TrayOverlay::Warning(StatusDotColors::yellow()),
+        );
         assert!(png_mac.is_some());
         let png_bytes_mac = png_mac.unwrap();
         let mut file_mac = File::create("/tmp/test_tray_graph_macos.png").unwrap();
         file_mac.write_all(&png_bytes_mac).unwrap();
-        println!("Wrote macOS graph to /tmp/test_tray_graph_macos.png");
+        println!("Wrote macOS graph (warning) to /tmp/test_tray_graph_macos.png");
+
+        // Generate macOS version with UpdateAvailable overlay
+        let png_update = generate_graph(&data, &config_mac, TrayOverlay::UpdateAvailable);
+        assert!(png_update.is_some());
+        let png_bytes_update = png_update.unwrap();
+        let mut file_update =
+            File::create("/tmp/test_tray_graph_macos_update.png").unwrap();
+        file_update.write_all(&png_bytes_update).unwrap();
+        println!("Wrote macOS graph (update) to /tmp/test_tray_graph_macos_update.png");
+
+        // Generate macOS version with no overlay
+        let png_none = generate_graph(&data, &config_mac, TrayOverlay::None);
+        assert!(png_none.is_some());
+        let png_bytes_none = png_none.unwrap();
+        let mut file_none = File::create("/tmp/test_tray_graph_macos_none.png").unwrap();
+        file_none.write_all(&png_bytes_none).unwrap();
+        println!("Wrote macOS graph (no overlay) to /tmp/test_tray_graph_macos_none.png");
     }
 }

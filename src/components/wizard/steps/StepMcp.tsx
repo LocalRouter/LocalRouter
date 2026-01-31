@@ -169,14 +169,14 @@ export function StepMcp({ accessMode, selectedServers, onChange }: StepMcpProps)
 
         <Button onClick={() => setShowAddServer(true)} className="w-full">
           <Plus className="h-4 w-4 mr-2" />
-          Add MCP Server
+          Add MCP
         </Button>
 
         <p className="text-xs text-muted-foreground text-center">
           You can skip this step and add MCP access later.
         </p>
 
-        {/* Add MCP Server Dialog */}
+        {/* Add MCP Dialog */}
         <Dialog
           open={showAddServer}
           onOpenChange={(open) => {
@@ -188,7 +188,7 @@ export function StepMcp({ accessMode, selectedServers, onChange }: StepMcpProps)
         >
           <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
             <DialogHeader>
-              <DialogTitle>Add MCP Server</DialogTitle>
+              <DialogTitle>Add MCP</DialogTitle>
             </DialogHeader>
 
             <Tabs value={createTab} onValueChange={(v) => setCreateTab(v as "templates" | "manual")}>
@@ -372,7 +372,7 @@ export function StepMcp({ accessMode, selectedServers, onChange }: StepMcpProps)
         </Button>
       </div>
 
-      {/* Add MCP Server Dialog (also available when servers exist) */}
+      {/* Add MCP Dialog (also available when servers exist) */}
       <Dialog
         open={showAddServer}
         onOpenChange={(open) => {
@@ -384,7 +384,7 @@ export function StepMcp({ accessMode, selectedServers, onChange }: StepMcpProps)
       >
         <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>Add MCP Server</DialogTitle>
+            <DialogTitle>Add MCP</DialogTitle>
           </DialogHeader>
 
           <Tabs value={createTab} onValueChange={(v) => setCreateTab(v as "templates" | "manual")}>

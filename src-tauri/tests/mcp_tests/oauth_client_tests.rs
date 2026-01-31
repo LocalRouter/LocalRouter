@@ -5,8 +5,8 @@
 
 use super::common::*;
 use base64::{engine::general_purpose::STANDARD, Engine};
-use localrouter_ai::api_keys::KeychainStorage;
-use localrouter_ai::oauth_clients::OAuthClientManager;
+use localrouter::api_keys::KeychainStorage;
+use localrouter::oauth_clients::OAuthClientManager;
 use std::sync::Arc;
 
 #[tokio::test]
