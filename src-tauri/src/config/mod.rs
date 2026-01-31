@@ -5,7 +5,7 @@
 
 #![allow(dead_code)]
 
-use crate::utils::errors::{AppError, AppResult};
+use lr_types::{AppError, AppResult};
 use chrono::{DateTime, Utc};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use parking_lot::RwLock;

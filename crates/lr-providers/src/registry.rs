@@ -19,8 +19,8 @@ use tracing::{debug, info, warn};
 use super::factory::{ProviderFactory, SetupParameter};
 use super::health::HealthCheckManager;
 use super::{ModelInfo, ModelProvider, ProviderHealth};
-use crate::config::ModelCacheConfig;
-use crate::utils::errors::{AppError, AppResult};
+use lr_config::ModelCacheConfig;
+use lr_types::{AppError, AppResult};
 
 /// Cached model list for a single provider
 #[derive(Clone)]
@@ -440,18 +440,18 @@ impl ProviderRegistry {
 
     /// Get models from models.dev catalog for a provider type
     fn get_models_from_catalog(&self, provider_type: &str) -> Vec<ModelInfo> {
-        crate::catalog::models()
+        lr_catalog::models()
             .iter()
             .filter(|m| m.id.starts_with(&format!("{}/", provider_type)))
             .map(|m| {
                 let capabilities = match m.modality {
-                    crate::catalog::Modality::Multimodal => {
+                    lr_catalog::Modality::Multimodal => {
                         vec![
-                            crate::providers::Capability::Chat,
-                            crate::providers::Capability::Vision,
+                            lr_providers::Capability::Chat,
+                            lr_providers::Capability::Vision,
                         ]
                     }
-                    _ => vec![crate::providers::Capability::Chat],
+                    _ => vec![lr_providers::Capability::Chat],
                 };
 
                 ModelInfo {
@@ -768,7 +768,7 @@ pub struct SimpleProviderConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::providers::factory::OllamaProviderFactory;
+    use lr_providers::factory::OllamaProviderFactory;
 
     #[tokio::test]
     async fn test_registry_creation() {

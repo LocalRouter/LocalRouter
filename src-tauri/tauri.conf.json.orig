@@ -1,0 +1,79 @@
+{
+<<<<<<< HEAD
+  "productName": "LocalRouter",
+  "version": "0.0.34",
+=======
+  "productName": "LocalRouter AI",
+  "version": "0.0.36",
+>>>>>>> 8d27bbbbaecc5f794f50bbb9925f49b040bb5ed7
+  "identifier": "ai.localrouter.app",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build",
+    "devUrl": "http://localhost:1420",
+    "frontendDist": "../dist"
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "createUpdaterArtifacts": true,
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": ["icons/32x32-active.png"],
+    "copyright": "Copyright (c) 2026 LocalRouter",
+    "category": "DeveloperTool",
+    "shortDescription": "Intelligent AI model routing",
+    "longDescription": "LocalRouter provides a local OpenAI-compatible API gateway that intelligently routes requests across multiple AI providers with smart routing, cost optimization, and comprehensive monitoring.",
+    "macOS": {
+      "minimumSystemVersion": "10.15",
+      "signingIdentity": "-"
+    },
+    "windows": {
+      "certificateThumbprint": null,
+      "digestAlgorithm": "sha256",
+      "timestampUrl": ""
+    },
+    "linux": {
+      "deb": {
+        "depends": []
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "active": true,
+      "endpoints": [
+        "https://github.com/LocalRouter/LocalRouter/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDE3MDEzRTM2M0QyMTgwOEMKUldTTWdDRTlOajRCRjJ1a044bEJPeitXZDAyM2lqeDE0Q0V0S1M2bFQ0K2FRZTJGK1V0Mkw1L1oK",
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "LocalRouter",
+        "width": 1200,
+        "height": 1000,
+        "resizable": true,
+        "fullscreen": false,
+        "transparent": false,
+        "decorations": true,
+        "center": true,
+        "visible": true,
+        "label": "main"
+      }
+    ],
+    "withGlobalTauri": true,
+    "security": {
+      "csp": "default-src 'self' 'unsafe-inline' 'unsafe-eval'; connect-src 'self' http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:* https://github.com https://api.github.com https://objects.githubusercontent.com; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'"
+    }
+  }
+}

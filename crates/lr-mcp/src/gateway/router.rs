@@ -2,9 +2,9 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::timeout;
 
-use crate::mcp::manager::McpServerManager;
-use crate::mcp::protocol::JsonRpcRequest;
-use crate::utils::errors::AppError;
+use lr_mcp::manager::McpServerManager;
+use lr_mcp::protocol::JsonRpcRequest;
+use lr_types::errors::AppError;
 use serde_json::Value;
 
 use super::types::ServerFailure;

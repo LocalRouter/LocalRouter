@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use super::types::*;
-use crate::mcp::protocol::Root;
+use lr_mcp::protocol::Root;
 
 /// Gateway session (one per client)
 #[derive(Debug)]
@@ -79,7 +79,7 @@ pub struct GatewaySession {
     pub subscribed_resources: HashMap<String, String>,
 
     /// Skills access control for this client
-    pub skills_access: crate::config::SkillsAccess,
+    pub skills_access: lr_config::SkillsAccess,
 }
 
 impl GatewaySession {
@@ -123,7 +123,7 @@ impl GatewaySession {
             resources_list_fetched: false,
             roots,
             subscribed_resources: HashMap::new(),
-            skills_access: crate::config::SkillsAccess::None,
+            skills_access: lr_config::SkillsAccess::None,
         }
     }
 

@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::pin::Pin;
 use utoipa::ToSchema;
 
-use crate::utils::errors::{AppError, AppResult};
+use lr_types::{AppError, AppResult};
 
 pub mod anthropic;
 pub mod cerebras;
@@ -111,7 +111,7 @@ pub trait ModelProvider: Send + Sync {
     fn get_feature_adapter(
         &self,
         _feature: &str,
-    ) -> Option<Box<dyn crate::providers::features::FeatureAdapter>> {
+    ) -> Option<Box<dyn lr_providers::features::FeatureAdapter>> {
         None
     }
 }
@@ -151,7 +151,7 @@ impl ModelInfo {
     /// # Returns
     /// Self with potentially updated context_window and capabilities
     pub fn enrich_with_catalog(mut self, provider_type: &str) -> Self {
-        use crate::catalog;
+        use lr_catalog as catalog;
 
         if let Some(catalog_model) = catalog::find_model(provider_type, &self.id) {
             tracing::debug!(
@@ -197,7 +197,7 @@ impl ModelInfo {
     /// # Returns
     /// Self with potentially updated context_window and capabilities
     pub fn enrich_with_catalog_by_name(mut self) -> Self {
-        use crate::catalog;
+        use lr_catalog as catalog;
 
         if let Some(catalog_model) = catalog::find_model_by_name(&self.id) {
             tracing::debug!(

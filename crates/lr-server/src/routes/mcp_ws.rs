@@ -14,10 +14,10 @@ use futures::{sink::SinkExt, stream::StreamExt};
 use serde_json::json;
 
 use super::helpers::get_enabled_client_from_manager;
-use crate::config::McpServerAccess;
-use crate::server::middleware::client_auth::ClientAuthContext;
-use crate::server::middleware::error::ApiErrorResponse;
-use crate::server::state::AppState;
+use lr_config::McpServerAccess;
+use lr_server::middleware::client_auth::ClientAuthContext;
+use lr_server::middleware::error::ApiErrorResponse;
+use lr_server::state::AppState;
 
 /// WebSocket upgrade handler for MCP notifications
 ///
@@ -49,8 +49,8 @@ use crate::server::state::AppState;
     tag = "mcp",
     responses(
         (status = 101, description = "WebSocket upgrade successful"),
-        (status = 401, description = "Unauthorized", body = crate::server::types::ErrorResponse),
-        (status = 403, description = "Forbidden - no MCP server access", body = crate::server::types::ErrorResponse)
+        (status = 401, description = "Unauthorized", body = lr_server::types::ErrorResponse),
+        (status = 403, description = "Forbidden - no MCP server access", body = lr_server::types::ErrorResponse)
     ),
     security(
         ("bearer" = [])

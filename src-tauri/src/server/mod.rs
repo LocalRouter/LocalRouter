@@ -27,9 +27,9 @@ use tokio::net::TcpListener;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::{error, info};
 
-use crate::mcp::McpServerManager;
-use crate::providers::registry::ProviderRegistry;
-use crate::router::{RateLimiterManager, Router as AppRouter};
+use lr_mcp::McpServerManager;
+use lr_providers::registry::ProviderRegistry;
+use lr_router::{RateLimiterManager, Router as AppRouter};
 
 use self::middleware::auth_layer::AuthLayer;
 use self::state::AppState;
@@ -71,10 +71,10 @@ pub async fn start_server(
     mcp_server_manager: Arc<McpServerManager>,
     rate_limiter: Arc<RateLimiterManager>,
     provider_registry: Arc<ProviderRegistry>,
-    config_manager: Arc<crate::config::ConfigManager>,
-    client_manager: Arc<crate::clients::ClientManager>,
-    token_store: Arc<crate::clients::TokenStore>,
-    metrics_collector: Arc<crate::monitoring::metrics::MetricsCollector>,
+    config_manager: Arc<lr_config::ConfigManager>,
+    client_manager: Arc<lr_clients::ClientManager>,
+    token_store: Arc<lr_clients::TokenStore>,
+    metrics_collector: Arc<lr_monitoring::metrics::MetricsCollector>,
 ) -> anyhow::Result<(AppState, tokio::task::JoinHandle<()>, u16)> {
     info!("Starting web server on {}:{}", config.host, config.port);
 

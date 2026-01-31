@@ -412,7 +412,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
     server_manager
         .start(
             server_config,
-            crate::server::manager::ServerDependencies {
+            lr_server::manager::ServerDependencies {
                 router: app_router.clone(),
                 mcp_server_manager: mcp_server_manager.clone(),
                 rate_limiter: rate_limiter.clone(),
@@ -564,7 +564,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                     match server_manager_clone2
                         .start(
                             server_config.clone(),
-                            crate::server::manager::ServerDependencies {
+                            lr_server::manager::ServerDependencies {
                                 router: app_router_clone2,
                                 mcp_server_manager: mcp_server_manager_clone2,
                                 rate_limiter: rate_limiter_clone2,

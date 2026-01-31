@@ -6,9 +6,9 @@ use tokio::task::JoinHandle;
 use tracing::info;
 
 use super::{start_server, state::AppState, ServerConfig};
-use crate::mcp::McpServerManager;
-use crate::providers::registry::ProviderRegistry;
-use crate::router::{RateLimiterManager, Router};
+use lr_mcp::McpServerManager;
+use lr_providers::registry::ProviderRegistry;
+use lr_router::{RateLimiterManager, Router};
 
 /// Dependencies needed to start the server
 pub struct ServerDependencies {
@@ -16,10 +16,10 @@ pub struct ServerDependencies {
     pub mcp_server_manager: Arc<McpServerManager>,
     pub rate_limiter: Arc<RateLimiterManager>,
     pub provider_registry: Arc<ProviderRegistry>,
-    pub config_manager: Arc<crate::config::ConfigManager>,
-    pub client_manager: Arc<crate::clients::ClientManager>,
-    pub token_store: Arc<crate::clients::TokenStore>,
-    pub metrics_collector: Arc<crate::monitoring::metrics::MetricsCollector>,
+    pub config_manager: Arc<lr_config::ConfigManager>,
+    pub client_manager: Arc<lr_clients::ClientManager>,
+    pub token_store: Arc<lr_clients::TokenStore>,
+    pub metrics_collector: Arc<lr_monitoring::metrics::MetricsCollector>,
 }
 
 /// Server status

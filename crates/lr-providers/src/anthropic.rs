@@ -12,8 +12,8 @@ use std::pin::Pin;
 use std::time::Instant;
 use tracing::{debug, info};
 
-use crate::api_keys::{keychain_trait::KeychainStorage, CachedKeychain};
-use crate::utils::errors::{AppError, AppResult};
+use lr_api_keys::{keychain_trait::KeychainStorage, CachedKeychain};
+use lr_types::{AppError, AppResult};
 
 use super::{
     Capability, ChatMessage, ChunkChoice, ChunkDelta, CompletionChoice, CompletionChunk,
@@ -449,7 +449,7 @@ impl ModelProvider for AnthropicProvider {
 
     async fn get_pricing(&self, model: &str) -> AppResult<PricingInfo> {
         // Try catalog first (embedded OpenRouter data)
-        if let Some(catalog_model) = crate::catalog::find_model("anthropic", model) {
+        if let Some(catalog_model) = lr_catalog::find_model("anthropic", model) {
             tracing::debug!("Using catalog pricing for Anthropic model: {}", model);
             return Ok(PricingInfo {
                 input_cost_per_1k: catalog_model.pricing.prompt_cost_per_1k(),
@@ -764,19 +764,19 @@ impl ModelProvider for AnthropicProvider {
     fn get_feature_adapter(
         &self,
         feature: &str,
-    ) -> Option<Box<dyn crate::providers::features::FeatureAdapter>> {
+    ) -> Option<Box<dyn lr_providers::features::FeatureAdapter>> {
         match feature {
             "extended_thinking" => Some(Box::new(
-                crate::providers::features::anthropic_thinking::AnthropicThinkingAdapter,
+                lr_providers::features::anthropic_thinking::AnthropicThinkingAdapter,
             )),
             "structured_outputs" => Some(Box::new(
-                crate::providers::features::structured_outputs::StructuredOutputsAdapter,
+                lr_providers::features::structured_outputs::StructuredOutputsAdapter,
             )),
             "prompt_caching" => Some(Box::new(
-                crate::providers::features::prompt_caching::PromptCachingAdapter,
+                lr_providers::features::prompt_caching::PromptCachingAdapter,
             )),
             "json_mode" => Some(Box::new(
-                crate::providers::features::json_mode::JsonModeAdapter,
+                lr_providers::features::json_mode::JsonModeAdapter,
             )),
             _ => None,
         }
@@ -908,7 +908,7 @@ struct AnthropicDelta {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::providers::{ChatMessageContent, FunctionCall, ToolCall};
+    use lr_providers::{ChatMessageContent, FunctionCall, ToolCall};
 
     #[test]
     fn test_convert_messages_with_system() {

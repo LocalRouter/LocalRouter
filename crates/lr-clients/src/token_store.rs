@@ -5,8 +5,8 @@
 
 #![allow(dead_code)]
 
-use crate::utils::crypto;
-use crate::utils::errors::{AppError, AppResult};
+use lr_utils::crypto;
+use lr_types::{AppError, AppResult};
 use chrono::{DateTime, Duration, Utc};
 use parking_lot::RwLock;
 use std::collections::HashMap;

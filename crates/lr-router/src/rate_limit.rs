@@ -21,7 +21,7 @@ use tokio::sync::RwLock;
 use tokio::time::{interval, Duration as TokioDuration};
 use tracing::{debug, error, warn};
 
-use crate::utils::errors::{AppError, AppResult};
+use lr_types::{AppError, AppResult};
 
 /// Type of rate limit
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

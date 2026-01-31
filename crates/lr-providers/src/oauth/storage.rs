@@ -9,7 +9,7 @@ use tokio::fs;
 use tokio::sync::RwLock;
 
 use super::OAuthCredentials;
-use crate::utils::errors::{AppError, AppResult};
+use lr_types::{AppError, AppResult};
 
 /// OAuth credentials storage
 pub struct OAuthStorage {

@@ -8,12 +8,12 @@ use futures::{Stream, StreamExt};
 use std::pin::Pin;
 use tracing::{debug, error, info, warn};
 
-use crate::config::ConfigManager;
-use crate::providers::registry::ProviderRegistry;
-use crate::providers::{
+use lr_config::ConfigManager;
+use lr_providers::registry::ProviderRegistry;
+use lr_providers::{
     CompletionChunk, CompletionRequest, CompletionResponse, EmbeddingRequest, EmbeddingResponse,
 };
-use crate::utils::errors::{AppError, AppResult};
+use lr_types::{AppError, AppResult};
 
 pub mod rate_limit;
 
@@ -252,7 +252,7 @@ async fn wrap_stream_with_usage_tracking(
 fn calculate_cost(
     input_tokens: u64,
     output_tokens: u64,
-    pricing: &crate::providers::PricingInfo,
+    pricing: &lr_providers::PricingInfo,
 ) -> f64 {
     let input_cost = (input_tokens as f64 / 1000.0) * pricing.input_cost_per_1k;
     let output_cost = (output_tokens as f64 / 1000.0) * pricing.output_cost_per_1k;
@@ -264,8 +264,8 @@ pub struct Router {
     config_manager: Arc<ConfigManager>,
     provider_registry: Arc<ProviderRegistry>,
     rate_limiter: Arc<RateLimiterManager>,
-    metrics_collector: Arc<crate::monitoring::metrics::MetricsCollector>,
-    routellm_service: Option<Arc<crate::routellm::RouteLLMService>>,
+    metrics_collector: Arc<lr_monitoring::metrics::MetricsCollector>,
+    routellm_service: Option<Arc<lr_routellm::RouteLLMService>>,
 }
 
 impl Router {
@@ -274,7 +274,7 @@ impl Router {
         config_manager: Arc<ConfigManager>,
         provider_registry: Arc<ProviderRegistry>,
         rate_limiter: Arc<RateLimiterManager>,
-        metrics_collector: Arc<crate::monitoring::metrics::MetricsCollector>,
+        metrics_collector: Arc<lr_monitoring::metrics::MetricsCollector>,
     ) -> Self {
         Self {
             config_manager,
@@ -288,14 +288,14 @@ impl Router {
     /// Set the RouteLLM service
     pub fn with_routellm(
         mut self,
-        routellm_service: Option<Arc<crate::routellm::RouteLLMService>>,
+        routellm_service: Option<Arc<lr_routellm::RouteLLMService>>,
     ) -> Self {
         self.routellm_service = routellm_service;
         self
     }
 
     /// Get the RouteLLM service
-    pub fn get_routellm_service(&self) -> Option<&Arc<crate::routellm::RouteLLMService>> {
+    pub fn get_routellm_service(&self) -> Option<&Arc<lr_routellm::RouteLLMService>> {
         self.routellm_service.as_ref()
     }
 
@@ -314,7 +314,7 @@ impl Router {
     fn validate_client_and_strategy(
         &self,
         client_id: &str,
-    ) -> AppResult<(crate::config::Client, crate::config::Strategy)> {
+    ) -> AppResult<(lr_config::Client, lr_config::Strategy)> {
         let config = self.config_manager.get();
 
         let client = config
@@ -378,7 +378,7 @@ impl Router {
     async fn find_provider_for_model(
         &self,
         model: &str,
-        strategy: &crate::config::Strategy,
+        strategy: &lr_config::Strategy,
     ) -> AppResult<(String, String)> {
         let normalized_requested = Self::normalize_model_id(model);
         let allowed = &strategy.allowed_models;
@@ -464,7 +464,7 @@ impl Router {
     /// Returns error if projected usage would exceed any configured limits
     fn check_strategy_rate_limits(
         &self,
-        strategy: &crate::config::Strategy,
+        strategy: &lr_config::Strategy,
         _provider: &str,
         _model: &str,
     ) -> AppResult<()> {
@@ -485,13 +485,13 @@ impl Router {
                 .get_recent_usage_for_strategy(&strategy.id, window_secs);
 
             let (projected_usage, limit_value) = match limit.limit_type {
-                crate::config::RateLimitType::Requests => {
+                lr_config::RateLimitType::Requests => {
                     (current_requests as f64 + 1.0, limit.value)
                 }
-                crate::config::RateLimitType::TotalTokens => {
+                lr_config::RateLimitType::TotalTokens => {
                     (current_tokens as f64 + avg_tokens, limit.value)
                 }
-                crate::config::RateLimitType::Cost => {
+                lr_config::RateLimitType::Cost => {
                     // Special case: if avg_cost is 0 (free models), don't count against cost limit
                     if avg_cost == 0.0 {
                         continue;
@@ -505,14 +505,14 @@ impl Router {
                 warn!(
                     "Strategy rate limit exceeded: {} (current: {:.2}, projected: {:.2}, limit: {:.2})",
                     match limit.limit_type {
-                        crate::config::RateLimitType::Requests => "requests",
-                        crate::config::RateLimitType::TotalTokens => "tokens",
-                        crate::config::RateLimitType::Cost => "cost",
+                        lr_config::RateLimitType::Requests => "requests",
+                        lr_config::RateLimitType::TotalTokens => "tokens",
+                        lr_config::RateLimitType::Cost => "cost",
                         _ => "unknown",
                     },
-                    if matches!(limit.limit_type, crate::config::RateLimitType::Requests) {
+                    if matches!(limit.limit_type, lr_config::RateLimitType::Requests) {
                         current_requests as f64
-                    } else if matches!(limit.limit_type, crate::config::RateLimitType::TotalTokens) {
+                    } else if matches!(limit.limit_type, lr_config::RateLimitType::TotalTokens) {
                         current_tokens as f64
                     } else {
                         current_cost
@@ -564,7 +564,7 @@ impl Router {
                     // Get the feature adapter
                     if let Some(adapter) = provider_instance.get_feature_adapter(feature_name) {
                         // Validate parameters
-                        let mut params: crate::providers::features::FeatureParams =
+                        let mut params: lr_providers::features::FeatureParams =
                             std::collections::HashMap::new();
                         if let serde_json::Value::Object(map) = feature_params {
                             for (k, v) in map {
@@ -626,7 +626,7 @@ impl Router {
         let pricing = provider_instance
             .get_pricing(model)
             .await
-            .unwrap_or_else(|_| crate::providers::PricingInfo::free());
+            .unwrap_or_else(|_| lr_providers::PricingInfo::free());
 
         let cost = calculate_cost(
             response.usage.prompt_tokens as u64,
@@ -659,7 +659,7 @@ impl Router {
     /// - Falls back to prioritized_models if RouteLLM fails or is disabled
     async fn select_models_for_auto_routing(
         &self,
-        auto_config: &crate::config::AutoModelConfig,
+        auto_config: &lr_config::AutoModelConfig,
         request: &CompletionRequest,
         context: &str, // "streaming" or empty for logging
     ) -> (Vec<(String, String)>, Option<f32>) {
@@ -730,7 +730,7 @@ impl Router {
     async fn complete_with_auto_routing(
         &self,
         client_id: &str,
-        strategy: &crate::config::Strategy,
+        strategy: &lr_config::Strategy,
         request: CompletionRequest,
     ) -> AppResult<CompletionResponse> {
         let auto_config = strategy.auto_config.as_ref().ok_or_else(|| {
@@ -844,7 +844,7 @@ impl Router {
     async fn stream_complete_with_auto_routing(
         &self,
         client_id: &str,
-        strategy: &crate::config::Strategy,
+        strategy: &lr_config::Strategy,
         request: CompletionRequest,
     ) -> AppResult<Pin<Box<dyn Stream<Item = AppResult<CompletionChunk>> + Send>>> {
         let auto_config = strategy.auto_config.as_ref().ok_or_else(|| {
@@ -1022,7 +1022,7 @@ impl Router {
                     let pricing = provider_instance
                         .get_pricing(model_name)
                         .await
-                        .unwrap_or_else(|_| crate::providers::PricingInfo::free());
+                        .unwrap_or_else(|_| lr_providers::PricingInfo::free());
 
                     let cost = calculate_cost(
                         response.usage.prompt_tokens as u64,
@@ -1329,7 +1329,7 @@ impl Router {
     async fn embed_with_auto_routing(
         &self,
         client_id: &str,
-        strategy: &crate::config::Strategy,
+        strategy: &lr_config::Strategy,
         request: EmbeddingRequest,
     ) -> AppResult<EmbeddingResponse> {
         let auto_config = strategy.auto_config.as_ref().ok_or_else(|| {
@@ -1513,7 +1513,7 @@ impl Router {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::AppConfig;
+    use lr_config::AppConfig;
 
     #[tokio::test]
     async fn test_router_creation() {
@@ -1529,8 +1529,8 @@ mod tests {
         let metrics_db_path =
             std::env::temp_dir().join(format!("test_metrics_{}.db", uuid::Uuid::new_v4()));
         let metrics_db =
-            Arc::new(crate::monitoring::storage::MetricsDatabase::new(metrics_db_path).unwrap());
-        let metrics_collector = Arc::new(crate::monitoring::metrics::MetricsCollector::new(
+            Arc::new(lr_monitoring::storage::MetricsDatabase::new(metrics_db_path).unwrap());
+        let metrics_collector = Arc::new(lr_monitoring::metrics::MetricsCollector::new(
             metrics_db,
         ));
 
@@ -1559,8 +1559,8 @@ mod tests {
         let metrics_db_path =
             std::env::temp_dir().join(format!("test_metrics_{}.db", uuid::Uuid::new_v4()));
         let metrics_db =
-            Arc::new(crate::monitoring::storage::MetricsDatabase::new(metrics_db_path).unwrap());
-        let metrics_collector = Arc::new(crate::monitoring::metrics::MetricsCollector::new(
+            Arc::new(lr_monitoring::storage::MetricsDatabase::new(metrics_db_path).unwrap());
+        let metrics_collector = Arc::new(lr_monitoring::metrics::MetricsCollector::new(
             metrics_db,
         ));
 

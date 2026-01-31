@@ -7,8 +7,8 @@ use std::task::{Context, Poll};
 use tauri::http::{Request, Response, StatusCode};
 use tower::{Layer, Service};
 
-use crate::server::state::{AppState, AuthContext};
-use crate::server::types::{ApiError, ErrorResponse};
+use lr_server::state::{AppState, AuthContext};
+use lr_server::types::{ApiError, ErrorResponse};
 
 /// Authentication layer that validates API keys
 #[derive(Clone)]

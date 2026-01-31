@@ -49,8 +49,8 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 
 use super::{FeatureAdapter, FeatureData, FeatureParams};
-use crate::providers::{CompletionRequest, CompletionResponse};
-use crate::utils::errors::{AppError, AppResult};
+use lr_providers::{CompletionRequest, CompletionResponse};
+use lr_types::{AppError, AppResult};
 
 /// Minimum top_logprobs value
 const MIN_TOP_LOGPROBS: u32 = 0;
@@ -438,7 +438,7 @@ mod tests {
             model: "gpt-4".to_string(),
             provider: "openai".to_string(),
             choices: vec![],
-            usage: crate::providers::TokenUsage {
+            usage: lr_providers::TokenUsage {
                 prompt_tokens: 100,
                 completion_tokens: 50,
                 total_tokens: 150,
@@ -473,7 +473,7 @@ mod tests {
             model: "gpt-4".to_string(),
             provider: "openai".to_string(),
             choices: vec![],
-            usage: crate::providers::TokenUsage {
+            usage: lr_providers::TokenUsage {
                 prompt_tokens: 100,
                 completion_tokens: 50,
                 total_tokens: 150,

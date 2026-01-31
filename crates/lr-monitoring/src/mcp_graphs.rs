@@ -408,7 +408,7 @@ impl McpGraphGenerator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::monitoring::mcp_metrics::{McpMetricDataPoint, MethodMetrics};
+    use lr_monitoring::mcp_metrics::{McpMetricDataPoint, MethodMetrics};
     use chrono::{Duration, Utc};
 
     #[test]

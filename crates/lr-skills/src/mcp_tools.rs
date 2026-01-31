@@ -5,8 +5,8 @@
 use super::executor::ScriptExecutor;
 use super::manager::SkillManager;
 use super::types::SkillDefinition;
-use crate::config::SkillsAccess;
-use crate::mcp::protocol::McpTool;
+use lr_config::SkillsAccess;
+use lr_mcp::protocol::McpTool;
 use serde_json::json;
 
 /// Build a show-skill tool for a specific skill

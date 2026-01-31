@@ -14,16 +14,16 @@ use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::clients::{ClientManager, TokenStore};
-use crate::config::ConfigManager;
-use crate::mcp::protocol::{JsonRpcNotification, JsonRpcRequest, JsonRpcResponse};
-use crate::mcp::{McpGateway, McpServerManager};
-use crate::monitoring::logger::AccessLogger;
-use crate::monitoring::mcp_logger::McpAccessLogger;
-use crate::monitoring::metrics::MetricsCollector;
-use crate::providers::health_cache::HealthCacheManager;
-use crate::providers::registry::ProviderRegistry;
-use crate::router::{RateLimiterManager, Router};
+use lr_clients::{ClientManager, TokenStore};
+use lr_config::ConfigManager;
+use lr_mcp::protocol::{JsonRpcNotification, JsonRpcRequest, JsonRpcResponse};
+use lr_mcp::{McpGateway, McpServerManager};
+use lr_monitoring::logger::AccessLogger;
+use lr_monitoring::mcp_logger::McpAccessLogger;
+use lr_monitoring::metrics::MetricsCollector;
+use lr_providers::health_cache::HealthCacheManager;
+use lr_providers::registry::ProviderRegistry;
+use lr_router::{RateLimiterManager, Router};
 use crate::ui::tray::TrayGraphManager;
 
 use super::types::{CostDetails, GenerationDetailsResponse, ProviderHealthSnapshot, TokenUsage};
@@ -319,7 +319,7 @@ pub struct AppState {
     pub internal_test_secret: Arc<String>,
 
     /// RouteLLM intelligent routing service
-    pub routellm_service: Option<Arc<crate::routellm::RouteLLMService>>,
+    pub routellm_service: Option<Arc<lr_routellm::RouteLLMService>>,
 
     /// Tray graph manager for real-time token visualization (optional, only in UI mode)
     /// Behind RwLock to allow setting it after AppState creation during Tauri setup
@@ -385,7 +385,7 @@ impl AppState {
         let mcp_server_manager = Arc::new(McpServerManager::new());
         let mcp_gateway = Arc::new(McpGateway::new(
             mcp_server_manager.clone(),
-            crate::mcp::gateway::GatewayConfig::default(),
+            lr_mcp::gateway::GatewayConfig::default(),
             router.clone(),
         ));
 
@@ -418,7 +418,7 @@ impl AppState {
         // Create gateway with the actual MCP server manager and notification broadcast
         let mcp_gateway = Arc::new(McpGateway::new_with_broadcast(
             mcp_server_manager.clone(),
-            crate::mcp::gateway::GatewayConfig::default(),
+            lr_mcp::gateway::GatewayConfig::default(),
             self.router.clone(),
             Some(self.mcp_notification_broadcast.clone()),
         ));
@@ -457,7 +457,7 @@ impl AppState {
     /// Initialize RouteLLM service with settings from config
     pub fn with_routellm(
         mut self,
-        routellm_service: Option<Arc<crate::routellm::RouteLLMService>>,
+        routellm_service: Option<Arc<lr_routellm::RouteLLMService>>,
     ) -> Self {
         self.routellm_service = routellm_service;
         self

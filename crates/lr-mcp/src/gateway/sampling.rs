@@ -5,9 +5,9 @@
 
 #![allow(dead_code)]
 
-use crate::mcp::protocol::{SamplingContent, SamplingMessage, SamplingRequest, SamplingResponse};
-use crate::providers::{ChatMessage, ChatMessageContent, CompletionRequest, CompletionResponse};
-use crate::utils::errors::{AppError, AppResult};
+use lr_mcp::protocol::{SamplingContent, SamplingMessage, SamplingRequest, SamplingResponse};
+use lr_providers::{ChatMessage, ChatMessageContent, CompletionRequest, CompletionResponse};
+use lr_types::{AppError, AppResult};
 
 /// Convert MCP sampling request to provider completion request
 pub fn convert_sampling_to_chat_request(
@@ -124,7 +124,7 @@ pub fn convert_chat_to_sampling_response(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mcp::protocol::{ModelHint, ModelPreferences};
+    use lr_mcp::protocol::{ModelHint, ModelPreferences};
     use serde_json::json;
 
     #[test]

@@ -5,9 +5,9 @@
 use std::sync::Arc;
 use tauri::State;
 
-use crate::monitoring::graphs::{GraphData, TimeRange};
-use crate::monitoring::mcp_graphs::{McpGraphGenerator, McpMetricType};
-use crate::server::ServerManager;
+use lr_monitoring::graphs::{GraphData, TimeRange};
+use lr_monitoring::mcp_graphs::{McpGraphGenerator, McpMetricType};
+use lr_server::ServerManager;
 
 /// Get global MCP metrics for dashboard
 #[tauri::command]

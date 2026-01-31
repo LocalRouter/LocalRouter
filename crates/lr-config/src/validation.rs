@@ -3,9 +3,9 @@
 #![allow(deprecated)]
 
 use super::{AppConfig, ProviderConfig};
-use crate::api_keys::keychain_trait::KeychainStorage;
-use crate::api_keys::CachedKeychain;
-use crate::utils::errors::{AppError, AppResult};
+use lr_api_keys::keychain_trait::KeychainStorage;
+use lr_api_keys::CachedKeychain;
+use lr_types::{AppError, AppResult};
 use std::collections::HashSet;
 
 /// Service name for LocalRouter client secrets in keychain
@@ -405,7 +405,7 @@ fn validate_cross_references(config: &AppConfig) -> AppResult<()> {
 #[cfg(test)]
 mod self_referential_tests {
     use super::*;
-    use crate::config::ProviderType;
+    use lr_config::ProviderType;
 
     #[test]
     fn test_looks_like_localrouter_key_valid() {

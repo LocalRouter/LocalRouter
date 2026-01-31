@@ -14,7 +14,7 @@ use std::sync::Arc;
 use tauri::Emitter;
 use tracing::{info, warn};
 
-use crate::utils::errors::{AppError, AppResult};
+use lr_types::{AppError, AppResult};
 
 /// Access log entry in JSON Lines format
 #[derive(Debug, Clone, Serialize, Deserialize)]

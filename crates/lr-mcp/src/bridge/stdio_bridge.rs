@@ -6,10 +6,10 @@
 //! This allows external MCP clients (Claude Desktop, Cursor, VS Code) to connect to
 //! LocalRouter's unified MCP gateway via standard input/output.
 
-use crate::api_keys::keychain_trait::{CachedKeychain, KeychainStorage};
-use crate::config::{AppConfig, Client, ConfigManager, McpServerAccess};
-use crate::mcp::protocol::{JsonRpcError, JsonRpcRequest, JsonRpcResponse};
-use crate::utils::errors::{AppError, AppResult};
+use lr_api_keys::keychain_trait::{CachedKeychain, KeychainStorage};
+use lr_config::{AppConfig, Client, ConfigManager, McpServerAccess};
+use lr_mcp::protocol::{JsonRpcError, JsonRpcRequest, JsonRpcResponse};
+use lr_types::{AppError, AppResult};
 use serde_json::Value;
 use std::path::PathBuf;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -386,7 +386,7 @@ mod tests {
                 mcp_sampling_requires_approval: true,
                 mcp_sampling_max_tokens: None,
                 mcp_sampling_rate_limit: None,
-                skills_access: crate::config::SkillsAccess::None,
+                skills_access: lr_config::SkillsAccess::None,
             },
             Client {
                 id: "disabled_client".to_string(),
@@ -403,7 +403,7 @@ mod tests {
                 mcp_sampling_requires_approval: true,
                 mcp_sampling_max_tokens: None,
                 mcp_sampling_rate_limit: None,
-                skills_access: crate::config::SkillsAccess::None,
+                skills_access: lr_config::SkillsAccess::None,
             },
             Client {
                 id: "no_mcp_client".to_string(),
@@ -420,7 +420,7 @@ mod tests {
                 mcp_sampling_requires_approval: true,
                 mcp_sampling_max_tokens: None,
                 mcp_sampling_rate_limit: None,
-                skills_access: crate::config::SkillsAccess::None,
+                skills_access: lr_config::SkillsAccess::None,
             },
         ];
         config

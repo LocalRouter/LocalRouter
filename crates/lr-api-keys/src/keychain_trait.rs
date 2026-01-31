@@ -6,7 +6,7 @@
 //! The CachedKeychain wrapper provides in-memory caching to prevent
 //! repeated password prompts for the same service:account combination.
 
-use crate::utils::errors::AppResult;
+use lr_types::errors::AppResult;
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::fs;
@@ -32,11 +32,11 @@ impl KeychainStorage for SystemKeychain {
     fn store(&self, service: &str, account: &str, secret: &str) -> AppResult<()> {
         trace!("SystemKeychain: storing {}:{}", service, account);
         let entry = keyring::Entry::new(service, account).map_err(|e| {
-            crate::utils::errors::AppError::Internal(format!("Failed to access keyring: {}", e))
+            lr_types::AppError::Internal(format!("Failed to access keyring: {}", e))
         })?;
 
         entry.set_password(secret).map_err(|e| {
-            crate::utils::errors::AppError::Internal(format!("Failed to store key: {}", e))
+            lr_types::AppError::Internal(format!("Failed to store key: {}", e))
         })?;
 
         debug!("SystemKeychain: stored {}:{}", service, account);
@@ -50,7 +50,7 @@ impl KeychainStorage for SystemKeychain {
             account
         );
         let entry = keyring::Entry::new(service, account).map_err(|e| {
-            crate::utils::errors::AppError::Internal(format!("Failed to access keyring: {}", e))
+            lr_types::AppError::Internal(format!("Failed to access keyring: {}", e))
         })?;
 
         match entry.get_password() {
@@ -65,7 +65,7 @@ impl KeychainStorage for SystemKeychain {
                 trace!("SystemKeychain: no entry found for {}:{}", service, account);
                 Ok(None)
             }
-            Err(e) => Err(crate::utils::errors::AppError::Internal(format!(
+            Err(e) => Err(lr_types::AppError::Internal(format!(
                 "Failed to retrieve key: {}",
                 e
             ))),
@@ -75,7 +75,7 @@ impl KeychainStorage for SystemKeychain {
     fn delete(&self, service: &str, account: &str) -> AppResult<()> {
         trace!("SystemKeychain: deleting {}:{}", service, account);
         let entry = keyring::Entry::new(service, account).map_err(|e| {
-            crate::utils::errors::AppError::Internal(format!("Failed to access keyring: {}", e))
+            lr_types::AppError::Internal(format!("Failed to access keyring: {}", e))
         })?;
 
         match entry.delete_credential() {
@@ -91,7 +91,7 @@ impl KeychainStorage for SystemKeychain {
                 );
                 Ok(())
             }
-            Err(e) => Err(crate::utils::errors::AppError::Internal(format!(
+            Err(e) => Err(lr_types::AppError::Internal(format!(
                 "Failed to delete key: {}",
                 e
             ))),
@@ -144,7 +144,7 @@ impl FileKeychain {
     /// Load secrets from file
     fn load_from_file(&self) -> AppResult<()> {
         let contents = fs::read_to_string(self.file_path.as_ref()).map_err(|e| {
-            crate::utils::errors::AppError::Internal(format!("Failed to read secrets file: {}", e))
+            lr_types::AppError::Internal(format!("Failed to read secrets file: {}", e))
         })?;
 
         // Handle empty file (treat as empty HashMap)
@@ -152,7 +152,7 @@ impl FileKeychain {
             HashMap::new()
         } else {
             serde_json::from_str(&contents).map_err(|e| {
-                crate::utils::errors::AppError::Internal(format!(
+                lr_types::AppError::Internal(format!(
                     "Failed to parse secrets file: {}",
                     e
                 ))
@@ -177,7 +177,7 @@ impl FileKeychain {
         // Ensure parent directory exists
         if let Some(parent) = self.file_path.parent() {
             fs::create_dir_all(parent).map_err(|e| {
-                crate::utils::errors::AppError::Internal(format!(
+                lr_types::AppError::Internal(format!(
                     "Failed to create secrets directory: {}",
                     e
                 ))
@@ -185,11 +185,11 @@ impl FileKeychain {
         }
 
         let contents = serde_json::to_string_pretty(&*storage).map_err(|e| {
-            crate::utils::errors::AppError::Internal(format!("Failed to serialize secrets: {}", e))
+            lr_types::AppError::Internal(format!("Failed to serialize secrets: {}", e))
         })?;
 
         fs::write(self.file_path.as_ref(), contents).map_err(|e| {
-            crate::utils::errors::AppError::Internal(format!("Failed to write secrets file: {}", e))
+            lr_types::AppError::Internal(format!("Failed to write secrets file: {}", e))
         })?;
 
         debug!(
@@ -284,7 +284,7 @@ impl CachedKeychain {
         match std::env::var("LOCALROUTER_KEYCHAIN").as_deref() {
             Ok("file") => {
                 warn!("Using file-based keychain storage (env var override)");
-                let secrets_path = crate::config::paths::secrets_file()?;
+                let secrets_path = lr_config::paths::secrets_file()?;
                 return Self::file(secrets_path);
             }
             Ok("system") => {
@@ -298,7 +298,7 @@ impl CachedKeychain {
         #[cfg(debug_assertions)]
         {
             warn!("Using file-based keychain storage (DEVELOPMENT MODE)");
-            let secrets_path = crate::config::paths::secrets_file()?;
+            let secrets_path = lr_config::paths::secrets_file()?;
             Self::file(secrets_path)
         }
 

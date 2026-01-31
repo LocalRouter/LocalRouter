@@ -3,7 +3,7 @@
 //! Handles migrating configuration files between versions.
 
 use super::{AppConfig, CONFIG_VERSION};
-use crate::utils::errors::AppResult;
+use lr_types::AppResult;
 use tracing::info;
 
 /// Migrate configuration from an older version to the current version
@@ -88,16 +88,16 @@ fn migrate_to_v2(mut config: AppConfig) -> AppResult<AppConfig> {
 #[allow(dead_code)]
 fn migrate_oauth_client_to_client(
     oauth_client: &super::OAuthClientConfig,
-    keychain: &dyn crate::api_keys::keychain_trait::KeychainStorage,
+    keychain: &dyn lr_api_keys::keychain_trait::KeychainStorage,
 ) -> AppResult<(super::Client, String)> {
-    use crate::config::Client;
+    use lr_config::Client;
 
     // Retrieve the old OAuth client secret from keychain
     let old_service = "LocalRouter-OAuthClients";
     let secret = keychain
         .get(old_service, &oauth_client.id)?
         .ok_or_else(|| {
-            crate::utils::errors::AppError::Config(format!(
+            lr_types::AppError::Config(format!(
                 "OAuth client secret not found in keychain: {}",
                 oauth_client.id
             ))
@@ -122,9 +122,9 @@ fn migrate_oauth_client_to_client(
 
     // Copy linked server IDs to mcp_server_access
     client.mcp_server_access = if oauth_client.linked_server_ids.is_empty() {
-        crate::config::McpServerAccess::None
+        lr_config::McpServerAccess::None
     } else {
-        crate::config::McpServerAccess::Specific(oauth_client.linked_server_ids.clone())
+        lr_config::McpServerAccess::Specific(oauth_client.linked_server_ids.clone())
     };
 
     // OAuth clients don't have LLM provider access by default

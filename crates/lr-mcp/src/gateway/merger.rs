@@ -1,7 +1,7 @@
 // Empty import section - using json! macro from types.rs
 
 use super::types::*;
-use crate::mcp::protocol::{McpPrompt, McpResource, McpTool};
+use lr_mcp::protocol::{McpPrompt, McpResource, McpTool};
 
 /// Merge initialize results from multiple servers
 pub fn merge_initialize_results(

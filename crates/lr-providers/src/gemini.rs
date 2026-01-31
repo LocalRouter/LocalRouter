@@ -16,7 +16,7 @@ use super::{
     CompletionRequest, CompletionResponse, FunctionCall, HealthStatus, ModelInfo, ModelProvider,
     PricingInfo, ProviderHealth, TokenUsage, ToolCall,
 };
-use crate::utils::errors::{AppError, AppResult};
+use lr_types::{AppError, AppResult};
 
 /// Google Gemini provider
 pub struct GeminiProvider {
@@ -300,7 +300,7 @@ impl ModelProvider for GeminiProvider {
         // Normalize model name: "models/gemini-2.0-flash" -> "gemini-2.0-flash"
         let model_id = model.strip_prefix("models/").unwrap_or(model);
 
-        if let Some(catalog_model) = crate::catalog::find_model("google", model_id) {
+        if let Some(catalog_model) = lr_catalog::find_model("google", model_id) {
             tracing::debug!("Using catalog pricing for Gemini model: {}", model);
             return Ok(PricingInfo {
                 input_cost_per_1k: catalog_model.pricing.prompt_cost_per_1k(),
@@ -662,13 +662,13 @@ impl ModelProvider for GeminiProvider {
     fn get_feature_adapter(
         &self,
         feature: &str,
-    ) -> Option<Box<dyn crate::providers::features::FeatureAdapter>> {
+    ) -> Option<Box<dyn lr_providers::features::FeatureAdapter>> {
         match feature {
             "thinking_level" => Some(Box::new(
-                crate::providers::features::gemini_thinking::GeminiThinkingAdapter,
+                lr_providers::features::gemini_thinking::GeminiThinkingAdapter,
             )),
             "json_mode" => Some(Box::new(
-                crate::providers::features::json_mode::JsonModeAdapter,
+                lr_providers::features::json_mode::JsonModeAdapter,
             )),
             _ => None,
         }
@@ -998,7 +998,7 @@ struct GeminiUsageMetadata {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::providers::{ChatMessageContent, FunctionCall, ToolCall};
+    use lr_providers::{ChatMessageContent, FunctionCall, ToolCall};
 
     #[test]
     fn test_provider_name() {

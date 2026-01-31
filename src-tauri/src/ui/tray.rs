@@ -4,13 +4,13 @@
 
 #![allow(dead_code)]
 
-use crate::clients::ClientManager;
-use crate::config::{ConfigManager, UiConfig};
-use crate::mcp::manager::McpServerManager;
-use crate::monitoring::metrics::MetricsCollector;
-use crate::providers::health_cache::{AggregateHealthStatus, ItemHealthStatus};
+use lr_clients::ClientManager;
+use lr_config::{ConfigManager, UiConfig};
+use lr_mcp::manager::McpServerManager;
+use lr_monitoring::metrics::MetricsCollector;
+use lr_providers::health_cache::{AggregateHealthStatus, ItemHealthStatus};
 use crate::ui::tray_graph::{platform_graph_config, DataPoint};
-use crate::utils::test_mode::is_test_mode;
+use lr_utils::test_mode::is_test_mode;
 use chrono::{DateTime, Duration, Utc};
 use parking_lot::RwLock;
 use std::sync::Arc;
@@ -374,11 +374,11 @@ fn build_tray_menu<R: Runtime, M: Manager<R>>(app: &M) -> tauri::Result<tauri::m
         if let Some(config_manager) = app.try_state::<ConfigManager>() {
             let config = config_manager.get();
             let running =
-                if let Some(server_manager) = app.try_state::<Arc<crate::server::ServerManager>>()
+                if let Some(server_manager) = app.try_state::<Arc<lr_server::ServerManager>>()
                 {
                     matches!(
                         server_manager.get_status(),
-                        crate::server::ServerStatus::Running
+                        lr_server::ServerStatus::Running
                     )
                 } else {
                     false
@@ -404,7 +404,7 @@ fn build_tray_menu<R: Runtime, M: Manager<R>>(app: &M) -> tauri::Result<tauri::m
     menu_builder = menu_builder.text("copy_url", &format!("{ICON_PAD}⧉{ICON_PAD} Copy URL"));
 
     // 4. Health issues section (only shown when there are issues)
-    if let Some(app_state) = app.try_state::<Arc<crate::server::state::AppState>>() {
+    if let Some(app_state) = app.try_state::<Arc<lr_server::state::AppState>>() {
         let health_state = app_state.health_cache.get();
         debug!(
             "Tray menu: aggregate_status={:?}, providers={}, mcp_servers={}",
@@ -492,7 +492,7 @@ fn build_tray_menu<R: Runtime, M: Manager<R>>(app: &M) -> tauri::Result<tauri::m
         let config_manager = app.try_state::<ConfigManager>();
 
         // Get all strategies for the strategy selector
-        let all_strategies: Vec<crate::config::Strategy> = config_manager
+        let all_strategies: Vec<lr_config::Strategy> = config_manager
             .map(|cm| cm.get().strategies.clone())
             .unwrap_or_default();
 
@@ -635,7 +635,7 @@ fn build_tray_menu<R: Runtime, M: Manager<R>>(app: &M) -> tauri::Result<tauri::m
                 client_submenu = client_submenu.item(&skills_header);
 
                 // Get all discovered skills via skill manager
-                if let Some(skill_manager) = app.try_state::<Arc<crate::skills::SkillManager>>() {
+                if let Some(skill_manager) = app.try_state::<Arc<lr_skills::SkillManager>>() {
                     let all_skills = skill_manager.list();
 
                     if all_skills.is_empty() {
@@ -1236,7 +1236,7 @@ async fn handle_toggle_skill_access<R: Runtime>(
 
     // Look up the skill's source_path from the skill manager
     let source_path = app
-        .try_state::<Arc<crate::skills::SkillManager>>()
+        .try_state::<Arc<lr_skills::SkillManager>>()
         .and_then(|manager| {
             manager
                 .list()
@@ -1257,45 +1257,45 @@ async fn handle_toggle_skill_access<R: Runtime>(
                 if is_allowed {
                     // Remove source path
                     match &client.skills_access {
-                        crate::config::SkillsAccess::All => {
+                        lr_config::SkillsAccess::All => {
                             // Switching from All: better UX handled by frontend
-                            client.set_skills_access(crate::config::SkillsAccess::None);
+                            client.set_skills_access(lr_config::SkillsAccess::None);
                         }
-                        crate::config::SkillsAccess::Specific(paths) => {
+                        lr_config::SkillsAccess::Specific(paths) => {
                             let new_paths: Vec<String> = paths
                                 .iter()
                                 .filter(|s| s.as_str() != source_path)
                                 .cloned()
                                 .collect();
                             if new_paths.is_empty() {
-                                client.set_skills_access(crate::config::SkillsAccess::None);
+                                client.set_skills_access(lr_config::SkillsAccess::None);
                             } else {
-                                client.set_skills_access(crate::config::SkillsAccess::Specific(
+                                client.set_skills_access(lr_config::SkillsAccess::Specific(
                                     new_paths,
                                 ));
                             }
                         }
-                        crate::config::SkillsAccess::None => {} // Already none
+                        lr_config::SkillsAccess::None => {} // Already none
                     }
                     info!("Skill {} (source: {}) removed from client {}", skill_name, source_path, client_id);
                 } else {
                     // Add source path
                     match &client.skills_access {
-                        crate::config::SkillsAccess::None => {
-                            client.set_skills_access(crate::config::SkillsAccess::Specific(vec![
+                        lr_config::SkillsAccess::None => {
+                            client.set_skills_access(lr_config::SkillsAccess::Specific(vec![
                                 source_path.clone(),
                             ]));
                         }
-                        crate::config::SkillsAccess::Specific(paths) => {
+                        lr_config::SkillsAccess::Specific(paths) => {
                             if !paths.contains(&source_path) {
                                 let mut new_paths = paths.clone();
                                 new_paths.push(source_path.clone());
-                                client.set_skills_access(crate::config::SkillsAccess::Specific(
+                                client.set_skills_access(lr_config::SkillsAccess::Specific(
                                     new_paths,
                                 ));
                             }
                         }
-                        crate::config::SkillsAccess::All => {} // Already all
+                        lr_config::SkillsAccess::All => {} // Already all
                     }
                     info!("Skill {} (source: {}) added to client {}", skill_name, source_path, client_id);
                 }
@@ -1784,11 +1784,11 @@ impl TrayGraphManager {
 
         // Determine overlay: Warning/Error health > UpdateAvailable > None
         let overlay = {
-            use crate::providers::health_cache::AggregateHealthStatus;
+            use lr_providers::health_cache::AggregateHealthStatus;
             use crate::ui::tray_graph::{StatusDotColors, TrayOverlay};
 
             let health_status = app_handle
-                .try_state::<Arc<crate::server::state::AppState>>()
+                .try_state::<Arc<lr_server::state::AppState>>()
                 .map(|state| state.health_cache.aggregate_status());
 
             match health_status {
@@ -1899,7 +1899,7 @@ pub fn set_update_available<R: Runtime>(app: &AppHandle<R>, available: bool) -> 
 
 #[cfg(test)]
 mod tests {
-    use crate::monitoring::metrics::MetricDataPoint;
+    use lr_monitoring::metrics::MetricDataPoint;
     use chrono::{DateTime, Duration, Timelike, Utc};
 
     /// Helper to create test metrics

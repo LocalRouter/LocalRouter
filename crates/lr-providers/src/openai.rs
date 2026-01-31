@@ -5,8 +5,8 @@ use super::{
     CompletionRequest, CompletionResponse, HealthStatus, ModelInfo, ModelProvider, PricingInfo,
     ProviderHealth, TokenUsage,
 };
-use crate::api_keys::{keychain_trait::KeychainStorage, CachedKeychain};
-use crate::utils::errors::{AppError, AppResult};
+use lr_api_keys::{keychain_trait::KeychainStorage, CachedKeychain};
+use lr_types::{AppError, AppResult};
 use async_trait::async_trait;
 use chrono::Utc;
 use futures::stream::{Stream, StreamExt};
@@ -438,7 +438,7 @@ impl ModelProvider for OpenAIProvider {
 
     async fn get_pricing(&self, model: &str) -> AppResult<PricingInfo> {
         // Try catalog first (embedded OpenRouter data)
-        if let Some(catalog_model) = crate::catalog::find_model("openai", model) {
+        if let Some(catalog_model) = lr_catalog::find_model("openai", model) {
             tracing::debug!("Using catalog pricing for OpenAI model: {}", model);
             return Ok(PricingInfo {
                 input_cost_per_1k: catalog_model.pricing.prompt_cost_per_1k(),
@@ -824,19 +824,19 @@ impl ModelProvider for OpenAIProvider {
     fn get_feature_adapter(
         &self,
         feature: &str,
-    ) -> Option<Box<dyn crate::providers::features::FeatureAdapter>> {
+    ) -> Option<Box<dyn lr_providers::features::FeatureAdapter>> {
         match feature {
             "reasoning_tokens" => Some(Box::new(
-                crate::providers::features::openai_reasoning::OpenAIReasoningAdapter,
+                lr_providers::features::openai_reasoning::OpenAIReasoningAdapter,
             )),
             "structured_outputs" => Some(Box::new(
-                crate::providers::features::structured_outputs::StructuredOutputsAdapter,
+                lr_providers::features::structured_outputs::StructuredOutputsAdapter,
             )),
             "logprobs" => Some(Box::new(
-                crate::providers::features::logprobs::LogprobsAdapter,
+                lr_providers::features::logprobs::LogprobsAdapter,
             )),
             "json_mode" => Some(Box::new(
-                crate::providers::features::json_mode::JsonModeAdapter,
+                lr_providers::features::json_mode::JsonModeAdapter,
             )),
             _ => None,
         }

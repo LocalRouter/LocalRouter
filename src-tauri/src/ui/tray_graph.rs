@@ -9,7 +9,7 @@ use image::{codecs::png::PngEncoder, ImageEncoder, Rgba, RgbaImage};
 use std::io::Cursor;
 use tracing::error;
 
-use crate::providers::health_cache::AggregateHealthStatus;
+use lr_providers::health_cache::AggregateHealthStatus;
 
 /// Overlay icon to render in the top-left corner of the tray graph
 #[derive(Debug, Clone, PartialEq)]

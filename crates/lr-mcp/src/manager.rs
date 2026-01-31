@@ -4,12 +4,12 @@
 
 #![allow(dead_code)]
 
-use crate::api_keys::keychain_trait::KeychainStorage;
-use crate::config::{McpServerConfig, McpTransportConfig, McpTransportType};
-use crate::mcp::oauth::McpOAuthManager;
-use crate::mcp::protocol::{JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, StreamingChunk};
-use crate::mcp::transport::{SseTransport, StdioTransport, Transport, WebSocketTransport};
-use crate::utils::errors::{AppError, AppResult};
+use lr_api_keys::keychain_trait::KeychainStorage;
+use lr_config::{McpServerConfig, McpTransportConfig, McpTransportType};
+use lr_mcp::oauth::McpOAuthManager;
+use lr_mcp::protocol::{JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, StreamingChunk};
+use lr_mcp::transport::{SseTransport, StdioTransport, Transport, WebSocketTransport};
+use lr_types::{AppError, AppResult};
 use dashmap::DashMap;
 use futures_util::stream::Stream;
 use serde::{Deserialize, Serialize};
@@ -129,7 +129,7 @@ impl McpServerManager {
     pub fn set_request_callback(
         &self,
         server_id: &str,
-        callback: crate::mcp::transport::StdioRequestCallback,
+        callback: lr_mcp::transport::StdioRequestCallback,
     ) -> bool {
         if let Some(transport) = self.stdio_transports.get(server_id) {
             transport.set_request_callback(callback);
@@ -309,7 +309,7 @@ impl McpServerManager {
             .map_err(AppError::Mcp)?;
 
         // Merge auth config environment variables (if specified)
-        if let Some(crate::config::McpAuthConfig::EnvVars { env: auth_env }) = &config.auth_config {
+        if let Some(lr_config::McpAuthConfig::EnvVars { env: auth_env }) = &config.auth_config {
             // Merge auth env vars with base env vars
             // Auth env vars override base env vars
             for (key, value) in auth_env {
@@ -351,10 +351,10 @@ impl McpServerManager {
         // Apply auth config (if specified)
         if let Some(auth_config) = &config.auth_config {
             match auth_config {
-                crate::config::McpAuthConfig::BearerToken { token_ref: _ } => {
+                lr_config::McpAuthConfig::BearerToken { token_ref: _ } => {
                     // Retrieve token from keychain
-                    let keychain = crate::api_keys::CachedKeychain::auto()
-                        .unwrap_or_else(|_| crate::api_keys::CachedKeychain::system());
+                    let keychain = lr_api_keys::CachedKeychain::auto()
+                        .unwrap_or_else(|_| lr_api_keys::CachedKeychain::system());
                     // Token is stored with account name: {server_id}_bearer_token
                     let account_name = format!("{}_bearer_token", config.id);
                     if let Ok(Some(token)) = keychain.get("LocalRouter-McpServers", &account_name) {
@@ -368,7 +368,7 @@ impl McpServerManager {
                         );
                     }
                 }
-                crate::config::McpAuthConfig::CustomHeaders {
+                lr_config::McpAuthConfig::CustomHeaders {
                     headers: auth_headers,
                 } => {
                     // Merge custom auth headers with base headers
@@ -378,7 +378,7 @@ impl McpServerManager {
                     }
                     tracing::debug!("Applied custom headers auth for SSE server: {}", server_id);
                 }
-                crate::config::McpAuthConfig::OAuth {
+                lr_config::McpAuthConfig::OAuth {
                     client_id,
                     client_secret_ref,
                     token_url,
@@ -386,8 +386,8 @@ impl McpServerManager {
                     ..
                 } => {
                     // Get keychain
-                    let keychain = crate::api_keys::CachedKeychain::auto()
-                        .unwrap_or_else(|_| crate::api_keys::CachedKeychain::system());
+                    let keychain = lr_api_keys::CachedKeychain::auto()
+                        .unwrap_or_else(|_| lr_api_keys::CachedKeychain::system());
 
                     // Get client secret from keychain
                     let client_secret = match keychain
@@ -466,11 +466,11 @@ impl McpServerManager {
 
                     tracing::info!("Applied OAuth token for SSE server: {}", server_id);
                 }
-                crate::config::McpAuthConfig::OAuthBrowser { .. } => {
+                lr_config::McpAuthConfig::OAuthBrowser { .. } => {
                     // OAuth browser flow - token should already be stored in keychain
                     // by the McpOAuthBrowserManager after successful authentication
-                    let keychain = crate::api_keys::CachedKeychain::auto()
-                        .unwrap_or_else(|_| crate::api_keys::CachedKeychain::system());
+                    let keychain = lr_api_keys::CachedKeychain::auto()
+                        .unwrap_or_else(|_| lr_api_keys::CachedKeychain::system());
 
                     // Try to get access token from keychain
                     let account_name = format!("{}_access_token", config.id);
@@ -542,10 +542,10 @@ impl McpServerManager {
         // Apply auth config (if specified)
         if let Some(auth_config) = &config.auth_config {
             match auth_config {
-                crate::config::McpAuthConfig::BearerToken { token_ref: _ } => {
+                lr_config::McpAuthConfig::BearerToken { token_ref: _ } => {
                     // Retrieve token from keychain
-                    let keychain = crate::api_keys::CachedKeychain::auto()
-                        .unwrap_or_else(|_| crate::api_keys::CachedKeychain::system());
+                    let keychain = lr_api_keys::CachedKeychain::auto()
+                        .unwrap_or_else(|_| lr_api_keys::CachedKeychain::system());
                     let account_name = format!("{}_bearer_token", config.id);
                     if let Ok(Some(token)) = keychain.get("LocalRouter-McpServers", &account_name) {
                         headers.insert("Authorization".to_string(), format!("Bearer {}", token));
@@ -561,7 +561,7 @@ impl McpServerManager {
                         );
                     }
                 }
-                crate::config::McpAuthConfig::CustomHeaders {
+                lr_config::McpAuthConfig::CustomHeaders {
                     headers: auth_headers,
                 } => {
                     for (key, value) in auth_headers {
@@ -572,7 +572,7 @@ impl McpServerManager {
                         server_id
                     );
                 }
-                crate::config::McpAuthConfig::OAuth {
+                lr_config::McpAuthConfig::OAuth {
                     client_id,
                     client_secret_ref,
                     token_url,
@@ -580,8 +580,8 @@ impl McpServerManager {
                     ..
                 } => {
                     // Get keychain
-                    let keychain = crate::api_keys::CachedKeychain::auto()
-                        .unwrap_or_else(|_| crate::api_keys::CachedKeychain::system());
+                    let keychain = lr_api_keys::CachedKeychain::auto()
+                        .unwrap_or_else(|_| lr_api_keys::CachedKeychain::system());
 
                     // Get client secret from keychain
                     let client_secret = match keychain
@@ -1272,7 +1272,7 @@ impl Default for McpServerManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::McpServerConfig;
+    use lr_config::McpServerConfig;
     use std::collections::HashMap;
 
     #[test]

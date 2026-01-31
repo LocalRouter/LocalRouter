@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::pin::Pin;
 use std::time::Instant;
 
-use crate::utils::errors::{AppError, AppResult};
+use lr_types::{AppError, AppResult};
 
 use super::{
     Capability, ChatMessage, ChunkChoice, ChunkDelta, CompletionChoice, CompletionChunk,
@@ -567,7 +567,7 @@ struct OpenRouterPricing {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::providers::{ChatMessageContent, FunctionCall, ToolCall};
+    use lr_providers::{ChatMessageContent, FunctionCall, ToolCall};
 
     #[test]
     fn test_provider_name() {

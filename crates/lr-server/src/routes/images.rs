@@ -9,9 +9,9 @@ use axum::{
 };
 use std::time::Instant;
 
-use crate::server::middleware::error::{ApiErrorResponse, ApiResult};
-use crate::server::state::{AppState, AuthContext};
-use crate::server::types::{ImageData, ImageGenerationRequest, ImageGenerationResponse};
+use lr_server::middleware::error::{ApiErrorResponse, ApiResult};
+use lr_server::state::{AppState, AuthContext};
+use lr_server::types::{ImageData, ImageGenerationRequest, ImageGenerationResponse};
 
 /// POST /v1/images/generations
 /// Generate images from a text prompt
@@ -22,10 +22,10 @@ use crate::server::types::{ImageData, ImageGenerationRequest, ImageGenerationRes
     request_body = ImageGenerationRequest,
     responses(
         (status = 200, description = "Successful response", body = ImageGenerationResponse),
-        (status = 400, description = "Bad request", body = crate::server::types::ErrorResponse),
-        (status = 401, description = "Unauthorized", body = crate::server::types::ErrorResponse),
-        (status = 502, description = "Provider error", body = crate::server::types::ErrorResponse),
-        (status = 500, description = "Internal server error", body = crate::server::types::ErrorResponse)
+        (status = 400, description = "Bad request", body = lr_server::types::ErrorResponse),
+        (status = 401, description = "Unauthorized", body = lr_server::types::ErrorResponse),
+        (status = 502, description = "Provider error", body = lr_server::types::ErrorResponse),
+        (status = 500, description = "Internal server error", body = lr_server::types::ErrorResponse)
     ),
     security(
         ("bearer_auth" = [])
@@ -72,7 +72,7 @@ pub async fn image_generations(
         })?;
 
     // Convert server request to provider request
-    let provider_request = crate::providers::ImageGenerationRequest {
+    let provider_request = lr_providers::ImageGenerationRequest {
         model: model_name,
         prompt: request.prompt.clone(),
         n: request.n,

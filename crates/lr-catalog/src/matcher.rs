@@ -135,7 +135,7 @@ fn normalize_id(id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::catalog::types::{CatalogCapabilities, CatalogModel, CatalogPricing, Modality};
+    use lr_catalog::types::{CatalogCapabilities, CatalogModel, CatalogPricing, Modality};
 
     fn create_test_models() -> Vec<CatalogModel> {
         vec![

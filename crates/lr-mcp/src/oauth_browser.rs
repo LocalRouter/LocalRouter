@@ -7,11 +7,11 @@
 //! This module now uses the unified oauth_browser module for the core OAuth flow,
 //! while maintaining backward compatibility with the original MCP OAuth API.
 
-use crate::api_keys::CachedKeychain;
-use crate::config::McpAuthConfig;
-use crate::mcp::oauth::McpOAuthManager;
-use crate::oauth_browser::{FlowId, OAuthFlowConfig, OAuthFlowManager, OAuthFlowResult};
-use crate::utils::errors::{AppError, AppResult};
+use lr_api_keys::CachedKeychain;
+use lr_config::McpAuthConfig;
+use lr_mcp::oauth::McpOAuthManager;
+use lr_oauth::browser::{FlowId, OAuthFlowConfig, OAuthFlowManager, OAuthFlowResult};
+use lr_types::{AppError, AppResult};
 use chrono::{DateTime, Duration, Utc};
 use parking_lot::RwLock;
 use reqwest::Url;

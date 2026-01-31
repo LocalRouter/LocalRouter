@@ -1,12 +1,12 @@
 //! OAuth flow manager - orchestrates complete OAuth authorization flows
 #![allow(dead_code)]
 
-use crate::api_keys::CachedKeychain;
-use crate::oauth_browser::{
+use lr_api_keys::CachedKeychain;
+use lr_oauth::browser::{
     generate_pkce_challenge, generate_state, CallbackServerManager, FlowId, FlowStatus,
     OAuthFlowConfig, OAuthFlowResult, OAuthFlowStart, OAuthFlowState, TokenExchanger,
 };
-use crate::utils::errors::{AppError, AppResult};
+use lr_types::{AppError, AppResult};
 use chrono::{Duration, Utc};
 use parking_lot::RwLock;
 use std::collections::HashMap;
@@ -162,7 +162,7 @@ impl OAuthFlowManager {
     async fn handle_callback(
         flow_id: FlowId,
         callback_rx: tokio::sync::oneshot::Receiver<
-            AppResult<crate::oauth_browser::callback_server::CallbackResult>,
+            AppResult<lr_oauth::browser::callback_server::CallbackResult>,
         >,
         flows: Arc<RwLock<HashMap<FlowId, OAuthFlowState>>>,
         callback_manager: Arc<CallbackServerManager>,

@@ -5,9 +5,9 @@
 use std::sync::Arc;
 use tauri::State;
 
-use crate::config::{ConfigManager, RateLimitType};
-use crate::monitoring::graphs::{GraphData, GraphGenerator, MetricType, RateLimitInfo, TimeRange};
-use crate::server::ServerManager;
+use lr_config::{ConfigManager, RateLimitType};
+use lr_monitoring::graphs::{GraphData, GraphGenerator, MetricType, RateLimitInfo, TimeRange};
+use lr_server::ServerManager;
 
 /// Helper function to get rate limits for a client based on metric type
 ///

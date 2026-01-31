@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::pin::Pin;
 use std::time::Instant;
 
-use crate::utils::errors::{AppError, AppResult};
+use lr_types::{AppError, AppResult};
 
 use super::{
     Capability, ChatMessage, ChunkChoice, ChunkDelta, CompletionChoice, CompletionChunk,
@@ -186,7 +186,7 @@ impl ModelProvider for PerplexityProvider {
 
     async fn get_pricing(&self, model: &str) -> AppResult<PricingInfo> {
         // Try catalog first (embedded OpenRouter data)
-        if let Some(catalog_model) = crate::catalog::find_model("perplexity", model) {
+        if let Some(catalog_model) = lr_catalog::find_model("perplexity", model) {
             tracing::debug!("Using catalog pricing for Perplexity model: {}", model);
             return Ok(PricingInfo {
                 input_cost_per_1k: catalog_model.pricing.prompt_cost_per_1k(),

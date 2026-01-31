@@ -2,9 +2,9 @@
 //!
 //! Communicates with MCP servers via WebSocket for bidirectional JSON-RPC messaging.
 
-use crate::mcp::protocol::{JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse};
-use crate::mcp::transport::Transport;
-use crate::utils::errors::{AppError, AppResult};
+use lr_mcp::protocol::{JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse};
+use lr_mcp::transport::Transport;
+use lr_types::{AppError, AppResult};
 use async_trait::async_trait;
 use futures_util::{SinkExt, StreamExt};
 use parking_lot::RwLock;

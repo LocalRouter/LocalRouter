@@ -17,7 +17,7 @@ use super::{
     CompletionRequest, CompletionResponse, HealthStatus, ModelInfo, ModelProvider, PricingInfo,
     ProviderHealth, TokenUsage,
 };
-use crate::utils::errors::{AppError, AppResult};
+use lr_types::{AppError, AppResult};
 
 /// LM Studio provider for local model inference
 pub struct LMStudioProvider {

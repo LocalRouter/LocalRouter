@@ -12,8 +12,8 @@ use tokio::sync::oneshot;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-use crate::mcp::protocol::{ElicitationRequest, ElicitationResponse, JsonRpcNotification};
-use crate::utils::errors::{AppError, AppResult};
+use lr_mcp::protocol::{ElicitationRequest, ElicitationResponse, JsonRpcNotification};
+use lr_types::{AppError, AppResult};
 
 /// Pending elicitation session
 #[derive(Debug)]

@@ -17,7 +17,7 @@ use super::{
     openrouter::OpenRouterProvider, perplexity::PerplexityProvider, togetherai::TogetherAIProvider,
     xai::XAIProvider, ModelProvider,
 };
-use crate::utils::errors::{AppError, AppResult};
+use lr_types::{AppError, AppResult};
 
 /// Provider category for UI grouping
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -1188,7 +1188,7 @@ impl ProviderFactory for GitHubCopilotProviderFactory {
     ) -> AppResult<Arc<dyn ModelProvider>> {
         // GitHub Copilot uses a custom API, create OpenAI-compatible provider
         // with the OAuth token from keychain
-        use crate::api_keys::{keychain_trait::KeychainStorage, CachedKeychain};
+        use lr_api_keys::{keychain_trait::KeychainStorage, CachedKeychain};
 
         let keychain = CachedKeychain::system();
         let access_token = keychain

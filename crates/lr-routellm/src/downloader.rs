@@ -2,8 +2,8 @@
 
 #![allow(dead_code)]
 
-use crate::config::RouteLLMDownloadStatus;
-use crate::routellm::errors::{RouteLLMError, RouteLLMResult};
+use lr_config::RouteLLMDownloadStatus;
+use lr_routellm::errors::{RouteLLMError, RouteLLMResult};
 use hf_hub::api::tokio::Api;
 use std::path::Path;
 use std::sync::Arc;
@@ -564,7 +564,7 @@ pub async fn download_models(
 ///
 /// This runs a quick test to ensure the model files are not corrupted
 async fn verify_model_loads(model_path: &Path, tokenizer_path: &Path) -> RouteLLMResult<()> {
-    use crate::routellm::candle_router::CandleRouter;
+    use lr_routellm::candle_router::CandleRouter;
 
     info!("Testing model loading from temp location...");
 
@@ -610,8 +610,8 @@ struct DownloadError {
 pub fn get_download_status(
     model_path: &Path,
     tokenizer_path: &Path,
-) -> crate::config::RouteLLMDownloadStatus {
-    use crate::config::RouteLLMDownloadState;
+) -> lr_config::RouteLLMDownloadStatus {
+    use lr_config::RouteLLMDownloadState;
 
     let model_file = model_path.join("model.safetensors");
     let patched_model_file = model_path.join("model.patched.safetensors");

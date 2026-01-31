@@ -6,16 +6,16 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::api_keys::keychain_trait::KeychainStorage;
-use crate::config::{
+use lr_api_keys::keychain_trait::KeychainStorage;
+use lr_config::{
     client_strategy_name, ConfigManager, McpAuthConfig, McpServerAccess, McpServerConfig,
     McpTransportConfig, McpTransportType, SkillsAccess, SkillsConfig,
 };
-use crate::mcp::McpServerManager;
-use crate::monitoring::logger::AccessLogger;
-use crate::oauth_clients::OAuthClientManager;
-use crate::providers::registry::ProviderRegistry;
-use crate::server::ServerManager;
+use lr_mcp::McpServerManager;
+use lr_monitoring::logger::AccessLogger;
+use lr_oauth::clients::OAuthClientManager;
+use lr_providers::registry::ProviderRegistry;
+use lr_server::ServerManager;
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager, State};
 
@@ -57,7 +57,7 @@ pub async fn reload_config(config_manager: State<'_, ConfigManager>) -> Result<(
 /// - Linux: Secret Service
 #[tauri::command]
 pub async fn set_provider_api_key(provider: String, api_key: String) -> Result<(), String> {
-    crate::providers::key_storage::store_provider_key(&provider, &api_key)
+    lr_providers::key_storage::store_provider_key(&provider, &api_key)
         .map_err(|e| e.to_string())
 }
 
@@ -74,7 +74,7 @@ pub async fn set_provider_api_key(provider: String, api_key: String) -> Result<(
 /// This command only returns whether a key exists, not the actual key value.
 #[tauri::command]
 pub async fn has_provider_api_key(provider: String) -> Result<bool, String> {
-    crate::providers::key_storage::has_provider_key(&provider).map_err(|e| e.to_string())
+    lr_providers::key_storage::has_provider_key(&provider).map_err(|e| e.to_string())
 }
 
 /// Delete a provider API key from the system keyring
@@ -86,7 +86,7 @@ pub async fn has_provider_api_key(provider: String) -> Result<bool, String> {
 /// * `Ok(())` if successful (even if the key didn't exist)
 #[tauri::command]
 pub async fn delete_provider_api_key(provider: String) -> Result<(), String> {
-    crate::providers::key_storage::delete_provider_key(&provider).map_err(|e| e.to_string())
+    lr_providers::key_storage::delete_provider_key(&provider).map_err(|e| e.to_string())
 }
 
 /// List all providers (from config) with their key status
@@ -108,7 +108,7 @@ pub async fn list_providers_with_key_status(
             .unwrap_or(&provider_config.name)
             .to_string();
 
-        let has_key = crate::providers::key_storage::has_provider_key(&key_ref).unwrap_or(false);
+        let has_key = lr_providers::key_storage::has_provider_key(&key_ref).unwrap_or(false);
 
         result.push(ProviderKeyStatus {
             name: provider_config.name,
@@ -143,7 +143,7 @@ pub struct ProviderKeyStatus {
 #[tauri::command]
 pub async fn list_provider_types(
     registry: State<'_, Arc<ProviderRegistry>>,
-) -> Result<Vec<crate::providers::registry::ProviderTypeInfo>, String> {
+) -> Result<Vec<lr_providers::registry::ProviderTypeInfo>, String> {
     Ok(registry.list_provider_types())
 }
 
@@ -154,7 +154,7 @@ pub async fn list_provider_types(
 #[tauri::command]
 pub async fn list_provider_instances(
     registry: State<'_, Arc<ProviderRegistry>>,
-) -> Result<Vec<crate::providers::registry::ProviderInstanceInfo>, String> {
+) -> Result<Vec<lr_providers::registry::ProviderInstanceInfo>, String> {
     Ok(registry.list_providers())
 }
 
@@ -196,7 +196,7 @@ pub async fn create_provider_instance(
                 None
             };
 
-            cfg.providers.push(crate::config::ProviderConfig {
+            cfg.providers.push(lr_config::ProviderConfig {
                 name: instance_name.clone(),
                 provider_type: provider_type_enum,
                 enabled: true,
@@ -284,24 +284,24 @@ pub async fn update_provider_instance(
 }
 
 /// Helper function to convert provider type string to enum
-fn provider_type_str_to_enum(provider_type: &str) -> crate::config::ProviderType {
+fn provider_type_str_to_enum(provider_type: &str) -> lr_config::ProviderType {
     match provider_type {
-        "ollama" => crate::config::ProviderType::Ollama,
-        "lmstudio" => crate::config::ProviderType::LMStudio,
-        "openai" => crate::config::ProviderType::OpenAI,
-        "anthropic" => crate::config::ProviderType::Anthropic,
-        "gemini" => crate::config::ProviderType::Gemini,
-        "openrouter" => crate::config::ProviderType::OpenRouter,
-        "groq" => crate::config::ProviderType::Groq,
-        "mistral" => crate::config::ProviderType::Mistral,
-        "cohere" => crate::config::ProviderType::Cohere,
-        "togetherai" => crate::config::ProviderType::TogetherAI,
-        "perplexity" => crate::config::ProviderType::Perplexity,
-        "deepinfra" => crate::config::ProviderType::DeepInfra,
-        "cerebras" => crate::config::ProviderType::Cerebras,
-        "xai" => crate::config::ProviderType::XAI,
-        "openai_compatible" => crate::config::ProviderType::Custom,
-        _ => crate::config::ProviderType::Custom,
+        "ollama" => lr_config::ProviderType::Ollama,
+        "lmstudio" => lr_config::ProviderType::LMStudio,
+        "openai" => lr_config::ProviderType::OpenAI,
+        "anthropic" => lr_config::ProviderType::Anthropic,
+        "gemini" => lr_config::ProviderType::Gemini,
+        "openrouter" => lr_config::ProviderType::OpenRouter,
+        "groq" => lr_config::ProviderType::Groq,
+        "mistral" => lr_config::ProviderType::Mistral,
+        "cohere" => lr_config::ProviderType::Cohere,
+        "togetherai" => lr_config::ProviderType::TogetherAI,
+        "perplexity" => lr_config::ProviderType::Perplexity,
+        "deepinfra" => lr_config::ProviderType::DeepInfra,
+        "cerebras" => lr_config::ProviderType::Cerebras,
+        "xai" => lr_config::ProviderType::XAI,
+        "openai_compatible" => lr_config::ProviderType::Custom,
+        _ => lr_config::ProviderType::Custom,
     }
 }
 
@@ -317,7 +317,7 @@ fn provider_type_str_to_enum(provider_type: &str) -> crate::config::ProviderType
 pub async fn remove_provider_instance(
     registry: State<'_, Arc<ProviderRegistry>>,
     config_manager: State<'_, ConfigManager>,
-    app_state: State<'_, Arc<crate::server::state::AppState>>,
+    app_state: State<'_, Arc<lr_server::state::AppState>>,
     app: tauri::AppHandle,
     instance_name: String,
 ) -> Result<(), String> {
@@ -359,7 +359,7 @@ pub async fn remove_provider_instance(
 pub async fn set_provider_enabled(
     registry: State<'_, Arc<ProviderRegistry>>,
     config_manager: State<'_, ConfigManager>,
-    app_state: State<'_, Arc<crate::server::state::AppState>>,
+    app_state: State<'_, Arc<lr_server::state::AppState>>,
     app: tauri::AppHandle,
     instance_name: String,
     enabled: bool,
@@ -382,7 +382,7 @@ pub async fn set_provider_enabled(
     config_manager.save().await.map_err(|e| e.to_string())?;
 
     // Update health cache immediately - this recalculates aggregate status and emits event
-    use crate::providers::health_cache::ItemHealth;
+    use lr_providers::health_cache::ItemHealth;
     if enabled {
         // Set to pending, then trigger a health check for this provider
         app_state
@@ -404,7 +404,7 @@ pub async fn set_provider_enabled(
 
                 let item_health = match health {
                     Ok(h) => {
-                        use crate::providers::HealthStatus;
+                        use lr_providers::HealthStatus;
                         match h.status {
                             HealthStatus::Healthy => {
                                 ItemHealth::healthy(name.clone(), h.latency_ms)
@@ -449,7 +449,7 @@ pub async fn set_provider_enabled(
 #[tauri::command]
 pub async fn get_providers_health(
     registry: State<'_, Arc<ProviderRegistry>>,
-) -> Result<HashMap<String, crate::providers::ProviderHealth>, String> {
+) -> Result<HashMap<String, lr_providers::ProviderHealth>, String> {
     Ok(registry.get_all_health().await)
 }
 
@@ -470,7 +470,7 @@ pub struct HealthCheckResult {
 pub async fn start_provider_health_checks(
     app: tauri::AppHandle,
     registry: State<'_, Arc<ProviderRegistry>>,
-    app_state: State<'_, Arc<crate::server::state::AppState>>,
+    app_state: State<'_, Arc<lr_server::state::AppState>>,
 ) -> Result<Vec<String>, String> {
     let provider_names = registry.get_provider_names();
 
@@ -505,7 +505,7 @@ pub async fn start_provider_health_checks(
                         let _ = app_handle.emit("provider-health-check", result);
                         health_cache.update_provider(
                             &instance_name_clone,
-                            crate::providers::health_cache::ItemHealth::disabled(
+                            lr_providers::health_cache::ItemHealth::disabled(
                                 instance_name_clone.clone(),
                             ),
                         );
@@ -518,9 +518,9 @@ pub async fn start_provider_health_checks(
                     let result = HealthCheckResult {
                         provider_name: instance_name_clone.clone(),
                         status: match &health.status {
-                            crate::providers::HealthStatus::Healthy => "healthy".to_string(),
-                            crate::providers::HealthStatus::Degraded => "degraded".to_string(),
-                            crate::providers::HealthStatus::Unhealthy => "unhealthy".to_string(),
+                            lr_providers::HealthStatus::Healthy => "healthy".to_string(),
+                            lr_providers::HealthStatus::Degraded => "degraded".to_string(),
+                            lr_providers::HealthStatus::Unhealthy => "unhealthy".to_string(),
                         },
                         latency_ms: health.latency_ms,
                         error_message: health.error_message.clone(),
@@ -528,8 +528,8 @@ pub async fn start_provider_health_checks(
                     let _ = app_handle.emit("provider-health-check", result);
 
                     // Update centralized health cache so aggregate status (tray + sidebar) recalculates
-                    use crate::providers::health_cache::ItemHealth;
-                    use crate::providers::HealthStatus;
+                    use lr_providers::health_cache::ItemHealth;
+                    use lr_providers::HealthStatus;
                     let item_health = match health.status {
                         HealthStatus::Healthy => {
                             ItemHealth::healthy(instance_name_clone.clone(), health.latency_ms)
@@ -570,7 +570,7 @@ pub async fn start_provider_health_checks(
 pub async fn check_single_provider_health(
     app: tauri::AppHandle,
     registry: State<'_, Arc<ProviderRegistry>>,
-    app_state: State<'_, Arc<crate::server::state::AppState>>,
+    app_state: State<'_, Arc<lr_server::state::AppState>>,
     instance_name: String,
 ) -> Result<(), String> {
     let registry = registry.inner().clone();
@@ -589,7 +589,7 @@ pub async fn check_single_provider_health(
             let _ = app_handle.emit("provider-health-check", result);
             health_cache.update_provider(
                 &instance_name,
-                crate::providers::health_cache::ItemHealth::disabled(instance_name.clone()),
+                lr_providers::health_cache::ItemHealth::disabled(instance_name.clone()),
             );
             return Ok(());
         }
@@ -603,9 +603,9 @@ pub async fn check_single_provider_health(
             let result = HealthCheckResult {
                 provider_name: instance_name.clone(),
                 status: match &health.status {
-                    crate::providers::HealthStatus::Healthy => "healthy".to_string(),
-                    crate::providers::HealthStatus::Degraded => "degraded".to_string(),
-                    crate::providers::HealthStatus::Unhealthy => "unhealthy".to_string(),
+                    lr_providers::HealthStatus::Healthy => "healthy".to_string(),
+                    lr_providers::HealthStatus::Degraded => "degraded".to_string(),
+                    lr_providers::HealthStatus::Unhealthy => "unhealthy".to_string(),
                 },
                 latency_ms: health.latency_ms,
                 error_message: health.error_message.clone(),
@@ -613,8 +613,8 @@ pub async fn check_single_provider_health(
             let _ = app_handle.emit("provider-health-check", result);
 
             // Update centralized health cache so aggregate status (tray + sidebar) recalculates
-            use crate::providers::health_cache::ItemHealth;
-            use crate::providers::HealthStatus;
+            use lr_providers::health_cache::ItemHealth;
+            use lr_providers::HealthStatus;
             let item_health = match health.status {
                 HealthStatus::Healthy => {
                     ItemHealth::healthy(instance_name.clone(), health.latency_ms)
@@ -654,8 +654,8 @@ pub async fn check_single_provider_health(
 /// - Aggregate health status (red/yellow/green)
 #[tauri::command]
 pub async fn get_health_cache(
-    app_state: State<'_, Arc<crate::server::state::AppState>>,
-) -> Result<crate::providers::health_cache::HealthCacheState, String> {
+    app_state: State<'_, Arc<lr_server::state::AppState>>,
+) -> Result<lr_providers::health_cache::HealthCacheState, String> {
     Ok(app_state.health_cache.get())
 }
 
@@ -667,7 +667,7 @@ pub async fn get_health_cache(
 #[tauri::command]
 pub async fn refresh_all_health(
     _app: tauri::AppHandle,
-    app_state: State<'_, Arc<crate::server::state::AppState>>,
+    app_state: State<'_, Arc<lr_server::state::AppState>>,
     config_manager: State<'_, ConfigManager>,
 ) -> Result<(), String> {
     let health_cache = app_state.health_cache.clone();
@@ -678,7 +678,7 @@ pub async fn refresh_all_health(
     // Spawn the refresh in the background
     tokio::spawn(async move {
         tracing::info!("Manual health refresh triggered...");
-        use crate::providers::health_cache::ItemHealth;
+        use lr_providers::health_cache::ItemHealth;
 
         // Check all providers
         let providers = provider_registry.list_providers();
@@ -701,7 +701,7 @@ pub async fn refresh_all_health(
 
                 let item_health = match health {
                     Ok(h) => {
-                        use crate::providers::HealthStatus;
+                        use lr_providers::HealthStatus;
                         match h.status {
                             HealthStatus::Healthy => ItemHealth::healthy(
                                 provider_info.instance_name.clone(),
@@ -737,7 +737,7 @@ pub async fn refresh_all_health(
             }
 
             let mcp_server_health = mcp_server_manager.get_server_health(&config.id).await;
-            use crate::mcp::manager::HealthStatus as McpHealthStatus;
+            use lr_mcp::manager::HealthStatus as McpHealthStatus;
             let server_id = mcp_server_health.server_id.clone();
             let server_name = mcp_server_health.server_name.clone();
             let item_health = match mcp_server_health.status {
@@ -774,7 +774,7 @@ pub async fn refresh_all_health(
 pub async fn list_provider_models(
     registry: State<'_, Arc<ProviderRegistry>>,
     instance_name: String,
-) -> Result<Vec<crate::providers::ModelInfo>, String> {
+) -> Result<Vec<lr_providers::ModelInfo>, String> {
     registry
         .list_provider_models(&instance_name)
         .await
@@ -792,7 +792,7 @@ pub async fn list_provider_models(
 #[tauri::command]
 pub async fn list_all_models(
     registry: State<'_, Arc<ProviderRegistry>>,
-) -> Result<Vec<crate::providers::ModelInfo>, String> {
+) -> Result<Vec<lr_providers::ModelInfo>, String> {
     registry.list_all_models().await.map_err(|e| e.to_string())
 }
 
@@ -843,7 +843,7 @@ pub async fn list_all_models_detailed(
     let detailed_models = models
         .into_iter()
         .map(|model| {
-            use crate::catalog;
+            use lr_catalog as catalog;
 
             // Extract provider type from provider instance name
             // Format is typically "provider_type/instance_name" or just "provider_type"
@@ -1037,8 +1037,8 @@ pub struct ServerConfigInfo {
 /// Returns statistics computed from persistent metrics database (last 90 days).
 #[tauri::command]
 pub async fn get_aggregate_stats(
-    server_manager: State<'_, Arc<crate::server::ServerManager>>,
-) -> Result<crate::server::state::AggregateStats, String> {
+    server_manager: State<'_, Arc<lr_server::ServerManager>>,
+) -> Result<lr_server::state::AggregateStats, String> {
     // Get the app state from server manager
     let app_state = server_manager
         .get_state()
@@ -1062,7 +1062,7 @@ pub async fn get_aggregate_stats(
         total_cost += point.cost_usd;
     }
 
-    Ok(crate::server::state::AggregateStats {
+    Ok(lr_server::state::AggregateStats {
         total_requests,
         successful_requests,
         total_tokens,
@@ -1142,19 +1142,19 @@ pub async fn get_executable_path() -> Result<String, String> {
 /// Get the current server status
 #[tauri::command]
 pub async fn get_server_status(
-    server_manager: State<'_, Arc<crate::server::ServerManager>>,
+    server_manager: State<'_, Arc<lr_server::ServerManager>>,
 ) -> Result<String, String> {
     let status = server_manager.get_status();
     Ok(match status {
-        crate::server::ServerStatus::Stopped => "stopped".to_string(),
-        crate::server::ServerStatus::Running => "running".to_string(),
+        lr_server::ServerStatus::Stopped => "stopped".to_string(),
+        lr_server::ServerStatus::Running => "running".to_string(),
     })
 }
 
 /// Stop the web server
 #[tauri::command]
 pub async fn stop_server(
-    server_manager: State<'_, Arc<crate::server::ServerManager>>,
+    server_manager: State<'_, Arc<lr_server::ServerManager>>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     tracing::info!("Stop server command received");
@@ -1183,7 +1183,7 @@ pub struct OAuthProviderInfo {
 /// Returns a list of all OAuth providers that can be authenticated with.
 #[tauri::command]
 pub async fn list_oauth_providers(
-    oauth_manager: State<'_, Arc<crate::providers::oauth::OAuthManager>>,
+    oauth_manager: State<'_, Arc<lr_providers::oauth::OAuthManager>>,
 ) -> Result<Vec<OAuthProviderInfo>, String> {
     let providers = oauth_manager.list_providers();
     Ok(providers
@@ -1205,8 +1205,8 @@ pub async fn list_oauth_providers(
 #[tauri::command]
 pub async fn start_oauth_flow(
     provider_id: String,
-    oauth_manager: State<'_, Arc<crate::providers::oauth::OAuthManager>>,
-) -> Result<crate::providers::oauth::OAuthFlowResult, String> {
+    oauth_manager: State<'_, Arc<lr_providers::oauth::OAuthManager>>,
+) -> Result<lr_providers::oauth::OAuthFlowResult, String> {
     oauth_manager
         .start_oauth(&provider_id)
         .await
@@ -1225,8 +1225,8 @@ pub async fn start_oauth_flow(
 #[tauri::command]
 pub async fn poll_oauth_status(
     provider_id: String,
-    oauth_manager: State<'_, Arc<crate::providers::oauth::OAuthManager>>,
-) -> Result<crate::providers::oauth::OAuthFlowResult, String> {
+    oauth_manager: State<'_, Arc<lr_providers::oauth::OAuthManager>>,
+) -> Result<lr_providers::oauth::OAuthFlowResult, String> {
     oauth_manager
         .poll_oauth(&provider_id)
         .await
@@ -1240,7 +1240,7 @@ pub async fn poll_oauth_status(
 #[tauri::command]
 pub async fn cancel_oauth_flow(
     provider_id: String,
-    oauth_manager: State<'_, Arc<crate::providers::oauth::OAuthManager>>,
+    oauth_manager: State<'_, Arc<lr_providers::oauth::OAuthManager>>,
 ) -> Result<(), String> {
     oauth_manager
         .cancel_oauth(&provider_id)
@@ -1253,7 +1253,7 @@ pub async fn cancel_oauth_flow(
 /// Returns a list of provider IDs that have OAuth credentials stored.
 #[tauri::command]
 pub async fn list_oauth_credentials(
-    oauth_manager: State<'_, Arc<crate::providers::oauth::OAuthManager>>,
+    oauth_manager: State<'_, Arc<lr_providers::oauth::OAuthManager>>,
 ) -> Result<Vec<String>, String> {
     oauth_manager
         .list_authenticated_providers()
@@ -1268,7 +1268,7 @@ pub async fn list_oauth_credentials(
 #[tauri::command]
 pub async fn delete_oauth_credentials(
     provider_id: String,
-    oauth_manager: State<'_, Arc<crate::providers::oauth::OAuthManager>>,
+    oauth_manager: State<'_, Arc<lr_providers::oauth::OAuthManager>>,
 ) -> Result<(), String> {
     oauth_manager
         .delete_credentials(&provider_id)
@@ -1705,7 +1705,7 @@ fn process_auth_config(
         FrontendAuthConfig::None => return Ok(None),
         FrontendAuthConfig::BearerToken { token } => {
             // Store token in keychain
-            let keychain = crate::api_keys::CachedKeychain::auto()
+            let keychain = lr_api_keys::CachedKeychain::auto()
                 .map_err(|e| format!("Failed to access keychain: {}", e))?;
 
             let key = format!("{}_bearer_token", server_id);
@@ -1726,7 +1726,7 @@ fn process_auth_config(
             scopes,
         } => {
             // Store client secret in keychain
-            let keychain = crate::api_keys::CachedKeychain::auto()
+            let keychain = lr_api_keys::CachedKeychain::auto()
                 .map_err(|e| format!("Failed to access keychain: {}", e))?;
 
             let key = format!("{}_oauth_secret", server_id);
@@ -1755,7 +1755,7 @@ fn process_auth_config(
         } => {
             // Store client secret in keychain if provided
             let secret_ref = if let Some(secret) = client_secret {
-                let keychain = crate::api_keys::CachedKeychain::auto()
+                let keychain = lr_api_keys::CachedKeychain::auto()
                     .map_err(|e| format!("Failed to access keychain: {}", e))?;
 
                 let key = format!("{}_oauth_browser_secret", server_id);
@@ -1956,7 +1956,7 @@ pub async fn delete_mcp_server(
     server_id: String,
     mcp_manager: State<'_, Arc<McpServerManager>>,
     config_manager: State<'_, ConfigManager>,
-    app_state: State<'_, Arc<crate::server::state::AppState>>,
+    app_state: State<'_, Arc<lr_server::state::AppState>>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     tracing::info!("Deleting MCP server: {}", server_id);
@@ -2059,7 +2059,7 @@ pub async fn stop_mcp_server(
 pub async fn get_mcp_server_health(
     server_id: String,
     mcp_manager: State<'_, Arc<McpServerManager>>,
-) -> Result<crate::mcp::manager::McpServerHealth, String> {
+) -> Result<lr_mcp::manager::McpServerHealth, String> {
     Ok(mcp_manager.get_server_health(&server_id).await)
 }
 
@@ -2070,7 +2070,7 @@ pub async fn get_mcp_server_health(
 #[tauri::command]
 pub async fn get_all_mcp_server_health(
     mcp_manager: State<'_, Arc<McpServerManager>>,
-) -> Result<Vec<crate::mcp::manager::McpServerHealth>, String> {
+) -> Result<Vec<lr_mcp::manager::McpServerHealth>, String> {
     Ok(mcp_manager.get_all_health().await)
 }
 
@@ -2133,10 +2133,10 @@ pub async fn start_mcp_health_checks(
                     server_id: health.server_id,
                     server_name: health.server_name,
                     status: match health.status {
-                        crate::mcp::manager::HealthStatus::Healthy => "healthy".to_string(),
-                        crate::mcp::manager::HealthStatus::Ready => "ready".to_string(),
-                        crate::mcp::manager::HealthStatus::Unhealthy => "unhealthy".to_string(),
-                        crate::mcp::manager::HealthStatus::Unknown => "unknown".to_string(),
+                        lr_mcp::manager::HealthStatus::Healthy => "healthy".to_string(),
+                        lr_mcp::manager::HealthStatus::Ready => "ready".to_string(),
+                        lr_mcp::manager::HealthStatus::Unhealthy => "unhealthy".to_string(),
+                        lr_mcp::manager::HealthStatus::Unknown => "unknown".to_string(),
                     },
                     latency_ms: health.latency_ms,
                     error: health.error,
@@ -2162,7 +2162,7 @@ pub async fn start_mcp_health_checks(
 pub async fn check_single_mcp_health(
     app: tauri::AppHandle,
     mcp_manager: State<'_, Arc<McpServerManager>>,
-    app_state: State<'_, Arc<crate::server::state::AppState>>,
+    app_state: State<'_, Arc<lr_server::state::AppState>>,
     server_id: String,
 ) -> Result<(), String> {
     let mcp_manager = mcp_manager.inner().clone();
@@ -2185,7 +2185,7 @@ pub async fn check_single_mcp_health(
         let _ = app_handle.emit("mcp-health-check", result);
         health_cache.update_mcp_server(
             &config.id,
-            crate::providers::health_cache::ItemHealth::disabled(config.name),
+            lr_providers::health_cache::ItemHealth::disabled(config.name),
         );
         return Ok(());
     }
@@ -2196,10 +2196,10 @@ pub async fn check_single_mcp_health(
             server_id: health.server_id.clone(),
             server_name: health.server_name.clone(),
             status: match health.status {
-                crate::mcp::manager::HealthStatus::Healthy => "healthy".to_string(),
-                crate::mcp::manager::HealthStatus::Ready => "ready".to_string(),
-                crate::mcp::manager::HealthStatus::Unhealthy => "unhealthy".to_string(),
-                crate::mcp::manager::HealthStatus::Unknown => "unknown".to_string(),
+                lr_mcp::manager::HealthStatus::Healthy => "healthy".to_string(),
+                lr_mcp::manager::HealthStatus::Ready => "ready".to_string(),
+                lr_mcp::manager::HealthStatus::Unhealthy => "unhealthy".to_string(),
+                lr_mcp::manager::HealthStatus::Unknown => "unknown".to_string(),
             },
             latency_ms: health.latency_ms,
             error: health.error.clone(),
@@ -2207,17 +2207,17 @@ pub async fn check_single_mcp_health(
         let _ = app_handle.emit("mcp-health-check", result);
 
         // Update centralized health cache so aggregate status (tray + sidebar) recalculates
-        use crate::providers::health_cache::ItemHealth;
+        use lr_providers::health_cache::ItemHealth;
         let item_health = match health.status {
-            crate::mcp::manager::HealthStatus::Healthy => {
+            lr_mcp::manager::HealthStatus::Healthy => {
                 ItemHealth::healthy(health.server_name, health.latency_ms)
             }
-            crate::mcp::manager::HealthStatus::Ready => ItemHealth::ready(health.server_name),
-            crate::mcp::manager::HealthStatus::Unhealthy => ItemHealth::unhealthy(
+            lr_mcp::manager::HealthStatus::Ready => ItemHealth::ready(health.server_name),
+            lr_mcp::manager::HealthStatus::Unhealthy => ItemHealth::unhealthy(
                 health.server_name,
                 health.error.unwrap_or_else(|| "Unhealthy".to_string()),
             ),
-            crate::mcp::manager::HealthStatus::Unknown => ItemHealth::unhealthy(
+            lr_mcp::manager::HealthStatus::Unknown => ItemHealth::unhealthy(
                 health.server_name,
                 health
                     .error
@@ -2485,7 +2485,7 @@ pub async fn toggle_mcp_server_enabled(
     enabled: bool,
     mcp_manager: State<'_, Arc<McpServerManager>>,
     config_manager: State<'_, ConfigManager>,
-    app_state: State<'_, Arc<crate::server::state::AppState>>,
+    app_state: State<'_, Arc<lr_server::state::AppState>>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     // Get server name before updating (needed for health cache)
@@ -2512,7 +2512,7 @@ pub async fn toggle_mcp_server_enabled(
     config_manager.save().await.map_err(|e| e.to_string())?;
 
     // Update health cache immediately - this recalculates aggregate status and emits event
-    use crate::providers::health_cache::ItemHealth;
+    use lr_providers::health_cache::ItemHealth;
     if enabled {
         // Set to pending, then trigger a health check for this MCP server
         app_state
@@ -2525,7 +2525,7 @@ pub async fn toggle_mcp_server_enabled(
         let id = server_id.clone();
         tokio::spawn(async move {
             let mcp_server_health = mcp_manager.get_server_health(&id).await;
-            use crate::mcp::manager::HealthStatus as McpHealthStatus;
+            use lr_mcp::manager::HealthStatus as McpHealthStatus;
             let server_name = mcp_server_health.server_name.clone();
             let item_health = match mcp_server_health.status {
                 McpHealthStatus::Ready => ItemHealth::ready(server_name),
@@ -2570,9 +2570,9 @@ pub async fn toggle_mcp_server_enabled(
 pub async fn list_mcp_tools(
     server_id: String,
     mcp_manager: State<'_, Arc<McpServerManager>>,
-    server_manager: State<'_, Arc<crate::server::manager::ServerManager>>,
+    server_manager: State<'_, Arc<lr_server::manager::ServerManager>>,
 ) -> Result<serde_json::Value, String> {
-    use crate::mcp::protocol::JsonRpcRequest;
+    use lr_mcp::protocol::JsonRpcRequest;
     use std::time::Instant;
 
     tracing::info!("📋 Listing tools for MCP server: {}", server_id);
@@ -2626,7 +2626,7 @@ pub async fn list_mcp_tools(
 
                 // Record metrics
                 state.metrics_collector.mcp().record(
-                    &crate::monitoring::mcp_metrics::McpRequestMetrics {
+                    &lr_monitoring::mcp_metrics::McpRequestMetrics {
                         client_id,
                         server_id: &server_id,
                         method,
@@ -2667,7 +2667,7 @@ pub async fn list_mcp_tools(
 
             // Record metrics
             state.metrics_collector.mcp().record(
-                &crate::monitoring::mcp_metrics::McpRequestMetrics {
+                &lr_monitoring::mcp_metrics::McpRequestMetrics {
                     client_id,
                     server_id: &server_id,
                     method,
@@ -2700,7 +2700,7 @@ pub async fn list_mcp_tools(
         state
             .metrics_collector
             .mcp()
-            .record(&crate::monitoring::mcp_metrics::McpRequestMetrics {
+            .record(&lr_monitoring::mcp_metrics::McpRequestMetrics {
                 client_id,
                 server_id: &server_id,
                 method,
@@ -2751,9 +2751,9 @@ pub async fn call_mcp_tool(
     tool_name: String,
     arguments: serde_json::Value,
     mcp_manager: State<'_, Arc<McpServerManager>>,
-    server_manager: State<'_, Arc<crate::server::manager::ServerManager>>,
+    server_manager: State<'_, Arc<lr_server::manager::ServerManager>>,
 ) -> Result<serde_json::Value, String> {
-    use crate::mcp::protocol::JsonRpcRequest;
+    use lr_mcp::protocol::JsonRpcRequest;
     use std::time::Instant;
 
     tracing::info!(
@@ -2823,7 +2823,7 @@ pub async fn call_mcp_tool(
 
                 // Record metrics
                 state.metrics_collector.mcp().record(
-                    &crate::monitoring::mcp_metrics::McpRequestMetrics {
+                    &lr_monitoring::mcp_metrics::McpRequestMetrics {
                         client_id,
                         server_id: &server_id,
                         method: &method,
@@ -2865,7 +2865,7 @@ pub async fn call_mcp_tool(
 
             // Record metrics
             state.metrics_collector.mcp().record(
-                &crate::monitoring::mcp_metrics::McpRequestMetrics {
+                &lr_monitoring::mcp_metrics::McpRequestMetrics {
                     client_id,
                     server_id: &server_id,
                     method: &method,
@@ -2898,7 +2898,7 @@ pub async fn call_mcp_tool(
         state
             .metrics_collector
             .mcp()
-            .record(&crate::monitoring::mcp_metrics::McpRequestMetrics {
+            .record(&lr_monitoring::mcp_metrics::McpRequestMetrics {
                 client_id,
                 server_id: &server_id,
                 method: &method,
@@ -2991,7 +2991,7 @@ pub async fn get_mcp_token_stats(
         }
 
         // Fetch tools/list
-        let tools_request = crate::mcp::protocol::JsonRpcRequest::new(
+        let tools_request = lr_mcp::protocol::JsonRpcRequest::new(
             Some(serde_json::json!(1)),
             "tools/list".to_string(),
             None,
@@ -3020,7 +3020,7 @@ pub async fn get_mcp_token_stats(
         };
 
         // Fetch resources/list
-        let resources_request = crate::mcp::protocol::JsonRpcRequest::new(
+        let resources_request = lr_mcp::protocol::JsonRpcRequest::new(
             Some(serde_json::json!(2)),
             "resources/list".to_string(),
             None,
@@ -3049,7 +3049,7 @@ pub async fn get_mcp_token_stats(
         };
 
         // Fetch prompts/list
-        let prompts_request = crate::mcp::protocol::JsonRpcRequest::new(
+        let prompts_request = lr_mcp::protocol::JsonRpcRequest::new(
             Some(serde_json::json!(3)),
             "prompts/list".to_string(),
             None,
@@ -3188,7 +3188,7 @@ fn mcp_access_to_ui(access: &McpServerAccess) -> (McpAccessMode, Vec<String>) {
 /// List all clients
 #[tauri::command]
 pub async fn list_clients(
-    client_manager: State<'_, Arc<crate::clients::ClientManager>>,
+    client_manager: State<'_, Arc<lr_clients::ClientManager>>,
 ) -> Result<Vec<ClientInfo>, String> {
     let clients = client_manager.list_clients();
     Ok(clients
@@ -3219,7 +3219,7 @@ pub async fn list_clients(
 #[tauri::command]
 pub async fn create_client(
     name: String,
-    client_manager: State<'_, Arc<crate::clients::ClientManager>>,
+    client_manager: State<'_, Arc<lr_clients::ClientManager>>,
     config_manager: State<'_, ConfigManager>,
     app: tauri::AppHandle,
 ) -> Result<(String, ClientInfo), String> {
@@ -3278,7 +3278,7 @@ pub async fn create_client(
 #[tauri::command]
 pub async fn delete_client(
     client_id: String,
-    client_manager: State<'_, Arc<crate::clients::ClientManager>>,
+    client_manager: State<'_, Arc<lr_clients::ClientManager>>,
     config_manager: State<'_, ConfigManager>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
@@ -3318,7 +3318,7 @@ pub async fn delete_client(
 pub async fn update_client_name(
     client_id: String,
     name: String,
-    client_manager: State<'_, Arc<crate::clients::ClientManager>>,
+    client_manager: State<'_, Arc<lr_clients::ClientManager>>,
     config_manager: State<'_, ConfigManager>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
@@ -3373,7 +3373,7 @@ pub async fn update_client_name(
 pub async fn toggle_client_enabled(
     client_id: String,
     enabled: bool,
-    client_manager: State<'_, Arc<crate::clients::ClientManager>>,
+    client_manager: State<'_, Arc<lr_clients::ClientManager>>,
     config_manager: State<'_, ConfigManager>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
@@ -3434,7 +3434,7 @@ pub async fn toggle_client_enabled(
 #[tauri::command]
 pub async fn rotate_client_secret(
     client_id: String,
-    client_manager: State<'_, Arc<crate::clients::ClientManager>>,
+    client_manager: State<'_, Arc<lr_clients::ClientManager>>,
 ) -> Result<String, String> {
     tracing::info!("Rotating secret for client: {}", client_id);
 
@@ -3458,7 +3458,7 @@ pub async fn rotate_client_secret(
 pub async fn toggle_client_deferred_loading(
     client_id: String,
     enabled: bool,
-    client_manager: State<'_, Arc<crate::clients::ClientManager>>,
+    client_manager: State<'_, Arc<lr_clients::ClientManager>>,
     config_manager: State<'_, ConfigManager>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
@@ -3498,7 +3498,7 @@ pub async fn toggle_client_deferred_loading(
 pub async fn add_client_llm_provider(
     client_id: String,
     provider: String,
-    client_manager: State<'_, Arc<crate::clients::ClientManager>>,
+    client_manager: State<'_, Arc<lr_clients::ClientManager>>,
     config_manager: State<'_, ConfigManager>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
@@ -3542,7 +3542,7 @@ pub async fn add_client_llm_provider(
 pub async fn remove_client_llm_provider(
     client_id: String,
     provider: String,
-    client_manager: State<'_, Arc<crate::clients::ClientManager>>,
+    client_manager: State<'_, Arc<lr_clients::ClientManager>>,
     config_manager: State<'_, ConfigManager>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
@@ -3588,7 +3588,7 @@ pub async fn remove_client_llm_provider(
 pub async fn add_client_mcp_server(
     client_id: String,
     server_id: String,
-    client_manager: State<'_, Arc<crate::clients::ClientManager>>,
+    client_manager: State<'_, Arc<lr_clients::ClientManager>>,
     config_manager: State<'_, ConfigManager>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
@@ -3630,7 +3630,7 @@ pub async fn add_client_mcp_server(
 pub async fn remove_client_mcp_server(
     client_id: String,
     server_id: String,
-    client_manager: State<'_, Arc<crate::clients::ClientManager>>,
+    client_manager: State<'_, Arc<lr_clients::ClientManager>>,
     config_manager: State<'_, ConfigManager>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
@@ -3682,7 +3682,7 @@ pub async fn set_client_mcp_access(
     client_id: String,
     mode: McpAccessMode,
     servers: Vec<String>,
-    client_manager: State<'_, Arc<crate::clients::ClientManager>>,
+    client_manager: State<'_, Arc<lr_clients::ClientManager>>,
     config_manager: State<'_, ConfigManager>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
@@ -3742,7 +3742,7 @@ pub async fn set_client_mcp_access(
 #[tauri::command]
 pub async fn get_client_value(
     id: String,
-    client_manager: State<'_, Arc<crate::clients::ClientManager>>,
+    client_manager: State<'_, Arc<lr_clients::ClientManager>>,
 ) -> Result<String, String> {
     // Get the client to verify it exists and get its internal ID
     let client = client_manager
@@ -3764,7 +3764,7 @@ pub async fn get_client_value(
 #[tauri::command]
 pub async fn list_strategies(
     config_manager: State<'_, ConfigManager>,
-) -> Result<Vec<crate::config::Strategy>, String> {
+) -> Result<Vec<lr_config::Strategy>, String> {
     let config = config_manager.get();
     Ok(config.strategies)
 }
@@ -3774,7 +3774,7 @@ pub async fn list_strategies(
 pub async fn get_strategy(
     strategy_id: String,
     config_manager: State<'_, ConfigManager>,
-) -> Result<crate::config::Strategy, String> {
+) -> Result<lr_config::Strategy, String> {
     let config = config_manager.get();
     config
         .strategies
@@ -3791,7 +3791,7 @@ pub async fn create_strategy(
     parent: Option<String>,
     config_manager: State<'_, ConfigManager>,
     app: tauri::AppHandle,
-) -> Result<crate::config::Strategy, String> {
+) -> Result<lr_config::Strategy, String> {
     tracing::info!("Creating strategy: {}", name);
 
     let strategy = if let Some(parent_id) = parent {
@@ -3803,9 +3803,9 @@ pub async fn create_strategy(
             .find(|c| c.id == parent_id)
             .ok_or_else(|| format!("Parent client not found: {}", parent_id))?;
 
-        crate::config::Strategy::new_for_client(parent_id, client.name.clone())
+        lr_config::Strategy::new_for_client(parent_id, client.name.clone())
     } else {
-        crate::config::Strategy::new(name)
+        lr_config::Strategy::new(name)
     };
 
     let strategy_clone = strategy.clone();
@@ -3839,9 +3839,9 @@ pub async fn create_strategy(
 pub async fn update_strategy(
     strategy_id: String,
     name: Option<String>,
-    allowed_models: Option<crate::config::AvailableModelsSelection>,
-    auto_config: Option<crate::config::AutoModelConfig>,
-    rate_limits: Option<Vec<crate::config::StrategyRateLimit>>,
+    allowed_models: Option<lr_config::AvailableModelsSelection>,
+    auto_config: Option<lr_config::AutoModelConfig>,
+    rate_limits: Option<Vec<lr_config::StrategyRateLimit>>,
     config_manager: State<'_, ConfigManager>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
@@ -3944,7 +3944,7 @@ pub async fn delete_strategy(
 pub async fn get_clients_using_strategy(
     strategy_id: String,
     config_manager: State<'_, ConfigManager>,
-) -> Result<Vec<crate::config::Client>, String> {
+) -> Result<Vec<lr_config::Client>, String> {
     let config = config_manager.get();
     Ok(config
         .clients
@@ -4006,7 +4006,7 @@ pub async fn assign_client_strategy(
 pub async fn get_openapi_spec(
     server_manager: State<'_, Arc<ServerManager>>,
 ) -> Result<String, String> {
-    let mut spec_json = crate::server::openapi::get_openapi_json().map_err(|e| e.to_string())?;
+    let mut spec_json = lr_server::openapi::get_openapi_json().map_err(|e| e.to_string())?;
 
     // Get the actual server port and dynamically update the spec
     if let Some(actual_port) = server_manager.get_actual_port() {
@@ -4023,7 +4023,7 @@ pub async fn get_openapi_spec(
 /// Use this as a regular bearer token in the Authorization header.
 #[tauri::command]
 pub async fn get_internal_test_token(
-    server_manager: State<'_, Arc<crate::server::ServerManager>>,
+    server_manager: State<'_, Arc<lr_server::ServerManager>>,
 ) -> Result<String, String> {
     let state = server_manager
         .get_state()
@@ -4039,7 +4039,7 @@ pub async fn get_internal_test_token(
 #[tauri::command]
 pub async fn create_test_client_for_strategy(
     strategy_id: String,
-    client_manager: State<'_, Arc<crate::clients::ClientManager>>,
+    client_manager: State<'_, Arc<lr_clients::ClientManager>>,
     config_manager: State<'_, ConfigManager>,
 ) -> Result<String, String> {
     // Verify strategy exists
@@ -4137,7 +4137,7 @@ pub async fn get_llm_logs(
     client_name: Option<String>,
     provider: Option<String>,
     model: Option<String>,
-) -> Result<Vec<crate::monitoring::logger::AccessLogEntry>, String> {
+) -> Result<Vec<lr_monitoring::logger::AccessLogEntry>, String> {
     use std::fs;
 
     let limit = limit.unwrap_or(100);
@@ -4145,7 +4145,7 @@ pub async fn get_llm_logs(
     let target_count = offset + limit;
 
     // Get log directory
-    let log_dir = get_log_directory().map_err(|e: crate::utils::errors::AppError| e.to_string())?;
+    let log_dir = get_log_directory().map_err(|e: lr_types::AppError| e.to_string())?;
 
     // Read all log files (sorted by date, newest first)
     let mut log_files = Vec::new();
@@ -4182,11 +4182,11 @@ pub async fn get_llm_logs(
         if let Ok(file) = fs::File::open(&log_file) {
             let reader = BufReader::new(file);
             // Collect all matching entries from this file, then reverse to get newest first
-            let mut file_entries: Vec<crate::monitoring::logger::AccessLogEntry> = Vec::new();
+            let mut file_entries: Vec<lr_monitoring::logger::AccessLogEntry> = Vec::new();
 
             for line in reader.lines().map_while(Result::ok) {
                 if let Ok(entry) =
-                    serde_json::from_str::<crate::monitoring::logger::AccessLogEntry>(&line)
+                    serde_json::from_str::<lr_monitoring::logger::AccessLogEntry>(&line)
                 {
                     // Apply filters
                     let matches = client_name
@@ -4241,7 +4241,7 @@ pub async fn get_mcp_logs(
     offset: Option<usize>,
     client_id: Option<String>,
     server_id: Option<String>,
-) -> Result<Vec<crate::monitoring::mcp_logger::McpAccessLogEntry>, String> {
+) -> Result<Vec<lr_monitoring::mcp_logger::McpAccessLogEntry>, String> {
     use std::fs;
 
     let limit = limit.unwrap_or(100);
@@ -4249,7 +4249,7 @@ pub async fn get_mcp_logs(
     let target_count = offset + limit;
 
     // Get log directory
-    let log_dir = get_log_directory().map_err(|e: crate::utils::errors::AppError| e.to_string())?;
+    let log_dir = get_log_directory().map_err(|e: lr_types::AppError| e.to_string())?;
 
     // Read all MCP log files (sorted by date, newest first)
     let mut log_files = Vec::new();
@@ -4283,12 +4283,12 @@ pub async fn get_mcp_logs(
         if let Ok(file) = fs::File::open(&log_file) {
             let reader = BufReader::new(file);
             // Collect all matching entries from this file, then reverse to get newest first
-            let mut file_entries: Vec<crate::monitoring::mcp_logger::McpAccessLogEntry> =
+            let mut file_entries: Vec<lr_monitoring::mcp_logger::McpAccessLogEntry> =
                 Vec::new();
 
             for line in reader.lines().map_while(Result::ok) {
                 if let Ok(entry) =
-                    serde_json::from_str::<crate::monitoring::mcp_logger::McpAccessLogEntry>(&line)
+                    serde_json::from_str::<lr_monitoring::mcp_logger::McpAccessLogEntry>(&line)
                 {
                     // Apply filters
                     let matches = client_id.as_ref().is_none_or(|f| entry.client_id == *f)
@@ -4324,7 +4324,7 @@ pub async fn get_mcp_logs(
 /// Get the OS-specific log directory
 ///
 /// Delegates to AccessLogger::get_log_directory() to avoid code duplication.
-fn get_log_directory() -> Result<PathBuf, crate::utils::errors::AppError> {
+fn get_log_directory() -> Result<PathBuf, lr_types::AppError> {
     AccessLogger::get_log_directory()
 }
 
@@ -4352,7 +4352,7 @@ pub struct CatalogStats {
 /// Get catalog metadata
 #[tauri::command]
 pub fn get_catalog_metadata() -> CatalogMetadata {
-    use crate::catalog;
+    use lr_catalog as catalog;
 
     let meta = catalog::metadata();
     CatalogMetadata {
@@ -4365,7 +4365,7 @@ pub fn get_catalog_metadata() -> CatalogMetadata {
 /// Get catalog statistics
 #[tauri::command]
 pub fn get_catalog_stats() -> CatalogStats {
-    use crate::catalog;
+    use lr_catalog as catalog;
     use std::collections::HashMap;
 
     let meta = catalog::metadata();
@@ -4383,9 +4383,9 @@ pub fn get_catalog_stats() -> CatalogStats {
     let mut modalities: HashMap<String, usize> = HashMap::new();
     for model in models {
         let modality = match model.modality {
-            crate::catalog::Modality::Text => "text",
-            crate::catalog::Modality::Multimodal => "multimodal",
-            crate::catalog::Modality::Image => "image",
+            lr_catalog::Modality::Text => "text",
+            lr_catalog::Modality::Multimodal => "multimodal",
+            lr_catalog::Modality::Image => "image",
         };
         *modalities.entry(modality.to_string()).or_insert(0) += 1;
     }
@@ -4408,7 +4408,7 @@ pub fn get_pricing_override(
     provider: String,
     model: String,
     config_manager: State<'_, ConfigManager>,
-) -> Option<crate::config::ModelPricingOverride> {
+) -> Option<lr_config::ModelPricingOverride> {
     let config = config_manager.get();
     config
         .pricing_overrides
@@ -4435,7 +4435,7 @@ pub fn set_pricing_override(
 
             provider_overrides.insert(
                 model.clone(),
-                crate::config::ModelPricingOverride {
+                lr_config::ModelPricingOverride {
                     input_per_million,
                     output_per_million,
                 },
@@ -4543,14 +4543,14 @@ pub fn get_app_version() -> String {
 #[tauri::command]
 pub async fn get_update_config(
     config_manager: State<'_, ConfigManager>,
-) -> Result<crate::config::UpdateConfig, String> {
+) -> Result<lr_config::UpdateConfig, String> {
     Ok(config_manager.get().update.clone())
 }
 
 /// Update update configuration
 #[tauri::command]
 pub async fn update_update_config(
-    mode: crate::config::UpdateMode,
+    mode: lr_config::UpdateMode,
     check_interval_days: u64,
     config_manager: State<'_, ConfigManager>,
 ) -> Result<(), String> {
@@ -4625,9 +4625,9 @@ pub fn set_update_notification(app: tauri::AppHandle, available: bool) -> Result
 #[tauri::command]
 pub async fn start_mcp_oauth_browser_flow(
     server_id: String,
-    oauth_browser_manager: State<'_, Arc<crate::mcp::oauth_browser::McpOAuthBrowserManager>>,
+    oauth_browser_manager: State<'_, Arc<lr_mcp::oauth_browser::McpOAuthBrowserManager>>,
     config_manager: State<'_, ConfigManager>,
-) -> Result<crate::mcp::oauth_browser::OAuthBrowserFlowResult, String> {
+) -> Result<lr_mcp::oauth_browser::OAuthBrowserFlowResult, String> {
     // Get server config
     let config = config_manager.get();
     let server = config
@@ -4659,8 +4659,8 @@ pub async fn start_mcp_oauth_browser_flow(
 #[tauri::command]
 pub fn poll_mcp_oauth_browser_status(
     server_id: String,
-    oauth_browser_manager: State<'_, Arc<crate::mcp::oauth_browser::McpOAuthBrowserManager>>,
-) -> Result<crate::mcp::oauth_browser::OAuthBrowserFlowStatus, String> {
+    oauth_browser_manager: State<'_, Arc<lr_mcp::oauth_browser::McpOAuthBrowserManager>>,
+) -> Result<lr_mcp::oauth_browser::OAuthBrowserFlowStatus, String> {
     oauth_browser_manager
         .poll_flow_status(&server_id)
         .map_err(|e| e.to_string())
@@ -4673,7 +4673,7 @@ pub fn poll_mcp_oauth_browser_status(
 #[tauri::command]
 pub fn cancel_mcp_oauth_browser_flow(
     server_id: String,
-    oauth_browser_manager: State<'_, Arc<crate::mcp::oauth_browser::McpOAuthBrowserManager>>,
+    oauth_browser_manager: State<'_, Arc<lr_mcp::oauth_browser::McpOAuthBrowserManager>>,
 ) -> Result<(), String> {
     oauth_browser_manager
         .cancel_flow(&server_id)
@@ -4693,10 +4693,10 @@ pub fn cancel_mcp_oauth_browser_flow(
 #[tauri::command]
 pub async fn discover_mcp_oauth_endpoints(
     base_url: String,
-    oauth_manager: State<'_, Arc<crate::mcp::oauth::McpOAuthManager>>,
-) -> Result<Option<crate::config::McpOAuthDiscovery>, String> {
+    oauth_manager: State<'_, Arc<lr_mcp::oauth::McpOAuthManager>>,
+) -> Result<Option<lr_config::McpOAuthDiscovery>, String> {
     match oauth_manager.discover_oauth(&base_url).await {
-        Ok(Some(discovery)) => Ok(Some(crate::config::McpOAuthDiscovery {
+        Ok(Some(discovery)) => Ok(Some(lr_config::McpOAuthDiscovery {
             auth_url: discovery.auth_url,
             token_url: discovery.token_endpoint,
             scopes_supported: discovery.scopes_supported,
@@ -4719,7 +4719,7 @@ pub async fn discover_mcp_oauth_endpoints(
 #[tauri::command]
 pub async fn test_mcp_oauth_connection(
     server_id: String,
-    oauth_browser_manager: State<'_, Arc<crate::mcp::oauth_browser::McpOAuthBrowserManager>>,
+    oauth_browser_manager: State<'_, Arc<lr_mcp::oauth_browser::McpOAuthBrowserManager>>,
 ) -> Result<bool, String> {
     Ok(oauth_browser_manager.has_valid_auth(&server_id).await)
 }
@@ -4733,7 +4733,7 @@ pub async fn test_mcp_oauth_connection(
 #[tauri::command]
 pub fn revoke_mcp_oauth_tokens(
     server_id: String,
-    oauth_browser_manager: State<'_, Arc<crate::mcp::oauth_browser::McpOAuthBrowserManager>>,
+    oauth_browser_manager: State<'_, Arc<lr_mcp::oauth_browser::McpOAuthBrowserManager>>,
 ) -> Result<(), String> {
     oauth_browser_manager
         .revoke_tokens(&server_id)
@@ -4806,8 +4806,8 @@ pub async fn start_inline_oauth_flow(
     mcp_url: String,
     client_id: Option<String>,
     client_secret: Option<String>,
-    oauth_manager: State<'_, Arc<crate::mcp::oauth::McpOAuthManager>>,
-    flow_manager: State<'_, Arc<crate::oauth_browser::OAuthFlowManager>>,
+    oauth_manager: State<'_, Arc<lr_mcp::oauth::McpOAuthManager>>,
+    flow_manager: State<'_, Arc<lr_oauth::browser::OAuthFlowManager>>,
 ) -> Result<InlineOAuthFlowResult, String> {
     // Step 1: Discover OAuth endpoints from MCP URL
     let discovery = oauth_manager
@@ -4834,7 +4834,7 @@ pub async fn start_inline_oauth_flow(
     let redirect_uri = format!("http://localhost:{}/callback", callback_port);
 
     // Create flow config
-    let config = crate::oauth_browser::OAuthFlowConfig {
+    let config = lr_oauth::browser::OAuthFlowConfig {
         client_id: client_id.clone(),
         client_secret,
         auth_url: auth_url.clone(),
@@ -4877,10 +4877,10 @@ pub async fn start_inline_oauth_flow(
 #[tauri::command]
 pub fn poll_inline_oauth_status(
     flow_id: String,
-    flow_manager: State<'_, Arc<crate::oauth_browser::OAuthFlowManager>>,
+    flow_manager: State<'_, Arc<lr_oauth::browser::OAuthFlowManager>>,
 ) -> Result<InlineOAuthFlowStatus, String> {
     // Parse flow_id back to FlowId
-    let flow_id_obj = crate::oauth_browser::FlowId::parse(&flow_id)
+    let flow_id_obj = lr_oauth::browser::FlowId::parse(&flow_id)
         .map_err(|e| format!("Invalid flow ID: {}", e))?;
 
     let result = flow_manager
@@ -4889,24 +4889,24 @@ pub fn poll_inline_oauth_status(
 
     // Convert to InlineOAuthFlowStatus
     match result {
-        crate::oauth_browser::OAuthFlowResult::Pending { time_remaining } => {
+        lr_oauth::browser::OAuthFlowResult::Pending { time_remaining } => {
             Ok(InlineOAuthFlowStatus::Pending { time_remaining })
         }
-        crate::oauth_browser::OAuthFlowResult::ExchangingToken => {
+        lr_oauth::browser::OAuthFlowResult::ExchangingToken => {
             Ok(InlineOAuthFlowStatus::ExchangingToken)
         }
-        crate::oauth_browser::OAuthFlowResult::Success { tokens } => {
+        lr_oauth::browser::OAuthFlowResult::Success { tokens } => {
             Ok(InlineOAuthFlowStatus::Success {
                 access_token: tokens.access_token,
                 refresh_token: tokens.refresh_token,
                 expires_in: tokens.expires_in,
             })
         }
-        crate::oauth_browser::OAuthFlowResult::Error { message } => {
+        lr_oauth::browser::OAuthFlowResult::Error { message } => {
             Ok(InlineOAuthFlowStatus::Error { message })
         }
-        crate::oauth_browser::OAuthFlowResult::Timeout => Ok(InlineOAuthFlowStatus::Timeout),
-        crate::oauth_browser::OAuthFlowResult::Cancelled => Ok(InlineOAuthFlowStatus::Cancelled),
+        lr_oauth::browser::OAuthFlowResult::Timeout => Ok(InlineOAuthFlowStatus::Timeout),
+        lr_oauth::browser::OAuthFlowResult::Cancelled => Ok(InlineOAuthFlowStatus::Cancelled),
     }
 }
 
@@ -4917,10 +4917,10 @@ pub fn poll_inline_oauth_status(
 #[tauri::command]
 pub fn cancel_inline_oauth_flow(
     flow_id: String,
-    flow_manager: State<'_, Arc<crate::oauth_browser::OAuthFlowManager>>,
+    flow_manager: State<'_, Arc<lr_oauth::browser::OAuthFlowManager>>,
 ) -> Result<(), String> {
     // Parse flow_id back to FlowId
-    let flow_id_obj = crate::oauth_browser::FlowId::parse(&flow_id)
+    let flow_id_obj = lr_oauth::browser::FlowId::parse(&flow_id)
         .map_err(|e| format!("Invalid flow ID: {}", e))?;
 
     flow_manager
@@ -4943,7 +4943,7 @@ pub struct LoggingConfigResponse {
 #[tauri::command]
 pub fn get_logging_config(
     config_manager: State<'_, ConfigManager>,
-    access_logger: State<'_, Arc<crate::monitoring::logger::AccessLogger>>,
+    access_logger: State<'_, Arc<lr_monitoring::logger::AccessLogger>>,
 ) -> Result<LoggingConfigResponse, String> {
     let config = config_manager.get();
     Ok(LoggingConfigResponse {
@@ -4957,8 +4957,8 @@ pub fn get_logging_config(
 pub async fn update_logging_config(
     enabled: bool,
     config_manager: State<'_, ConfigManager>,
-    access_logger: State<'_, Arc<crate::monitoring::logger::AccessLogger>>,
-    mcp_access_logger: State<'_, Arc<crate::monitoring::mcp_logger::McpAccessLogger>>,
+    access_logger: State<'_, Arc<lr_monitoring::logger::AccessLogger>>,
+    mcp_access_logger: State<'_, Arc<lr_monitoring::mcp_logger::McpAccessLogger>>,
 ) -> Result<(), String> {
     // Update config
     config_manager
@@ -4979,7 +4979,7 @@ pub async fn update_logging_config(
 /// Open the logs folder in the system file manager
 #[tauri::command]
 pub async fn open_logs_folder(
-    access_logger: State<'_, Arc<crate::monitoring::logger::AccessLogger>>,
+    access_logger: State<'_, Arc<lr_monitoring::logger::AccessLogger>>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     use tauri_plugin_shell::ShellExt;
@@ -5027,8 +5027,8 @@ pub async fn get_active_connections(
 /// List all discovered skills
 #[tauri::command]
 pub async fn list_skills(
-    skill_manager: State<'_, Arc<crate::skills::SkillManager>>,
-) -> Result<Vec<crate::skills::SkillInfo>, String> {
+    skill_manager: State<'_, Arc<lr_skills::SkillManager>>,
+) -> Result<Vec<lr_skills::SkillInfo>, String> {
     Ok(skill_manager.list())
 }
 
@@ -5036,8 +5036,8 @@ pub async fn list_skills(
 #[tauri::command]
 pub async fn get_skill(
     skill_name: String,
-    skill_manager: State<'_, Arc<crate::skills::SkillManager>>,
-) -> Result<crate::skills::SkillDefinition, String> {
+    skill_manager: State<'_, Arc<lr_skills::SkillManager>>,
+) -> Result<lr_skills::SkillDefinition, String> {
     skill_manager
         .get(&skill_name)
         .ok_or_else(|| format!("Skill '{}' not found", skill_name))
@@ -5056,7 +5056,7 @@ pub async fn get_skills_config(
 pub async fn add_skill_source(
     path: String,
     config_manager: State<'_, ConfigManager>,
-    skill_manager: State<'_, Arc<crate::skills::SkillManager>>,
+    skill_manager: State<'_, Arc<lr_skills::SkillManager>>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     config_manager
@@ -5074,7 +5074,7 @@ pub async fn add_skill_source(
     skill_manager.rescan(&config.skills.paths, &config.skills.disabled_skills);
 
     // Notify watcher if available
-    if let Some(watcher) = app.try_state::<Arc<crate::skills::SkillWatcher>>() {
+    if let Some(watcher) = app.try_state::<Arc<lr_skills::SkillWatcher>>() {
         watcher.inner().add_path(path);
     }
 
@@ -5090,7 +5090,7 @@ pub async fn add_skill_source(
 pub async fn remove_skill_source(
     path: String,
     config_manager: State<'_, ConfigManager>,
-    skill_manager: State<'_, Arc<crate::skills::SkillManager>>,
+    skill_manager: State<'_, Arc<lr_skills::SkillManager>>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     config_manager
@@ -5105,7 +5105,7 @@ pub async fn remove_skill_source(
     skill_manager.rescan(&config.skills.paths, &config.skills.disabled_skills);
 
     // Notify watcher if available
-    if let Some(watcher) = app.try_state::<Arc<crate::skills::SkillWatcher>>() {
+    if let Some(watcher) = app.try_state::<Arc<lr_skills::SkillWatcher>>() {
         watcher.inner().remove_path(path);
     }
 
@@ -5122,7 +5122,7 @@ pub async fn set_skill_enabled(
     skill_name: String,
     enabled: bool,
     config_manager: State<'_, ConfigManager>,
-    skill_manager: State<'_, Arc<crate::skills::SkillManager>>,
+    skill_manager: State<'_, Arc<lr_skills::SkillManager>>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     // Update disabled_skills in config
@@ -5152,9 +5152,9 @@ pub async fn set_skill_enabled(
 #[tauri::command]
 pub async fn rescan_skills(
     config_manager: State<'_, ConfigManager>,
-    skill_manager: State<'_, Arc<crate::skills::SkillManager>>,
+    skill_manager: State<'_, Arc<lr_skills::SkillManager>>,
     app: tauri::AppHandle,
-) -> Result<Vec<crate::skills::SkillInfo>, String> {
+) -> Result<Vec<lr_skills::SkillInfo>, String> {
     let config = config_manager.get();
     let skills = skill_manager.rescan(
         &config.skills.paths,

@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::pin::Pin;
 use std::time::Instant;
 
-use crate::utils::errors::{AppError, AppResult};
+use lr_types::{AppError, AppResult};
 
 use super::{
     Capability, ChatMessage, CompletionChoice, CompletionChunk, CompletionRequest,
@@ -319,7 +319,7 @@ impl ModelProvider for CohereProvider {
 
     async fn get_pricing(&self, model: &str) -> AppResult<PricingInfo> {
         // Try catalog first (embedded OpenRouter data)
-        if let Some(catalog_model) = crate::catalog::find_model("cohere", model) {
+        if let Some(catalog_model) = lr_catalog::find_model("cohere", model) {
             tracing::debug!("Using catalog pricing for Cohere model: {}", model);
             return Ok(PricingInfo {
                 input_cost_per_1k: catalog_model.pricing.prompt_cost_per_1k(),

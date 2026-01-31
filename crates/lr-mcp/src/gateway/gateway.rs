@@ -6,15 +6,15 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
 
-use crate::mcp::manager::McpServerManager;
-use crate::mcp::protocol::{
+use lr_mcp::manager::McpServerManager;
+use lr_mcp::protocol::{
     JsonRpcError, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, McpPrompt, McpResource,
     McpTool,
 };
-use crate::router::Router;
-use crate::skills::executor::ScriptExecutor;
-use crate::skills::manager::SkillManager;
-use crate::utils::errors::{AppError, AppResult};
+use lr_router::Router;
+use lr_skills::executor::ScriptExecutor;
+use lr_skills::manager::SkillManager;
+use lr_types::{AppError, AppResult};
 
 use super::deferred::{create_search_tool, search_prompts, search_resources, search_tools};
 use super::elicitation::ElicitationManager;
@@ -130,7 +130,7 @@ impl McpGateway {
         client_id: &str,
         allowed_servers: Vec<String>,
         enable_deferred_loading: bool,
-        roots: Vec<crate::mcp::protocol::Root>,
+        roots: Vec<lr_mcp::protocol::Root>,
         request: JsonRpcRequest,
     ) -> AppResult<JsonRpcResponse> {
         self.handle_request_with_skills(
@@ -138,7 +138,7 @@ impl McpGateway {
             allowed_servers,
             enable_deferred_loading,
             roots,
-            crate::config::SkillsAccess::None,
+            lr_config::SkillsAccess::None,
             request,
         )
         .await
@@ -150,8 +150,8 @@ impl McpGateway {
         client_id: &str,
         allowed_servers: Vec<String>,
         enable_deferred_loading: bool,
-        roots: Vec<crate::mcp::protocol::Root>,
-        skills_access: crate::config::SkillsAccess,
+        roots: Vec<lr_mcp::protocol::Root>,
+        skills_access: lr_config::SkillsAccess,
         request: JsonRpcRequest,
     ) -> AppResult<JsonRpcResponse> {
         let method = request.method.clone();
@@ -220,7 +220,7 @@ impl McpGateway {
         client_id: &str,
         allowed_servers: Vec<String>,
         enable_deferred_loading: bool,
-        roots: Vec<crate::mcp::protocol::Root>,
+        roots: Vec<lr_mcp::protocol::Root>,
     ) -> AppResult<Arc<RwLock<GatewaySession>>> {
         // Check if session exists
         if let Some(session) = self.sessions.get(client_id) {
@@ -704,7 +704,7 @@ impl McpGateway {
         request: JsonRpcRequest,
     ) -> AppResult<JsonRpcResponse> {
         // Parse elicitation request from params
-        let elicitation_req: crate::mcp::protocol::ElicitationRequest =
+        let elicitation_req: lr_mcp::protocol::ElicitationRequest =
             match request.params.as_ref() {
                 Some(params) => serde_json::from_value(params.clone()).map_err(|e| {
                     AppError::InvalidParams(format!("Invalid elicitation request: {}", e))
@@ -1917,10 +1917,10 @@ impl McpGateway {
     }
 
     /// Append skill tools to a tools list if the client has skills access
-    fn append_skill_tools(&self, tools: &mut Vec<serde_json::Value>, access: &crate::config::SkillsAccess) {
+    fn append_skill_tools(&self, tools: &mut Vec<serde_json::Value>, access: &lr_config::SkillsAccess) {
         if access.has_any_access() {
             if let Some(ref sm) = self.skill_manager {
-                let skill_tools = crate::skills::mcp_tools::build_skill_tools(sm, access);
+                let skill_tools = lr_skills::mcp_tools::build_skill_tools(sm, access);
                 for st in skill_tools {
                     tools.push(serde_json::to_value(&st).unwrap_or_default());
                 }
@@ -1971,7 +1971,7 @@ impl McpGateway {
             .cloned()
             .unwrap_or(json!({}));
 
-        match crate::skills::mcp_tools::handle_skill_tool_call(
+        match lr_skills::mcp_tools::handle_skill_tool_call(
             tool_name,
             &arguments,
             skill_manager,

@@ -5,9 +5,9 @@
 
 #![allow(dead_code)]
 
-use crate::api_keys::{CachedKeychain, KeychainStorage};
-use crate::config::McpOAuthConfig;
-use crate::utils::errors::{AppError, AppResult};
+use lr_api_keys::{CachedKeychain, KeychainStorage};
+use lr_config::McpOAuthConfig;
+use lr_types::{AppError, AppResult};
 use axum::{
     extract::Query,
     http::StatusCode,

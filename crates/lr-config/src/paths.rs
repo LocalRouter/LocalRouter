@@ -2,7 +2,7 @@
 
 #![allow(dead_code)]
 
-use crate::utils::errors::{AppError, AppResult};
+use lr_types::{AppError, AppResult};
 use std::path::PathBuf;
 
 /// Get the configuration directory

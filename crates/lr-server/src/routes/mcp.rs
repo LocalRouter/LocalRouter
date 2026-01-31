@@ -17,12 +17,12 @@ use std::convert::Infallible;
 use std::time::Instant;
 
 use super::helpers::get_enabled_client_from_manager;
-use crate::config::{McpServerAccess, RootConfig};
-use crate::mcp::protocol::{JsonRpcRequest, JsonRpcResponse, Root};
-use crate::monitoring::mcp_metrics::McpRequestMetrics;
-use crate::server::middleware::client_auth::ClientAuthContext;
-use crate::server::middleware::error::ApiErrorResponse;
-use crate::server::state::{AppState, SseConnectionManager, SseMessage};
+use lr_config::{McpServerAccess, RootConfig};
+use lr_mcp::protocol::{JsonRpcRequest, JsonRpcResponse, Root};
+use lr_monitoring::mcp_metrics::McpRequestMetrics;
+use lr_server::middleware::client_auth::ClientAuthContext;
+use lr_server::middleware::error::ApiErrorResponse;
+use lr_server::state::{AppState, SseConnectionManager, SseMessage};
 
 /// Send a JSON-RPC response via SSE stream (preferred) or HTTP body (fallback)
 ///
@@ -79,8 +79,8 @@ fn send_response(
     tag = "mcp",
     responses(
         (status = 200, description = "SSE event stream or API info", content_type = "text/event-stream"),
-        (status = 401, description = "Unauthorized", body = crate::server::types::ErrorResponse),
-        (status = 403, description = "Forbidden - no MCP server access", body = crate::server::types::ErrorResponse)
+        (status = 401, description = "Unauthorized", body = lr_server::types::ErrorResponse),
+        (status = 403, description = "Forbidden - no MCP server access", body = lr_server::types::ErrorResponse)
     ),
     security(("bearer" = []))
 )]
@@ -265,7 +265,7 @@ pub async fn mcp_gateway_get_handler(
                             // Only forward notifications for allowed servers
                             if allowed_servers.contains(&server_id) {
                                 // Namespace the notification for the unified gateway
-                                let namespaced_notification = crate::mcp::protocol::JsonRpcNotification {
+                                let namespaced_notification = lr_mcp::protocol::JsonRpcNotification {
                                     jsonrpc: notification.jsonrpc.clone(),
                                     method: format!("{}::{}", server_id, notification.method),
                                     params: notification.params.clone(),
@@ -313,12 +313,12 @@ pub async fn mcp_gateway_get_handler(
     post,
     path = "/",
     tag = "mcp",
-    request_body = crate::mcp::protocol::JsonRpcRequest,
+    request_body = lr_mcp::protocol::JsonRpcRequest,
     responses(
-        (status = 200, description = "JSON-RPC response", body = crate::mcp::protocol::JsonRpcResponse),
-        (status = 401, description = "Unauthorized", body = crate::server::types::ErrorResponse),
-        (status = 403, description = "Forbidden - no MCP server access", body = crate::server::types::ErrorResponse),
-        (status = 500, description = "Internal server error", body = crate::server::types::ErrorResponse)
+        (status = 200, description = "JSON-RPC response", body = lr_mcp::protocol::JsonRpcResponse),
+        (status = 401, description = "Unauthorized", body = lr_server::types::ErrorResponse),
+        (status = 403, description = "Forbidden - no MCP server access", body = lr_server::types::ErrorResponse),
+        (status = 500, description = "Internal server error", body = lr_server::types::ErrorResponse)
     ),
     security(
         ("bearer" = [])
@@ -363,7 +363,7 @@ pub async fn mcp_gateway_handler(
     // Handle internal test client specially (for UI testing)
     let (client, allowed_servers) = if client_id == "internal-test" {
         // Create a synthetic client with full MCP access for testing
-        let mut test_client = crate::config::Client::new_with_strategy("Internal Test Client".to_string(), "internal-test".to_string());
+        let mut test_client = lr_config::Client::new_with_strategy("Internal Test Client".to_string(), "internal-test".to_string());
         test_client.id = "internal-test".to_string();
         test_client.mcp_server_access = McpServerAccess::All;
         test_client.mcp_sampling_enabled = true;
@@ -418,7 +418,7 @@ pub async fn mcp_gateway_handler(
         "sampling/createMessage" => {
             // Check if sampling is enabled for this client
             if !client.mcp_sampling_enabled {
-                let error = crate::mcp::protocol::JsonRpcError::custom(
+                let error = lr_mcp::protocol::JsonRpcError::custom(
                     -32601,
                     "Sampling is disabled for this client".to_string(),
                     Some(serde_json::json!({
@@ -426,7 +426,7 @@ pub async fn mcp_gateway_handler(
                     })),
                 );
 
-                let response = crate::mcp::protocol::JsonRpcResponse::error(
+                let response = lr_mcp::protocol::JsonRpcResponse::error(
                     request.id.unwrap_or(serde_json::Value::Null),
                     error,
                 );
@@ -435,16 +435,16 @@ pub async fn mcp_gateway_handler(
             }
 
             // Parse sampling request from params
-            let sampling_req: crate::mcp::protocol::SamplingRequest = match request.params.as_ref()
+            let sampling_req: lr_mcp::protocol::SamplingRequest = match request.params.as_ref()
             {
                 Some(params) => match serde_json::from_value(params.clone()) {
                     Ok(req) => req,
                     Err(e) => {
-                        let error = crate::mcp::protocol::JsonRpcError::invalid_params(format!(
+                        let error = lr_mcp::protocol::JsonRpcError::invalid_params(format!(
                             "Invalid sampling request: {}",
                             e
                         ));
-                        let response = crate::mcp::protocol::JsonRpcResponse::error(
+                        let response = lr_mcp::protocol::JsonRpcResponse::error(
                             request.id.unwrap_or(serde_json::Value::Null),
                             error,
                         );
@@ -452,10 +452,10 @@ pub async fn mcp_gateway_handler(
                     }
                 },
                 None => {
-                    let error = crate::mcp::protocol::JsonRpcError::invalid_params(
+                    let error = lr_mcp::protocol::JsonRpcError::invalid_params(
                         "Missing params for sampling request".to_string(),
                     );
-                    let response = crate::mcp::protocol::JsonRpcResponse::error(
+                    let response = lr_mcp::protocol::JsonRpcResponse::error(
                         request.id.unwrap_or(serde_json::Value::Null),
                         error,
                     );
@@ -465,16 +465,16 @@ pub async fn mcp_gateway_handler(
 
             // Convert MCP sampling request to provider completion request
             let mut completion_req =
-                match crate::mcp::gateway::sampling::convert_sampling_to_chat_request(sampling_req)
+                match lr_mcp::gateway::sampling::convert_sampling_to_chat_request(sampling_req)
                 {
                     Ok(req) => req,
                     Err(e) => {
-                        let error = crate::mcp::protocol::JsonRpcError::custom(
+                        let error = lr_mcp::protocol::JsonRpcError::custom(
                             -32603,
                             format!("Failed to convert sampling request: {}", e),
                             None,
                         );
-                        let response = crate::mcp::protocol::JsonRpcResponse::error(
+                        let response = lr_mcp::protocol::JsonRpcResponse::error(
                             request.id.unwrap_or(serde_json::Value::Null),
                             error,
                         );
@@ -491,12 +491,12 @@ pub async fn mcp_gateway_handler(
             let completion_resp = match state.router.complete(&client_id, completion_req).await {
                 Ok(resp) => resp,
                 Err(e) => {
-                    let error = crate::mcp::protocol::JsonRpcError::custom(
+                    let error = lr_mcp::protocol::JsonRpcError::custom(
                         -32603,
                         format!("LLM completion failed: {}", e),
                         None,
                     );
-                    let response = crate::mcp::protocol::JsonRpcResponse::error(
+                    let response = lr_mcp::protocol::JsonRpcResponse::error(
                         request.id.unwrap_or(serde_json::Value::Null),
                         error,
                     );
@@ -506,17 +506,17 @@ pub async fn mcp_gateway_handler(
 
             // Convert provider response back to MCP sampling response
             let sampling_resp =
-                match crate::mcp::gateway::sampling::convert_chat_to_sampling_response(
+                match lr_mcp::gateway::sampling::convert_chat_to_sampling_response(
                     completion_resp,
                 ) {
                     Ok(resp) => resp,
                     Err(e) => {
-                        let error = crate::mcp::protocol::JsonRpcError::custom(
+                        let error = lr_mcp::protocol::JsonRpcError::custom(
                             -32603,
                             format!("Failed to convert completion response: {}", e),
                             None,
                         );
-                        let response = crate::mcp::protocol::JsonRpcResponse::error(
+                        let response = lr_mcp::protocol::JsonRpcResponse::error(
                             request.id.unwrap_or(serde_json::Value::Null),
                             error,
                         );
@@ -525,7 +525,7 @@ pub async fn mcp_gateway_handler(
                 };
 
             // Return success response
-            let response = crate::mcp::protocol::JsonRpcResponse::success(
+            let response = lr_mcp::protocol::JsonRpcResponse::success(
                 request.id.unwrap_or(serde_json::Value::Null),
                 serde_json::to_value(sampling_resp).unwrap(),
             );
@@ -578,13 +578,13 @@ pub async fn mcp_gateway_handler(
     params(
         ("server_id" = String, Path, description = "MCP server ID")
     ),
-    request_body = crate::mcp::protocol::JsonRpcRequest,
+    request_body = lr_mcp::protocol::JsonRpcRequest,
     responses(
-        (status = 200, description = "JSON-RPC response", body = crate::mcp::protocol::JsonRpcResponse),
-        (status = 401, description = "Unauthorized", body = crate::server::types::ErrorResponse),
-        (status = 403, description = "Forbidden - no access to server", body = crate::server::types::ErrorResponse),
-        (status = 502, description = "Bad gateway - MCP server error", body = crate::server::types::ErrorResponse),
-        (status = 500, description = "Internal server error", body = crate::server::types::ErrorResponse)
+        (status = 200, description = "JSON-RPC response", body = lr_mcp::protocol::JsonRpcResponse),
+        (status = 401, description = "Unauthorized", body = lr_server::types::ErrorResponse),
+        (status = 403, description = "Forbidden - no access to server", body = lr_server::types::ErrorResponse),
+        (status = 502, description = "Bad gateway - MCP server error", body = lr_server::types::ErrorResponse),
+        (status = 500, description = "Internal server error", body = lr_server::types::ErrorResponse)
     ),
     security(
         ("bearer" = [])
@@ -660,7 +660,7 @@ pub async fn mcp_server_handler(
     // Handle internal test client specially (for UI testing)
     let client = if client_id == "internal-test" {
         // Create a synthetic client with full MCP access for testing
-        let mut test_client = crate::config::Client::new_with_strategy("Internal Test Client".to_string(), "internal-test".to_string());
+        let mut test_client = lr_config::Client::new_with_strategy("Internal Test Client".to_string(), "internal-test".to_string());
         test_client.id = "internal-test".to_string();
         test_client.mcp_server_access = McpServerAccess::All;
         test_client.mcp_sampling_enabled = true;
@@ -708,7 +708,7 @@ pub async fn mcp_server_handler(
                 "roots": roots
             });
 
-            let response = crate::mcp::protocol::JsonRpcResponse::success(
+            let response = lr_mcp::protocol::JsonRpcResponse::success(
                 request.id.unwrap_or(serde_json::Value::Null),
                 result,
             );
@@ -719,7 +719,7 @@ pub async fn mcp_server_handler(
         "sampling/createMessage" => {
             // Check if sampling is enabled for this client
             if !client.mcp_sampling_enabled {
-                let error = crate::mcp::protocol::JsonRpcError::custom(
+                let error = lr_mcp::protocol::JsonRpcError::custom(
                     -32601,
                     "Sampling is disabled for this client".to_string(),
                     Some(serde_json::json!({
@@ -727,7 +727,7 @@ pub async fn mcp_server_handler(
                     })),
                 );
 
-                let response = crate::mcp::protocol::JsonRpcResponse::error(
+                let response = lr_mcp::protocol::JsonRpcResponse::error(
                     request.id.unwrap_or(serde_json::Value::Null),
                     error,
                 );
@@ -736,15 +736,15 @@ pub async fn mcp_server_handler(
             }
 
             // Parse sampling request from params
-            let sampling_req: crate::mcp::protocol::SamplingRequest =
+            let sampling_req: lr_mcp::protocol::SamplingRequest =
                 match request.params.as_ref() {
                     Some(params) => match serde_json::from_value(params.clone()) {
                         Ok(req) => req,
                         Err(e) => {
-                            let error = crate::mcp::protocol::JsonRpcError::invalid_params(
+                            let error = lr_mcp::protocol::JsonRpcError::invalid_params(
                                 format!("Invalid sampling request: {}", e),
                             );
-                            let response = crate::mcp::protocol::JsonRpcResponse::error(
+                            let response = lr_mcp::protocol::JsonRpcResponse::error(
                                 request.id.unwrap_or(serde_json::Value::Null),
                                 error,
                             );
@@ -756,10 +756,10 @@ pub async fn mcp_server_handler(
                         }
                     },
                     None => {
-                        let error = crate::mcp::protocol::JsonRpcError::invalid_params(
+                        let error = lr_mcp::protocol::JsonRpcError::invalid_params(
                             "Missing params for sampling request".to_string(),
                         );
-                        let response = crate::mcp::protocol::JsonRpcResponse::error(
+                        let response = lr_mcp::protocol::JsonRpcResponse::error(
                             request.id.unwrap_or(serde_json::Value::Null),
                             error,
                         );
@@ -773,16 +773,16 @@ pub async fn mcp_server_handler(
 
             // Convert MCP sampling request to provider completion request
             let mut completion_req =
-                match crate::mcp::gateway::sampling::convert_sampling_to_chat_request(sampling_req)
+                match lr_mcp::gateway::sampling::convert_sampling_to_chat_request(sampling_req)
                 {
                     Ok(req) => req,
                     Err(e) => {
-                        let error = crate::mcp::protocol::JsonRpcError::custom(
+                        let error = lr_mcp::protocol::JsonRpcError::custom(
                             -32603,
                             format!("Failed to convert sampling request: {}", e),
                             None,
                         );
-                        let response = crate::mcp::protocol::JsonRpcResponse::error(
+                        let response = lr_mcp::protocol::JsonRpcResponse::error(
                             request.id.unwrap_or(serde_json::Value::Null),
                             error,
                         );
@@ -803,12 +803,12 @@ pub async fn mcp_server_handler(
             let completion_resp = match state.router.complete(&client_id, completion_req).await {
                 Ok(resp) => resp,
                 Err(e) => {
-                    let error = crate::mcp::protocol::JsonRpcError::custom(
+                    let error = lr_mcp::protocol::JsonRpcError::custom(
                         -32603,
                         format!("LLM completion failed: {}", e),
                         None,
                     );
-                    let response = crate::mcp::protocol::JsonRpcResponse::error(
+                    let response = lr_mcp::protocol::JsonRpcResponse::error(
                         request.id.unwrap_or(serde_json::Value::Null),
                         error,
                     );
@@ -822,17 +822,17 @@ pub async fn mcp_server_handler(
 
             // Convert provider response back to MCP sampling response
             let sampling_resp =
-                match crate::mcp::gateway::sampling::convert_chat_to_sampling_response(
+                match lr_mcp::gateway::sampling::convert_chat_to_sampling_response(
                     completion_resp,
                 ) {
                     Ok(resp) => resp,
                     Err(e) => {
-                        let error = crate::mcp::protocol::JsonRpcError::custom(
+                        let error = lr_mcp::protocol::JsonRpcError::custom(
                             -32603,
                             format!("Failed to convert completion response: {}", e),
                             None,
                         );
-                        let response = crate::mcp::protocol::JsonRpcResponse::error(
+                        let response = lr_mcp::protocol::JsonRpcResponse::error(
                             request.id.unwrap_or(serde_json::Value::Null),
                             error,
                         );
@@ -845,7 +845,7 @@ pub async fn mcp_server_handler(
                 };
 
             // Return success response
-            let response = crate::mcp::protocol::JsonRpcResponse::success(
+            let response = lr_mcp::protocol::JsonRpcResponse::success(
                 request.id.unwrap_or(serde_json::Value::Null),
                 serde_json::to_value(sampling_resp).unwrap(),
             );
@@ -855,15 +855,15 @@ pub async fn mcp_server_handler(
 
         "elicitation/requestInput" => {
             // Parse elicitation request from params
-            let elicitation_req: crate::mcp::protocol::ElicitationRequest =
+            let elicitation_req: lr_mcp::protocol::ElicitationRequest =
                 match request.params.as_ref() {
                     Some(params) => match serde_json::from_value(params.clone()) {
                         Ok(req) => req,
                         Err(e) => {
-                            let error = crate::mcp::protocol::JsonRpcError::invalid_params(
+                            let error = lr_mcp::protocol::JsonRpcError::invalid_params(
                                 format!("Invalid elicitation request: {}", e),
                             );
-                            let response = crate::mcp::protocol::JsonRpcResponse::error(
+                            let response = lr_mcp::protocol::JsonRpcResponse::error(
                                 request.id.unwrap_or(serde_json::Value::Null),
                                 error,
                             );
@@ -875,10 +875,10 @@ pub async fn mcp_server_handler(
                         }
                     },
                     None => {
-                        let error = crate::mcp::protocol::JsonRpcError::invalid_params(
+                        let error = lr_mcp::protocol::JsonRpcError::invalid_params(
                             "Missing params for elicitation request".to_string(),
                         );
-                        let response = crate::mcp::protocol::JsonRpcResponse::error(
+                        let response = lr_mcp::protocol::JsonRpcResponse::error(
                             request.id.unwrap_or(serde_json::Value::Null),
                             error,
                         );
@@ -892,7 +892,7 @@ pub async fn mcp_server_handler(
 
             // Get the elicitation manager from gateway
             // For now, return a helpful message that elicitation needs WebSocket support
-            let error = crate::mcp::protocol::JsonRpcError::custom(
+            let error = lr_mcp::protocol::JsonRpcError::custom(
                 -32601,
                 "Elicitation requires WebSocket notification infrastructure".to_string(),
                 Some(serde_json::json!({
@@ -903,7 +903,7 @@ pub async fn mcp_server_handler(
                 })),
             );
 
-            let response = crate::mcp::protocol::JsonRpcResponse::error(
+            let response = lr_mcp::protocol::JsonRpcResponse::error(
                 request.id.unwrap_or(serde_json::Value::Null),
                 error,
             );
@@ -1060,9 +1060,9 @@ pub async fn mcp_server_handler(
     ),
     responses(
         (status = 200, description = "SSE event stream", content_type = "text/event-stream"),
-        (status = 401, description = "Unauthorized", body = crate::server::types::ErrorResponse),
-        (status = 403, description = "Forbidden - no access to server", body = crate::server::types::ErrorResponse),
-        (status = 502, description = "Bad gateway - MCP server error", body = crate::server::types::ErrorResponse)
+        (status = 401, description = "Unauthorized", body = lr_server::types::ErrorResponse),
+        (status = 403, description = "Forbidden - no access to server", body = lr_server::types::ErrorResponse),
+        (status = 502, description = "Bad gateway - MCP server error", body = lr_server::types::ErrorResponse)
     ),
     security(("bearer" = []))
 )]
@@ -1086,7 +1086,7 @@ pub async fn mcp_server_sse_handler(
             "Internal test client establishing SSE connection to MCP server {}",
             server_id
         );
-        let mut test_client = crate::config::Client::new_with_strategy("Internal Test Client".to_string(), "internal-test".to_string());
+        let mut test_client = lr_config::Client::new_with_strategy("Internal Test Client".to_string(), "internal-test".to_string());
         test_client.id = "internal-test".to_string();
         test_client.mcp_server_access = McpServerAccess::All;
         test_client.mcp_sampling_enabled = true;
@@ -1199,7 +1199,7 @@ pub async fn mcp_server_sse_handler(
                             );
                             JsonRpcResponse::error(
                                 request.id.unwrap_or(serde_json::Value::Null),
-                                crate::mcp::protocol::JsonRpcError::custom(-32000, "Client connection closed", None),
+                                lr_mcp::protocol::JsonRpcError::custom(-32000, "Client connection closed", None),
                             )
                         }
                         Err(_) => {
@@ -1209,7 +1209,7 @@ pub async fn mcp_server_sse_handler(
                             );
                             JsonRpcResponse::error(
                                 request.id.unwrap_or(serde_json::Value::Null),
-                                crate::mcp::protocol::JsonRpcError::custom(-32000, "Request timeout", None),
+                                lr_mcp::protocol::JsonRpcError::custom(-32000, "Request timeout", None),
                             )
                         }
                     }
@@ -1220,7 +1220,7 @@ pub async fn mcp_server_sse_handler(
                     );
                     JsonRpcResponse::error(
                         request.id.unwrap_or(serde_json::Value::Null),
-                        crate::mcp::protocol::JsonRpcError::custom(-32000, "No client connection", None),
+                        lr_mcp::protocol::JsonRpcError::custom(-32000, "No client connection", None),
                     )
                 }
             })
@@ -1388,14 +1388,14 @@ pub async fn mcp_server_sse_handler(
     params(
         ("server_id" = String, Path, description = "MCP server ID")
     ),
-    request_body = crate::mcp::protocol::JsonRpcRequest,
+    request_body = lr_mcp::protocol::JsonRpcRequest,
     responses(
         (status = 200, description = "SSE stream of chunks", content_type = "text/event-stream"),
-        (status = 401, description = "Unauthorized", body = crate::server::types::ErrorResponse),
-        (status = 403, description = "Forbidden - no access to server", body = crate::server::types::ErrorResponse),
-        (status = 400, description = "Bad request - streaming not supported", body = crate::server::types::ErrorResponse),
-        (status = 502, description = "Bad gateway - MCP server error", body = crate::server::types::ErrorResponse),
-        (status = 500, description = "Internal server error", body = crate::server::types::ErrorResponse)
+        (status = 401, description = "Unauthorized", body = lr_server::types::ErrorResponse),
+        (status = 403, description = "Forbidden - no access to server", body = lr_server::types::ErrorResponse),
+        (status = 400, description = "Bad request - streaming not supported", body = lr_server::types::ErrorResponse),
+        (status = 502, description = "Bad gateway - MCP server error", body = lr_server::types::ErrorResponse),
+        (status = 500, description = "Internal server error", body = lr_server::types::ErrorResponse)
     ),
     security(
         ("bearer" = [])
@@ -1418,7 +1418,7 @@ pub async fn mcp_server_streaming_handler(
 
     // Handle internal test client specially (for UI testing)
     let client = if client_id == "internal-test" {
-        let mut test_client = crate::config::Client::new_with_strategy("Internal Test Client".to_string(), "internal-test".to_string());
+        let mut test_client = lr_config::Client::new_with_strategy("Internal Test Client".to_string(), "internal-test".to_string());
         test_client.id = "internal-test".to_string();
         test_client.mcp_server_access = McpServerAccess::All;
         test_client.mcp_sampling_enabled = true;
@@ -1553,11 +1553,11 @@ fn merge_roots(global_roots: &[RootConfig], client_roots: Option<&Vec<RootConfig
     post,
     path = "/mcp/elicitation/respond/{request_id}",
     tag = "mcp",
-    request_body = crate::mcp::protocol::ElicitationResponse,
+    request_body = lr_mcp::protocol::ElicitationResponse,
     responses(
-        (status = 200, description = "Response submitted successfully", body = crate::server::types::MessageResponse),
-        (status = 400, description = "Invalid request or request not found", body = crate::server::types::ErrorResponse),
-        (status = 401, description = "Unauthorized", body = crate::server::types::ErrorResponse),
+        (status = 200, description = "Response submitted successfully", body = lr_server::types::MessageResponse),
+        (status = 400, description = "Invalid request or request not found", body = lr_server::types::ErrorResponse),
+        (status = 401, description = "Unauthorized", body = lr_server::types::ErrorResponse),
     ),
     security(
         ("bearer" = [])
@@ -1567,7 +1567,7 @@ pub async fn elicitation_response_handler(
     State(state): State<AppState>,
     Path(request_id): Path<String>,
     client_auth: Option<axum::Extension<ClientAuthContext>>,
-    Json(response): Json<crate::mcp::protocol::ElicitationResponse>,
+    Json(response): Json<lr_mcp::protocol::ElicitationResponse>,
 ) -> Response {
     // Verify authentication
     if client_auth.is_none() {
@@ -1582,7 +1582,7 @@ pub async fn elicitation_response_handler(
     {
         Ok(()) => {
             tracing::info!("Elicitation response submitted for request {}", request_id);
-            Json(crate::server::types::MessageResponse {
+            Json(lr_server::types::MessageResponse {
                 message: "Response submitted successfully".to_string(),
             })
             .into_response()

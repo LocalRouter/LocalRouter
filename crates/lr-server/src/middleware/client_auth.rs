@@ -14,7 +14,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 
-use crate::server::middleware::error::ApiErrorResponse;
+use lr_server::middleware::error::ApiErrorResponse;
 
 /// Client authentication context
 ///
@@ -78,7 +78,7 @@ pub async fn client_auth_middleware(mut req: Request, next: Next) -> Response {
     };
 
     // Extract state from request extensions
-    let state = match req.extensions().get::<crate::server::state::AppState>() {
+    let state = match req.extensions().get::<lr_server::state::AppState>() {
         Some(s) => s.clone(),
         None => {
             return ApiErrorResponse::internal_error("Missing application state").into_response();

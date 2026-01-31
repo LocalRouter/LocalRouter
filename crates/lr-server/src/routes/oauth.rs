@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use utoipa::ToSchema;
 
-use crate::clients::{ClientManager, TokenStore};
+use lr_clients::{ClientManager, TokenStore};
 
 /// OAuth 2.0 token request (client credentials flow)
 ///

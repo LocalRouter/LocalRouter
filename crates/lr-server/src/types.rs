@@ -324,11 +324,11 @@ pub struct TokenUsage {
 
     /// Detailed prompt token breakdown (optional)
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub prompt_tokens_details: Option<crate::providers::PromptTokensDetails>,
+    pub prompt_tokens_details: Option<lr_providers::PromptTokensDetails>,
 
     /// Detailed completion token breakdown (optional)
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub completion_tokens_details: Option<crate::providers::CompletionTokensDetails>,
+    pub completion_tokens_details: Option<lr_providers::CompletionTokensDetails>,
 }
 
 // Streaming chunk
@@ -617,7 +617,7 @@ pub struct ModelData {
     // Enhanced capability tracking (Phase 1)
     /// Detailed capability information with parameters and features
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub detailed_capabilities: Option<crate::providers::ModelCapabilities>,
+    pub detailed_capabilities: Option<lr_providers::ModelCapabilities>,
 
     /// List of supported advanced features (e.g., "structured_outputs", "thinking", "caching")
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -629,7 +629,7 @@ pub struct ModelData {
 
     /// Performance metrics for this model
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub performance: Option<crate::providers::PerformanceMetrics>,
+    pub performance: Option<lr_providers::PerformanceMetrics>,
 
     /// Catalog information (Phase 4)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -797,9 +797,9 @@ pub struct MessageResponse {
 }
 
 // Helper functions for conversion
-impl From<&crate::providers::ModelInfo> for ModelData {
-    fn from(info: &crate::providers::ModelInfo) -> Self {
-        use crate::providers::Capability;
+impl From<&lr_providers::ModelInfo> for ModelData {
+    fn from(info: &lr_providers::ModelInfo) -> Self {
+        use lr_providers::Capability;
 
         let capabilities = info
             .capabilities

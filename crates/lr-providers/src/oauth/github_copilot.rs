@@ -17,7 +17,7 @@ use tokio::sync::RwLock;
 use tracing::{debug, error, info};
 
 use super::{OAuthCredentials, OAuthFlowResult, OAuthProvider};
-use crate::utils::errors::{AppError, AppResult};
+use lr_types::{AppError, AppResult};
 
 const GITHUB_CLIENT_ID: &str = "Ov23li8tweQw6odWQebz";
 const GITHUB_DEVICE_CODE_URL: &str = "https://github.com/login/device/code";

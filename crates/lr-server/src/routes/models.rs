@@ -9,9 +9,9 @@ use axum::{
 };
 
 use super::helpers::get_client_with_strategy;
-use crate::server::middleware::error::{ApiErrorResponse, ApiResult};
-use crate::server::state::{AppState, AuthContext};
-use crate::server::types::{ModelData, ModelPricing, ModelsResponse};
+use lr_server::middleware::error::{ApiErrorResponse, ApiResult};
+use lr_server::state::{AppState, AuthContext};
+use lr_server::types::{ModelData, ModelPricing, ModelsResponse};
 
 /// GET /v1/models
 /// List available models filtered by the authenticated API key's model selection
@@ -21,8 +21,8 @@ use crate::server::types::{ModelData, ModelPricing, ModelsResponse};
     tag = "models",
     responses(
         (status = 200, description = "List of available models", body = ModelsResponse),
-        (status = 401, description = "Unauthorized", body = crate::server::types::ErrorResponse),
-        (status = 500, description = "Internal server error", body = crate::server::types::ErrorResponse)
+        (status = 401, description = "Unauthorized", body = lr_server::types::ErrorResponse),
+        (status = 500, description = "Internal server error", body = lr_server::types::ErrorResponse)
     ),
     security(
         ("bearer_auth" = [])
@@ -121,10 +121,10 @@ pub async fn list_models<B>(
     ),
     responses(
         (status = 200, description = "Model details", body = ModelData),
-        (status = 401, description = "Unauthorized", body = crate::server::types::ErrorResponse),
-        (status = 403, description = "Forbidden - no access to this model", body = crate::server::types::ErrorResponse),
-        (status = 404, description = "Model not found", body = crate::server::types::ErrorResponse),
-        (status = 500, description = "Internal server error", body = crate::server::types::ErrorResponse)
+        (status = 401, description = "Unauthorized", body = lr_server::types::ErrorResponse),
+        (status = 403, description = "Forbidden - no access to this model", body = lr_server::types::ErrorResponse),
+        (status = 404, description = "Model not found", body = lr_server::types::ErrorResponse),
+        (status = 500, description = "Internal server error", body = lr_server::types::ErrorResponse)
     ),
     security(
         ("bearer_auth" = [])
@@ -231,10 +231,10 @@ pub async fn get_model<B>(
     ),
     responses(
         (status = 200, description = "Model pricing information", body = ModelPricing),
-        (status = 401, description = "Unauthorized", body = crate::server::types::ErrorResponse),
-        (status = 403, description = "Forbidden - no access to this model", body = crate::server::types::ErrorResponse),
-        (status = 404, description = "Model or pricing not found", body = crate::server::types::ErrorResponse),
-        (status = 500, description = "Internal server error", body = crate::server::types::ErrorResponse)
+        (status = 401, description = "Unauthorized", body = lr_server::types::ErrorResponse),
+        (status = 403, description = "Forbidden - no access to this model", body = lr_server::types::ErrorResponse),
+        (status = 404, description = "Model or pricing not found", body = lr_server::types::ErrorResponse),
+        (status = 500, description = "Internal server error", body = lr_server::types::ErrorResponse)
     ),
     security(
         ("bearer_auth" = [])

@@ -206,10 +206,10 @@ mod tests {
     use futures::Stream;
     use std::pin::Pin;
 
-    use crate::providers::{
+    use lr_providers::{
         CompletionChunk, CompletionRequest, CompletionResponse, ModelInfo, PricingInfo,
     };
-    use crate::utils::errors::AppResult;
+    use lr_types::errors::AppResult;
 
     /// Mock provider for testing
     struct MockProvider {

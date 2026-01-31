@@ -18,7 +18,7 @@ use super::{
     CompletionRequest, CompletionResponse, HealthStatus, ModelInfo, ModelProvider, PricingInfo,
     ProviderHealth, TokenUsage,
 };
-use crate::utils::errors::{AppError, AppResult};
+use lr_types::{AppError, AppResult};
 
 /// Ollama provider using hybrid SDK + HTTP approach
 pub struct OllamaProvider {

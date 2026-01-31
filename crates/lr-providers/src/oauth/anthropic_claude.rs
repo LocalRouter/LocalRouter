@@ -16,9 +16,9 @@ use tokio::sync::RwLock;
 use tracing::{info, warn};
 
 use super::{OAuthCredentials, OAuthFlowResult, OAuthProvider};
-use crate::api_keys::CachedKeychain;
-use crate::oauth_browser::{FlowId, OAuthFlowConfig, OAuthFlowManager};
-use crate::utils::errors::{AppError, AppResult};
+use lr_api_keys::CachedKeychain;
+use lr_oauth::browser::{FlowId, OAuthFlowConfig, OAuthFlowManager};
+use lr_types::{AppError, AppResult};
 
 const ANTHROPIC_CLIENT_ID: &str = "claude-web";
 const ANTHROPIC_AUTHORIZE_URL: &str = "https://console.anthropic.com/oauth/authorize";
@@ -105,19 +105,19 @@ impl OAuthProvider for AnthropicClaudeOAuthProvider {
 
         // Convert to provider format
         match result {
-            crate::oauth_browser::OAuthFlowResult::Pending { .. } => Ok(OAuthFlowResult::Pending {
+            lr_oauth::browser::OAuthFlowResult::Pending { .. } => Ok(OAuthFlowResult::Pending {
                 user_code: None,
                 verification_url: "Waiting for browser authorization...".to_string(),
                 instructions: "Complete the authorization in your browser".to_string(),
             }),
-            crate::oauth_browser::OAuthFlowResult::ExchangingToken => {
+            lr_oauth::browser::OAuthFlowResult::ExchangingToken => {
                 Ok(OAuthFlowResult::Pending {
                     user_code: None,
                     verification_url: "Exchanging authorization code for tokens...".to_string(),
                     instructions: "Please wait...".to_string(),
                 })
             }
-            crate::oauth_browser::OAuthFlowResult::Success { tokens } => {
+            lr_oauth::browser::OAuthFlowResult::Success { tokens } => {
                 // Clean up flow tracking
                 *self.current_flow.write().await = None;
 
@@ -134,14 +134,14 @@ impl OAuthProvider for AnthropicClaudeOAuthProvider {
                 info!("Anthropic Claude OAuth flow completed successfully");
                 Ok(OAuthFlowResult::Success { credentials })
             }
-            crate::oauth_browser::OAuthFlowResult::Error { message } => {
+            lr_oauth::browser::OAuthFlowResult::Error { message } => {
                 // Clean up flow tracking
                 *self.current_flow.write().await = None;
 
                 warn!("Anthropic Claude OAuth flow failed: {}", message);
                 Ok(OAuthFlowResult::Error { message })
             }
-            crate::oauth_browser::OAuthFlowResult::Timeout => {
+            lr_oauth::browser::OAuthFlowResult::Timeout => {
                 // Clean up flow tracking
                 *self.current_flow.write().await = None;
 
@@ -149,7 +149,7 @@ impl OAuthProvider for AnthropicClaudeOAuthProvider {
                     message: "Authorization timed out after 5 minutes".to_string(),
                 })
             }
-            crate::oauth_browser::OAuthFlowResult::Cancelled => {
+            lr_oauth::browser::OAuthFlowResult::Cancelled => {
                 // Clean up flow tracking
                 *self.current_flow.write().await = None;
 
@@ -184,7 +184,7 @@ impl OAuthProvider for AnthropicClaudeOAuthProvider {
         };
 
         // Use unified token exchanger
-        let token_exchanger = crate::oauth_browser::TokenExchanger::new();
+        let token_exchanger = lr_oauth::browser::TokenExchanger::new();
         let keychain = CachedKeychain::system();
 
         let new_tokens = token_exchanger

@@ -3,9 +3,9 @@
 //! Spawns a subprocess and communicates via stdin/stdout using JSON-RPC 2.0.
 //! This is the most common transport type for MCP servers.
 
-use crate::mcp::protocol::{JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse};
-use crate::mcp::transport::Transport;
-use crate::utils::errors::{AppError, AppResult};
+use lr_mcp::protocol::{JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse};
+use lr_mcp::transport::Transport;
+use lr_types::{AppError, AppResult};
 use async_trait::async_trait;
 use parking_lot::RwLock;
 use serde_json::Value;

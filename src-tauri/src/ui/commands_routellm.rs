@@ -1,7 +1,7 @@
 //! Tauri commands for RouteLLM intelligent routing
 
-use crate::routellm::{RouteLLMStatus, RouteLLMTestResult};
-use crate::server::state::AppState;
+use lr_routellm::{RouteLLMStatus, RouteLLMTestResult};
+use lr_server::state::AppState;
 use std::sync::Arc;
 use std::time::Instant;
 use tauri::{AppHandle, State};
@@ -18,7 +18,7 @@ pub async fn routellm_get_status(
     } else {
         // Service not initialized
         Ok(RouteLLMStatus {
-            state: crate::routellm::status::RouteLLMState::NotDownloaded,
+            state: lr_routellm::status::RouteLLMState::NotDownloaded,
             memory_usage_mb: None,
             last_access_secs_ago: None,
         })
@@ -97,7 +97,7 @@ pub async fn routellm_download_models(
     let (model_path, tokenizer_path) = service.get_paths();
 
     // Use the downloader module (downloads SafeTensors from HuggingFace)
-    crate::routellm::downloader::download_models(&model_path, &tokenizer_path, Some(app_handle))
+    lr_routellm::downloader::download_models(&model_path, &tokenizer_path, Some(app_handle))
         .await
         .map_err(|e| format!("Download failed: {}", e))?;
 
@@ -109,7 +109,7 @@ pub async fn routellm_download_models(
 pub async fn open_routellm_folder(app: AppHandle) -> Result<(), String> {
     use tauri_plugin_shell::ShellExt;
 
-    let config_dir = crate::config::paths::config_dir()
+    let config_dir = lr_config::paths::config_dir()
         .map_err(|e| format!("Failed to get config dir: {}", e))?;
     let routellm_dir = config_dir.join("routellm");
 

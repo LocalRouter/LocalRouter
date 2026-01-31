@@ -5,7 +5,7 @@
 
 #![allow(dead_code)]
 
-use crate::config::{ConfigManager, UpdateMode};
+use lr_config::{ConfigManager, UpdateMode};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;

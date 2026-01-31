@@ -29,8 +29,8 @@
 use serde_json::{json, Value};
 
 use super::{FeatureAdapter, FeatureData, FeatureParams};
-use crate::providers::{CompletionRequest, CompletionResponse};
-use crate::utils::errors::{AppError, AppResult};
+use lr_providers::{CompletionRequest, CompletionResponse};
+use lr_types::{AppError, AppResult};
 
 /// Feature adapter for JSON mode
 pub struct JsonModeAdapter;
@@ -125,9 +125,9 @@ impl FeatureAdapter for JsonModeAdapter {
             "anthropic" | "gemini" => {
                 // For Anthropic/Gemini, add JSON instruction to system message
                 let instruction = Self::create_json_instruction();
-                let system_message = crate::providers::ChatMessage {
+                let system_message = lr_providers::ChatMessage {
                     role: "system".to_string(),
-                    content: crate::providers::ChatMessageContent::Text(instruction),
+                    content: lr_providers::ChatMessageContent::Text(instruction),
                     tool_calls: None,
                     tool_call_id: None,
                     name: None,
@@ -389,11 +389,11 @@ mod tests {
             created: 1234567890,
             model: "gpt-4".to_string(),
             provider: "openai".to_string(),
-            choices: vec![crate::providers::CompletionChoice {
+            choices: vec![lr_providers::CompletionChoice {
                 index: 0,
-                message: crate::providers::ChatMessage {
+                message: lr_providers::ChatMessage {
                     role: "assistant".to_string(),
-                    content: crate::providers::ChatMessageContent::Text(
+                    content: lr_providers::ChatMessageContent::Text(
                         r#"{"result": "success", "count": 42}"#.to_string(),
                     ),
                     tool_calls: None,
@@ -403,7 +403,7 @@ mod tests {
                 finish_reason: Some("stop".to_string()),
                 logprobs: None,
             }],
-            usage: crate::providers::TokenUsage {
+            usage: lr_providers::TokenUsage {
                 prompt_tokens: 100,
                 completion_tokens: 50,
                 total_tokens: 150,
@@ -439,11 +439,11 @@ mod tests {
             created: 1234567890,
             model: "gpt-4".to_string(),
             provider: "openai".to_string(),
-            choices: vec![crate::providers::CompletionChoice {
+            choices: vec![lr_providers::CompletionChoice {
                 index: 0,
-                message: crate::providers::ChatMessage {
+                message: lr_providers::ChatMessage {
                     role: "assistant".to_string(),
-                    content: crate::providers::ChatMessageContent::Text(
+                    content: lr_providers::ChatMessageContent::Text(
                         "This is not valid JSON".to_string(),
                     ),
                     tool_calls: None,
@@ -453,7 +453,7 @@ mod tests {
                 finish_reason: Some("stop".to_string()),
                 logprobs: None,
             }],
-            usage: crate::providers::TokenUsage {
+            usage: lr_providers::TokenUsage {
                 prompt_tokens: 100,
                 completion_tokens: 50,
                 total_tokens: 150,
@@ -483,7 +483,7 @@ mod tests {
             model: "gpt-4".to_string(),
             provider: "openai".to_string(),
             choices: vec![],
-            usage: crate::providers::TokenUsage {
+            usage: lr_providers::TokenUsage {
                 prompt_tokens: 100,
                 completion_tokens: 50,
                 total_tokens: 150,

@@ -9,7 +9,7 @@
 
 #![allow(dead_code)]
 
-use crate::utils::errors::{AppError, AppResult};
+use lr_types::{AppError, AppResult};
 use tracing::debug;
 
 const KEYRING_SERVICE: &str = "LocalRouter-APIKeys";

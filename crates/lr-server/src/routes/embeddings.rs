@@ -11,11 +11,11 @@ use std::time::Instant;
 use uuid::Uuid;
 
 use super::helpers::{get_enabled_client, get_enabled_client_from_manager};
-use crate::router::UsageInfo;
-use crate::server::middleware::client_auth::ClientAuthContext;
-use crate::server::middleware::error::{ApiErrorResponse, ApiResult};
-use crate::server::state::{AppState, AuthContext};
-use crate::server::types::{
+use lr_router::UsageInfo;
+use lr_server::middleware::client_auth::ClientAuthContext;
+use lr_server::middleware::error::{ApiErrorResponse, ApiResult};
+use lr_server::state::{AppState, AuthContext};
+use lr_server::types::{
     EmbeddingData, EmbeddingInput, EmbeddingRequest, EmbeddingResponse, EmbeddingVector,
 };
 
@@ -27,11 +27,11 @@ use crate::server::types::{
     tag = "embeddings",
     request_body = EmbeddingRequest,
     responses(
-        (status = 200, description = "Successful response", body = crate::server::types::EmbeddingResponse),
-        (status = 400, description = "Bad request", body = crate::server::types::ErrorResponse),
-        (status = 401, description = "Unauthorized", body = crate::server::types::ErrorResponse),
-        (status = 501, description = "Not implemented yet", body = crate::server::types::ErrorResponse),
-        (status = 500, description = "Internal server error", body = crate::server::types::ErrorResponse)
+        (status = 200, description = "Successful response", body = lr_server::types::EmbeddingResponse),
+        (status = 400, description = "Bad request", body = lr_server::types::ErrorResponse),
+        (status = 401, description = "Unauthorized", body = lr_server::types::ErrorResponse),
+        (status = 501, description = "Not implemented yet", body = lr_server::types::ErrorResponse),
+        (status = 500, description = "Internal server error", body = lr_server::types::ErrorResponse)
     ),
     security(
         ("bearer_auth" = [])
@@ -72,23 +72,23 @@ pub async fn embeddings(
         .encoding_format
         .as_ref()
         .and_then(|fmt| match fmt.as_str() {
-            "float" => Some(crate::providers::EncodingFormat::Float),
-            "base64" => Some(crate::providers::EncodingFormat::Base64),
+            "float" => Some(lr_providers::EncodingFormat::Float),
+            "base64" => Some(lr_providers::EncodingFormat::Base64),
             _ => None,
         });
 
     // Convert server EmbeddingInput to provider EmbeddingInput
     let provider_input = match request.input.clone() {
-        crate::server::types::EmbeddingInput::Single(s) => {
-            crate::providers::EmbeddingInput::Single(s)
+        lr_server::types::EmbeddingInput::Single(s) => {
+            lr_providers::EmbeddingInput::Single(s)
         }
-        crate::server::types::EmbeddingInput::Multiple(v) => {
-            crate::providers::EmbeddingInput::Multiple(v)
+        lr_server::types::EmbeddingInput::Multiple(v) => {
+            lr_providers::EmbeddingInput::Multiple(v)
         }
     };
 
     // Convert to provider format
-    let provider_request = crate::providers::EmbeddingRequest {
+    let provider_request = lr_providers::EmbeddingRequest {
         model: request.model.clone(),
         input: provider_input,
         encoding_format,
@@ -149,7 +149,7 @@ pub async fn embeddings(
         Some(p) => p.get_pricing(&response.model).await.ok(),
         None => None,
     }
-    .unwrap_or_else(crate::providers::PricingInfo::free);
+    .unwrap_or_else(lr_providers::PricingInfo::free);
 
     let cost = (response.usage.prompt_tokens as f64 / 1000.0) * pricing.input_cost_per_1k;
 
@@ -163,7 +163,7 @@ pub async fn embeddings(
     // Record success metrics
     state
         .metrics_collector
-        .record_success(&crate::monitoring::metrics::RequestMetrics {
+        .record_success(&lr_monitoring::metrics::RequestMetrics {
             api_key_name: &auth.api_key_id,
             provider: &provider,
             model: &response.model,
@@ -210,7 +210,7 @@ pub async fn embeddings(
             })
             .collect(),
         model: response.model,
-        usage: crate::server::types::EmbeddingUsage {
+        usage: lr_server::types::EmbeddingUsage {
             prompt_tokens: response.usage.prompt_tokens,
             total_tokens: response.usage.total_tokens,
         },

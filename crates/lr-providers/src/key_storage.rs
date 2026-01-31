@@ -9,8 +9,8 @@
 //!
 //! Uses CachedKeychain to avoid repeated password prompts.
 
-use crate::api_keys::keychain_trait::{CachedKeychain, KeychainStorage};
-use crate::utils::errors::AppResult;
+use lr_api_keys::keychain_trait::{CachedKeychain, KeychainStorage};
+use lr_types::errors::AppResult;
 use std::sync::OnceLock;
 use tracing::{debug, warn};
 
