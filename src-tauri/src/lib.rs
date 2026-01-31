@@ -15,6 +15,7 @@ pub mod providers;
 pub mod routellm;
 pub mod router;
 pub mod server;
+pub mod skills;
 pub mod ui;
 pub mod updater;
 pub mod utils;
