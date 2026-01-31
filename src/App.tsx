@@ -9,6 +9,7 @@ import { DashboardView } from './views/dashboard'
 import { ClientsView } from './views/clients'
 import { ResourcesView } from './views/resources'
 import { McpServersView } from './views/mcp-servers'
+import { SkillsView } from './views/skills'
 import { TryItOutView } from './views/try-it-out'
 import { SettingsView } from './views/settings'
 import { ClientCreationWizard } from './components/wizard/ClientCreationWizard'
@@ -178,6 +179,13 @@ function App() {
       case 'mcp-servers':
         return (
           <McpServersView
+            activeSubTab={activeSubTab}
+            onTabChange={handleChildViewChange}
+          />
+        )
+      case 'skills':
+        return (
+          <SkillsView
             activeSubTab={activeSubTab}
             onTabChange={handleChildViewChange}
           />
