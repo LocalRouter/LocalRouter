@@ -93,6 +93,7 @@ async fn test_gemini_pricing_flash() {
 }
 
 #[tokio::test]
+#[ignore = "requires live API key"]
 async fn test_gemini_pricing_2_0_flash() {
     let provider = GeminiProvider::new("test-key".to_string());
 

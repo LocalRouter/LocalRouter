@@ -7,6 +7,7 @@ use futures::StreamExt;
 use localrouter::providers::{anthropic::AnthropicProvider, ModelProvider};
 
 #[tokio::test]
+#[ignore = "requires live API key"]
 async fn test_anthropic_list_models() {
     let provider = AnthropicProvider::new("test-key".to_string()).unwrap();
 

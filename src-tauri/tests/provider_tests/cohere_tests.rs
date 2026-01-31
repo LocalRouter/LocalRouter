@@ -6,6 +6,7 @@ use super::common::*;
 use localrouter::providers::{cohere::CohereProvider, ModelProvider};
 
 #[tokio::test]
+#[ignore = "requires live API key"]
 async fn test_cohere_list_models() {
     let provider = CohereProvider::new("test-key".to_string()).unwrap();
 
