@@ -20,7 +20,8 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import { Checkbox } from "@/components/ui/checkbox"
-import { Wrench, FileText, MessageSquare, Radio, HelpCircle, AlertCircle, X, Circle, Info } from "lucide-react"
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
+import { Wrench, FileText, MessageSquare, Radio, HelpCircle, AlertCircle, X, Circle, Info, Users, Globe, Zap } from "lucide-react"
 import { ConnectionInfoPanel } from "./connection-info-panel"
 import { ToolsPanel } from "./tools-panel"
 import { ResourcesPanel } from "./resources-panel"
@@ -115,6 +116,13 @@ export interface ElicitationState {
   formValues: Record<string, unknown>
 }
 
+interface McpClient {
+  id: string
+  name: string
+  client_id: string
+  enabled: boolean
+}
+
 interface McpServer {
   id: string
   name: string
@@ -122,6 +130,8 @@ interface McpServer {
   enabled: boolean
   status?: string
 }
+
+type McpTestMode = "client" | "all" | "direct"
 
 interface ServerConfig {
   host: string
@@ -135,12 +145,13 @@ interface McpTabProps {
   onPathChange: (path: string | null) => void
 }
 
-// Target can be "gateway" for unified or a server ID for individual
-type McpTarget = "gateway" | string
-
 export function McpTab({ innerPath, onPathChange }: McpTabProps) {
   const [mcpServers, setMcpServers] = useState<McpServer[]>([])
-  const [selectedTarget, setSelectedTarget] = useState<McpTarget>("gateway")
+  const [mode, setMode] = useState<McpTestMode>("all")
+  const [clients, setClients] = useState<McpClient[]>([])
+  const [selectedClientId, setSelectedClientId] = useState<string>("")
+  const [clientApiKey, setClientApiKey] = useState<string | null>(null)
+  const [selectedServerId, setSelectedServerId] = useState<string>("")
   const [serverPort, setServerPort] = useState<number | null>(null)
   const [internalTestToken, setInternalTestToken] = useState<string | null>(null)
 
@@ -248,22 +259,47 @@ export function McpTab({ innerPath, onPathChange }: McpTabProps) {
   }, [])
 
   // Determine if target is gateway or a specific server
-  const isGatewayTarget = selectedTarget === "gateway"
-  const selectedServerId = isGatewayTarget ? "" : selectedTarget
+  const isGatewayTarget = mode === "client" || mode === "all"
+
+  // Fetch client API key when client selection changes
+  useEffect(() => {
+    const fetchClientKey = async () => {
+      if (mode === "client" && selectedClientId) {
+        try {
+          const secret = await invoke<string>("get_client_value", { id: selectedClientId })
+          setClientApiKey(secret)
+        } catch (error) {
+          console.error("Failed to get client API key:", error)
+          setClientApiKey(null)
+        }
+      }
+    }
+    fetchClientKey()
+  }, [mode, selectedClientId])
 
   // Initialize data
   useEffect(() => {
     const init = async () => {
       try {
-        const [config, servers, testToken] = await Promise.all([
+        const [config, servers, testToken, clientsList] = await Promise.all([
           invoke<ServerConfig>("get_server_config"),
           invoke<McpServer[]>("list_mcp_servers"),
           invoke<string>("get_internal_test_token"),
+          invoke<McpClient[]>("list_clients"),
         ])
 
         setServerPort(config.actual_port ?? config.port)
-        setMcpServers(servers.filter((s) => s.enabled))
+        const enabledServers = servers.filter((s) => s.enabled)
+        setMcpServers(enabledServers)
+        if (enabledServers.length > 0) {
+          setSelectedServerId(enabledServers[0].id)
+        }
         setInternalTestToken(testToken)
+        const enabledClients = clientsList.filter(c => c.enabled)
+        setClients(enabledClients)
+        if (enabledClients.length > 0) {
+          setSelectedClientId(enabledClients[0].id)
+        }
       } catch (error) {
         console.error("Failed to initialize MCP tab:", error)
       }
@@ -364,7 +400,11 @@ export function McpTab({ innerPath, onPathChange }: McpTabProps) {
   )
 
   const handleConnect = async () => {
-    if (!serverPort || !internalTestToken) return
+    if (!serverPort) return
+
+    // Determine token based on mode
+    const token = mode === "client" ? clientApiKey : internalTestToken
+    if (!token) return
 
     // Disconnect existing client if any
     if (mcpClientRef.current) {
@@ -375,10 +415,10 @@ export function McpTab({ innerPath, onPathChange }: McpTabProps) {
     const client = createMcpClient(
       {
         serverPort,
-        clientToken: internalTestToken,
-        serverId: isGatewayTarget ? undefined : selectedServerId,
+        clientToken: token,
+        serverId: mode === "direct" ? selectedServerId : undefined,
         transportType: "sse",
-        // Only enable deferred loading for unified gateway
+        // Only enable deferred loading for gateway modes (all / client)
         deferredLoading: isGatewayTarget ? deferredLoading : undefined,
       },
       {
@@ -416,11 +456,10 @@ export function McpTab({ innerPath, onPathChange }: McpTabProps) {
 
   const getEndpointUrl = () => {
     if (!serverPort) return null
-    if (isGatewayTarget) {
-      return `http://localhost:${serverPort}/`
-    } else {
+    if (mode === "direct") {
       return `http://localhost:${serverPort}/mcp/${selectedServerId}`
     }
+    return `http://localhost:${serverPort}/`
   }
 
   const { isConnected, isConnecting, error: connectionError, capabilities } = connectionState
@@ -432,9 +471,9 @@ export function McpTab({ innerPath, onPathChange }: McpTabProps) {
         <CardHeader className="pb-3">
           <div className="flex items-center justify-between">
             <div>
-              <CardTitle className="text-base">MCP Connection</CardTitle>
+              <CardTitle className="text-base">MCP & Skill Connection</CardTitle>
               <p className="text-sm text-muted-foreground">
-                Test MCP servers through the unified gateway or individually
+                Test MCP servers and skills through a client, the unified gateway, or individually
               </p>
             </div>
             <Badge variant={isConnected ? "success" : isConnecting ? "outline" : "secondary"}>
@@ -443,84 +482,129 @@ export function McpTab({ innerPath, onPathChange }: McpTabProps) {
           </div>
         </CardHeader>
         <CardContent>
-          <div className="flex items-center gap-4">
-            <div className="flex items-center gap-2">
-              <Label>Target:</Label>
-              <Select
-                value={selectedTarget}
-                onValueChange={setSelectedTarget}
+          <div className="flex flex-col gap-4">
+            <div className="flex items-center gap-4">
+              <RadioGroup
+                value={mode}
+                onValueChange={(v: string) => setMode(v as McpTestMode)}
+                className="flex gap-4"
                 disabled={isConnected || isConnecting}
               >
-                <SelectTrigger className="w-[280px]">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="gateway">
-                    Unified Gateway (all servers)
-                  </SelectItem>
-                  {mcpServers.map((server) => (
-                    <SelectItem key={server.id} value={server.id}>
-                      {server.name} ({server.transport_type})
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                <div className="flex items-center space-x-2">
+                  <RadioGroupItem value="client" id="mcp-mode-client" disabled={isConnected || isConnecting} />
+                  <Label htmlFor="mcp-mode-client" className="flex items-center gap-2 cursor-pointer">
+                    <Users className="h-4 w-4" />
+                    Against Client
+                  </Label>
+                </div>
+                <div className="flex items-center space-x-2">
+                  <RadioGroupItem value="all" id="mcp-mode-all" disabled={isConnected || isConnecting} />
+                  <Label htmlFor="mcp-mode-all" className="flex items-center gap-2 cursor-pointer">
+                    <Globe className="h-4 w-4" />
+                    All MCPs & Skills
+                  </Label>
+                </div>
+                <div className="flex items-center space-x-2">
+                  <RadioGroupItem value="direct" id="mcp-mode-direct" disabled={isConnected || isConnecting} />
+                  <Label htmlFor="mcp-mode-direct" className="flex items-center gap-2 cursor-pointer">
+                    <Zap className="h-4 w-4" />
+                    Direct MCP/Skill
+                  </Label>
+                </div>
+              </RadioGroup>
             </div>
 
-            {/* Deferred Loading toggle - only for unified gateway */}
-            {isGatewayTarget && (
-              <div className="flex items-center gap-2">
-                <Checkbox
-                  id="deferred-loading"
-                  checked={deferredLoading}
-                  onCheckedChange={(checked) => setDeferredLoading(checked === true)}
-                  disabled={isConnected || isConnecting}
-                />
-                <Label htmlFor="deferred-loading" className="text-sm cursor-pointer">
-                  Deferred Loading
-                </Label>
-                <TooltipProvider>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Info className="h-3.5 w-3.5 text-muted-foreground cursor-help" />
-                    </TooltipTrigger>
-                    <TooltipContent side="bottom" className="max-w-[300px]">
-                      <p>
-                        When enabled, tools and resources are loaded on-demand via search
-                        instead of all at once. Reduces token consumption for large catalogs.
-                      </p>
-                    </TooltipContent>
-                  </Tooltip>
-                </TooltipProvider>
-              </div>
-            )}
+            <div className="flex items-center gap-4">
+              {/* Mode-specific selector */}
+              {mode === "client" && (
+                <Select value={selectedClientId} onValueChange={setSelectedClientId} disabled={isConnected || isConnecting}>
+                  <SelectTrigger className="w-[250px]">
+                    <SelectValue placeholder="Select a client" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {clients.map((client) => (
+                      <SelectItem key={client.id} value={client.id}>
+                        {client.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
 
-            {/* Connection buttons */}
-            <div className="flex items-center gap-2 ml-auto">
-              {getEndpointUrl() && (
-                <code className="text-xs text-muted-foreground bg-muted px-2 py-1 rounded">
-                  {getEndpointUrl()}
-                </code>
+              {mode === "direct" && (
+                <Select value={selectedServerId} onValueChange={setSelectedServerId} disabled={isConnected || isConnecting}>
+                  <SelectTrigger className="w-[280px]">
+                    <SelectValue placeholder="Select a server" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {mcpServers.map((server) => (
+                      <SelectItem key={server.id} value={server.id}>
+                        {server.name} ({server.transport_type})
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               )}
-              {!isConnected ? (
-                isConnecting ? (
-                  <Button variant="outline" onClick={handleDisconnect}>
-                    <X className="h-4 w-4 mr-1" />
-                    Cancel
-                  </Button>
+
+              {/* Deferred Loading toggle - for gateway modes (all / client) */}
+              {isGatewayTarget && (
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    id="deferred-loading"
+                    checked={deferredLoading}
+                    onCheckedChange={(checked) => setDeferredLoading(checked === true)}
+                    disabled={isConnected || isConnecting}
+                  />
+                  <Label htmlFor="deferred-loading" className="text-sm cursor-pointer">
+                    Deferred Loading
+                  </Label>
+                  <TooltipProvider>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Info className="h-3.5 w-3.5 text-muted-foreground cursor-help" />
+                      </TooltipTrigger>
+                      <TooltipContent side="bottom" className="max-w-[300px]">
+                        <p>
+                          When enabled, tools and resources are loaded on-demand via search
+                          instead of all at once. Reduces token consumption for large catalogs.
+                        </p>
+                      </TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
+                </div>
+              )}
+
+              {/* Connection buttons */}
+              <div className="flex items-center gap-2 ml-auto">
+                {getEndpointUrl() && (
+                  <code className="text-xs text-muted-foreground bg-muted px-2 py-1 rounded">
+                    {getEndpointUrl()}
+                  </code>
+                )}
+                {!isConnected ? (
+                  isConnecting ? (
+                    <Button variant="outline" onClick={handleDisconnect}>
+                      <X className="h-4 w-4 mr-1" />
+                      Cancel
+                    </Button>
+                  ) : (
+                    <Button
+                      onClick={handleConnect}
+                      disabled={
+                        (mode === "client" && (!selectedClientId || !clientApiKey)) ||
+                        (mode === "all" && !internalTestToken) ||
+                        (mode === "direct" && (!internalTestToken || !selectedServerId || mcpServers.length === 0))
+                      }
+                    >
+                      Connect
+                    </Button>
+                  )
                 ) : (
-                  <Button
-                    onClick={handleConnect}
-                    disabled={!internalTestToken || (mcpServers.length === 0 && !isGatewayTarget)}
-                  >
-                    Connect
+                  <Button variant="outline" onClick={handleDisconnect}>
+                    Disconnect
                   </Button>
-                )
-              ) : (
-                <Button variant="outline" onClick={handleDisconnect}>
-                  Disconnect
-                </Button>
-              )}
+                )}
+              </div>
             </div>
           </div>
 

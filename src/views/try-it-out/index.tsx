@@ -44,7 +44,7 @@ export function TryItOutView({ activeSubTab, onTabChange }: TryItOutViewProps) {
       >
         <TabsList className="flex-shrink-0 w-fit">
           <TabsTrigger value="llm">LLM</TabsTrigger>
-          <TabsTrigger value="mcp">MCP</TabsTrigger>
+          <TabsTrigger value="mcp">MCP & Skill</TabsTrigger>
         </TabsList>
 
         <TabsContent value="llm" className="flex-1 min-h-0 mt-4">
