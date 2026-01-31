@@ -38,6 +38,16 @@ pub fn migrate_config(mut config: AppConfig) -> AppResult<AppConfig> {
     // - auth_config defaults to None
     // - discovered_oauth defaults to None
 
+    // Migrate to v3: Skills system
+    if config.version < 3 {
+        config = migrate_to_v3(config)?;
+    }
+
+    // Migrate to v4: Unified skill paths, disabled_skills, path-based SkillsAccess
+    if config.version < 4 {
+        config = migrate_to_v4(config)?;
+    }
+
     // Update version to current
     config.version = CONFIG_VERSION;
 
@@ -135,6 +145,60 @@ fn migrate_oauth_client_to_client(
     );
 
     Ok((client, secret))
+}
+
+/// Migrate to version 3: Skills system
+///
+/// Adds default skills configuration and skills_access to clients.
+/// These fields use #[serde(default)] so existing configs will get
+/// default values automatically. This migration just bumps the version.
+fn migrate_to_v3(mut config: AppConfig) -> AppResult<AppConfig> {
+    info!("Migrating to version 3: Skills system");
+
+    // No data transformation needed - serde defaults handle the new fields:
+    // - AppConfig.skills defaults to SkillsConfig::default()
+    // - Client.skills_access defaults to SkillsAccess::None
+    config.version = 3;
+    Ok(config)
+}
+
+/// Migrate to version 4: Unified skill paths, disabled_skills, path-based SkillsAccess
+///
+/// - Merges `auto_scan_directories` and `skill_paths` into unified `paths`
+/// - Converts any `Specific(names)` to `All` since we can't reliably map names to paths
+fn migrate_to_v4(mut config: AppConfig) -> AppResult<AppConfig> {
+    info!("Migrating to version 4: Unified skill paths and path-based access");
+
+    // Merge old auto_scan_directories + skill_paths into unified paths
+    let mut unified_paths = Vec::new();
+    for dir in &config.skills.auto_scan_directories {
+        if !unified_paths.contains(dir) {
+            unified_paths.push(dir.clone());
+        }
+    }
+    for path in &config.skills.skill_paths {
+        if !unified_paths.contains(path) {
+            unified_paths.push(path.clone());
+        }
+    }
+    config.skills.paths = unified_paths;
+    // Clear old fields (they won't be serialized due to skip_serializing, but clear for consistency)
+    config.skills.auto_scan_directories = Vec::new();
+    config.skills.skill_paths = Vec::new();
+
+    // Convert any Specific(names) to All since we can't map skill names to source paths
+    for client in &mut config.clients {
+        if let super::SkillsAccess::Specific(_) = &client.skills_access {
+            info!(
+                "Client '{}': converting Specific skills access to All (names can't be mapped to paths)",
+                client.name
+            );
+            client.skills_access = super::SkillsAccess::All;
+        }
+    }
+
+    config.version = 4;
+    Ok(config)
 }
 
 // Future migration functions will follow this pattern:

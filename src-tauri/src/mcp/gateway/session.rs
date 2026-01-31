@@ -77,6 +77,9 @@ pub struct GatewaySession {
     /// Subscribed resource URIs (uri -> server_id)
     /// Tracks which resources this session has subscribed to for change notifications
     pub subscribed_resources: HashMap<String, String>,
+
+    /// Skills access control for this client
+    pub skills_access: crate::config::SkillsAccess,
 }
 
 impl GatewaySession {
@@ -120,6 +123,7 @@ impl GatewaySession {
             resources_list_fetched: false,
             roots,
             subscribed_resources: HashMap::new(),
+            skills_access: crate::config::SkillsAccess::None,
         }
     }
 
