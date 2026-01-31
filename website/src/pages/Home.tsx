@@ -9,6 +9,8 @@ import {
   Route,
   Wrench,
   FlaskConical,
+  Sparkles,
+  Blocks,
 } from 'lucide-react'
 
 export default function Home() {
@@ -19,12 +21,17 @@ export default function Home() {
         <div className="mx-auto max-w-7xl px-4 py-24 sm:px-6 sm:py-32 lg:px-8">
           <div className="mx-auto max-w-3xl text-center">
             <h1 className="text-4xl font-bold tracking-tight sm:text-5xl lg:text-6xl">
-              One Local API.
+              Local Gateway for
               <br />
-              <span className="text-primary">For LLMs and MCPs.</span>
+              <span className="text-primary">LLM</span>
+              {"s, "}
+              <span className="text-primary">MCP</span>
+              {"s and "}
+              <span className="text-primary">Skill</span>
+              s.
             </h1>
             <p className="mt-6 text-lg text-muted-foreground sm:text-xl">
-              A vault for managing your LLM and MCP keys. Give granular access to your local apps to specific models and MCP endpoints. LLM routing based on complexity and fallback to other providers or offline models.
+              A vault for managing your keys in one place to provide granular access to your local AI-powered apps. Smart LLM Model routing with fallback to offline models. One MCP gateway for all MCPs and skills.
             </p>
             <div className="mt-10 flex flex-col items-center justify-center gap-4 sm:flex-row">
               <Button asChild size="xl">
@@ -190,7 +197,7 @@ export default function Home() {
                 <span className="text-sm font-medium text-blue-500 uppercase tracking-wide">Credential Management</span>
               </div>
               <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">
-                One Place for All Your Credentials
+                One Place for your Credentials
               </h2>
               <p className="mt-4 text-lg text-muted-foreground">
                 Stop scattering API keys across config files. LocalRouter securely stores all your provider credentials and gives each app exactly the access it needs.
@@ -595,6 +602,128 @@ export default function Home() {
                   </div>
                 </div>
               </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* Feature 4: Unified Skills */}
+      <section className="border-b py-16 sm:py-24">
+        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+          <div className="grid gap-12 lg:grid-cols-2 lg:gap-16 items-center">
+            {/* Visual: Skills Architecture */}
+            <div className="relative order-2 lg:order-1">
+              <div className="rounded-xl border bg-gradient-to-br from-violet-950 to-slate-900 p-6 shadow-2xl">
+                {/* Three-column layout: App → Gateway → Skills */}
+                <div className="flex items-stretch gap-3">
+                  {/* App */}
+                  <div className="flex flex-col items-center justify-center">
+                    <div className="rounded-lg bg-blue-500/20 border border-blue-500/30 p-3 text-center">
+                      <div className="h-8 w-8 rounded bg-blue-500/30 flex items-center justify-center mx-auto mb-1">
+                        <span className="text-blue-400 text-sm font-bold">{'</>'}</span>
+                      </div>
+                      <div className="text-white text-xs font-medium">App</div>
+                      <div className="text-blue-400 text-[10px]">Claude Code</div>
+                    </div>
+                  </div>
+
+                  {/* Connection */}
+                  <div className="flex flex-col items-center justify-center">
+                    <div className="flex items-center gap-1">
+                      <div className="w-6 h-0.5 bg-slate-500" />
+                      <div className="px-1.5 py-0.5 rounded bg-slate-700 text-slate-400 text-[9px] font-mono">MCP</div>
+                      <div className="w-6 h-0.5 bg-slate-500" />
+                    </div>
+                  </div>
+
+                  {/* Gateway */}
+                  <div className="flex flex-col items-center justify-center">
+                    <div className="rounded-lg bg-violet-500/20 border-2 border-violet-500/50 p-3 text-center">
+                      <Sparkles className="h-6 w-6 text-violet-400 mx-auto mb-1" />
+                      <div className="text-white text-xs font-medium">Skills</div>
+                      <div className="text-violet-400 text-[10px]">Gateway</div>
+                    </div>
+                  </div>
+
+                  {/* Arrow */}
+                  <div className="flex flex-col items-center justify-center">
+                    <div className="w-3 h-0.5 bg-violet-600" />
+                  </div>
+
+                  {/* Skills */}
+                  <div className="flex flex-col gap-2">
+                    <div className="rounded-lg bg-violet-500/10 border border-violet-500/30 p-2 flex items-center gap-2">
+                      <Blocks className="h-4 w-4 text-violet-400" />
+                      <div>
+                        <div className="text-white text-xs font-medium">Web Search</div>
+                        <div className="text-violet-400 text-[10px]">Multi-step</div>
+                      </div>
+                    </div>
+                    <div className="rounded-lg bg-violet-500/10 border border-violet-500/30 p-2 flex items-center gap-2">
+                      <Blocks className="h-4 w-4 text-violet-400" />
+                      <div>
+                        <div className="text-white text-xs font-medium">Code Review</div>
+                        <div className="text-violet-400 text-[10px]">Multi-step</div>
+                      </div>
+                    </div>
+                    <div className="rounded-lg bg-violet-500/10 border border-violet-500/30 p-2 flex items-center gap-2">
+                      <Blocks className="h-4 w-4 text-violet-400" />
+                      <div>
+                        <div className="text-white text-xs font-medium">Summarize</div>
+                        <div className="text-violet-400 text-[10px]">Multi-step</div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Legend */}
+                <div className="mt-4 pt-3 border-t border-white/10 flex justify-center gap-4">
+                  <div className="flex items-center gap-1.5">
+                    <div className="h-2 w-2 rounded-full bg-violet-500" />
+                    <span className="text-slate-400 text-[10px]">Skills (multi-step tools)</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <div className="h-2 w-2 rounded-full bg-slate-500" />
+                    <span className="text-slate-400 text-[10px]">MCP transport</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="order-1 lg:order-2">
+              <div className="flex items-center gap-2 mb-4">
+                <Sparkles className="h-5 w-5 text-violet-500" />
+                <span className="text-sm font-medium text-violet-500 uppercase tracking-wide">Skills</span>
+              </div>
+              <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">
+                Unified Skills via MCP
+              </h2>
+              <p className="mt-4 text-lg text-muted-foreground">
+                Give apps granular access to a curated set of skills — multi-step workflows exposed as tools through the unified MCP gateway. Each client gets only the skills it needs.
+              </p>
+              <ul className="mt-8 space-y-4">
+                <li className="flex gap-3">
+                  <Check className="h-5 w-5 shrink-0 text-violet-500 mt-0.5" />
+                  <div>
+                    <span className="font-medium">Multi-step workflows as tools</span>
+                    <p className="text-sm text-muted-foreground">Skills combine multiple actions into a single callable tool — search the web, review code, summarize documents, and more</p>
+                  </div>
+                </li>
+                <li className="flex gap-3">
+                  <Check className="h-5 w-5 shrink-0 text-violet-500 mt-0.5" />
+                  <div>
+                    <span className="font-medium">Per-client skill assignment</span>
+                    <p className="text-sm text-muted-foreground">Control exactly which skills each app can invoke — give Claude Code full access while limiting others</p>
+                  </div>
+                </li>
+                <li className="flex gap-3">
+                  <Check className="h-5 w-5 shrink-0 text-violet-500 mt-0.5" />
+                  <div>
+                    <span className="font-medium">Exposed via MCP gateway</span>
+                    <p className="text-sm text-muted-foreground">Skills appear as standard MCP tools — any MCP-compatible app can use them with zero integration work</p>
+                  </div>
+                </li>
+              </ul>
             </div>
           </div>
         </div>
