@@ -100,7 +100,7 @@ fn test_roots_list_response_serialization() {
 #[test]
 fn test_client_roots_configuration() {
     // Test that Client struct properly stores roots configuration
-    let mut client = Client::new("Test Client".to_string());
+    let mut client = Client::new_with_strategy("Test Client".to_string(), "default".to_string());
 
     // Initially no roots override
     assert!(client.roots.is_none());

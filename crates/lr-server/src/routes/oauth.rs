@@ -23,6 +23,7 @@ use lr_clients::{ClientManager, TokenStore};
 /// 2. Form-encoded body with client_id and client_secret
 /// 3. Basic Authentication header with client_id:client_secret (base64 encoded)
 #[derive(Debug, Deserialize, ToSchema)]
+#[schema(example = json!({"grant_type": "client_credentials", "client_id": "my-client", "client_secret": "my-secret"}))]
 pub struct TokenRequest {
     /// OAuth 2.0 grant type (must be "client_credentials")
     #[schema(example = "client_credentials")]

@@ -13,7 +13,6 @@ use localrouter::mcp::manager::McpServerManager;
 use localrouter::mcp::protocol::{JsonRpcNotification, JsonRpcRequest};
 use localrouter::monitoring::metrics::MetricsCollector;
 use localrouter::monitoring::storage::MetricsDatabase;
-use localrouter::providers::health::HealthCheckManager;
 use localrouter::providers::registry::ProviderRegistry;
 use localrouter::router::{RateLimiterManager, Router};
 use localrouter::server::state::AppState;
@@ -26,8 +25,7 @@ fn create_test_router() -> Arc<Router> {
         std::path::PathBuf::from("/tmp/test_notification_router.yaml"),
     ));
 
-    let health_manager = Arc::new(HealthCheckManager::default());
-    let provider_registry = Arc::new(ProviderRegistry::new(health_manager));
+    let provider_registry = Arc::new(ProviderRegistry::new());
     let rate_limiter = Arc::new(RateLimiterManager::new(None));
 
     let metrics_db_path = std::env::temp_dir().join(format!(
@@ -55,8 +53,7 @@ fn create_test_app_state() -> AppState {
     let client_manager = Arc::new(ClientManager::new(vec![])); // Empty client list for tests
     let token_store = Arc::new(TokenStore::new());
 
-    let health_manager = Arc::new(HealthCheckManager::default());
-    let provider_registry = Arc::new(ProviderRegistry::new(health_manager));
+    let provider_registry = Arc::new(ProviderRegistry::new());
     let rate_limiter = Arc::new(RateLimiterManager::new(None));
 
     let metrics_db_path =

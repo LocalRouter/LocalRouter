@@ -11,11 +11,10 @@
 use localrouter::config::ConfigManager;
 use localrouter::config::{
     AppConfig, AutoModelConfig, AvailableModelsSelection, Client, McpServerAccess,
-    RateLimitTimeWindow, RateLimitType, Strategy, StrategyRateLimit,
+    RateLimitTimeWindow, RateLimitType, SkillsAccess, Strategy, StrategyRateLimit,
 };
 use localrouter::monitoring::metrics::MetricsCollector;
 use localrouter::monitoring::storage::MetricsDatabase;
-use localrouter::providers::health::HealthCheckManager;
 use localrouter::providers::registry::ProviderRegistry;
 use localrouter::providers::{ChatMessage, ChatMessageContent, CompletionRequest};
 use localrouter::router::{RateLimiterManager, Router};
@@ -51,6 +50,7 @@ fn create_test_config(
         mcp_sampling_max_tokens: None,
         mcp_sampling_rate_limit: None,
         mcp_deferred_loading: false,
+        skills_access: SkillsAccess::default(),
         created_at: chrono::Utc::now(),
         last_used: None,
     };
@@ -99,8 +99,7 @@ fn create_test_router(config: AppConfig) -> Router {
         std::path::PathBuf::from("/tmp/test_router.yaml"),
     ));
 
-    let health_manager = Arc::new(HealthCheckManager::default());
-    let provider_registry = Arc::new(ProviderRegistry::new(health_manager));
+    let provider_registry = Arc::new(ProviderRegistry::new());
     let rate_limiter = Arc::new(RateLimiterManager::new(None));
 
     // Create test metrics collector with unique DB path
@@ -213,6 +212,7 @@ async fn test_strategy_allows_all_provider_models() {
 async fn test_auto_routing_requires_enabled() {
     let auto_config = AutoModelConfig {
         enabled: false,
+        model_name: "localrouter/auto".to_string(),
         prioritized_models: vec![("ollama".to_string(), "llama2".to_string())],
         available_models: vec![],
         routellm_config: None,
@@ -247,6 +247,7 @@ async fn test_auto_routing_requires_enabled() {
 async fn test_auto_routing_requires_prioritized_models() {
     let auto_config = AutoModelConfig {
         enabled: true,
+        model_name: "localrouter/auto".to_string(),
         prioritized_models: vec![], // Empty list
         available_models: vec![],
         routellm_config: None,
@@ -468,6 +469,7 @@ async fn test_disabled_client_returns_unauthorized() {
         mcp_sampling_max_tokens: None,
         mcp_sampling_rate_limit: None,
         mcp_deferred_loading: false,
+        skills_access: SkillsAccess::default(),
         created_at: chrono::Utc::now(),
         last_used: None,
     };
@@ -505,6 +507,7 @@ async fn test_client_with_missing_strategy() {
         mcp_sampling_max_tokens: None,
         mcp_sampling_rate_limit: None,
         mcp_deferred_loading: false,
+        skills_access: SkillsAccess::default(),
         created_at: chrono::Utc::now(),
         last_used: None,
     };
@@ -545,6 +548,7 @@ async fn test_streaming_supports_auto_routing() {
     // Verify that streaming now supports auto-routing (as of recent implementation)
     let auto_config = AutoModelConfig {
         enabled: true,
+        model_name: "localrouter/auto".to_string(),
         prioritized_models: vec![("ollama".to_string(), "llama2".to_string())],
         available_models: vec![],
         routellm_config: None,
@@ -891,6 +895,7 @@ async fn test_auto_routing_fallback_configuration() {
     // Verify that auto-routing is configured to try multiple models in order
     let auto_config = AutoModelConfig {
         enabled: true,
+        model_name: "localrouter/auto".to_string(),
         prioritized_models: vec![
             ("ollama".to_string(), "model1".to_string()),
             ("ollama".to_string(), "model2".to_string()),
@@ -946,6 +951,7 @@ async fn test_auto_routing_strategy_rate_limits_checked_per_model() {
 
     let auto_config = AutoModelConfig {
         enabled: true,
+        model_name: "localrouter/auto".to_string(),
         prioritized_models: vec![
             ("ollama".to_string(), "model1".to_string()),
             ("ollama".to_string(), "model2".to_string()),

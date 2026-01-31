@@ -8,7 +8,6 @@ use localrouter::config::AppConfig;
 use localrouter::mcp::McpServerManager;
 use localrouter::monitoring::metrics::MetricsCollector;
 use localrouter::monitoring::storage::MetricsDatabase;
-use localrouter::providers::health::HealthCheckManager;
 use localrouter::providers::registry::ProviderRegistry;
 use localrouter::router::{RateLimiterManager, Router};
 use localrouter::server;
@@ -25,8 +24,7 @@ async fn start_test_server() -> (String, tokio::task::JoinHandle<()>) {
     ));
 
     // Create dependencies
-    let health_manager = Arc::new(HealthCheckManager::default());
-    let provider_registry = Arc::new(ProviderRegistry::new(health_manager));
+    let provider_registry = Arc::new(ProviderRegistry::new());
     let mcp_server_manager = Arc::new(McpServerManager::new());
 
     // Create metrics collector with temporary database

@@ -6,10 +6,9 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use localrouter::clients::{ClientManager, TokenStore};
-use localrouter::config::{AppConfig, Client, ConfigManager, McpServerAccess, Strategy};
+use localrouter::config::{AppConfig, Client, ConfigManager, McpServerAccess, SkillsAccess, Strategy};
 use localrouter::monitoring::metrics::MetricsCollector;
 use localrouter::monitoring::storage::MetricsDatabase;
-use localrouter::providers::health::HealthCheckManager;
 use localrouter::providers::registry::ProviderRegistry;
 use localrouter::router::{RateLimiterManager, Router};
 use localrouter::server::routes::helpers::{
@@ -26,6 +25,7 @@ fn create_test_client(id: &str, name: &str, enabled: bool, strategy_id: &str) ->
         allowed_llm_providers: vec![],
         mcp_server_access: McpServerAccess::None,
         mcp_deferred_loading: false,
+        skills_access: SkillsAccess::default(),
         created_at: Utc::now(),
         last_used: None,
         strategy_id: strategy_id.to_string(),
@@ -70,8 +70,7 @@ fn create_test_state(config: AppConfig, client_manager: Arc<ClientManager>) -> A
     let config_manager = Arc::new(ConfigManager::new(config, config_path));
     let token_store = Arc::new(TokenStore::new());
 
-    let health_manager = Arc::new(HealthCheckManager::default());
-    let provider_registry = Arc::new(ProviderRegistry::new(health_manager));
+    let provider_registry = Arc::new(ProviderRegistry::new());
     let rate_limiter = Arc::new(RateLimiterManager::new(None));
 
     let metrics_db_path =
@@ -237,7 +236,7 @@ fn test_get_enabled_client_from_manager_success() {
 
     // Create a new client via the manager (this stores the secret properly)
     let (client_id, _secret, _client) = client_manager
-        .create_client("Manager Test Client".to_string())
+        .create_client("Manager Test Client".to_string(), "default".to_string())
         .expect("Failed to create client");
 
     let config = create_test_config(vec![], vec![]);
@@ -271,7 +270,7 @@ fn test_get_enabled_client_from_manager_disabled() {
 
     // Create and then disable a client
     let (client_id, _secret, _client) = client_manager
-        .create_client("Disabled Manager Client".to_string())
+        .create_client("Disabled Manager Client".to_string(), "default".to_string())
         .expect("Failed to create client");
 
     client_manager

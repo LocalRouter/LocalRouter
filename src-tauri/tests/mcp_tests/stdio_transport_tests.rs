@@ -316,18 +316,26 @@ async fn test_stdio_request_id_uniqueness() {
         .await
         .expect("Failed to spawn transport");
 
-    // Send multiple requests and verify response IDs are unique
-    // The transport always generates unique IDs to avoid collisions
-    let req1 = standard_jsonrpc_request("test");
-    let req2 = standard_jsonrpc_request("test");
-    let req3 = standard_jsonrpc_request("test");
+    // Send multiple requests with unique IDs and verify response IDs match originals
+    // The transport generates unique internal IDs to avoid collisions,
+    // but restores the original request ID in the response
+    let mut req1 = standard_jsonrpc_request("test");
+    let mut req2 = standard_jsonrpc_request("test");
+    let mut req3 = standard_jsonrpc_request("test");
+    req1.id = Some(json!(10));
+    req2.id = Some(json!(20));
+    req3.id = Some(json!(30));
 
     let resp1 = transport.send_request(req1.clone()).await.unwrap();
     let resp2 = transport.send_request(req2.clone()).await.unwrap();
     let resp3 = transport.send_request(req3.clone()).await.unwrap();
 
-    // Response IDs should all be unique (not the same as original request IDs)
-    // Transport generates sequential IDs: 1, 2, 3
+    // Response IDs should match their original request IDs
+    assert_eq!(resp1.id, json!(10), "Response should preserve original request ID");
+    assert_eq!(resp2.id, json!(20), "Response should preserve original request ID");
+    assert_eq!(resp3.id, json!(30), "Response should preserve original request ID");
+
+    // And therefore all be unique
     assert_ne!(resp1.id, resp2.id, "Response IDs should be unique");
     assert_ne!(resp2.id, resp3.id, "Response IDs should be unique");
     assert_ne!(resp1.id, resp3.id, "Response IDs should be unique");

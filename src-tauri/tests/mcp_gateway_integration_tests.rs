@@ -8,7 +8,6 @@ use localrouter::mcp::protocol::{JsonRpcRequest, JsonRpcResponse};
 use localrouter::mcp::McpServerManager;
 use localrouter::monitoring::metrics::MetricsCollector;
 use localrouter::monitoring::storage::MetricsDatabase;
-use localrouter::providers::health::HealthCheckManager;
 use localrouter::providers::registry::ProviderRegistry;
 use localrouter::router::{RateLimiterManager, Router};
 use serde_json::json;
@@ -22,8 +21,7 @@ fn create_test_router() -> Arc<Router> {
         std::path::PathBuf::from("/tmp/test_gateway_router.yaml"),
     ));
 
-    let health_manager = Arc::new(HealthCheckManager::default());
-    let provider_registry = Arc::new(ProviderRegistry::new(health_manager));
+    let provider_registry = Arc::new(ProviderRegistry::new());
     let rate_limiter = Arc::new(RateLimiterManager::new(None));
 
     let metrics_db_path =

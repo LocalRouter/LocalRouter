@@ -8,6 +8,7 @@ mod mcp_tests;
 
 use localrouter::config::AppConfig;
 use localrouter::config::ConfigManager;
+use localrouter::config::SkillsAccess;
 use localrouter::mcp::gateway::types::DeferredLoadingState;
 use localrouter::mcp::gateway::{GatewayConfig, McpGateway};
 use localrouter::mcp::protocol::JsonRpcRequest;
@@ -123,7 +124,7 @@ async fn test_skills_e2e_all_tool_commands() {
     let gateway = Arc::new(gateway);
 
     let client_id = "test-skills-client";
-    let allowed_skills = vec!["get-current-time".to_string()];
+    let skills_access = SkillsAccess::Specific(vec!["get-current-time".to_string()]);
 
     // ── Step 1: tools/list ─────────────────────────────────────────
     let tools_list_req = JsonRpcRequest::with_id(1, "tools/list".to_string(), Some(json!({})));
@@ -133,7 +134,7 @@ async fn test_skills_e2e_all_tool_commands() {
             vec![],
             false,
             vec![],
-            allowed_skills.clone(),
+            skills_access.clone(),
             tools_list_req,
         )
         .await
@@ -183,7 +184,7 @@ async fn test_skills_e2e_all_tool_commands() {
             vec![],
             false,
             vec![],
-            allowed_skills.clone(),
+            skills_access.clone(),
             show_req,
         )
         .await
@@ -232,7 +233,7 @@ async fn test_skills_e2e_all_tool_commands() {
             vec![],
             false,
             vec![],
-            allowed_skills.clone(),
+            skills_access.clone(),
             resource_req,
         )
         .await
@@ -276,7 +277,7 @@ async fn test_skills_e2e_all_tool_commands() {
             vec![],
             false,
             vec![],
-            allowed_skills.clone(),
+            skills_access.clone(),
             run_sync_req,
         )
         .await
@@ -343,7 +344,7 @@ async fn test_skills_e2e_all_tool_commands() {
             vec![],
             false,
             vec![],
-            allowed_skills.clone(),
+            skills_access.clone(),
             run_async_req,
         )
         .await
@@ -383,7 +384,7 @@ async fn test_skills_e2e_all_tool_commands() {
                 vec![],
                 false,
                 vec![],
-                allowed_skills.clone(),
+                skills_access.clone(),
                 poll_req,
             )
             .await
@@ -491,7 +492,7 @@ async fn test_no_skill_tools_when_no_skills_configured() {
     // Call tools/list with empty allowed_skills
     let req = JsonRpcRequest::with_id(1, "tools/list".to_string(), Some(json!({})));
     let response = gateway
-        .handle_request_with_skills(client_id, vec![], false, vec![], vec![], req)
+        .handle_request_with_skills(client_id, vec![], false, vec![], SkillsAccess::None, req)
         .await
         .expect("tools/list should succeed");
 
@@ -526,7 +527,7 @@ async fn test_skill_tools_present_after_cache_hit() {
     let (gateway, _temp_dir) = setup_gateway_with_skill().await;
 
     let client_id = "cache-test-client";
-    let allowed_skills = vec!["get-current-time".to_string()];
+    let skills_access = SkillsAccess::Specific(vec!["get-current-time".to_string()]);
 
     // First call: populates cache
     let req = JsonRpcRequest::with_id(1, "tools/list".to_string(), Some(json!({})));
@@ -536,7 +537,7 @@ async fn test_skill_tools_present_after_cache_hit() {
             vec![],
             false,
             vec![],
-            allowed_skills.clone(),
+            skills_access.clone(),
             req,
         )
         .await
@@ -557,7 +558,7 @@ async fn test_skill_tools_present_after_cache_hit() {
             vec![],
             false,
             vec![],
-            allowed_skills.clone(),
+            skills_access.clone(),
             req2,
         )
         .await
@@ -592,7 +593,7 @@ async fn test_skill_tools_present_with_deferred_loading() {
     let (gateway, _temp_dir) = setup_gateway_with_skill().await;
 
     let client_id = "deferred-test-client";
-    let allowed_skills = vec!["get-current-time".to_string()];
+    let skills_access = SkillsAccess::Specific(vec!["get-current-time".to_string()]);
 
     // First call to create the session and set allowed_skills
     let req = JsonRpcRequest::with_id(1, "tools/list".to_string(), Some(json!({})));
@@ -602,7 +603,7 @@ async fn test_skill_tools_present_with_deferred_loading() {
             vec![],
             false,
             vec![],
-            allowed_skills.clone(),
+            skills_access.clone(),
             req,
         )
         .await
@@ -633,7 +634,7 @@ async fn test_skill_tools_present_with_deferred_loading() {
             vec![],
             false,
             vec![],
-            allowed_skills.clone(),
+            skills_access.clone(),
             req2,
         )
         .await

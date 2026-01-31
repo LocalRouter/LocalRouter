@@ -6,7 +6,6 @@
 //! 3. API failure (fallback to catalog)
 
 use localrouter::config::ModelCacheConfig;
-use localrouter::providers::health::HealthCheckManager;
 use localrouter::providers::registry::ProviderRegistry;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -14,8 +13,7 @@ use std::sync::Arc;
 #[tokio::test]
 async fn test_model_caching_with_ollama() {
     // Create registry
-    let health_mgr = Arc::new(HealthCheckManager::default());
-    let registry = ProviderRegistry::new(health_mgr);
+    let registry = ProviderRegistry::new();
 
     // Configure short cache TTL for testing
     let mut cache_config = ModelCacheConfig::default();
@@ -87,8 +85,7 @@ async fn test_model_caching_with_ollama() {
 #[tokio::test]
 async fn test_catalog_fallback() {
     // Create registry
-    let health_mgr = Arc::new(HealthCheckManager::default());
-    let registry = ProviderRegistry::new(health_mgr);
+    let registry = ProviderRegistry::new();
 
     // Configure cache to use catalog fallback
     let mut cache_config = ModelCacheConfig::default();
@@ -148,8 +145,7 @@ async fn test_catalog_fallback() {
 #[tokio::test]
 async fn test_cache_invalidation() {
     // Create registry
-    let health_mgr = Arc::new(HealthCheckManager::default());
-    let registry = ProviderRegistry::new(health_mgr);
+    let registry = ProviderRegistry::new();
 
     // Register Ollama provider
     registry.register_factory(Arc::new(

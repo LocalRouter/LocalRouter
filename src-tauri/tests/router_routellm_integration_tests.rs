@@ -65,6 +65,7 @@ mod config_tests {
         // Strong models come from prioritized_models in AutoModelConfig
         let auto_config = AutoModelConfig {
             enabled: true,
+            model_name: "localrouter/auto".to_string(),
             prioritized_models: vec![("ollama".to_string(), "llama3.2".to_string())],
             available_models: vec![],
             routellm_config: Some(RouteLLMConfig {

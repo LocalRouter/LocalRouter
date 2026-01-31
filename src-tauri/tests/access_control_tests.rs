@@ -13,7 +13,7 @@ fn test_client_llm_provider_access_control() -> AppResult<()> {
     let manager = ClientManager::new(vec![]);
 
     // Create a client
-    let (_client_id, _secret, client) = manager.create_client("Test Client".to_string())?;
+    let (_client_id, _secret, client) = manager.create_client("Test Client".to_string(), "default".to_string())?;
 
     // Initially, client has no provider access
     assert!(client.allowed_llm_providers.is_empty());
@@ -94,7 +94,7 @@ fn test_client_mcp_server_access_control() -> AppResult<()> {
     mcp_manager.add_config(server2);
 
     // Create a client
-    let (_client_id, _secret, client) = client_manager.create_client("Test Client".to_string())?;
+    let (_client_id, _secret, client) = client_manager.create_client("Test Client".to_string(), "default".to_string())?;
 
     // Initially, client has no MCP server access
     assert!(!client.mcp_server_access.has_any_access());
@@ -139,8 +139,8 @@ fn test_multiple_clients_independent_access() -> AppResult<()> {
     let manager = ClientManager::new(vec![]);
 
     // Create two clients
-    let (_id1, _secret1, client1) = manager.create_client("Client 1".to_string())?;
-    let (_id2, _secret2, client2) = manager.create_client("Client 2".to_string())?;
+    let (_id1, _secret1, client1) = manager.create_client("Client 1".to_string(), "default".to_string())?;
+    let (_id2, _secret2, client2) = manager.create_client("Client 2".to_string(), "default".to_string())?;
 
     // Grant different provider access to each client
     manager.add_llm_provider(&client1.id, "openai")?;
@@ -182,7 +182,7 @@ fn test_disabled_client_loses_access() -> AppResult<()> {
     let manager = ClientManager::new(vec![]);
 
     // Create a client with provider access
-    let (_client_id, secret, client) = manager.create_client("Test Client".to_string())?;
+    let (_client_id, secret, client) = manager.create_client("Test Client".to_string(), "default".to_string())?;
     manager.add_llm_provider(&client.id, "openai")?;
 
     // Verify client is enabled and can authenticate
@@ -216,7 +216,7 @@ fn test_access_control_persists_across_updates() -> AppResult<()> {
     let manager = ClientManager::new(vec![]);
 
     // Create a client
-    let (_client_id, _secret, client) = manager.create_client("Test Client".to_string())?;
+    let (_client_id, _secret, client) = manager.create_client("Test Client".to_string(), "default".to_string())?;
 
     // Grant access to providers and servers
     manager.add_llm_provider(&client.id, "openai")?;
@@ -261,7 +261,7 @@ fn test_duplicate_access_grants_are_idempotent() -> AppResult<()> {
     let manager = ClientManager::new(vec![]);
 
     // Create a client
-    let (_client_id, _secret, client) = manager.create_client("Test Client".to_string())?;
+    let (_client_id, _secret, client) = manager.create_client("Test Client".to_string(), "default".to_string())?;
 
     // Grant access to openai multiple times
     manager.add_llm_provider(&client.id, "openai")?;
@@ -293,7 +293,7 @@ fn test_removing_nonexistent_access_is_safe() -> AppResult<()> {
     let manager = ClientManager::new(vec![]);
 
     // Create a client
-    let (_client_id, _secret, client) = manager.create_client("Test Client".to_string())?;
+    let (_client_id, _secret, client) = manager.create_client("Test Client".to_string(), "default".to_string())?;
 
     // Try to remove access that was never granted
     let result = manager.remove_llm_provider(&client.id, "openai");
@@ -315,7 +315,7 @@ fn test_client_deletion_removes_all_access() -> AppResult<()> {
     let manager = ClientManager::new(vec![]);
 
     // Create a client with access to providers and servers
-    let (_client_id, secret, client) = manager.create_client("Test Client".to_string())?;
+    let (_client_id, secret, client) = manager.create_client("Test Client".to_string(), "default".to_string())?;
     manager.add_llm_provider(&client.id, "openai")?;
     manager.add_llm_provider(&client.id, "anthropic")?;
     manager.add_mcp_server(&client.id, "server-1")?;
@@ -346,7 +346,7 @@ fn test_case_sensitivity_in_provider_names() -> AppResult<()> {
     let manager = ClientManager::new(vec![]);
 
     // Create a client
-    let (_client_id, _secret, client) = manager.create_client("Test Client".to_string())?;
+    let (_client_id, _secret, client) = manager.create_client("Test Client".to_string(), "default".to_string())?;
 
     // Add providers with different cases
     manager.add_llm_provider(&client.id, "openai")?;

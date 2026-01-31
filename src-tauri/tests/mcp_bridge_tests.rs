@@ -4,7 +4,7 @@
 //! to the LocalRouter HTTP server and returns responses.
 
 use chrono::Utc;
-use localrouter::config::{AppConfig, Client, McpServerAccess};
+use localrouter::config::{AppConfig, Client, McpServerAccess, SkillsAccess};
 use localrouter::mcp::bridge::StdioBridge;
 use localrouter::mcp::protocol::{JsonRpcRequest, JsonRpcResponse};
 use serde_json::{json, Value};
@@ -23,6 +23,7 @@ fn test_config() -> AppConfig {
                 "web".to_string(),
             ]),
             mcp_deferred_loading: false,
+            skills_access: SkillsAccess::default(),
             created_at: Utc::now(),
             last_used: None,
             strategy_id: "default".to_string(),
@@ -39,6 +40,7 @@ fn test_config() -> AppConfig {
             allowed_llm_providers: vec![],
             mcp_server_access: McpServerAccess::Specific(vec!["github".to_string()]),
             mcp_deferred_loading: false,
+            skills_access: SkillsAccess::default(),
             created_at: Utc::now(),
             last_used: None,
             strategy_id: "default".to_string(),
@@ -55,6 +57,7 @@ fn test_config() -> AppConfig {
             allowed_llm_providers: vec!["openai".to_string()],
             mcp_server_access: McpServerAccess::None,
             mcp_deferred_loading: false,
+            skills_access: SkillsAccess::default(),
             created_at: Utc::now(),
             last_used: None,
             strategy_id: "default".to_string(),
