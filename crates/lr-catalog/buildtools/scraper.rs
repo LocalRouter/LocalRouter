@@ -112,10 +112,7 @@ impl CatalogFetcher {
         // Flatten the nested structure
         let flattened = flatten_models(parsed);
 
-        println!(
-            "cargo:warning=Loaded {} models from cache",
-            flattened.len()
-        );
+        println!("cargo:warning=Loaded {} models from cache", flattened.len());
         Ok(flattened)
     }
 

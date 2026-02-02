@@ -194,14 +194,15 @@ pub fn flatten_models(response: ModelsDevResponse) -> Vec<FlattenedModel> {
         .providers
         .into_iter()
         .flat_map(|(provider_id, provider)| {
-            provider.models.into_iter().map(move |(model_id, model)| {
-                FlattenedModel {
+            provider
+                .models
+                .into_iter()
+                .map(move |(model_id, model)| FlattenedModel {
                     full_id: format!("{}/{}", provider_id, model_id),
                     provider_id: provider_id.clone(),
                     model_id: model_id.clone(),
                     model,
-                }
-            })
+                })
         })
         .collect()
 }
