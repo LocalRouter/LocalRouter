@@ -18,6 +18,7 @@ import { buildGraph } from './utils/buildGraph'
 import { AccessKeyNode } from './nodes/AccessKeyNode'
 import { ProviderNode } from './nodes/ProviderNode'
 import { McpServerNode } from './nodes/McpServerNode'
+import { SkillNode } from './nodes/SkillNode'
 import type { GraphNodeData } from './types'
 
 // Register custom node types
@@ -25,6 +26,7 @@ const nodeTypes: NodeTypes = {
   accessKey: AccessKeyNode,
   provider: ProviderNode,
   mcpServer: McpServerNode,
+  skill: SkillNode,
 }
 
 // Props for the ConnectionGraph component
@@ -34,7 +36,7 @@ interface ConnectionGraphProps {
 }
 
 export function ConnectionGraph({ className, onViewChange }: ConnectionGraphProps) {
-  const { clients, providers, mcpServers, healthState, activeConnections, loading, error } = useGraphData()
+  const { clients, providers, mcpServers, skills, healthState, activeConnections, loading, error } = useGraphData()
 
   // Build the graph from data
   const { graphNodes, graphEdges, graphBounds } = useMemo(() => {
@@ -42,11 +44,12 @@ export function ConnectionGraph({ className, onViewChange }: ConnectionGraphProp
       clients,
       providers,
       mcpServers,
+      skills,
       healthState,
       activeConnections
     )
     return { graphNodes: nodes as Node<GraphNodeData>[], graphEdges: edges as Edge[], graphBounds: bounds }
-  }, [clients, providers, mcpServers, healthState, activeConnections])
+  }, [clients, providers, mcpServers, skills, healthState, activeConnections])
 
   // React Flow state
   const [nodes, setNodes, onNodesChange] = useNodesState<GraphNodeData>([])
@@ -61,7 +64,8 @@ export function ConnectionGraph({ className, onViewChange }: ConnectionGraphProp
   // Calculate if graph is empty
   const isEmpty = clients.filter(c => c.enabled).length === 0 &&
     providers.filter(p => p.enabled).length === 0 &&
-    mcpServers.filter(s => s.enabled).length === 0
+    mcpServers.filter(s => s.enabled).length === 0 &&
+    skills.length === 0
 
   // Count connected apps
   const connectedCount = activeConnections.length
@@ -81,6 +85,9 @@ export function ConnectionGraph({ className, onViewChange }: ConnectionGraphProp
         break
       case 'mcpServer':
         onViewChange('mcp-servers', id)
+        break
+      case 'skill':
+        onViewChange('skills', id)
         break
     }
   }, [onViewChange])

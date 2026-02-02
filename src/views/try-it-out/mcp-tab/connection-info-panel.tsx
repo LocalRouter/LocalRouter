@@ -2,7 +2,6 @@ import { Info, Server, Monitor, CheckCircle2, XCircle, Zap, FileText, MessageSqu
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card"
 import { Badge } from "@/components/ui/Badge"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { Separator } from "@/components/ui/separator"
 import type { McpConnectionState } from "@/lib/mcp-client"
 
 interface ConnectionInfoPanelProps {

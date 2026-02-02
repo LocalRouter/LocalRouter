@@ -4,12 +4,14 @@ import type {
   Client,
   Provider,
   McpServer,
+  Skill,
   HealthCacheState,
   GraphNode,
   GraphEdge,
   AccessKeyNodeData,
   ProviderNodeData,
   McpServerNodeData,
+  SkillNodeData,
   ItemHealthStatus,
 } from '../types'
 
@@ -42,6 +44,7 @@ function buildNodes(
   clients: Client[],
   providers: Provider[],
   mcpServers: McpServer[],
+  skills: Skill[],
   healthState: HealthCacheState | null,
   activeConnections: string[]
 ): GraphNode[] {
@@ -109,6 +112,22 @@ function buildNodes(
     })
   })
 
+  // Add Skill nodes
+  skills.forEach((skill) => {
+    const nodeData: SkillNodeData = {
+      id: skill.name,
+      name: skill.name,
+      type: 'skill',
+    }
+
+    nodes.push({
+      id: `skill-${skill.name}`,
+      type: 'skill',
+      data: nodeData,
+      position: { x: 0, y: 0 },
+    })
+  })
+
   return nodes
 }
 
@@ -117,6 +136,7 @@ function buildEdges(
   clients: Client[],
   providers: Provider[],
   mcpServers: McpServer[],
+  skills: Skill[],
   activeConnections: string[]
 ): GraphEdge[] {
   const edges: GraphEdge[] = []
@@ -128,6 +148,7 @@ function buildEdges(
 
   const providerNames = new Set(enabledProviders.map(p => p.instance_name))
   const mcpServerIds = new Set(enabledMcpServers.map(s => s.id))
+  const skillNames = new Set(skills.map(s => s.name))
 
   enabledClients.forEach((client) => {
     const isConnected = activeConnections.includes(client.id)
@@ -167,6 +188,27 @@ function buildEdges(
         animated: isConnected,
         style: {
           stroke: isConnected ? '#10b981' : '#64748b',
+          strokeWidth: isConnected ? 2 : 1,
+        },
+        data: { isActive: isConnected },
+      })
+    })
+
+    // Create edges to skills
+    const clientSkills = client.skills_access_mode === 'all'
+      ? Array.from(skillNames)
+      : client.skills_access_mode === 'specific'
+        ? client.skills_names.filter(s => skillNames.has(s))
+        : []
+
+    clientSkills.forEach((skillName) => {
+      edges.push({
+        id: `edge-${client.id}-skill-${skillName}`,
+        source: `client-${client.id}`,
+        target: `skill-${skillName}`,
+        animated: isConnected,
+        style: {
+          stroke: isConnected ? '#f59e0b' : '#64748b',
           strokeWidth: isConnected ? 2 : 1,
         },
         data: { isActive: isConnected },
@@ -244,11 +286,12 @@ export function buildGraph(
   clients: Client[],
   providers: Provider[],
   mcpServers: McpServer[],
+  skills: Skill[],
   healthState: HealthCacheState | null,
   activeConnections: string[]
 ): { nodes: GraphNode[]; edges: GraphEdge[]; bounds: { width: number; height: number } } {
-  const nodes = buildNodes(clients, providers, mcpServers, healthState, activeConnections)
-  const edges = buildEdges(clients, providers, mcpServers, activeConnections)
+  const nodes = buildNodes(clients, providers, mcpServers, skills, healthState, activeConnections)
+  const edges = buildEdges(clients, providers, mcpServers, skills, activeConnections)
   const layoutedNodes = applyDagreLayout(nodes, edges)
   const bounds = calculateBounds(layoutedNodes)
 

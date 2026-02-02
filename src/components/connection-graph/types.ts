@@ -4,7 +4,7 @@ import { Node, Edge } from 'reactflow'
 export type ItemHealthStatus = 'healthy' | 'degraded' | 'unhealthy' | 'ready' | 'pending' | 'disabled'
 
 // Graph node types
-export type GraphNodeType = 'accessKey' | 'provider' | 'mcpServer'
+export type GraphNodeType = 'accessKey' | 'provider' | 'mcpServer' | 'skill'
 
 // Base node data shared by all node types
 export interface BaseNodeData {
@@ -37,13 +37,19 @@ export interface McpServerNodeData extends BaseNodeData {
   enabled: boolean
 }
 
+// Skill node data
+export interface SkillNodeData extends BaseNodeData {
+  type: 'skill'
+}
+
 // Union type for all node data
-export type GraphNodeData = AccessKeyNodeData | ProviderNodeData | McpServerNodeData
+export type GraphNodeData = AccessKeyNodeData | ProviderNodeData | McpServerNodeData | SkillNodeData
 
 // Typed nodes
 export type AccessKeyNode = Node<AccessKeyNodeData, 'accessKey'>
 export type ProviderNode = Node<ProviderNodeData, 'provider'>
 export type McpServerNode = Node<McpServerNodeData, 'mcpServer'>
+export type SkillNode = Node<SkillNodeData, 'skill'>
 export type GraphNode = Node<GraphNodeData>
 
 // Edge type (use React Flow's Edge type directly)
@@ -59,6 +65,8 @@ export interface Client {
   allowed_llm_providers: string[]
   mcp_access_mode: 'none' | 'all' | 'specific'
   mcp_servers: string[]
+  skills_access_mode: 'none' | 'all' | 'specific'
+  skills_names: string[]
 }
 
 // Provider info from backend
@@ -73,6 +81,11 @@ export interface McpServer {
   id: string
   name: string
   enabled: boolean
+}
+
+// Skill info from backend
+export interface Skill {
+  name: string
 }
 
 // Health cache state from backend
@@ -99,6 +112,7 @@ export interface UseGraphDataResult {
   clients: Client[]
   providers: Provider[]
   mcpServers: McpServer[]
+  skills: Skill[]
   healthState: HealthCacheState | null
   activeConnections: string[]
   loading: boolean
