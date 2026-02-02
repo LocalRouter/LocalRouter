@@ -486,7 +486,7 @@ fn build_tray_menu<R: Runtime, M: Manager<R>>(app: &M) -> tauri::Result<tauri::m
 
     // Get client manager and build client list
     if let Some(client_manager) = app.try_state::<Arc<ClientManager>>() {
-        let clients = client_manager.list_clients();
+        let clients: Vec<_> = client_manager.list_clients().into_iter().filter(|c| !c.name.starts_with("_test_strategy_")).collect();
         let mcp_server_manager = app.try_state::<Arc<McpServerManager>>();
         let config_manager = app.try_state::<ConfigManager>();
 

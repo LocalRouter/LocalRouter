@@ -3192,6 +3192,7 @@ pub async fn list_clients(
     let clients = client_manager.list_clients();
     Ok(clients
         .into_iter()
+        .filter(|c| !c.name.starts_with("_test_strategy_"))
         .map(|c| {
             let (mcp_access_mode, mcp_servers) = mcp_access_to_ui(&c.mcp_server_access);
             let (skills_access_mode, skills_names) = skills_access_to_ui(&c.skills_access);
