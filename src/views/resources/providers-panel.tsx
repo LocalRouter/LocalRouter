@@ -6,8 +6,10 @@ import { CheckCircle, XCircle, AlertCircle, Plus, Loader2, RefreshCw, FlaskConic
 import { ProvidersIcon } from "@/components/icons/category-icons"
 import { Badge } from "@/components/ui/Badge"
 import { Button } from "@/components/ui/Button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card"
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import { Switch } from "@/components/ui/Toggle"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
   ResizablePanelGroup,
   ResizablePanel,
@@ -30,11 +32,6 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
-import {
-  EntityActions,
-  commonActions,
-  createToggleAction,
-} from "@/components/shared/entity-actions"
 import ProviderForm, { ProviderType } from "@/components/ProviderForm"
 import ProviderIcon from "@/components/ProviderIcon"
 import { cn } from "@/lib/utils"
@@ -98,10 +95,11 @@ export function ProvidersPanel({
 
   // Dialog states
   const [createDialogOpen, setCreateDialogOpen] = useState(false)
-  const [editDialogOpen, setEditDialogOpen] = useState(false)
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
   const [providerToDelete, setProviderToDelete] = useState<Provider | null>(null)
-  const [providerToEdit, setProviderToEdit] = useState<Provider | null>(null)
+
+  // Detail tab state
+  const [detailTab, setDetailTab] = useState("info")
 
   // Create form state
   const [selectedProviderType, setSelectedProviderType] = useState<string>("")
@@ -131,6 +129,11 @@ export function ProvidersPanel({
       unsubProviders.then((fn) => fn())
     }
   }, [])
+
+  // Reset detail tab when selection changes
+  useEffect(() => {
+    setDetailTab("info")
+  }, [selectedId])
 
   // Load providers and initialize health checks (only on first load)
   const loadProviders = async () => {
@@ -246,32 +249,20 @@ export function ProvidersPanel({
   }
 
   const handleEditProvider = async (_instanceName: string, config: Record<string, string>) => {
-    if (!providerToEdit) return
+    if (!selectedProvider) return
     setIsSubmitting(true)
     try {
       await invoke("update_provider_instance", {
-        instanceName: providerToEdit.instance_name,
+        instanceName: selectedProvider.instance_name,
         updates: { config },
       })
       toast.success("Provider updated")
-      setEditDialogOpen(false)
-      setProviderToEdit(null)
       loadProvidersOnly()
     } catch (error) {
       toast.error(`Failed to update provider: ${error}`)
     } finally {
       setIsSubmitting(false)
     }
-  }
-
-  const openEditDialog = (provider: Provider) => {
-    setProviderToEdit(provider)
-    setEditDialogOpen(true)
-  }
-
-  const openDeleteDialog = (provider: Provider) => {
-    setProviderToDelete(provider)
-    setDeleteDialogOpen(true)
   }
 
   const filteredProviders = providers.filter((p) =>
@@ -281,8 +272,8 @@ export function ProvidersPanel({
 
   const selectedProvider = providers.find((p) => p.instance_name === selectedId)
   const selectedTypeForCreate = providerTypes.find((t) => t.provider_type === selectedProviderType)
-  const selectedTypeForEdit = providerToEdit
-    ? providerTypes.find((t) => t.provider_type === providerToEdit.provider_type)
+  const selectedTypeForEdit = selectedProvider
+    ? providerTypes.find((t) => t.provider_type === selectedProvider.provider_type)
     : null
 
   return (
@@ -389,9 +380,6 @@ export function ProvidersPanel({
                     </p>
                   </div>
                   <div className="flex items-center gap-2">
-                    <Badge variant={selectedProvider.enabled ? "success" : "secondary"}>
-                      {selectedProvider.enabled ? "Enabled" : "Disabled"}
-                    </Badge>
                     {onViewChange && selectedProvider.enabled && (
                       <Button
                         variant="outline"
@@ -402,152 +390,231 @@ export function ProvidersPanel({
                         Try It Out
                       </Button>
                     )}
-                    <EntityActions
-                      actions={[
-                        commonActions.edit(() => openEditDialog(selectedProvider)),
-                        createToggleAction(selectedProvider.enabled, () =>
-                          handleToggle(selectedProvider)
-                        ),
-                        commonActions.delete(() => openDeleteDialog(selectedProvider)),
-                      ]}
-                    />
                   </div>
                 </div>
 
-                {/* Health Status */}
-                <Card>
-                  <CardHeader className="pb-3">
-                    <div className="flex items-center justify-between">
-                      <CardTitle className="text-sm">Health Status</CardTitle>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-6 w-6"
-                        onClick={() => onRefreshHealth(selectedProvider.instance_name)}
-                        disabled={healthStatus[selectedProvider.instance_name]?.status === "pending"}
-                      >
-                        <RefreshCw className={cn(
-                          "h-3 w-3",
-                          healthStatus[selectedProvider.instance_name]?.status === "pending" && "animate-spin"
-                        )} />
-                      </Button>
-                    </div>
-                  </CardHeader>
-                  <CardContent>
-                    {(() => {
-                      const health = healthStatus[selectedProvider.instance_name]
-                      const formatLatency = (ms?: number) => {
-                        if (!ms) return ""
-                        return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`
-                      }
+                <Tabs value={detailTab} onValueChange={setDetailTab}>
+                  <TabsList>
+                    <TabsTrigger value="info">Info</TabsTrigger>
+                    <TabsTrigger value="settings">Settings</TabsTrigger>
+                  </TabsList>
 
-                      if (!health || health.status === "pending") {
-                        return (
-                          <div className="flex items-center gap-2 text-muted-foreground">
-                            <Loader2 className="h-4 w-4 animate-spin" />
-                            <span>Checking health...</span>
+                  <TabsContent value="info">
+                    <div className="space-y-6">
+                      {/* Health Status */}
+                      <Card>
+                        <CardHeader className="pb-3">
+                          <div className="flex items-center justify-between">
+                            <CardTitle className="text-sm">Health Status</CardTitle>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-6 w-6"
+                              onClick={() => onRefreshHealth(selectedProvider.instance_name)}
+                              disabled={healthStatus[selectedProvider.instance_name]?.status === "pending"}
+                            >
+                              <RefreshCw className={cn(
+                                "h-3 w-3",
+                                healthStatus[selectedProvider.instance_name]?.status === "pending" && "animate-spin"
+                              )} />
+                            </Button>
                           </div>
-                        )
-                      }
+                        </CardHeader>
+                        <CardContent>
+                          {(() => {
+                            const health = healthStatus[selectedProvider.instance_name]
+                            const formatLatency = (ms?: number) => {
+                              if (!ms) return ""
+                              return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`
+                            }
 
-                      if (health.status === "healthy") {
-                        return (
-                          <div className="flex items-center gap-2 text-green-600">
-                            <CheckCircle className="h-4 w-4" />
-                            <span>Healthy</span>
-                            {health.latency_ms != null && (
-                              <span className="text-muted-foreground">
-                                ({formatLatency(health.latency_ms)})
-                              </span>
+                            if (!health || health.status === "pending") {
+                              return (
+                                <div className="flex items-center gap-2 text-muted-foreground">
+                                  <Loader2 className="h-4 w-4 animate-spin" />
+                                  <span>Checking health...</span>
+                                </div>
+                              )
+                            }
+
+                            if (health.status === "healthy") {
+                              return (
+                                <div className="flex items-center gap-2 text-green-600">
+                                  <CheckCircle className="h-4 w-4" />
+                                  <span>Healthy</span>
+                                  {health.latency_ms != null && (
+                                    <span className="text-muted-foreground">
+                                      ({formatLatency(health.latency_ms)})
+                                    </span>
+                                  )}
+                                </div>
+                              )
+                            }
+
+                            if (health.status === "degraded") {
+                              return (
+                                <div className="flex items-center gap-2 text-yellow-600">
+                                  <AlertCircle className="h-4 w-4" />
+                                  <span>Degraded</span>
+                                  {health.latency_ms != null && (
+                                    <span className="text-muted-foreground">
+                                      ({formatLatency(health.latency_ms)})
+                                    </span>
+                                  )}
+                                  {health.error && (
+                                    <span className="text-muted-foreground">- {health.error}</span>
+                                  )}
+                                </div>
+                              )
+                            }
+
+                            if (health.status === "disabled") {
+                              return (
+                                <div className="flex items-center gap-2 text-muted-foreground">
+                                  <XCircle className="h-4 w-4" />
+                                  <span>Disabled</span>
+                                </div>
+                              )
+                            }
+
+                            return (
+                              <div className="flex items-center gap-2 text-red-600">
+                                <XCircle className="h-4 w-4" />
+                                <span>Unhealthy</span>
+                                {health.error && (
+                                  <span className="text-muted-foreground">- {health.error}</span>
+                                )}
+                              </div>
+                            )
+                          })()}
+                        </CardContent>
+                      </Card>
+
+                      {/* Models List */}
+                      <Card>
+                        <CardHeader className="pb-3">
+                          <CardTitle className="text-sm">
+                            Models {!modelsLoading && models.length > 0 && (
+                              <span className="text-muted-foreground font-normal">({models.length})</span>
                             )}
-                          </div>
-                        )
-                      }
-
-                      if (health.status === "degraded") {
-                        return (
-                          <div className="flex items-center gap-2 text-yellow-600">
-                            <AlertCircle className="h-4 w-4" />
-                            <span>Degraded</span>
-                            {health.latency_ms != null && (
-                              <span className="text-muted-foreground">
-                                ({formatLatency(health.latency_ms)})
-                              </span>
-                            )}
-                            {health.error && (
-                              <span className="text-muted-foreground">- {health.error}</span>
-                            )}
-                          </div>
-                        )
-                      }
-
-                      if (health.status === "disabled") {
-                        return (
-                          <div className="flex items-center gap-2 text-muted-foreground">
-                            <XCircle className="h-4 w-4" />
-                            <span>Disabled</span>
-                          </div>
-                        )
-                      }
-
-                      return (
-                        <div className="flex items-center gap-2 text-red-600">
-                          <XCircle className="h-4 w-4" />
-                          <span>Unhealthy</span>
-                          {health.error && (
-                            <span className="text-muted-foreground">- {health.error}</span>
+                          </CardTitle>
+                        </CardHeader>
+                        <CardContent>
+                          {modelsLoading ? (
+                            <div className="flex items-center gap-2 text-muted-foreground">
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                              <span>Loading models...</span>
+                            </div>
+                          ) : models.length === 0 ? (
+                            <p className="text-sm text-muted-foreground">No models available</p>
+                          ) : (
+                            <div className="space-y-2">
+                              {models.map((model) => (
+                                <div
+                                  key={model.id}
+                                  className="flex items-center justify-between p-2 rounded-md bg-muted/50"
+                                >
+                                  <div className="min-w-0 flex-1">
+                                    <p className="font-medium text-sm truncate">{model.name || model.id}</p>
+                                    <p className="text-xs text-muted-foreground truncate">{model.id}</p>
+                                  </div>
+                                  <div className="flex items-center gap-2 ml-2">
+                                    {model.context_window > 0 && (
+                                      <Badge variant="secondary" className="text-xs whitespace-nowrap">
+                                        {model.context_window >= 1000000
+                                          ? `${(model.context_window / 1000000).toFixed(1)}M`
+                                          : model.context_window >= 1000
+                                          ? `${Math.round(model.context_window / 1000)}k`
+                                          : model.context_window} ctx
+                                      </Badge>
+                                    )}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
                           )}
-                        </div>
-                      )
-                    })()}
-                  </CardContent>
-                </Card>
+                        </CardContent>
+                      </Card>
+                    </div>
+                  </TabsContent>
 
-                {/* Models List */}
-                <Card>
-                  <CardHeader className="pb-3">
-                    <CardTitle className="text-sm">
-                      Models {!modelsLoading && models.length > 0 && (
-                        <span className="text-muted-foreground font-normal">({models.length})</span>
+                  <TabsContent value="settings">
+                    <div className="space-y-6">
+                      {/* Inline Edit Form */}
+                      {selectedTypeForEdit && (
+                        <Card>
+                          <CardHeader>
+                            <CardTitle>Provider Configuration</CardTitle>
+                            <CardDescription>
+                              Update the configuration for this provider
+                            </CardDescription>
+                          </CardHeader>
+                          <CardContent>
+                            <ProviderForm
+                              mode="edit"
+                              providerType={selectedTypeForEdit}
+                              initialInstanceName={selectedProvider.instance_name}
+                              initialConfig={selectedProvider.config || {}}
+                              onSubmit={handleEditProvider}
+                              onCancel={() => setDetailTab("info")}
+                              isSubmitting={isSubmitting}
+                            />
+                          </CardContent>
+                        </Card>
                       )}
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    {modelsLoading ? (
-                      <div className="flex items-center gap-2 text-muted-foreground">
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                        <span>Loading models...</span>
-                      </div>
-                    ) : models.length === 0 ? (
-                      <p className="text-sm text-muted-foreground">No models available</p>
-                    ) : (
-                      <div className="space-y-2">
-                        {models.map((model) => (
-                          <div
-                            key={model.id}
-                            className="flex items-center justify-between p-2 rounded-md bg-muted/50"
-                          >
-                            <div className="min-w-0 flex-1">
-                              <p className="font-medium text-sm truncate">{model.name || model.id}</p>
-                              <p className="text-xs text-muted-foreground truncate">{model.id}</p>
-                            </div>
-                            <div className="flex items-center gap-2 ml-2">
-                              {model.context_window > 0 && (
-                                <Badge variant="secondary" className="text-xs whitespace-nowrap">
-                                  {model.context_window >= 1000000
-                                    ? `${(model.context_window / 1000000).toFixed(1)}M`
-                                    : model.context_window >= 1000
-                                    ? `${Math.round(model.context_window / 1000)}k`
-                                    : model.context_window} ctx
-                                </Badge>
-                              )}
-                            </div>
+
+                      {/* Enable/Disable */}
+                      <Card>
+                        <CardHeader>
+                          <CardTitle>Enable Provider</CardTitle>
+                          <CardDescription>
+                            When disabled, this provider will not be used for routing requests
+                          </CardDescription>
+                        </CardHeader>
+                        <CardContent>
+                          <div className="flex items-center gap-3">
+                            <Switch
+                              checked={selectedProvider.enabled}
+                              onCheckedChange={() => handleToggle(selectedProvider)}
+                            />
+                            <span className="text-sm">
+                              {selectedProvider.enabled ? "Enabled" : "Disabled"}
+                            </span>
                           </div>
-                        ))}
-                      </div>
-                    )}
-                  </CardContent>
-                </Card>
+                        </CardContent>
+                      </Card>
+
+                      {/* Danger Zone */}
+                      <Card className="border-red-200 dark:border-red-900">
+                        <CardHeader>
+                          <CardTitle className="text-red-600 dark:text-red-400">Danger Zone</CardTitle>
+                          <CardDescription>
+                            Irreversible actions for this provider
+                          </CardDescription>
+                        </CardHeader>
+                        <CardContent>
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <p className="text-sm font-medium">Delete this provider</p>
+                              <p className="text-sm text-muted-foreground">
+                                Permanently delete "{selectedProvider.instance_name}" and its configuration
+                              </p>
+                            </div>
+                            <Button
+                              variant="destructive"
+                              onClick={() => {
+                                setProviderToDelete(selectedProvider)
+                                setDeleteDialogOpen(true)
+                              }}
+                            >
+                              Delete Provider
+                            </Button>
+                          </div>
+                        </CardContent>
+                      </Card>
+                    </div>
+                  </TabsContent>
+                </Tabs>
 
               </div>
             </ScrollArea>
@@ -677,30 +744,6 @@ export function ProvidersPanel({
             >
               Back to provider selection
             </Button>
-          )}
-        </DialogContent>
-      </Dialog>
-
-      {/* Edit Provider Dialog */}
-      <Dialog open={editDialogOpen} onOpenChange={setEditDialogOpen}>
-        <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>Edit Provider: {providerToEdit?.instance_name}</DialogTitle>
-          </DialogHeader>
-
-          {providerToEdit && selectedTypeForEdit && (
-            <ProviderForm
-              mode="edit"
-              providerType={selectedTypeForEdit}
-              initialInstanceName={providerToEdit.instance_name}
-              initialConfig={providerToEdit.config || {}}
-              onSubmit={handleEditProvider}
-              onCancel={() => {
-                setEditDialogOpen(false)
-                setProviderToEdit(null)
-              }}
-              isSubmitting={isSubmitting}
-            />
           )}
         </DialogContent>
       </Dialog>

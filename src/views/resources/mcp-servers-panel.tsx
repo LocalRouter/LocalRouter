@@ -2,12 +2,14 @@ import { useState, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
 import { toast } from "sonner"
-import { Plus, CheckCircle, XCircle, Loader2, RefreshCw, FlaskConical } from "lucide-react"
+import { Plus, CheckCircle, XCircle, Loader2, RefreshCw, FlaskConical, Blocks } from "lucide-react"
 import McpServerIcon from "@/components/McpServerIcon"
 import { Badge } from "@/components/ui/Badge"
 import { Button } from "@/components/ui/Button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card"
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import { Switch } from "@/components/ui/switch"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
   ResizablePanelGroup,
   ResizablePanel,
@@ -32,11 +34,6 @@ import {
 } from "@/components/ui/alert-dialog"
 import LegacySelect from "@/components/ui/Select"
 import KeyValueInput from "@/components/ui/KeyValueInput"
-import {
-  EntityActions,
-  commonActions,
-  createToggleAction,
-} from "@/components/shared/entity-actions"
 import { McpServerTemplates, McpServerTemplate } from "@/components/mcp/McpServerTemplates"
 import { McpOAuthModal } from "@/components/mcp/McpOAuthModal"
 import { cn } from "@/lib/utils"
@@ -109,8 +106,10 @@ export function McpServersPanel({
   // Delete confirmation state
   const [serverToDelete, setServerToDelete] = useState<McpServer | null>(null)
 
-  // Edit modal state
-  const [showEditModal, setShowEditModal] = useState(false)
+  // Detail tab state
+  const [detailTab, setDetailTab] = useState("info")
+
+  // Inline edit state
   const [isEditing, setIsEditing] = useState(false)
 
   // Create modal state
@@ -168,6 +167,11 @@ export function McpServersPanel({
     }
   }, [initialAddTemplateId])
 
+  // Reset detail tab when selection changes
+  useEffect(() => {
+    setDetailTab("info")
+  }, [selectedId])
+
   // Load servers and initialize health checks (only on first load)
   const loadServers = async () => {
     try {
@@ -214,7 +218,6 @@ export function McpServersPanel({
     setTransportType(template.transport)
 
     if (template.transport === "Stdio" && template.command) {
-      // Combine command and args into single command string
       const fullCommand = template.args
         ? [template.command, ...template.args].join(" ")
         : template.command
@@ -237,78 +240,46 @@ export function McpServersPanel({
     setIsCreating(true)
 
     try {
-      // Parse transport config based on type
       let transportConfig
       if (transportType === "Stdio") {
-        transportConfig = {
-          type: "stdio",
-          command,
-          env: envVars,
-        }
+        transportConfig = { type: "stdio", command, env: envVars }
       } else {
-        transportConfig = {
-          type: "http_sse",
-          url,
-          headers: headers,
-        }
+        transportConfig = { type: "http_sse", url, headers: headers }
       }
 
-      // Build auth config based on auth method
       let authConfig = null
       if (authMethod === "bearer") {
-        authConfig = {
-          type: "bearer_token",
-          token: bearerToken,
-        }
+        authConfig = { type: "bearer_token", token: bearerToken }
       } else if (authMethod === "oauth_pregenerated") {
-        // Pre-generated OAuth credentials - need to discover endpoints first
         if (!oauthClientId || !oauthClientSecret) {
           toast.error("Client ID and Client Secret are required for OAuth")
           setIsCreating(false)
           return
         }
-
-        // Discover OAuth endpoints
         const discovery = await invoke<{
-          auth_url: string
-          token_url: string
-          scopes_supported: string[]
+          auth_url: string; token_url: string; scopes_supported: string[]
         } | null>("discover_mcp_oauth_endpoints", { baseUrl: url })
-
         if (!discovery) {
           toast.error("This MCP server does not support OAuth")
           setIsCreating(false)
           return
         }
-
         authConfig = {
-          type: "oauth",
-          client_id: oauthClientId,
-          client_secret: oauthClientSecret,
-          auth_url: discovery.auth_url,
-          token_url: discovery.token_url,
-          scopes: discovery.scopes_supported,
+          type: "oauth", client_id: oauthClientId, client_secret: oauthClientSecret,
+          auth_url: discovery.auth_url, token_url: discovery.token_url, scopes: discovery.scopes_supported,
         }
       } else if (authMethod === "oauth_browser") {
-        // Just mark as oauth_browser - credentials will be configured in detail view
-        authConfig = {
-          type: "oauth_browser",
-        }
+        authConfig = { type: "oauth_browser" }
       }
 
       const newServer = await invoke<{ id: string }>("create_mcp_server", {
-        name: serverName || null,
-        transport: transportType,
-        transportConfig,
-        authConfig,
+        name: serverName || null, transport: transportType, transportConfig, authConfig,
       })
 
       toast.success("MCP server created")
       await loadServersOnly()
       setShowCreateModal(false)
       resetForm()
-
-      // Trigger health check for the new server
       onRefreshHealth(newServer.id)
     } catch (error) {
       console.error("Failed to create MCP server:", error)
@@ -321,19 +292,16 @@ export function McpServersPanel({
   const handleToggle = async (server: McpServer) => {
     try {
       await invoke("toggle_mcp_server_enabled", {
-        serverId: server.id,
-        enabled: !server.enabled,
+        serverId: server.id, enabled: !server.enabled,
       })
       toast.success(`Server ${server.enabled ? "disabled" : "enabled"}`)
       loadServersOnly()
-      // Trigger health check to update status to disabled/enabled
       onRefreshHealth(server.id)
     } catch (error) {
       toast.error("Failed to update server")
     }
   }
 
-  // Populate form from an existing server for editing
   const populateFormFromServer = (server: McpServer) => {
     setServerName(server.name)
     setTransportType(server.transport === "Stdio" ? "Stdio" : "Sse")
@@ -341,7 +309,6 @@ export function McpServersPanel({
 
     const tc = server.transport_config as Record<string, unknown>
     if (server.transport === "Stdio") {
-      // Combine command and legacy args into single command string
       const cmd = (tc.command as string) || ""
       const args = (tc.args as string[]) || []
       const fullCommand = args.length > 0 ? [cmd, ...args].join(" ") : cmd
@@ -356,38 +323,21 @@ export function McpServersPanel({
       setEnvVars({})
     }
 
-    // Set auth method based on existing config
     if (!server.auth_config || server.auth_config.type === "none") {
-      setAuthMethod("none")
-      setBearerToken("")
-      setOauthClientId("")
-      setOauthClientSecret("")
+      setAuthMethod("none"); setBearerToken(""); setOauthClientId(""); setOauthClientSecret("")
     } else if (server.auth_config.type === "bearer_token") {
-      setAuthMethod("bearer")
-      setBearerToken("") // Don't show existing token for security
-      setOauthClientId("")
-      setOauthClientSecret("")
+      setAuthMethod("bearer"); setBearerToken(""); setOauthClientId(""); setOauthClientSecret("")
     } else if (server.auth_config.type === "oauth") {
-      setAuthMethod("oauth_pregenerated")
-      setBearerToken("")
+      setAuthMethod("oauth_pregenerated"); setBearerToken("")
       setOauthClientId((server.auth_config as { client_id?: string }).client_id || "")
-      setOauthClientSecret("") // Don't show existing secret for security
-    } else if (server.auth_config.type === "oauth_browser") {
-      setAuthMethod("oauth_browser")
-      setBearerToken("")
-      setOauthClientId((server.auth_config as { client_id?: string }).client_id || "")
-      setOauthClientSecret("") // Don't show existing secret for security
-    } else {
-      setAuthMethod("none")
-      setBearerToken("")
-      setOauthClientId("")
       setOauthClientSecret("")
+    } else if (server.auth_config.type === "oauth_browser") {
+      setAuthMethod("oauth_browser"); setBearerToken("")
+      setOauthClientId((server.auth_config as { client_id?: string }).client_id || "")
+      setOauthClientSecret("")
+    } else {
+      setAuthMethod("none"); setBearerToken(""); setOauthClientId(""); setOauthClientSecret("")
     }
-  }
-
-  const handleStartEdit = (server: McpServer) => {
-    populateFormFromServer(server)
-    setShowEditModal(true)
   }
 
   const handleEditServer = async (e: React.FormEvent) => {
@@ -395,68 +345,36 @@ export function McpServersPanel({
     if (!selectedServer) return
 
     setIsEditing(true)
-
     try {
-      // Parse transport config based on type
       let transportConfig
       if (transportType === "Stdio") {
-        transportConfig = {
-          type: "stdio",
-          command,
-          env: envVars,
-        }
+        transportConfig = { type: "stdio", command, env: envVars }
       } else {
-        transportConfig = {
-          type: "http_sse",
-          url,
-          headers: headers,
-        }
+        transportConfig = { type: "http_sse", url, headers: headers }
       }
 
-      // Build auth config based on auth method
-      // Only include auth_config in updates if we're changing it
       let authConfig = null
       if (authMethod === "bearer" && bearerToken) {
-        // Only update bearer token if a new one is provided
-        authConfig = {
-          type: "bearer_token",
-          token: bearerToken,
-        }
+        authConfig = { type: "bearer_token", token: bearerToken }
       } else if (authMethod === "oauth_browser") {
-        // Preserve existing OAuth config - just mark the type
-        authConfig = {
-          type: "oauth_browser",
-        }
+        authConfig = { type: "oauth_browser" }
       } else if (authMethod === "none") {
-        // Explicitly clear auth
         authConfig = null
       }
 
-      // Build updates object - only include fields that are being updated
       const updates: Record<string, unknown> = {
-        name: serverName,
-        transport_config: transportConfig,
+        name: serverName, transport_config: transportConfig,
       }
 
-      // Only include auth_config if we're explicitly changing it
-      // (bearer with new token, or changing to none)
       if (authMethod === "bearer" && bearerToken) {
         updates.auth_config = authConfig
       } else if (authMethod === "none" && selectedServer.auth_config?.type !== "none" && selectedServer.auth_config !== null) {
-        // Clearing auth config
         updates.auth_config = null
       }
-      // If authMethod is oauth_browser, we don't update auth_config here (use OAuth setup flow instead)
 
-      await invoke("update_mcp_server", {
-        serverId: selectedServer.id,
-        updates,
-      })
-
+      await invoke("update_mcp_server", { serverId: selectedServer.id, updates })
       toast.success("MCP server updated")
       await loadServersOnly()
-      setShowEditModal(false)
-      resetForm()
     } catch (error) {
       console.error("Failed to update MCP server:", error)
       toast.error(`Error updating MCP server: ${error}`)
@@ -470,9 +388,7 @@ export function McpServersPanel({
     try {
       await invoke("delete_mcp_server", { serverId: serverToDelete.id })
       toast.success("Server deleted")
-      if (selectedId === serverToDelete.id) {
-        onSelect(null)
-      }
+      if (selectedId === serverToDelete.id) { onSelect(null) }
       loadServersOnly()
     } catch (error) {
       toast.error("Failed to delete server")
@@ -491,9 +407,7 @@ export function McpServersPanel({
   }
 
   const handleOAuthSuccess = () => {
-    if (selectedId) {
-      checkOAuthStatus(selectedId)
-    }
+    if (selectedId) { checkOAuthStatus(selectedId) }
     setShowOAuthModal(false)
     toast.success("OAuth authentication successful")
   }
@@ -508,41 +422,25 @@ export function McpServersPanel({
     }
   }
 
-  // Check if OAuth is fully configured (has client_id)
   const isOAuthConfigured = (server: McpServer) => {
     if (server.auth_config?.type !== "oauth_browser") return false
-    // Check if client_id is present (indicating OAuth is configured)
     return !!(server.auth_config as { client_id?: string }).client_id
   }
 
-  // Start OAuth setup flow
   const handleStartOAuthSetup = async () => {
     if (!selectedServer) return
-
     setIsDiscovering(true)
     setOauthDiscovery(null)
     setOauthSetupClientId("")
     setOauthSetupClientSecret("")
 
     try {
-      // Get the server's base URL from transport config
       const transportConfig = selectedServer.transport_config as { url?: string }
-      if (!transportConfig.url) {
-        toast.error("Server URL not found")
-        return
-      }
-
-      // Use the full URL (including path) as the protected resource identifier
-      // Per RFC 9728, the well-known URL is constructed by inserting
-      // .well-known/oauth-protected-resource between the host and path
+      if (!transportConfig.url) { toast.error("Server URL not found"); return }
       const baseUrl = transportConfig.url.replace(/\/+$/, "")
-
-      // Discover OAuth endpoints
       const discovery = await invoke<{ auth_url: string; token_url: string; scopes: string[] } | null>(
-        "discover_mcp_oauth_endpoints",
-        { baseUrl }
+        "discover_mcp_oauth_endpoints", { baseUrl }
       )
-
       if (discovery) {
         setOauthDiscovery(discovery)
         setShowOAuthSetup(true)
@@ -556,27 +454,20 @@ export function McpServersPanel({
     }
   }
 
-  // Save OAuth credentials
   const handleSaveOAuthCredentials = async () => {
     if (!selectedServer || !oauthDiscovery) return
-
     setIsSavingOAuth(true)
     try {
       await invoke("update_mcp_server", {
         serverId: selectedServer.id,
         updates: {
           auth_config: {
-            type: "oauth_browser",
-            client_id: oauthSetupClientId,
-            client_secret: oauthSetupClientSecret,
-            auth_url: oauthDiscovery.auth_url,
-            token_url: oauthDiscovery.token_url,
-            scopes: oauthDiscovery.scopes,
-            redirect_uri: "http://localhost:8080/callback",
+            type: "oauth_browser", client_id: oauthSetupClientId, client_secret: oauthSetupClientSecret,
+            auth_url: oauthDiscovery.auth_url, token_url: oauthDiscovery.token_url,
+            scopes: oauthDiscovery.scopes, redirect_uri: "http://localhost:8080/callback",
           },
         },
       })
-
       toast.success("OAuth credentials saved")
       setShowOAuthSetup(false)
       await loadServersOnly()
@@ -587,7 +478,6 @@ export function McpServersPanel({
     }
   }
 
-  // Check OAuth status when a server with OAuth browser auth is selected
   useEffect(() => {
     if (selectedId) {
       const server = servers.find((s) => s.id === selectedId)
@@ -596,6 +486,13 @@ export function McpServersPanel({
       }
     }
   }, [selectedId, servers])
+
+  // Populate edit form when switching to settings tab
+  useEffect(() => {
+    if (detailTab === "settings" && selectedServer) {
+      populateFormFromServer(selectedServer)
+    }
+  }, [detailTab, selectedId])
 
   const filteredServers = servers.filter((s) =>
     s.name.toLowerCase().includes(search.toLowerCase()) ||
@@ -618,11 +515,7 @@ export function McpServersPanel({
                 onChange={(e) => setSearch(e.target.value)}
                 className="flex-1"
               />
-              <Button
-                size="icon"
-                onClick={() => setShowCreateModal(true)}
-                title="Add MCP"
-              >
+              <Button size="icon" onClick={() => setShowCreateModal(true)} title="Add MCP">
                 <Plus className="h-4 w-4" />
               </Button>
             </div>
@@ -710,9 +603,6 @@ export function McpServersPanel({
                   </p>
                 </div>
                 <div className="flex items-center gap-2">
-                  <Badge variant={selectedServer.enabled ? "success" : "secondary"}>
-                    {selectedServer.enabled ? "Enabled" : "Disabled"}
-                  </Badge>
                   {onViewChange && selectedServer.enabled && (
                     <Button
                       variant="outline"
@@ -723,267 +613,370 @@ export function McpServersPanel({
                       Try It Out
                     </Button>
                   )}
-                  <EntityActions
-                    actions={[
-                      commonActions.edit(() => handleStartEdit(selectedServer)),
-                      createToggleAction(selectedServer.enabled, () =>
-                        handleToggle(selectedServer)
-                      ),
-                      commonActions.delete(() => setServerToDelete(selectedServer)),
-                    ]}
-                  />
                 </div>
               </div>
 
-              {/* Health Status */}
-              <Card>
-                <CardHeader className="pb-3">
-                  <div className="flex items-center justify-between">
-                    <CardTitle className="text-sm">Health Status</CardTitle>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-6 w-6"
-                      onClick={() => onRefreshHealth(selectedServer.id)}
-                      disabled={healthStatus[selectedServer.id]?.status === "pending"}
-                    >
-                      <RefreshCw className={cn(
-                        "h-3 w-3",
-                        healthStatus[selectedServer.id]?.status === "pending" && "animate-spin"
-                      )} />
-                    </Button>
-                  </div>
-                </CardHeader>
-                <CardContent>
-                  {(() => {
-                    const health = healthStatus[selectedServer.id]
-                    const formatLatency = (ms?: number) => {
-                      if (!ms) return ""
-                      return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`
-                    }
+              <Tabs value={detailTab} onValueChange={setDetailTab}>
+                <TabsList>
+                  <TabsTrigger value="info">Info</TabsTrigger>
+                  <TabsTrigger value="settings">Settings</TabsTrigger>
+                </TabsList>
 
-                    if (!health || health.status === "pending") {
-                      return (
-                        <div className="flex items-center gap-2 text-muted-foreground">
-                          <Loader2 className="h-4 w-4 animate-spin" />
-                          <span>Checking health...</span>
-                        </div>
-                      )
-                    }
-
-                    if (health.status === "healthy") {
-                      return (
-                        <div className="flex items-center gap-2 text-green-600">
-                          <CheckCircle className="h-4 w-4" />
-                          <span>Running</span>
-                          {health.latency_ms != null && (
-                            <span className="text-muted-foreground">
-                              ({formatLatency(health.latency_ms)})
-                            </span>
-                          )}
-                        </div>
-                      )
-                    }
-
-                    if (health.status === "ready") {
-                      return (
-                        <div className="flex items-center gap-2 text-green-600">
-                          <CheckCircle className="h-4 w-4" />
-                          <span>Ready</span>
-                          {health.error && (
-                            <span className="text-muted-foreground">- {health.error}</span>
-                          )}
-                        </div>
-                      )
-                    }
-
-                    if (health.status === "disabled") {
-                      return (
-                        <div className="flex items-center gap-2 text-muted-foreground">
-                          <XCircle className="h-4 w-4" />
-                          <span>Disabled</span>
-                        </div>
-                      )
-                    }
-
-                    // unhealthy or unknown
-                    return (
-                      <div className="flex items-center gap-2 text-red-600">
-                        <XCircle className="h-4 w-4" />
-                        <span>Unhealthy</span>
-                        {health.error && (
-                          <span className="text-muted-foreground">- {health.error}</span>
-                        )}
-                      </div>
-                    )
-                  })()}
-                </CardContent>
-              </Card>
-
-              {/* Connection Info */}
-              <Card>
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-sm">Connection Details</CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <div>
-                    <p className="text-sm text-muted-foreground">Proxy URL</p>
-                    <code className="text-sm break-all">{selectedServer.proxy_url}</code>
-                  </div>
-                  <div>
-                    <p className="text-sm text-muted-foreground">Gateway URL</p>
-                    <code className="text-sm break-all">{selectedServer.gateway_url}</code>
-                  </div>
-                  {selectedServer.auth_config?.type && (
-                    <div>
-                      <p className="text-sm text-muted-foreground">Authentication</p>
-                      <p className="text-sm capitalize">{selectedServer.auth_config?.type.replace(/_/g, " ")}</p>
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-
-              {/* Transport Configuration */}
-              <Card>
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-sm">Transport Configuration</CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  {selectedServer.transport === "Stdio" && (() => {
-                    const tc = selectedServer.transport_config as { command?: string; args?: string[]; env?: Record<string, string> }
-                    return (
-                      <>
-                        <div>
-                          <p className="text-sm text-muted-foreground">Command</p>
-                          <code className="text-sm break-all">{tc.command || "N/A"}</code>
-                        </div>
-                        {tc.args && tc.args.length > 0 && (
-                          <div>
-                            <p className="text-sm text-muted-foreground">Arguments</p>
-                            <code className="text-sm break-all">{tc.args.join(" ")}</code>
-                          </div>
-                        )}
-                        {tc.env && Object.keys(tc.env).length > 0 && (
-                          <div>
-                            <p className="text-sm text-muted-foreground">Environment Variables</p>
-                            <div className="space-y-1">
-                              {Object.entries(tc.env).map(([key, value]) => (
-                                <div key={key} className="text-sm">
-                                  <code>{key}</code>=<code className="text-muted-foreground">{value}</code>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-                      </>
-                    )
-                  })()}
-                  {selectedServer.transport !== "Stdio" && (() => {
-                    const tc = selectedServer.transport_config as { url?: string; headers?: Record<string, string> }
-                    return (
-                      <>
-                        <div>
-                          <p className="text-sm text-muted-foreground">URL</p>
-                          <code className="text-sm break-all">{tc.url || "N/A"}</code>
-                        </div>
-                        {tc.headers && Object.keys(tc.headers).length > 0 && (
-                          <div>
-                            <p className="text-sm text-muted-foreground">Headers</p>
-                            <div className="space-y-1">
-                              {Object.entries(tc.headers).map(([key, value]) => (
-                                <div key={key} className="text-sm">
-                                  <code>{key}</code>: <code className="text-muted-foreground">{value}</code>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-                      </>
-                    )
-                  })()}
-                </CardContent>
-              </Card>
-
-              {/* OAuth Status */}
-              {selectedServer.auth_config?.type === "oauth_browser" && (
-                <Card>
-                  <CardHeader className="pb-3">
-                    <CardTitle className="text-sm">OAuth Authentication</CardTitle>
-                  </CardHeader>
-                  <CardContent className="space-y-4">
-                    {!isOAuthConfigured(selectedServer) ? (
-                      // OAuth not yet configured - show setup button
-                      <>
-                        <p className="text-sm text-muted-foreground">
-                          OAuth credentials are not configured. Click Setup to discover OAuth
-                          endpoints and enter your credentials.
-                        </p>
-                        <Button
-                          size="sm"
-                          onClick={handleStartOAuthSetup}
-                          disabled={isDiscovering}
-                        >
-                          {isDiscovering ? "Discovering..." : "Setup OAuth"}
-                        </Button>
-                      </>
-                    ) : (
-                      // OAuth configured - show status and authenticate button
-                      <>
+                <TabsContent value="info">
+                  <div className="space-y-6">
+                    {/* Health Status */}
+                    <Card>
+                      <CardHeader className="pb-3">
                         <div className="flex items-center justify-between">
-                          <div>
-                            <p className="text-sm font-medium">
-                              {oauthStatus[selectedServer.id]
-                                ? "Authenticated"
-                                : "Not authenticated"}
-                            </p>
-                            <p className="text-xs text-muted-foreground">
-                              {oauthStatus[selectedServer.id]
-                                ? "OAuth tokens are valid and ready to use"
-                                : "Click Authenticate to complete browser login"}
-                            </p>
-                          </div>
-                          <Badge variant={oauthStatus[selectedServer.id] ? "success" : "secondary"}>
-                            {oauthStatus[selectedServer.id] ? "Active" : "Inactive"}
-                          </Badge>
-                        </div>
-                        <div className="flex gap-2">
+                          <CardTitle className="text-sm">Health Status</CardTitle>
                           <Button
-                            size="sm"
-                            variant={oauthStatus[selectedServer.id] ? "secondary" : "default"}
-                            onClick={() => setShowOAuthModal(true)}
+                            variant="ghost"
+                            size="icon"
+                            className="h-6 w-6"
+                            onClick={() => onRefreshHealth(selectedServer.id)}
+                            disabled={healthStatus[selectedServer.id]?.status === "pending"}
                           >
-                            {oauthStatus[selectedServer.id] ? "Re-authenticate" : "Authenticate"}
+                            <RefreshCw className={cn(
+                              "h-3 w-3",
+                              healthStatus[selectedServer.id]?.status === "pending" && "animate-spin"
+                            )} />
                           </Button>
-                          {oauthStatus[selectedServer.id] && (
+                        </div>
+                      </CardHeader>
+                      <CardContent>
+                        {(() => {
+                          const health = healthStatus[selectedServer.id]
+                          const formatLatency = (ms?: number) => {
+                            if (!ms) return ""
+                            return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`
+                          }
+
+                          if (!health || health.status === "pending") {
+                            return (
+                              <div className="flex items-center gap-2 text-muted-foreground">
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                                <span>Checking health...</span>
+                              </div>
+                            )
+                          }
+                          if (health.status === "healthy") {
+                            return (
+                              <div className="flex items-center gap-2 text-green-600">
+                                <CheckCircle className="h-4 w-4" />
+                                <span>Running</span>
+                                {health.latency_ms != null && (
+                                  <span className="text-muted-foreground">({formatLatency(health.latency_ms)})</span>
+                                )}
+                              </div>
+                            )
+                          }
+                          if (health.status === "ready") {
+                            return (
+                              <div className="flex items-center gap-2 text-green-600">
+                                <CheckCircle className="h-4 w-4" />
+                                <span>Ready</span>
+                                {health.error && <span className="text-muted-foreground">- {health.error}</span>}
+                              </div>
+                            )
+                          }
+                          if (health.status === "disabled") {
+                            return (
+                              <div className="flex items-center gap-2 text-muted-foreground">
+                                <XCircle className="h-4 w-4" />
+                                <span>Disabled</span>
+                              </div>
+                            )
+                          }
+                          return (
+                            <div className="flex items-center gap-2 text-red-600">
+                              <XCircle className="h-4 w-4" />
+                              <span>Unhealthy</span>
+                              {health.error && <span className="text-muted-foreground">- {health.error}</span>}
+                            </div>
+                          )
+                        })()}
+                      </CardContent>
+                    </Card>
+
+                    {/* Connection Info */}
+                    <Card>
+                      <CardHeader className="pb-3">
+                        <CardTitle className="text-sm">Connection Details</CardTitle>
+                      </CardHeader>
+                      <CardContent className="space-y-4">
+                        <div>
+                          <p className="text-sm text-muted-foreground">Proxy URL</p>
+                          <code className="text-sm break-all">{selectedServer.proxy_url}</code>
+                        </div>
+                        <div>
+                          <p className="text-sm text-muted-foreground">Gateway URL</p>
+                          <code className="text-sm break-all">{selectedServer.gateway_url}</code>
+                        </div>
+                        {selectedServer.auth_config?.type && (
+                          <div>
+                            <p className="text-sm text-muted-foreground">Authentication</p>
+                            <p className="text-sm capitalize">{selectedServer.auth_config?.type.replace(/_/g, " ")}</p>
+                          </div>
+                        )}
+                      </CardContent>
+                    </Card>
+
+                    {/* Transport Configuration */}
+                    <Card>
+                      <CardHeader className="pb-3">
+                        <CardTitle className="text-sm">Transport Configuration</CardTitle>
+                      </CardHeader>
+                      <CardContent className="space-y-4">
+                        {selectedServer.transport === "Stdio" && (() => {
+                          const tc = selectedServer.transport_config as { command?: string; args?: string[]; env?: Record<string, string> }
+                          return (
                             <>
-                              <Button
-                                size="sm"
-                                variant="secondary"
-                                onClick={() => checkOAuthStatus(selectedServer.id)}
-                              >
-                                Test
-                              </Button>
-                              <Button
-                                size="sm"
-                                variant="destructive"
-                                onClick={() => handleRevokeOAuth(selectedServer.id)}
-                              >
-                                Revoke
+                              <div>
+                                <p className="text-sm text-muted-foreground">Command</p>
+                                <code className="text-sm break-all">{tc.command || "N/A"}</code>
+                              </div>
+                              {tc.args && tc.args.length > 0 && (
+                                <div>
+                                  <p className="text-sm text-muted-foreground">Arguments</p>
+                                  <code className="text-sm break-all">{tc.args.join(" ")}</code>
+                                </div>
+                              )}
+                              {tc.env && Object.keys(tc.env).length > 0 && (
+                                <div>
+                                  <p className="text-sm text-muted-foreground">Environment Variables</p>
+                                  <div className="space-y-1">
+                                    {Object.entries(tc.env).map(([key, value]) => (
+                                      <div key={key} className="text-sm">
+                                        <code>{key}</code>=<code className="text-muted-foreground">{value}</code>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+                            </>
+                          )
+                        })()}
+                        {selectedServer.transport !== "Stdio" && (() => {
+                          const tc = selectedServer.transport_config as { url?: string; headers?: Record<string, string> }
+                          return (
+                            <>
+                              <div>
+                                <p className="text-sm text-muted-foreground">URL</p>
+                                <code className="text-sm break-all">{tc.url || "N/A"}</code>
+                              </div>
+                              {tc.headers && Object.keys(tc.headers).length > 0 && (
+                                <div>
+                                  <p className="text-sm text-muted-foreground">Headers</p>
+                                  <div className="space-y-1">
+                                    {Object.entries(tc.headers).map(([key, value]) => (
+                                      <div key={key} className="text-sm">
+                                        <code>{key}</code>: <code className="text-muted-foreground">{value}</code>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+                            </>
+                          )
+                        })()}
+                      </CardContent>
+                    </Card>
+
+                    {/* OAuth Status */}
+                    {selectedServer.auth_config?.type === "oauth_browser" && (
+                      <Card>
+                        <CardHeader className="pb-3">
+                          <CardTitle className="text-sm">OAuth Authentication</CardTitle>
+                        </CardHeader>
+                        <CardContent className="space-y-4">
+                          {!isOAuthConfigured(selectedServer) ? (
+                            <>
+                              <p className="text-sm text-muted-foreground">
+                                OAuth credentials are not configured. Click Setup to discover OAuth
+                                endpoints and enter your credentials.
+                              </p>
+                              <Button size="sm" onClick={handleStartOAuthSetup} disabled={isDiscovering}>
+                                {isDiscovering ? "Discovering..." : "Setup OAuth"}
                               </Button>
                             </>
+                          ) : (
+                            <>
+                              <div className="flex items-center justify-between">
+                                <div>
+                                  <p className="text-sm font-medium">
+                                    {oauthStatus[selectedServer.id] ? "Authenticated" : "Not authenticated"}
+                                  </p>
+                                  <p className="text-xs text-muted-foreground">
+                                    {oauthStatus[selectedServer.id]
+                                      ? "OAuth tokens are valid and ready to use"
+                                      : "Click Authenticate to complete browser login"}
+                                  </p>
+                                </div>
+                                <Badge variant={oauthStatus[selectedServer.id] ? "success" : "secondary"}>
+                                  {oauthStatus[selectedServer.id] ? "Active" : "Inactive"}
+                                </Badge>
+                              </div>
+                              <div className="flex gap-2">
+                                <Button
+                                  size="sm"
+                                  variant={oauthStatus[selectedServer.id] ? "secondary" : "default"}
+                                  onClick={() => setShowOAuthModal(true)}
+                                >
+                                  {oauthStatus[selectedServer.id] ? "Re-authenticate" : "Authenticate"}
+                                </Button>
+                                {oauthStatus[selectedServer.id] && (
+                                  <>
+                                    <Button size="sm" variant="secondary" onClick={() => checkOAuthStatus(selectedServer.id)}>
+                                      Test
+                                    </Button>
+                                    <Button size="sm" variant="destructive" onClick={() => handleRevokeOAuth(selectedServer.id)}>
+                                      Revoke
+                                    </Button>
+                                  </>
+                                )}
+                              </div>
+                            </>
                           )}
-                        </div>
-                      </>
+                        </CardContent>
+                      </Card>
                     )}
-                  </CardContent>
-                </Card>
-              )}
+                  </div>
+                </TabsContent>
+
+                <TabsContent value="settings">
+                  <div className="space-y-6">
+                    {/* Inline Edit Form */}
+                    <Card>
+                      <CardHeader>
+                        <CardTitle>Server Configuration</CardTitle>
+                        <CardDescription>Update the configuration for this MCP server</CardDescription>
+                      </CardHeader>
+                      <CardContent>
+                        <form onSubmit={handleEditServer} className="space-y-4">
+                          <div>
+                            <label className="block text-sm font-medium mb-2">Server Name</label>
+                            <Input value={serverName} onChange={(e) => setServerName(e.target.value)} placeholder="My MCP Server" required />
+                          </div>
+                          <div>
+                            <label className="block text-sm font-medium mb-2">Transport Type</label>
+                            <LegacySelect value={transportType} onChange={(e) => setTransportType(e.target.value as "Stdio" | "Sse")}>
+                              <option value="Stdio">STDIO (Subprocess)</option>
+                              <option value="Sse">HTTP-SSE (Server-Sent Events)</option>
+                            </LegacySelect>
+                          </div>
+                          {transportType === "Stdio" && (
+                            <>
+                              <div>
+                                <label className="block text-sm font-medium mb-2">Command</label>
+                                <Input value={command} onChange={(e) => setCommand(e.target.value)} placeholder="npx -y @modelcontextprotocol/server-everything" required />
+                                <p className="text-xs text-muted-foreground mt-1">Full command with arguments</p>
+                              </div>
+                              <div>
+                                <label className="block text-sm font-medium mb-2">Environment Variables</label>
+                                <KeyValueInput value={envVars} onChange={setEnvVars} keyPlaceholder="KEY" valuePlaceholder="VALUE" />
+                              </div>
+                            </>
+                          )}
+                          {transportType === "Sse" && (
+                            <div>
+                              <label className="block text-sm font-medium mb-2">URL</label>
+                              <Input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://api.example.com/mcp" required />
+                            </div>
+                          )}
+                          {transportType === "Sse" && (
+                            <div className="border-t pt-4 mt-4">
+                              <h3 className="text-md font-semibold mb-3">Authentication</h3>
+                              <p className="text-sm text-muted-foreground mb-3">Configure how LocalRouter authenticates to this MCP server</p>
+                              <div>
+                                <label className="block text-sm font-medium mb-2">Authentication Method</label>
+                                <LegacySelect value={authMethod} onChange={(e) => setAuthMethod(e.target.value as typeof authMethod)}>
+                                  <option value="none">None / Via headers</option>
+                                  <option value="bearer">Bearer Token</option>
+                                  <option value="oauth_pregenerated">OAuth (Pre-generated credentials)</option>
+                                </LegacySelect>
+                              </div>
+                              {authMethod === "bearer" && (
+                                <div className="mt-3">
+                                  <label className="block text-sm font-medium mb-2">Bearer Token</label>
+                                  <Input type="password" value={bearerToken} onChange={(e) => setBearerToken(e.target.value)} placeholder="Enter new token to update (leave empty to keep existing)" />
+                                  <p className="text-xs text-muted-foreground mt-1">Leave empty to keep the existing token. Token will be stored securely in system keychain.</p>
+                                </div>
+                              )}
+                              {authMethod === "oauth_pregenerated" && (
+                                <div className="mt-3 space-y-3">
+                                  <div>
+                                    <label className="block text-sm font-medium mb-2">Client ID</label>
+                                    <Input value={oauthClientId} onChange={(e) => setOauthClientId(e.target.value)} placeholder="your-oauth-client-id" />
+                                    <p className="text-xs text-muted-foreground mt-1">Leave empty to keep the existing client ID</p>
+                                  </div>
+                                  <div>
+                                    <label className="block text-sm font-medium mb-2">Client Secret</label>
+                                    <Input type="password" value={oauthClientSecret} onChange={(e) => setOauthClientSecret(e.target.value)} placeholder="Enter new secret to update (leave empty to keep existing)" />
+                                    <p className="text-xs text-muted-foreground mt-1">Leave empty to keep the existing secret. Stored securely in system keychain.</p>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                          {transportType === "Sse" && (
+                            <div>
+                              <label className="block text-sm font-medium mb-2">Headers (Optional)</label>
+                              <KeyValueInput value={headers} onChange={setHeaders} keyPlaceholder="Header Name" valuePlaceholder="Header Value" />
+                            </div>
+                          )}
+                          <div className="flex justify-end gap-2 pt-4">
+                            <Button type="submit" disabled={isEditing}>
+                              {isEditing ? "Saving..." : "Save Changes"}
+                            </Button>
+                          </div>
+                        </form>
+                      </CardContent>
+                    </Card>
+
+                    {/* Enable/Disable */}
+                    <Card>
+                      <CardHeader>
+                        <CardTitle>Enable Server</CardTitle>
+                        <CardDescription>When disabled, this MCP server will not be available to clients</CardDescription>
+                      </CardHeader>
+                      <CardContent>
+                        <div className="flex items-center gap-3">
+                          <Switch checked={selectedServer.enabled} onCheckedChange={() => handleToggle(selectedServer)} />
+                          <span className="text-sm">{selectedServer.enabled ? "Enabled" : "Disabled"}</span>
+                        </div>
+                      </CardContent>
+                    </Card>
+
+                    {/* Danger Zone */}
+                    <Card className="border-red-200 dark:border-red-900">
+                      <CardHeader>
+                        <CardTitle className="text-red-600 dark:text-red-400">Danger Zone</CardTitle>
+                        <CardDescription>Irreversible actions for this server</CardDescription>
+                      </CardHeader>
+                      <CardContent>
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <p className="text-sm font-medium">Delete this server</p>
+                            <p className="text-sm text-muted-foreground">Permanently delete "{selectedServer.name}" and its configuration</p>
+                          </div>
+                          <Button variant="destructive" onClick={() => setServerToDelete(selectedServer)}>
+                            Delete Server
+                          </Button>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  </div>
+                </TabsContent>
+              </Tabs>
 
             </div>
           </ScrollArea>
         ) : (
-          <div className="flex items-center justify-center h-full text-muted-foreground">
-            <p>Select an MCP to view details</p>
+          <div className="flex flex-col items-center justify-center h-full text-muted-foreground gap-4">
+            <Blocks className="h-12 w-12 opacity-30" />
+            <div className="text-center">
+              <p className="font-medium">Select an MCP to view details</p>
+            </div>
           </div>
         )}
       </ResizablePanel>
@@ -993,10 +986,7 @@ export function McpServersPanel({
     <Dialog
       open={showCreateModal}
       onOpenChange={(open) => {
-        if (!open) {
-          setShowCreateModal(false)
-          resetForm()
-        }
+        if (!open) { setShowCreateModal(false); resetForm() }
       }}
     >
       <DialogContent className={cn(
@@ -1013,174 +1003,83 @@ export function McpServersPanel({
           <form onSubmit={handleCreateServer} className="space-y-4">
             <div>
               <label className="block text-sm font-medium mb-2">Server Name</label>
-              <Input
-                value={serverName}
-                onChange={(e) => setServerName(e.target.value)}
-                placeholder="My MCP Server"
-                required
-              />
+              <Input value={serverName} onChange={(e) => setServerName(e.target.value)} placeholder="My MCP Server" required />
             </div>
-
             <div>
               <label className="block text-sm font-medium mb-2">Transport Type</label>
-              <LegacySelect
-                value={transportType}
-                onChange={(e) => setTransportType(e.target.value as "Stdio" | "Sse")}
-              >
+              <LegacySelect value={transportType} onChange={(e) => setTransportType(e.target.value as "Stdio" | "Sse")}>
                 <option value="Stdio">STDIO (Subprocess)</option>
                 <option value="Sse">HTTP-SSE (Server-Sent Events)</option>
               </LegacySelect>
             </div>
-
-            {/* STDIO Config */}
             {transportType === "Stdio" && (
               <>
                 <div>
                   <label className="block text-sm font-medium mb-2">Command</label>
-                  <Input
-                    value={command}
-                    onChange={(e) => setCommand(e.target.value)}
-                    placeholder="npx -y @modelcontextprotocol/server-everything"
-                    required
-                  />
-                  <p className="text-xs text-muted-foreground mt-1">
-                    Full command with arguments (e.g., npx -y @modelcontextprotocol/server-filesystem /tmp)
-                  </p>
+                  <Input value={command} onChange={(e) => setCommand(e.target.value)} placeholder="npx -y @modelcontextprotocol/server-everything" required />
+                  <p className="text-xs text-muted-foreground mt-1">Full command with arguments (e.g., npx -y @modelcontextprotocol/server-filesystem /tmp)</p>
                 </div>
-
                 <div>
-                  <label className="block text-sm font-medium mb-2">
-                    Environment Variables
-                  </label>
-                  <KeyValueInput
-                    value={envVars}
-                    onChange={setEnvVars}
-                    keyPlaceholder="KEY"
-                    valuePlaceholder="VALUE"
-                  />
+                  <label className="block text-sm font-medium mb-2">Environment Variables</label>
+                  <KeyValueInput value={envVars} onChange={setEnvVars} keyPlaceholder="KEY" valuePlaceholder="VALUE" />
                 </div>
               </>
             )}
-
-            {/* HTTP-SSE Config - URL first */}
             {transportType === "Sse" && (
               <div>
                 <label className="block text-sm font-medium mb-2">URL</label>
-                <Input
-                  value={url}
-                  onChange={(e) => setUrl(e.target.value)}
-                  placeholder="https://api.example.com/mcp"
-                  required
-                />
+                <Input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://api.example.com/mcp" required />
               </div>
             )}
-
-            {/* Authentication Configuration - comes BEFORE Headers for HTTP-SSE */}
             {transportType === "Sse" && (
               <div className="border-t pt-4 mt-4">
                 <h3 className="text-md font-semibold mb-3">Authentication (Optional)</h3>
-                <p className="text-sm text-muted-foreground mb-3">
-                  Configure how LocalRouter authenticates to this MCP server
-                </p>
-
+                <p className="text-sm text-muted-foreground mb-3">Configure how LocalRouter authenticates to this MCP server</p>
                 <div>
                   <label className="block text-sm font-medium mb-2">Authentication Method</label>
-                  <LegacySelect
-                    value={authMethod}
-                    onChange={(e) => setAuthMethod(e.target.value as typeof authMethod)}
-                  >
+                  <LegacySelect value={authMethod} onChange={(e) => setAuthMethod(e.target.value as typeof authMethod)}>
                     <option value="none">None / Via headers</option>
                     <option value="bearer">Bearer Token</option>
                     <option value="oauth_pregenerated">OAuth (Pre-generated credentials)</option>
                   </LegacySelect>
                 </div>
-
-                {/* Bearer Token Auth */}
                 {authMethod === "bearer" && (
                   <div className="mt-3">
                     <label className="block text-sm font-medium mb-2">Bearer Token</label>
-                    <Input
-                      type="password"
-                      value={bearerToken}
-                      onChange={(e) => setBearerToken(e.target.value)}
-                      placeholder="your-bearer-token"
-                      required
-                    />
-                    <p className="text-xs text-muted-foreground mt-1">
-                      Token will be stored securely in system keychain
-                    </p>
+                    <Input type="password" value={bearerToken} onChange={(e) => setBearerToken(e.target.value)} placeholder="your-bearer-token" required />
+                    <p className="text-xs text-muted-foreground mt-1">Token will be stored securely in system keychain</p>
                   </div>
                 )}
-
-                {/* OAuth Pre-generated credentials */}
                 {authMethod === "oauth_pregenerated" && (
                   <div className="mt-3 space-y-3">
                     <div>
                       <label className="block text-sm font-medium mb-2">Client ID</label>
-                      <Input
-                        value={oauthClientId}
-                        onChange={(e) => setOauthClientId(e.target.value)}
-                        placeholder="your-oauth-client-id"
-                        required
-                      />
+                      <Input value={oauthClientId} onChange={(e) => setOauthClientId(e.target.value)} placeholder="your-oauth-client-id" required />
                     </div>
                     <div>
                       <label className="block text-sm font-medium mb-2">Client Secret</label>
-                      <Input
-                        type="password"
-                        value={oauthClientSecret}
-                        onChange={(e) => setOauthClientSecret(e.target.value)}
-                        placeholder="your-oauth-client-secret"
-                        required
-                      />
-                      <p className="text-xs text-muted-foreground mt-1">
-                        Stored securely in system keychain
-                      </p>
+                      <Input type="password" value={oauthClientSecret} onChange={(e) => setOauthClientSecret(e.target.value)} placeholder="your-oauth-client-secret" required />
+                      <p className="text-xs text-muted-foreground mt-1">Stored securely in system keychain</p>
                     </div>
                   </div>
                 )}
               </div>
             )}
-
-            {/* Headers - comes AFTER Authentication for HTTP-SSE */}
             {transportType === "Sse" && (
               <div>
                 <label className="block text-sm font-medium mb-2">Headers (Optional)</label>
-                <KeyValueInput
-                  value={headers}
-                  onChange={setHeaders}
-                  keyPlaceholder="Header Name"
-                  valuePlaceholder="Header Value"
-                />
+                <KeyValueInput value={headers} onChange={setHeaders} keyPlaceholder="Header Name" valuePlaceholder="Header Value" />
               </div>
             )}
-
             <div className="flex justify-end gap-2 pt-4">
-              <Button
-                type="button"
-                variant="secondary"
-                onClick={() => {
-                  setShowCreateModal(false)
-                  resetForm()
-                }}
-                disabled={isCreating}
-              >
-                Cancel
-              </Button>
-              <Button type="submit" disabled={isCreating}>
-                {isCreating ? "Creating..." : "Create"}
-              </Button>
+              <Button type="button" variant="secondary" onClick={() => { setShowCreateModal(false); resetForm() }} disabled={isCreating}>Cancel</Button>
+              <Button type="submit" disabled={isCreating}>{isCreating ? "Creating..." : "Create"}</Button>
             </div>
           </form>
         )}
 
         {selectedTemplate && (
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => setSelectedTemplate(null)}
-            className="mt-2"
-          >
+          <Button variant="ghost" size="sm" onClick={() => setSelectedTemplate(null)} className="mt-2">
             Back to template selection
           </Button>
         )}
@@ -1208,252 +1107,29 @@ export function McpServersPanel({
           {oauthDiscovery && (
             <div className="bg-muted rounded p-3 text-sm">
               <p className="font-medium mb-2">Discovered OAuth Endpoints:</p>
-              <p className="text-xs text-muted-foreground truncate">
-                Auth: {oauthDiscovery.auth_url}
-              </p>
-              <p className="text-xs text-muted-foreground truncate">
-                Token: {oauthDiscovery.token_url}
-              </p>
+              <p className="text-xs text-muted-foreground truncate">Auth: {oauthDiscovery.auth_url}</p>
+              <p className="text-xs text-muted-foreground truncate">Token: {oauthDiscovery.token_url}</p>
               {oauthDiscovery.scopes && oauthDiscovery.scopes.length > 0 && (
-                <p className="text-xs text-muted-foreground">
-                  Scopes: {oauthDiscovery.scopes.join(", ")}
-                </p>
+                <p className="text-xs text-muted-foreground">Scopes: {oauthDiscovery.scopes.join(", ")}</p>
               )}
             </div>
           )}
-
           <div>
             <label className="block text-sm font-medium mb-2">Client ID</label>
-            <Input
-              value={oauthSetupClientId}
-              onChange={(e) => setOauthSetupClientId(e.target.value)}
-              placeholder="your-oauth-app-client-id"
-            />
-            <p className="text-xs text-muted-foreground mt-1">
-              Create an OAuth app in your provider's settings
-            </p>
+            <Input value={oauthSetupClientId} onChange={(e) => setOauthSetupClientId(e.target.value)} placeholder="your-oauth-app-client-id" />
+            <p className="text-xs text-muted-foreground mt-1">Create an OAuth app in your provider's settings</p>
           </div>
-
           <div>
             <label className="block text-sm font-medium mb-2">Client Secret</label>
-            <Input
-              type="password"
-              value={oauthSetupClientSecret}
-              onChange={(e) => setOauthSetupClientSecret(e.target.value)}
-              placeholder="your-oauth-app-client-secret"
-            />
+            <Input type="password" value={oauthSetupClientSecret} onChange={(e) => setOauthSetupClientSecret(e.target.value)} placeholder="your-oauth-app-client-secret" />
           </div>
-
           <div className="flex justify-end gap-2">
-            <Button
-              variant="secondary"
-              onClick={() => setShowOAuthSetup(false)}
-              disabled={isSavingOAuth}
-            >
-              Cancel
-            </Button>
-            <Button
-              onClick={handleSaveOAuthCredentials}
-              disabled={!oauthSetupClientId || !oauthSetupClientSecret || isSavingOAuth}
-            >
+            <Button variant="secondary" onClick={() => setShowOAuthSetup(false)} disabled={isSavingOAuth}>Cancel</Button>
+            <Button onClick={handleSaveOAuthCredentials} disabled={!oauthSetupClientId || !oauthSetupClientSecret || isSavingOAuth}>
               {isSavingOAuth ? "Saving..." : "Save & Continue"}
             </Button>
           </div>
         </div>
-      </DialogContent>
-    </Dialog>
-
-    {/* Edit MCP Server Modal */}
-    <Dialog
-      open={showEditModal}
-      onOpenChange={(open) => {
-        if (!open) {
-          setShowEditModal(false)
-          resetForm()
-        }
-      }}
-    >
-      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle>Edit MCP Server</DialogTitle>
-        </DialogHeader>
-
-        <form onSubmit={handleEditServer} className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium mb-2">Server Name</label>
-            <Input
-              value={serverName}
-              onChange={(e) => setServerName(e.target.value)}
-              placeholder="My MCP Server"
-              required
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium mb-2">Transport Type</label>
-            <LegacySelect
-              value={transportType}
-              onChange={(e) => setTransportType(e.target.value as "Stdio" | "Sse")}
-            >
-              <option value="Stdio">STDIO (Subprocess)</option>
-              <option value="Sse">HTTP-SSE (Server-Sent Events)</option>
-            </LegacySelect>
-          </div>
-
-          {/* STDIO Config */}
-          {transportType === "Stdio" && (
-            <>
-              <div>
-                <label className="block text-sm font-medium mb-2">Command</label>
-                <Input
-                  value={command}
-                  onChange={(e) => setCommand(e.target.value)}
-                  placeholder="npx -y @modelcontextprotocol/server-everything"
-                  required
-                />
-                <p className="text-xs text-muted-foreground mt-1">
-                  Full command with arguments (e.g., npx -y @modelcontextprotocol/server-filesystem /tmp)
-                </p>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium mb-2">
-                  Environment Variables
-                </label>
-                <KeyValueInput
-                  value={envVars}
-                  onChange={setEnvVars}
-                  keyPlaceholder="KEY"
-                  valuePlaceholder="VALUE"
-                />
-              </div>
-            </>
-          )}
-
-          {/* HTTP-SSE Config - URL first */}
-          {transportType === "Sse" && (
-            <div>
-              <label className="block text-sm font-medium mb-2">URL</label>
-              <Input
-                value={url}
-                onChange={(e) => setUrl(e.target.value)}
-                placeholder="https://api.example.com/mcp"
-                required
-              />
-            </div>
-          )}
-
-          {/* Authentication Configuration - comes BEFORE Headers */}
-          {transportType === "Sse" && (
-            <div className="border-t pt-4 mt-4">
-              <h3 className="text-md font-semibold mb-3">Authentication</h3>
-              <p className="text-sm text-muted-foreground mb-3">
-                Configure how LocalRouter authenticates to this MCP server
-              </p>
-
-              <div>
-                <label className="block text-sm font-medium mb-2">Authentication Method</label>
-                <LegacySelect
-                  value={authMethod}
-                  onChange={(e) => setAuthMethod(e.target.value as typeof authMethod)}
-                >
-                  <option value="none">None / Via headers</option>
-                  <option value="bearer">Bearer Token</option>
-                  <option value="oauth_pregenerated">OAuth (Pre-generated credentials)</option>
-                  {/* TODO: Re-enable when dynamic client registration is implemented */}
-                  {/* <option value="oauth_browser">OAuth (External browser)</option> */}
-                </LegacySelect>
-              </div>
-
-              {/* Bearer Token Auth */}
-              {authMethod === "bearer" && (
-                <div className="mt-3">
-                  <label className="block text-sm font-medium mb-2">Bearer Token</label>
-                  <Input
-                    type="password"
-                    value={bearerToken}
-                    onChange={(e) => setBearerToken(e.target.value)}
-                    placeholder="Enter new token to update (leave empty to keep existing)"
-                  />
-                  <p className="text-xs text-muted-foreground mt-1">
-                    Leave empty to keep the existing token. Token will be stored securely in system keychain.
-                  </p>
-                </div>
-              )}
-
-              {/* OAuth Pre-generated credentials */}
-              {authMethod === "oauth_pregenerated" && (
-                <div className="mt-3 space-y-3">
-                  <div>
-                    <label className="block text-sm font-medium mb-2">Client ID</label>
-                    <Input
-                      value={oauthClientId}
-                      onChange={(e) => setOauthClientId(e.target.value)}
-                      placeholder="your-oauth-client-id"
-                    />
-                    <p className="text-xs text-muted-foreground mt-1">
-                      Leave empty to keep the existing client ID
-                    </p>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium mb-2">Client Secret</label>
-                    <Input
-                      type="password"
-                      value={oauthClientSecret}
-                      onChange={(e) => setOauthClientSecret(e.target.value)}
-                      placeholder="Enter new secret to update (leave empty to keep existing)"
-                    />
-                    <p className="text-xs text-muted-foreground mt-1">
-                      Leave empty to keep the existing secret. Stored securely in system keychain.
-                    </p>
-                  </div>
-                </div>
-              )}
-
-              {/* OAuth Browser Flow - TODO: Re-enable when dynamic client registration is implemented */}
-              {/* {authMethod === "oauth_browser" && (
-                <div className="mt-3">
-                  <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-700 rounded p-3">
-                    <p className="text-blue-800 dark:text-blue-200 text-sm">
-                      OAuth settings are managed in the detail view. After saving, use the
-                      "Re-authorize" button to complete browser authentication.
-                    </p>
-                  </div>
-                </div>
-              )} */}
-            </div>
-          )}
-
-          {/* Headers - comes AFTER Authentication */}
-          {transportType === "Sse" && (
-            <div>
-              <label className="block text-sm font-medium mb-2">Headers (Optional)</label>
-              <KeyValueInput
-                value={headers}
-                onChange={setHeaders}
-                keyPlaceholder="Header Name"
-                valuePlaceholder="Header Value"
-              />
-            </div>
-          )}
-
-          <div className="flex justify-end gap-2 pt-4">
-            <Button
-              type="button"
-              variant="secondary"
-              onClick={() => {
-                setShowEditModal(false)
-                resetForm()
-              }}
-              disabled={isEditing}
-            >
-              Cancel
-            </Button>
-            <Button type="submit" disabled={isEditing}>
-              {isEditing ? "Saving..." : "Save Changes"}
-            </Button>
-          </div>
-        </form>
       </DialogContent>
     </Dialog>
 
@@ -1468,10 +1144,7 @@ export function McpServersPanel({
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel>Cancel</AlertDialogCancel>
-          <AlertDialogAction
-            onClick={handleDelete}
-            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-          >
+          <AlertDialogAction onClick={handleDelete} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
             Delete
           </AlertDialogAction>
         </AlertDialogFooter>

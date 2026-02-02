@@ -5,10 +5,11 @@ import { listen } from "@tauri-apps/api/event"
 import { toast } from "sonner"
 import { RefreshCw, ExternalLink, ChevronDown, ChevronRight, FileText, FileCode, Image, Folder, FlaskConical, Play, BookOpen, Sparkles } from "lucide-react"
 import { Button } from "@/components/ui/Button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card"
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Switch } from "@/components/ui/switch"
 import { Input } from "@/components/ui/Input"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
   ResizablePanelGroup,
   ResizablePanel,
@@ -50,6 +51,7 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
   const [loadingFiles, setLoadingFiles] = useState(false)
   const [expandedFiles, setExpandedFiles] = useState<Set<string>>(new Set())
   const [search, setSearch] = useState("")
+  const [detailTab, setDetailTab] = useState("info")
 
   useEffect(() => {
     loadData()
@@ -74,6 +76,7 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
       setSkillFiles([])
       setExpandedFiles(new Set())
     }
+    setDetailTab("info")
   }, [selectedSkill])
 
   const loadData = async () => {
@@ -254,229 +257,257 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
                         Try It Out
                       </Button>
                     )}
-                    <span className="text-xs text-muted-foreground">
-                      {selectedSkillInfo.enabled ? "Enabled" : "Disabled"}
-                    </span>
-                    <Switch
-                      checked={selectedSkillInfo.enabled}
-                      onCheckedChange={(checked) => handleToggleEnabled(selectedSkillInfo.name, checked)}
-                    />
                   </div>
                 </div>
 
-                {/* Metadata */}
-                <Card>
-                  <CardHeader className="pb-3">
-                    <CardTitle className="text-sm">Details</CardTitle>
-                  </CardHeader>
-                  <CardContent className="space-y-4">
-                    <div className="grid grid-cols-2 gap-3 text-sm">
-                      {selectedSkillInfo.version && (
-                        <div>
-                          <span className="text-muted-foreground">Version:</span>{" "}
-                          <span className="font-medium">{selectedSkillInfo.version}</span>
-                        </div>
-                      )}
-                      {selectedSkillInfo.author && (
-                        <div>
-                          <span className="text-muted-foreground">Author:</span>{" "}
-                          <span className="font-medium">{selectedSkillInfo.author}</span>
-                        </div>
-                      )}
-                      {Object.entries(selectedSkillInfo.extra).map(([key, value]) => (
-                        <div key={key}>
-                          <span className="text-muted-foreground">{key}:</span>{" "}
-                          <span className="font-medium">{typeof value === "object" ? JSON.stringify(value) : String(value)}</span>
-                        </div>
-                      ))}
-                    </div>
+                <Tabs value={detailTab} onValueChange={setDetailTab}>
+                  <TabsList>
+                    <TabsTrigger value="info">Info</TabsTrigger>
+                    <TabsTrigger value="settings">Settings</TabsTrigger>
+                  </TabsList>
 
-                    {/* Tags */}
-                    {selectedSkillInfo.tags.length > 0 && (
-                      <div className="flex flex-wrap gap-1.5">
-                        {selectedSkillInfo.tags.map((tag) => (
-                          <span
-                            key={tag}
-                            className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground"
-                          >
-                            {tag}
-                          </span>
-                        ))}
-                      </div>
-                    )}
+                  <TabsContent value="info">
+                    <div className="space-y-6">
+                      {/* Metadata */}
+                      <Card>
+                        <CardHeader className="pb-3">
+                          <CardTitle className="text-sm">Details</CardTitle>
+                        </CardHeader>
+                        <CardContent className="space-y-4">
+                          <div className="grid grid-cols-2 gap-3 text-sm">
+                            {selectedSkillInfo.version && (
+                              <div>
+                                <span className="text-muted-foreground">Version:</span>{" "}
+                                <span className="font-medium">{selectedSkillInfo.version}</span>
+                              </div>
+                            )}
+                            {selectedSkillInfo.author && (
+                              <div>
+                                <span className="text-muted-foreground">Author:</span>{" "}
+                                <span className="font-medium">{selectedSkillInfo.author}</span>
+                              </div>
+                            )}
+                            {Object.entries(selectedSkillInfo.extra).map(([key, value]) => (
+                              <div key={key}>
+                                <span className="text-muted-foreground">{key}:</span>{" "}
+                                <span className="font-medium">{typeof value === "object" ? JSON.stringify(value) : String(value)}</span>
+                              </div>
+                            ))}
+                          </div>
 
-                    {/* Capabilities */}
-                    <div className="flex gap-2">
-                      {selectedSkillInfo.script_count > 0 && (
-                        <span className="text-xs px-2 py-1 rounded bg-blue-500/10 text-blue-600 dark:text-blue-400 flex items-center gap-1">
-                          <Play className="h-3 w-3" />
-                          {selectedSkillInfo.script_count} Executable{selectedSkillInfo.script_count > 1 ? "s" : ""}
-                        </span>
-                      )}
-                      {(selectedSkillInfo.reference_count > 0 || selectedSkillInfo.asset_count > 0) && (
-                        <span className="text-xs px-2 py-1 rounded bg-green-500/10 text-green-600 dark:text-green-400 flex items-center gap-1">
-                          <BookOpen className="h-3 w-3" />
-                          {selectedSkillInfo.reference_count + selectedSkillInfo.asset_count} Resource{selectedSkillInfo.reference_count + selectedSkillInfo.asset_count > 1 ? "s" : ""}
-                        </span>
-                      )}
-                    </div>
-                  </CardContent>
-                </Card>
+                          {/* Tags */}
+                          {selectedSkillInfo.tags.length > 0 && (
+                            <div className="flex flex-wrap gap-1.5">
+                              {selectedSkillInfo.tags.map((tag) => (
+                                <span
+                                  key={tag}
+                                  className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground"
+                                >
+                                  {tag}
+                                </span>
+                              ))}
+                            </div>
+                          )}
 
-                {/* File Tree */}
-                {loadingFiles ? (
-                  <Card>
-                    <CardContent className="py-4">
-                      <p className="text-xs text-muted-foreground">Loading files...</p>
-                    </CardContent>
-                  </Card>
-                ) : skillFiles.length > 0 && (
-                  <Card>
-                    <CardHeader className="pb-3">
-                      <CardTitle className="text-sm">Files</CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                      <div className="rounded-md border border-border/50 bg-muted/20 py-1">
-                        {(() => {
-                          // Build a nested tree from flat relative paths
-                          interface TreeNode {
-                            name: string
-                            fullPath: string
-                            file?: SkillFile
-                            children: Record<string, TreeNode>
-                          }
+                          {/* Capabilities */}
+                          <div className="flex gap-2">
+                            {selectedSkillInfo.script_count > 0 && (
+                              <span className="text-xs px-2 py-1 rounded bg-blue-500/10 text-blue-600 dark:text-blue-400 flex items-center gap-1">
+                                <Play className="h-3 w-3" />
+                                {selectedSkillInfo.script_count} Executable{selectedSkillInfo.script_count > 1 ? "s" : ""}
+                              </span>
+                            )}
+                            {(selectedSkillInfo.reference_count > 0 || selectedSkillInfo.asset_count > 0) && (
+                              <span className="text-xs px-2 py-1 rounded bg-green-500/10 text-green-600 dark:text-green-400 flex items-center gap-1">
+                                <BookOpen className="h-3 w-3" />
+                                {selectedSkillInfo.reference_count + selectedSkillInfo.asset_count} Resource{selectedSkillInfo.reference_count + selectedSkillInfo.asset_count > 1 ? "s" : ""}
+                              </span>
+                            )}
+                          </div>
+                        </CardContent>
+                      </Card>
 
-                          const root: TreeNode = { name: "", fullPath: "", children: {} }
-                          for (const file of skillFiles) {
-                            const parts = file.name.split("/")
-                            let node = root
-                            for (let i = 0; i < parts.length; i++) {
-                              const part = parts[i]
-                              const partialPath = parts.slice(0, i + 1).join("/")
-                              if (!node.children[part]) {
-                                node.children[part] = { name: part, fullPath: partialPath, children: {} }
-                              }
-                              node = node.children[part]
-                            }
-                            node.file = file
-                          }
-
-                          const getFileIcon = (name: string, category: string) => {
-                            if (category === "skill_md") return <FileText className="h-3.5 w-3.5 text-amber-500" />
-                            if (category === "script") return <Play className="h-3.5 w-3.5 text-blue-500" />
-                            if (category === "reference") return <BookOpen className="h-3.5 w-3.5 text-green-500" />
-                            if (category === "asset") return <Image className="h-3.5 w-3.5 text-purple-500" />
-                            const ext = name.split(".").pop()?.toLowerCase() ?? ""
-                            if (["sh", "bash", "py", "js", "ts", "rb", "pl"].includes(ext)) return <FileCode className="h-3.5 w-3.5 text-muted-foreground" />
-                            if (["png", "jpg", "jpeg", "gif", "svg", "webp", "ico"].includes(ext)) return <Image className="h-3.5 w-3.5 text-muted-foreground" />
-                            return <FileText className="h-3.5 w-3.5 text-muted-foreground" />
-                          }
-
-                          const getCategoryBadge = (category: string) => {
-                            if (category === "skill_md") return <span className="text-[9px] px-1 py-0.5 rounded bg-amber-500/10 text-amber-600 dark:text-amber-400 font-medium uppercase">Definition</span>
-                            if (category === "script") return <span className="text-[9px] px-1 py-0.5 rounded bg-blue-500/10 text-blue-600 dark:text-blue-400 font-medium uppercase">Executable</span>
-                            if (category === "reference") return <span className="text-[9px] px-1 py-0.5 rounded bg-green-500/10 text-green-600 dark:text-green-400 font-medium uppercase">Resource</span>
-                            if (category === "asset") return <span className="text-[9px] px-1 py-0.5 rounded bg-purple-500/10 text-purple-600 dark:text-purple-400 font-medium uppercase">Resource</span>
-                            return null
-                          }
-
-                          const renderNode = (node: TreeNode, depth: number): React.ReactNode[] => {
-                            const entries = Object.values(node.children)
-                            entries.sort((a, b) => {
-                              const aIsDir = Object.keys(a.children).length > 0 && !a.file
-                              const bIsDir = Object.keys(b.children).length > 0 && !b.file
-                              if (aIsDir !== bIsDir) return aIsDir ? -1 : 1
-                              return a.name.localeCompare(b.name)
-                            })
-
-                            const results: React.ReactNode[] = []
-                            const padLeft = 12 + depth * 16
-
-                            for (const entry of entries) {
-                              const isDir = Object.keys(entry.children).length > 0 && !entry.file
-                              if (isDir) {
-                                const countFiles = (n: TreeNode): number => {
-                                  let c = n.file ? 1 : 0
-                                  for (const child of Object.values(n.children)) c += countFiles(child)
-                                  return c
+                      {/* File Tree */}
+                      {loadingFiles ? (
+                        <Card>
+                          <CardContent className="py-4">
+                            <p className="text-xs text-muted-foreground">Loading files...</p>
+                          </CardContent>
+                        </Card>
+                      ) : skillFiles.length > 0 && (
+                        <Card>
+                          <CardHeader className="pb-3">
+                            <CardTitle className="text-sm">Files</CardTitle>
+                          </CardHeader>
+                          <CardContent>
+                            <div className="rounded-md border border-border/50 bg-muted/20 py-1">
+                              {(() => {
+                                interface TreeNode {
+                                  name: string
+                                  fullPath: string
+                                  file?: SkillFile
+                                  children: Record<string, TreeNode>
                                 }
-                                const fileCount = countFiles(entry)
-                                const dirKey = `dir:${entry.fullPath}`
-                                const isDirExpanded = expandedFiles.has(dirKey)
 
-                                results.push(
-                                  <div key={dirKey}>
-                                    <button
-                                      className="w-full flex items-center gap-1.5 py-1 text-xs hover:bg-muted/50 transition-colors"
-                                      style={{ paddingLeft: padLeft }}
-                                      onClick={() => toggleFileExpanded(dirKey)}
-                                    >
-                                      {isDirExpanded
-                                        ? <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" />
-                                        : <ChevronRight className="h-3 w-3 shrink-0 text-muted-foreground" />}
-                                      <Folder className="h-3.5 w-3.5 text-muted-foreground" />
-                                      <span className="font-medium">{entry.name}/</span>
-                                      <span className="text-muted-foreground">({fileCount})</span>
-                                    </button>
-                                    {isDirExpanded && renderNode(entry, depth + 1)}
-                                  </div>
-                                )
-                              } else if (entry.file) {
-                                const file = entry.file
-                                const badge = getCategoryBadge(file.category)
-                                results.push(
-                                  <div key={file.name}>
-                                    <button
-                                      className="w-full flex items-center gap-1.5 py-1 pr-3 text-xs hover:bg-muted/50 transition-colors"
-                                      style={{ paddingLeft: padLeft }}
-                                      onClick={() => file.content_preview && toggleFileExpanded(file.name)}
-                                    >
-                                      {file.content_preview ? (
-                                        expandedFiles.has(file.name)
-                                          ? <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" />
-                                          : <ChevronRight className="h-3 w-3 shrink-0 text-muted-foreground" />
-                                      ) : <div className="w-3" />}
-                                      {getFileIcon(entry.name, file.category)}
-                                      <span>{entry.name}</span>
-                                      {badge}
-                                    </button>
-                                    {expandedFiles.has(file.name) && file.content_preview && (
-                                      <pre
-                                        className="mr-3 mb-1 px-3 py-2 text-[10px] leading-relaxed bg-muted/30 rounded border border-border/50 overflow-x-auto max-h-48 whitespace-pre-wrap break-words"
-                                        style={{ marginLeft: padLeft + 18 }}
-                                      >
-                                        {file.content_preview}
-                                      </pre>
-                                    )}
-                                  </div>
-                                )
-                              }
-                            }
-                            return results
-                          }
+                                const root: TreeNode = { name: "", fullPath: "", children: {} }
+                                for (const file of skillFiles) {
+                                  const parts = file.name.split("/")
+                                  let node = root
+                                  for (let i = 0; i < parts.length; i++) {
+                                    const part = parts[i]
+                                    const partialPath = parts.slice(0, i + 1).join("/")
+                                    if (!node.children[part]) {
+                                      node.children[part] = { name: part, fullPath: partialPath, children: {} }
+                                    }
+                                    node = node.children[part]
+                                  }
+                                  node.file = file
+                                }
 
-                          return renderNode(root, 0)
-                        })()}
+                                const getFileIcon = (name: string, category: string) => {
+                                  if (category === "skill_md") return <FileText className="h-3.5 w-3.5 text-amber-500" />
+                                  if (category === "script") return <Play className="h-3.5 w-3.5 text-blue-500" />
+                                  if (category === "reference") return <BookOpen className="h-3.5 w-3.5 text-green-500" />
+                                  if (category === "asset") return <Image className="h-3.5 w-3.5 text-purple-500" />
+                                  const ext = name.split(".").pop()?.toLowerCase() ?? ""
+                                  if (["sh", "bash", "py", "js", "ts", "rb", "pl"].includes(ext)) return <FileCode className="h-3.5 w-3.5 text-muted-foreground" />
+                                  if (["png", "jpg", "jpeg", "gif", "svg", "webp", "ico"].includes(ext)) return <Image className="h-3.5 w-3.5 text-muted-foreground" />
+                                  return <FileText className="h-3.5 w-3.5 text-muted-foreground" />
+                                }
+
+                                const getCategoryBadge = (category: string) => {
+                                  if (category === "skill_md") return <span className="text-[9px] px-1 py-0.5 rounded bg-amber-500/10 text-amber-600 dark:text-amber-400 font-medium uppercase">Definition</span>
+                                  if (category === "script") return <span className="text-[9px] px-1 py-0.5 rounded bg-blue-500/10 text-blue-600 dark:text-blue-400 font-medium uppercase">Executable</span>
+                                  if (category === "reference") return <span className="text-[9px] px-1 py-0.5 rounded bg-green-500/10 text-green-600 dark:text-green-400 font-medium uppercase">Resource</span>
+                                  if (category === "asset") return <span className="text-[9px] px-1 py-0.5 rounded bg-purple-500/10 text-purple-600 dark:text-purple-400 font-medium uppercase">Resource</span>
+                                  return null
+                                }
+
+                                const renderNode = (node: TreeNode, depth: number): React.ReactNode[] => {
+                                  const entries = Object.values(node.children)
+                                  entries.sort((a, b) => {
+                                    const aIsDir = Object.keys(a.children).length > 0 && !a.file
+                                    const bIsDir = Object.keys(b.children).length > 0 && !b.file
+                                    if (aIsDir !== bIsDir) return aIsDir ? -1 : 1
+                                    return a.name.localeCompare(b.name)
+                                  })
+
+                                  const results: React.ReactNode[] = []
+                                  const padLeft = 12 + depth * 16
+
+                                  for (const entry of entries) {
+                                    const isDir = Object.keys(entry.children).length > 0 && !entry.file
+                                    if (isDir) {
+                                      const countFiles = (n: TreeNode): number => {
+                                        let c = n.file ? 1 : 0
+                                        for (const child of Object.values(n.children)) c += countFiles(child)
+                                        return c
+                                      }
+                                      const fileCount = countFiles(entry)
+                                      const dirKey = `dir:${entry.fullPath}`
+                                      const isDirExpanded = expandedFiles.has(dirKey)
+
+                                      results.push(
+                                        <div key={dirKey}>
+                                          <button
+                                            className="w-full flex items-center gap-1.5 py-1 text-xs hover:bg-muted/50 transition-colors"
+                                            style={{ paddingLeft: padLeft }}
+                                            onClick={() => toggleFileExpanded(dirKey)}
+                                          >
+                                            {isDirExpanded
+                                              ? <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" />
+                                              : <ChevronRight className="h-3 w-3 shrink-0 text-muted-foreground" />}
+                                            <Folder className="h-3.5 w-3.5 text-muted-foreground" />
+                                            <span className="font-medium">{entry.name}/</span>
+                                            <span className="text-muted-foreground">({fileCount})</span>
+                                          </button>
+                                          {isDirExpanded && renderNode(entry, depth + 1)}
+                                        </div>
+                                      )
+                                    } else if (entry.file) {
+                                      const file = entry.file
+                                      const badge = getCategoryBadge(file.category)
+                                      results.push(
+                                        <div key={file.name}>
+                                          <button
+                                            className="w-full flex items-center gap-1.5 py-1 pr-3 text-xs hover:bg-muted/50 transition-colors"
+                                            style={{ paddingLeft: padLeft }}
+                                            onClick={() => file.content_preview && toggleFileExpanded(file.name)}
+                                          >
+                                            {file.content_preview ? (
+                                              expandedFiles.has(file.name)
+                                                ? <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" />
+                                                : <ChevronRight className="h-3 w-3 shrink-0 text-muted-foreground" />
+                                            ) : <div className="w-3" />}
+                                            {getFileIcon(entry.name, file.category)}
+                                            <span>{entry.name}</span>
+                                            {badge}
+                                          </button>
+                                          {expandedFiles.has(file.name) && file.content_preview && (
+                                            <pre
+                                              className="mr-3 mb-1 px-3 py-2 text-[10px] leading-relaxed bg-muted/30 rounded border border-border/50 overflow-x-auto max-h-48 whitespace-pre-wrap break-words"
+                                              style={{ marginLeft: padLeft + 18 }}
+                                            >
+                                              {file.content_preview}
+                                            </pre>
+                                          )}
+                                        </div>
+                                      )
+                                    }
+                                  }
+                                  return results
+                                }
+
+                                return renderNode(root, 0)
+                              })()}
+                            </div>
+                          </CardContent>
+                        </Card>
+                      )}
+
+                      {/* Source path */}
+                      <div className="flex items-center justify-between text-xs text-muted-foreground">
+                        <span className="truncate" title={selectedSkillInfo.source_path}>
+                          Source: {selectedSkillInfo.source_path}
+                        </span>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-6 text-xs shrink-0"
+                          onClick={() => handleOpenPath(selectedSkillInfo.source_path)}
+                        >
+                          <ExternalLink className="h-3 w-3 mr-1" />
+                          Open folder
+                        </Button>
                       </div>
-                    </CardContent>
-                  </Card>
-                )}
+                    </div>
+                  </TabsContent>
 
-                {/* Source path */}
-                <div className="flex items-center justify-between text-xs text-muted-foreground">
-                  <span className="truncate" title={selectedSkillInfo.source_path}>
-                    Source: {selectedSkillInfo.source_path}
-                  </span>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-6 text-xs shrink-0"
-                    onClick={() => handleOpenPath(selectedSkillInfo.source_path)}
-                  >
-                    <ExternalLink className="h-3 w-3 mr-1" />
-                    Open folder
-                  </Button>
-                </div>
+                  <TabsContent value="settings">
+                    <div className="space-y-6">
+                      {/* Enable/Disable */}
+                      <Card>
+                        <CardHeader>
+                          <CardTitle>Enable Skill</CardTitle>
+                          <CardDescription>
+                            When disabled, this skill will not be available to clients
+                          </CardDescription>
+                        </CardHeader>
+                        <CardContent>
+                          <div className="flex items-center gap-3">
+                            <Switch
+                              checked={selectedSkillInfo.enabled}
+                              onCheckedChange={(checked) => handleToggleEnabled(selectedSkillInfo.name, checked)}
+                            />
+                            <span className="text-sm">
+                              {selectedSkillInfo.enabled ? "Enabled" : "Disabled"}
+                            </span>
+                          </div>
+                        </CardContent>
+                      </Card>
+                    </div>
+                  </TabsContent>
+                </Tabs>
               </div>
             </ScrollArea>
           ) : (
