@@ -42,7 +42,6 @@ interface ChatPanelProps {
   isReady: boolean
   selectedModel: string
   parameters: ModelParameters
-  subtitle?: string
 }
 
 export function ChatPanel({
@@ -50,7 +49,6 @@ export function ChatPanel({
   isReady,
   selectedModel,
   parameters,
-  subtitle,
 }: ChatPanelProps) {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState("")
@@ -293,10 +291,7 @@ export function ChatPanel({
     <Card className="flex flex-col h-full">
       <CardHeader className="pb-3 flex-shrink-0">
         <div className="flex items-center justify-between">
-          <div>
-            <CardTitle className="text-base">Chat</CardTitle>
-            {subtitle && <p className="text-sm text-muted-foreground">{subtitle}</p>}
-          </div>
+          <CardTitle className="text-base">Chat</CardTitle>
           <Button variant="outline" size="sm" onClick={clearChat}>
             Clear
           </Button>

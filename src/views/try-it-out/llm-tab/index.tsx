@@ -300,19 +300,6 @@ export function LlmTab({ initialMode, initialProvider, initialClientId }: LlmTab
     return true
   }
 
-  const getSubtitle = () => {
-    if (mode === "client" && selectedClientId) {
-      return `Using client: ${clients.find(c => c.id === selectedClientId)?.name}`
-    }
-    if (mode === "strategy" && selectedStrategy) {
-      return `Using strategy: ${selectedStrategy}`
-    }
-    if (mode === "direct" && selectedProvider) {
-      return `Direct to: ${selectedProvider}`
-    }
-    return undefined
-  }
-
   // Get the effective model string for API calls
   // In direct mode, internal test token requires provider/model format
   const getEffectiveModel = () => {
@@ -343,18 +330,23 @@ export function LlmTab({ initialMode, initialProvider, initialClientId }: LlmTab
       {/* Mode Selection */}
       <Card>
         <CardHeader className="pb-3">
-          <CardTitle className="text-base">Test Mode</CardTitle>
-          <p className="text-sm text-muted-foreground">{getModeDescription()}</p>
+          <div className="space-y-1.5">
+            <CardTitle className="text-base">Connect to LLM</CardTitle>
+            <p className="text-sm text-muted-foreground">{getModeDescription()}</p>
+          </div>
         </CardHeader>
-        <CardContent>
-          <div className="space-y-4">
+        <CardContent className="flex flex-col gap-4">
+          {/* Two-column layout: radio buttons left, options right */}
+          <div className="flex gap-6">
+            <div className="flex flex-col gap-2 flex-shrink-0">
+            <Label className="text-sm font-medium">Mode</Label>
             <RadioGroup
               value={mode}
               onValueChange={(v: string) => {
                 setMode(v as TestMode)
                 setSelectedModel("")
               }}
-              className="flex flex-col gap-2"
+              className="flex flex-col gap-3"
             >
               <div className="flex items-center space-x-2">
                 <RadioGroupItem value="client" id="mode-client" />
@@ -378,136 +370,151 @@ export function LlmTab({ initialMode, initialProvider, initialClientId }: LlmTab
                 </Label>
               </div>
             </RadioGroup>
-
-            {/* Mode-specific selector */}
-            {mode === "client" && (
-              <Select value={selectedClientId} onValueChange={setSelectedClientId}>
-                <SelectTrigger className="w-[250px]">
-                  <SelectValue placeholder="Select a client" />
-                </SelectTrigger>
-                <SelectContent>
-                  {clients.map((client) => (
-                    <SelectItem key={client.id} value={client.id}>
-                      {client.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            )}
-
-            {mode === "strategy" && (
-              <Select value={selectedStrategy} onValueChange={setSelectedStrategy}>
-                <SelectTrigger className="w-[250px]">
-                  <SelectValue placeholder="Select a strategy" />
-                </SelectTrigger>
-                <SelectContent>
-                  {strategies.map((strategy) => (
-                    <SelectItem key={strategy.name} value={strategy.name}>
-                      {strategy.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            )}
-
-            {mode === "direct" && (
-              <Select value={selectedProvider} onValueChange={(v) => {
-                setSelectedProvider(v)
-                setSelectedModel("")
-              }}>
-                <SelectTrigger className="w-[250px]">
-                  <SelectValue placeholder="Select a provider" />
-                </SelectTrigger>
-                <SelectContent>
-                  {providers.map((provider) => (
-                    <SelectItem key={provider.instance_name} value={provider.instance_name}>
-                      {provider.instance_name} ({provider.provider_type})
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            )}
-
-            {/* Model selector */}
-            <div className="flex items-center gap-2">
-              <Select value={selectedModel} onValueChange={setSelectedModel}>
-                <SelectTrigger className="w-[300px]">
-                  <SelectValue placeholder={loadingModels ? "Loading models..." : "Select a model"} />
-                </SelectTrigger>
-                <SelectContent>
-                  {models.map((model) => (
-                    <SelectItem key={model.id} value={model.id}>
-                      {model.id}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-
-              <Button
-                variant="outline"
-                size="icon"
-                onClick={fetchModels}
-                disabled={loadingModels || !openaiClient}
-                title="Refresh models"
-              >
-                <RefreshCw className={cn("h-4 w-4", loadingModels && "animate-spin")} />
-              </Button>
             </div>
 
-            {/* Model Parameters */}
-            <Collapsible open={showParameters} onOpenChange={setShowParameters}>
-              <CollapsibleTrigger asChild>
-                <Button variant="ghost" size="sm" className="gap-2">
-                  <Settings2 className="h-4 w-4" />
-                  Model Parameters
-                  <ChevronDown className={cn("h-4 w-4 transition-transform", showParameters && "rotate-180")} />
-                </Button>
-              </CollapsibleTrigger>
-              <CollapsibleContent className="pt-4">
-                <div className="grid grid-cols-3 gap-6">
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between">
-                      <Label className="text-sm">Temperature</Label>
-                      <span className="text-sm text-muted-foreground">{parameters.temperature.toFixed(2)}</span>
-                    </div>
-                    <Slider
-                      value={[parameters.temperature]}
-                      onValueChange={(values: number[]) => setParameters(p => ({ ...p, temperature: values[0] }))}
-                      min={0}
-                      max={2}
-                      step={0.01}
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between">
-                      <Label className="text-sm">Max Tokens</Label>
-                      <span className="text-sm text-muted-foreground">{parameters.maxTokens}</span>
-                    </div>
-                    <Slider
-                      value={[parameters.maxTokens]}
-                      onValueChange={(values: number[]) => setParameters(p => ({ ...p, maxTokens: values[0] }))}
-                      min={1}
-                      max={8192}
-                      step={1}
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between">
-                      <Label className="text-sm">Top P</Label>
-                      <span className="text-sm text-muted-foreground">{parameters.topP.toFixed(2)}</span>
-                    </div>
-                    <Slider
-                      value={[parameters.topP]}
-                      onValueChange={(values: number[]) => setParameters(p => ({ ...p, topP: values[0] }))}
-                      min={0}
-                      max={1}
-                      step={0.01}
-                    />
-                  </div>
+            {/* Right side: mode-specific options, model selector */}
+            <div className="flex flex-col gap-3 flex-1 min-w-0">
+              {mode === "client" && (
+                <div className="space-y-1.5">
+                  <Label className="text-sm">Client</Label>
+                  <Select value={selectedClientId} onValueChange={setSelectedClientId}>
+                    <SelectTrigger className="w-full max-w-[280px]">
+                      <SelectValue placeholder="Select a client" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {clients.map((client) => (
+                        <SelectItem key={client.id} value={client.id}>
+                          {client.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
-              </CollapsibleContent>
-            </Collapsible>
+              )}
+
+              {mode === "strategy" && (
+                <div className="space-y-1.5">
+                  <Label className="text-sm">Strategy</Label>
+                  <Select value={selectedStrategy} onValueChange={setSelectedStrategy}>
+                    <SelectTrigger className="w-full max-w-[280px]">
+                      <SelectValue placeholder="Select a strategy" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {strategies.map((strategy) => (
+                        <SelectItem key={strategy.name} value={strategy.name}>
+                          {strategy.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+
+              {mode === "direct" && (
+                <div className="space-y-1.5">
+                  <Label className="text-sm">Provider</Label>
+                  <Select value={selectedProvider} onValueChange={(v) => {
+                    setSelectedProvider(v)
+                    setSelectedModel("")
+                  }}>
+                    <SelectTrigger className="w-full max-w-[280px]">
+                      <SelectValue placeholder="Select a provider" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {providers.map((provider) => (
+                        <SelectItem key={provider.instance_name} value={provider.instance_name}>
+                          {provider.instance_name} ({provider.provider_type})
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+
+              {/* Model selector */}
+              <div className="space-y-1.5">
+                <Label className="text-sm">Model</Label>
+                <div className="flex items-center gap-2">
+                  <Select value={selectedModel} onValueChange={setSelectedModel}>
+                    <SelectTrigger className="w-full max-w-[280px]">
+                      <SelectValue placeholder={loadingModels ? "Loading models..." : "Select a model"} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {models.map((model) => (
+                        <SelectItem key={model.id} value={model.id}>
+                          {model.id}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    onClick={fetchModels}
+                    disabled={loadingModels || !openaiClient}
+                    title="Refresh models"
+                  >
+                    <RefreshCw className={cn("h-4 w-4", loadingModels && "animate-spin")} />
+                  </Button>
+                </div>
+              </div>
+            </div>
           </div>
+
+          {/* Model Parameters - outside two-column layout */}
+          <Collapsible open={showParameters} onOpenChange={setShowParameters}>
+            <CollapsibleTrigger asChild>
+              <Button variant="ghost" size="sm" className="gap-2">
+                <Settings2 className="h-4 w-4" />
+                Model Parameters
+                <ChevronDown className={cn("h-4 w-4 transition-transform", showParameters && "rotate-180")} />
+              </Button>
+            </CollapsibleTrigger>
+            <CollapsibleContent className="pt-4">
+              <div className="grid grid-cols-3 gap-6">
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <Label className="text-sm">Temperature</Label>
+                    <span className="text-sm text-muted-foreground">{parameters.temperature.toFixed(2)}</span>
+                  </div>
+                  <Slider
+                    value={[parameters.temperature]}
+                    onValueChange={(values: number[]) => setParameters(p => ({ ...p, temperature: values[0] }))}
+                    min={0}
+                    max={2}
+                    step={0.01}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <Label className="text-sm">Max Tokens</Label>
+                    <span className="text-sm text-muted-foreground">{parameters.maxTokens}</span>
+                  </div>
+                  <Slider
+                    value={[parameters.maxTokens]}
+                    onValueChange={(values: number[]) => setParameters(p => ({ ...p, maxTokens: values[0] }))}
+                    min={1}
+                    max={8192}
+                    step={1}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <Label className="text-sm">Top P</Label>
+                    <span className="text-sm text-muted-foreground">{parameters.topP.toFixed(2)}</span>
+                  </div>
+                  <Slider
+                    value={[parameters.topP]}
+                    onValueChange={(values: number[]) => setParameters(p => ({ ...p, topP: values[0] }))}
+                    min={0}
+                    max={1}
+                    step={0.01}
+                  />
+                </div>
+              </div>
+            </CollapsibleContent>
+          </Collapsible>
         </CardContent>
       </Card>
 
@@ -534,7 +541,6 @@ export function LlmTab({ initialMode, initialProvider, initialClientId }: LlmTab
             isReady={isReady()}
             selectedModel={getEffectiveModel()}
             parameters={parameters}
-            subtitle={getSubtitle()}
           />
         </TabsContent>
 

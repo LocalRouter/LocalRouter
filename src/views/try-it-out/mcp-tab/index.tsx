@@ -4,7 +4,6 @@ import { listen } from "@tauri-apps/api/event"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card"
 import { Label } from "@/components/ui/label"
-import { Badge } from "@/components/ui/Badge"
 import {
   Select,
   SelectContent,
@@ -20,7 +19,8 @@ import {
 } from "@/components/ui/tooltip"
 import { Checkbox } from "@/components/ui/checkbox"
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
-import { Wrench, FileText, MessageSquare, Radio, HelpCircle, AlertCircle, Circle, Info, Users, Globe, Zap, BookOpen } from "lucide-react"
+import { Button } from "@/components/ui/Button"
+import { Wrench, FileText, MessageSquare, Radio, HelpCircle, AlertCircle, Circle, Info, Users, Globe, Zap, BookOpen, RefreshCw, Loader2 } from "lucide-react"
 import { ConnectionInfoPanel } from "./connection-info-panel"
 import { ToolsPanel } from "./tools-panel"
 import { ResourcesPanel } from "./resources-panel"
@@ -169,7 +169,7 @@ interface McpTabProps {
 export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarget, initialClientId }: McpTabProps) {
   const [mcpServers, setMcpServers] = useState<McpServer[]>([])
   const [skills, setSkills] = useState<SkillInfo[]>([])
-  const [mode, setMode] = useState<McpTestMode>("all")
+  const [mode, setMode] = useState<McpTestMode>("client")
   const [clients, setClients] = useState<McpClient[]>([])
   const [selectedClientId, setSelectedClientId] = useState<string>("")
   const [clientApiKey, setClientApiKey] = useState<string | null>(null)
@@ -279,10 +279,6 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
       return next
     })
   }, [])
-
-  // Decode the direct target selection
-  const directTarget = decodeDirectTarget(selectedDirectTarget)
-  const isDirectSkill = mode === "direct" && directTarget?.type === "skill"
 
   // Fetch client API key when client selection changes
   useEffect(() => {
@@ -459,6 +455,10 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
   const retryCountRef = useRef(0)
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const isConnectingRef = useRef(false)
+  // Counter to force reconnect from UI
+  const [reconnectCounter, setReconnectCounter] = useState(0)
+  // Manual disconnect flag - prevents auto-reconnect until user clicks Connect
+  const [manuallyDisconnected, setManuallyDisconnected] = useState(false)
 
   const doDisconnect = useCallback(async () => {
     // Cancel any pending retry
@@ -529,10 +529,16 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
   // Serialize config for change detection
   const connectionConfigKey = connectionConfig ? JSON.stringify(connectionConfig) : null
 
+  // Reset manuallyDisconnected when settings change (user changed mode/target)
+  useEffect(() => {
+    setManuallyDisconnected(false)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connectionConfigKey])
+
   // Auto-connect when settings are ready, reconnect when they change
   useEffect(() => {
-    if (!connectionConfig) {
-      // Settings not ready - disconnect if connected
+    if (!connectionConfig || manuallyDisconnected) {
+      // Settings not ready or user manually disconnected - disconnect if connected
       doDisconnect()
       retryCountRef.current = 0
       return
@@ -540,9 +546,11 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
 
     // Reset retry count when settings change (user-initiated)
     retryCountRef.current = 0
+    // Abort flag to cancel stale connection attempts
+    let aborted = false
 
     const doConnect = async () => {
-      if (isConnectingRef.current) return
+      if (aborted) return
       isConnectingRef.current = true
 
       try {
@@ -551,6 +559,8 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
           await mcpClientRef.current.disconnect()
           mcpClientRef.current = null
         }
+
+        if (aborted) return
 
         const client = createMcpClient(connectionConfig, {
           onStateChange: handleStateChange,
@@ -561,8 +571,11 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
         mcpClientRef.current = client
 
         await client.connect()
-        retryCountRef.current = 0
+        if (!aborted) {
+          retryCountRef.current = 0
+        }
       } catch (error) {
+        if (aborted) return
         console.error("Failed to connect:", error)
         // Schedule retry with exponential backoff
         const delay = Math.min(1000 * Math.pow(2, retryCountRef.current), 30000)
@@ -570,24 +583,27 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
         console.log(`[MCP] Retrying in ${delay}ms (attempt ${retryCountRef.current})`)
         retryTimerRef.current = setTimeout(() => {
           retryTimerRef.current = null
-          isConnectingRef.current = false
           doConnect()
         }, delay)
       } finally {
-        isConnectingRef.current = false
+        if (!aborted) {
+          isConnectingRef.current = false
+        }
       }
     }
 
     doConnect()
 
     return () => {
+      aborted = true
+      isConnectingRef.current = false
       if (retryTimerRef.current) {
         clearTimeout(retryTimerRef.current)
         retryTimerRef.current = null
       }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [connectionConfigKey])
+  }, [connectionConfigKey, reconnectCounter, manuallyDisconnected])
 
   const getEndpointUrl = () => {
     if (!serverPort) return null
@@ -601,24 +617,22 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
       {/* Connection Settings */}
       <Card>
         <CardHeader className="pb-3">
-          <div className="flex items-center justify-between">
-            <div>
-              <CardTitle className="text-base">MCP & Skill Connection</CardTitle>
-              <p className="text-sm text-muted-foreground">
-                Test MCP servers and skills through a client, the unified gateway, or individually
-              </p>
-            </div>
-            <Badge variant={isConnected ? "success" : isConnecting ? "outline" : "secondary"}>
-              {isConnected ? "Connected" : isConnecting ? "Connecting..." : "Disconnected"}
-            </Badge>
+          <div className="space-y-1.5">
+            <CardTitle className="text-base">Connect to Unified MCP Gateway</CardTitle>
+            <p className="text-sm text-muted-foreground">
+              Test MCP servers and skills through a client, the unified gateway, or individually
+            </p>
           </div>
         </CardHeader>
-        <CardContent>
-          <div className="flex flex-col gap-4">
+        <CardContent className="flex flex-col gap-4">
+          {/* Two-column layout: radio buttons left, options right */}
+          <div className="flex gap-6">
+            <div className="flex flex-col gap-2 flex-shrink-0">
+            <Label className="text-sm font-medium">Mode</Label>
             <RadioGroup
               value={mode}
               onValueChange={(v: string) => setMode(v as McpTestMode)}
-              className="flex flex-col gap-2"
+              className="flex flex-col gap-3"
             >
               <div className="flex items-center space-x-2">
                 <RadioGroupItem value="client" id="mcp-mode-client" />
@@ -642,55 +656,61 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
                 </Label>
               </div>
             </RadioGroup>
+            </div>
 
-            {/* Mode-specific selector */}
-            {mode === "client" && (
-              <Select value={selectedClientId} onValueChange={setSelectedClientId}>
-                <SelectTrigger className="w-[250px]">
-                  <SelectValue placeholder="Select a client" />
-                </SelectTrigger>
-                <SelectContent>
-                  {clients.map((client) => (
-                    <SelectItem key={client.id} value={client.id}>
-                      {client.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            )}
-
-            {mode === "direct" && (
-              <Select value={selectedDirectTarget} onValueChange={setSelectedDirectTarget}>
-                <SelectTrigger className="w-[280px]">
-                  <SelectValue placeholder="Select a server or skill" />
-                </SelectTrigger>
-                <SelectContent>
-                  {mcpServers.length > 0 && (
-                    <>
-                      <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">MCP Servers</div>
-                      {mcpServers.map((server) => (
-                        <SelectItem key={`server:${server.id}`} value={`server:${server.id}`}>
-                          {server.name} ({server.transport_type})
+            {/* Right side: mode-specific options */}
+            <div className="flex flex-col gap-3 flex-1 min-w-0">
+              {mode === "client" && (
+                <div className="space-y-1.5">
+                  <Label className="text-sm">Client</Label>
+                  <Select value={selectedClientId} onValueChange={setSelectedClientId}>
+                    <SelectTrigger className="w-full max-w-[280px]">
+                      <SelectValue placeholder="Select a client" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {clients.map((client) => (
+                        <SelectItem key={client.id} value={client.id}>
+                          {client.name}
                         </SelectItem>
                       ))}
-                    </>
-                  )}
-                  {skills.length > 0 && (
-                    <>
-                      <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">Skills</div>
-                      {skills.map((skill) => (
-                        <SelectItem key={`skill:${skill.name}`} value={`skill:${skill.name}`}>
-                          {skill.name}
-                        </SelectItem>
-                      ))}
-                    </>
-                  )}
-                </SelectContent>
-              </Select>
-            )}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
 
-            {/* Deferred Loading toggle - not shown for direct skill (no MCP servers to defer) */}
-            {!isDirectSkill && (
+              {mode === "direct" && (
+                <div className="space-y-1.5">
+                  <Label className="text-sm">MCP Server / Skill</Label>
+                  <Select value={selectedDirectTarget} onValueChange={setSelectedDirectTarget}>
+                    <SelectTrigger className="w-full max-w-[280px]">
+                      <SelectValue placeholder="Select a server or skill" />
+                    </SelectTrigger>
+                  <SelectContent>
+                    {mcpServers.length > 0 && (
+                      <>
+                        <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">MCP Servers</div>
+                        {mcpServers.map((server) => (
+                          <SelectItem key={`server:${server.id}`} value={`server:${server.id}`}>
+                            {server.name} ({server.transport_type})
+                          </SelectItem>
+                        ))}
+                      </>
+                    )}
+                    {skills.length > 0 && (
+                      <>
+                        <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">Skills</div>
+                        {skills.map((skill) => (
+                          <SelectItem key={`skill:${skill.name}`} value={`skill:${skill.name}`}>
+                            {skill.name}
+                          </SelectItem>
+                        ))}
+                      </>
+                    )}
+                  </SelectContent>
+                </Select>
+                </div>
+              )}
+
               <div className="flex items-center gap-2">
                 <Checkbox
                   id="deferred-loading"
@@ -714,21 +734,65 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
                   </Tooltip>
                 </TooltipProvider>
               </div>
-            )}
+            </div>
+          </div>
 
+          {/* Status bar: URL, loading state, connect/disconnect button */}
+          <div className="flex items-center gap-3 pt-2 border-t">
             {getEndpointUrl() && (
-              <code className="text-xs text-muted-foreground bg-muted px-2 py-1 rounded w-fit">
+              <code className="text-xs text-muted-foreground bg-muted px-2 py-1 rounded">
                 {getEndpointUrl()}
               </code>
             )}
-          </div>
-
-          {connectionError && (
-            <div className="flex items-center gap-2 text-destructive text-sm mt-4">
-              <AlertCircle className="h-4 w-4" />
-              {connectionError}
+            {isConnecting && (
+              <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                Connecting...
+              </div>
+            )}
+            {connectionError && (
+              <div className="flex items-center gap-1.5 text-destructive text-sm">
+                <AlertCircle className="h-3.5 w-3.5" />
+                {connectionError}
+              </div>
+            )}
+            <div className="ml-auto">
+              {isConnected ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setManuallyDisconnected(true)}
+                >
+                  Disconnect
+                </Button>
+              ) : (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={!canConnect}
+                  onClick={() => {
+                    isConnectingRef.current = false
+                    retryCountRef.current = 0
+                    if (retryTimerRef.current) {
+                      clearTimeout(retryTimerRef.current)
+                      retryTimerRef.current = null
+                    }
+                    setManuallyDisconnected(false)
+                    setReconnectCounter(c => c + 1)
+                  }}
+                >
+                  {isConnecting ? (
+                    <>
+                      <RefreshCw className="h-3.5 w-3.5 mr-1.5" />
+                      Reconnect
+                    </>
+                  ) : (
+                    "Connect"
+                  )}
+                </Button>
+              )}
             </div>
-          )}
+          </div>
         </CardContent>
       </Card>
 
