@@ -443,9 +443,7 @@ mod tests {
                 index: 0,
                 message: crate::ChatMessage {
                     role: "assistant".to_string(),
-                    content: crate::ChatMessageContent::Text(
-                        "This is not valid JSON".to_string(),
-                    ),
+                    content: crate::ChatMessageContent::Text("This is not valid JSON".to_string()),
                     tool_calls: None,
                     tool_call_id: None,
                     name: None,

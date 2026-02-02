@@ -14,10 +14,10 @@ use futures::{sink::SinkExt, stream::StreamExt};
 use serde_json::json;
 
 use super::helpers::get_enabled_client_from_manager;
-use lr_config::McpServerAccess;
 use crate::middleware::client_auth::ClientAuthContext;
 use crate::middleware::error::ApiErrorResponse;
 use crate::state::AppState;
+use lr_config::McpServerAccess;
 
 /// WebSocket upgrade handler for MCP notifications
 ///

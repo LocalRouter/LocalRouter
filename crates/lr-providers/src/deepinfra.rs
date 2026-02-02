@@ -199,10 +199,9 @@ impl ModelProvider for DeepInfraProvider {
             )));
         }
 
-        let models_response: DeepInfraModelsResponse = response
-            .json()
-            .await
-            .map_err(|e| AppError::Provider(format!("Failed to parse DeepInfra models response: {}", e)))?;
+        let models_response: DeepInfraModelsResponse = response.json().await.map_err(|e| {
+            AppError::Provider(format!("Failed to parse DeepInfra models response: {}", e))
+        })?;
 
         let models = models_response
             .data

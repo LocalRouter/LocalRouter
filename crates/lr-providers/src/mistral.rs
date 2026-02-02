@@ -231,10 +231,9 @@ impl ModelProvider for MistralProvider {
             )));
         }
 
-        let models_response: MistralModelsResponse = response
-            .json()
-            .await
-            .map_err(|e| AppError::Provider(format!("Failed to parse Mistral models response: {}", e)))?;
+        let models_response: MistralModelsResponse = response.json().await.map_err(|e| {
+            AppError::Provider(format!("Failed to parse Mistral models response: {}", e))
+        })?;
 
         let models = models_response
             .data

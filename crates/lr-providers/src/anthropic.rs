@@ -433,10 +433,9 @@ impl ModelProvider for AnthropicProvider {
             )));
         }
 
-        let models_response: AnthropicModelsResponse = response
-            .json()
-            .await
-            .map_err(|e| AppError::Provider(format!("Failed to parse Anthropic models response: {}", e)))?;
+        let models_response: AnthropicModelsResponse = response.json().await.map_err(|e| {
+            AppError::Provider(format!("Failed to parse Anthropic models response: {}", e))
+        })?;
 
         let models = models_response
             .data
@@ -775,9 +774,7 @@ impl ModelProvider for AnthropicProvider {
             "prompt_caching" => Some(Box::new(
                 crate::features::prompt_caching::PromptCachingAdapter,
             )),
-            "json_mode" => Some(Box::new(
-                crate::features::json_mode::JsonModeAdapter,
-            )),
+            "json_mode" => Some(Box::new(crate::features::json_mode::JsonModeAdapter)),
             _ => None,
         }
     }

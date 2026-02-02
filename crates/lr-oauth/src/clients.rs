@@ -8,11 +8,11 @@
 //!
 //! OAuth clients can be linked to specific MCP servers, enabling granular access control.
 
+use base64::{engine::general_purpose::STANDARD, Engine};
 use lr_api_keys::keychain_trait::{CachedKeychain, KeychainStorage};
 use lr_config::OAuthClientConfig;
-use lr_utils::crypto::generate_api_key;
 use lr_types::{AppError, AppResult};
-use base64::{engine::general_purpose::STANDARD, Engine};
+use lr_utils::crypto::generate_api_key;
 use parking_lot::RwLock;
 use std::sync::Arc;
 

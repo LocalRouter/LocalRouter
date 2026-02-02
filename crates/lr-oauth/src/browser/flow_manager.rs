@@ -1,13 +1,13 @@
 //! OAuth flow manager - orchestrates complete OAuth authorization flows
 #![allow(dead_code)]
 
-use lr_api_keys::CachedKeychain;
 use crate::browser::{
     generate_pkce_challenge, generate_state, CallbackServerManager, FlowId, FlowStatus,
     OAuthFlowConfig, OAuthFlowResult, OAuthFlowStart, OAuthFlowState, TokenExchanger,
 };
-use lr_types::{AppError, AppResult};
 use chrono::{Duration, Utc};
+use lr_api_keys::CachedKeychain;
+use lr_types::{AppError, AppResult};
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;

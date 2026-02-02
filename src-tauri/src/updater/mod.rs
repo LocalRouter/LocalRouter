@@ -5,8 +5,8 @@
 
 #![allow(dead_code)]
 
-use lr_config::{ConfigManager, UpdateMode};
 use chrono::Utc;
+use lr_config::{ConfigManager, UpdateMode};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter};

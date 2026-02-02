@@ -147,13 +147,11 @@ impl OAuthProvider for OpenAICodexOAuthProvider {
                 verification_url: "Waiting for browser authorization...".to_string(),
                 instructions: "Complete the authorization in your browser".to_string(),
             }),
-            lr_oauth::browser::OAuthFlowResult::ExchangingToken => {
-                Ok(OAuthFlowResult::Pending {
-                    user_code: None,
-                    verification_url: "Exchanging authorization code for tokens...".to_string(),
-                    instructions: "Please wait...".to_string(),
-                })
-            }
+            lr_oauth::browser::OAuthFlowResult::ExchangingToken => Ok(OAuthFlowResult::Pending {
+                user_code: None,
+                verification_url: "Exchanging authorization code for tokens...".to_string(),
+                instructions: "Please wait...".to_string(),
+            }),
             lr_oauth::browser::OAuthFlowResult::Success { tokens } => {
                 // Clean up flow tracking
                 *self.current_flow.write().await = None;

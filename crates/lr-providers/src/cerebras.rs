@@ -169,10 +169,9 @@ impl ModelProvider for CerebrasProvider {
             )));
         }
 
-        let models_response: CerebrasModelsResponse = response
-            .json()
-            .await
-            .map_err(|e| AppError::Provider(format!("Failed to parse Cerebras models response: {}", e)))?;
+        let models_response: CerebrasModelsResponse = response.json().await.map_err(|e| {
+            AppError::Provider(format!("Failed to parse Cerebras models response: {}", e))
+        })?;
 
         let models = models_response
             .data

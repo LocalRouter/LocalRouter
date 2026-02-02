@@ -5,13 +5,13 @@
 #![allow(dead_code)]
 
 use crate::browser::FlowId;
-use lr_types::{AppError, AppResult};
 use axum::{
     extract::Query,
     http::StatusCode,
     response::{Html, IntoResponse},
     Router,
 };
+use lr_types::{AppError, AppResult};
 use parking_lot::Mutex;
 use serde::Deserialize;
 use std::collections::HashMap;

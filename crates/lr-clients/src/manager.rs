@@ -14,8 +14,8 @@
 use lr_api_keys::keychain_trait::KeychainStorage;
 use lr_api_keys::CachedKeychain;
 use lr_config::{Client, McpServerAccess};
-use lr_utils::crypto;
 use lr_types::{AppError, AppResult};
+use lr_utils::crypto;
 use parking_lot::RwLock;
 use std::sync::Arc;
 
@@ -61,7 +61,11 @@ impl ClientManager {
     /// # Returns
     /// Returns (client_id, secret, client_config) tuple
     /// The secret is also stored in the keychain automatically
-    pub fn create_client(&self, name: String, strategy_id: String) -> AppResult<(String, String, Client)> {
+    pub fn create_client(
+        &self,
+        name: String,
+        strategy_id: String,
+    ) -> AppResult<(String, String, Client)> {
         // Generate secret (same format as API keys)
         let secret = crypto::generate_api_key()
             .map_err(|e| AppError::Config(format!("Failed to generate client secret: {}", e)))?;

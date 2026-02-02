@@ -35,9 +35,9 @@ impl KeychainStorage for SystemKeychain {
             lr_types::AppError::Internal(format!("Failed to access keyring: {}", e))
         })?;
 
-        entry.set_password(secret).map_err(|e| {
-            lr_types::AppError::Internal(format!("Failed to store key: {}", e))
-        })?;
+        entry
+            .set_password(secret)
+            .map_err(|e| lr_types::AppError::Internal(format!("Failed to store key: {}", e)))?;
 
         debug!("SystemKeychain: stored {}:{}", service, account);
         Ok(())
@@ -152,10 +152,7 @@ impl FileKeychain {
             HashMap::new()
         } else {
             serde_json::from_str(&contents).map_err(|e| {
-                lr_types::AppError::Internal(format!(
-                    "Failed to parse secrets file: {}",
-                    e
-                ))
+                lr_types::AppError::Internal(format!("Failed to parse secrets file: {}", e))
             })?
         };
 
@@ -177,10 +174,7 @@ impl FileKeychain {
         // Ensure parent directory exists
         if let Some(parent) = self.file_path.parent() {
             fs::create_dir_all(parent).map_err(|e| {
-                lr_types::AppError::Internal(format!(
-                    "Failed to create secrets directory: {}",
-                    e
-                ))
+                lr_types::AppError::Internal(format!("Failed to create secrets directory: {}", e))
             })?;
         }
 

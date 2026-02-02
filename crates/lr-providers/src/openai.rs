@@ -5,11 +5,11 @@ use super::{
     CompletionRequest, CompletionResponse, HealthStatus, ModelInfo, ModelProvider, PricingInfo,
     ProviderHealth, TokenUsage,
 };
-use lr_api_keys::{keychain_trait::KeychainStorage, CachedKeychain};
-use lr_types::{AppError, AppResult};
 use async_trait::async_trait;
 use chrono::Utc;
 use futures::stream::{Stream, StreamExt};
+use lr_api_keys::{keychain_trait::KeychainStorage, CachedKeychain};
+use lr_types::{AppError, AppResult};
 use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use std::pin::Pin;
@@ -832,12 +832,8 @@ impl ModelProvider for OpenAIProvider {
             "structured_outputs" => Some(Box::new(
                 crate::features::structured_outputs::StructuredOutputsAdapter,
             )),
-            "logprobs" => Some(Box::new(
-                crate::features::logprobs::LogprobsAdapter,
-            )),
-            "json_mode" => Some(Box::new(
-                crate::features::json_mode::JsonModeAdapter,
-            )),
+            "logprobs" => Some(Box::new(crate::features::logprobs::LogprobsAdapter)),
+            "json_mode" => Some(Box::new(crate::features::json_mode::JsonModeAdapter)),
             _ => None,
         }
     }

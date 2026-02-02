@@ -188,7 +188,9 @@ impl ModelProvider for TogetherAIProvider {
             .header("Authorization", format!("Bearer {}", self.api_key))
             .send()
             .await
-            .map_err(|e| AppError::Provider(format!("Failed to fetch Together AI models: {}", e)))?;
+            .map_err(|e| {
+                AppError::Provider(format!("Failed to fetch Together AI models: {}", e))
+            })?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -199,10 +201,12 @@ impl ModelProvider for TogetherAIProvider {
             )));
         }
 
-        let models_list: Vec<TogetherModel> = response
-            .json()
-            .await
-            .map_err(|e| AppError::Provider(format!("Failed to parse Together AI models response: {}", e)))?;
+        let models_list: Vec<TogetherModel> = response.json().await.map_err(|e| {
+            AppError::Provider(format!(
+                "Failed to parse Together AI models response: {}",
+                e
+            ))
+        })?;
 
         let models = models_list
             .into_iter()

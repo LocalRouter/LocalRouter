@@ -667,9 +667,7 @@ impl ModelProvider for GeminiProvider {
             "thinking_level" => Some(Box::new(
                 crate::features::gemini_thinking::GeminiThinkingAdapter,
             )),
-            "json_mode" => Some(Box::new(
-                crate::features::json_mode::JsonModeAdapter,
-            )),
+            "json_mode" => Some(Box::new(crate::features::json_mode::JsonModeAdapter)),
             _ => None,
         }
     }

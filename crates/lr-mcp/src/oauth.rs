@@ -5,9 +5,6 @@
 
 #![allow(dead_code)]
 
-use lr_api_keys::{CachedKeychain, KeychainStorage};
-use lr_config::McpOAuthConfig;
-use lr_types::{AppError, AppResult};
 use axum::{
     extract::Query,
     http::StatusCode,
@@ -16,6 +13,9 @@ use axum::{
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use chrono::{DateTime, Duration, Utc};
+use lr_api_keys::{CachedKeychain, KeychainStorage};
+use lr_config::McpOAuthConfig;
+use lr_types::{AppError, AppResult};
 use parking_lot::{Mutex, RwLock};
 use rand::{thread_rng, Rng};
 use reqwest::Client;

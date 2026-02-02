@@ -446,10 +446,7 @@ impl ProviderRegistry {
             .map(|m| {
                 let capabilities = match m.modality {
                     lr_catalog::Modality::Multimodal => {
-                        vec![
-                            crate::Capability::Chat,
-                            crate::Capability::Vision,
-                        ]
+                        vec![crate::Capability::Chat, crate::Capability::Vision]
                     }
                     _ => vec![crate::Capability::Chat],
                 };

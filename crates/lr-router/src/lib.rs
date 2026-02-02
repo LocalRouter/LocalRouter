@@ -485,9 +485,7 @@ impl Router {
                 .get_recent_usage_for_strategy(&strategy.id, window_secs);
 
             let (projected_usage, limit_value) = match limit.limit_type {
-                lr_config::RateLimitType::Requests => {
-                    (current_requests as f64 + 1.0, limit.value)
-                }
+                lr_config::RateLimitType::Requests => (current_requests as f64 + 1.0, limit.value),
                 lr_config::RateLimitType::TotalTokens => {
                     (current_tokens as f64 + avg_tokens, limit.value)
                 }
@@ -1530,9 +1528,7 @@ mod tests {
             std::env::temp_dir().join(format!("test_metrics_{}.db", uuid::Uuid::new_v4()));
         let metrics_db =
             Arc::new(lr_monitoring::storage::MetricsDatabase::new(metrics_db_path).unwrap());
-        let metrics_collector = Arc::new(lr_monitoring::metrics::MetricsCollector::new(
-            metrics_db,
-        ));
+        let metrics_collector = Arc::new(lr_monitoring::metrics::MetricsCollector::new(metrics_db));
 
         let router = Router::new(
             config_manager,
@@ -1560,9 +1556,7 @@ mod tests {
             std::env::temp_dir().join(format!("test_metrics_{}.db", uuid::Uuid::new_v4()));
         let metrics_db =
             Arc::new(lr_monitoring::storage::MetricsDatabase::new(metrics_db_path).unwrap());
-        let metrics_collector = Arc::new(lr_monitoring::metrics::MetricsCollector::new(
-            metrics_db,
-        ));
+        let metrics_collector = Arc::new(lr_monitoring::metrics::MetricsCollector::new(metrics_db));
 
         let router = Router::new(
             config_manager,

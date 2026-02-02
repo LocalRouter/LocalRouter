@@ -147,9 +147,7 @@ fn validate_providers_not_self_referential(config: &AppConfig) -> AppResult<()> 
     let client_secrets: HashSet<String> = config
         .clients
         .iter()
-        .filter_map(|client| {
-            keychain.get(CLIENT_SERVICE, &client.id).ok().flatten()
-        })
+        .filter_map(|client| keychain.get(CLIENT_SERVICE, &client.id).ok().flatten())
         .collect();
 
     // Check if any suspect provider key matches an actual client secret

@@ -1,9 +1,9 @@
 //! Configuration storage - loading and saving YAML files
 
 use super::{migration, validation, AppConfig};
-use lr_utils::paths;
-use lr_types::{AppError, AppResult};
 use chrono::Utc;
+use lr_types::{AppError, AppResult};
+use lr_utils::paths;
 use std::path::{Path, PathBuf};
 use tokio::fs;
 use tracing::{debug, error, info, warn};
@@ -49,18 +49,12 @@ pub async fn load_config(path: &Path) -> AppResult<AppConfig> {
             if let Some(parent) = path.parent() {
                 let backups = list_backups(parent).await;
                 if !backups.is_empty() {
-                    info!(
-                        "Attempting to recover from {} backup(s)...",
-                        backups.len()
-                    );
+                    info!("Attempting to recover from {} backup(s)...", backups.len());
 
                     for backup_path in &backups {
                         match load_config_from_file(backup_path).await {
                             Ok(config) => {
-                                warn!(
-                                    "Recovered configuration from backup: {:?}",
-                                    backup_path
-                                );
+                                warn!("Recovered configuration from backup: {:?}", backup_path);
                                 // Save the recovered config as the main file
                                 // (this also creates a new backup of the corrupted file)
                                 if let Err(e) = save_config(&config, path).await {

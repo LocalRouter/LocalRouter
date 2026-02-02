@@ -10,9 +10,9 @@ use crate::protocol::{
     JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, StreamingChunk,
 };
 use crate::transport::Transport;
-use lr_types::{AppError, AppResult};
 use async_trait::async_trait;
 use futures_util::{Stream, StreamExt};
+use lr_types::{AppError, AppResult};
 use once_cell::sync::Lazy;
 use parking_lot::RwLock;
 use reqwest::Client;

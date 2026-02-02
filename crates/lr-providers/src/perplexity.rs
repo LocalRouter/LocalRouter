@@ -143,7 +143,8 @@ impl ModelProvider for PerplexityProvider {
         // This is a read-only GET request that doesn't consume any tokens
         let url = format!("{}/async/chat/completions?limit=1", PERPLEXITY_API_BASE);
 
-        match self.client
+        match self
+            .client
             .get(&url)
             .header("Authorization", format!("Bearer {}", self.api_key))
             .send()

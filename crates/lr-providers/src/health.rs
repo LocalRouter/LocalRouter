@@ -206,9 +206,7 @@ mod tests {
     use futures::Stream;
     use std::pin::Pin;
 
-    use crate::{
-        CompletionChunk, CompletionRequest, CompletionResponse, ModelInfo, PricingInfo,
-    };
+    use crate::{CompletionChunk, CompletionRequest, CompletionResponse, ModelInfo, PricingInfo};
     use lr_types::errors::AppResult;
 
     /// Mock provider for testing

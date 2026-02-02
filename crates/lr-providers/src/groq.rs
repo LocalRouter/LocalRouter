@@ -231,10 +231,9 @@ impl ModelProvider for GroqProvider {
             )));
         }
 
-        let models_response: GroqModelsResponse = response
-            .json()
-            .await
-            .map_err(|e| AppError::Provider(format!("Failed to parse Groq models response: {}", e)))?;
+        let models_response: GroqModelsResponse = response.json().await.map_err(|e| {
+            AppError::Provider(format!("Failed to parse Groq models response: {}", e))
+        })?;
 
         let models = models_response
             .data

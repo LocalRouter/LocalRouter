@@ -73,13 +73,9 @@ mod tests {
 
     #[test]
     fn test_cli_bridge_mode_with_client_id() {
-        let cli = Cli::try_parse_from([
-            "localrouter",
-            "--mcp-bridge",
-            "--client-id",
-            "test_client",
-        ])
-        .unwrap();
+        let cli =
+            Cli::try_parse_from(["localrouter", "--mcp-bridge", "--client-id", "test_client"])
+                .unwrap();
         assert!(cli.mcp_bridge);
         assert_eq!(cli.client_id, Some("test_client".to_string()));
     }

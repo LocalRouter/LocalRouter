@@ -5,8 +5,7 @@ pub mod clients;
 
 // Re-export browser public API
 pub use browser::{
-    CallbackServerManager, OAuthFlowManager, OAuthFlowConfig, OAuthFlowResult, OAuthFlowStart,
-    OAuthFlowState, OAuthTokens, FlowId, FlowStatus,
-    generate_pkce_challenge, generate_state,
-    TokenExchanger,
+    generate_pkce_challenge, generate_state, CallbackServerManager, FlowId, FlowStatus,
+    OAuthFlowConfig, OAuthFlowManager, OAuthFlowResult, OAuthFlowStart, OAuthFlowState,
+    OAuthTokens, TokenExchanger,
 };

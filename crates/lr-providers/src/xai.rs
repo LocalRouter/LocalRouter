@@ -179,10 +179,9 @@ impl ModelProvider for XAIProvider {
             )));
         }
 
-        let models_response: XAIModelsResponse = response
-            .json()
-            .await
-            .map_err(|e| AppError::Provider(format!("Failed to parse xAI models response: {}", e)))?;
+        let models_response: XAIModelsResponse = response.json().await.map_err(|e| {
+            AppError::Provider(format!("Failed to parse xAI models response: {}", e))
+        })?;
 
         let models = models_response
             .data

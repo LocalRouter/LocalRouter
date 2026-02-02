@@ -284,10 +284,9 @@ impl ModelProvider for CohereProvider {
             )));
         }
 
-        let models_response: CohereModelsResponse = response
-            .json()
-            .await
-            .map_err(|e| AppError::Provider(format!("Failed to parse Cohere models response: {}", e)))?;
+        let models_response: CohereModelsResponse = response.json().await.map_err(|e| {
+            AppError::Provider(format!("Failed to parse Cohere models response: {}", e))
+        })?;
 
         // Convert Cohere models to our format
         let models = models_response

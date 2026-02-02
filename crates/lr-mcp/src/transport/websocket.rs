@@ -4,9 +4,9 @@
 
 use crate::protocol::{JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse};
 use crate::transport::Transport;
-use lr_types::{AppError, AppResult};
 use async_trait::async_trait;
 use futures_util::{SinkExt, StreamExt};
+use lr_types::{AppError, AppResult};
 use parking_lot::RwLock;
 use serde_json::Value;
 use std::collections::HashMap;

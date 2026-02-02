@@ -8,10 +8,10 @@ use super::{
     CompletionRequest, CompletionResponse, HealthStatus, ModelInfo, ModelProvider, PricingInfo,
     ProviderHealth, TokenUsage,
 };
-use lr_types::{AppError, AppResult};
 use async_trait::async_trait;
 use chrono::Utc;
 use futures::stream::{Stream, StreamExt};
+use lr_types::{AppError, AppResult};
 use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use std::pin::Pin;

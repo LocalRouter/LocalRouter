@@ -6,9 +6,9 @@
 //! This allows external MCP clients (Claude Desktop, Cursor, VS Code) to connect to
 //! LocalRouter's unified MCP gateway via standard input/output.
 
+use crate::protocol::{JsonRpcError, JsonRpcRequest, JsonRpcResponse};
 use lr_api_keys::keychain_trait::{CachedKeychain, KeychainStorage};
 use lr_config::{AppConfig, Client, ConfigManager, McpServerAccess};
-use crate::protocol::{JsonRpcError, JsonRpcRequest, JsonRpcResponse};
 use lr_types::{AppError, AppResult};
 use serde_json::Value;
 use std::path::PathBuf;

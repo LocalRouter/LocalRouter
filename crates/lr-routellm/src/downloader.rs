@@ -2,9 +2,9 @@
 
 #![allow(dead_code)]
 
-use lr_config::RouteLLMDownloadStatus;
 use crate::errors::{RouteLLMError, RouteLLMResult};
 use hf_hub::api::tokio::Api;
+use lr_config::RouteLLMDownloadStatus;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
