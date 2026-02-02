@@ -69,7 +69,7 @@ interface WizardState {
 
   // Step 4 - Skills
   skillsAccessMode: SkillsAccessMode
-  selectedSkillPaths: string[]
+  selectedSkills: string[]
 
   // After creation
   clientId?: string
@@ -135,7 +135,7 @@ export function ClientCreationWizard({
     mcpAccessMode: "none",
     selectedMcpServers: [],
     skillsAccessMode: "none",
-    selectedSkillPaths: [],
+    selectedSkills: [],
   })
 
   // Build step arrays based on whether welcome is shown
@@ -237,7 +237,7 @@ export function ClientCreationWizard({
         await invoke("set_client_skills_access", {
           clientId: clientInfo.client_id,
           mode: state.skillsAccessMode,
-          paths: state.selectedSkillPaths,
+          skillNames: state.selectedSkills,
         })
       }
 
@@ -285,7 +285,7 @@ export function ClientCreationWizard({
       mcpAccessMode: "none",
       selectedMcpServers: [],
       skillsAccessMode: "none",
-      selectedSkillPaths: [],
+      selectedSkills: [],
     })
     onOpenChange(false)
   }
@@ -357,12 +357,12 @@ export function ClientCreationWizard({
       return (
         <StepSkills
           accessMode={state.skillsAccessMode}
-          selectedPaths={state.selectedSkillPaths}
-          onChange={(mode, paths) =>
+          selectedSkills={state.selectedSkills}
+          onChange={(mode, skills) =>
             setState((prev) => ({
               ...prev,
               skillsAccessMode: mode,
-              selectedSkillPaths: paths,
+              selectedSkills: skills,
             }))
           }
         />

@@ -12,7 +12,7 @@ interface Client {
   name: string
   client_id: string
   skills_access_mode: "none" | "all" | "specific"
-  skills_paths: string[]
+  skills_names: string[]
 }
 
 interface SkillInfo {
@@ -39,8 +39,8 @@ export function ClientSkillsTab({ client, onUpdate }: SkillsTabProps) {
   const [saving, setSaving] = useState(false)
 
   const [includeAllSkills, setIncludeAllSkills] = useState(client.skills_access_mode === "all")
-  const [selectedPaths, setSelectedPaths] = useState<Set<string>>(
-    new Set(client.skills_paths)
+  const [selectedSkills, setSelectedSkills] = useState<Set<string>>(
+    new Set(client.skills_names)
   )
 
   useEffect(() => {
@@ -57,8 +57,8 @@ export function ClientSkillsTab({ client, onUpdate }: SkillsTabProps) {
 
   useEffect(() => {
     setIncludeAllSkills(client.skills_access_mode === "all")
-    setSelectedPaths(new Set(client.skills_paths))
-  }, [client.skills_access_mode, client.skills_paths])
+    setSelectedSkills(new Set(client.skills_names))
+  }, [client.skills_access_mode, client.skills_names])
 
   const loadSkills = async () => {
     try {
@@ -71,8 +71,8 @@ export function ClientSkillsTab({ client, onUpdate }: SkillsTabProps) {
     }
   }
 
-  // Get unique source paths from discovered skills
-  const sourcePaths = [...new Set(skills.map(s => s.source_path))]
+  const enabledSkills = skills.filter(s => s.enabled)
+  const skillNames = enabledSkills.map(s => s.name)
 
   const handleAllSkillsToggle = async () => {
     try {
@@ -83,16 +83,16 @@ export function ClientSkillsTab({ client, onUpdate }: SkillsTabProps) {
         await invoke("set_client_skills_access", {
           clientId: client.client_id,
           mode: "all",
-          paths: [],
+          skillNames: [],
         })
         setIncludeAllSkills(true)
         toast.success("All skills enabled")
       } else {
-        const mode = selectedPaths.size > 0 ? "specific" : "none"
+        const mode = selectedSkills.size > 0 ? "specific" : "none"
         await invoke("set_client_skills_access", {
           clientId: client.client_id,
           mode,
-          paths: Array.from(selectedPaths),
+          skillNames: Array.from(selectedSkills),
         })
         setIncludeAllSkills(false)
         toast.success("Switched to specific skill selection")
@@ -106,21 +106,21 @@ export function ClientSkillsTab({ client, onUpdate }: SkillsTabProps) {
     }
   }
 
-  const handleSourcePathToggle = async (sourcePath: string) => {
+  const handleSkillToggle = async (skillName: string) => {
     if (includeAllSkills) {
-      // Switch from All to Specific, excluding this path
+      // Switch from All to Specific, excluding this skill
       try {
         setSaving(true)
-        const otherPaths = sourcePaths.filter(p => p !== sourcePath)
+        const otherSkills = skillNames.filter(n => n !== skillName)
 
         await invoke("set_client_skills_access", {
           clientId: client.client_id,
-          mode: otherPaths.length > 0 ? "specific" : "none",
-          paths: otherPaths,
+          mode: otherSkills.length > 0 ? "specific" : "none",
+          skillNames: otherSkills,
         })
 
         setIncludeAllSkills(false)
-        setSelectedPaths(new Set(otherPaths))
+        setSelectedSkills(new Set(otherSkills))
         toast.success("Skill access updated")
         onUpdate()
       } catch (error) {
@@ -134,33 +134,33 @@ export function ClientSkillsTab({ client, onUpdate }: SkillsTabProps) {
 
     try {
       setSaving(true)
-      const newSelected = new Set(selectedPaths)
+      const newSelected = new Set(selectedSkills)
 
-      if (newSelected.has(sourcePath)) {
-        newSelected.delete(sourcePath)
+      if (newSelected.has(skillName)) {
+        newSelected.delete(skillName)
       } else {
-        newSelected.add(sourcePath)
+        newSelected.add(skillName)
       }
 
-      const allSelected = sourcePaths.length > 0 && sourcePaths.every(p => newSelected.has(p))
+      const allSelected = skillNames.length > 0 && skillNames.every(n => newSelected.has(n))
 
       if (allSelected) {
         await invoke("set_client_skills_access", {
           clientId: client.client_id,
           mode: "all",
-          paths: [],
+          skillNames: [],
         })
         setIncludeAllSkills(true)
-        setSelectedPaths(newSelected)
+        setSelectedSkills(newSelected)
         toast.success("All skills enabled")
       } else {
         const mode = newSelected.size > 0 ? "specific" : "none"
         await invoke("set_client_skills_access", {
           clientId: client.client_id,
           mode,
-          paths: Array.from(newSelected),
+          skillNames: Array.from(newSelected),
         })
-        setSelectedPaths(newSelected)
+        setSelectedSkills(newSelected)
         toast.success("Skill access updated")
       }
 
@@ -174,25 +174,17 @@ export function ClientSkillsTab({ client, onUpdate }: SkillsTabProps) {
   }
 
   const selectedCount = includeAllSkills
-    ? sourcePaths.length
-    : Array.from(selectedPaths).filter((p) =>
-        sourcePaths.includes(p)
+    ? skillNames.length
+    : Array.from(selectedSkills).filter((n) =>
+        skillNames.includes(n)
       ).length
 
-  const isIndeterminate = !includeAllSkills && selectedCount > 0 && selectedCount < sourcePaths.length
+  const isIndeterminate = !includeAllSkills && selectedCount > 0 && selectedCount < skillNames.length
 
-  const isPathSelected = (sourcePath: string): boolean => {
+  const isSkillSelected = (skillName: string): boolean => {
     if (includeAllSkills) return true
-    return selectedPaths.has(sourcePath)
+    return selectedSkills.has(skillName)
   }
-
-  // Group skills by source_path
-  const groupedSkills = skills.reduce<Record<string, SkillInfo[]>>((acc, skill) => {
-    const key = skill.source_path
-    if (!acc[key]) acc[key] = []
-    acc[key].push(skill)
-    return acc
-  }, {})
 
   return (
     <div className="space-y-6">
@@ -200,7 +192,7 @@ export function ClientSkillsTab({ client, onUpdate }: SkillsTabProps) {
         <CardHeader>
           <CardTitle>Skills Access</CardTitle>
           <CardDescription>
-            Select which skill sources this client can access via MCP tools
+            Select which skills this client can access via MCP tools
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -236,80 +228,58 @@ export function ClientSkillsTab({ client, onUpdate }: SkillsTabProps) {
                     {includeAllSkills ? (
                       <span className="text-primary">All (including future skills)</span>
                     ) : (
-                      `${selectedCount} / ${sourcePaths.length} source${sourcePaths.length !== 1 ? "s" : ""} selected`
+                      `${selectedCount} / ${skillNames.length} skill${skillNames.length !== 1 ? "s" : ""} selected`
                     )}
                   </span>
                 </div>
 
-                {/* Skills grouped by source path */}
-                {Object.entries(groupedSkills).map(([sourcePath, groupSkills]) => {
-                  const isSelected = isPathSelected(sourcePath)
-                  const canToggle = !saving
-                  const hasDisabled = groupSkills.some(s => !s.enabled)
+                {/* Individual skills */}
+                {skills.map((skill) => {
+                  const isSelected = isSkillSelected(skill.name)
+                  const canToggle = !saving && skill.enabled
 
                   return (
-                    <div key={sourcePath}>
-                      <div
-                        className={cn(
-                          "flex items-center gap-3 px-4 py-2.5 border-b",
-                          "hover:bg-muted/30 transition-colors",
-                          canToggle ? "cursor-pointer" : "",
-                          includeAllSkills && "opacity-60"
-                        )}
-                        onClick={() => canToggle && handleSourcePathToggle(sourcePath)}
-                      >
-                        <Checkbox
-                          checked={isSelected}
-                          onCheckedChange={() => handleSourcePathToggle(sourcePath)}
-                          disabled={!canToggle}
-                        />
-                        <div className="flex-1 min-w-0">
-                          <span className="text-sm font-medium truncate block" title={sourcePath}>
-                            {sourcePath}
-                          </span>
-                          <p className="text-xs text-muted-foreground">
-                            {groupSkills.length} skill{groupSkills.length !== 1 ? "s" : ""}
-                            {hasDisabled && " (some disabled globally)"}
+                    <div
+                      key={skill.name}
+                      className={cn(
+                        "flex items-center gap-3 px-4 py-2.5 border-b",
+                        "hover:bg-muted/30 transition-colors",
+                        canToggle ? "cursor-pointer" : "",
+                        !skill.enabled && "opacity-40",
+                        includeAllSkills && skill.enabled && "opacity-60"
+                      )}
+                      onClick={() => canToggle && handleSkillToggle(skill.name)}
+                    >
+                      <Checkbox
+                        checked={isSelected}
+                        onCheckedChange={() => handleSkillToggle(skill.name)}
+                        disabled={!canToggle}
+                      />
+                      <div className="flex-1 min-w-0">
+                        <span className="text-sm font-medium">{skill.name}</span>
+                        {skill.description && (
+                          <p className="text-xs text-muted-foreground truncate">
+                            {skill.description}
                           </p>
-                        </div>
+                        )}
                       </div>
-                      {/* Show individual skills under this source (non-interactive, info only) */}
-                      {groupSkills.map((skill) => (
-                        <div
-                          key={skill.name}
-                          className={cn(
-                            "flex items-center gap-3 px-4 py-1.5 border-b border-border/50",
-                            !skill.enabled && "opacity-40"
-                          )}
-                          style={{ paddingLeft: "3rem" }}
-                        >
-                          <div className="flex-1 min-w-0">
-                            <span className="text-xs font-medium">{skill.name}</span>
-                            {skill.description && (
-                              <span className="text-xs text-muted-foreground ml-2 truncate">
-                                {skill.description}
-                              </span>
-                            )}
-                          </div>
-                          <div className="flex items-center gap-1.5">
-                            {!skill.enabled && (
-                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground">
-                                disabled
-                              </span>
-                            )}
-                            {skill.script_count > 0 && (
-                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-600 dark:text-blue-400">
-                                scripts
-                              </span>
-                            )}
-                            {skill.reference_count > 0 && (
-                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-500/10 text-green-600 dark:text-green-400">
-                                refs
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                      ))}
+                      <div className="flex items-center gap-1.5">
+                        {!skill.enabled && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground">
+                            disabled
+                          </span>
+                        )}
+                        {skill.script_count > 0 && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-600 dark:text-blue-400">
+                            scripts
+                          </span>
+                        )}
+                        {skill.reference_count > 0 && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-500/10 text-green-600 dark:text-green-400">
+                            refs
+                          </span>
+                        )}
+                      </div>
                     </div>
                   )
                 })}

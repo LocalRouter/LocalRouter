@@ -1,10 +1,9 @@
 import { useState, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
-import { open as openDialog } from "@tauri-apps/plugin-dialog"
-import { open as openShell } from "@tauri-apps/plugin-shell"
+
 import { toast } from "sonner"
-import { Plus, FolderOpen, RefreshCw, Trash2, ExternalLink, ChevronDown, ChevronRight, FileText, FileCode, Image } from "lucide-react"
+import { RefreshCw, ExternalLink, ChevronDown, ChevronRight, FileText, FileCode, Image, Folder } from "lucide-react"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Switch } from "@/components/ui/switch"
@@ -22,11 +21,6 @@ interface SkillInfo {
   enabled: boolean
 }
 
-interface SkillsConfig {
-  paths: string[]
-  disabled_skills: string[]
-}
-
 interface SkillFile {
   name: string
   category: string
@@ -40,12 +34,9 @@ interface SkillsViewProps {
 
 export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
   const [skills, setSkills] = useState<SkillInfo[]>([])
-  const [config, setConfig] = useState<SkillsConfig | null>(null)
   const [loading, setLoading] = useState(true)
   const [rescanning, setRescanning] = useState(false)
   const [selectedSkill, setSelectedSkill] = useState<string | null>(activeSubTab)
-  const [addMode, setAddMode] = useState(false)
-  const [newPath, setNewPath] = useState("")
   const [skillFiles, setSkillFiles] = useState<SkillFile[]>([])
   const [loadingFiles, setLoadingFiles] = useState(false)
   const [expandedFiles, setExpandedFiles] = useState<Set<string>>(new Set())
@@ -77,12 +68,8 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
 
   const loadData = async () => {
     try {
-      const [skillList, skillsConfig] = await Promise.all([
-        invoke<SkillInfo[]>("list_skills"),
-        invoke<SkillsConfig>("get_skills_config"),
-      ])
+      const skillList = await invoke<SkillInfo[]>("list_skills")
       setSkills(skillList)
-      setConfig(skillsConfig)
     } catch (error) {
       console.error("Failed to load skills:", error)
     } finally {
@@ -104,43 +91,9 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
     }
   }
 
-  const handleAddPath = async () => {
-    const trimmed = newPath.trim()
-    if (!trimmed) return
-
-    try {
-      await invoke("add_skill_source", { path: trimmed })
-      toast.success("Skill source added")
-      setNewPath("")
-      setAddMode(false)
-      loadData()
-    } catch (error) {
-      console.error("Failed to add path:", error)
-      toast.error(`Failed to add source: ${error}`)
-    }
-  }
-
-  const handleAddFolder = async () => {
-    try {
-      const selected = await openDialog({
-        directory: true,
-        multiple: false,
-        title: "Select skill source directory",
-      })
-      if (selected) {
-        await invoke("add_skill_source", { path: selected })
-        toast.success("Skill source added")
-        loadData()
-      }
-    } catch (error) {
-      console.error("Failed to open folder picker:", error)
-      toast.error(`Failed to add source: ${error}`)
-    }
-  }
-
   const handleOpenPath = async (path: string) => {
     try {
-      await openShell(path)
+      await invoke("open_path", { path })
     } catch (error) {
       console.error("Failed to open path:", error)
       toast.error("Failed to open in file explorer")
@@ -172,25 +125,6 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
     })
   }
 
-  const getCategoryIcon = (category: string) => {
-    switch (category) {
-      case "script": return <FileCode className="h-3.5 w-3.5 text-blue-500" />
-      case "reference": return <FileText className="h-3.5 w-3.5 text-green-500" />
-      case "asset": return <Image className="h-3.5 w-3.5 text-purple-500" />
-      default: return <FileText className="h-3.5 w-3.5 text-muted-foreground" />
-    }
-  }
-
-  const handleRemoveSource = async (path: string) => {
-    try {
-      await invoke("remove_skill_source", { path })
-      toast.success("Skill source removed")
-      loadData()
-    } catch (error) {
-      console.error("Failed to remove skill source:", error)
-      toast.error("Failed to remove source")
-    }
-  }
 
   const handleToggleEnabled = async (skillName: string, enabled: boolean) => {
     try {
@@ -202,14 +136,6 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
       toast.error("Failed to update skill")
     }
   }
-
-  // Group skills by source_path
-  const groupedSkills = skills.reduce<Record<string, SkillInfo[]>>((acc, skill) => {
-    const key = skill.source_path
-    if (!acc[key]) acc[key] = []
-    acc[key].push(skill)
-    return acc
-  }, {})
 
   const selectedSkillInfo = skills.find(s => s.name === selectedSkill)
 
@@ -241,83 +167,12 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
             <RefreshCw className={`h-4 w-4 mr-2 ${rescanning ? "animate-spin" : ""}`} />
             Rescan
           </Button>
-          <Button size="sm" variant="outline" onClick={() => { setAddMode(true); setNewPath("") }}>
-            <FileText className="h-4 w-4 mr-2" />
-            Manual Path...
-          </Button>
-          <Button size="sm" onClick={handleAddFolder}>
-            <Plus className="h-4 w-4 mr-2" />
-            Add Skill Source
-          </Button>
         </div>
       </div>
-
-      {/* Add path input */}
-      {addMode && (
-        <Card>
-          <CardContent className="pt-4">
-            <div className="flex items-center gap-2">
-              <label className="text-sm font-medium shrink-0">
-                Source Path:
-              </label>
-              <input
-                type="text"
-                value={newPath}
-                onChange={(e) => setNewPath(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter") handleAddPath(); if (e.key === "Escape") setAddMode(false) }}
-                placeholder="/path/to/skills/directory or /path/to/skill.zip"
-                className="flex-1 h-8 rounded-md border border-input bg-background px-3 py-1 text-sm"
-                autoFocus
-              />
-              <Button size="sm" onClick={handleAddPath} disabled={!newPath.trim()}>
-                Add
-              </Button>
-              <Button size="sm" variant="outline" onClick={() => setAddMode(false)}>
-                Cancel
-              </Button>
-            </div>
-            <p className="text-xs text-muted-foreground mt-1.5">
-              Path to a skill directory (with SKILL.md), a directory of skills, or a .zip/.skill file
-            </p>
-          </CardContent>
-        </Card>
-      )}
 
       <div className="flex gap-6">
         {/* Left: Skills list */}
         <div className="w-[35%] space-y-4">
-          {/* Configured paths */}
-          {config && config.paths.length > 0 && (
-            <Card>
-              <CardHeader className="pb-3">
-                <CardTitle className="text-sm">Configured Sources</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-2">
-                {config.paths.map((p) => (
-                  <div key={p} className="flex items-center justify-between text-xs group">
-                    <button
-                      className="flex items-center gap-1.5 min-w-0 hover:text-foreground transition-colors"
-                      onClick={() => handleOpenPath(p)}
-                      title={`Open ${p} in file explorer`}
-                    >
-                      <FolderOpen className="h-3 w-3 text-muted-foreground shrink-0" />
-                      <span className="truncate text-muted-foreground hover:text-foreground">{p}</span>
-                      <ExternalLink className="h-2.5 w-2.5 text-muted-foreground opacity-0 group-hover:opacity-100 shrink-0" />
-                    </button>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-5 w-5 opacity-0 group-hover:opacity-100"
-                      onClick={() => handleRemoveSource(p)}
-                    >
-                      <Trash2 className="h-3 w-3" />
-                    </Button>
-                  </div>
-                ))}
-              </CardContent>
-            </Card>
-          )}
-
           {/* Skills list */}
           <Card>
             <CardHeader className="pb-3">
@@ -330,35 +185,26 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
                 </p>
               ) : (
                 <div className="space-y-1">
-                  {Object.entries(groupedSkills).map(([sourcePath, groupSkills]) => (
-                    <div key={sourcePath}>
-                      {Object.keys(groupedSkills).length > 1 && (
-                        <div className="text-[10px] text-muted-foreground font-medium px-2 py-1 truncate" title={sourcePath}>
-                          {sourcePath}
+                  {skills.map((skill) => (
+                    <button
+                      key={skill.name}
+                      onClick={() => {
+                        setSelectedSkill(skill.name)
+                        onTabChange("skills", skill.name)
+                      }}
+                      className={`w-full text-left px-3 py-2 rounded-md text-sm transition-colors ${
+                        selectedSkill === skill.name
+                          ? "bg-accent text-accent-foreground"
+                          : "hover:bg-muted/50"
+                      } ${!skill.enabled ? "opacity-50" : ""}`}
+                    >
+                      <div className="font-medium">{skill.name}</div>
+                      {skill.description && (
+                        <div className="text-xs text-muted-foreground truncate">
+                          {skill.description}
                         </div>
                       )}
-                      {groupSkills.map((skill) => (
-                        <button
-                          key={skill.name}
-                          onClick={() => {
-                            setSelectedSkill(skill.name)
-                            onTabChange("skills", skill.name)
-                          }}
-                          className={`w-full text-left px-3 py-2 rounded-md text-sm transition-colors ${
-                            selectedSkill === skill.name
-                              ? "bg-accent text-accent-foreground"
-                              : "hover:bg-muted/50"
-                          } ${!skill.enabled ? "opacity-50" : ""}`}
-                        >
-                          <div className="font-medium">{skill.name}</div>
-                          {skill.description && (
-                            <div className="text-xs text-muted-foreground truncate">
-                              {skill.description}
-                            </div>
-                          )}
-                        </button>
-                      ))}
-                    </div>
+                    </button>
                   ))}
                 </div>
               )}
@@ -439,46 +285,126 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
                   )}
                 </div>
 
-                {/* Files */}
+                {/* File Tree */}
                 {loadingFiles ? (
                   <div className="text-xs text-muted-foreground border-t pt-3">
                     Loading files...
                   </div>
                 ) : skillFiles.length > 0 && (
-                  <div className="border-t pt-3 space-y-1">
+                  <div className="border-t pt-3">
                     <h4 className="text-xs font-medium text-muted-foreground mb-2">Files</h4>
-                    {["script", "reference", "asset"].map(category => {
-                      const categoryFiles = skillFiles.filter(f => f.category === category)
-                      if (categoryFiles.length === 0) return null
-                      return (
-                        <div key={category} className="space-y-0.5">
-                          <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium px-1">
-                            {category}s ({categoryFiles.length})
-                          </div>
-                          {categoryFiles.map(file => (
-                            <div key={file.name} className="rounded-md border border-border/50">
-                              <button
-                                className="w-full flex items-center gap-2 px-2 py-1.5 text-xs hover:bg-muted/50 transition-colors"
-                                onClick={() => file.content_preview && toggleFileExpanded(file.name)}
-                              >
-                                {file.content_preview ? (
-                                  expandedFiles.has(file.name)
-                                    ? <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" />
-                                    : <ChevronRight className="h-3 w-3 shrink-0 text-muted-foreground" />
-                                ) : <div className="w-3" />}
-                                {getCategoryIcon(file.category)}
-                                <span className="truncate">{file.name}</span>
-                              </button>
-                              {expandedFiles.has(file.name) && file.content_preview && (
-                                <pre className="px-3 py-2 text-[10px] leading-relaxed bg-muted/30 border-t border-border/50 overflow-x-auto max-h-48 whitespace-pre-wrap break-words">
-                                  {file.content_preview}
-                                </pre>
-                              )}
-                            </div>
-                          ))}
-                        </div>
-                      )
-                    })}
+                    <div className="rounded-md border border-border/50 bg-muted/20 py-1">
+                      {(() => {
+                        // Build a nested tree from flat relative paths
+                        interface TreeNode {
+                          name: string
+                          fullPath: string
+                          file?: SkillFile
+                          children: Record<string, TreeNode>
+                        }
+
+                        const root: TreeNode = { name: "", fullPath: "", children: {} }
+                        for (const file of skillFiles) {
+                          const parts = file.name.split("/")
+                          let node = root
+                          for (let i = 0; i < parts.length; i++) {
+                            const part = parts[i]
+                            const partialPath = parts.slice(0, i + 1).join("/")
+                            if (!node.children[part]) {
+                              node.children[part] = { name: part, fullPath: partialPath, children: {} }
+                            }
+                            node = node.children[part]
+                          }
+                          node.file = file
+                        }
+
+                        const getFileIcon = (name: string) => {
+                          const ext = name.split(".").pop()?.toLowerCase() ?? ""
+                          if (name === "SKILL.md") return <FileText className="h-3.5 w-3.5 text-amber-500" />
+                          if (["sh", "bash", "py", "js", "ts", "rb", "pl"].includes(ext)) return <FileCode className="h-3.5 w-3.5 text-blue-500" />
+                          if (["md", "txt", "json", "yaml", "yml", "toml", "xml", "csv", "html", "css"].includes(ext)) return <FileText className="h-3.5 w-3.5 text-green-500" />
+                          if (["png", "jpg", "jpeg", "gif", "svg", "webp", "ico"].includes(ext)) return <Image className="h-3.5 w-3.5 text-purple-500" />
+                          return <FileText className="h-3.5 w-3.5 text-muted-foreground" />
+                        }
+
+                        const renderNode = (node: TreeNode, depth: number): React.ReactNode[] => {
+                          const entries = Object.values(node.children)
+                          // Sort: directories first, then files, alphabetically within each
+                          entries.sort((a, b) => {
+                            const aIsDir = Object.keys(a.children).length > 0 && !a.file
+                            const bIsDir = Object.keys(b.children).length > 0 && !b.file
+                            if (aIsDir !== bIsDir) return aIsDir ? -1 : 1
+                            return a.name.localeCompare(b.name)
+                          })
+
+                          const results: React.ReactNode[] = []
+                          const padLeft = 12 + depth * 16
+
+                          for (const entry of entries) {
+                            const isDir = Object.keys(entry.children).length > 0 && !entry.file
+                            if (isDir) {
+                              // Count total files under this directory
+                              const countFiles = (n: TreeNode): number => {
+                                let c = n.file ? 1 : 0
+                                for (const child of Object.values(n.children)) c += countFiles(child)
+                                return c
+                              }
+                              const fileCount = countFiles(entry)
+                              const dirKey = `dir:${entry.fullPath}`
+                              const isDirExpanded = expandedFiles.has(dirKey)
+
+                              results.push(
+                                <div key={dirKey}>
+                                  <button
+                                    className="w-full flex items-center gap-1.5 py-1 text-xs hover:bg-muted/50 transition-colors"
+                                    style={{ paddingLeft: padLeft }}
+                                    onClick={() => toggleFileExpanded(dirKey)}
+                                  >
+                                    {isDirExpanded
+                                      ? <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" />
+                                      : <ChevronRight className="h-3 w-3 shrink-0 text-muted-foreground" />}
+                                    <Folder className="h-3.5 w-3.5 text-muted-foreground" />
+                                    <span className="font-medium">{entry.name}/</span>
+                                    <span className="text-muted-foreground">({fileCount})</span>
+                                  </button>
+                                  {isDirExpanded && renderNode(entry, depth + 1)}
+                                </div>
+                              )
+                            } else if (entry.file) {
+                              const file = entry.file
+                              results.push(
+                                <div key={file.name}>
+                                  <button
+                                    className="w-full flex items-center gap-1.5 py-1 pr-3 text-xs hover:bg-muted/50 transition-colors"
+                                    style={{ paddingLeft: padLeft }}
+                                    onClick={() => file.content_preview && toggleFileExpanded(file.name)}
+                                  >
+                                    {file.content_preview ? (
+                                      expandedFiles.has(file.name)
+                                        ? <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" />
+                                        : <ChevronRight className="h-3 w-3 shrink-0 text-muted-foreground" />
+                                    ) : <div className="w-3" />}
+                                    {getFileIcon(entry.name)}
+                                    <span>{entry.name}</span>
+                                  </button>
+                                  {expandedFiles.has(file.name) && file.content_preview && (
+                                    <pre
+                                      className="mr-3 mb-1 px-3 py-2 text-[10px] leading-relaxed bg-muted/30 rounded border border-border/50 overflow-x-auto max-h-48 whitespace-pre-wrap break-words"
+                                      style={{ marginLeft: padLeft + 18 }}
+                                    >
+                                      {file.content_preview}
+                                    </pre>
+                                  )}
+                                </div>
+                              )
+                            }
+                          }
+                          return results
+                        }
+
+                        return renderNode(root, 0)
+                      })()}
+                    </div>
                   </div>
                 )}
 

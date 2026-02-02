@@ -5,7 +5,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { open } from '@tauri-apps/plugin-shell';
+
 import { RouteLLMStatusIndicator } from './RouteLLMStatusIndicator';
 import { RouteLLMValueProp } from './RouteLLMValueProp';
 import { ThresholdSlider } from './ThresholdSlider';
@@ -71,7 +71,7 @@ export const RouteLLMConfigEditor: React.FC<RouteLLMConfigEditorProps> = ({
       // Open the model folder in file explorer
       const homeDir = await invoke<string>('get_home_dir');
       const path = modelPath.replace('~', homeDir);
-      await open(path);
+      await invoke('open_path', { path });
     } catch (error) {
       console.error('Failed to open folder:', error);
     }

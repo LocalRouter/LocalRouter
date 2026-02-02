@@ -43,7 +43,7 @@ interface Client {
   mcp_servers: string[]
   mcp_deferred_loading: boolean
   skills_access_mode: "none" | "all" | "specific"
-  skills_paths: string[]
+  skills_names: string[]
   created_at: string
   last_used: string | null
 }

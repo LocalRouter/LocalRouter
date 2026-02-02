@@ -2,7 +2,7 @@
  * Step 4: Select Skills
  *
  * Skills access selection for the client.
- * Supports All / Specific / None access modes.
+ * Supports All / Specific / None access modes with per-skill selection.
  */
 
 import { useState, useEffect } from "react"
@@ -24,11 +24,11 @@ interface SkillInfo {
 
 interface StepSkillsProps {
   accessMode: SkillsAccessMode
-  selectedPaths: string[]
-  onChange: (mode: SkillsAccessMode, paths: string[]) => void
+  selectedSkills: string[]
+  onChange: (mode: SkillsAccessMode, skills: string[]) => void
 }
 
-export function StepSkills({ accessMode, selectedPaths, onChange }: StepSkillsProps) {
+export function StepSkills({ accessMode, selectedSkills, onChange }: StepSkillsProps) {
   const [skills, setSkills] = useState<SkillInfo[]>([])
   const [loading, setLoading] = useState(true)
 
@@ -47,23 +47,15 @@ export function StepSkills({ accessMode, selectedPaths, onChange }: StepSkillsPr
     }
   }
 
-  // Get unique source paths from discovered skills
-  const sourcePaths = [...new Set(skills.map(s => s.source_path))]
-
-  // Group skills by source_path
-  const groupedSkills = skills.reduce<Record<string, SkillInfo[]>>((acc, skill) => {
-    const key = skill.source_path
-    if (!acc[key]) acc[key] = []
-    acc[key].push(skill)
-    return acc
-  }, {})
+  const enabledSkills = skills.filter(s => s.enabled)
+  const skillNames = enabledSkills.map(s => s.name)
 
   const includeAll = accessMode === "all"
-  const selectedSet = new Set(selectedPaths)
+  const selectedSet = new Set(selectedSkills)
   const selectedCount = includeAll
-    ? sourcePaths.length
-    : Array.from(selectedSet).filter(p => sourcePaths.includes(p)).length
-  const isIndeterminate = !includeAll && selectedCount > 0 && selectedCount < sourcePaths.length
+    ? skillNames.length
+    : Array.from(selectedSet).filter(n => skillNames.includes(n)).length
+  const isIndeterminate = !includeAll && selectedCount > 0 && selectedCount < skillNames.length
 
   const handleAllToggle = () => {
     if (includeAll) {
@@ -74,33 +66,33 @@ export function StepSkills({ accessMode, selectedPaths, onChange }: StepSkillsPr
     }
   }
 
-  const handleSourcePathToggle = (sourcePath: string) => {
+  const handleSkillToggle = (skillName: string) => {
     if (includeAll) {
-      // Switch from All to Specific, excluding this path
-      const otherPaths = sourcePaths.filter(p => p !== sourcePath)
-      onChange(otherPaths.length > 0 ? "specific" : "none", otherPaths)
+      // Switch from All to Specific, excluding this skill
+      const otherSkills = skillNames.filter(n => n !== skillName)
+      onChange(otherSkills.length > 0 ? "specific" : "none", otherSkills)
       return
     }
 
     const newSelected = new Set(selectedSet)
-    if (newSelected.has(sourcePath)) {
-      newSelected.delete(sourcePath)
+    if (newSelected.has(skillName)) {
+      newSelected.delete(skillName)
     } else {
-      newSelected.add(sourcePath)
+      newSelected.add(skillName)
     }
 
-    const allSelected = sourcePaths.length > 0 && sourcePaths.every(p => newSelected.has(p))
+    const allSelected = skillNames.length > 0 && skillNames.every(n => newSelected.has(n))
     if (allSelected) {
       onChange("all", [])
     } else {
-      const paths = Array.from(newSelected)
-      onChange(paths.length > 0 ? "specific" : "none", paths)
+      const names = Array.from(newSelected)
+      onChange(names.length > 0 ? "specific" : "none", names)
     }
   }
 
-  const isPathSelected = (sourcePath: string): boolean => {
+  const isSkillSelected = (skillName: string): boolean => {
     if (includeAll) return true
-    return selectedSet.has(sourcePath)
+    return selectedSet.has(skillName)
   }
 
   if (loading) {
@@ -150,57 +142,40 @@ export function StepSkills({ accessMode, selectedPaths, onChange }: StepSkillsPr
               {includeAll ? (
                 <span className="text-primary">All (including future skills)</span>
               ) : (
-                `${selectedCount} / ${sourcePaths.length} source${sourcePaths.length !== 1 ? "s" : ""} selected`
+                `${selectedCount} / ${skillNames.length} skill${skillNames.length !== 1 ? "s" : ""} selected`
               )}
             </span>
           </div>
 
-          {/* Skills grouped by source path */}
-          {Object.entries(groupedSkills).map(([sourcePath, groupSkills]) => {
-            const isSelected = isPathSelected(sourcePath)
+          {/* Individual skills */}
+          {skills.map((skill) => {
+            const isSelected = isSkillSelected(skill.name)
 
             return (
-              <div key={sourcePath}>
-                <div
-                  className={cn(
-                    "flex items-center gap-3 px-4 py-2.5 border-b",
-                    "hover:bg-muted/30 transition-colors cursor-pointer",
-                    includeAll && "opacity-60"
-                  )}
-                  onClick={() => handleSourcePathToggle(sourcePath)}
-                >
-                  <Checkbox
-                    checked={isSelected}
-                    onCheckedChange={() => handleSourcePathToggle(sourcePath)}
-                  />
-                  <div className="flex-1 min-w-0">
-                    <span className="text-sm font-medium truncate block" title={sourcePath}>
-                      {sourcePath}
-                    </span>
-                    <p className="text-xs text-muted-foreground">
-                      {groupSkills.length} skill{groupSkills.length !== 1 ? "s" : ""}
+              <div
+                key={skill.name}
+                className={cn(
+                  "flex items-center gap-3 px-4 py-2.5 border-b",
+                  "hover:bg-muted/30 transition-colors",
+                  skill.enabled ? "cursor-pointer" : "",
+                  !skill.enabled && "opacity-40",
+                  includeAll && skill.enabled && "opacity-60"
+                )}
+                onClick={() => skill.enabled && handleSkillToggle(skill.name)}
+              >
+                <Checkbox
+                  checked={isSelected}
+                  onCheckedChange={() => handleSkillToggle(skill.name)}
+                  disabled={!skill.enabled}
+                />
+                <div className="flex-1 min-w-0">
+                  <span className="text-sm font-medium">{skill.name}</span>
+                  {skill.description && (
+                    <p className="text-xs text-muted-foreground truncate">
+                      {skill.description}
                     </p>
-                  </div>
+                  )}
                 </div>
-                {groupSkills.map(skill => (
-                  <div
-                    key={skill.name}
-                    className={cn(
-                      "flex items-center gap-3 px-4 py-1.5 border-b border-border/50",
-                      !skill.enabled && "opacity-40"
-                    )}
-                    style={{ paddingLeft: "3rem" }}
-                  >
-                    <div className="flex-1 min-w-0">
-                      <span className="text-xs font-medium">{skill.name}</span>
-                      {skill.description && (
-                        <span className="text-xs text-muted-foreground ml-2 truncate">
-                          {skill.description}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                ))}
               </div>
             )
           })}
