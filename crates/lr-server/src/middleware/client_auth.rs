@@ -54,6 +54,21 @@ fn extract_bearer_token(auth_header: &str) -> Option<String> {
 ///
 /// On success, attaches ClientAuthContext to request extensions.
 pub async fn client_auth_middleware(mut req: Request, next: Next) -> Response {
+    // Allow unauthenticated GET requests to root info endpoints (non-SSE)
+    // These return API documentation and don't require auth
+    let path = req.uri().path().to_string();
+    let is_get = req.method() == axum::http::Method::GET;
+    let accepts_sse = req
+        .headers()
+        .get(axum::http::header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.contains("text/event-stream"))
+        .unwrap_or(false);
+
+    if is_get && !accepts_sse && (path == "/" || path == "/mcp") {
+        return next.run(req).await;
+    }
+
     // Extract Authorization header
     let auth_header = match req
         .headers()

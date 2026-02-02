@@ -155,7 +155,7 @@ pub async fn start_server(
 /// Build the Axum app with all routes and middleware
 fn build_app(state: AppState, enable_cors: bool) -> Router {
     // Build MCP routes with client auth middleware
-    // MCP routes: unified gateway at root (/), individual servers under /mcp
+    // MCP routes: unified gateway at root (/) and /mcp
     // GET returns SSE if Accept: text/event-stream, otherwise API info
     let mcp_routes = Router::new()
         .route(
@@ -166,14 +166,6 @@ fn build_app(state: AppState, enable_cors: bool) -> Router {
             "/mcp",
             get(routes::mcp_gateway_get_handler).post(routes::mcp_gateway_handler),
         ) // Alias: /mcp also serves unified gateway
-        .route(
-            "/mcp/:server_id",
-            get(routes::mcp_server_sse_handler).post(routes::mcp_server_handler),
-        ) // Individual MCP server: GET for SSE, POST for JSON-RPC
-        .route(
-            "/mcp/:server_id/stream",
-            post(routes::mcp_server_streaming_handler), // MCP streaming endpoint (SSE)
-        )
         .route("/ws", get(routes::mcp_websocket_handler)) // WebSocket notifications
         .route("/mcp/ws", get(routes::mcp_websocket_handler)) // Alias: /mcp/ws
         .route(

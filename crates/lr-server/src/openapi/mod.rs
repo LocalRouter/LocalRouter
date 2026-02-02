@@ -42,9 +42,6 @@ use utoipa::OpenApi;
         // MCP endpoints
         crate::routes::mcp::mcp_gateway_get_handler,
         crate::routes::mcp::mcp_gateway_handler,
-        crate::routes::mcp::mcp_server_handler,
-        crate::routes::mcp::mcp_server_sse_handler,
-        crate::routes::mcp::mcp_server_streaming_handler,
         crate::routes::mcp::elicitation_response_handler,
 
         // OAuth endpoints
@@ -236,8 +233,8 @@ mod tests {
             .paths
             .contains_key("/v1/models/{provider}/{model}/pricing"));
         assert!(spec.paths.paths.contains_key("/v1/generation"));
-        assert!(spec.paths.paths.contains_key("/mcp/{server_id}"));
-        assert!(spec.paths.paths.contains_key("/mcp/{server_id}/stream"));
+        assert!(!spec.paths.paths.contains_key("/mcp/{server_id}"));
+        assert!(!spec.paths.paths.contains_key("/mcp/{server_id}/stream"));
         assert!(spec.paths.paths.contains_key("/health"));
         assert!(spec.paths.paths.contains_key("/"));
 
