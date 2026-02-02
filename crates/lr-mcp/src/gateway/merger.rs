@@ -10,22 +10,40 @@ pub struct SkillInfo {
     pub get_info_tool: String,
 }
 
+/// An MCP server's info for instruction building (using human-readable names, not UUIDs)
+pub struct McpServerInstructionInfo {
+    /// Human-readable name (e.g., "My Filesystem" as configured by the user)
+    pub name: String,
+    /// The server's own instructions (from MCP `instructions` field), if any
+    pub instructions: Option<String>,
+    /// The server's description (from MCP `serverInfo.description`), if any
+    pub description: Option<String>,
+    /// Tool names (already namespaced, e.g., "my-filesystem__read_file")
+    pub tool_names: Vec<String>,
+    /// Resource names (already namespaced)
+    pub resource_names: Vec<String>,
+    /// Prompt names (already namespaced)
+    pub prompt_names: Vec<String>,
+}
+
+/// An unavailable server for instruction building
+pub struct UnavailableServerInfo {
+    /// Human-readable name
+    pub name: String,
+    /// Error message
+    pub error: String,
+}
+
 /// Context for building gateway instructions
 pub struct InstructionsContext {
-    /// MCP server init results (server_id, result)
-    pub servers: Vec<(String, InitializeResult)>,
+    /// Available MCP servers with their info
+    pub servers: Vec<McpServerInstructionInfo>,
+    /// Unavailable MCP servers
+    pub unavailable_servers: Vec<UnavailableServerInfo>,
     /// Skills accessible to this client
     pub skills: Vec<SkillInfo>,
     /// Whether deferred loading is enabled
     pub deferred_loading: bool,
-    /// Deferred catalog: tool names (only relevant when deferred_loading is true)
-    pub deferred_tool_names: Vec<String>,
-    /// Deferred catalog: resource names
-    pub deferred_resource_names: Vec<String>,
-    /// Deferred catalog: prompt names
-    pub deferred_prompt_names: Vec<String>,
-    /// Server failures
-    pub failures: Vec<ServerFailure>,
 }
 
 /// Merge initialize results from multiple servers
@@ -139,151 +157,186 @@ fn build_server_description(
 
 /// Build comprehensive gateway instructions based on available capabilities.
 ///
-/// Generates instructions tailored to the combination of:
-/// - MCP servers (with their own instructions/descriptions embedded)
-/// - Skills (with discovery instructions)
-/// - Deferred loading mode (catalog listing instead of full server details)
+/// Structure:
+/// 1. Header (varies by what's available: MCPs, skills, both)
+/// 2. Tool listing grouped by MCP server, then skills
+/// 3. Per-server instructions in XML tags
 pub fn build_gateway_instructions(ctx: &InstructionsContext) -> Option<String> {
     let has_servers = !ctx.servers.is_empty();
     let has_skills = !ctx.skills.is_empty();
+    let has_unavailable = !ctx.unavailable_servers.is_empty();
 
     // Nothing to describe
-    if !has_servers && !has_skills {
+    if !has_servers && !has_skills && !has_unavailable {
         return None;
     }
 
     let mut inst = String::new();
 
-    // --- MCP Servers section ---
+    // --- 1. Header ---
+    build_header(&mut inst, has_servers, has_skills, ctx.deferred_loading);
+
+    // --- 2. Tool listing grouped by server, then skills ---
+    build_tool_listing(&mut inst, ctx);
+
+    // --- 3. Per-server instructions in XML tags ---
     if has_servers {
-        if ctx.deferred_loading {
-            build_deferred_servers_section(&mut inst, ctx);
-        } else {
-            build_normal_servers_section(&mut inst, ctx);
-        }
-    }
-
-    // --- Skills section ---
-    if has_skills {
-        if has_servers {
-            inst.push('\n');
-        }
-        build_skills_section(&mut inst, &ctx.skills);
-    }
-
-    // --- Failures section ---
-    if !ctx.failures.is_empty() {
-        inst.push('\n');
-        inst.push_str("## Unavailable Servers\n\n");
-        for failure in &ctx.failures {
-            inst.push_str(&format!("- **{}**: {}\n", failure.server_id, failure.error));
-        }
+        build_server_instructions_section(&mut inst, &ctx.servers);
     }
 
     Some(inst)
 }
 
-/// Build the MCP servers section for normal (non-deferred) mode.
-/// Embeds each server's instructions/description directly.
-fn build_normal_servers_section(inst: &mut String, ctx: &InstructionsContext) {
-    inst.push_str("## MCP Servers\n\n");
-    inst.push_str(
-        "Tools, resources, and prompts from MCP servers are namespaced with a \
-         `servername__` prefix (e.g., `filesystem__read_file`).\n\n",
-    );
+/// Slugify a server name for use as an XML tag (e.g., "My MCP Server" -> "my-mcp-server")
+fn slugify(name: &str) -> String {
+    let mut slug = String::with_capacity(name.len());
+    let mut last_was_separator = true; // avoid leading dash
+    for ch in name.chars() {
+        if ch.is_ascii_alphanumeric() {
+            slug.push(ch.to_ascii_lowercase());
+            last_was_separator = false;
+        } else if !last_was_separator {
+            slug.push('-');
+            last_was_separator = true;
+        }
+    }
+    // trim trailing dash
+    if slug.ends_with('-') {
+        slug.pop();
+    }
+    slug
+}
 
-    for (server_id, result) in &ctx.servers {
-        inst.push_str(&format!("### {}", server_id));
-        if result.server_info.name != *server_id {
-            inst.push_str(&format!(" ({})", result.server_info.name));
+/// Build the header line based on what's available.
+fn build_header(inst: &mut String, has_servers: bool, has_skills: bool, deferred: bool) {
+    match (has_servers, has_skills) {
+        (true, true) => {
+            if deferred {
+                inst.push_str(
+                    "Unified Gateway to MCP servers and skills. \
+                     Tools from MCP servers are loaded on demand — use the `search` \
+                     tool to discover and activate them by keyword. Skills are available directly; \
+                     call a skill's `get_info` tool to view its full instructions and unlock its \
+                     run/read tools.\n\n",
+                );
+            } else {
+                inst.push_str(
+                    "Unified Gateway to MCP servers and skills. \
+                     Tools from MCP servers are namespaced with a `servername__` \
+                     prefix. Skills are available directly; call a skill's `get_info` tool to \
+                     view its full instructions and unlock its run/read tools.\n\n",
+                );
+            }
+        }
+        (true, false) => {
+            if deferred {
+                inst.push_str(
+                    "Unified Gateway to MCP servers. \
+                     Tools are loaded on demand — use the `search` tool to discover and activate \
+                     them by keyword. Activated items remain available for the rest of the session.\n\n",
+                );
+            } else {
+                inst.push_str(
+                    "Unified Gateway to MCP servers. \
+                     Tools are namespaced with a `servername__` prefix (e.g., `filesystem__read_file`).\n\n",
+                );
+            }
+        }
+        (false, true) => {
+            inst.push_str(
+                "Unified Gateway to skills. Call a skill's `get_info` tool to \
+                 view its full instructions and unlock its run/read tools.\n\n",
+            );
+        }
+        (false, false) => {
+            // Only unavailable servers — header still needed
+            inst.push_str("Unified Gateway: No MCP servers or skills are currently available.\n\n");
+        }
+    }
+}
+
+/// Build the grouped capability listing: MCP servers first, then skills, then unavailable servers.
+fn build_tool_listing(inst: &mut String, ctx: &InstructionsContext) {
+    // MCP server capabilities grouped by server
+    for server in &ctx.servers {
+        let has_anything = !server.tool_names.is_empty()
+            || !server.resource_names.is_empty()
+            || !server.prompt_names.is_empty();
+
+        inst.push_str(&format!("**{}**", server.name));
+        if !has_anything {
+            inst.push_str(" (no capabilities)\n");
+        } else {
+            inst.push('\n');
+            for name in &server.tool_names {
+                inst.push_str(&format!("- `{}`\n", name));
+            }
+            for name in &server.resource_names {
+                inst.push_str(&format!("- `{}` (resource)\n", name));
+            }
+            for name in &server.prompt_names {
+                inst.push_str(&format!("- `{}` (prompt)\n", name));
+            }
         }
         inst.push('\n');
+    }
 
-        // Embed the server's own instructions (preferred) or description
-        if let Some(server_instructions) = &result.instructions {
-            inst.push('\n');
-            inst.push_str(server_instructions);
-            if !server_instructions.ends_with('\n') {
-                inst.push('\n');
+    // Unavailable servers
+    for server in &ctx.unavailable_servers {
+        inst.push_str(&format!(
+            "**{}** — unavailable: {}\n\n",
+            server.name, server.error
+        ));
+    }
+
+    // Skills
+    if !ctx.skills.is_empty() {
+        inst.push_str("**Skills**\n");
+        for skill in &ctx.skills {
+            inst.push_str(&format!("- **{}**: `{}`", skill.name, skill.get_info_tool));
+            if let Some(desc) = &skill.description {
+                inst.push_str(&format!(" — {}", desc));
             }
-        } else if let Some(server_desc) = &result.server_info.description {
             inst.push('\n');
-            inst.push_str(server_desc);
-            if !server_desc.ends_with('\n') {
-                inst.push('\n');
-            }
         }
-
         inst.push('\n');
     }
 }
 
-/// Build the MCP servers section for deferred loading mode.
-/// Lists available tool/resource/prompt names without full instructions.
-fn build_deferred_servers_section(inst: &mut String, ctx: &InstructionsContext) {
-    inst.push_str("## MCP Servers (deferred loading)\n\n");
-    inst.push_str(
-        "Tools are loaded on demand. Use the `search` tool to discover and activate \
-         capabilities by keyword before using them. Activated items remain available \
-         for the rest of the session.\n\n",
-    );
+/// Build per-server instructions wrapped in XML tags.
+fn build_server_instructions_section(inst: &mut String, servers: &[McpServerInstructionInfo]) {
+    // Only emit section if at least one server has instructions or a description
+    let servers_with_content: Vec<&McpServerInstructionInfo> = servers
+        .iter()
+        .filter(|s| s.instructions.is_some() || s.description.is_some())
+        .collect();
 
-    // List servers briefly
-    inst.push_str("Connected servers: ");
-    let server_names: Vec<&str> = ctx.servers.iter().map(|(id, _)| id.as_str()).collect();
-    inst.push_str(&server_names.join(", "));
-    inst.push_str("\n\n");
-
-    // List available tool names so the LLM knows what exists
-    if !ctx.deferred_tool_names.is_empty() {
-        inst.push_str(&format!(
-            "**Available tools** ({}):\n",
-            ctx.deferred_tool_names.len()
-        ));
-        for name in &ctx.deferred_tool_names {
-            inst.push_str(&format!("- `{}`\n", name));
-        }
-        inst.push('\n');
+    if servers_with_content.is_empty() {
+        return;
     }
 
-    if !ctx.deferred_resource_names.is_empty() {
-        inst.push_str(&format!(
-            "**Available resources** ({}):\n",
-            ctx.deferred_resource_names.len()
-        ));
-        for name in &ctx.deferred_resource_names {
-            inst.push_str(&format!("- `{}`\n", name));
-        }
-        inst.push('\n');
-    }
+    for server in &servers_with_content {
+        let tag = slugify(&server.name);
+        inst.push_str(&format!("<{}>\n", tag));
 
-    if !ctx.deferred_prompt_names.is_empty() {
-        inst.push_str(&format!(
-            "**Available prompts** ({}):\n",
-            ctx.deferred_prompt_names.len()
-        ));
-        for name in &ctx.deferred_prompt_names {
-            inst.push_str(&format!("- `{}`\n", name));
+        if let Some(desc) = &server.description {
+            inst.push_str(desc);
+            if !desc.ends_with('\n') {
+                inst.push('\n');
+            }
         }
-        inst.push('\n');
-    }
-}
 
-/// Build the skills section with discovery instructions.
-fn build_skills_section(inst: &mut String, skills: &[SkillInfo]) {
-    inst.push_str("## Skills\n\n");
-    inst.push_str(
-        "Skills provide specialized capabilities with scripts and resources. \
-         Call a skill's `get_info` tool to view its full instructions and unlock \
-         its run/read tools.\n\n",
-    );
-
-    for skill in skills {
-        inst.push_str(&format!("- **{}**", skill.name));
-        if let Some(desc) = &skill.description {
-            inst.push_str(&format!(" — {}", desc));
+        if let Some(instructions) = &server.instructions {
+            if server.description.is_some() {
+                inst.push('\n');
+            }
+            inst.push_str(instructions);
+            if !instructions.ends_with('\n') {
+                inst.push('\n');
+            }
         }
-        inst.push_str(&format!(" → `{}`\n", skill.get_info_tool));
+
+        inst.push_str(&format!("</{}>\n", tag));
     }
 }
 
@@ -572,168 +625,289 @@ mod tests {
     }
 
     #[test]
+    fn test_slugify() {
+        assert_eq!(slugify("My MCP Server"), "my-mcp-server");
+        assert_eq!(slugify("filesystem"), "filesystem");
+        assert_eq!(slugify("GitHub  API"), "github-api");
+        assert_eq!(slugify("  leading-trailing  "), "leading-trailing");
+        assert_eq!(slugify("CamelCase"), "camelcase");
+    }
+
+    #[test]
     fn test_build_gateway_instructions_servers_only() {
         let ctx = InstructionsContext {
-            servers: vec![(
-                "filesystem".to_string(),
-                InitializeResult {
-                    protocol_version: "2024-11-05".to_string(),
-                    capabilities: ServerCapabilities::default(),
-                    server_info: ServerInfo {
-                        name: "Filesystem Server".to_string(),
-                        version: "1.0.0".to_string(),
-                        description: Some("File operations server".to_string()),
-                    },
-                    instructions: Some("Use read_file to read and write_file to write.".to_string()),
-                },
-            )],
+            servers: vec![McpServerInstructionInfo {
+                name: "filesystem".to_string(),
+                instructions: Some(
+                    "Use read_file to read and write_file to write.".to_string(),
+                ),
+                description: Some("File operations server".to_string()),
+                tool_names: vec![
+                    "filesystem__read_file".to_string(),
+                    "filesystem__write_file".to_string(),
+                ],
+                resource_names: Vec::new(),
+                prompt_names: Vec::new(),
+            }],
+            unavailable_servers: Vec::new(),
             skills: Vec::new(),
             deferred_loading: false,
-            deferred_tool_names: Vec::new(),
-            deferred_resource_names: Vec::new(),
-            deferred_prompt_names: Vec::new(),
-            failures: Vec::new(),
         };
 
         let instructions = build_gateway_instructions(&ctx).unwrap();
-        assert!(instructions.contains("## MCP Servers"));
-        assert!(instructions.contains("### filesystem"));
-        // Server's own instructions should be embedded
+        // Header should mention MCP servers
+        assert!(instructions.contains("MCP servers"));
+        // Tool listing grouped by server
+        assert!(instructions.contains("**filesystem**"));
+        assert!(instructions.contains("`filesystem__read_file`"));
+        assert!(instructions.contains("`filesystem__write_file`"));
+        // Server instructions in XML tags (prefers instructions over description)
+        assert!(instructions.contains("<filesystem>"));
         assert!(instructions.contains("Use read_file to read"));
+        assert!(instructions.contains("</filesystem>"));
         // Should NOT contain deferred loading text
-        assert!(!instructions.contains("deferred loading"));
+        assert!(!instructions.contains("on demand"));
+    }
+
+    #[test]
+    fn test_build_gateway_instructions_server_description_fallback() {
+        let ctx = InstructionsContext {
+            servers: vec![McpServerInstructionInfo {
+                name: "github".to_string(),
+                instructions: None,
+                description: Some("GitHub API access".to_string()),
+                tool_names: vec!["github__create_issue".to_string()],
+                resource_names: Vec::new(),
+                prompt_names: Vec::new(),
+            }],
+            unavailable_servers: Vec::new(),
+            skills: Vec::new(),
+            deferred_loading: false,
+        };
+
+        let instructions = build_gateway_instructions(&ctx).unwrap();
+        // Falls back to description when instructions is None
+        assert!(instructions.contains("<github>"));
+        assert!(instructions.contains("GitHub API access"));
+        assert!(instructions.contains("</github>"));
+    }
+
+    #[test]
+    fn test_build_gateway_instructions_both_description_and_instructions() {
+        let ctx = InstructionsContext {
+            servers: vec![McpServerInstructionInfo {
+                name: "filesystem".to_string(),
+                instructions: Some("Use read_file to read files.".to_string()),
+                description: Some("File operations server".to_string()),
+                tool_names: vec!["filesystem__read_file".to_string()],
+                resource_names: Vec::new(),
+                prompt_names: Vec::new(),
+            }],
+            unavailable_servers: Vec::new(),
+            skills: Vec::new(),
+            deferred_loading: false,
+        };
+
+        let instructions = build_gateway_instructions(&ctx).unwrap();
+        assert!(instructions.contains("<filesystem>"));
+        // Both description and instructions should appear
+        assert!(instructions.contains("File operations server"));
+        assert!(instructions.contains("Use read_file to read files."));
+        assert!(instructions.contains("</filesystem>"));
     }
 
     #[test]
     fn test_build_gateway_instructions_skills_only() {
         let ctx = InstructionsContext {
             servers: Vec::new(),
+            unavailable_servers: Vec::new(),
             skills: vec![SkillInfo {
                 name: "code-review".to_string(),
                 description: Some("Automated code review".to_string()),
                 get_info_tool: "skill_code_review_get_info".to_string(),
             }],
             deferred_loading: false,
-            deferred_tool_names: Vec::new(),
-            deferred_resource_names: Vec::new(),
-            deferred_prompt_names: Vec::new(),
-            failures: Vec::new(),
         };
 
         let instructions = build_gateway_instructions(&ctx).unwrap();
-        assert!(instructions.contains("## Skills"));
-        assert!(instructions.contains("code-review"));
-        assert!(instructions.contains("skill_code_review_get_info"));
-        assert!(!instructions.contains("## MCP Servers"));
+        // Header should mention skills
+        assert!(instructions.contains("skills"));
+        // Skill listing
+        assert!(instructions.contains("`skill_code_review_get_info`"));
+        assert!(instructions.contains("Automated code review"));
+        // No server XML tags
+        assert!(!instructions.contains("</"));
     }
 
     #[test]
     fn test_build_gateway_instructions_deferred_loading() {
         let ctx = InstructionsContext {
-            servers: vec![(
-                "filesystem".to_string(),
-                InitializeResult {
-                    protocol_version: "2024-11-05".to_string(),
-                    capabilities: ServerCapabilities::default(),
-                    server_info: ServerInfo {
-                        name: "Filesystem Server".to_string(),
-                        version: "1.0.0".to_string(),
-                        description: None,
-                    },
-                    instructions: None,
-                },
-            )],
+            servers: vec![McpServerInstructionInfo {
+                name: "filesystem".to_string(),
+                instructions: Some("Detailed file system instructions.".to_string()),
+                description: None,
+                tool_names: vec![
+                    "filesystem__read_file".to_string(),
+                    "filesystem__write_file".to_string(),
+                ],
+                resource_names: Vec::new(),
+                prompt_names: Vec::new(),
+            }],
+            unavailable_servers: Vec::new(),
             skills: Vec::new(),
             deferred_loading: true,
-            deferred_tool_names: vec![
-                "filesystem__read_file".to_string(),
-                "filesystem__write_file".to_string(),
-            ],
-            deferred_resource_names: Vec::new(),
-            deferred_prompt_names: Vec::new(),
-            failures: Vec::new(),
         };
 
         let instructions = build_gateway_instructions(&ctx).unwrap();
-        assert!(instructions.contains("deferred loading"));
+        assert!(instructions.contains("on demand"));
         assert!(instructions.contains("`search`"));
         assert!(instructions.contains("`filesystem__read_file`"));
-        assert!(instructions.contains("`filesystem__write_file`"));
+        // Deferred mode still includes server instructions XML tags
+        assert!(instructions.contains("<filesystem>"));
+        assert!(instructions.contains("Detailed file system instructions."));
+        assert!(instructions.contains("</filesystem>"));
     }
 
     #[test]
     fn test_build_gateway_instructions_both_servers_and_skills() {
         let ctx = InstructionsContext {
-            servers: vec![(
-                "github".to_string(),
-                InitializeResult {
-                    protocol_version: "2024-11-05".to_string(),
-                    capabilities: ServerCapabilities::default(),
-                    server_info: ServerInfo {
-                        name: "GitHub".to_string(),
-                        version: "1.0.0".to_string(),
-                        description: Some("GitHub API access".to_string()),
-                    },
-                    instructions: None,
-                },
-            )],
+            servers: vec![McpServerInstructionInfo {
+                name: "github".to_string(),
+                instructions: None,
+                description: Some("GitHub API access".to_string()),
+                tool_names: vec!["github__create_issue".to_string()],
+                resource_names: Vec::new(),
+                prompt_names: Vec::new(),
+            }],
+            unavailable_servers: Vec::new(),
             skills: vec![SkillInfo {
                 name: "deploy".to_string(),
                 description: None,
                 get_info_tool: "skill_deploy_get_info".to_string(),
             }],
             deferred_loading: false,
-            deferred_tool_names: Vec::new(),
-            deferred_resource_names: Vec::new(),
-            deferred_prompt_names: Vec::new(),
-            failures: Vec::new(),
         };
 
         let instructions = build_gateway_instructions(&ctx).unwrap();
-        assert!(instructions.contains("## MCP Servers"));
-        assert!(instructions.contains("## Skills"));
-        assert!(instructions.contains("### github"));
-        assert!(instructions.contains("deploy"));
+        // Header mentions both
+        assert!(instructions.contains("MCP servers"));
+        assert!(instructions.contains("skills"));
+        // Tool listing for server
+        assert!(instructions.contains("**github**"));
+        assert!(instructions.contains("`github__create_issue`"));
+        // Skill listing
+        assert!(instructions.contains("**Skills**"));
+        assert!(instructions.contains("`skill_deploy_get_info`"));
+        // Server instructions in XML
+        assert!(instructions.contains("<github>"));
     }
 
     #[test]
     fn test_build_gateway_instructions_empty() {
         let ctx = InstructionsContext {
             servers: Vec::new(),
+            unavailable_servers: Vec::new(),
             skills: Vec::new(),
             deferred_loading: false,
-            deferred_tool_names: Vec::new(),
-            deferred_resource_names: Vec::new(),
-            deferred_prompt_names: Vec::new(),
-            failures: Vec::new(),
         };
 
         assert!(build_gateway_instructions(&ctx).is_none());
     }
 
     #[test]
-    fn test_build_gateway_instructions_with_failures() {
+    fn test_build_gateway_instructions_with_unavailable_servers() {
         let ctx = InstructionsContext {
             servers: Vec::new(),
+            unavailable_servers: vec![UnavailableServerInfo {
+                name: "broken-server".to_string(),
+                error: "Connection refused".to_string(),
+            }],
             skills: vec![SkillInfo {
                 name: "test".to_string(),
                 description: None,
                 get_info_tool: "skill_test_get_info".to_string(),
             }],
             deferred_loading: false,
-            deferred_tool_names: Vec::new(),
-            deferred_resource_names: Vec::new(),
-            deferred_prompt_names: Vec::new(),
-            failures: vec![ServerFailure {
-                server_id: "broken-server".to_string(),
-                error: "Connection refused".to_string(),
-            }],
         };
 
         let instructions = build_gateway_instructions(&ctx).unwrap();
-        assert!(instructions.contains("## Unavailable Servers"));
-        assert!(instructions.contains("broken-server"));
+        assert!(instructions.contains("**broken-server**"));
+        assert!(instructions.contains("unavailable"));
         assert!(instructions.contains("Connection refused"));
+    }
+
+    #[test]
+    fn test_build_gateway_instructions_xml_tag_slugified() {
+        let ctx = InstructionsContext {
+            servers: vec![McpServerInstructionInfo {
+                name: "My MCP Server".to_string(),
+                instructions: Some("Some instructions.".to_string()),
+                description: None,
+                tool_names: vec!["my-mcp-server__do_thing".to_string()],
+                resource_names: Vec::new(),
+                prompt_names: Vec::new(),
+            }],
+            unavailable_servers: Vec::new(),
+            skills: Vec::new(),
+            deferred_loading: false,
+        };
+
+        let instructions = build_gateway_instructions(&ctx).unwrap();
+        assert!(instructions.contains("<my-mcp-server>"));
+        assert!(instructions.contains("Some instructions."));
+        assert!(instructions.contains("</my-mcp-server>"));
+    }
+
+    #[test]
+    fn test_build_gateway_instructions_no_xml_when_no_content() {
+        let ctx = InstructionsContext {
+            servers: vec![McpServerInstructionInfo {
+                name: "barebones".to_string(),
+                instructions: None,
+                description: None,
+                tool_names: vec!["barebones__tool".to_string()],
+                resource_names: Vec::new(),
+                prompt_names: Vec::new(),
+            }],
+            unavailable_servers: Vec::new(),
+            skills: Vec::new(),
+            deferred_loading: false,
+        };
+
+        let instructions = build_gateway_instructions(&ctx).unwrap();
+        // Tool listing should be present
+        assert!(instructions.contains("`barebones__tool`"));
+        // But no XML tags since no instructions or description
+        assert!(!instructions.contains("<barebones>"));
+    }
+
+    #[test]
+    fn test_build_gateway_instructions_with_resources_and_prompts() {
+        let ctx = InstructionsContext {
+            servers: vec![McpServerInstructionInfo {
+                name: "knowledge".to_string(),
+                instructions: None,
+                description: Some("Knowledge base server".to_string()),
+                tool_names: vec!["knowledge__search".to_string()],
+                resource_names: vec![
+                    "knowledge__docs".to_string(),
+                    "knowledge__faq".to_string(),
+                ],
+                prompt_names: vec!["knowledge__summarize".to_string()],
+            }],
+            unavailable_servers: Vec::new(),
+            skills: Vec::new(),
+            deferred_loading: false,
+        };
+
+        let instructions = build_gateway_instructions(&ctx).unwrap();
+        // Tools listed
+        assert!(instructions.contains("`knowledge__search`"));
+        // Resources listed with annotation
+        assert!(instructions.contains("`knowledge__docs` (resource)"));
+        assert!(instructions.contains("`knowledge__faq` (resource)"));
+        // Prompts listed with annotation
+        assert!(instructions.contains("`knowledge__summarize` (prompt)"));
     }
 
     #[test]

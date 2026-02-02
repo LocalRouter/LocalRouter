@@ -136,6 +136,35 @@ impl Default for GatewayConfig {
     }
 }
 
+/// Slugify a name for use as a namespace prefix and XML tag.
+///
+/// Produces a consistent kebab-case identifier from a human-readable name.
+/// Used for both tool namespace prefixes (e.g., `everything-mcp-server__echo`)
+/// and XML instruction tags (e.g., `<everything-mcp-server>`).
+///
+/// Examples:
+/// - "My MCP Server" → "my-mcp-server"
+/// - "filesystem" → "filesystem"
+/// - "GitHub  API" → "github-api"
+pub fn slugify(name: &str) -> String {
+    let mut slug = String::with_capacity(name.len());
+    let mut last_was_separator = true; // avoid leading dash
+    for ch in name.chars() {
+        if ch.is_ascii_alphanumeric() {
+            slug.push(ch.to_ascii_lowercase());
+            last_was_separator = false;
+        } else if !last_was_separator {
+            slug.push('-');
+            last_was_separator = true;
+        }
+    }
+    // trim trailing dash
+    if slug.ends_with('-') {
+        slug.pop();
+    }
+    slug
+}
+
 /// Parse namespaced name into (server_id, original_name)
 /// Example: "filesystem__read_file" -> ("filesystem", "read_file")
 pub fn parse_namespace(namespaced: &str) -> Option<(String, String)> {
@@ -434,8 +463,14 @@ pub struct ServerInfo {
 /// Deferred loading state
 #[derive(Debug, Clone)]
 pub struct DeferredLoadingState {
-    /// Whether deferred loading is enabled
+    /// Whether deferred loading is enabled (tools are always deferred when this is true)
     pub enabled: bool,
+
+    /// Whether resources are deferred (requires client resources.listChanged capability)
+    pub resources_deferred: bool,
+
+    /// Whether prompts are deferred (requires client prompts.listChanged capability)
+    pub prompts_deferred: bool,
 
     /// Activated tools (persist for session lifetime)
     pub activated_tools: HashSet<String>,
@@ -443,10 +478,10 @@ pub struct DeferredLoadingState {
     /// Full catalog of all available tools
     pub full_catalog: Vec<NamespacedTool>,
 
-    /// Activated resources (optional)
+    /// Activated resources
     pub activated_resources: HashSet<String>,
 
-    /// Activated prompts (optional)
+    /// Activated prompts
     pub activated_prompts: HashSet<String>,
 
     /// Full resource catalog
@@ -518,5 +553,32 @@ mod tests {
 
         assert_eq!(server, original_server);
         assert_eq!(tool, original_tool);
+    }
+
+    #[test]
+    fn test_slugify() {
+        assert_eq!(slugify("My MCP Server"), "my-mcp-server");
+        assert_eq!(slugify("filesystem"), "filesystem");
+        assert_eq!(slugify("GitHub  API"), "github-api");
+        assert_eq!(slugify("  leading-trailing  "), "leading-trailing");
+        assert_eq!(slugify("CamelCase"), "camelcase");
+        // Idempotent: slugifying an already-slugified name produces the same result
+        assert_eq!(slugify("my-mcp-server"), "my-mcp-server");
+    }
+
+    #[test]
+    fn test_slugify_used_for_namespace() {
+        // Demonstrates that slugify + apply_namespace produces consistent tool names
+        let server_name = "Everything MCP Server";
+        let slug = slugify(server_name);
+        assert_eq!(slug, "everything-mcp-server");
+        assert_eq!(
+            apply_namespace(&slug, "echo"),
+            "everything-mcp-server__echo"
+        );
+        // And parsing roundtrips correctly
+        let (server, tool) = parse_namespace("everything-mcp-server__echo").unwrap();
+        assert_eq!(server, "everything-mcp-server");
+        assert_eq!(tool, "echo");
     }
 }

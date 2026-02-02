@@ -16,11 +16,12 @@ use lr_skills::executor::ScriptExecutor;
 use lr_skills::manager::SkillManager;
 use lr_types::{AppError, AppResult};
 
-use super::deferred::{create_search_tool, search_prompts, search_resources, search_tools};
+use super::deferred::{create_search_tool, search_prompts, search_resources, search_tools, SearchMode};
 use super::elicitation::ElicitationManager;
 use super::merger::{
     build_gateway_instructions, merge_initialize_results, merge_prompts, merge_resources,
-    merge_tools, InstructionsContext, SkillInfo,
+    merge_tools, InstructionsContext, McpServerInstructionInfo, SkillInfo,
+    UnavailableServerInfo,
 };
 use super::router::{broadcast_request, separate_results, should_broadcast};
 use super::session::GatewaySession;
@@ -161,10 +162,87 @@ impl McpGateway {
             .collect()
     }
 
-    /// Build a mapping from server ID (UUID) to human-readable server name
+    /// Build `McpServerInstructionInfo` list from init results and catalogs.
+    ///
+    /// Maps server UUIDs to human-readable names and groups tools/resources/prompts by server.
+    fn build_server_instruction_infos(
+        &self,
+        init_results: &[(String, InitializeResult)],
+        tools: &[NamespacedTool],
+        resources: &[NamespacedResource],
+        prompts: &[NamespacedPrompt],
+    ) -> Vec<McpServerInstructionInfo> {
+        let name_mapping = self.build_server_id_to_name_mapping(
+            &init_results
+                .iter()
+                .map(|(id, _)| id.clone())
+                .collect::<Vec<_>>(),
+        );
+
+        init_results
+            .iter()
+            .map(|(server_id, result)| {
+                let name = name_mapping
+                    .get(server_id)
+                    .cloned()
+                    .unwrap_or_else(|| server_id.clone());
+
+                let tool_names: Vec<String> = tools
+                    .iter()
+                    .filter(|t| t.server_id == *server_id)
+                    .map(|t| t.name.clone())
+                    .collect();
+
+                let resource_names: Vec<String> = resources
+                    .iter()
+                    .filter(|r| r.server_id == *server_id)
+                    .map(|r| r.name.clone())
+                    .collect();
+
+                let prompt_names: Vec<String> = prompts
+                    .iter()
+                    .filter(|p| p.server_id == *server_id)
+                    .map(|p| p.name.clone())
+                    .collect();
+
+                McpServerInstructionInfo {
+                    name,
+                    instructions: result.instructions.clone(),
+                    description: result.server_info.description.clone(),
+                    tool_names,
+                    resource_names,
+                    prompt_names,
+                }
+            })
+            .collect()
+    }
+
+    /// Build `UnavailableServerInfo` list from server failures.
+    fn build_unavailable_server_infos(
+        &self,
+        failures: &[ServerFailure],
+    ) -> Vec<UnavailableServerInfo> {
+        failures
+            .iter()
+            .map(|f| {
+                let name = self
+                    .server_manager
+                    .get_config(&f.server_id)
+                    .map(|c| crate::gateway::types::slugify(&c.name))
+                    .unwrap_or_else(|| f.server_id.clone());
+                UnavailableServerInfo {
+                    name,
+                    error: f.error.clone(),
+                }
+            })
+            .collect()
+    }
+
+    /// Build a mapping from server ID (UUID) to slugified server name
     ///
     /// This is used to namespace tools/resources/prompts with readable names
-    /// (e.g., "filesystem__read_file") instead of UUIDs.
+    /// (e.g., "filesystem__read_file") instead of UUIDs. The name is slugified
+    /// so the same form is used for tool prefixes and XML instruction tags.
     fn build_server_id_to_name_mapping(
         &self,
         server_ids: &[String],
@@ -172,7 +250,7 @@ impl McpGateway {
         let mut mapping = std::collections::HashMap::new();
         for server_id in server_ids {
             if let Some(config) = self.server_manager.get_config(server_id) {
-                mapping.insert(server_id.clone(), config.name);
+                mapping.insert(server_id.clone(), crate::gateway::types::slugify(&config.name));
             }
         }
         mapping
@@ -932,14 +1010,12 @@ impl McpGateway {
                 drop(session_read);
 
                 let skill_infos = self.collect_skill_info(&skills_access);
+                let unavailable = self.build_unavailable_server_infos(&start_failures);
                 let instructions = build_gateway_instructions(&InstructionsContext {
                     servers: Vec::new(),
+                    unavailable_servers: unavailable,
                     skills: skill_infos,
                     deferred_loading: false,
-                    deferred_tool_names: Vec::new(),
-                    deferred_resource_names: Vec::new(),
-                    deferred_prompt_names: Vec::new(),
-                    failures: start_failures.clone(),
                 });
 
                 let merged = MergedCapabilities {
@@ -1063,14 +1139,12 @@ impl McpGateway {
                 drop(session_read);
 
                 let skill_infos = self.collect_skill_info(&skills_access);
+                let unavailable = self.build_unavailable_server_infos(&failures);
                 let instructions = build_gateway_instructions(&InstructionsContext {
                     servers: Vec::new(),
+                    unavailable_servers: unavailable,
                     skills: skill_infos,
                     deferred_loading: false,
-                    deferred_tool_names: Vec::new(),
-                    deferred_resource_names: Vec::new(),
-                    deferred_prompt_names: Vec::new(),
-                    failures: failures.clone(),
                 });
 
                 let merged = MergedCapabilities {
@@ -1231,9 +1305,23 @@ impl McpGateway {
                     .await
                     .unwrap_or_default();
 
+                // Check per-type capabilities for resources and prompts
+                let resources_deferred = is_internal_test
+                    || client_capabilities
+                        .as_ref()
+                        .map(|caps| caps.supports_resources_list_changed())
+                        .unwrap_or(false);
+                let prompts_deferred = is_internal_test
+                    || client_capabilities
+                        .as_ref()
+                        .map(|caps| caps.supports_prompts_list_changed())
+                        .unwrap_or(false);
+
                 let mut session_write = session.write().await;
                 session_write.deferred_loading = Some(DeferredLoadingState {
                     enabled: true,
+                    resources_deferred,
+                    prompts_deferred,
                     activated_tools: std::collections::HashSet::new(),
                     full_catalog: tools.clone(),
                     activated_resources: std::collections::HashSet::new(),
@@ -1256,10 +1344,10 @@ impl McpGateway {
         let session_read = session.read().await;
         let skills_access = session_read.skills_access.clone();
         let deferred_state = session_read.deferred_loading.clone();
+        let active_server_ids = session_read.allowed_servers.clone();
         drop(session_read);
 
-        let has_skills =
-            skills_access.has_any_access() && self.has_skill_support();
+        let has_skills = skills_access.has_any_access() && self.has_skill_support();
         let skill_infos = if has_skills {
             self.collect_skill_info(&skills_access)
         } else {
@@ -1271,31 +1359,71 @@ impl McpGateway {
             .map(|d| d.enabled)
             .unwrap_or(false);
 
-        let (deferred_tool_names, deferred_resource_names, deferred_prompt_names) =
+        // Get the full catalogs for building instructions.
+        // In deferred mode, we already have them; in normal mode, fetch now.
+        let (tools_catalog, resources_catalog, prompts_catalog) =
             if let Some(ref ds) = deferred_state {
                 (
-                    ds.full_catalog.iter().map(|t| t.name.clone()).collect(),
-                    ds.full_resource_catalog
-                        .iter()
-                        .map(|r| r.name.clone())
-                        .collect(),
-                    ds.full_prompt_catalog
-                        .iter()
-                        .map(|p| p.name.clone())
-                        .collect(),
+                    ds.full_catalog.clone(),
+                    ds.full_resource_catalog.clone(),
+                    ds.full_prompt_catalog.clone(),
                 )
             } else {
-                (Vec::new(), Vec::new(), Vec::new())
+                let tools = self
+                    .fetch_and_merge_tools(
+                        &active_server_ids,
+                        JsonRpcRequest::new(
+                            Some(serde_json::json!("_instructions_tools")),
+                            "tools/list".to_string(),
+                            None,
+                        ),
+                    )
+                    .await
+                    .map(|(t, _)| t)
+                    .unwrap_or_default();
+
+                let resources = self
+                    .fetch_and_merge_resources(
+                        &active_server_ids,
+                        JsonRpcRequest::new(
+                            Some(serde_json::json!("_instructions_resources")),
+                            "resources/list".to_string(),
+                            None,
+                        ),
+                    )
+                    .await
+                    .map(|(r, _)| r)
+                    .unwrap_or_default();
+
+                let prompts = self
+                    .fetch_and_merge_prompts(
+                        &active_server_ids,
+                        JsonRpcRequest::new(
+                            Some(serde_json::json!("_instructions_prompts")),
+                            "prompts/list".to_string(),
+                            None,
+                        ),
+                    )
+                    .await
+                    .map(|(p, _)| p)
+                    .unwrap_or_default();
+
+                (tools, resources, prompts)
             };
 
+        let server_infos = self.build_server_instruction_infos(
+            &init_results_for_instructions,
+            &tools_catalog,
+            &resources_catalog,
+            &prompts_catalog,
+        );
+        let unavailable = self.build_unavailable_server_infos(&merged.failures);
+
         let instructions = build_gateway_instructions(&InstructionsContext {
-            servers: init_results_for_instructions,
+            servers: server_infos,
+            unavailable_servers: unavailable,
             skills: skill_infos,
             deferred_loading: deferred_enabled,
-            deferred_tool_names,
-            deferred_resource_names,
-            deferred_prompt_names,
-            failures: merged.failures.clone(),
         });
 
         // Store instructions in merged capabilities
@@ -1335,7 +1463,7 @@ impl McpGateway {
             if deferred.enabled {
                 // Return only search tool + activated tools + skill tools
                 let mut tools: Vec<serde_json::Value> =
-                    vec![serde_json::to_value(create_search_tool()).unwrap_or_default()];
+                    vec![serde_json::to_value(create_search_tool(deferred.resources_deferred, deferred.prompts_deferred)).unwrap_or_default()];
 
                 for tool_name in &deferred.activated_tools {
                     if let Some(tool) = deferred.full_catalog.iter().find(|t| t.name == *tool_name)
@@ -1349,7 +1477,7 @@ impl McpGateway {
                 let async_enabled = session_read.skills_async_enabled;
                 drop(session_read);
 
-                self.append_skill_tools(&mut tools, &skills_access, &info_loaded, async_enabled);
+                self.append_skill_tools(&mut tools, &skills_access, &info_loaded, async_enabled, true);
 
                 return Ok(JsonRpcResponse::success(
                     request.id.unwrap_or(Value::Null),
@@ -1372,7 +1500,7 @@ impl McpGateway {
                 let async_enabled = session_read.skills_async_enabled;
                 drop(session_read);
 
-                self.append_skill_tools(&mut tools, &skills_access, &info_loaded, async_enabled);
+                self.append_skill_tools(&mut tools, &skills_access, &info_loaded, async_enabled, false);
 
                 return Ok(JsonRpcResponse::success(
                     request.id.unwrap_or(Value::Null),
@@ -1417,7 +1545,7 @@ impl McpGateway {
             .map(|t| serde_json::to_value(t).unwrap_or_default())
             .collect();
 
-        self.append_skill_tools(&mut all_tools, &skills_access, &info_loaded, async_enabled);
+        self.append_skill_tools(&mut all_tools, &skills_access, &info_loaded, async_enabled, false);
 
         let mut result = json!({"tools": all_tools});
         if let Some(failures) = failures {
@@ -1494,6 +1622,32 @@ impl McpGateway {
     ) -> AppResult<JsonRpcResponse> {
         let request_id = request.id.clone();
         let session_read = session.read().await;
+
+        // Check for deferred loading (only if client supports resources.listChanged)
+        if let Some(deferred) = &session_read.deferred_loading {
+            if deferred.enabled && deferred.resources_deferred {
+                // Return only activated resources
+                let resources: Vec<serde_json::Value> = deferred
+                    .full_resource_catalog
+                    .iter()
+                    .filter(|r| deferred.activated_resources.contains(&r.name))
+                    .map(|r| serde_json::to_value(r).unwrap_or_default())
+                    .collect();
+
+                drop(session_read);
+
+                tracing::debug!(
+                    "resources/list returning {} deferred resources (request_id={:?})",
+                    resources.len(),
+                    request_id
+                );
+
+                return Ok(JsonRpcResponse::success(
+                    request.id.unwrap_or(Value::Null),
+                    json!({"resources": resources}),
+                ));
+            }
+        }
 
         // Check cache
         if let Some(cached) = &session_read.cached_resources {
@@ -1620,6 +1774,26 @@ impl McpGateway {
         request: JsonRpcRequest,
     ) -> AppResult<JsonRpcResponse> {
         let session_read = session.read().await;
+
+        // Check for deferred loading (only if client supports prompts.listChanged)
+        if let Some(deferred) = &session_read.deferred_loading {
+            if deferred.enabled && deferred.prompts_deferred {
+                // Return only activated prompts
+                let prompts: Vec<serde_json::Value> = deferred
+                    .full_prompt_catalog
+                    .iter()
+                    .filter(|p| deferred.activated_prompts.contains(&p.name))
+                    .map(|p| serde_json::to_value(p).unwrap_or_default())
+                    .collect();
+
+                drop(session_read);
+
+                return Ok(JsonRpcResponse::success(
+                    request.id.unwrap_or(Value::Null),
+                    json!({"prompts": prompts}),
+                ));
+            }
+        }
 
         // Check cache
         if let Some(cached) = &session_read.cached_prompts {
@@ -1871,12 +2045,19 @@ impl McpGateway {
             .and_then(|l| l.as_u64())
             .unwrap_or(10) as usize;
 
+        let mode = SearchMode::from_str(
+            arguments
+                .get("mode")
+                .and_then(|m| m.as_str())
+                .unwrap_or("regex"),
+        );
+
         // Search based on type
         let mut activated_names = Vec::new();
         let mut all_matches = Vec::new();
 
         if search_type == "tools" || search_type == "all" {
-            let matches = search_tools(query, &deferred.full_catalog, limit);
+            let matches = search_tools(query, &deferred.full_catalog, limit, mode);
             for (tool, _score) in &matches {
                 deferred.activated_tools.insert(tool.name.clone());
                 activated_names.push(tool.name.clone());
@@ -1892,7 +2073,7 @@ impl McpGateway {
         }
 
         if search_type == "resources" || search_type == "all" {
-            let matches = search_resources(query, &deferred.full_resource_catalog, limit);
+            let matches = search_resources(query, &deferred.full_resource_catalog, limit, mode);
             for (resource, _score) in &matches {
                 deferred.activated_resources.insert(resource.name.clone());
                 activated_names.push(resource.name.clone());
@@ -1908,7 +2089,7 @@ impl McpGateway {
         }
 
         if search_type == "prompts" || search_type == "all" {
-            let matches = search_prompts(query, &deferred.full_prompt_catalog, limit);
+            let matches = search_prompts(query, &deferred.full_prompt_catalog, limit, mode);
             for (prompt, _score) in &matches {
                 deferred.activated_prompts.insert(prompt.name.clone());
                 activated_names.push(prompt.name.clone());
@@ -2207,11 +2388,17 @@ impl McpGateway {
         access: &lr_config::SkillsAccess,
         info_loaded: &std::collections::HashSet<String>,
         async_enabled: bool,
+        deferred_loading: bool,
     ) {
         if access.has_any_access() {
             if let Some(sm) = self.skill_manager.get() {
-                let skill_tools =
-                    lr_skills::mcp_tools::build_skill_tools(sm, access, info_loaded, async_enabled);
+                let skill_tools = lr_skills::mcp_tools::build_skill_tools(
+                    sm,
+                    access,
+                    info_loaded,
+                    async_enabled,
+                    deferred_loading,
+                );
                 for st in skill_tools {
                     tools.push(serde_json::to_value(&st).unwrap_or_default());
                 }

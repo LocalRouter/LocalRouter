@@ -41,3 +41,4 @@ lr-providers = { workspace = true }
 once_cell = { workspace = true }
 utoipa = { workspace = true }
 async-stream = { workspace = true }
+regex = "1"

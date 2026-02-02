@@ -223,7 +223,7 @@ mod tests {
             },
         ];
 
-        let results = deferred::search_tools("read", &tools, 10);
+        let results = deferred::search_tools("read", &tools, 10, deferred::SearchMode::Regex);
 
         // Should return tools with "read" in name or description
         assert!(!results.is_empty());
@@ -256,7 +256,7 @@ mod tests {
             },
         ];
 
-        let results = deferred::search_tools("related", &tools, 10);
+        let results = deferred::search_tools("related", &tools, 10, deferred::SearchMode::Regex);
 
         // Should activate at least MIN_ACTIVATIONS (3) if available
         assert!(results.len() >= 3 || results.len() == tools.len());
