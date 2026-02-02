@@ -18,7 +18,10 @@ use lr_types::{AppError, AppResult};
 
 use super::deferred::{create_search_tool, search_prompts, search_resources, search_tools};
 use super::elicitation::ElicitationManager;
-use super::merger::{merge_initialize_results, merge_prompts, merge_resources, merge_tools};
+use super::merger::{
+    build_gateway_instructions, merge_initialize_results, merge_prompts, merge_resources,
+    merge_tools, InstructionsContext, SkillInfo,
+};
 use super::router::{broadcast_request, separate_results, should_broadcast};
 use super::session::GatewaySession;
 use super::types::*;
@@ -132,6 +135,30 @@ impl McpGateway {
     /// Check if skill support has been configured
     fn has_skill_support(&self) -> bool {
         self.skill_manager.get().is_some() && self.script_executor.get().is_some()
+    }
+
+    /// Collect skill info for building gateway instructions.
+    /// Returns skill metadata for all skills accessible to the given access level.
+    fn collect_skill_info(&self, access: &lr_config::SkillsAccess) -> Vec<SkillInfo> {
+        if !access.has_any_access() {
+            return Vec::new();
+        }
+        let Some(sm) = self.skill_manager.get() else {
+            return Vec::new();
+        };
+        let all_skills = sm.get_all();
+        all_skills
+            .iter()
+            .filter(|s| s.enabled && access.can_access_by_name(&s.metadata.name))
+            .map(|s| {
+                let sname = lr_skills::types::sanitize_name(&s.metadata.name);
+                SkillInfo {
+                    name: s.metadata.name.clone(),
+                    description: s.metadata.description.clone(),
+                    get_info_tool: format!("skill_{}_get_info", sname),
+                }
+            })
+            .collect()
     }
 
     /// Build a mapping from server ID (UUID) to human-readable server name
@@ -267,25 +294,46 @@ impl McpGateway {
                 // Remove expired session
                 self.sessions.remove(client_id);
             } else {
-                // Update deferred loading setting if it changed
-                // This allows the Try it out UI to toggle deferred loading between connections
-                let current_deferred = session_read.deferred_loading_requested;
+                // Check if allowed servers changed (e.g. switching between direct/all modes)
+                // If so, drop the stale session and create a fresh one since cached state
+                // (tool mappings, init statuses, etc.) is tied to the server list
+                let mut servers_sorted = allowed_servers.clone();
+                servers_sorted.sort();
+                let mut existing_sorted = session_read.allowed_servers.clone();
+                existing_sorted.sort();
+                let servers_changed = servers_sorted != existing_sorted;
                 drop(session_read);
 
-                if current_deferred != enable_deferred_loading {
-                    let mut session_write = session.write().await;
-                    session_write.deferred_loading_requested = enable_deferred_loading;
-                    // Reset deferred loading state so it can be re-initialized
-                    session_write.deferred_loading = None;
+                if servers_changed {
                     tracing::info!(
-                        "Updated deferred loading setting for session {}: {} -> {}",
+                        "Allowed servers changed for session {} - recreating session",
                         client_id,
-                        current_deferred,
-                        enable_deferred_loading
                     );
-                }
+                    drop(session);
+                    self.sessions.remove(client_id);
+                    // Fall through to create new session below
+                } else {
+                    // Update deferred loading setting if it changed
+                    // This allows the Try it out UI to toggle deferred loading between connections
+                    let session_read = session.read().await;
+                    let current_deferred = session_read.deferred_loading_requested;
+                    drop(session_read);
 
-                return Ok(session.clone());
+                    if current_deferred != enable_deferred_loading {
+                        let mut session_write = session.write().await;
+                        session_write.deferred_loading_requested = enable_deferred_loading;
+                        // Reset deferred loading state so it can be re-initialized
+                        session_write.deferred_loading = None;
+                        tracing::info!(
+                            "Updated deferred loading setting for session {}: {} -> {}",
+                            client_id,
+                            current_deferred,
+                            enable_deferred_loading
+                        );
+                    }
+
+                    return Ok(session.clone());
+                }
             }
         }
 
@@ -879,6 +927,21 @@ impl McpGateway {
                     "No MCP servers available, but skills are configured — proceeding in skills-only mode"
                 );
 
+                let session_read = session.read().await;
+                let skills_access = session_read.skills_access.clone();
+                drop(session_read);
+
+                let skill_infos = self.collect_skill_info(&skills_access);
+                let instructions = build_gateway_instructions(&InstructionsContext {
+                    servers: Vec::new(),
+                    skills: skill_infos,
+                    deferred_loading: false,
+                    deferred_tool_names: Vec::new(),
+                    deferred_resource_names: Vec::new(),
+                    deferred_prompt_names: Vec::new(),
+                    failures: start_failures.clone(),
+                });
+
                 let merged = MergedCapabilities {
                     protocol_version: "2024-11-05".to_string(),
                     capabilities: ServerCapabilities {
@@ -895,9 +958,10 @@ impl McpGateway {
                         description: None,
                     },
                     failures: start_failures,
+                    instructions: instructions.clone(),
                 };
 
-                let response_value = json!({
+                let mut response_value = json!({
                     "protocolVersion": merged.protocol_version,
                     "capabilities": {
                         "tools": { "listChanged": true }
@@ -907,6 +971,9 @@ impl McpGateway {
                         "version": merged.server_info.version
                     }
                 });
+                if let Some(inst) = &instructions {
+                    response_value["instructions"] = json!(inst);
+                }
 
                 {
                     let mut session_write = session.write().await;
@@ -991,6 +1058,21 @@ impl McpGateway {
                     "All MCP servers failed to initialize, but skills are configured — proceeding in skills-only mode"
                 );
 
+                let session_read = session.read().await;
+                let skills_access = session_read.skills_access.clone();
+                drop(session_read);
+
+                let skill_infos = self.collect_skill_info(&skills_access);
+                let instructions = build_gateway_instructions(&InstructionsContext {
+                    servers: Vec::new(),
+                    skills: skill_infos,
+                    deferred_loading: false,
+                    deferred_tool_names: Vec::new(),
+                    deferred_resource_names: Vec::new(),
+                    deferred_prompt_names: Vec::new(),
+                    failures: failures.clone(),
+                });
+
                 let merged = MergedCapabilities {
                     protocol_version: "2024-11-05".to_string(),
                     capabilities: ServerCapabilities {
@@ -1007,9 +1089,10 @@ impl McpGateway {
                         description: None,
                     },
                     failures,
+                    instructions: instructions.clone(),
                 };
 
-                let response_value = json!({
+                let mut response_value = json!({
                     "protocolVersion": merged.protocol_version,
                     "capabilities": {
                         "tools": { "listChanged": true }
@@ -1019,6 +1102,9 @@ impl McpGateway {
                         "version": merged.server_info.version
                     }
                 });
+                if let Some(inst) = &instructions {
+                    response_value["instructions"] = json!(inst);
+                }
 
                 {
                     let mut session_write = session.write().await;
@@ -1043,6 +1129,8 @@ impl McpGateway {
         }
 
         // Merge results (includes both start failures and initialize failures)
+        // Keep a clone of init_results for building instructions later
+        let init_results_for_instructions = init_results.clone();
         let merged = merge_initialize_results(init_results, failures);
 
         // Store capabilities in session
@@ -1164,12 +1252,69 @@ impl McpGateway {
             } // end of if client_supports_notifications
         } // end of if should_enable_deferred
 
+        // Build gateway instructions based on the full context
+        let session_read = session.read().await;
+        let skills_access = session_read.skills_access.clone();
+        let deferred_state = session_read.deferred_loading.clone();
+        drop(session_read);
+
+        let has_skills =
+            skills_access.has_any_access() && self.has_skill_support();
+        let skill_infos = if has_skills {
+            self.collect_skill_info(&skills_access)
+        } else {
+            Vec::new()
+        };
+
+        let deferred_enabled = deferred_state
+            .as_ref()
+            .map(|d| d.enabled)
+            .unwrap_or(false);
+
+        let (deferred_tool_names, deferred_resource_names, deferred_prompt_names) =
+            if let Some(ref ds) = deferred_state {
+                (
+                    ds.full_catalog.iter().map(|t| t.name.clone()).collect(),
+                    ds.full_resource_catalog
+                        .iter()
+                        .map(|r| r.name.clone())
+                        .collect(),
+                    ds.full_prompt_catalog
+                        .iter()
+                        .map(|p| p.name.clone())
+                        .collect(),
+                )
+            } else {
+                (Vec::new(), Vec::new(), Vec::new())
+            };
+
+        let instructions = build_gateway_instructions(&InstructionsContext {
+            servers: init_results_for_instructions,
+            skills: skill_infos,
+            deferred_loading: deferred_enabled,
+            deferred_tool_names,
+            deferred_resource_names,
+            deferred_prompt_names,
+            failures: merged.failures.clone(),
+        });
+
+        // Store instructions in merged capabilities
+        if instructions.is_some() {
+            let mut session_write = session.write().await;
+            if let Some(ref mut mc) = session_write.merged_capabilities {
+                mc.instructions = instructions.clone();
+            }
+        }
+
         // Build response
-        let result = json!({
+        let mut result = json!({
             "protocolVersion": merged.protocol_version,
             "capabilities": merged.capabilities,
             "serverInfo": merged.server_info,
         });
+        if let Some(inst) = &instructions {
+            result["instructions"] = json!(inst);
+        }
 
         Ok(JsonRpcResponse::success(
             request.id.unwrap_or(Value::Null),

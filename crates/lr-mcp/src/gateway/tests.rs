@@ -150,6 +150,7 @@ mod tests {
                 version: "1.0.0".to_string(),
                 description: Some("File operations".to_string()),
             },
+            instructions: None,
         };
 
         let result2 = types::InitializeResult {
@@ -166,6 +167,7 @@ mod tests {
                 version: "1.0.0".to_string(),
                 description: None,
             },
+            instructions: None,
         };
 
         let results = vec![

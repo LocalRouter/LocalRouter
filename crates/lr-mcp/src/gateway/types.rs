@@ -281,6 +281,10 @@ pub struct InitializeResult {
 
     #[serde(rename = "serverInfo")]
     pub server_info: ServerInfo,
+
+    /// Optional instructions describing how to use this server
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
 }
 
 /// Client capabilities (sent by MCP client during initialization)
@@ -466,6 +470,8 @@ pub struct MergedCapabilities {
     pub capabilities: ServerCapabilities,
     pub server_info: ServerInfo,
     pub failures: Vec<ServerFailure>,
+    /// Instructions for the LLM on how to use this gateway
+    pub instructions: Option<String>,
 }
 
 #[cfg(test)]
