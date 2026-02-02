@@ -25,7 +25,7 @@ mod validation;
 pub use storage::{load_config, save_config};
 // RateLimitType is now defined locally in this module (see line 610)
 
-const CONFIG_VERSION: u32 = 4;
+const CONFIG_VERSION: u32 = 5;
 
 /// Suffix for auto-generated client strategy names
 pub const CLIENT_STRATEGY_NAME_SUFFIX: &str = "'s strategy";
@@ -683,7 +683,7 @@ impl McpServerAccess {
 /// Defines which skills a client can access:
 /// - `None`: No skills access (default)
 /// - `All`: Access to all discovered skills
-/// - `Specific`: Access only to skills from listed source paths
+/// - `Specific`: Access only to listed skill names
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SkillsAccess {
@@ -692,17 +692,17 @@ pub enum SkillsAccess {
     None,
     /// Access to all discovered skills
     All,
-    /// Access only to skills from specific source paths
+    /// Access only to specific skills by name
     Specific(Vec<String>),
 }
 
 impl SkillsAccess {
-    /// Check if a skill is accessible by its source path
-    pub fn can_access_by_source(&self, source_path: &str) -> bool {
+    /// Check if a skill is accessible by its name
+    pub fn can_access_by_name(&self, skill_name: &str) -> bool {
         match self {
             SkillsAccess::None => false,
             SkillsAccess::All => true,
-            SkillsAccess::Specific(paths) => paths.iter().any(|p| p == source_path),
+            SkillsAccess::Specific(names) => names.iter().any(|n| n == skill_name),
         }
     }
 
@@ -711,10 +711,10 @@ impl SkillsAccess {
         !matches!(self, SkillsAccess::None)
     }
 
-    /// Get the list of source paths (for Specific mode)
-    pub fn specific_paths(&self) -> Option<&Vec<String>> {
+    /// Get the list of skill names (for Specific mode)
+    pub fn specific_skills(&self) -> Option<&Vec<String>> {
         match self {
-            SkillsAccess::Specific(paths) => Some(paths),
+            SkillsAccess::Specific(names) => Some(names),
             _ => None,
         }
     }
@@ -2023,9 +2023,9 @@ impl Client {
         &self.mcp_server_access
     }
 
-    /// Check if this client can access skills from a specific source path
-    pub fn can_access_skill_source(&self, source_path: &str) -> bool {
-        self.enabled && self.skills_access.can_access_by_source(source_path)
+    /// Check if this client can access a specific skill by name
+    pub fn can_access_skill(&self, skill_name: &str) -> bool {
+        self.enabled && self.skills_access.can_access_by_name(skill_name)
     }
 
     /// Set skills access mode

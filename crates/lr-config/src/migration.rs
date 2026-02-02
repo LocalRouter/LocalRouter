@@ -48,6 +48,11 @@ pub fn migrate_config(mut config: AppConfig) -> AppResult<AppConfig> {
         config = migrate_to_v4(config)?;
     }
 
+    // Migrate to v5: Per-skill-name access (replaces source-path-based SkillsAccess)
+    if config.version < 5 {
+        config = migrate_to_v5(config)?;
+    }
+
     // Update version to current
     config.version = CONFIG_VERSION;
 
@@ -198,6 +203,28 @@ fn migrate_to_v4(mut config: AppConfig) -> AppResult<AppConfig> {
     }
 
     config.version = 4;
+    Ok(config)
+}
+
+/// Migrate to version 5: Per-skill-name access
+///
+/// SkillsAccess::Specific now contains skill names instead of source paths.
+/// Since we can't reliably map source paths to skill names at migration time,
+/// convert any `Specific(paths)` → `All`.
+fn migrate_to_v5(mut config: AppConfig) -> AppResult<AppConfig> {
+    info!("Migrating to version 5: Per-skill-name access");
+
+    for client in &mut config.clients {
+        if let super::SkillsAccess::Specific(_) = &client.skills_access {
+            info!(
+                "Client '{}': converting Specific skills access to All (paths can't be mapped to names)",
+                client.name
+            );
+            client.skills_access = super::SkillsAccess::All;
+        }
+    }
+
+    config.version = 5;
     Ok(config)
 }
 
