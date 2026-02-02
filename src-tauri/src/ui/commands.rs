@@ -3149,8 +3149,8 @@ pub struct ClientInfo {
     pub mcp_deferred_loading: bool,
     /// Skills access mode: "none", "all", or "specific"
     pub skills_access_mode: SkillsAccessMode,
-    /// List of specific source paths (only relevant when skills_access_mode is "specific")
-    pub skills_paths: Vec<String>,
+    /// List of specific skill names (only relevant when skills_access_mode is "specific")
+    pub skills_names: Vec<String>,
     pub created_at: String,
     pub last_used: Option<String>,
 }
@@ -3172,7 +3172,7 @@ fn skills_access_to_ui(access: &SkillsAccess) -> (SkillsAccessMode, Vec<String>)
     match access {
         SkillsAccess::None => (SkillsAccessMode::None, vec![]),
         SkillsAccess::All => (SkillsAccessMode::All, vec![]),
-        SkillsAccess::Specific(paths) => (SkillsAccessMode::Specific, paths.clone()),
+        SkillsAccess::Specific(names) => (SkillsAccessMode::Specific, names.clone()),
     }
 }
 
@@ -3195,7 +3195,7 @@ pub async fn list_clients(
         .into_iter()
         .map(|c| {
             let (mcp_access_mode, mcp_servers) = mcp_access_to_ui(&c.mcp_server_access);
-            let (skills_access_mode, skills_paths) = skills_access_to_ui(&c.skills_access);
+            let (skills_access_mode, skills_names) = skills_access_to_ui(&c.skills_access);
             ClientInfo {
                 id: c.id.clone(),
                 name: c.name.clone(),
@@ -3207,7 +3207,7 @@ pub async fn list_clients(
                 mcp_servers,
                 mcp_deferred_loading: c.mcp_deferred_loading,
                 skills_access_mode,
-                skills_paths,
+                skills_names,
                 created_at: c.created_at.to_rfc3339(),
                 last_used: c.last_used.map(|t| t.to_rfc3339()),
             }
@@ -3254,7 +3254,7 @@ pub async fn create_client(
     }
 
     let (mcp_access_mode, mcp_servers) = mcp_access_to_ui(&client.mcp_server_access);
-    let (skills_access_mode, skills_paths) = skills_access_to_ui(&client.skills_access);
+    let (skills_access_mode, skills_names) = skills_access_to_ui(&client.skills_access);
     let client_info = ClientInfo {
         id: client.id.clone(),
         name: client.name.clone(),
@@ -3266,7 +3266,7 @@ pub async fn create_client(
         mcp_servers,
         mcp_deferred_loading: client.mcp_deferred_loading,
         skills_access_mode,
-        skills_paths,
+        skills_names,
         created_at: client.created_at.to_rfc3339(),
         last_used: client.last_used.map(|t| t.to_rfc3339()),
     };
@@ -5002,6 +5002,28 @@ pub async fn open_logs_folder(
 }
 
 // ============================================================================
+// File System Commands
+// ============================================================================
+
+/// Open a file or folder path in the system file manager / default application
+#[tauri::command]
+pub async fn open_path(path: String, app: tauri::AppHandle) -> Result<(), String> {
+    use tauri_plugin_shell::ShellExt;
+
+    let path = std::path::PathBuf::from(&path);
+    if !path.exists() {
+        return Err(format!("Path does not exist: {}", path.display()));
+    }
+
+    #[allow(deprecated)]
+    app.shell()
+        .open(path.to_string_lossy().as_ref(), None)
+        .map_err(|e| format!("Failed to open path: {}", e))?;
+
+    Ok(())
+}
+
+// ============================================================================
 // Connection Graph Commands
 // ============================================================================
 
@@ -5173,14 +5195,14 @@ pub async fn rescan_skills(
 pub async fn set_client_skills_access(
     client_id: String,
     mode: SkillsAccessMode,
-    paths: Vec<String>,
+    skill_names: Vec<String>,
     config_manager: State<'_, ConfigManager>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     let access = match mode {
         SkillsAccessMode::None => SkillsAccess::None,
         SkillsAccessMode::All => SkillsAccess::All,
-        SkillsAccessMode::Specific => SkillsAccess::Specific(paths),
+        SkillsAccessMode::Specific => SkillsAccess::Specific(skill_names),
     };
 
     tracing::info!(
@@ -5212,7 +5234,8 @@ pub async fn set_client_skills_access(
     Ok(())
 }
 
-/// Get files for a specific skill with content previews
+/// Get files for a specific skill with content previews.
+/// Walks the entire skill directory recursively to list all files.
 #[tauri::command]
 pub async fn get_skill_files(
     skill_name: String,
@@ -5223,40 +5246,48 @@ pub async fn get_skill_files(
         .ok_or_else(|| format!("Skill '{}' not found", skill_name))?;
 
     let mut files = Vec::new();
-
-    for script in &skill.scripts {
-        let preview = read_file_preview(&skill.skill_dir.join("scripts").join(script));
-        files.push(SkillFileInfo {
-            name: script.clone(),
-            category: "script".to_string(),
-            content_preview: preview,
-        });
-    }
-
-    for reference in &skill.references {
-        let preview = read_file_preview(&skill.skill_dir.join("references").join(reference));
-        files.push(SkillFileInfo {
-            name: reference.clone(),
-            category: "reference".to_string(),
-            content_preview: preview,
-        });
-    }
-
-    for asset in &skill.assets {
-        let path = skill.skill_dir.join("assets").join(asset);
-        let preview = if is_text_file(&path) {
-            read_file_preview(&path)
-        } else {
-            None
-        };
-        files.push(SkillFileInfo {
-            name: asset.clone(),
-            category: "asset".to_string(),
-            content_preview: preview,
-        });
-    }
+    collect_skill_files_recursive(&skill.skill_dir, &skill.skill_dir, &mut files);
+    files.sort_by(|a, b| a.name.cmp(&b.name));
 
     Ok(files)
+}
+
+fn collect_skill_files_recursive(
+    base_dir: &std::path::Path,
+    current_dir: &std::path::Path,
+    files: &mut Vec<SkillFileInfo>,
+) {
+    let Ok(entries) = std::fs::read_dir(current_dir) else {
+        return;
+    };
+
+    let mut entries: Vec<_> = entries.flatten().collect();
+    entries.sort_by_key(|e| e.file_name());
+
+    for entry in entries {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_skill_files_recursive(base_dir, &path, files);
+        } else if path.is_file() {
+            let relative = path
+                .strip_prefix(base_dir)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .to_string();
+
+            let preview = if is_text_file(&path) {
+                read_file_preview(&path)
+            } else {
+                None
+            };
+
+            files.push(SkillFileInfo {
+                name: relative,
+                category: String::new(),
+                content_preview: preview,
+            });
+        }
+    }
 }
 
 #[derive(serde::Serialize)]

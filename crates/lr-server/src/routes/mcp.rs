@@ -366,6 +366,7 @@ pub async fn mcp_gateway_handler(
         let mut test_client = lr_config::Client::new_with_strategy("Internal Test Client".to_string(), "internal-test".to_string());
         test_client.id = "internal-test".to_string();
         test_client.mcp_server_access = McpServerAccess::All;
+        test_client.skills_access = lr_config::SkillsAccess::All;
         test_client.mcp_sampling_enabled = true;
         // Apply deferred loading from header for internal test client only
         test_client.mcp_deferred_loading = deferred_loading_header;
@@ -541,11 +542,12 @@ pub async fn mcp_gateway_handler(
     // Handle request via gateway
     match state
         .mcp_gateway
-        .handle_request(
+        .handle_request_with_skills(
             &client_id,
             allowed_servers,
             client.mcp_deferred_loading,
             roots,
+            client.skills_access.clone(),
             request,
         )
         .await

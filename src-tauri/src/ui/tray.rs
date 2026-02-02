@@ -650,7 +650,7 @@ fn build_tray_menu<R: Runtime, M: Manager<R>>(app: &M) -> tauri::Result<tauri::m
                         client_submenu = client_submenu.item(&no_skills_item);
                     } else {
                         for skill_info in &all_skills {
-                            let is_allowed = skill_info.enabled && client.skills_access.can_access_by_source(&skill_info.source_path);
+                            let is_allowed = skill_info.enabled && client.skills_access.can_access_by_name(&skill_info.name);
                             let label = if !skill_info.enabled {
                                 format!("{}{} (disabled)", TRAY_INDENT, skill_info.name)
                             } else if is_allowed {
@@ -1234,70 +1234,58 @@ async fn handle_toggle_skill_access<R: Runtime>(
         skill_name, client_id
     );
 
-    // Look up the skill's source_path from the skill manager
-    let source_path = app
-        .try_state::<Arc<lr_skills::SkillManager>>()
-        .and_then(|manager| {
-            manager
-                .list()
-                .into_iter()
-                .find(|s| s.name == skill_name)
-                .map(|s| s.source_path)
-        })
-        .ok_or_else(|| tauri::Error::Anyhow(anyhow::anyhow!("Skill '{}' not found", skill_name)))?;
-
     let config_manager = app.state::<ConfigManager>();
 
-    // Read current access and toggle by source path
+    // Read current access and toggle by skill name
     let mut found = false;
     config_manager
         .update(|cfg| {
             if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
-                let is_allowed = client.skills_access.can_access_by_source(&source_path);
+                let is_allowed = client.skills_access.can_access_by_name(skill_name);
                 if is_allowed {
-                    // Remove source path
+                    // Remove skill name
                     match &client.skills_access {
                         lr_config::SkillsAccess::All => {
                             // Switching from All: better UX handled by frontend
                             client.set_skills_access(lr_config::SkillsAccess::None);
                         }
-                        lr_config::SkillsAccess::Specific(paths) => {
-                            let new_paths: Vec<String> = paths
+                        lr_config::SkillsAccess::Specific(names) => {
+                            let new_names: Vec<String> = names
                                 .iter()
-                                .filter(|s| s.as_str() != source_path)
+                                .filter(|n| n.as_str() != skill_name)
                                 .cloned()
                                 .collect();
-                            if new_paths.is_empty() {
+                            if new_names.is_empty() {
                                 client.set_skills_access(lr_config::SkillsAccess::None);
                             } else {
                                 client.set_skills_access(lr_config::SkillsAccess::Specific(
-                                    new_paths,
+                                    new_names,
                                 ));
                             }
                         }
                         lr_config::SkillsAccess::None => {} // Already none
                     }
-                    info!("Skill {} (source: {}) removed from client {}", skill_name, source_path, client_id);
+                    info!("Skill {} removed from client {}", skill_name, client_id);
                 } else {
-                    // Add source path
+                    // Add skill name
                     match &client.skills_access {
                         lr_config::SkillsAccess::None => {
                             client.set_skills_access(lr_config::SkillsAccess::Specific(vec![
-                                source_path.clone(),
+                                skill_name.to_string(),
                             ]));
                         }
-                        lr_config::SkillsAccess::Specific(paths) => {
-                            if !paths.contains(&source_path) {
-                                let mut new_paths = paths.clone();
-                                new_paths.push(source_path.clone());
+                        lr_config::SkillsAccess::Specific(names) => {
+                            if !names.contains(&skill_name.to_string()) {
+                                let mut new_names = names.clone();
+                                new_names.push(skill_name.to_string());
                                 client.set_skills_access(lr_config::SkillsAccess::Specific(
-                                    new_paths,
+                                    new_names,
                                 ));
                             }
                         }
                         lr_config::SkillsAccess::All => {} // Already all
                     }
-                    info!("Skill {} (source: {}) added to client {}", skill_name, source_path, client_id);
+                    info!("Skill {} added to client {}", skill_name, client_id);
                 }
                 found = true;
             }

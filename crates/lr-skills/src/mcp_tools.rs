@@ -130,7 +130,7 @@ fn build_get_script_run_tool() -> McpTool {
 /// Three-tier access control:
 /// 1. Discovered — skill exists in manager's list
 /// 2. Globally enabled — skill.enabled == true
-/// 3. Client-allowed — client's SkillsAccess matches by source_path
+/// 3. Client-allowed — client's SkillsAccess matches by skill name
 pub fn build_skill_tools(
     skill_manager: &SkillManager,
     access: &SkillsAccess,
@@ -144,7 +144,7 @@ pub fn build_skill_tools(
     // Filter: enabled AND client-allowed
     let allowed: Vec<&SkillDefinition> = all_skills
         .iter()
-        .filter(|s| s.enabled && access.can_access_by_source(&s.source_path))
+        .filter(|s| s.enabled && access.can_access_by_name(&s.metadata.name))
         .collect();
 
     if allowed.is_empty() {
@@ -176,7 +176,7 @@ pub fn is_skill_allowed(
         return false;
     }
     match skill_manager.get(skill_name) {
-        Some(skill) => skill.enabled && access.can_access_by_source(&skill.source_path),
+        Some(skill) => skill.enabled && access.can_access_by_name(skill_name),
         None => false,
     }
 }

@@ -124,7 +124,7 @@ async fn test_skills_e2e_all_tool_commands() {
     let gateway = Arc::new(gateway);
 
     let client_id = "test-skills-client";
-    let skills_access = SkillsAccess::Specific(vec![skill_dir.to_string_lossy().to_string()]);
+    let skills_access = SkillsAccess::Specific(vec!["get-current-time".to_string()]);
 
     // ── Step 1: tools/list ─────────────────────────────────────────
     let tools_list_req = JsonRpcRequest::with_id(1, "tools/list".to_string(), Some(json!({})));
@@ -528,7 +528,7 @@ async fn test_skill_tools_present_after_cache_hit() {
 
     let client_id = "cache-test-client";
     let skill_dir = temp_dir.path().join("get-current-time");
-    let skills_access = SkillsAccess::Specific(vec![skill_dir.to_string_lossy().to_string()]);
+    let skills_access = SkillsAccess::Specific(vec!["get-current-time".to_string()]);
 
     // First call: populates cache
     let req = JsonRpcRequest::with_id(1, "tools/list".to_string(), Some(json!({})));
@@ -595,7 +595,7 @@ async fn test_skill_tools_present_with_deferred_loading() {
 
     let client_id = "deferred-test-client";
     let skill_dir = temp_dir.path().join("get-current-time");
-    let skills_access = SkillsAccess::Specific(vec![skill_dir.to_string_lossy().to_string()]);
+    let skills_access = SkillsAccess::Specific(vec!["get-current-time".to_string()]);
 
     // First call to create the session and set allowed_skills
     let req = JsonRpcRequest::with_id(1, "tools/list".to_string(), Some(json!({})));
