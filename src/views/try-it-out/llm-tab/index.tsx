@@ -69,7 +69,13 @@ interface ModelParameters {
 
 type TestMode = "client" | "strategy" | "direct"
 
-export function LlmTab() {
+interface LlmTabProps {
+  initialMode?: TestMode
+  initialProvider?: string
+  initialClientId?: string
+}
+
+export function LlmTab({ initialMode, initialProvider, initialClientId }: LlmTabProps) {
   const [activeSubtab, setActiveSubtab] = useState("chat")
   const [mode, setMode] = useState<TestMode>("client")
   const [serverPort, setServerPort] = useState<number | null>(null)
@@ -146,6 +152,27 @@ export function LlmTab() {
     }
     init()
   }, [])
+
+  // Apply initial props once data is loaded
+  useEffect(() => {
+    if (initialMode) {
+      setMode(initialMode)
+    }
+    if (initialMode === "direct" && initialProvider && providers.length > 0) {
+      const match = providers.find(p => p.instance_name === initialProvider)
+      if (match) {
+        setSelectedProvider(initialProvider)
+        setSelectedModel("")
+      }
+    }
+    if (initialMode === "client" && initialClientId && clients.length > 0) {
+      const match = clients.find(c => c.id === initialClientId)
+      if (match) {
+        setSelectedClientId(initialClientId)
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialMode, initialProvider, initialClientId, providers.length, clients.length])
 
   // Fetch client API key when client changes
   useEffect(() => {
@@ -327,7 +354,7 @@ export function LlmTab() {
                 setMode(v as TestMode)
                 setSelectedModel("")
               }}
-              className="flex gap-4"
+              className="flex flex-col gap-2"
             >
               <div className="flex items-center space-x-2">
                 <RadioGroupItem value="client" id="mode-client" />
@@ -352,57 +379,57 @@ export function LlmTab() {
               </div>
             </RadioGroup>
 
-            {/* Mode-specific selectors */}
+            {/* Mode-specific selector */}
+            {mode === "client" && (
+              <Select value={selectedClientId} onValueChange={setSelectedClientId}>
+                <SelectTrigger className="w-[250px]">
+                  <SelectValue placeholder="Select a client" />
+                </SelectTrigger>
+                <SelectContent>
+                  {clients.map((client) => (
+                    <SelectItem key={client.id} value={client.id}>
+                      {client.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+
+            {mode === "strategy" && (
+              <Select value={selectedStrategy} onValueChange={setSelectedStrategy}>
+                <SelectTrigger className="w-[250px]">
+                  <SelectValue placeholder="Select a strategy" />
+                </SelectTrigger>
+                <SelectContent>
+                  {strategies.map((strategy) => (
+                    <SelectItem key={strategy.name} value={strategy.name}>
+                      {strategy.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+
+            {mode === "direct" && (
+              <Select value={selectedProvider} onValueChange={(v) => {
+                setSelectedProvider(v)
+                setSelectedModel("")
+              }}>
+                <SelectTrigger className="w-[250px]">
+                  <SelectValue placeholder="Select a provider" />
+                </SelectTrigger>
+                <SelectContent>
+                  {providers.map((provider) => (
+                    <SelectItem key={provider.instance_name} value={provider.instance_name}>
+                      {provider.instance_name} ({provider.provider_type})
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+
+            {/* Model selector */}
             <div className="flex items-center gap-2">
-              {mode === "client" && (
-                <Select value={selectedClientId} onValueChange={setSelectedClientId}>
-                  <SelectTrigger className="w-[250px]">
-                    <SelectValue placeholder="Select a client" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {clients.map((client) => (
-                      <SelectItem key={client.id} value={client.id}>
-                        {client.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              )}
-
-              {mode === "strategy" && (
-                <Select value={selectedStrategy} onValueChange={setSelectedStrategy}>
-                  <SelectTrigger className="w-[250px]">
-                    <SelectValue placeholder="Select a strategy" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {strategies.map((strategy) => (
-                      <SelectItem key={strategy.name} value={strategy.name}>
-                        {strategy.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              )}
-
-              {mode === "direct" && (
-                <Select value={selectedProvider} onValueChange={(v) => {
-                  setSelectedProvider(v)
-                  setSelectedModel("")
-                }}>
-                  <SelectTrigger className="w-[250px]">
-                    <SelectValue placeholder="Select a provider" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {providers.map((provider) => (
-                      <SelectItem key={provider.instance_name} value={provider.instance_name}>
-                        {provider.instance_name} ({provider.provider_type})
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              )}
-
-              {/* Model selector */}
               <Select value={selectedModel} onValueChange={setSelectedModel}>
                 <SelectTrigger className="w-[300px]">
                   <SelectValue placeholder={loadingModels ? "Loading models..." : "Select a model"} />

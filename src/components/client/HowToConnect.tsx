@@ -81,15 +81,15 @@ function CopyableCode({
           </span>
         ) : masked ? (showValue ? value : maskedValue) : value}
       </code>
-      {masked && onToggleShow && (
+      {masked && onToggleShow && !showValue && (
         <Button
           variant="outline"
           size="icon"
           onClick={onToggleShow}
-          title={showValue ? "Hide" : "Show"}
+          title="Show"
           disabled={loading || !value}
         >
-          {showValue ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+          <Eye className="h-4 w-4" />
         </Button>
       )}
       <Button
@@ -106,12 +106,12 @@ function CopyableCode({
 }
 
 // Helper component for copyable multi-line code blocks
-function CopyableCodeBlock({ value, className = "" }: { value: string; className?: string }) {
+function CopyableCodeBlock({ value, copyValue, className = "" }: { value: string; copyValue?: string; className?: string }) {
   const [copied, setCopied] = useState(false)
 
   const handleCopy = async () => {
     try {
-      await navigator.clipboard.writeText(value)
+      await navigator.clipboard.writeText(copyValue ?? value)
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
       toast.success("Copied to clipboard")
@@ -150,6 +150,7 @@ export function HowToConnect({
   const [showSecret, setShowSecret] = useState(false)
   const [serverConfig, setServerConfig] = useState<ServerConfig | null>(null)
   const [executablePath, setExecutablePath] = useState<string>("")
+  const [models, setModels] = useState<Array<{ id: string }>>([])
 
   // Fetch server config and executable path
   useEffect(() => {
@@ -173,6 +174,27 @@ export function HowToConnect({
     fetchExecutablePath()
   }, [])
 
+  // Fetch models filtered by client's strategy via the real API endpoint
+  useEffect(() => {
+    if (!secret || !serverConfig) return
+    const port = serverConfig.actual_port ?? serverConfig.port ?? 3625
+    const host = serverConfig.host ?? "127.0.0.1"
+    const url = `http://${host}:${port}/v1/models`
+    const fetchModels = async () => {
+      try {
+        const res = await fetch(url, {
+          headers: { Authorization: `Bearer ${secret}` },
+        })
+        if (!res.ok) return
+        const body = await res.json()
+        setModels(body.data ?? [])
+      } catch (error) {
+        console.error("Failed to fetch models:", error)
+      }
+    }
+    fetchModels()
+  }, [secret, serverConfig])
+
   // Compute URLs based on server config
   const port = serverConfig?.actual_port ?? serverConfig?.port ?? 3625
   const host = serverConfig?.host ?? "127.0.0.1"
@@ -183,27 +205,41 @@ export function HowToConnect({
   // Quoted version for shell usage (handles spaces in path)
   const quotedBinaryPath = `"${binaryPath}"`
 
-  // Generate STDIO config JSON
-  const stdioConfig = JSON.stringify({
+  const maskedSecret = "••••••••••••••••••••••••••••••••"
+
+  // Generate API Key JSON config
+  const apiKeyJsonConfig = (masked: boolean) => JSON.stringify({
     mcpServers: {
       localrouter: {
-        command: binaryPath,
-        args: ["--mcp-bridge", "--client-id", clientId],
-        env: {
-          LOCALROUTER_CLIENT_SECRET: secret || "<your_client_secret>"
+        url: baseUrl,
+        transport: "http",
+        headers: {
+          Authorization: `Bearer ${masked ? maskedSecret : (secret || "<your_client_secret>")}`
         }
       }
     }
   }, null, 2)
 
-  // Generate MCP JSON config for HTTP/SSE
-  const mcpJsonConfig = JSON.stringify({
+  // Generate OAuth JSON config
+  const oauthJsonConfig = (masked: boolean) => JSON.stringify({
     mcpServers: {
       localrouter: {
         url: baseUrl,
-        transport: "sse",
-        headers: {
-          Authorization: `Bearer ${secret || "<your_client_secret>"}`
+        transport: "http",
+        clientId: clientUuid,
+        clientSecret: masked ? maskedSecret : (secret || "<your_client_secret>")
+      }
+    }
+  }, null, 2)
+
+  // Generate STDIO JSON config
+  const stdioJsonConfig = (masked: boolean) => JSON.stringify({
+    mcpServers: {
+      localrouter: {
+        command: binaryPath,
+        args: ["--mcp-bridge", "--client-id", clientId],
+        env: {
+          LOCALROUTER_CLIENT_SECRET: masked ? maskedSecret : (secret || "<your_client_secret>")
         }
       }
     }
@@ -270,7 +306,7 @@ export function HowToConnect({
             <div className="rounded-lg border p-4 space-y-4">
               <div className="flex items-center gap-2">
                 <Globe className="h-4 w-4 text-muted-foreground" />
-                <span className="text-sm font-medium">HTTP/SSE (OpenAI-compatible)</span>
+                <span className="text-sm font-medium">HTTP (OpenAI-compatible)</span>
               </div>
 
               <div className="space-y-3">
@@ -285,196 +321,281 @@ export function HowToConnect({
                     value={secret || "Error loading secret"}
                     masked
                     showValue={showSecret}
-                    onToggleShow={() => setShowSecret(!showSecret)}
+                    onToggleShow={() => setShowSecret(true)}
                     loading={loadingSecret}
                   />
                 </div>
               </div>
-
-              <div className="rounded-lg bg-muted/50 p-3 space-y-2">
-                <p className="text-xs font-medium">Usage Example</p>
-                <CopyableCodeBlock value={`curl ${baseUrl}/chat/completions \\
-  -H "Authorization: Bearer <api_key>" \\
-  -H "Content-Type: application/json" \\
-  -d '{"model": "gpt-4", "messages": [{"role": "user", "content": "Hello"}]}'`} />
-              </div>
             </div>
+
+            {models.length > 0 && (
+              <div className="rounded-lg border p-4 space-y-3">
+                <div>
+                  <p className="text-sm font-medium">Available Models</p>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Specify the model in the <code className="text-xs bg-muted px-1 py-0.5 rounded">"model"</code> field of your request body.
+                  </p>
+                </div>
+                <div className="max-h-48 overflow-y-auto rounded-md border">
+                  <table className="w-full text-xs">
+                    <thead className="bg-muted/50 sticky top-0">
+                      <tr>
+                        <th className="text-left p-2 font-medium text-muted-foreground">Model</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {models.map((model) => (
+                        <tr key={model.id} className="border-t border-border/50">
+                          <td className="p-2 font-mono">{model.id}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
           </TabsContent>
 
-          {/* MCP Tab - Multiple connection methods */}
+          {/* MCP Tab - Three auth methods, each with Config/JSON sub-tabs */}
           <TabsContent value="mcp" className="space-y-4">
-            <Tabs defaultValue="stdio">
-              <TabsList className="mb-4 w-full grid grid-cols-4">
+            <Tabs defaultValue="api-key">
+              <TabsList className="mb-4 w-full grid grid-cols-3">
+                <TabsTrigger value="api-key" className="text-xs gap-1">
+                  <Key className="h-3 w-3" />
+                  API Key
+                </TabsTrigger>
+                <TabsTrigger value="oauth" className="text-xs gap-1">
+                  <Globe className="h-3 w-3" />
+                  OAuth
+                </TabsTrigger>
                 <TabsTrigger value="stdio" className="text-xs gap-1">
                   <Terminal className="h-3 w-3" />
                   STDIO
                 </TabsTrigger>
-                <TabsTrigger value="http-oauth" className="text-xs gap-1">
-                  <Key className="h-3 w-3" />
-                  OAuth
-                </TabsTrigger>
-                <TabsTrigger value="http-bearer" className="text-xs gap-1">
-                  <Globe className="h-3 w-3" />
-                  Bearer
-                </TabsTrigger>
-                <TabsTrigger value="json" className="text-xs gap-1">
-                  <FileJson className="h-3 w-3" />
-                  JSON
-                </TabsTrigger>
               </TabsList>
 
-              {/* MCP STDIO */}
-              <TabsContent value="stdio" className="space-y-4">
-                <div className="rounded-lg border p-4 space-y-4">
-                  <div>
-                    <p className="text-sm font-medium">STDIO Bridge</p>
-                    <p className="text-xs text-muted-foreground mt-1">
-                      Recommended for Claude Desktop, Cursor, VS Code, and other MCP clients that use STDIO transport.
-                    </p>
-                  </div>
+              {/* API Key */}
+              <TabsContent value="api-key" className="space-y-4">
+                <Tabs defaultValue="config">
+                  <TabsList className="mb-3 w-full grid grid-cols-2">
+                    <TabsTrigger value="config" className="text-xs gap-1">
+                      <Cpu className="h-3 w-3" />
+                      Config
+                    </TabsTrigger>
+                    <TabsTrigger value="json" className="text-xs gap-1">
+                      <FileJson className="h-3 w-3" />
+                      JSON
+                    </TabsTrigger>
+                  </TabsList>
 
-                  <div className="space-y-3">
-                    <div className="space-y-1.5">
-                      <Label className="text-xs text-muted-foreground">Command</Label>
-                      <CopyableCode value={quotedBinaryPath} />
-                    </div>
-
-                    <div className="space-y-1.5">
-                      <Label className="text-xs text-muted-foreground">Arguments</Label>
-                      <CopyableCode value={`--mcp-bridge --client-id ${clientId}`} />
-                    </div>
-
-                    <div className="space-y-1.5">
-                      <Label className="text-xs text-muted-foreground">Environment Variable</Label>
-                      <div className="flex items-center gap-2">
-                        <code className="flex-1 p-3 text-sm bg-muted rounded-md font-mono">
-                          LOCALROUTER_CLIENT_SECRET
-                        </code>
+                  <TabsContent value="config" className="space-y-4">
+                    <div className="rounded-lg border p-4 space-y-4">
+                      <div>
+                        <p className="text-sm font-medium">HTTP with Bearer Token</p>
+                        <p className="text-xs text-muted-foreground mt-1">
+                          Direct authentication using the client secret as a bearer token.
+                        </p>
                       </div>
-                      <CopyableCode
-                        value={secret || "Error loading secret"}
-                        masked
-                        showValue={showSecret}
-                        onToggleShow={() => setShowSecret(!showSecret)}
-                        loading={loadingSecret}
-                      />
-                    </div>
-                  </div>
 
-                  <div className="rounded-lg bg-blue-500/10 border border-blue-500/20 p-3 space-y-2">
-                    <p className="text-xs font-medium">MCP Configuration JSON</p>
-                    <CopyableCodeBlock value={stdioConfig} />
-                  </div>
-                </div>
+                      <div className="space-y-3">
+                        <div className="space-y-1.5">
+                          <Label className="text-xs text-muted-foreground">Endpoint URL</Label>
+                          <CopyableCode value={baseUrl} />
+                        </div>
+
+                        <div className="space-y-1.5">
+                          <Label className="text-xs text-muted-foreground">API Key</Label>
+                          <CopyableCode
+                            value={secret || "Error loading secret"}
+                            masked
+                            showValue={showSecret}
+                            onToggleShow={() => setShowSecret(true)}
+                            loading={loadingSecret}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  </TabsContent>
+
+                  <TabsContent value="json" className="space-y-4">
+                    <div className="rounded-lg border p-4 space-y-4">
+                      <div>
+                        <p className="text-sm font-medium">MCP JSON Configuration</p>
+                        <p className="text-xs text-muted-foreground mt-1">
+                          Copy this JSON to your MCP client config for API key auth.
+                        </p>
+                      </div>
+
+                      <div
+                        className={`rounded-lg bg-muted/50 p-3 space-y-2${!showSecret ? " cursor-pointer" : ""}`}
+                        onClick={!showSecret ? () => setShowSecret(true) : undefined}
+                        title={!showSecret ? "Click to reveal secret" : undefined}
+                      >
+                        <CopyableCodeBlock value={apiKeyJsonConfig(!showSecret)} copyValue={apiKeyJsonConfig(false)} />
+                      </div>
+                    </div>
+                  </TabsContent>
+                </Tabs>
               </TabsContent>
 
-              {/* MCP HTTP OAuth */}
-              <TabsContent value="http-oauth" className="space-y-4">
-                <div className="rounded-lg border p-4 space-y-4">
-                  <div>
-                    <p className="text-sm font-medium">HTTP/SSE with OAuth 2.0</p>
-                    <p className="text-xs text-muted-foreground mt-1">
-                      Use OAuth client credentials flow for token-based authentication.
-                    </p>
-                  </div>
+              {/* OAuth */}
+              <TabsContent value="oauth" className="space-y-4">
+                <Tabs defaultValue="config">
+                  <TabsList className="mb-3 w-full grid grid-cols-2">
+                    <TabsTrigger value="config" className="text-xs gap-1">
+                      <Cpu className="h-3 w-3" />
+                      Config
+                    </TabsTrigger>
+                    <TabsTrigger value="json" className="text-xs gap-1">
+                      <FileJson className="h-3 w-3" />
+                      JSON
+                    </TabsTrigger>
+                  </TabsList>
 
-                  <div className="space-y-3">
-                    <div className="space-y-1.5">
-                      <Label className="text-xs text-muted-foreground">Endpoint URL</Label>
-                      <CopyableCode value={baseUrl} />
+                  <TabsContent value="config" className="space-y-4">
+                    <div className="rounded-lg border p-4 space-y-4">
+                      <div>
+                        <p className="text-sm font-medium">HTTP with OAuth 2.0</p>
+                        <p className="text-xs text-muted-foreground mt-1">
+                          Use OAuth client credentials flow for token-based authentication.
+                        </p>
+                      </div>
+
+                      <div className="space-y-3">
+                        <div className="space-y-1.5">
+                          <Label className="text-xs text-muted-foreground">Endpoint URL</Label>
+                          <CopyableCode value={baseUrl} />
+                        </div>
+
+                        <div className="space-y-1.5">
+                          <Label className="text-xs text-muted-foreground">OAuth Token URL</Label>
+                          <CopyableCode value={`${baseUrl}/oauth/token`} />
+                        </div>
+
+                        <div className="space-y-1.5">
+                          <Label className="text-xs text-muted-foreground">Client ID</Label>
+                          <CopyableCode value={clientUuid} />
+                        </div>
+
+                        <div className="space-y-1.5">
+                          <Label className="text-xs text-muted-foreground">Client Secret</Label>
+                          <CopyableCode
+                            value={secret || "Error loading secret"}
+                            masked
+                            showValue={showSecret}
+                            onToggleShow={() => setShowSecret(true)}
+                            loading={loadingSecret}
+                          />
+                        </div>
+                      </div>
+
+                      <div
+                        className={`rounded-lg bg-muted/50 p-3 space-y-2${!showSecret ? " cursor-pointer" : ""}`}
+                        onClick={!showSecret ? () => setShowSecret(true) : undefined}
+                        title={!showSecret ? "Click to reveal secret" : undefined}
+                      >
+                        <p className="text-xs font-medium">Token Exchange</p>
+                        <CopyableCodeBlock
+                          value={`POST ${baseUrl}/oauth/token\nContent-Type: application/x-www-form-urlencoded\n\ngrant_type=client_credentials&client_id=${clientUuid}&client_secret=${!showSecret ? maskedSecret : (secret || "<your_client_secret>")}`}
+                          copyValue={`POST ${baseUrl}/oauth/token\nContent-Type: application/x-www-form-urlencoded\n\ngrant_type=client_credentials&client_id=${clientUuid}&client_secret=${secret || "<your_client_secret>"}`}
+                        />
+                      </div>
                     </div>
+                  </TabsContent>
 
-                    <div className="space-y-1.5">
-                      <Label className="text-xs text-muted-foreground">OAuth Token URL</Label>
-                      <CopyableCode value={`${baseUrl}/oauth/token`} />
+                  <TabsContent value="json" className="space-y-4">
+                    <div className="rounded-lg border p-4 space-y-4">
+                      <div>
+                        <p className="text-sm font-medium">MCP JSON Configuration</p>
+                        <p className="text-xs text-muted-foreground mt-1">
+                          Copy this JSON to your MCP client config for OAuth auth.
+                        </p>
+                      </div>
+
+                      <div
+                        className={`rounded-lg bg-muted/50 p-3 space-y-2${!showSecret ? " cursor-pointer" : ""}`}
+                        onClick={!showSecret ? () => setShowSecret(true) : undefined}
+                        title={!showSecret ? "Click to reveal secret" : undefined}
+                      >
+                        <CopyableCodeBlock value={oauthJsonConfig(!showSecret)} copyValue={oauthJsonConfig(false)} />
+                      </div>
                     </div>
-
-                    <div className="space-y-1.5">
-                      <Label className="text-xs text-muted-foreground">Client ID</Label>
-                      <CopyableCode value={clientUuid} />
-                    </div>
-
-                    <div className="space-y-1.5">
-                      <Label className="text-xs text-muted-foreground">Client Secret</Label>
-                      <CopyableCode
-                        value={secret || "Error loading secret"}
-                        masked
-                        showValue={showSecret}
-                        onToggleShow={() => setShowSecret(!showSecret)}
-                        loading={loadingSecret}
-                      />
-                    </div>
-                  </div>
-
-                  <div className="rounded-lg bg-muted/50 p-3 space-y-2">
-                    <p className="text-xs font-medium">Token Exchange</p>
-                    <CopyableCodeBlock value={`POST ${baseUrl}/oauth/token
-Content-Type: application/x-www-form-urlencoded
-
-grant_type=client_credentials&client_id=${clientUuid}&client_secret=<secret>`} />
-                  </div>
-                </div>
+                  </TabsContent>
+                </Tabs>
               </TabsContent>
 
-              {/* MCP HTTP Bearer */}
-              <TabsContent value="http-bearer" className="space-y-4">
-                <div className="rounded-lg border p-4 space-y-4">
-                  <div>
-                    <p className="text-sm font-medium">HTTP/SSE with Bearer Token</p>
-                    <p className="text-xs text-muted-foreground mt-1">
-                      Direct authentication using the client secret as a bearer token.
-                    </p>
-                  </div>
+              {/* STDIO */}
+              <TabsContent value="stdio" className="space-y-4">
+                <Tabs defaultValue="config">
+                  <TabsList className="mb-3 w-full grid grid-cols-2">
+                    <TabsTrigger value="config" className="text-xs gap-1">
+                      <Cpu className="h-3 w-3" />
+                      Config
+                    </TabsTrigger>
+                    <TabsTrigger value="json" className="text-xs gap-1">
+                      <FileJson className="h-3 w-3" />
+                      JSON
+                    </TabsTrigger>
+                  </TabsList>
 
-                  <div className="space-y-3">
-                    <div className="space-y-1.5">
-                      <Label className="text-xs text-muted-foreground">Endpoint URL</Label>
-                      <CopyableCode value={baseUrl} />
+                  <TabsContent value="config" className="space-y-4">
+                    <div className="rounded-lg border p-4 space-y-4">
+                      <div>
+                        <p className="text-sm font-medium">STDIO Bridge</p>
+                        <p className="text-xs text-muted-foreground mt-1">
+                          For clients that do not support HTTP transport, connect locally via STDIO bridge.
+                        </p>
+                      </div>
+
+                      <div className="space-y-3">
+                        <div className="space-y-1.5">
+                          <Label className="text-xs text-muted-foreground">Command</Label>
+                          <CopyableCode value={quotedBinaryPath} />
+                        </div>
+
+                        <div className="space-y-1.5">
+                          <Label className="text-xs text-muted-foreground">Arguments</Label>
+                          <CopyableCode value={`--mcp-bridge --client-id ${clientId}`} />
+                        </div>
+
+                        <div className="space-y-1.5">
+                          <Label className="text-xs text-muted-foreground">Environment Variable</Label>
+                          <div className="flex items-center gap-2">
+                            <code className="flex-1 p-3 text-sm bg-muted rounded-md font-mono">
+                              LOCALROUTER_CLIENT_SECRET
+                            </code>
+                          </div>
+                          <CopyableCode
+                            value={secret || "Error loading secret"}
+                            masked
+                            showValue={showSecret}
+                            onToggleShow={() => setShowSecret(true)}
+                            loading={loadingSecret}
+                          />
+                        </div>
+                      </div>
                     </div>
+                  </TabsContent>
 
-                    <div className="space-y-1.5">
-                      <Label className="text-xs text-muted-foreground">Authorization Header</Label>
-                      <CopyableCode
-                        value={`Bearer ${secret || "<your_client_secret>"}`}
-                        masked
-                        showValue={showSecret}
-                        onToggleShow={() => setShowSecret(!showSecret)}
-                        loading={loadingSecret}
-                      />
+                  <TabsContent value="json" className="space-y-4">
+                    <div className="rounded-lg border p-4 space-y-4">
+                      <div>
+                        <p className="text-sm font-medium">MCP JSON Configuration</p>
+                        <p className="text-xs text-muted-foreground mt-1">
+                          Copy this JSON to your MCP client config for STDIO bridge.
+                        </p>
+                      </div>
+
+                      <div
+                        className={`rounded-lg bg-muted/50 p-3 space-y-2${!showSecret ? " cursor-pointer" : ""}`}
+                        onClick={!showSecret ? () => setShowSecret(true) : undefined}
+                        title={!showSecret ? "Click to reveal secret" : undefined}
+                      >
+                        <CopyableCodeBlock value={stdioJsonConfig(!showSecret)} copyValue={stdioJsonConfig(false)} />
+                      </div>
                     </div>
-                  </div>
-
-                  <div className="rounded-lg bg-muted/50 p-3 space-y-2">
-                    <p className="text-xs font-medium">Usage Example</p>
-                    <CopyableCodeBlock value={`curl ${baseUrl} \\
-  -H "Authorization: Bearer <client_secret>" \\
-  -H "Content-Type: application/json" \\
-  -d '{"jsonrpc": "2.0", "method": "tools/list", "id": 1}'`} />
-                  </div>
-                </div>
-              </TabsContent>
-
-              {/* MCP JSON Config */}
-              <TabsContent value="json" className="space-y-4">
-                <div className="rounded-lg border p-4 space-y-4">
-                  <div>
-                    <p className="text-sm font-medium">MCP JSON Configuration</p>
-                    <p className="text-xs text-muted-foreground mt-1">
-                      Copy this JSON configuration to connect via HTTP/SSE transport.
-                    </p>
-                  </div>
-
-                  <div className="rounded-lg bg-muted/50 p-3 space-y-2">
-                    <CopyableCodeBlock value={mcpJsonConfig} />
-                  </div>
-
-                  <div className="rounded-lg bg-yellow-500/10 border border-yellow-500/20 p-3">
-                    <p className="text-xs text-yellow-600 dark:text-yellow-400">
-                      <strong>Note:</strong> Replace the Authorization header value with your actual client secret.
-                      The secret is shown above when you click the eye icon.
-                    </p>
-                  </div>
-                </div>
+                  </TabsContent>
+                </Tabs>
               </TabsContent>
             </Tabs>
           </TabsContent>

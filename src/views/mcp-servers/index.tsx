@@ -105,6 +105,7 @@ export function McpServersView({ activeSubTab, onTabChange }: McpServersViewProp
           }}
           onRefreshHealth={refreshHealth}
           initialAddTemplateId={addTemplateId}
+          onViewChange={onTabChange}
         />
       </div>
     </div>

@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
 import { toast } from "sonner"
-import { CheckCircle, XCircle, AlertCircle, Plus, Loader2, RefreshCw } from "lucide-react"
+import { CheckCircle, XCircle, AlertCircle, Plus, Loader2, RefreshCw, FlaskConical } from "lucide-react"
 import { ProvidersIcon } from "@/components/icons/category-icons"
 import { Badge } from "@/components/ui/Badge"
 import { Button } from "@/components/ui/Button"
@@ -77,6 +77,7 @@ interface ProvidersPanelProps {
   onHealthInit: (providerNames: string[]) => void
   onRefreshHealth: (instanceName: string) => Promise<void>
   initialAddProviderType?: string | null
+  onViewChange?: (view: string, subTab?: string | null) => void
 }
 
 export function ProvidersPanel({
@@ -86,6 +87,7 @@ export function ProvidersPanel({
   onHealthInit,
   onRefreshHealth,
   initialAddProviderType,
+  onViewChange,
 }: ProvidersPanelProps) {
   const [providers, setProviders] = useState<Provider[]>([])
   const [providerTypes, setProviderTypes] = useState<ProviderType[]>([])
@@ -390,6 +392,16 @@ export function ProvidersPanel({
                     <Badge variant={selectedProvider.enabled ? "success" : "secondary"}>
                       {selectedProvider.enabled ? "Enabled" : "Disabled"}
                     </Badge>
+                    {onViewChange && selectedProvider.enabled && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => onViewChange("try-it-out", `llm/init/direct/${selectedProvider.instance_name}`)}
+                      >
+                        <FlaskConical className="h-4 w-4 mr-1" />
+                        Try It Out
+                      </Button>
+                    )}
                     <EntityActions
                       actions={[
                         commonActions.edit(() => openEditDialog(selectedProvider)),

@@ -40,9 +40,10 @@ export type TransportType = "sse" | "websocket"
 export interface McpClientConfig {
   serverPort: number
   clientToken: string
-  serverId?: string // If provided, connect to specific server; otherwise use gateway
   transportType?: TransportType
   deferredLoading?: boolean // Enable deferred loading for unified gateway
+  mcpAccess?: string // MCP server access: "all", "none", or a specific server ID
+  skillsAccess?: "all" | string // Skills access: "all" or specific skill name
 }
 
 // Detailed capability info for display
@@ -145,11 +146,7 @@ export class McpClientWrapper {
   }
 
   private getEndpointUrl(): string {
-    const { serverPort, serverId } = this.config
-    if (serverId) {
-      return `http://localhost:${serverPort}/mcp/${serverId}`
-    }
-    return `http://localhost:${serverPort}/`
+    return `http://localhost:${this.config.serverPort}/`
   }
 
   async connect(): Promise<void> {
@@ -169,12 +166,18 @@ export class McpClientWrapper {
         this.transport = new WebSocketClientTransport(new URL(wsUrl))
       } else {
         // SSE transport
-        // Build headers - include deferred loading header if enabled
+        // Build headers - include access control headers for internal test client
         const headers: Record<string, string> = {
           Authorization: `Bearer ${this.config.clientToken}`,
         }
         if (this.config.deferredLoading) {
           headers["X-Deferred-Loading"] = "true"
+        }
+        if (this.config.mcpAccess) {
+          headers["X-MCP-Access"] = this.config.mcpAccess
+        }
+        if (this.config.skillsAccess) {
+          headers["X-Skills-Access"] = this.config.skillsAccess
         }
         this.transport = new SSEClientTransport(new URL(endpoint), {
           requestInit: {

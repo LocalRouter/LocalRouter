@@ -2,7 +2,7 @@ import { useState, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
 import { toast } from "sonner"
-import { Plus, CheckCircle, XCircle, Loader2, RefreshCw } from "lucide-react"
+import { Plus, CheckCircle, XCircle, Loader2, RefreshCw, FlaskConical } from "lucide-react"
 import McpServerIcon from "@/components/McpServerIcon"
 import { Badge } from "@/components/ui/Badge"
 import { Button } from "@/components/ui/Button"
@@ -78,6 +78,7 @@ interface McpServersPanelProps {
   onHealthInit: (serverIds: string[]) => void
   onRefreshHealth: (serverId: string) => Promise<void>
   initialAddTemplateId?: string | null
+  onViewChange?: (view: string, subTab?: string | null) => void
 }
 
 export function McpServersPanel({
@@ -87,6 +88,7 @@ export function McpServersPanel({
   onHealthInit,
   onRefreshHealth,
   initialAddTemplateId,
+  onViewChange,
 }: McpServersPanelProps) {
   const [servers, setServers] = useState<McpServer[]>([])
   const [loading, setLoading] = useState(true)
@@ -711,6 +713,16 @@ export function McpServersPanel({
                   <Badge variant={selectedServer.enabled ? "success" : "secondary"}>
                     {selectedServer.enabled ? "Enabled" : "Disabled"}
                   </Badge>
+                  {onViewChange && selectedServer.enabled && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => onViewChange("try-it-out", `mcp/init/direct/server:${selectedServer.id}`)}
+                    >
+                      <FlaskConical className="h-4 w-4 mr-1" />
+                      Try It Out
+                    </Button>
+                  )}
                   <EntityActions
                     actions={[
                       commonActions.edit(() => handleStartEdit(selectedServer)),

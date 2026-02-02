@@ -123,6 +123,7 @@ export function ResourcesView({ activeSubTab, onTabChange }: LlmProvidersViewPro
             }}
             onRefreshHealth={refreshHealth}
             initialAddProviderType={resourceType === "providers" ? addType : null}
+            onViewChange={onTabChange}
           />
         </TabsContent>
 
