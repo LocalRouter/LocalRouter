@@ -8,7 +8,7 @@
 import { useState, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
-import { Copy, Check, Eye, EyeOff, RefreshCw, Cpu, Terminal, Globe, Key, FileJson, Loader2 } from "lucide-react"
+import { Copy, Check, Eye, RefreshCw, Cpu, Terminal, Globe, Key, FileJson, Loader2 } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Button } from "@/components/ui/Button"
 import { Label } from "@/components/ui/label"
