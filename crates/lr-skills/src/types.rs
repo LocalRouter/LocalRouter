@@ -86,6 +86,9 @@ pub struct SkillInfo {
     /// Tags
     pub tags: Vec<String>,
 
+    /// Additional metadata fields from frontmatter
+    pub extra: HashMap<String, serde_yaml::Value>,
+
     /// Source path
     pub source_path: String,
 
@@ -110,6 +113,7 @@ impl From<&SkillDefinition> for SkillInfo {
             description: def.metadata.description.clone(),
             author: def.metadata.author.clone(),
             tags: def.metadata.tags.clone(),
+            extra: def.metadata.extra.clone(),
             source_path: def.source_path.clone(),
             script_count: def.scripts.len(),
             reference_count: def.references.len(),
@@ -117,6 +121,50 @@ impl From<&SkillDefinition> for SkillInfo {
             enabled: def.enabled,
         }
     }
+}
+
+/// Sanitize a skill name into a valid tool name segment.
+///
+/// Lowercases, replaces non-`[a-z0-9_-]` with `_`, collapses consecutive `_`, trims `_` from edges.
+pub fn sanitize_name(input: &str) -> String {
+    let mut result = String::with_capacity(input.len());
+    for ch in input.chars() {
+        let ch = ch.to_ascii_lowercase();
+        if ch.is_ascii_alphanumeric() || ch == '-' {
+            result.push(ch);
+        } else {
+            result.push('_');
+        }
+    }
+    // Collapse consecutive underscores
+    let mut collapsed = String::with_capacity(result.len());
+    let mut prev_underscore = false;
+    for ch in result.chars() {
+        if ch == '_' {
+            if !prev_underscore {
+                collapsed.push('_');
+            }
+            prev_underscore = true;
+        } else {
+            collapsed.push(ch);
+            prev_underscore = false;
+        }
+    }
+    // Trim underscores from edges
+    collapsed.trim_matches('_').to_string()
+}
+
+/// Sanitize a file path into a tool name segment.
+///
+/// Strips known directory prefixes (`scripts/`, `references/`, `assets/`),
+/// then sanitizes (dots become underscores, so `build.sh` → `build_sh`).
+pub fn sanitize_tool_segment(file_path: &str) -> String {
+    let stripped = file_path
+        .strip_prefix("scripts/")
+        .or_else(|| file_path.strip_prefix("references/"))
+        .or_else(|| file_path.strip_prefix("assets/"))
+        .unwrap_or(file_path);
+    sanitize_name(stripped)
 }
 
 /// Result of running a script synchronously
@@ -155,4 +203,52 @@ pub struct AsyncScriptStatus {
 
     /// Whether the process timed out
     pub timed_out: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sanitize_name_basic() {
+        assert_eq!(sanitize_name("hello"), "hello");
+        assert_eq!(sanitize_name("Hello World"), "hello_world");
+        assert_eq!(sanitize_name("my-skill"), "my-skill");
+        assert_eq!(sanitize_name("my_skill"), "my_skill");
+    }
+
+    #[test]
+    fn test_sanitize_name_special_chars() {
+        assert_eq!(sanitize_name("skill@v2!"), "skill_v2");
+        assert_eq!(sanitize_name("a..b"), "a_b");
+        assert_eq!(sanitize_name("___leading___"), "leading");
+        assert_eq!(sanitize_name("trail___"), "trail");
+    }
+
+    #[test]
+    fn test_sanitize_name_collapse_underscores() {
+        assert_eq!(sanitize_name("a   b"), "a_b");
+        assert_eq!(sanitize_name("a___b"), "a_b");
+        assert_eq!(sanitize_name("a . b"), "a_b");
+    }
+
+    #[test]
+    fn test_sanitize_tool_segment_strips_prefix() {
+        assert_eq!(sanitize_tool_segment("scripts/build.sh"), "build_sh");
+        assert_eq!(sanitize_tool_segment("references/api.md"), "api_md");
+        assert_eq!(sanitize_tool_segment("assets/logo.png"), "logo_png");
+        assert_eq!(sanitize_tool_segment("other/file.txt"), "other_file_txt");
+    }
+
+    #[test]
+    fn test_sanitize_tool_segment_complex() {
+        assert_eq!(
+            sanitize_tool_segment("scripts/run-tests.sh"),
+            "run-tests_sh"
+        );
+        assert_eq!(
+            sanitize_tool_segment("scripts/My Script.py"),
+            "my_script_py"
+        );
+    }
 }

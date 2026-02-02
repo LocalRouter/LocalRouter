@@ -13,8 +13,8 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 // Re-exported crate aliases from lib.rs
 use localrouter::{
-    api_keys, clients, config, mcp, monitoring, oauth_browser, oauth_clients, providers,
-    routellm, router, server, skills, utils,
+    api_keys, clients, config, mcp, monitoring, oauth_browser, oauth_clients, providers, routellm,
+    router, server, skills, utils,
 };
 
 use lr_providers::factory::{
@@ -457,10 +457,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             let mut skill_manager = skills::SkillManager::new();
             skill_manager.set_app_handle(app.handle().clone());
             let skills_config = config_manager.get().skills.clone();
-            skill_manager.initial_scan(
-                &skills_config.paths,
-                &skills_config.disabled_skills,
-            );
+            skill_manager.initial_scan(&skills_config.paths, &skills_config.disabled_skills);
             skill_manager.start_cleanup_task();
             let skill_manager = Arc::new(skill_manager);
             let script_executor = Arc::new(skills::executor::ScriptExecutor::new());
@@ -473,10 +470,8 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                 watcher_paths,
                 Arc::new(move |_affected_paths| {
                     let config = config_manager_for_watcher.get();
-                    skill_manager_for_watcher.rescan(
-                        &config.skills.paths,
-                        &config.skills.disabled_skills,
-                    );
+                    skill_manager_for_watcher
+                        .rescan(&config.skills.paths, &config.skills.disabled_skills);
                 }),
             ) {
                 Ok(watcher) => {
@@ -497,10 +492,12 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                 info!("Managing AppState for Tauri commands");
 
                 // Wire skill support into MCP gateway (uses OnceLock, so &self is fine)
-                app_state.mcp_gateway.set_skill_support(
-                    skill_manager.clone(),
-                    script_executor.clone(),
-                );
+                app_state
+                    .mcp_gateway
+                    .set_skill_support(skill_manager.clone(), script_executor.clone());
+                if skills_config.async_enabled {
+                    app_state.mcp_gateway.set_skills_async_enabled(true);
+                }
                 info!("Skills wired to MCP gateway");
 
                 // Set app handle on AppState for event emission

@@ -118,6 +118,9 @@ pub struct GatewayConfig {
 
     /// Max retry attempts for failed requests (default: 1)
     pub max_retry_attempts: u8,
+
+    /// Whether async skill script execution is enabled (default: false)
+    pub skills_async_enabled: bool,
 }
 
 impl Default for GatewayConfig {
@@ -128,6 +131,7 @@ impl Default for GatewayConfig {
             allow_partial_failures: true,
             cache_ttl_seconds: 300,
             max_retry_attempts: 1,
+            skills_async_enabled: false,
         }
     }
 }

@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 use super::types::*;
@@ -80,6 +80,12 @@ pub struct GatewaySession {
 
     /// Skills access control for this client
     pub skills_access: lr_config::SkillsAccess,
+
+    /// Skills that have had get_info called (enables per-skill run/read tools)
+    pub skills_info_loaded: HashSet<String>,
+
+    /// Whether async skill tools are enabled
+    pub skills_async_enabled: bool,
 }
 
 impl GatewaySession {
@@ -124,6 +130,8 @@ impl GatewaySession {
             roots,
             subscribed_resources: HashMap::new(),
             skills_access: lr_config::SkillsAccess::None,
+            skills_info_loaded: HashSet::new(),
+            skills_async_enabled: false,
         }
     }
 
@@ -278,6 +286,16 @@ impl GatewaySession {
             .filter(|(_, sid)| *sid == server_id)
             .map(|(uri, _)| uri.clone())
             .collect()
+    }
+
+    /// Mark a skill as having had get_info called
+    pub fn mark_skill_info_loaded(&mut self, name: &str) {
+        self.skills_info_loaded.insert(name.to_string());
+    }
+
+    /// Check if a skill has had get_info called
+    pub fn is_skill_info_loaded(&self, name: &str) -> bool {
+        self.skills_info_loaded.contains(name)
     }
 
     /// Get all subscribed resources

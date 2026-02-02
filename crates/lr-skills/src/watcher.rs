@@ -44,18 +44,14 @@ impl SkillWatcher {
         // Create the notify watcher
         let event_tx_clone = event_tx.clone();
         let mut watcher: RecommendedWatcher =
-            notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
-                match res {
-                    Ok(event) => {
-                        if !event.paths.is_empty() {
-                            let _ = event_tx_clone.send(FileEvent {
-                                paths: event.paths,
-                            });
-                        }
+            notify::recommended_watcher(move |res: Result<Event, notify::Error>| match res {
+                Ok(event) => {
+                    if !event.paths.is_empty() {
+                        let _ = event_tx_clone.send(FileEvent { paths: event.paths });
                     }
-                    Err(e) => {
-                        warn!("File watcher error: {}", e);
-                    }
+                }
+                Err(e) => {
+                    warn!("File watcher error: {}", e);
                 }
             })
             .map_err(|e| format!("Failed to create file watcher: {}", e))?;

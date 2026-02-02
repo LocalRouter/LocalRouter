@@ -70,10 +70,7 @@ impl ScriptExecutor {
     }
 
     /// Validate that the script path is within the skill's scripts/ directory
-    fn validate_script_path(
-        skill_dir: &Path,
-        script: &str,
-    ) -> Result<PathBuf, String> {
+    fn validate_script_path(skill_dir: &Path, script: &str) -> Result<PathBuf, String> {
         let script_path = skill_dir.join(script);
 
         // Canonicalize both paths
@@ -117,9 +114,8 @@ impl ScriptExecutor {
         tail: Option<usize>,
     ) -> Result<ScriptRunResult, String> {
         let script_path = Self::validate_script_path(skill_dir, script)?;
-        let timeout = std::time::Duration::from_secs(
-            timeout_secs.unwrap_or(10).min(MAX_SYNC_TIMEOUT),
-        );
+        let timeout =
+            std::time::Duration::from_secs(timeout_secs.unwrap_or(10).min(MAX_SYNC_TIMEOUT));
         let tail_lines = tail.unwrap_or(DEFAULT_TAIL);
 
         let cmd = command
@@ -183,9 +179,8 @@ impl ScriptExecutor {
         timeout_secs: Option<u64>,
     ) -> Result<u32, String> {
         let script_path = Self::validate_script_path(skill_dir, script)?;
-        let timeout = std::time::Duration::from_secs(
-            timeout_secs.unwrap_or(300).min(MAX_ASYNC_TIMEOUT),
-        );
+        let timeout =
+            std::time::Duration::from_secs(timeout_secs.unwrap_or(300).min(MAX_ASYNC_TIMEOUT));
 
         let cmd = command
             .map(|c| c.to_string())

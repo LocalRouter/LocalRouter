@@ -15,7 +15,8 @@ pub struct DiscoveryResult {
 
 /// Compute SHA-256 hash of a file, returning first 16 bytes as 32-char hex string
 pub fn content_hash_of_file(path: &Path) -> Result<String, String> {
-    let data = std::fs::read(path).map_err(|e| format!("Failed to read file for hashing: {}", e))?;
+    let data =
+        std::fs::read(path).map_err(|e| format!("Failed to read file for hashing: {}", e))?;
     let hash = Sha256::digest(&data);
     let hex: String = hash.iter().take(16).map(|b| format!("{:02x}", b)).collect();
     Ok(hex)
@@ -425,20 +426,12 @@ Body"#,
         // Skill A
         let skill_a = parent.join("skill-a");
         fs::create_dir(&skill_a).unwrap();
-        fs::write(
-            skill_a.join("SKILL.md"),
-            "---\nname: skill-a\n---\nBody A",
-        )
-        .unwrap();
+        fs::write(skill_a.join("SKILL.md"), "---\nname: skill-a\n---\nBody A").unwrap();
 
         // Skill B
         let skill_b = parent.join("skill-b");
         fs::create_dir(&skill_b).unwrap();
-        fs::write(
-            skill_b.join("SKILL.md"),
-            "---\nname: skill-b\n---\nBody B",
-        )
-        .unwrap();
+        fs::write(skill_b.join("SKILL.md"), "---\nname: skill-b\n---\nBody B").unwrap();
 
         // Not a skill
         let not_skill = parent.join("not-a-skill");
@@ -448,7 +441,11 @@ Body"#,
         let result = discover_skills(parent);
         assert_eq!(result.skills.len(), 2);
 
-        let names: Vec<&str> = result.skills.iter().map(|s| s.metadata.name.as_str()).collect();
+        let names: Vec<&str> = result
+            .skills
+            .iter()
+            .map(|s| s.metadata.name.as_str())
+            .collect();
         assert!(names.contains(&"skill-a"));
         assert!(names.contains(&"skill-b"));
     }
@@ -464,11 +461,7 @@ Body"#,
         let tmp = TempDir::new().unwrap();
         let skill_dir = tmp.path();
 
-        fs::write(
-            skill_dir.join("SKILL.md"),
-            "---\nname: test\n---\nBody",
-        )
-        .unwrap();
+        fs::write(skill_dir.join("SKILL.md"), "---\nname: test\n---\nBody").unwrap();
 
         // Create references dir with a normal file
         fs::create_dir(skill_dir.join("references")).unwrap();

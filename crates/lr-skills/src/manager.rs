@@ -117,22 +117,14 @@ impl SkillManager {
     }
 
     /// Rescan specific paths and atomically update the skill list
-    pub fn rescan_paths(
-        &self,
-        all_paths: &[String],
-        disabled_skills: &[String],
-    ) -> Vec<SkillInfo> {
+    pub fn rescan_paths(&self, all_paths: &[String], disabled_skills: &[String]) -> Vec<SkillInfo> {
         self.initial_scan(all_paths, disabled_skills);
         self.emit_skills_changed();
         self.list()
     }
 
     /// Legacy rescan method (calls through to rescan_paths)
-    pub fn rescan(
-        &self,
-        paths: &[String],
-        disabled_skills: &[String],
-    ) -> Vec<SkillInfo> {
+    pub fn rescan(&self, paths: &[String], disabled_skills: &[String]) -> Vec<SkillInfo> {
         self.rescan_paths(paths, disabled_skills)
     }
 
@@ -158,10 +150,7 @@ impl SkillManager {
     /// Get a specific skill by name
     pub fn get(&self, name: &str) -> Option<SkillDefinition> {
         let snapshot = self.snapshot();
-        snapshot
-            .iter()
-            .find(|s| s.metadata.name == name)
-            .cloned()
+        snapshot.iter().find(|s| s.metadata.name == name).cloned()
     }
 
     /// Get all skill definitions (for MCP tool generation)
@@ -303,7 +292,9 @@ mod tests {
         let manager = SkillManager::new();
         manager.initial_scan(&[skill_dir.display().to_string()], &[]);
 
-        let content = manager.get_resource("test-skill", "references/doc.md").unwrap();
+        let content = manager
+            .get_resource("test-skill", "references/doc.md")
+            .unwrap();
         assert_eq!(content, "# Documentation");
     }
 
@@ -341,10 +332,7 @@ mod tests {
 
         let manager = SkillManager::new();
         manager.initial_scan(
-            &[
-                dir_a.display().to_string(),
-                dir_b.display().to_string(),
-            ],
+            &[dir_a.display().to_string(), dir_b.display().to_string()],
             &[],
         );
 

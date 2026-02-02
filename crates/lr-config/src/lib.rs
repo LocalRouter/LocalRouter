@@ -5,15 +5,15 @@
 
 #![allow(dead_code)]
 
-use lr_types::{AppError, AppResult};
 use chrono::{DateTime, Utc};
+use lr_types::{AppError, AppResult};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::Mutex as AsyncMutex;
 use tauri::{AppHandle, Emitter};
+use tokio::sync::Mutex as AsyncMutex;
 use tracing::{debug, error, info};
 use uuid::Uuid;
 
@@ -730,6 +730,10 @@ pub struct SkillsConfig {
     #[serde(default)]
     pub disabled_skills: Vec<String>,
 
+    /// Enable async script execution tools (default: false)
+    #[serde(default)]
+    pub async_enabled: bool,
+
     /// Migration shim: old auto_scan_directories (deserialize only)
     #[serde(default, skip_serializing)]
     pub auto_scan_directories: Vec<String>,
@@ -769,7 +773,8 @@ where
         type Value = SkillsAccess;
 
         fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-            formatter.write_str("'none', 'all', or an object with 'specific' key containing skill names")
+            formatter
+                .write_str("'none', 'all', or an object with 'specific' key containing skill names")
         }
 
         fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
@@ -1709,7 +1714,10 @@ fn default_log_retention() -> u32 {
 
 /// Serializer for McpServerAccess that produces YAML-friendly format
 /// Matches the format expected by deserialize_mcp_server_access
-fn serialize_mcp_server_access<S>(access: &McpServerAccess, serializer: S) -> Result<S::Ok, S::Error>
+fn serialize_mcp_server_access<S>(
+    access: &McpServerAccess,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
 where
     S: serde::Serializer,
 {
@@ -2147,7 +2155,8 @@ mod tests {
 
     #[test]
     fn test_client_with_roots_override() {
-        let mut client = Client::new_with_strategy("Test Client".to_string(), "test-strategy".to_string());
+        let mut client =
+            Client::new_with_strategy("Test Client".to_string(), "test-strategy".to_string());
         client.roots = Some(vec![RootConfig {
             uri: "file:///custom/path".to_string(),
             name: Some("Custom".to_string()),
@@ -2167,7 +2176,8 @@ mod tests {
 
     #[test]
     fn test_client_sampling_config_defaults() {
-        let client = Client::new_with_strategy("Test Client".to_string(), "test-strategy".to_string());
+        let client =
+            Client::new_with_strategy("Test Client".to_string(), "test-strategy".to_string());
 
         // Sampling disabled by default
         assert!(!client.mcp_sampling_enabled);
@@ -2182,7 +2192,8 @@ mod tests {
 
     #[test]
     fn test_client_with_sampling_enabled() {
-        let mut client = Client::new_with_strategy("Test Client".to_string(), "test-strategy".to_string());
+        let mut client =
+            Client::new_with_strategy("Test Client".to_string(), "test-strategy".to_string());
         client.mcp_sampling_enabled = true;
         client.mcp_sampling_requires_approval = false;
         client.mcp_sampling_max_tokens = Some(2000);

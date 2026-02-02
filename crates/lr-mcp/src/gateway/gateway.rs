@@ -55,6 +55,9 @@ pub struct McpGateway {
 
     /// Script executor for running skill scripts (optional)
     script_executor: OnceLock<Arc<ScriptExecutor>>,
+
+    /// Override for skills async enabled (set via set_skills_async_enabled)
+    skills_async_override: OnceLock<bool>,
 }
 
 impl McpGateway {
@@ -95,6 +98,7 @@ impl McpGateway {
             elicitation_manager,
             skill_manager: OnceLock::new(),
             script_executor: OnceLock::new(),
+            skills_async_override: OnceLock::new(),
         }
     }
 
@@ -107,6 +111,22 @@ impl McpGateway {
     ) {
         let _ = self.skill_manager.set(skill_manager);
         let _ = self.script_executor.set(script_executor);
+    }
+
+    /// Enable or disable async skill script execution.
+    ///
+    /// Updates the gateway config's `skills_async_enabled` flag.
+    /// This is applied to new sessions and existing sessions on their next request.
+    pub fn set_skills_async_enabled(&self, enabled: bool) {
+        // Note: config is not behind a lock since it's set at construction time.
+        // This is a best-effort update for the async flag; new sessions will
+        // pick it up via handle_request_with_skills.
+        // For existing sessions, it's propagated when skills_access is set.
+        //
+        // Since GatewayConfig is in a plain field (not Arc/RwLock), we can't
+        // mutate it after construction. Instead, we store the flag on the gateway
+        // struct itself and check it in handle_request_with_skills.
+        let _ = self.skills_async_override.set(enabled);
     }
 
     /// Check if skill support has been configured
@@ -179,10 +199,16 @@ impl McpGateway {
             .get_or_create_session(client_id, allowed_servers, enable_deferred_loading, roots)
             .await?;
 
-        // Update skills access on session
+        // Update skills access and async config on session
         if skills_access.has_any_access() {
+            let async_enabled = self
+                .skills_async_override
+                .get()
+                .copied()
+                .unwrap_or(self.config.skills_async_enabled);
             let mut session_write = session.write().await;
             session_write.skills_access = skills_access;
+            session_write.skills_async_enabled = async_enabled;
         }
 
         // Update last activity
@@ -1174,9 +1200,11 @@ impl McpGateway {
                 }
 
                 let skills_access = session_read.skills_access.clone();
+                let info_loaded = session_read.skills_info_loaded.clone();
+                let async_enabled = session_read.skills_async_enabled;
                 drop(session_read);
 
-                self.append_skill_tools(&mut tools, &skills_access);
+                self.append_skill_tools(&mut tools, &skills_access, &info_loaded, async_enabled);
 
                 return Ok(JsonRpcResponse::success(
                     request.id.unwrap_or(Value::Null),
@@ -1195,9 +1223,11 @@ impl McpGateway {
                     .collect();
 
                 let skills_access = session_read.skills_access.clone();
+                let info_loaded = session_read.skills_info_loaded.clone();
+                let async_enabled = session_read.skills_async_enabled;
                 drop(session_read);
 
-                self.append_skill_tools(&mut tools, &skills_access);
+                self.append_skill_tools(&mut tools, &skills_access, &info_loaded, async_enabled);
 
                 return Ok(JsonRpcResponse::success(
                     request.id.unwrap_or(Value::Null),
@@ -1233,6 +1263,8 @@ impl McpGateway {
             None
         };
         let skills_access = session_read.skills_access.clone();
+        let info_loaded = session_read.skills_info_loaded.clone();
+        let async_enabled = session_read.skills_async_enabled;
         drop(session_read);
 
         let mut all_tools: Vec<serde_json::Value> = tools
@@ -1240,7 +1272,7 @@ impl McpGateway {
             .map(|t| serde_json::to_value(t).unwrap_or_default())
             .collect();
 
-        self.append_skill_tools(&mut all_tools, &skills_access);
+        self.append_skill_tools(&mut all_tools, &skills_access, &info_loaded, async_enabled);
 
         let mut result = json!({"tools": all_tools});
         if let Some(failures) = failures {
@@ -2028,10 +2060,13 @@ impl McpGateway {
         &self,
         tools: &mut Vec<serde_json::Value>,
         access: &lr_config::SkillsAccess,
+        info_loaded: &std::collections::HashSet<String>,
+        async_enabled: bool,
     ) {
         if access.has_any_access() {
             if let Some(sm) = self.skill_manager.get() {
-                let skill_tools = lr_skills::mcp_tools::build_skill_tools(sm, access);
+                let skill_tools =
+                    lr_skills::mcp_tools::build_skill_tools(sm, access, info_loaded, async_enabled);
                 for st in skill_tools {
                     tools.push(serde_json::to_value(&st).unwrap_or_default());
                 }
@@ -2041,10 +2076,7 @@ impl McpGateway {
 
     /// Check if a tool name matches a skill tool pattern
     fn is_skill_tool(&self, tool_name: &str) -> bool {
-        tool_name.starts_with("show-skill_")
-            || tool_name == "get-skill-resource"
-            || tool_name == "run-skill-script"
-            || tool_name == "get-skill-script-run"
+        lr_skills::mcp_tools::is_skill_tool(tool_name)
     }
 
     /// Handle a skill tool call
@@ -2069,9 +2101,11 @@ impl McpGateway {
                 }
             };
 
-        // Get skills access from session
+        // Get skills access and info_loaded from session
         let session_read = session.read().await;
         let skills_access = session_read.skills_access.clone();
+        let info_loaded = session_read.skills_info_loaded.clone();
+        let async_enabled = session_read.skills_async_enabled;
         drop(session_read);
 
         // Extract arguments from params
@@ -2088,13 +2122,46 @@ impl McpGateway {
             skill_manager,
             script_executor,
             &skills_access,
+            &info_loaded,
+            async_enabled,
         )
         .await
         {
-            Ok(Some(response)) => Ok(JsonRpcResponse::success(
-                request.id.unwrap_or(Value::Null),
-                response,
-            )),
+            Ok(Some(result)) => {
+                use lr_skills::mcp_tools::SkillToolResult;
+                match result {
+                    SkillToolResult::Response(response) => Ok(JsonRpcResponse::success(
+                        request.id.unwrap_or(Value::Null),
+                        response,
+                    )),
+                    SkillToolResult::InfoLoaded {
+                        skill_name,
+                        response,
+                    } => {
+                        // Mark skill as info-loaded and invalidate tools cache
+                        {
+                            let mut session_write = session.write().await;
+                            session_write.mark_skill_info_loaded(&skill_name);
+                            session_write.invalidate_tools_cache();
+                        }
+
+                        // Send tools/list_changed notification if broadcast channel exists
+                        if let Some(broadcast) = &self.notification_broadcast {
+                            let notification = JsonRpcNotification {
+                                jsonrpc: "2.0".to_string(),
+                                method: "notifications/tools/list_changed".to_string(),
+                                params: None,
+                            };
+                            let _ = broadcast.send(("_skills".to_string(), notification));
+                        }
+
+                        Ok(JsonRpcResponse::success(
+                            request.id.unwrap_or(Value::Null),
+                            response,
+                        ))
+                    }
+                }
+            }
             Ok(None) => Ok(JsonRpcResponse::error(
                 request.id.unwrap_or(Value::Null),
                 JsonRpcError::tool_not_found(tool_name),
