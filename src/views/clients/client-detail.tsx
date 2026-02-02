@@ -4,12 +4,12 @@ import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
 import { toast } from "sonner"
 import {
-  ArrowLeft,
   MoreHorizontal,
 } from "lucide-react"
 import { Button } from "@/components/ui/Button"
 import { Badge } from "@/components/ui/Badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { ScrollArea } from "@/components/ui/scroll-area"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -53,7 +53,7 @@ interface ClientDetailProps {
   client?: Client | null
   initialTab?: string | null
   initialMode?: "forced" | "multi" | "prioritized" | null
-  onBack: () => void
+  onDeselect: () => void
   onViewChange?: (view: string, subTab?: string | null) => void
 }
 
@@ -62,7 +62,7 @@ export function ClientDetail({
   client: initialClient,
   initialTab,
   initialMode,
-  onBack,
+  onDeselect,
   onViewChange,
 }: ClientDetailProps) {
   const [client, setClient] = useState<Client | null>(initialClient || null)
@@ -75,11 +75,15 @@ export function ClientDetail({
     }
   }, [clientId])
 
+  useEffect(() => {
+    if (initialClient) {
+      setClient(initialClient)
+    }
+  }, [initialClient])
+
   // Listen for clients-changed events to refresh data
   useEffect(() => {
-    console.log("Setting up clients-changed listener for client:", clientId)
     const unsubscribe = listen("clients-changed", () => {
-      console.log("clients-changed event received, reloading client data")
       loadClient()
     })
 
@@ -132,7 +136,7 @@ export function ClientDetail({
     try {
       await invoke("delete_client", { clientId: client.client_id })
       toast.success("Client deleted")
-      onBack()
+      onDeselect()
     } catch (error) {
       console.error("Failed to delete client:", error)
       toast.error("Failed to delete client")
@@ -142,10 +146,9 @@ export function ClientDetail({
   }
 
   // Only show loading state when we don't have data yet
-  // This prevents scroll reset when refreshing existing data
   if (loading && !client) {
     return (
-      <div className="flex items-center justify-center h-64">
+      <div className="flex items-center justify-center h-full">
         <p className="text-muted-foreground">Loading client...</p>
       </div>
     )
@@ -153,91 +156,86 @@ export function ClientDetail({
 
   if (!client) {
     return (
-      <div className="flex flex-col items-center justify-center h-64 gap-4">
+      <div className="flex items-center justify-center h-full">
         <p className="text-muted-foreground">Client not found</p>
-        <Button variant="outline" onClick={onBack}>
-          <ArrowLeft className="mr-2 h-4 w-4" />
-          Back to Clients
-        </Button>
       </div>
     )
   }
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-start justify-between">
-        <div className="flex items-center gap-4">
-          <Button variant="ghost" size="icon" onClick={onBack}>
-            <ArrowLeft className="h-4 w-4" />
-          </Button>
-          <div>
+    <>
+      <ScrollArea className="h-full">
+        <div className="p-6 space-y-6">
+          {/* Header */}
+          <div className="flex items-start justify-between">
+            <div>
+              <div className="flex items-center gap-2">
+                <h2 className="text-xl font-bold">{client.name}</h2>
+                <Badge variant={client.enabled ? "success" : "secondary"}>
+                  {client.enabled ? "Enabled" : "Disabled"}
+                </Badge>
+              </div>
+            </div>
+
             <div className="flex items-center gap-2">
-              <h1 className="text-2xl font-bold">{client.name}</h1>
-              <Badge variant={client.enabled ? "success" : "secondary"}>
-                {client.enabled ? "Enabled" : "Disabled"}
-              </Badge>
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-muted-foreground">Enabled</span>
+                <Switch
+                  checked={client.enabled}
+                  onCheckedChange={handleToggleEnabled}
+                />
+              </div>
+
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" size="icon">
+                    <MoreHorizontal className="h-4 w-4" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem
+                    onSelect={() => setShowDeleteDialog(true)}
+                    className="text-red-600 dark:text-red-400 focus:text-red-600 dark:focus:text-red-400"
+                  >
+                    Delete Client
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
             </div>
           </div>
+
+          {/* Tabs */}
+          <Tabs value={activeTab} onValueChange={setActiveTab}>
+            <TabsList>
+              <TabsTrigger value="config">Config</TabsTrigger>
+              <TabsTrigger value="models">Models</TabsTrigger>
+              <TabsTrigger value="mcp">MCP</TabsTrigger>
+              <TabsTrigger value="skills">Skills</TabsTrigger>
+            </TabsList>
+
+            <TabsContent value="config">
+              <ClientConfigTab client={client} onUpdate={loadClient} />
+            </TabsContent>
+
+            <TabsContent value="models">
+              <ClientModelsTab
+                client={client}
+                onUpdate={loadClient}
+                initialMode={initialMode}
+                onViewChange={onViewChange}
+              />
+            </TabsContent>
+
+            <TabsContent value="mcp">
+              <ClientMcpTab client={client} onUpdate={loadClient} />
+            </TabsContent>
+
+            <TabsContent value="skills">
+              <ClientSkillsTab client={client} onUpdate={loadClient} />
+            </TabsContent>
+          </Tabs>
         </div>
-
-        <div className="flex items-center gap-2">
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-muted-foreground">Enabled</span>
-            <Switch
-              checked={client.enabled}
-              onCheckedChange={handleToggleEnabled}
-            />
-          </div>
-
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="outline" size="icon">
-                <MoreHorizontal className="h-4 w-4" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem
-                onSelect={() => setShowDeleteDialog(true)}
-                className="text-red-600 dark:text-red-400 focus:text-red-600 dark:focus:text-red-400"
-              >
-                Delete Client
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
-      </div>
-
-      {/* Tabs */}
-      <Tabs value={activeTab} onValueChange={setActiveTab}>
-        <TabsList>
-          <TabsTrigger value="config">Config</TabsTrigger>
-          <TabsTrigger value="models">Models</TabsTrigger>
-          <TabsTrigger value="mcp">MCP</TabsTrigger>
-          <TabsTrigger value="skills">Skills</TabsTrigger>
-        </TabsList>
-
-        <TabsContent value="config">
-          <ClientConfigTab client={client} onUpdate={loadClient} />
-        </TabsContent>
-
-        <TabsContent value="models">
-          <ClientModelsTab
-            client={client}
-            onUpdate={loadClient}
-            initialMode={initialMode}
-            onViewChange={onViewChange}
-          />
-        </TabsContent>
-
-        <TabsContent value="mcp">
-          <ClientMcpTab client={client} onUpdate={loadClient} />
-        </TabsContent>
-
-        <TabsContent value="skills">
-          <ClientSkillsTab client={client} onUpdate={loadClient} />
-        </TabsContent>
-      </Tabs>
+      </ScrollArea>
 
       <AlertDialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
         <AlertDialogContent>
@@ -259,6 +257,6 @@ export function ClientDetail({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </div>
+    </>
   )
 }
