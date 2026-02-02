@@ -85,17 +85,6 @@ export function ConnectionInfoPanel({ connectionState }: ConnectionInfoPanelProp
               </div>
             </div>
 
-            {serverInfo?.instructions && (
-              <>
-                <Separator />
-                <div>
-                  <p className="text-xs text-muted-foreground mb-2">Server Instructions</p>
-                  <pre className="text-xs bg-muted p-3 rounded-md whitespace-pre-wrap">
-                    {serverInfo.instructions}
-                  </pre>
-                </div>
-              </>
-            )}
           </CardContent>
         </Card>
 

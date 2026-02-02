@@ -815,6 +815,10 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
                   <BookOpen className="h-3 w-3" />
                   Welcome
                 </TabsTrigger>
+                <TabsTrigger value="connection" className="flex items-center gap-1">
+                  <Info className="h-3 w-3" />
+                  Connection
+                </TabsTrigger>
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <span>
@@ -882,10 +886,6 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
                   {pendingElicitationRequests.length > 0 && (
                     <Circle className="h-2 w-2 fill-primary text-primary absolute -top-0.5 -right-0.5" />
                   )}
-                </TabsTrigger>
-                <TabsTrigger value="connection" className="flex items-center gap-1">
-                  <Info className="h-3 w-3" />
-                  Connection
                 </TabsTrigger>
               </TabsList>
             </TooltipProvider>

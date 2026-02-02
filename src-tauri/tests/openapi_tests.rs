@@ -25,7 +25,10 @@ fn test_openapi_spec_validity() {
 
     // Validate info section
     assert_eq!(spec["info"]["title"].as_str(), Some("LocalRouter API"));
-    assert_eq!(spec["info"]["version"].as_str(), Some("0.1.0"));
+    assert_eq!(
+        spec["info"]["version"].as_str(),
+        Some(env!("CARGO_PKG_VERSION"))
+    );
     assert!(
         spec["info"]["description"].as_str().is_some(),
         "API description should be present"

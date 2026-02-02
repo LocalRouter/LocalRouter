@@ -197,14 +197,18 @@ impl utoipa::Modify for SecurityAddon {
 ///
 /// Returns the complete OpenAPI 3.1 specification in JSON format.
 pub fn get_openapi_json() -> Result<String, serde_json::Error> {
-    serde_json::to_string_pretty(&ApiDoc::openapi())
+    let mut spec = ApiDoc::openapi();
+    spec.info.version = env!("CARGO_PKG_VERSION").to_string();
+    serde_json::to_string_pretty(&spec)
 }
 
 /// Get the OpenAPI specification as YAML
 ///
 /// Returns the complete OpenAPI 3.1 specification in YAML format.
 pub fn get_openapi_yaml() -> Result<String, serde_yaml::Error> {
-    serde_yaml::to_string(&ApiDoc::openapi())
+    let mut spec = ApiDoc::openapi();
+    spec.info.version = env!("CARGO_PKG_VERSION").to_string();
+    serde_yaml::to_string(&spec)
 }
 
 #[cfg(test)]
@@ -220,7 +224,7 @@ mod tests {
 
         // Validate info
         assert_eq!(spec.info.title, "LocalRouter API");
-        assert_eq!(spec.info.version, "0.1.0");
+        assert_eq!(spec.info.version, env!("CARGO_PKG_VERSION"));
 
         // Validate paths exist
         assert!(spec.paths.paths.contains_key("/v1/chat/completions"));

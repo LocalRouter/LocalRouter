@@ -7,6 +7,9 @@ pub mod deferred;
 pub mod elicitation;
 #[allow(clippy::module_inception)]
 mod gateway;
+mod gateway_prompts;
+mod gateway_resources;
+mod gateway_tools;
 mod merger;
 pub mod router;
 pub mod sampling;

@@ -78,7 +78,7 @@ impl CatalogFetcher {
         // Use blocking reqwest since we're in build.rs context
         let client = reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(30))
-            .user_agent("LocalRouter/0.1.0")
+            .user_agent(concat!("LocalRouter/", env!("CARGO_PKG_VERSION")))
             .build()?;
 
         let response = client.get(MODELS_DEV_API).send()?;
