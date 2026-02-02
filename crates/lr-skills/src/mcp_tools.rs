@@ -187,13 +187,17 @@ fn build_get_async_status_tool() -> McpTool {
 /// Generate all skill MCP tools for a client's allowed skills.
 ///
 /// - Always includes `get_info` tools for all allowed skills.
-/// - Only includes run/read/run_async tools for skills in `info_loaded`.
-/// - Includes `skill_get_async_status` only when `async_enabled` and any skill loaded.
+/// - When `deferred_loading` is true, only includes run/read/run_async tools
+///   for skills in `info_loaded` (progressive disclosure).
+/// - When `deferred_loading` is false, includes all run/read/run_async tools
+///   for all allowed skills immediately.
+/// - Includes `skill_get_async_status` only when `async_enabled` and any skill has tools.
 pub fn build_skill_tools(
     skill_manager: &SkillManager,
     access: &SkillsAccess,
     info_loaded: &HashSet<String>,
     async_enabled: bool,
+    deferred_loading: bool,
 ) -> Vec<McpTool> {
     if !access.has_any_access() {
         return Vec::new();
@@ -218,8 +222,13 @@ pub fn build_skill_tools(
         // Always add get_info
         tools.push(build_get_info_tool(skill));
 
-        // Only add run/read tools if info was loaded for this skill
-        if info_loaded.contains(&skill.metadata.name) {
+        // Add run/read tools if:
+        // - deferred loading is disabled (show all tools immediately), OR
+        // - deferred loading is enabled AND info was loaded for this skill
+        let show_tools =
+            !deferred_loading || info_loaded.contains(&skill.metadata.name);
+
+        if show_tools {
             any_loaded = true;
 
             for script in &skill.scripts {
@@ -239,7 +248,7 @@ pub fn build_skill_tools(
         }
     }
 
-    // Add shared async status tool if async is enabled and at least one skill is loaded
+    // Add shared async status tool if async is enabled and at least one skill has tools
     if async_enabled && any_loaded {
         tools.push(build_get_async_status_tool());
     }
