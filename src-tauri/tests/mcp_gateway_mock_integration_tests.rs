@@ -1004,7 +1004,9 @@ async fn test_gateway_deferred_loading_activates_tools() {
     // Should have search tool + activated tools
     assert!(tools.len() > 1);
     assert!(tools.iter().any(|t| t["name"] == "search"));
-    assert!(tools.iter().any(|t| t["name"] == "Test Server 1__read_file"));
+    assert!(tools
+        .iter()
+        .any(|t| t["name"] == "Test Server 1__read_file"));
 }
 
 // ============================================================================
@@ -1198,7 +1200,8 @@ async fn test_resources_read_by_name() {
         .await;
 
     // Read resource by namespaced name
-    let read_request = request_with_params("resources/read", json!({"name": "Test Server 1__logs"}));
+    let read_request =
+        request_with_params("resources/read", json!({"name": "Test Server 1__logs"}));
 
     let response = gateway
         .handle_request(
@@ -1243,8 +1246,10 @@ async fn test_resources_read_not_found() {
         .unwrap();
 
     // Try to read non-existent resource
-    let read_request =
-        request_with_params("resources/read", json!({"name": "Test Server 1__nonexistent"}));
+    let read_request = request_with_params(
+        "resources/read",
+        json!({"name": "Test Server 1__nonexistent"}),
+    );
 
     let result = gateway
         .handle_request(
@@ -1552,7 +1557,8 @@ async fn test_prompts_get_not_found() {
         .unwrap();
 
     // Try to get non-existent prompt
-    let get_request = request_with_params("prompts/get", json!({"name": "Test Server 1__nonexistent"}));
+    let get_request =
+        request_with_params("prompts/get", json!({"name": "Test Server 1__nonexistent"}));
 
     let result = gateway
         .handle_request(
@@ -1658,8 +1664,14 @@ async fn test_tools_list_handles_duplicates() {
     assert!(tools.iter().any(|t| t["name"] == "Test Server 2__read"));
 
     // Descriptions should be different
-    let read1 = tools.iter().find(|t| t["name"] == "Test Server 1__read").unwrap();
-    let read2 = tools.iter().find(|t| t["name"] == "Test Server 2__read").unwrap();
+    let read1 = tools
+        .iter()
+        .find(|t| t["name"] == "Test Server 1__read")
+        .unwrap();
+    let read2 = tools
+        .iter()
+        .find(|t| t["name"] == "Test Server 2__read")
+        .unwrap();
     assert_ne!(read1["description"], read2["description"]);
 }
 
@@ -1911,10 +1923,14 @@ async fn test_concurrent_clients() {
     let tools2 = result2["tools"].as_array().unwrap();
 
     // Client 1 should only see server1 tools
-    assert!(tools1.iter().any(|t| t["name"] == "Test Server 1__server1_tool"));
+    assert!(tools1
+        .iter()
+        .any(|t| t["name"] == "Test Server 1__server1_tool"));
 
     // Client 2 should only see server2 tools
-    assert!(tools2.iter().any(|t| t["name"] == "Test Server 2__server2_tool"));
+    assert!(tools2
+        .iter()
+        .any(|t| t["name"] == "Test Server 2__server2_tool"));
 }
 
 // ============================================================================
@@ -2724,9 +2740,15 @@ async fn test_deferred_loading_falls_back_without_client_capability() {
 
     // Without client capability, should fall back to normal mode - all tools visible
     assert!(tools.len() > 1); // Should have multiple tools, not just search
-    assert!(tools.iter().any(|t| t["name"] == "Test Server 1__read_file"));
-    assert!(tools.iter().any(|t| t["name"] == "Test Server 1__write_file"));
-    assert!(tools.iter().any(|t| t["name"] == "Test Server 2__github_issue"));
+    assert!(tools
+        .iter()
+        .any(|t| t["name"] == "Test Server 1__read_file"));
+    assert!(tools
+        .iter()
+        .any(|t| t["name"] == "Test Server 1__write_file"));
+    assert!(tools
+        .iter()
+        .any(|t| t["name"] == "Test Server 2__github_issue"));
 
     // Should NOT have the search tool
     assert!(!tools.iter().any(|t| t["name"] == "search"));

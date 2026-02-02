@@ -331,9 +331,21 @@ async fn test_stdio_request_id_uniqueness() {
     let resp3 = transport.send_request(req3.clone()).await.unwrap();
 
     // Response IDs should match their original request IDs
-    assert_eq!(resp1.id, json!(10), "Response should preserve original request ID");
-    assert_eq!(resp2.id, json!(20), "Response should preserve original request ID");
-    assert_eq!(resp3.id, json!(30), "Response should preserve original request ID");
+    assert_eq!(
+        resp1.id,
+        json!(10),
+        "Response should preserve original request ID"
+    );
+    assert_eq!(
+        resp2.id,
+        json!(20),
+        "Response should preserve original request ID"
+    );
+    assert_eq!(
+        resp3.id,
+        json!(30),
+        "Response should preserve original request ID"
+    );
 
     // And therefore all be unique
     assert_ne!(resp1.id, resp2.id, "Response IDs should be unique");

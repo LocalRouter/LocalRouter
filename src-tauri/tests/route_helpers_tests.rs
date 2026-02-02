@@ -6,7 +6,9 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use localrouter::clients::{ClientManager, TokenStore};
-use localrouter::config::{AppConfig, Client, ConfigManager, McpServerAccess, SkillsAccess, Strategy};
+use localrouter::config::{
+    AppConfig, Client, ConfigManager, McpServerAccess, SkillsAccess, Strategy,
+};
 use localrouter::monitoring::metrics::MetricsCollector;
 use localrouter::monitoring::storage::MetricsDatabase;
 use localrouter::providers::registry::ProviderRegistry;

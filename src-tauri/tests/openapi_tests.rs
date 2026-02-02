@@ -77,14 +77,14 @@ fn test_all_endpoints_present() {
         "Missing /v1/generation endpoint"
     );
 
-    // MCP endpoints
+    // MCP proxy routes removed - only gateway remains at /
     assert!(
-        paths.contains_key("/mcp/{server_id}"),
-        "Missing /mcp/:server_id endpoint"
+        !paths.contains_key("/mcp/{server_id}"),
+        "Proxy /mcp/:server_id endpoint should be removed"
     );
     assert!(
-        paths.contains_key("/mcp/{server_id}/stream"),
-        "Missing /mcp/:server_id/stream endpoint"
+        !paths.contains_key("/mcp/{server_id}/stream"),
+        "Proxy /mcp/:server_id/stream endpoint should be removed"
     );
 
     // OAuth endpoints

@@ -3,6 +3,11 @@
 //! Sets up a "get-current-time" skill with a JavaScript script in a temp directory,
 //! stands up the MCP gateway with skill support, and exercises all skill tool commands
 //! through the gateway's JSON-RPC interface.
+//!
+//! Tools use per-skill namespaced names with deferred loading:
+//! - `skill_{sname}_get_info` — always visible
+//! - `skill_{sname}_run_{sfile}` — visible after get_info
+//! - `skill_{sname}_read_{sfile}` — visible after get_info
 
 mod mcp_tests;
 
@@ -102,11 +107,18 @@ in ISO 8601 format.
 async fn test_skills_e2e_all_tool_commands() {
     // ── Setup ──────────────────────────────────────────────────────
     let temp_dir = TempDir::new().unwrap();
-    let skill_dir = create_test_skill(&temp_dir);
+    let _skill_dir = create_test_skill(&temp_dir);
 
     // SkillManager: discover the test skill
     let skill_manager = Arc::new(SkillManager::new());
-    skill_manager.initial_scan(&[skill_dir.to_string_lossy().to_string()], &[]);
+    skill_manager.initial_scan(
+        &[temp_dir
+            .path()
+            .join("get-current-time")
+            .to_string_lossy()
+            .to_string()],
+        &[],
+    );
 
     // Verify skill was discovered
     let skills = skill_manager.list();
@@ -116,17 +128,19 @@ async fn test_skills_e2e_all_tool_commands() {
     // ScriptExecutor
     let script_executor = Arc::new(ScriptExecutor::new());
 
-    // McpServerManager + Gateway
+    // McpServerManager + Gateway (with async enabled for testing)
     let server_manager = Arc::new(McpServerManager::new());
     let router = create_test_router();
     let gateway = McpGateway::new(server_manager, GatewayConfig::default(), router);
     gateway.set_skill_support(skill_manager, script_executor);
+    gateway.set_skills_async_enabled(true);
     let gateway = Arc::new(gateway);
 
     let client_id = "test-skills-client";
     let skills_access = SkillsAccess::Specific(vec!["get-current-time".to_string()]);
 
-    // ── Step 1: tools/list ─────────────────────────────────────────
+    // ── Step 1: tools/list (before get_info) ──────────────────────
+    // Only get_info tools should be visible initially
     let tools_list_req = JsonRpcRequest::with_id(1, "tools/list".to_string(), Some(json!({})));
     let response = gateway
         .handle_request_with_skills(
@@ -141,40 +155,32 @@ async fn test_skills_e2e_all_tool_commands() {
         .expect("tools/list should succeed");
 
     let result = response.result.expect("tools/list should have a result");
-    let tools = result["tools"].as_array().expect("result should have tools array");
+    let tools = result["tools"]
+        .as_array()
+        .expect("result should have tools array");
 
-    let tool_names: Vec<&str> = tools
-        .iter()
-        .filter_map(|t| t["name"].as_str())
-        .collect();
+    let tool_names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
 
     assert!(
-        tool_names.contains(&"show-skill_get-current-time"),
-        "Missing show-skill tool. Found: {:?}",
+        tool_names.contains(&"skill_get-current-time_get_info"),
+        "Missing get_info tool. Found: {:?}",
         tool_names
     );
+    // Run/read tools should NOT be visible before get_info
     assert!(
-        tool_names.contains(&"get-skill-resource"),
-        "Missing get-skill-resource tool. Found: {:?}",
-        tool_names
-    );
-    assert!(
-        tool_names.contains(&"run-skill-script"),
-        "Missing run-skill-script tool. Found: {:?}",
-        tool_names
-    );
-    assert!(
-        tool_names.contains(&"get-skill-script-run"),
-        "Missing get-skill-script-run tool. Found: {:?}",
+        !tool_names
+            .iter()
+            .any(|n| n.contains("_run_") || n.contains("_read_")),
+        "Run/read tools should not appear before get_info. Found: {:?}",
         tool_names
     );
 
-    // ── Step 2: show-skill ─────────────────────────────────────────
+    // ── Step 2: skill_get-current-time_get_info ───────────────────
     let show_req = JsonRpcRequest::with_id(
         2,
         "tools/call".to_string(),
         Some(json!({
-            "name": "show-skill_get-current-time",
+            "name": "skill_get-current-time_get_info",
             "arguments": {}
         })),
     );
@@ -188,43 +194,96 @@ async fn test_skills_e2e_all_tool_commands() {
             show_req,
         )
         .await
-        .expect("show-skill should succeed");
+        .expect("get_info should succeed");
 
-    let result = response.result.expect("show-skill should have a result");
+    let result = response.result.expect("get_info should have a result");
     let content = result["content"]
         .as_array()
-        .expect("show-skill should have content array");
+        .expect("get_info should have content array");
     let text = content[0]["text"]
         .as_str()
         .expect("content should have text");
 
     assert!(
         text.contains("get-current-time"),
-        "show-skill response should contain skill name"
+        "get_info response should contain skill name"
     );
     assert!(
         text.contains("Get the current date and time"),
-        "show-skill response should contain description"
+        "get_info response should contain description"
     );
     assert!(
         text.contains("scripts/get-time.js"),
-        "show-skill response should list scripts"
+        "get_info response should list scripts"
     );
     assert!(
         text.contains("references/notes.md"),
-        "show-skill response should list references"
+        "get_info response should list references"
+    );
+    // Verify new tool names are referenced
+    assert!(
+        text.contains("skill_get-current-time_run_get-time_js"),
+        "get_info should reference run tool by new name"
+    );
+    assert!(
+        text.contains("skill_get-current-time_read_notes_md"),
+        "get_info should reference read tool by new name"
     );
 
-    // ── Step 3: get-skill-resource ─────────────────────────────────
+    // ── Step 2b: tools/list (after get_info) ──────────────────────
+    // Run/read tools should now be visible
+    let tools_list_req2 = JsonRpcRequest::with_id(20, "tools/list".to_string(), Some(json!({})));
+    let response = gateway
+        .handle_request_with_skills(
+            client_id,
+            vec![],
+            false,
+            vec![],
+            skills_access.clone(),
+            tools_list_req2,
+        )
+        .await
+        .expect("tools/list after get_info should succeed");
+
+    let result = response.result.expect("tools/list should have a result");
+    let tools = result["tools"]
+        .as_array()
+        .expect("result should have tools array");
+    let tool_names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
+
+    assert!(
+        tool_names.contains(&"skill_get-current-time_get_info"),
+        "get_info tool should still be present. Found: {:?}",
+        tool_names
+    );
+    assert!(
+        tool_names.contains(&"skill_get-current-time_run_get-time_js"),
+        "Run tool should appear after get_info. Found: {:?}",
+        tool_names
+    );
+    assert!(
+        tool_names.contains(&"skill_get-current-time_read_notes_md"),
+        "Read tool should appear after get_info. Found: {:?}",
+        tool_names
+    );
+    assert!(
+        tool_names.contains(&"skill_get-current-time_run_async_get-time_js"),
+        "Async run tool should appear with async_enabled. Found: {:?}",
+        tool_names
+    );
+    assert!(
+        tool_names.contains(&"skill_get_async_status"),
+        "Async status tool should appear with async_enabled. Found: {:?}",
+        tool_names
+    );
+
+    // ── Step 3: skill_get-current-time_read_notes_md ──────────────
     let resource_req = JsonRpcRequest::with_id(
         3,
         "tools/call".to_string(),
         Some(json!({
-            "name": "get-skill-resource",
-            "arguments": {
-                "skill_name": "get-current-time",
-                "resource": "references/notes.md"
-            }
+            "name": "skill_get-current-time_read_notes_md",
+            "arguments": {}
         })),
     );
     let response = gateway
@@ -237,11 +296,9 @@ async fn test_skills_e2e_all_tool_commands() {
             resource_req,
         )
         .await
-        .expect("get-skill-resource should succeed");
+        .expect("read tool should succeed");
 
-    let result = response
-        .result
-        .expect("get-skill-resource should have a result");
+    let result = response.result.expect("read tool should have a result");
     let content = result["content"]
         .as_array()
         .expect("resource should have content array");
@@ -259,16 +316,13 @@ async fn test_skills_e2e_all_tool_commands() {
         "Resource content should mention the script"
     );
 
-    // ── Step 4: run-skill-script (sync) ────────────────────────────
+    // ── Step 4: skill_get-current-time_run_get-time_js (sync) ─────
     let run_sync_req = JsonRpcRequest::with_id(
         4,
         "tools/call".to_string(),
         Some(json!({
-            "name": "run-skill-script",
-            "arguments": {
-                "skill_name": "get-current-time",
-                "script": "scripts/get-time.js"
-            }
+            "name": "skill_get-current-time_run_get-time_js",
+            "arguments": {}
         })),
     );
     let response = gateway
@@ -281,11 +335,9 @@ async fn test_skills_e2e_all_tool_commands() {
             run_sync_req,
         )
         .await
-        .expect("run-skill-script (sync) should succeed");
+        .expect("run tool (sync) should succeed");
 
-    let result = response
-        .result
-        .expect("run-skill-script should have a result");
+    let result = response.result.expect("run tool should have a result");
 
     assert_eq!(
         result["exit_code"].as_i64(),
@@ -325,17 +377,13 @@ async fn test_skills_e2e_all_tool_commands() {
         diff
     );
 
-    // ── Step 5: run-skill-script (async) ───────────────────────────
+    // ── Step 5: skill_get-current-time_run_async_get-time_js ──────
     let run_async_req = JsonRpcRequest::with_id(
         5,
         "tools/call".to_string(),
         Some(json!({
-            "name": "run-skill-script",
-            "arguments": {
-                "skill_name": "get-current-time",
-                "script": "scripts/get-time.js",
-                "async": true
-            }
+            "name": "skill_get-current-time_run_async_get-time_js",
+            "arguments": {}
         })),
     );
     let response = gateway
@@ -348,18 +396,16 @@ async fn test_skills_e2e_all_tool_commands() {
             run_async_req,
         )
         .await
-        .expect("run-skill-script (async) should succeed");
+        .expect("run_async tool should succeed");
 
-    let result = response
-        .result
-        .expect("async run should have a result");
+    let result = response.result.expect("async run should have a result");
 
     let pid = result["pid"]
         .as_u64()
         .expect("Async result should contain a pid");
     assert!(pid > 0, "PID should be positive");
 
-    // ── Step 6: get-skill-script-run (poll until done) ─────────────
+    // ── Step 6: skill_get_async_status (poll until done) ──────────
     let mut attempts = 0;
     let max_attempts = 20;
     let mut final_result = None;
@@ -372,7 +418,7 @@ async fn test_skills_e2e_all_tool_commands() {
             6,
             "tools/call".to_string(),
             Some(json!({
-                "name": "get-skill-script-run",
+                "name": "skill_get_async_status",
                 "arguments": {
                     "pid": pid
                 }
@@ -388,11 +434,9 @@ async fn test_skills_e2e_all_tool_commands() {
                 poll_req,
             )
             .await
-            .expect("get-skill-script-run should succeed");
+            .expect("skill_get_async_status should succeed");
 
-        let result = response
-            .result
-            .expect("poll should have a result");
+        let result = response.result.expect("poll should have a result");
 
         let running = result["running"]
             .as_bool()
@@ -447,10 +491,17 @@ async fn test_skills_e2e_all_tool_commands() {
 /// Helper to set up a gateway with a single "get-current-time" skill
 async fn setup_gateway_with_skill() -> (Arc<McpGateway>, TempDir) {
     let temp_dir = TempDir::new().unwrap();
-    let skill_dir = create_test_skill(&temp_dir);
+    let _skill_dir = create_test_skill(&temp_dir);
 
     let skill_manager = Arc::new(SkillManager::new());
-    skill_manager.initial_scan(&[skill_dir.to_string_lossy().to_string()], &[]);
+    skill_manager.initial_scan(
+        &[temp_dir
+            .path()
+            .join("get-current-time")
+            .to_string_lossy()
+            .to_string()],
+        &[],
+    );
 
     let script_executor = Arc::new(ScriptExecutor::new());
     let server_manager = Arc::new(McpServerManager::new());
@@ -473,9 +524,7 @@ async fn setup_gateway_without_skills() -> Arc<McpGateway> {
 /// Helper to extract tool names from a tools/list response
 fn extract_tool_names(response: &localrouter::mcp::protocol::JsonRpcResponse) -> Vec<String> {
     let result = response.result.as_ref().expect("should have result");
-    let tools = result["tools"]
-        .as_array()
-        .expect("should have tools array");
+    let tools = result["tools"].as_array().expect("should have tools array");
     tools
         .iter()
         .filter_map(|t| t["name"].as_str().map(|s| s.to_string()))
@@ -500,23 +549,8 @@ async fn test_no_skill_tools_when_no_skills_configured() {
 
     // No skill tools should be present
     assert!(
-        !tool_names.iter().any(|n| n.starts_with("show-skill_")),
-        "show-skill tools should not appear without skills. Found: {:?}",
-        tool_names
-    );
-    assert!(
-        !tool_names.contains(&"get-skill-resource".to_string()),
-        "get-skill-resource should not appear without skills. Found: {:?}",
-        tool_names
-    );
-    assert!(
-        !tool_names.contains(&"run-skill-script".to_string()),
-        "run-skill-script should not appear without skills. Found: {:?}",
-        tool_names
-    );
-    assert!(
-        !tool_names.contains(&"get-skill-script-run".to_string()),
-        "get-skill-script-run should not appear without skills. Found: {:?}",
+        !tool_names.iter().any(|n| n.starts_with("skill_")),
+        "skill_ tools should not appear without skills. Found: {:?}",
         tool_names
     );
 }
@@ -524,30 +558,22 @@ async fn test_no_skill_tools_when_no_skills_configured() {
 /// Test: Skill tools must survive the tools/list cache (second call must still include them)
 #[tokio::test]
 async fn test_skill_tools_present_after_cache_hit() {
-    let (gateway, temp_dir) = setup_gateway_with_skill().await;
+    let (gateway, _temp_dir) = setup_gateway_with_skill().await;
 
     let client_id = "cache-test-client";
-    let skill_dir = temp_dir.path().join("get-current-time");
     let skills_access = SkillsAccess::Specific(vec!["get-current-time".to_string()]);
 
     // First call: populates cache
     let req = JsonRpcRequest::with_id(1, "tools/list".to_string(), Some(json!({})));
     let response1 = gateway
-        .handle_request_with_skills(
-            client_id,
-            vec![],
-            false,
-            vec![],
-            skills_access.clone(),
-            req,
-        )
+        .handle_request_with_skills(client_id, vec![], false, vec![], skills_access.clone(), req)
         .await
         .expect("first tools/list should succeed");
 
     let names1 = extract_tool_names(&response1);
     assert!(
-        names1.contains(&"show-skill_get-current-time".to_string()),
-        "First call should include skill tool. Found: {:?}",
+        names1.contains(&"skill_get-current-time_get_info".to_string()),
+        "First call should include get_info tool. Found: {:?}",
         names1
     );
 
@@ -567,47 +593,24 @@ async fn test_skill_tools_present_after_cache_hit() {
 
     let names2 = extract_tool_names(&response2);
     assert!(
-        names2.contains(&"show-skill_get-current-time".to_string()),
-        "Cached tools/list must still include skill tools. Found: {:?}",
-        names2
-    );
-    assert!(
-        names2.contains(&"get-skill-resource".to_string()),
-        "Cached tools/list must still include get-skill-resource. Found: {:?}",
-        names2
-    );
-    assert!(
-        names2.contains(&"run-skill-script".to_string()),
-        "Cached tools/list must still include run-skill-script. Found: {:?}",
-        names2
-    );
-    assert!(
-        names2.contains(&"get-skill-script-run".to_string()),
-        "Cached tools/list must still include get-skill-script-run. Found: {:?}",
+        names2.contains(&"skill_get-current-time_get_info".to_string()),
+        "Cached tools/list must still include get_info tool. Found: {:?}",
         names2
     );
 }
 
-/// Test: Skill tools must be present even when deferred loading is enabled
+/// Test: Skill get_info tools must be present even when deferred loading is enabled
 #[tokio::test]
 async fn test_skill_tools_present_with_deferred_loading() {
-    let (gateway, temp_dir) = setup_gateway_with_skill().await;
+    let (gateway, _temp_dir) = setup_gateway_with_skill().await;
 
     let client_id = "deferred-test-client";
-    let skill_dir = temp_dir.path().join("get-current-time");
     let skills_access = SkillsAccess::Specific(vec!["get-current-time".to_string()]);
 
     // First call to create the session and set allowed_skills
     let req = JsonRpcRequest::with_id(1, "tools/list".to_string(), Some(json!({})));
     gateway
-        .handle_request_with_skills(
-            client_id,
-            vec![],
-            false,
-            vec![],
-            skills_access.clone(),
-            req,
-        )
+        .handle_request_with_skills(client_id, vec![], false, vec![], skills_access.clone(), req)
         .await
         .expect("initial tools/list should succeed");
 
@@ -645,23 +648,60 @@ async fn test_skill_tools_present_with_deferred_loading() {
     let tool_names = extract_tool_names(&response);
 
     assert!(
-        tool_names.contains(&"show-skill_get-current-time".to_string()),
-        "Deferred loading must still include show-skill tool. Found: {:?}",
+        tool_names.contains(&"skill_get-current-time_get_info".to_string()),
+        "Deferred loading must still include get_info tool. Found: {:?}",
         tool_names
     );
-    assert!(
-        tool_names.contains(&"get-skill-resource".to_string()),
-        "Deferred loading must still include get-skill-resource. Found: {:?}",
-        tool_names
+}
+
+/// Test: Run/read tools should NOT be available before get_info is called
+#[tokio::test]
+async fn test_run_tool_blocked_before_get_info() {
+    let (gateway, _temp_dir) = setup_gateway_with_skill().await;
+
+    let client_id = "gate-test-client";
+    let skills_access = SkillsAccess::Specific(vec!["get-current-time".to_string()]);
+
+    // Create session first
+    let req = JsonRpcRequest::with_id(1, "tools/list".to_string(), Some(json!({})));
+    gateway
+        .handle_request_with_skills(client_id, vec![], false, vec![], skills_access.clone(), req)
+        .await
+        .expect("tools/list should succeed");
+
+    // Try to call run tool before get_info
+    let run_req = JsonRpcRequest::with_id(
+        2,
+        "tools/call".to_string(),
+        Some(json!({
+            "name": "skill_get-current-time_run_get-time_js",
+            "arguments": {}
+        })),
     );
-    assert!(
-        tool_names.contains(&"run-skill-script".to_string()),
-        "Deferred loading must still include run-skill-script. Found: {:?}",
-        tool_names
+    let response = gateway
+        .handle_request_with_skills(
+            client_id,
+            vec![],
+            false,
+            vec![],
+            skills_access.clone(),
+            run_req,
+        )
+        .await
+        .expect("run tool call should return response (not panic)");
+
+    let result = response.result.expect("should have result");
+    // Should be an error response
+    assert_eq!(
+        result["isError"].as_bool(),
+        Some(true),
+        "Calling run tool before get_info should return an error. Got: {:?}",
+        result
     );
+    let error_text = result["content"][0]["text"].as_str().unwrap_or("");
     assert!(
-        tool_names.contains(&"get-skill-script-run".to_string()),
-        "Deferred loading must still include get-skill-script-run. Found: {:?}",
-        tool_names
+        error_text.contains("get_info first"),
+        "Error should mention calling get_info first. Got: {}",
+        error_text
     );
 }

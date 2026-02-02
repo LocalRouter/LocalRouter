@@ -10,7 +10,8 @@ fn test_client_creation() -> AppResult<()> {
     let manager = ClientManager::new(vec![]);
 
     // Create a new client
-    let (client_id, secret, client) = manager.create_client("Test Client".to_string(), "default".to_string())?;
+    let (client_id, secret, client) =
+        manager.create_client("Test Client".to_string(), "default".to_string())?;
 
     // Verify client was created
     assert_eq!(client.name, "Test Client");
@@ -32,7 +33,8 @@ fn test_client_authentication_with_secret() -> AppResult<()> {
     let manager = ClientManager::new(vec![]);
 
     // Create a client
-    let (_client_id, secret, client) = manager.create_client("Auth Test Client".to_string(), "default".to_string())?;
+    let (_client_id, secret, client) =
+        manager.create_client("Auth Test Client".to_string(), "default".to_string())?;
 
     // Verify authentication with correct secret
     let verified = manager.verify_secret(&secret)?;
@@ -53,7 +55,8 @@ fn test_client_credentials_verification() -> AppResult<()> {
     let manager = ClientManager::new(vec![]);
 
     // Create a client
-    let (client_id, secret, _client) = manager.create_client("Creds Test Client".to_string(), "default".to_string())?;
+    let (client_id, secret, _client) =
+        manager.create_client("Creds Test Client".to_string(), "default".to_string())?;
 
     // Verify with correct credentials
     let verified = manager.verify_credentials(&client_id, &secret)?;
@@ -76,7 +79,8 @@ fn test_client_disabled_authentication() -> AppResult<()> {
     let manager = ClientManager::new(vec![]);
 
     // Create a client
-    let (_client_id, secret, client) = manager.create_client("Disabled Test".to_string(), "default".to_string())?;
+    let (_client_id, secret, client) =
+        manager.create_client("Disabled Test".to_string(), "default".to_string())?;
 
     // Verify authentication works initially
     let verified = manager.verify_secret(&secret)?;
@@ -220,7 +224,8 @@ fn test_client_mcp_server_access() -> AppResult<()> {
     let manager = ClientManager::new(vec![]);
 
     // Create a client
-    let (_client_id, _secret, client) = manager.create_client("MCP Access Test".to_string(), "default".to_string())?;
+    let (_client_id, _secret, client) =
+        manager.create_client("MCP Access Test".to_string(), "default".to_string())?;
 
     // Initially no servers allowed
     assert!(!client.mcp_server_access.has_any_access());
@@ -262,7 +267,8 @@ fn test_client_deletion() -> AppResult<()> {
     let manager = ClientManager::new(vec![]);
 
     // Create a client
-    let (_client_id, secret, client) = manager.create_client("Delete Test".to_string(), "default".to_string())?;
+    let (_client_id, secret, client) =
+        manager.create_client("Delete Test".to_string(), "default".to_string())?;
 
     // Verify client exists
     assert!(manager.get_client(&client.id).is_some());
@@ -283,7 +289,8 @@ fn test_client_update() -> AppResult<()> {
     let manager = ClientManager::new(vec![]);
 
     // Create a client
-    let (_client_id, _secret, client) = manager.create_client("Update Test".to_string(), "default".to_string())?;
+    let (_client_id, _secret, client) =
+        manager.create_client("Update Test".to_string(), "default".to_string())?;
 
     // Update name
     manager.update_client(&client.id, Some("New Name".to_string()), None)?;
@@ -311,9 +318,12 @@ fn test_multiple_clients() -> AppResult<()> {
     let manager = ClientManager::new(vec![]);
 
     // Create multiple clients
-    let (client_id1, secret1, client1) = manager.create_client("Client 1".to_string(), "default".to_string())?;
-    let (client_id2, secret2, client2) = manager.create_client("Client 2".to_string(), "default".to_string())?;
-    let (client_id3, secret3, client3) = manager.create_client("Client 3".to_string(), "default".to_string())?;
+    let (client_id1, secret1, client1) =
+        manager.create_client("Client 1".to_string(), "default".to_string())?;
+    let (client_id2, secret2, client2) =
+        manager.create_client("Client 2".to_string(), "default".to_string())?;
+    let (client_id3, secret3, client3) =
+        manager.create_client("Client 3".to_string(), "default".to_string())?;
 
     // Verify all clients exist
     let clients = manager.list_clients();

@@ -56,10 +56,7 @@ async fn test_openai_compatible_health_check() {
 
     let health = provider.health_check().await;
 
-    assert_eq!(
-        health.status,
-        localrouter::providers::HealthStatus::Healthy
-    );
+    assert_eq!(health.status, localrouter::providers::HealthStatus::Healthy);
     assert!(health.latency_ms.is_some());
     assert!(health.error_message.is_none());
 }
@@ -205,10 +202,7 @@ async fn test_lmstudio_health_check() {
 
     let health = provider.health_check().await;
 
-    assert_eq!(
-        health.status,
-        localrouter::providers::HealthStatus::Healthy
-    );
+    assert_eq!(health.status, localrouter::providers::HealthStatus::Healthy);
 }
 
 #[tokio::test]
