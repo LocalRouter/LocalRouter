@@ -136,29 +136,14 @@ export function ClientMcpTab({ client, onUpdate }: McpTabProps) {
         newSelected.add(serverId)
       }
 
-      // Check if all enabled servers are now selected - promote to "all" mode
-      const enabledServers = servers.filter(s => s.enabled)
-      const allSelected = enabledServers.every(s => newSelected.has(s.id))
-
-      if (allSelected && enabledServers.length > 0) {
-        await invoke("set_client_mcp_access", {
-          clientId: client.client_id,
-          mode: "all",
-          servers: [],
-        })
-        setIncludeAllServers(true)
-        setSelectedServers(newSelected)
-        toast.success("All MCP servers enabled")
-      } else {
-        const mode = newSelected.size > 0 ? "specific" : "none"
-        await invoke("set_client_mcp_access", {
-          clientId: client.client_id,
-          mode,
-          servers: Array.from(newSelected),
-        })
-        setSelectedServers(newSelected)
-        toast.success("MCP server access updated")
-      }
+      const mode = newSelected.size > 0 ? "specific" : "none"
+      await invoke("set_client_mcp_access", {
+        clientId: client.client_id,
+        mode,
+        servers: Array.from(newSelected),
+      })
+      setSelectedServers(newSelected)
+      toast.success("MCP server access updated")
 
       onUpdate()
     } catch (error) {

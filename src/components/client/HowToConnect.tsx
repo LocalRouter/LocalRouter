@@ -151,6 +151,7 @@ export function HowToConnect({
   const [serverConfig, setServerConfig] = useState<ServerConfig | null>(null)
   const [executablePath, setExecutablePath] = useState<string>("")
   const [models, setModels] = useState<Array<{ id: string }>>([])
+  const [mcpSubTab, setMcpSubTab] = useState<string>("config")
 
   // Fetch server config and executable path
   useEffect(() => {
@@ -376,7 +377,7 @@ export function HowToConnect({
 
               {/* API Key */}
               <TabsContent value="api-key" className="space-y-4">
-                <Tabs defaultValue="config">
+                <Tabs value={mcpSubTab} onValueChange={setMcpSubTab}>
                   <TabsList className="mb-3 w-full grid grid-cols-2">
                     <TabsTrigger value="config" className="text-xs gap-1">
                       <Cpu className="h-3 w-3" />
@@ -440,7 +441,7 @@ export function HowToConnect({
 
               {/* OAuth */}
               <TabsContent value="oauth" className="space-y-4">
-                <Tabs defaultValue="config">
+                <Tabs value={mcpSubTab} onValueChange={setMcpSubTab}>
                   <TabsList className="mb-3 w-full grid grid-cols-2">
                     <TabsTrigger value="config" className="text-xs gap-1">
                       <Cpu className="h-3 w-3" />
@@ -526,7 +527,7 @@ export function HowToConnect({
 
               {/* STDIO */}
               <TabsContent value="stdio" className="space-y-4">
-                <Tabs defaultValue="config">
+                <Tabs value={mcpSubTab} onValueChange={setMcpSubTab}>
                   <TabsList className="mb-3 w-full grid grid-cols-2">
                     <TabsTrigger value="config" className="text-xs gap-1">
                       <Cpu className="h-3 w-3" />

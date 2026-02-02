@@ -8,7 +8,7 @@
  *   <ServiceIcon service="GitHub MCP Server" size={24} />
  */
 
-import { Server } from 'lucide-react'
+import { ProvidersIcon, McpIcon } from './icons/category-icons'
 
 interface ServiceIconProps {
   /** Service identifier - can be a provider type, MCP server name, or service ID */
@@ -193,9 +193,14 @@ export default function ServiceIcon({
         />
         <span
           className={`items-center justify-center ${className}`}
-          style={{ fontSize: `${size * 0.6}px`, lineHeight: '1', display: 'none' }}
+          style={{ display: 'none' }}
         >
-          {emoji || '📦'}
+          {emoji
+            ? <span style={{ fontSize: `${size * 0.6}px`, lineHeight: '1' }}>{emoji}</span>
+            : fallbackToServerIcon
+              ? <McpIcon style={{ width: size * 0.6, height: size * 0.6 }} />
+              : <ProvidersIcon style={{ width: size * 0.6, height: size * 0.6 }} />
+          }
         </span>
       </span>
     )
@@ -210,16 +215,12 @@ export default function ServiceIcon({
     )
   }
 
-  // Ultimate fallback
+  // Ultimate fallback - use category icons matching the sidebar
   if (fallbackToServerIcon) {
-    return <Server className={className} style={{ width: size * 0.6, height: size * 0.6 }} />
+    return <McpIcon className={className} style={{ width: size * 0.6, height: size * 0.6 }} />
   }
 
-  return (
-    <span className={className} style={{ fontSize: `${size * 0.6}px`, lineHeight: '1' }}>
-      📦
-    </span>
-  )
+  return <ProvidersIcon className={className} style={{ width: size * 0.6, height: size * 0.6 }} />
 }
 
 // Re-export for backwards compatibility

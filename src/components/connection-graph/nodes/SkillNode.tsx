@@ -1,7 +1,7 @@
 import { memo } from 'react'
 import { Handle, Position, type NodeProps } from 'reactflow'
 import { cn } from '@/lib/utils'
-import { Sparkles } from 'lucide-react'
+import { SkillsIcon } from '@/components/icons/category-icons'
 import type { SkillNodeData } from '../types'
 
 function SkillNodeComponent({ data }: NodeProps<SkillNodeData>) {
@@ -26,7 +26,7 @@ function SkillNodeComponent({ data }: NodeProps<SkillNodeData>) {
       {/* Node content */}
       <div className="flex items-center gap-2">
         <div className="flex items-center justify-center w-6 h-6 rounded-full bg-amber-200 dark:bg-amber-800">
-          <Sparkles className="w-3.5 h-3.5 text-amber-700 dark:text-amber-300" />
+          <SkillsIcon className="w-3.5 h-3.5 text-amber-700 dark:text-amber-300" />
         </div>
         <div className="min-w-0 flex-1">
           <div className="text-sm font-medium text-amber-900 dark:text-amber-100 truncate">

@@ -30,7 +30,13 @@
       "Bash(tree:*)",
       "Bash(gh run:*)",
       "Bash(gh release list:*)",
-      "Bash(gh release download:*)"
+      "Bash(gh release download:*)",
+      "Bash(npx vite build)",
+      "Bash(source:*)",
+      "Bash([ -s \"$NVM_DIR/nvm.sh\" ])",
+      "Bash(source \"$NVM_DIR/nvm.sh\")",
+      "Bash(nvm ls:*)",
+      "Bash(nvm use:*)"
     ]
   }
 }

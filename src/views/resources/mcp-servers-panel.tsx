@@ -214,7 +214,7 @@ export function McpServersPanel({
 
   const handleSelectTemplate = (template: McpServerTemplate) => {
     setSelectedTemplate(template)
-    setServerName(template.name)
+    setServerName(template.id === "custom" ? "" : template.name)
     setTransportType(template.transport)
 
     if (template.transport === "Stdio" && template.command) {

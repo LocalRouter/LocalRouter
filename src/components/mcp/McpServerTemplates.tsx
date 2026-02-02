@@ -308,6 +308,16 @@ export const MCP_SERVER_TEMPLATES: McpServerTemplate[] = [
   },
 ]
 
+export const CUSTOM_MCP_TEMPLATE: McpServerTemplate = {
+  id: 'custom',
+  name: 'Custom',
+  description: 'Configure a custom MCP server manually',
+  category: 'utilities',
+  icon: '⚙️',
+  transport: 'Stdio',
+  authMethod: 'none',
+}
+
 interface McpServerTemplatesProps {
   onSelectTemplate: (template: McpServerTemplate) => void
 }
@@ -407,6 +417,16 @@ export const McpServerTemplates: React.FC<McpServerTemplatesProps> = ({ onSelect
 
   return (
     <div className="space-y-6">
+      <button
+        onClick={() => onSelectTemplate(CUSTOM_MCP_TEMPLATE)}
+        className="w-full flex items-center gap-3 p-3 rounded-lg border-2 border-dashed border-muted hover:border-primary hover:bg-accent transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+      >
+        <span className="text-2xl">⚙️</span>
+        <div className="text-left">
+          <p className="font-medium text-sm">Custom MCP Server</p>
+          <p className="text-xs text-muted-foreground">Configure a custom MCP server manually</p>
+        </div>
+      </button>
       {CATEGORY_ORDER.map(category => {
         const templates = templatesByCategory[category]
         if (!templates) return null

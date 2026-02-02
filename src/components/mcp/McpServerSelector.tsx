@@ -91,17 +91,8 @@ export function McpServerSelector({
     }
 
     const selectedArray = Array.from(newSelected)
-
-    // Check if all enabled servers are now selected - promote to "all" mode
-    const enabledServers = servers.filter(s => s.enabled)
-    const allSelected = enabledServers.every(s => newSelected.has(s.id))
-
-    if (allSelected && enabledServers.length > 0) {
-      onChange("all", [])
-    } else {
-      const mode = selectedArray.length > 0 ? "specific" : "none"
-      onChange(mode, selectedArray)
-    }
+    const mode = selectedArray.length > 0 ? "specific" : "none"
+    onChange(mode, selectedArray)
   }
 
   if (loading) {
