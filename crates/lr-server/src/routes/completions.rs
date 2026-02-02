@@ -16,11 +16,6 @@ use std::time::Instant;
 use uuid::Uuid;
 
 use super::helpers::get_enabled_client_from_manager;
-use lr_providers::{
-    ChatMessage as ProviderChatMessage, ChatMessageContent,
-    CompletionRequest as ProviderCompletionRequest,
-};
-use lr_router::UsageInfo;
 use crate::middleware::client_auth::ClientAuthContext;
 use crate::middleware::error::{ApiErrorResponse, ApiResult};
 use crate::state::{AppState, AuthContext, GenerationDetails};
@@ -28,6 +23,11 @@ use crate::types::{
     CompletionChoice, CompletionChunk, CompletionChunkChoice, CompletionRequest,
     CompletionResponse, PromptInput, TokenUsage,
 };
+use lr_providers::{
+    ChatMessage as ProviderChatMessage, ChatMessageContent,
+    CompletionRequest as ProviderCompletionRequest,
+};
+use lr_router::UsageInfo;
 
 /// POST /v1/completions
 /// Legacy completion endpoint - converts prompt to chat format

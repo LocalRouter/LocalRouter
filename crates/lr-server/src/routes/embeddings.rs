@@ -11,13 +11,13 @@ use std::time::Instant;
 use uuid::Uuid;
 
 use super::helpers::{get_enabled_client, get_enabled_client_from_manager};
-use lr_router::UsageInfo;
 use crate::middleware::client_auth::ClientAuthContext;
 use crate::middleware::error::{ApiErrorResponse, ApiResult};
 use crate::state::{AppState, AuthContext};
 use crate::types::{
     EmbeddingData, EmbeddingInput, EmbeddingRequest, EmbeddingResponse, EmbeddingVector,
 };
+use lr_router::UsageInfo;
 
 /// POST /v1/embeddings
 /// Generate embeddings for input text(s)
@@ -79,12 +79,8 @@ pub async fn embeddings(
 
     // Convert server EmbeddingInput to provider EmbeddingInput
     let provider_input = match request.input.clone() {
-        crate::types::EmbeddingInput::Single(s) => {
-            lr_providers::EmbeddingInput::Single(s)
-        }
-        crate::types::EmbeddingInput::Multiple(v) => {
-            lr_providers::EmbeddingInput::Multiple(v)
-        }
+        crate::types::EmbeddingInput::Single(s) => lr_providers::EmbeddingInput::Single(s),
+        crate::types::EmbeddingInput::Multiple(v) => lr_providers::EmbeddingInput::Multiple(v),
     };
 
     // Convert to provider format

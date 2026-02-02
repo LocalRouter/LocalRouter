@@ -17,12 +17,6 @@ use futures::stream::StreamExt;
 use uuid::Uuid;
 
 use super::helpers::{get_client_with_strategy, get_enabled_client_from_manager};
-use lr_providers::{
-    ChatMessage as ProviderChatMessage, ChatMessageContent as ProviderMessageContent,
-    CompletionRequest as ProviderCompletionRequest, ContentPart as ProviderContentPart,
-    ImageUrl as ProviderImageUrl,
-};
-use lr_router::UsageInfo;
 use crate::middleware::client_auth::ClientAuthContext;
 use crate::middleware::error::{ApiErrorResponse, ApiResult};
 use crate::state::{AppState, AuthContext, GenerationDetails};
@@ -31,6 +25,12 @@ use crate::types::{
     ChatCompletionRequest, ChatCompletionResponse, ChatCompletionTokenLogprob, ChatMessage,
     ChunkDelta, MessageContent, TokenUsage, TopLogprob,
 };
+use lr_providers::{
+    ChatMessage as ProviderChatMessage, ChatMessageContent as ProviderMessageContent,
+    CompletionRequest as ProviderCompletionRequest, ContentPart as ProviderContentPart,
+    ImageUrl as ProviderImageUrl,
+};
+use lr_router::UsageInfo;
 
 /// POST /v1/chat/completions
 /// Send a chat completion request
