@@ -424,7 +424,7 @@ export function MetricsChart({
           {commonAxisProps.xAxis}
           {commonAxisProps.yAxis}
           {commonAxisProps.tooltip}
-          {hasData && commonAxisProps.legend}
+          {hasData && data && data.datasets.length > 1 && commonAxisProps.legend}
           {renderContent()}
         </BarChart>
       </ResponsiveContainer>
