@@ -109,8 +109,8 @@ pub async fn routellm_download_models(
 pub async fn open_routellm_folder(app: AppHandle) -> Result<(), String> {
     use tauri_plugin_shell::ShellExt;
 
-    let config_dir = lr_utils::paths::config_dir()
-        .map_err(|e| format!("Failed to get config dir: {}", e))?;
+    let config_dir =
+        lr_utils::paths::config_dir().map_err(|e| format!("Failed to get config dir: {}", e))?;
     let routellm_dir = config_dir.join("routellm");
 
     // Ensure directory exists

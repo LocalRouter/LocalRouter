@@ -4,14 +4,14 @@
 
 #![allow(dead_code)]
 
+use crate::ui::tray_graph::{platform_graph_config, DataPoint};
+use chrono::{DateTime, Duration, Utc};
 use lr_clients::ClientManager;
 use lr_config::{ConfigManager, UiConfig};
 use lr_mcp::manager::McpServerManager;
 use lr_monitoring::metrics::MetricsCollector;
 use lr_providers::health_cache::{AggregateHealthStatus, ItemHealthStatus};
-use crate::ui::tray_graph::{platform_graph_config, DataPoint};
 use lr_utils::test_mode::is_test_mode;
-use chrono::{DateTime, Duration, Utc};
 use parking_lot::RwLock;
 use std::sync::Arc;
 use tauri::{
@@ -325,9 +325,7 @@ pub fn setup_tray<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
                         let app_clone = app.clone();
                         let client_id = client_id.to_string();
                         tauri::async_runtime::spawn(async move {
-                            if let Err(e) =
-                                handle_copy_mcp_bearer(&app_clone, &client_id).await
-                            {
+                            if let Err(e) = handle_copy_mcp_bearer(&app_clone, &client_id).await {
                                 error!("Failed to copy client secret: {}", e);
                             }
                         });
@@ -374,8 +372,7 @@ fn build_tray_menu<R: Runtime, M: Manager<R>>(app: &M) -> tauri::Result<tauri::m
         if let Some(config_manager) = app.try_state::<ConfigManager>() {
             let config = config_manager.get();
             let running =
-                if let Some(server_manager) = app.try_state::<Arc<lr_server::ServerManager>>()
-                {
+                if let Some(server_manager) = app.try_state::<Arc<lr_server::ServerManager>>() {
                     matches!(
                         server_manager.get_status(),
                         lr_server::ServerStatus::Running
@@ -398,7 +395,10 @@ fn build_tray_menu<R: Runtime, M: Manager<R>>(app: &M) -> tauri::Result<tauri::m
     menu_builder = menu_builder.item(&app_header);
 
     // 2. Open dashboard (immediately after header)
-    menu_builder = menu_builder.text("open_dashboard", &format!("{ICON_PAD}⌘{ICON_PAD} Settings..."));
+    menu_builder = menu_builder.text(
+        "open_dashboard",
+        &format!("{ICON_PAD}⌘{ICON_PAD} Settings..."),
+    );
 
     // 3. Copy URL (LLM and MCP)
     menu_builder = menu_builder.text("copy_url", &format!("{ICON_PAD}⧉{ICON_PAD} Copy URL"));
@@ -433,10 +433,8 @@ fn build_tray_menu<R: Runtime, M: Manager<R>>(app: &M) -> tauri::Result<tauri::m
                             _ => "",
                         }
                     );
-                    menu_builder = menu_builder.text(
-                        format!("health_issue_provider_{}", provider_name),
-                        label,
-                    );
+                    menu_builder = menu_builder
+                        .text(format!("health_issue_provider_{}", provider_name), label);
                 }
             }
 
@@ -460,10 +458,8 @@ fn build_tray_menu<R: Runtime, M: Manager<R>>(app: &M) -> tauri::Result<tauri::m
                             _ => "",
                         }
                     );
-                    menu_builder = menu_builder.text(
-                        format!("health_issue_mcp_{}", server_id),
-                        label,
-                    );
+                    menu_builder =
+                        menu_builder.text(format!("health_issue_mcp_{}", server_id), label);
                 }
             }
         }
@@ -474,7 +470,10 @@ fn build_tray_menu<R: Runtime, M: Manager<R>>(app: &M) -> tauri::Result<tauri::m
     // 5. Update section (shown when update is available)
     if let Some(update_state) = app.try_state::<Arc<UpdateNotificationState>>() {
         if update_state.is_update_available() {
-            menu_builder = menu_builder.text("update_and_restart", &format!("{ICON_PAD}↓{ICON_PAD} Update and restart"));
+            menu_builder = menu_builder.text(
+                "update_and_restart",
+                &format!("{ICON_PAD}↓{ICON_PAD} Update and restart"),
+            );
         }
     }
 
@@ -603,10 +602,8 @@ fn build_tray_menu<R: Runtime, M: Manager<R>>(app: &M) -> tauri::Result<tauri::m
                             };
 
                             // Clicking toggles the allowed state
-                            client_submenu = client_submenu.text(
-                                format!("toggle_mcp_{}_{}", client.id, server.id),
-                                label,
-                            );
+                            client_submenu = client_submenu
+                                .text(format!("toggle_mcp_{}_{}", client.id, server.id), label);
                         }
                     }
                 } else {
@@ -650,7 +647,8 @@ fn build_tray_menu<R: Runtime, M: Manager<R>>(app: &M) -> tauri::Result<tauri::m
                         client_submenu = client_submenu.item(&no_skills_item);
                     } else {
                         for skill_info in &all_skills {
-                            let is_allowed = skill_info.enabled && client.skills_access.can_access_by_name(&skill_info.name);
+                            let is_allowed = skill_info.enabled
+                                && client.skills_access.can_access_by_name(&skill_info.name);
                             let label = if !skill_info.enabled {
                                 format!("{}{} (disabled)", TRAY_INDENT, skill_info.name)
                             } else if is_allowed {
@@ -1121,10 +1119,7 @@ async fn handle_set_client_strategy<R: Runtime>(
     client_id: &str,
     strategy_id: &str,
 ) -> tauri::Result<()> {
-    info!(
-        "Setting strategy {} for client {}",
-        strategy_id, client_id
-    );
+    info!("Setting strategy {} for client {}", strategy_id, client_id);
 
     // Get managers from state
     let client_manager = app.state::<Arc<ClientManager>>();
@@ -1155,10 +1150,7 @@ async fn handle_set_client_strategy<R: Runtime>(
         error!("Failed to emit clients-changed event: {}", e);
     }
 
-    info!(
-        "Strategy {} set for client {}",
-        strategy_id, client_id
-    );
+    info!("Strategy {} set for client {}", strategy_id, client_id);
 
     Ok(())
 }
@@ -1169,10 +1161,7 @@ async fn handle_toggle_mcp_access<R: Runtime>(
     client_id: &str,
     server_id: &str,
 ) -> tauri::Result<()> {
-    info!(
-        "Toggling MCP {} access for client {}",
-        server_id, client_id
-    );
+    info!("Toggling MCP {} access for client {}", server_id, client_id);
 
     // Get managers from state
     let client_manager = app.state::<Arc<ClientManager>>();
@@ -1772,8 +1761,8 @@ impl TrayGraphManager {
 
         // Determine overlay: Warning/Error health > UpdateAvailable > None
         let overlay = {
-            use lr_providers::health_cache::AggregateHealthStatus;
             use crate::ui::tray_graph::{StatusDotColors, TrayOverlay};
+            use lr_providers::health_cache::AggregateHealthStatus;
 
             let health_status = app_handle
                 .try_state::<Arc<lr_server::state::AppState>>()
@@ -1800,9 +1789,8 @@ impl TrayGraphManager {
 
         // Generate graph PNG with overlay
         let graph_config = platform_graph_config();
-        let png_bytes =
-            crate::ui::tray_graph::generate_graph(&data_points, &graph_config, overlay)
-                .ok_or_else(|| anyhow::anyhow!("Failed to generate graph PNG"))?;
+        let png_bytes = crate::ui::tray_graph::generate_graph(&data_points, &graph_config, overlay)
+            .ok_or_else(|| anyhow::anyhow!("Failed to generate graph PNG"))?;
 
         // Calculate simple hash of PNG bytes to detect changes
         use std::hash::{Hash, Hasher};
@@ -1893,8 +1881,8 @@ pub fn set_update_available<R: Runtime>(app: &AppHandle<R>, available: bool) -> 
 
 #[cfg(test)]
 mod tests {
-    use lr_monitoring::metrics::MetricDataPoint;
     use chrono::{DateTime, Duration, Timelike, Utc};
+    use lr_monitoring::metrics::MetricDataPoint;
 
     /// Helper to create test metrics
     fn create_metric(timestamp: DateTime<Utc>, tokens: u64) -> MetricDataPoint {

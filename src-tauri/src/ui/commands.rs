@@ -57,8 +57,7 @@ pub async fn reload_config(config_manager: State<'_, ConfigManager>) -> Result<(
 /// - Linux: Secret Service
 #[tauri::command]
 pub async fn set_provider_api_key(provider: String, api_key: String) -> Result<(), String> {
-    lr_providers::key_storage::store_provider_key(&provider, &api_key)
-        .map_err(|e| e.to_string())
+    lr_providers::key_storage::store_provider_key(&provider, &api_key).map_err(|e| e.to_string())
 }
 
 /// Check if a provider has an API key stored
@@ -2219,9 +2218,7 @@ pub async fn check_single_mcp_health(
             ),
             lr_mcp::manager::HealthStatus::Unknown => ItemHealth::unhealthy(
                 health.server_name,
-                health
-                    .error
-                    .unwrap_or_else(|| "Unknown status".to_string()),
+                health.error.unwrap_or_else(|| "Unknown status".to_string()),
             ),
         };
         health_cache.update_mcp_server(&health.server_id, item_health);
@@ -2666,16 +2663,17 @@ pub async fn list_mcp_tools(
             );
 
             // Record metrics
-            state.metrics_collector.mcp().record(
-                &lr_monitoring::mcp_metrics::McpRequestMetrics {
+            state
+                .metrics_collector
+                .mcp()
+                .record(&lr_monitoring::mcp_metrics::McpRequestMetrics {
                     client_id,
                     server_id: &server_id,
                     method,
                     latency_ms,
                     success: false,
                     error_code: Some(error.code),
-                },
-            );
+                });
         }
 
         return Err(format!(
@@ -2864,16 +2862,17 @@ pub async fn call_mcp_tool(
             );
 
             // Record metrics
-            state.metrics_collector.mcp().record(
-                &lr_monitoring::mcp_metrics::McpRequestMetrics {
+            state
+                .metrics_collector
+                .mcp()
+                .record(&lr_monitoring::mcp_metrics::McpRequestMetrics {
                     client_id,
                     server_id: &server_id,
                     method: &method,
                     latency_ms,
                     success: false,
                     error_code: Some(error.code),
-                },
-            );
+                });
         }
 
         return Err(format!(
@@ -4042,12 +4041,14 @@ pub async fn create_test_client_for_strategy(
     client_manager: State<'_, Arc<lr_clients::ClientManager>>,
     config_manager: State<'_, ConfigManager>,
 ) -> Result<String, String> {
-    // Verify strategy exists
+    // Verify strategy exists and get its actual ID
     let config = config_manager.get();
-    let strategy_exists = config.strategies.iter().any(|s| s.name == strategy_id);
-    if !strategy_exists {
-        return Err(format!("Strategy not found: {}", strategy_id));
-    }
+    let strategy = config
+        .strategies
+        .iter()
+        .find(|s| s.name == strategy_id)
+        .ok_or_else(|| format!("Strategy not found: {}", strategy_id))?;
+    let actual_strategy_id = strategy.id.clone();
 
     // Create a test client with a unique name
     let test_client_name = format!("_test_strategy_{}", strategy_id);
@@ -4064,7 +4065,7 @@ pub async fn create_test_client_for_strategy(
 
     // Create a new test client with the specified strategy
     let (_client_id, secret, client) = client_manager
-        .create_client(test_client_name, strategy_id)
+        .create_client(test_client_name, actual_strategy_id)
         .map_err(|e| e.to_string())?;
 
     // Save client to config
@@ -4283,8 +4284,7 @@ pub async fn get_mcp_logs(
         if let Ok(file) = fs::File::open(&log_file) {
             let reader = BufReader::new(file);
             // Collect all matching entries from this file, then reverse to get newest first
-            let mut file_entries: Vec<lr_monitoring::mcp_logger::McpAccessLogEntry> =
-                Vec::new();
+            let mut file_entries: Vec<lr_monitoring::mcp_logger::McpAccessLogEntry> = Vec::new();
 
             for line in reader.lines().map_while(Result::ok) {
                 if let Ok(entry) =
@@ -5178,10 +5178,7 @@ pub async fn rescan_skills(
     app: tauri::AppHandle,
 ) -> Result<Vec<lr_skills::SkillInfo>, String> {
     let config = config_manager.get();
-    let skills = skill_manager.rescan(
-        &config.skills.paths,
-        &config.skills.disabled_skills,
-    );
+    let skills = skill_manager.rescan(&config.skills.paths, &config.skills.disabled_skills);
 
     if let Err(e) = app.emit("skills-changed", ()) {
         tracing::error!("Failed to emit skills-changed event: {}", e);
@@ -5236,6 +5233,12 @@ pub async fn set_client_skills_access(
 
 /// Get files for a specific skill with content previews.
 /// Walks the entire skill directory recursively to list all files.
+/// Each file is categorized based on the skill's discovery logic:
+/// - "skill_md": The SKILL.md definition file
+/// - "script": Executable scripts in scripts/ directory
+/// - "reference": Readable reference files in references/ directory
+/// - "asset": Asset files in assets/ directory
+/// - "": Other files not classified by the skill system
 #[tauri::command]
 pub async fn get_skill_files(
     skill_name: String,
@@ -5245,8 +5248,21 @@ pub async fn get_skill_files(
         .get(&skill_name)
         .ok_or_else(|| format!("Skill '{}' not found", skill_name))?;
 
+    // Build a set of known classified files for quick lookup
+    let mut category_map = std::collections::HashMap::new();
+    category_map.insert("SKILL.md".to_string(), "skill_md".to_string());
+    for s in &skill.scripts {
+        category_map.insert(s.clone(), "script".to_string());
+    }
+    for r in &skill.references {
+        category_map.insert(r.clone(), "reference".to_string());
+    }
+    for a in &skill.assets {
+        category_map.insert(a.clone(), "asset".to_string());
+    }
+
     let mut files = Vec::new();
-    collect_skill_files_recursive(&skill.skill_dir, &skill.skill_dir, &mut files);
+    collect_skill_files_recursive(&skill.skill_dir, &skill.skill_dir, &category_map, &mut files);
     files.sort_by(|a, b| a.name.cmp(&b.name));
 
     Ok(files)
@@ -5255,6 +5271,7 @@ pub async fn get_skill_files(
 fn collect_skill_files_recursive(
     base_dir: &std::path::Path,
     current_dir: &std::path::Path,
+    category_map: &std::collections::HashMap<String, String>,
     files: &mut Vec<SkillFileInfo>,
 ) {
     let Ok(entries) = std::fs::read_dir(current_dir) else {
@@ -5267,7 +5284,7 @@ fn collect_skill_files_recursive(
     for entry in entries {
         let path = entry.path();
         if path.is_dir() {
-            collect_skill_files_recursive(base_dir, &path, files);
+            collect_skill_files_recursive(base_dir, &path, category_map, files);
         } else if path.is_file() {
             let relative = path
                 .strip_prefix(base_dir)
@@ -5281,9 +5298,14 @@ fn collect_skill_files_recursive(
                 None
             };
 
+            let category = category_map
+                .get(&relative)
+                .cloned()
+                .unwrap_or_default();
+
             files.push(SkillFileInfo {
                 name: relative,
-                category: String::new(),
+                category,
                 content_preview: preview,
             });
         }
@@ -5324,11 +5346,45 @@ fn is_text_file(path: &std::path::Path) -> bool {
                 | "css"
                 | "js"
                 | "ts"
+                | "jsx"
+                | "tsx"
                 | "py"
                 | "rs"
                 | "sh"
                 | "bash"
+                | "zsh"
+                | "pl"
+                | "rb"
+                | "lua"
+                | "go"
+                | "java"
+                | "c"
+                | "h"
+                | "cpp"
+                | "hpp"
+                | "swift"
+                | "kt"
+                | "r"
+                | "sql"
+                | "graphql"
+                | "proto"
+                | "ini"
+                | "cfg"
+                | "conf"
+                | "env"
+                | "cmake"
         ),
-        None => false,
+        None => {
+            // Handle extensionless text files by filename
+            path.file_name()
+                .and_then(|f| f.to_str())
+                .map(|name| {
+                    matches!(
+                        name.to_lowercase().as_str(),
+                        "dockerfile" | "makefile" | "gemfile" | "rakefile" | "license" | "readme"
+                    )
+                })
+                .unwrap_or(false)
+        }
     }
 }

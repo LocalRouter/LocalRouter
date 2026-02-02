@@ -356,13 +356,17 @@ pub fn generate_graph(
     const CUTOUT_CY: i32 = 6;
     const CUTOUT_R: i32 = 9;
     const CUTOUT_R_SQ: i32 = CUTOUT_R * CUTOUT_R; // 81
-    // Where the arc intersects the image edges — borders start here
+                                                  // Where the arc intersects the image edges — borders start here
     const CUTOUT_SIZE: u32 = 13;
 
     let has_overlay = overlay != TrayOverlay::None;
 
     // Top border (skip corner regions; wider skip at top-left when overlay present)
-    let top_left_border_start = if has_overlay { CUTOUT_SIZE } else { CORNER_RADIUS };
+    let top_left_border_start = if has_overlay {
+        CUTOUT_SIZE
+    } else {
+        CORNER_RADIUS
+    };
     for x in top_left_border_start..(WIDTH - CORNER_RADIUS) {
         img.put_pixel(x, 0, config.foreground);
     }
@@ -371,7 +375,11 @@ pub fn generate_graph(
         img.put_pixel(x, HEIGHT - 1, config.foreground);
     }
     // Left border (skip corner regions; wider skip at top-left when overlay present)
-    let left_top_border_start = if has_overlay { CUTOUT_SIZE } else { CORNER_RADIUS };
+    let left_top_border_start = if has_overlay {
+        CUTOUT_SIZE
+    } else {
+        CORNER_RADIUS
+    };
     for y in left_top_border_start..(HEIGHT - CORNER_RADIUS) {
         img.put_pixel(0, y, config.foreground);
     }
@@ -406,8 +414,7 @@ pub fn generate_graph(
         // (i.e. in the top-left cutout region, up to where the
         // straight borders begin).
         for step in 0..=400 {
-            let angle =
-                2.0 * std::f64::consts::PI * (step as f64 / 400.0);
+            let angle = 2.0 * std::f64::consts::PI * (step as f64 / 400.0);
             let px = CUTOUT_CX as f64 + CUTOUT_R as f64 * angle.cos();
             let py = CUTOUT_CY as f64 + CUTOUT_R as f64 * angle.sin();
             // Skip points that are mathematically off-screen but round onto (0,0)
@@ -896,8 +903,7 @@ mod tests {
         let png_update = generate_graph(&data, &config_mac, TrayOverlay::UpdateAvailable);
         assert!(png_update.is_some());
         let png_bytes_update = png_update.unwrap();
-        let mut file_update =
-            File::create("/tmp/test_tray_graph_macos_update.png").unwrap();
+        let mut file_update = File::create("/tmp/test_tray_graph_macos_update.png").unwrap();
         file_update.write_all(&png_bytes_update).unwrap();
         println!("Wrote macOS graph (update) to /tmp/test_tray_graph_macos_update.png");
 
