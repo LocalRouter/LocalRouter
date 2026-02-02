@@ -7,6 +7,7 @@
 import { useState, useEffect, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
+import { McpIcon } from "@/components/icons/category-icons"
 import { McpServersPanel, McpHealthStatus, McpHealthCheckEvent } from "../resources/mcp-servers-panel"
 
 interface McpServersViewProps {
@@ -86,9 +87,9 @@ export function McpServersView({ activeSubTab, onTabChange }: McpServersViewProp
   return (
     <div className="flex flex-col h-full min-h-0">
       <div className="flex-shrink-0 pb-4">
-        <h1 className="text-2xl font-bold tracking-tight">MCP</h1>
+        <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2"><McpIcon className="h-6 w-6" />MCP</h1>
         <p className="text-sm text-muted-foreground">
-          Manage Model Context Protocol server connections
+          Manage Model Context Protocol server connections and expose it via Unified MCP.
         </p>
       </div>
 

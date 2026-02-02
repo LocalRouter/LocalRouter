@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { ProvidersIcon } from "@/components/icons/category-icons"
 import { ProvidersPanel, HealthStatus, HealthCheckEvent } from "./providers-panel"
 import { StrategiesPanel } from "./strategies-panel"
 
@@ -94,7 +95,7 @@ export function ResourcesView({ activeSubTab, onTabChange }: LlmProvidersViewPro
   return (
     <div className="flex flex-col h-full min-h-0">
       <div className="flex-shrink-0 pb-4">
-        <h1 className="text-2xl font-bold tracking-tight">LLM Providers</h1>
+        <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2"><ProvidersIcon className="h-6 w-6" />LLM Providers</h1>
         <p className="text-sm text-muted-foreground">
           Manage providers and strategies
         </p>

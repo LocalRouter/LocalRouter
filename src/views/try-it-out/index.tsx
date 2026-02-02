@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react"
+import { FlaskConical } from "lucide-react"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { LlmTab } from "./llm-tab"
 import { McpTab } from "./mcp-tab"
@@ -77,7 +78,7 @@ export function TryItOutView({ activeSubTab, onTabChange }: TryItOutViewProps) {
   return (
     <div className="flex flex-col h-full min-h-0">
       <div className="flex-shrink-0 pb-4">
-        <h1 className="text-2xl font-bold tracking-tight">Try It Out</h1>
+        <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2"><FlaskConical className="h-6 w-6" />Try It Out</h1>
         <p className="text-sm text-muted-foreground">
           Test LLM completions and MCP server capabilities
         </p>

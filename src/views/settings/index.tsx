@@ -1,4 +1,5 @@
 import { lazy, Suspense } from "react"
+import { Settings as SettingsIcon } from "lucide-react"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { ServerTab } from "./server-tab"
 import { RoutingTab } from "./routing-tab"
@@ -43,7 +44,7 @@ export function SettingsView({ activeSubTab, onTabChange }: SettingsViewProps) {
   return (
     <div className="space-y-4">
       <div>
-        <h1 className="text-2xl font-bold tracking-tight">Settings</h1>
+        <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2"><SettingsIcon className="h-6 w-6" />Settings</h1>
         <p className="text-sm text-muted-foreground">
           Configure server, strategies, and application preferences
         </p>

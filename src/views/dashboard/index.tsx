@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
-import { Activity, DollarSign, Zap, CheckCircle, RefreshCw, Plus } from "lucide-react"
+import { Activity, DollarSign, Zap, CheckCircle, RefreshCw, Plus, LayoutDashboard } from "lucide-react"
 import { StatsCard, StatsRow } from "@/components/shared/stats-card"
 import { MetricsChart } from "@/components/shared/metrics-chart"
 import { useMetricsSubscription } from "@/hooks/useMetricsSubscription"
@@ -197,7 +197,7 @@ export function DashboardView({ onViewChange }: DashboardViewProps) {
       {/* Header with Create Client button */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Dashboard</h1>
+          <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2"><LayoutDashboard className="h-6 w-6" />Dashboard</h1>
           <p className="text-sm text-muted-foreground">
             Monitor your LLM and MCP usage across all clients.
           </p>

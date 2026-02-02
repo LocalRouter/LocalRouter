@@ -103,7 +103,7 @@ export function ClientsView({ activeSubTab, onTabChange }: ClientsViewProps) {
   return (
     <div className="flex flex-col h-full min-h-0">
       <div className="flex-shrink-0 pb-4">
-        <h1 className="text-2xl font-bold tracking-tight">Clients</h1>
+        <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2"><Users className="h-6 w-6" />Clients</h1>
         <p className="text-sm text-muted-foreground">
           Give access to your LLM-powered applications by creating a client
         </p>
