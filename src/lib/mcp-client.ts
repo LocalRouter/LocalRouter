@@ -3,6 +3,7 @@ import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js"
 import { WebSocketClientTransport } from "@modelcontextprotocol/sdk/client/websocket.js"
 import {
   ResourceUpdatedNotificationSchema,
+  ToolListChangedNotificationSchema,
   CreateMessageRequestSchema,
   ElicitRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js"
@@ -112,6 +113,7 @@ export interface McpClientCallbacks {
   onStateChange?: (state: McpConnectionState) => void
   onSamplingRequest?: SamplingRequestHandler
   onElicitationRequest?: ElicitationRequestHandler
+  onToolsListChanged?: () => void
 }
 
 export class McpClientWrapper {
@@ -255,6 +257,12 @@ export class McpClientWrapper {
         } else {
           console.log("[MCP Client] No subscription callback for URI:", uri)
         }
+      })
+
+      // Register notification handler for tools list changes
+      this.client.setNotificationHandler(ToolListChangedNotificationSchema, () => {
+        console.log("[MCP Client] Received tools/list_changed notification")
+        this.callbacks.onToolsListChanged?.()
       })
 
       // Get server info

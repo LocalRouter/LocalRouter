@@ -23,6 +23,7 @@ interface ToolsPanelProps {
   isConnected: boolean
   toolState: ToolExecutionState
   onToolStateChange: (state: SetStateAction<ToolExecutionState>) => void
+  refreshTrigger?: number
 }
 
 export function ToolsPanel({
@@ -30,6 +31,7 @@ export function ToolsPanel({
   isConnected,
   toolState,
   onToolStateChange,
+  refreshTrigger,
 }: ToolsPanelProps) {
   const [tools, setTools] = useState<Tool[]>([])
   const [filteredTools, setFilteredTools] = useState<Tool[]>([])
@@ -80,6 +82,13 @@ export function ToolsPanel({
       })
     }
   }, [isConnected, mcpClient, fetchTools, onToolStateChange])
+
+  // Re-fetch tools when server sends tools/list_changed notification
+  useEffect(() => {
+    if (refreshTrigger && isConnected && mcpClient) {
+      fetchTools()
+    }
+  }, [refreshTrigger, isConnected, mcpClient, fetchTools])
 
   // Filter tools by search query
   useEffect(() => {
