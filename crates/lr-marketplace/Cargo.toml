@@ -1,0 +1,30 @@
+[package]
+name = "lr-marketplace"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Marketplace for discovering and installing MCP servers and Skills"
+
+[dependencies]
+lr-types = { workspace = true }
+lr-config = { workspace = true }
+lr-skills = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+parking_lot = { workspace = true }
+uuid = { workspace = true }
+dashmap = { workspace = true }
+reqwest = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tauri = { workspace = true }
+urlencoding = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3.8"
