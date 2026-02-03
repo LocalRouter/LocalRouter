@@ -548,7 +548,15 @@ async fn test_no_skill_tools_when_no_skills_configured() {
     // Call tools/list with empty allowed_skills
     let req = JsonRpcRequest::with_id(1, "tools/list".to_string(), Some(json!({})));
     let response = gateway
-        .handle_request_with_skills(client_id, vec![], false, vec![], SkillsAccess::None, lr_config::FirewallRules::default(), req)
+        .handle_request_with_skills(
+            client_id,
+            vec![],
+            false,
+            vec![],
+            SkillsAccess::None,
+            lr_config::FirewallRules::default(),
+            req,
+        )
         .await
         .expect("tools/list should succeed");
 
@@ -573,7 +581,15 @@ async fn test_skill_tools_present_after_cache_hit() {
     // First call: populates cache
     let req = JsonRpcRequest::with_id(1, "tools/list".to_string(), Some(json!({})));
     let response1 = gateway
-        .handle_request_with_skills(client_id, vec![], false, vec![], skills_access.clone(), lr_config::FirewallRules::default(), req)
+        .handle_request_with_skills(
+            client_id,
+            vec![],
+            false,
+            vec![],
+            skills_access.clone(),
+            lr_config::FirewallRules::default(),
+            req,
+        )
         .await
         .expect("first tools/list should succeed");
 
@@ -618,7 +634,15 @@ async fn test_skill_tools_present_with_deferred_loading() {
     // First call to create the session and set allowed_skills
     let req = JsonRpcRequest::with_id(1, "tools/list".to_string(), Some(json!({})));
     gateway
-        .handle_request_with_skills(client_id, vec![], false, vec![], skills_access.clone(), lr_config::FirewallRules::default(), req)
+        .handle_request_with_skills(
+            client_id,
+            vec![],
+            false,
+            vec![],
+            skills_access.clone(),
+            lr_config::FirewallRules::default(),
+            req,
+        )
         .await
         .expect("initial tools/list should succeed");
 
@@ -674,7 +698,15 @@ async fn test_run_tool_blocked_before_get_info() {
     // Create session first
     let req = JsonRpcRequest::with_id(1, "tools/list".to_string(), Some(json!({})));
     gateway
-        .handle_request_with_skills(client_id, vec![], false, vec![], skills_access.clone(), lr_config::FirewallRules::default(), req)
+        .handle_request_with_skills(
+            client_id,
+            vec![],
+            false,
+            vec![],
+            skills_access.clone(),
+            lr_config::FirewallRules::default(),
+            req,
+        )
         .await
         .expect("tools/list should succeed");
 
