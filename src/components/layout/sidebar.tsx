@@ -54,8 +54,11 @@ interface NavItem {
   shortcut: string
 }
 
-const mainNavItems: NavItem[] = [
+const clientNavItems: NavItem[] = [
   { id: 'clients', icon: Users, label: 'Clients', shortcut: '⌘2' },
+]
+
+const resourceNavItems: NavItem[] = [
   { id: 'resources', icon: ProvidersIcon, label: 'LLM Providers', shortcut: '⌘3' },
   { id: 'mcp-servers', icon: McpIcon, label: 'MCP', shortcut: '⌘4' },
   { id: 'skills', icon: SkillsIcon, label: 'Skills', shortcut: '⌘5' },
@@ -255,7 +258,44 @@ export function Sidebar({ activeView, onViewChange }: SidebarProps) {
 
         {/* Main Navigation */}
         <nav className="flex flex-1 flex-col gap-1 p-2">
-          {mainNavItems.map((item) => {
+          {/* Client section */}
+          {clientNavItems.map((item) => {
+            const Icon = item.icon
+            const isActive = activeView === item.id
+
+            return (
+              <Tooltip key={item.id}>
+                <TooltipTrigger asChild>
+                  <button
+                    onClick={() => onViewChange(item.id)}
+                    className={cn(
+                      "flex h-8 w-8 items-center justify-center rounded-md transition-colors",
+                      isActive
+                        ? "bg-accent text-accent-foreground"
+                        : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+                    )}
+                  >
+                    <Icon className="h-4 w-4" />
+                    <span className="sr-only">{item.label}</span>
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="right" sideOffset={8}>
+                  <div className="flex items-center gap-2">
+                    <span>{item.label}</span>
+                    <kbd className="ml-auto rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                      {item.shortcut}
+                    </kbd>
+                  </div>
+                </TooltipContent>
+              </Tooltip>
+            )
+          })}
+
+          {/* Separator */}
+          <div className="my-1 h-px bg-border" />
+
+          {/* Resources section */}
+          {resourceNavItems.map((item) => {
             const Icon = item.icon
             const isActive = activeView === item.id
 
