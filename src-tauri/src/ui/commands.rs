@@ -1598,6 +1598,66 @@ pub async fn rescan_skills(
     Ok(skills)
 }
 
+/// Tool information for a skill (for permission tree UI)
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SkillToolInfo {
+    pub name: String,
+    pub description: Option<String>,
+}
+
+/// Get tools exposed by a specific skill
+///
+/// Skills expose tools through their scripts. Each script becomes a callable tool.
+/// Used by the permission tree UI to display available tools for each skill.
+///
+/// # Arguments
+/// * `skill_name` - The skill name to get tools for
+///
+/// # Returns
+/// * List of tool information (scripts exposed as tools)
+#[tauri::command]
+pub async fn get_skill_tools(
+    skill_name: String,
+    skill_manager: State<'_, Arc<lr_skills::SkillManager>>,
+) -> Result<Vec<SkillToolInfo>, String> {
+    // Get the skill definition
+    let skill = skill_manager
+        .get(&skill_name)
+        .ok_or_else(|| format!("Skill '{}' not found", skill_name))?;
+
+    // Skills expose scripts as tools
+    // Tool names are typically: skill_{sanitized_skill_name}_{script_name}
+    let sanitized_name = lr_skills::sanitize_name(&skill.metadata.name);
+
+    let tools: Vec<SkillToolInfo> = skill
+        .scripts
+        .iter()
+        .map(|script| {
+            // Extract script name without extension
+            let script_name = std::path::Path::new(script)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or(script);
+
+            let tool_name = format!("skill_{}_{}", sanitized_name, script_name);
+
+            SkillToolInfo {
+                name: tool_name,
+                description: Some(format!("Execute {} script from {} skill", script_name, skill.metadata.name)),
+            }
+        })
+        .collect();
+
+    tracing::debug!(
+        "Skill '{}' has {} tools: {:?}",
+        skill_name,
+        tools.len(),
+        tools.iter().map(|t| &t.name).collect::<Vec<_>>()
+    );
+
+    Ok(tools)
+}
+
 /// Set skills access for a client
 #[tauri::command]
 pub async fn set_client_skills_access(
@@ -1841,6 +1901,7 @@ pub async fn debug_trigger_firewall_popup(
             response_sender: None, // No response channel for debug mode
             created_at: std::time::Instant::now(),
             timeout_seconds: timeout_secs,
+            is_model_request: false,
         };
 
         firewall_manager.insert_pending(request_id.clone(), session);
