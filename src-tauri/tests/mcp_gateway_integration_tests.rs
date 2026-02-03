@@ -168,7 +168,7 @@ async fn test_gateway_concurrent_requests() {
 async fn test_search_tool_creation() {
     use localrouter::mcp::gateway::deferred::create_search_tool;
 
-    let search_tool = create_search_tool();
+    let search_tool = create_search_tool(false, false);
 
     assert_eq!(search_tool.name, "search");
     assert_eq!(search_tool.server_id, "_gateway");
@@ -247,7 +247,7 @@ async fn test_gateway_cleanup_expired_sessions() {
 
 #[tokio::test]
 async fn test_deferred_loading_search_relevance() {
-    use localrouter::mcp::gateway::deferred::search_tools;
+    use localrouter::mcp::gateway::deferred::{search_tools, SearchMode};
     use localrouter::mcp::gateway::types::NamespacedTool;
     use serde_json::json;
 
@@ -275,7 +275,7 @@ async fn test_deferred_loading_search_relevance() {
         },
     ];
 
-    let results = search_tools("read", &tools, 10);
+    let results = search_tools("read", &tools, 10, SearchMode::Bm25);
 
     // Should return tools with "read" in name or description
     assert!(!results.is_empty());

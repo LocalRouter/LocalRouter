@@ -150,6 +150,8 @@ async fn test_skills_e2e_all_tool_commands() {
             vec![],
             skills_access.clone(),
             lr_config::FirewallRules::default(),
+            "Test Client".to_string(),
+            false,
             tools_list_req,
         )
         .await
@@ -193,6 +195,8 @@ async fn test_skills_e2e_all_tool_commands() {
             vec![],
             skills_access.clone(),
             lr_config::FirewallRules::default(),
+            "Test Client".to_string(),
+            false,
             show_req,
         )
         .await
@@ -243,6 +247,8 @@ async fn test_skills_e2e_all_tool_commands() {
             vec![],
             skills_access.clone(),
             lr_config::FirewallRules::default(),
+            "Test Client".to_string(),
+            false,
             tools_list_req2,
         )
         .await
@@ -297,6 +303,8 @@ async fn test_skills_e2e_all_tool_commands() {
             vec![],
             skills_access.clone(),
             lr_config::FirewallRules::default(),
+            "Test Client".to_string(),
+            false,
             resource_req,
         )
         .await
@@ -337,6 +345,8 @@ async fn test_skills_e2e_all_tool_commands() {
             vec![],
             skills_access.clone(),
             lr_config::FirewallRules::default(),
+            "Test Client".to_string(),
+            false,
             run_sync_req,
         )
         .await
@@ -399,6 +409,8 @@ async fn test_skills_e2e_all_tool_commands() {
             vec![],
             skills_access.clone(),
             lr_config::FirewallRules::default(),
+            "Test Client".to_string(),
+            false,
             run_async_req,
         )
         .await
@@ -438,6 +450,8 @@ async fn test_skills_e2e_all_tool_commands() {
                 vec![],
                 skills_access.clone(),
                 lr_config::FirewallRules::default(),
+                "Test Client".to_string(),
+                false,
                 poll_req,
             )
             .await
@@ -555,6 +569,8 @@ async fn test_no_skill_tools_when_no_skills_configured() {
             vec![],
             SkillsAccess::None,
             lr_config::FirewallRules::default(),
+            "Test Client".to_string(),
+            false,
             req,
         )
         .await
@@ -588,6 +604,8 @@ async fn test_skill_tools_present_after_cache_hit() {
             vec![],
             skills_access.clone(),
             lr_config::FirewallRules::default(),
+            "Test Client".to_string(),
+            false,
             req,
         )
         .await
@@ -610,6 +628,8 @@ async fn test_skill_tools_present_after_cache_hit() {
             vec![],
             skills_access.clone(),
             lr_config::FirewallRules::default(),
+            "Test Client".to_string(),
+            false,
             req2,
         )
         .await
@@ -641,6 +661,8 @@ async fn test_skill_tools_present_with_deferred_loading() {
             vec![],
             skills_access.clone(),
             lr_config::FirewallRules::default(),
+            "Test Client".to_string(),
+            false,
             req,
         )
         .await
@@ -654,6 +676,8 @@ async fn test_skill_tools_present_with_deferred_loading() {
         let mut session_write = session.write().await;
         session_write.deferred_loading = Some(DeferredLoadingState {
             enabled: true,
+            resources_deferred: false,
+            prompts_deferred: false,
             activated_tools: HashSet::new(),
             full_catalog: vec![],
             activated_resources: HashSet::new(),
@@ -673,6 +697,8 @@ async fn test_skill_tools_present_with_deferred_loading() {
             vec![],
             skills_access.clone(),
             lr_config::FirewallRules::default(),
+            "Test Client".to_string(),
+            false,
             req2,
         )
         .await
@@ -705,6 +731,8 @@ async fn test_run_tool_blocked_before_get_info() {
             vec![],
             skills_access.clone(),
             lr_config::FirewallRules::default(),
+            "Test Client".to_string(),
+            false,
             req,
         )
         .await
@@ -727,6 +755,8 @@ async fn test_run_tool_blocked_before_get_info() {
             vec![],
             skills_access.clone(),
             lr_config::FirewallRules::default(),
+            "Test Client".to_string(),
+            false,
             run_req,
         )
         .await

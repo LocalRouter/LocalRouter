@@ -10,8 +10,9 @@
 
 use localrouter::config::ConfigManager;
 use localrouter::config::{
-    AppConfig, AutoModelConfig, AvailableModelsSelection, Client, FirewallRules, McpServerAccess,
-    RateLimitTimeWindow, RateLimitType, SkillsAccess, Strategy, StrategyRateLimit,
+    AppConfig, AutoModelConfig, AvailableModelsSelection, Client, FirewallRules, McpPermissions,
+    McpServerAccess, ModelPermissions, PermissionState, RateLimitTimeWindow, RateLimitType,
+    SkillsAccess, SkillsPermissions, Strategy, StrategyRateLimit,
 };
 use localrouter::monitoring::metrics::MetricsCollector;
 use localrouter::monitoring::storage::MetricsDatabase;
@@ -54,6 +55,11 @@ fn create_test_config(
         skills_access: SkillsAccess::default(),
         created_at: chrono::Utc::now(),
         last_used: None,
+        marketplace_enabled: false,
+        mcp_permissions: McpPermissions::default(),
+        skills_permissions: SkillsPermissions::default(),
+        model_permissions: ModelPermissions::default(),
+        marketplace_permission: PermissionState::Off,
     };
 
     AppConfig {
@@ -474,6 +480,11 @@ async fn test_disabled_client_returns_unauthorized() {
         skills_access: SkillsAccess::default(),
         created_at: chrono::Utc::now(),
         last_used: None,
+        marketplace_enabled: false,
+        mcp_permissions: McpPermissions::default(),
+        skills_permissions: SkillsPermissions::default(),
+        model_permissions: ModelPermissions::default(),
+        marketplace_permission: PermissionState::Off,
     };
 
     let config = AppConfig {
@@ -513,6 +524,11 @@ async fn test_client_with_missing_strategy() {
         skills_access: SkillsAccess::default(),
         created_at: chrono::Utc::now(),
         last_used: None,
+        marketplace_enabled: false,
+        mcp_permissions: McpPermissions::default(),
+        skills_permissions: SkillsPermissions::default(),
+        model_permissions: ModelPermissions::default(),
+        marketplace_permission: PermissionState::Off,
     };
 
     let config = AppConfig {

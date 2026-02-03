@@ -4,7 +4,10 @@
 //! to the LocalRouter HTTP server and returns responses.
 
 use chrono::Utc;
-use localrouter::config::{AppConfig, Client, FirewallRules, McpServerAccess, SkillsAccess};
+use localrouter::config::{
+    AppConfig, Client, FirewallRules, McpPermissions, McpServerAccess, ModelPermissions,
+    PermissionState, SkillsAccess, SkillsPermissions,
+};
 use localrouter::mcp::bridge::StdioBridge;
 use localrouter::mcp::protocol::{JsonRpcRequest, JsonRpcResponse};
 use serde_json::{json, Value};
@@ -33,6 +36,11 @@ fn test_config() -> AppConfig {
             mcp_sampling_max_tokens: None,
             mcp_sampling_rate_limit: None,
             firewall: FirewallRules::default(),
+            marketplace_enabled: false,
+            mcp_permissions: McpPermissions::default(),
+            skills_permissions: SkillsPermissions::default(),
+            model_permissions: ModelPermissions::default(),
+            marketplace_permission: PermissionState::Off,
         },
         Client {
             id: "disabled_client".to_string(),
@@ -51,6 +59,11 @@ fn test_config() -> AppConfig {
             mcp_sampling_max_tokens: None,
             mcp_sampling_rate_limit: None,
             firewall: FirewallRules::default(),
+            marketplace_enabled: false,
+            mcp_permissions: McpPermissions::default(),
+            skills_permissions: SkillsPermissions::default(),
+            model_permissions: ModelPermissions::default(),
+            marketplace_permission: PermissionState::Off,
         },
         Client {
             id: "no_mcp_client".to_string(),
@@ -69,6 +82,11 @@ fn test_config() -> AppConfig {
             mcp_sampling_max_tokens: None,
             mcp_sampling_rate_limit: None,
             firewall: FirewallRules::default(),
+            marketplace_enabled: false,
+            mcp_permissions: McpPermissions::default(),
+            skills_permissions: SkillsPermissions::default(),
+            model_permissions: ModelPermissions::default(),
+            marketplace_permission: PermissionState::Off,
         },
     ];
     config
