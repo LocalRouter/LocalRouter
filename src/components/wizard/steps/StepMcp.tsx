@@ -8,7 +8,7 @@
 import { useState, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
-import { Loader2, Info, Plus } from "lucide-react"
+import { Loader2, Info, Plus, Grid, Settings, Store } from "lucide-react"
 import { Button } from "@/components/ui/Button"
 import { Input } from "@/components/ui/Input"
 import { Label } from "@/components/ui/label"
@@ -23,6 +23,7 @@ import LegacySelect from "@/components/ui/Select"
 import KeyValueInput from "@/components/ui/KeyValueInput"
 import { McpServerSelector } from "@/components/mcp/McpServerSelector"
 import { McpServerTemplates, McpServerTemplate } from "@/components/mcp/McpServerTemplates"
+import { MarketplaceSearchPanel } from "@/components/add-resource"
 
 interface McpServer {
   id: string
@@ -45,7 +46,7 @@ export function StepMcp({ accessMode, selectedServers, onChange }: StepMcpProps)
 
   // MCP server creation state
   const [showAddServer, setShowAddServer] = useState(false)
-  const [createTab, setCreateTab] = useState<"templates" | "manual">("templates")
+  const [createTab, setCreateTab] = useState<"templates" | "custom" | "marketplace">("templates")
   const [selectedTemplate, setSelectedTemplate] = useState<McpServerTemplate | null>(null)
   const [isCreating, setIsCreating] = useState(false)
 
@@ -99,7 +100,7 @@ export function StepMcp({ accessMode, selectedServers, onChange }: StepMcpProps)
       setUrl(template.url)
     }
 
-    setCreateTab("manual")
+    setCreateTab("custom")
   }
 
   const handleCreateServer = async (e: React.FormEvent) => {
@@ -191,61 +192,67 @@ export function StepMcp({ accessMode, selectedServers, onChange }: StepMcpProps)
               <DialogTitle>Add MCP</DialogTitle>
             </DialogHeader>
 
-            <Tabs value={createTab} onValueChange={(v) => setCreateTab(v as "templates" | "manual")}>
-              <TabsList className="grid w-full grid-cols-2">
-                <TabsTrigger value="templates">Templates</TabsTrigger>
-                <TabsTrigger value="manual">Manual</TabsTrigger>
+            <Tabs value={createTab} onValueChange={(v) => setCreateTab(v as typeof createTab)}>
+              <TabsList className="grid w-full grid-cols-3">
+                <TabsTrigger value="templates" className="gap-2">
+                  <Grid className="h-4 w-4" />
+                  Templates
+                </TabsTrigger>
+                <TabsTrigger value="custom" className="gap-2">
+                  <Settings className="h-4 w-4" />
+                  Custom
+                </TabsTrigger>
+                <TabsTrigger value="marketplace" className="gap-2">
+                  <Store className="h-4 w-4" />
+                  Marketplace
+                </TabsTrigger>
               </TabsList>
 
               {/* Templates Tab */}
               <TabsContent value="templates" className="mt-4">
-                <McpServerTemplates
-                  onSelectTemplate={(template) => {
-                    handleSelectTemplate(template)
-                  }}
-                />
+                <McpServerTemplates onSelectTemplate={handleSelectTemplate} />
               </TabsContent>
 
-              {/* Manual Tab */}
-              <TabsContent value="manual" className="mt-4">
-                <form onSubmit={handleCreateServer} className="space-y-4">
-                  {/* Show selected template info */}
-                  {selectedTemplate && (
-                    <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded p-3">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <span className="text-2xl">{selectedTemplate.icon}</span>
-                          <div>
-                            <p className="text-sm font-medium text-blue-900 dark:text-blue-100">
-                              Using template: {selectedTemplate.name}
-                            </p>
-                            <p className="text-xs text-blue-700 dark:text-blue-300">
-                              Customize the settings below
-                            </p>
-                          </div>
+              {/* Custom Tab */}
+              <TabsContent value="custom" className="mt-4">
+                {/* Show selected template info */}
+                {selectedTemplate && selectedTemplate.id !== "custom" && (
+                  <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded p-3 mb-4">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <span className="text-2xl">{selectedTemplate.icon}</span>
+                        <div>
+                          <p className="text-sm font-medium text-blue-900 dark:text-blue-100">
+                            Using template: {selectedTemplate.name}
+                          </p>
+                          <p className="text-xs text-blue-700 dark:text-blue-300">
+                            Customize the settings below
+                          </p>
                         </div>
-                        <Button
-                          type="button"
-                          variant="secondary"
-                          size="sm"
-                          onClick={() => {
-                            setSelectedTemplate(null)
-                            setServerName("")
-                            setCommand("")
-                            setUrl("")
-                          }}
-                        >
-                          Clear
-                        </Button>
                       </div>
-                      {selectedTemplate.setupInstructions && (
-                        <p className="text-xs text-blue-700 dark:text-blue-300 mt-2">
-                          {selectedTemplate.setupInstructions}
-                        </p>
-                      )}
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => {
+                          setSelectedTemplate(null)
+                          setServerName("")
+                          setCommand("")
+                          setUrl("")
+                        }}
+                      >
+                        Clear
+                      </Button>
                     </div>
-                  )}
+                    {selectedTemplate.setupInstructions && (
+                      <p className="text-xs text-blue-700 dark:text-blue-300 mt-2">
+                        {selectedTemplate.setupInstructions}
+                      </p>
+                    )}
+                  </div>
+                )}
 
+                <form onSubmit={handleCreateServer} className="space-y-4">
                   <div>
                     <Label className="mb-2 block">Server Name</Label>
                     <Input
@@ -338,6 +345,19 @@ export function StepMcp({ accessMode, selectedServers, onChange }: StepMcpProps)
                   </div>
                 </form>
               </TabsContent>
+
+              {/* Marketplace Tab */}
+              <TabsContent value="marketplace" className="mt-4">
+                <MarketplaceSearchPanel
+                  type="mcp"
+                  onInstallComplete={() => {
+                    setShowAddServer(false)
+                    resetForm()
+                    loadServers()
+                  }}
+                  maxHeight="400px"
+                />
+              </TabsContent>
             </Tabs>
           </DialogContent>
         </Dialog>
@@ -387,61 +407,67 @@ export function StepMcp({ accessMode, selectedServers, onChange }: StepMcpProps)
             <DialogTitle>Add MCP</DialogTitle>
           </DialogHeader>
 
-          <Tabs value={createTab} onValueChange={(v) => setCreateTab(v as "templates" | "manual")}>
-            <TabsList className="grid w-full grid-cols-2">
-              <TabsTrigger value="templates">Templates</TabsTrigger>
-              <TabsTrigger value="manual">Manual</TabsTrigger>
+          <Tabs value={createTab} onValueChange={(v) => setCreateTab(v as typeof createTab)}>
+            <TabsList className="grid w-full grid-cols-3">
+              <TabsTrigger value="templates" className="gap-2">
+                <Grid className="h-4 w-4" />
+                Templates
+              </TabsTrigger>
+              <TabsTrigger value="custom" className="gap-2">
+                <Settings className="h-4 w-4" />
+                Custom
+              </TabsTrigger>
+              <TabsTrigger value="marketplace" className="gap-2">
+                <Store className="h-4 w-4" />
+                Marketplace
+              </TabsTrigger>
             </TabsList>
 
             {/* Templates Tab */}
             <TabsContent value="templates" className="mt-4">
-              <McpServerTemplates
-                onSelectTemplate={(template) => {
-                  handleSelectTemplate(template)
-                }}
-              />
+              <McpServerTemplates onSelectTemplate={handleSelectTemplate} />
             </TabsContent>
 
-            {/* Manual Tab */}
-            <TabsContent value="manual" className="mt-4">
-              <form onSubmit={handleCreateServer} className="space-y-4">
-                {/* Show selected template info */}
-                {selectedTemplate && (
-                  <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded p-3">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <span className="text-2xl">{selectedTemplate.icon}</span>
-                        <div>
-                          <p className="text-sm font-medium text-blue-900 dark:text-blue-100">
-                            Using template: {selectedTemplate.name}
-                          </p>
-                          <p className="text-xs text-blue-700 dark:text-blue-300">
-                            Customize the settings below
-                          </p>
-                        </div>
+            {/* Custom Tab */}
+            <TabsContent value="custom" className="mt-4">
+              {/* Show selected template info */}
+              {selectedTemplate && selectedTemplate.id !== "custom" && (
+                <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded p-3 mb-4">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className="text-2xl">{selectedTemplate.icon}</span>
+                      <div>
+                        <p className="text-sm font-medium text-blue-900 dark:text-blue-100">
+                          Using template: {selectedTemplate.name}
+                        </p>
+                        <p className="text-xs text-blue-700 dark:text-blue-300">
+                          Customize the settings below
+                        </p>
                       </div>
-                      <Button
-                        type="button"
-                        variant="secondary"
-                        size="sm"
-                        onClick={() => {
-                          setSelectedTemplate(null)
-                          setServerName("")
-                          setCommand("")
-                          setUrl("")
-                        }}
-                      >
-                        Clear
-                      </Button>
                     </div>
-                    {selectedTemplate.setupInstructions && (
-                      <p className="text-xs text-blue-700 dark:text-blue-300 mt-2">
-                        {selectedTemplate.setupInstructions}
-                      </p>
-                    )}
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => {
+                        setSelectedTemplate(null)
+                        setServerName("")
+                        setCommand("")
+                        setUrl("")
+                      }}
+                    >
+                      Clear
+                    </Button>
                   </div>
-                )}
+                  {selectedTemplate.setupInstructions && (
+                    <p className="text-xs text-blue-700 dark:text-blue-300 mt-2">
+                      {selectedTemplate.setupInstructions}
+                    </p>
+                  )}
+                </div>
+              )}
 
+              <form onSubmit={handleCreateServer} className="space-y-4">
                 <div>
                   <Label className="mb-2 block">Server Name</Label>
                   <Input
@@ -533,6 +559,19 @@ export function StepMcp({ accessMode, selectedServers, onChange }: StepMcpProps)
                   </Button>
                 </div>
               </form>
+            </TabsContent>
+
+            {/* Marketplace Tab */}
+            <TabsContent value="marketplace" className="mt-4">
+              <MarketplaceSearchPanel
+                type="mcp"
+                onInstallComplete={() => {
+                  setShowAddServer(false)
+                  resetForm()
+                  loadServers()
+                }}
+                maxHeight="400px"
+              />
             </TabsContent>
           </Tabs>
         </DialogContent>

@@ -29,16 +29,16 @@ export function DebugView({ activeSubTab: _activeSubTab, onTabChange }: DebugVie
   }
 
   return (
-    <div className="flex-1 overflow-auto">
-      <div className="p-6 space-y-6 max-w-2xl">
-        <div>
-          <h1 className="text-lg font-semibold">Debug</h1>
-          <p className="text-sm text-muted-foreground">
-            Development-only tools for testing UI flows.
-          </p>
-        </div>
+    <div className="flex flex-col h-full min-h-0">
+      <div className="flex-shrink-0 pb-4">
+        <h1 className="text-2xl font-bold tracking-tight">Debug</h1>
+        <p className="text-sm text-muted-foreground">
+          Development-only tools for testing UI flows
+        </p>
+      </div>
 
-        <div className="space-y-4">
+      <div className="flex-1 overflow-auto">
+        <div className="space-y-4 max-w-2xl">
           {/* First-time wizard */}
           <div className="border rounded-lg p-4 space-y-2">
             <h2 className="text-sm font-medium">First-Time Setup Wizard</h2>

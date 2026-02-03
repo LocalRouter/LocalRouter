@@ -23,6 +23,7 @@ interface Client {
   mcp_deferred_loading: boolean
   skills_access_mode: "none" | "all" | "specific"
   skills_names: string[]
+  marketplace_enabled: boolean
   created_at: string
   last_used: string | null
 }

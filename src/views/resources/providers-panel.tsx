@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
 import { toast } from "sonner"
-import { CheckCircle, XCircle, AlertCircle, Plus, Loader2, RefreshCw, FlaskConical } from "lucide-react"
+import { CheckCircle, XCircle, AlertCircle, Plus, Loader2, RefreshCw, FlaskConical, Grid, Settings } from "lucide-react"
 import { ProvidersIcon } from "@/components/icons/category-icons"
 import { Badge } from "@/components/ui/Badge"
 import { Button } from "@/components/ui/Button"
@@ -102,6 +102,7 @@ export function ProvidersPanel({
   const [detailTab, setDetailTab] = useState("info")
 
   // Create form state
+  const [createTab, setCreateTab] = useState<"templates" | "custom">("templates")
   const [selectedProviderType, setSelectedProviderType] = useState<string>("")
   const [isSubmitting, setIsSubmitting] = useState(false)
 
@@ -633,118 +634,167 @@ export function ProvidersPanel({
       </ResizablePanelGroup>
 
       {/* Create Provider Dialog */}
-      <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
-        <DialogContent className={cn(
-          "max-h-[90vh] overflow-y-auto",
-          !selectedProviderType ? "max-w-2xl" : "max-w-lg"
-        )}>
+      <Dialog open={createDialogOpen} onOpenChange={(open) => {
+        setCreateDialogOpen(open)
+        if (!open) {
+          setSelectedProviderType("")
+          setCreateTab("templates")
+        }
+      }}>
+        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Add Provider</DialogTitle>
           </DialogHeader>
 
-          {!selectedProviderType ? (
-            (() => {
-              // Group providers by category from backend
-              const genericProviders = providerTypes.filter(t => t.category === 'generic')
-              const localProviders = providerTypes.filter(t => t.category === 'local')
-              const subscriptionProviders = providerTypes.filter(t => t.category === 'subscription')
-              const firstPartyProviders = providerTypes.filter(t => t.category === 'first_party')
-              const thirdPartyProviders = providerTypes.filter(t => t.category === 'third_party')
+          <Tabs value={createTab} onValueChange={(v) => setCreateTab(v as typeof createTab)}>
+            <TabsList className="grid w-full grid-cols-2">
+              <TabsTrigger value="templates" className="gap-2">
+                <Grid className="h-4 w-4" />
+                Templates
+              </TabsTrigger>
+              <TabsTrigger value="custom" className="gap-2">
+                <Settings className="h-4 w-4" />
+                Custom
+              </TabsTrigger>
+            </TabsList>
 
-              const ProviderButton = ({ type }: { type: ProviderType }) => (
-                <button
-                  key={type.provider_type}
-                  onClick={() => setSelectedProviderType(type.provider_type)}
-                  className={cn(
-                    "flex flex-col items-center gap-2 p-4 rounded-lg border-2 border-muted",
-                    "hover:border-primary hover:bg-accent transition-colors",
-                    "focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
-                  )}
-                >
-                  <ProviderIcon providerId={type.provider_type.toLowerCase()} size={40} />
-                  <div className="text-center">
-                    <p className="font-medium text-sm">{type.display_name}</p>
-                    <p className="text-xs text-muted-foreground line-clamp-2 mt-0.5">
-                      {type.description}
-                    </p>
-                  </div>
-                </button>
-              )
+            {/* Templates Tab */}
+            <TabsContent value="templates" className="mt-4">
+              {!selectedProviderType ? (
+                (() => {
+                  // Group providers by category from backend (excluding generic for templates)
+                  const localProviders = providerTypes.filter(t => t.category === 'local')
+                  const subscriptionProviders = providerTypes.filter(t => t.category === 'subscription')
+                  const firstPartyProviders = providerTypes.filter(t => t.category === 'first_party')
+                  const thirdPartyProviders = providerTypes.filter(t => t.category === 'third_party')
 
-              const ProviderSection = ({ title, description, providers }: {
-                title: string
-                description: string
-                providers: ProviderType[]
-              }) => {
-                if (providers.length === 0) return null
+                  const ProviderButton = ({ type }: { type: ProviderType }) => (
+                    <button
+                      key={type.provider_type}
+                      onClick={() => setSelectedProviderType(type.provider_type)}
+                      className={cn(
+                        "flex flex-col items-center gap-2 p-4 rounded-lg border-2 border-muted",
+                        "hover:border-primary hover:bg-accent transition-colors",
+                        "focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+                      )}
+                    >
+                      <ProviderIcon providerId={type.provider_type.toLowerCase()} size={40} />
+                      <div className="text-center">
+                        <p className="font-medium text-sm">{type.display_name}</p>
+                        <p className="text-xs text-muted-foreground line-clamp-2 mt-0.5">
+                          {type.description}
+                        </p>
+                      </div>
+                    </button>
+                  )
+
+                  const ProviderSection = ({ title, description, providers }: {
+                    title: string
+                    description: string
+                    providers: ProviderType[]
+                  }) => {
+                    if (providers.length === 0) return null
+                    return (
+                      <div className="space-y-3">
+                        <div>
+                          <h3 className="text-sm font-semibold">{title}</h3>
+                          <p className="text-xs text-muted-foreground">{description}</p>
+                        </div>
+                        <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                          {providers.map((type) => (
+                            <ProviderButton key={type.provider_type} type={type} />
+                          ))}
+                        </div>
+                      </div>
+                    )
+                  }
+
+                  return (
+                    <div className="space-y-6">
+                      <ProviderSection
+                        title="Local Providers"
+                        description="Connect to models running on your machine"
+                        providers={localProviders}
+                      />
+                      <ProviderSection
+                        title="Subscription Cloud Providers"
+                        description="Connect using your existing subscription (OAuth)"
+                        providers={subscriptionProviders}
+                      />
+                      <ProviderSection
+                        title="First-Party Cloud Providers"
+                        description="Direct API access to model creators"
+                        providers={firstPartyProviders}
+                      />
+                      <ProviderSection
+                        title="Third-Party Hosting"
+                        description="Platforms hosting models from multiple sources"
+                        providers={thirdPartyProviders}
+                      />
+                    </div>
+                  )
+                })()
+              ) : selectedTypeForCreate ? (
+                <>
+                  <ProviderForm
+                    mode="create"
+                    providerType={selectedTypeForCreate}
+                    onSubmit={handleCreateProvider}
+                    onCancel={() => {
+                      setCreateDialogOpen(false)
+                      setSelectedProviderType("")
+                    }}
+                    isSubmitting={isSubmitting}
+                  />
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setSelectedProviderType("")}
+                    className="mt-2"
+                  >
+                    Back to provider selection
+                  </Button>
+                </>
+              ) : null}
+            </TabsContent>
+
+            {/* Custom Tab - Generic/OpenAI-compatible only */}
+            <TabsContent value="custom" className="mt-4">
+              {(() => {
+                const genericType = providerTypes.find(t => t.category === 'generic')
+                if (!genericType) {
+                  return (
+                    <div className="text-center py-8 text-muted-foreground">
+                      <p>Generic provider type not available</p>
+                    </div>
+                  )
+                }
                 return (
-                  <div className="space-y-3">
-                    <div>
-                      <h3 className="text-sm font-semibold">{title}</h3>
-                      <p className="text-xs text-muted-foreground">{description}</p>
+                  <div className="space-y-4">
+                    <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded p-3">
+                      <p className="text-sm font-medium text-blue-900 dark:text-blue-100">
+                        OpenAI-Compatible Provider
+                      </p>
+                      <p className="text-xs text-blue-700 dark:text-blue-300 mt-1">
+                        Connect to any API that follows the OpenAI API format
+                      </p>
                     </div>
-                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-                      {providers.map((type) => (
-                        <ProviderButton key={type.provider_type} type={type} />
-                      ))}
-                    </div>
+                    <ProviderForm
+                      mode="create"
+                      providerType={genericType}
+                      onSubmit={handleCreateProvider}
+                      onCancel={() => {
+                        setCreateDialogOpen(false)
+                        setSelectedProviderType("")
+                        setCreateTab("templates")
+                      }}
+                      isSubmitting={isSubmitting}
+                    />
                   </div>
                 )
-              }
-
-              return (
-                <div className="space-y-6">
-                  <ProviderSection
-                    title="Generic / Custom"
-                    description="Connect to any OpenAI-compatible API endpoint"
-                    providers={genericProviders}
-                  />
-                  <ProviderSection
-                    title="Local Providers"
-                    description="Connect to models running on your machine"
-                    providers={localProviders}
-                  />
-                  <ProviderSection
-                    title="Subscription Cloud Providers"
-                    description="Connect using your existing subscription (OAuth)"
-                    providers={subscriptionProviders}
-                  />
-                  <ProviderSection
-                    title="First-Party Cloud Providers"
-                    description="Direct API access to model creators"
-                    providers={firstPartyProviders}
-                  />
-                  <ProviderSection
-                    title="Third-Party Hosting"
-                    description="Platforms hosting models from multiple sources"
-                    providers={thirdPartyProviders}
-                  />
-                </div>
-              )
-            })()
-          ) : selectedTypeForCreate ? (
-            <ProviderForm
-              mode="create"
-              providerType={selectedTypeForCreate}
-              onSubmit={handleCreateProvider}
-              onCancel={() => {
-                setCreateDialogOpen(false)
-                setSelectedProviderType("")
-              }}
-              isSubmitting={isSubmitting}
-            />
-          ) : null}
-
-          {selectedProviderType && (
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => setSelectedProviderType("")}
-              className="mt-2"
-            >
-              Back to provider selection
-            </Button>
-          )}
+              })()}
+            </TabsContent>
+          </Tabs>
         </DialogContent>
       </Dialog>
 

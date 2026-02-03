@@ -1,9 +1,11 @@
 import { useState, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
+import { open } from "@tauri-apps/plugin-dialog"
 
 import { toast } from "sonner"
-import { RefreshCw, ExternalLink, ChevronDown, ChevronRight, FileText, FileCode, Image, Folder, FlaskConical, Play, BookOpen, Sparkles } from "lucide-react"
+import { RefreshCw, ExternalLink, ChevronDown, ChevronRight, FileText, FileCode, Image, Folder, FlaskConical, Play, BookOpen, Plus, Trash2, FolderOpen, Store } from "lucide-react"
+import { SkillsIcon } from "@/components/icons/category-icons"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Switch } from "@/components/ui/switch"
@@ -15,6 +17,14 @@ import {
   ResizablePanel,
   ResizableHandle,
 } from "@/components/ui/resizable"
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+} from "@/components/ui/Modal"
+import { MarketplaceSearchPanel } from "@/components/add-resource"
 import { cn } from "@/lib/utils"
 
 interface SkillInfo {
@@ -37,6 +47,12 @@ interface SkillFile {
   content_preview: string | null
 }
 
+interface SkillsConfig {
+  paths: string[]
+  disabled_skills: string[]
+  async_enabled: boolean
+}
+
 interface SkillsViewProps {
   activeSubTab: string | null
   onTabChange: (view: string, subTab?: string | null) => void
@@ -52,6 +68,14 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
   const [expandedFiles, setExpandedFiles] = useState<Set<string>>(new Set())
   const [search, setSearch] = useState("")
   const [detailTab, setDetailTab] = useState("info")
+
+  // Skill paths dialog state
+  const [showPathsDialog, setShowPathsDialog] = useState(false)
+  const [dialogTab, setDialogTab] = useState<"manage" | "marketplace">("manage")
+  const [skillPaths, setSkillPaths] = useState<string[]>([])
+  const [newPath, setNewPath] = useState("")
+  const [addingPath, setAddingPath] = useState(false)
+  const [removingPath, setRemovingPath] = useState<string | null>(null)
 
   useEffect(() => {
     loadData()
@@ -150,33 +174,85 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
     }
   }
 
+  const loadSkillsConfig = async () => {
+    try {
+      const config = await invoke<SkillsConfig>("get_skills_config")
+      setSkillPaths(config.paths)
+    } catch (error) {
+      console.error("Failed to load skills config:", error)
+    }
+  }
+
+  const handleOpenPathsDialog = async () => {
+    await loadSkillsConfig()
+    setShowPathsDialog(true)
+  }
+
+  const handleAddPath = async (path: string) => {
+    if (!path.trim()) return
+
+    setAddingPath(true)
+    try {
+      await invoke("add_skill_source", { path: path.trim() })
+      toast.success("Skill path added")
+      setNewPath("")
+      await loadSkillsConfig()
+    } catch (error) {
+      console.error("Failed to add skill path:", error)
+      toast.error("Failed to add skill path")
+    } finally {
+      setAddingPath(false)
+    }
+  }
+
+  const handleRemovePath = async (path: string) => {
+    setRemovingPath(path)
+    try {
+      await invoke("remove_skill_source", { path })
+      toast.success("Skill path removed")
+      await loadSkillsConfig()
+    } catch (error) {
+      console.error("Failed to remove skill path:", error)
+      toast.error("Failed to remove skill path")
+    } finally {
+      setRemovingPath(null)
+    }
+  }
+
+  const handleBrowse = async () => {
+    try {
+      const selected = await open({
+        directory: true,
+        multiple: false,
+        title: "Select Skill Folder or File",
+      })
+      if (selected && typeof selected === "string") {
+        await handleAddPath(selected)
+      }
+    } catch (error) {
+      console.error("Failed to open browse dialog:", error)
+    }
+  }
+
   const selectedSkillInfo = skills.find(s => s.name === selectedSkill)
 
-  const filteredSkills = skills.filter((s) =>
-    s.name.toLowerCase().includes(search.toLowerCase()) ||
-    (s.description && s.description.toLowerCase().includes(search.toLowerCase()))
-  )
+  const filteredSkills = skills
+    .filter((s) =>
+      s.name.toLowerCase().includes(search.toLowerCase()) ||
+      (s.description && s.description.toLowerCase().includes(search.toLowerCase()))
+    )
+    .sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()))
 
   return (
     <div className="flex flex-col h-full min-h-0">
       <div className="flex-shrink-0 pb-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-2xl font-bold tracking-tight">Skills</h1>
-            <p className="text-sm text-muted-foreground">
-              Manage AgentSkills.io skill packages
-            </p>
-          </div>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleRescan}
-            disabled={rescanning}
-          >
-            <RefreshCw className={`h-4 w-4 mr-2 ${rescanning ? "animate-spin" : ""}`} />
-            Rescan
-          </Button>
-        </div>
+        <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
+          <SkillsIcon className="h-6 w-6" />
+          Skills
+        </h1>
+        <p className="text-sm text-muted-foreground">
+          Manage AgentSkills.io skill packages
+        </p>
       </div>
 
       <ResizablePanelGroup direction="horizontal" className="flex-1 min-h-0 rounded-lg border">
@@ -184,11 +260,17 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
         <ResizablePanel defaultSize={35} minSize={25}>
           <div className="flex flex-col h-full">
             <div className="p-4 border-b">
-              <Input
-                placeholder="Search skills..."
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-              />
+              <div className="flex items-center gap-2">
+                <Input
+                  placeholder="Search skills..."
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  className="flex-1"
+                />
+                <Button size="icon" onClick={handleOpenPathsDialog} title="Add skill source">
+                  <Plus className="h-4 w-4" />
+                </Button>
+              </div>
             </div>
             <ScrollArea className="flex-1">
               <div className="p-2 space-y-1">
@@ -275,19 +357,21 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
                         </CardHeader>
                         <CardContent className="space-y-4">
                           <div className="grid grid-cols-2 gap-3 text-sm">
-                            {selectedSkillInfo.version && (
-                              <div>
-                                <span className="text-muted-foreground">Version:</span>{" "}
-                                <span className="font-medium">{selectedSkillInfo.version}</span>
-                              </div>
-                            )}
                             {selectedSkillInfo.author && (
                               <div>
                                 <span className="text-muted-foreground">Author:</span>{" "}
                                 <span className="font-medium">{selectedSkillInfo.author}</span>
                               </div>
                             )}
-                            {Object.entries(selectedSkillInfo.extra).map(([key, value]) => (
+                            {selectedSkillInfo.version && (
+                              <div>
+                                <span className="text-muted-foreground">Version:</span>{" "}
+                                <span className="font-medium">{selectedSkillInfo.version}</span>
+                              </div>
+                            )}
+                            {Object.entries(selectedSkillInfo.extra)
+                              .sort(([a], [b]) => a.localeCompare(b))
+                              .map(([key, value]) => (
                               <div key={key}>
                                 <span className="text-muted-foreground">{key}:</span>{" "}
                                 <span className="font-medium">{typeof value === "object" ? JSON.stringify(value) : String(value)}</span>
@@ -512,17 +596,152 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
             </ScrollArea>
           ) : (
             <div className="flex flex-col items-center justify-center h-full text-muted-foreground gap-4">
-              <Sparkles className="h-12 w-12 opacity-30" />
+              <SkillsIcon className="h-12 w-12 opacity-30" />
               <div className="text-center">
                 <p className="font-medium">Select a skill to view details</p>
                 <p className="text-sm">
-                  or rescan to discover new skills
+                  Click + to add skill sources
                 </p>
               </div>
             </div>
           )}
         </ResizablePanel>
       </ResizablePanelGroup>
+
+      {/* Add Skills Dialog */}
+      <Dialog open={showPathsDialog} onOpenChange={(open) => {
+        setShowPathsDialog(open)
+        if (!open) {
+          setDialogTab("manage")
+        }
+      }}>
+        <DialogContent className="max-w-lg max-h-[80vh] flex flex-col overflow-hidden">
+          <DialogHeader className="flex-shrink-0">
+            <DialogTitle>Add Skills</DialogTitle>
+            <DialogDescription>
+              Manage local skill paths or install from the marketplace.
+            </DialogDescription>
+          </DialogHeader>
+
+          <Tabs value={dialogTab} onValueChange={(v) => setDialogTab(v as typeof dialogTab)} className="flex-1 flex flex-col min-h-0">
+            <TabsList className="grid w-full grid-cols-2 flex-shrink-0">
+              <TabsTrigger value="manage" className="gap-2">
+                <FolderOpen className="h-4 w-4" />
+                Manage Paths
+              </TabsTrigger>
+              <TabsTrigger value="marketplace" className="gap-2">
+                <Store className="h-4 w-4" />
+                Marketplace
+              </TabsTrigger>
+            </TabsList>
+
+            {/* Manage Paths Tab */}
+            <TabsContent value="manage" className="mt-4 flex-1 flex flex-col min-h-0 data-[state=inactive]:hidden">
+              <div className="space-y-4 flex-1 overflow-y-auto">
+                {/* Existing Paths */}
+                <div className="space-y-2">
+                  <p className="text-sm font-medium">Current Paths</p>
+                  {skillPaths.length === 0 ? (
+                    <p className="text-sm text-muted-foreground py-2">No skill paths configured</p>
+                  ) : (
+                    <div className="space-y-1">
+                      {skillPaths.map((path) => (
+                        <div
+                          key={path}
+                          className="flex items-center gap-2 p-2 rounded-md bg-muted/50 group"
+                        >
+                          <Folder className="h-4 w-4 text-muted-foreground shrink-0" />
+                          <span className="text-sm flex-1 truncate" title={path}>
+                            {path}
+                          </span>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity"
+                            onClick={() => handleRemovePath(path)}
+                            disabled={removingPath === path}
+                          >
+                            <Trash2 className="h-3.5 w-3.5 text-destructive" />
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Add New Path */}
+                <div className="space-y-2">
+                  <p className="text-sm font-medium">Add New Path</p>
+                  <div className="flex gap-2">
+                    <Input
+                      placeholder="Enter path or browse..."
+                      value={newPath}
+                      onChange={(e) => setNewPath(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && newPath.trim()) {
+                          handleAddPath(newPath)
+                        }
+                      }}
+                      className="flex-1"
+                    />
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      onClick={() => handleAddPath(newPath)}
+                      disabled={!newPath.trim() || addingPath}
+                      title="Add path"
+                    >
+                      <Plus className="h-4 w-4" />
+                    </Button>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="w-full"
+                    onClick={handleBrowse}
+                    disabled={addingPath}
+                  >
+                    <FolderOpen className="h-4 w-4 mr-2" />
+                    Browse...
+                  </Button>
+                </div>
+              </div>
+
+              {/* Footer with Rescan */}
+              <div className="flex-shrink-0 pt-4 border-t flex justify-between items-center mt-4">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleRescan}
+                  disabled={rescanning}
+                >
+                  <RefreshCw className={`h-4 w-4 mr-2 ${rescanning ? "animate-spin" : ""}`} />
+                  Rescan Skills
+                </Button>
+                <Button
+                  variant="default"
+                  size="sm"
+                  onClick={() => setShowPathsDialog(false)}
+                >
+                  Done
+                </Button>
+              </div>
+            </TabsContent>
+
+            {/* Marketplace Tab */}
+            <TabsContent value="marketplace" className="mt-4 flex-1 min-h-0 data-[state=inactive]:hidden">
+              <MarketplaceSearchPanel
+                type="skill"
+                onInstallComplete={() => {
+                  loadData()
+                  handleRescan()
+                }}
+                maxHeight="350px"
+              />
+            </TabsContent>
+          </Tabs>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

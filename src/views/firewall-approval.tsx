@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow"
-import { Shield, Clock, AlertTriangle } from "lucide-react"
+import { Shield, AlertTriangle, X } from "lucide-react"
 import { Button } from "@/components/ui/Button"
 
 interface ApprovalDetails {
@@ -23,7 +23,6 @@ export function FirewallApproval() {
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [showArgs, setShowArgs] = useState(false)
-  const [remainingSeconds, setRemainingSeconds] = useState<number | null>(null)
 
   useEffect(() => {
     const loadDetails = async () => {
@@ -37,7 +36,6 @@ export function FirewallApproval() {
           requestId,
         })
         setDetails(result)
-        setRemainingSeconds(Math.max(0, result.timeout_seconds - result.created_at_secs_ago))
       } catch (err) {
         console.error("Failed to load approval details:", err)
         setError(typeof err === "string" ? err : "Failed to load approval details")
@@ -48,25 +46,6 @@ export function FirewallApproval() {
 
     loadDetails()
   }, [])
-
-  // Countdown timer
-  useEffect(() => {
-    if (remainingSeconds === null || remainingSeconds <= 0) return
-
-    const interval = setInterval(() => {
-      setRemainingSeconds((prev) => {
-        if (prev === null || prev <= 1) {
-          clearInterval(interval)
-          // Auto-close on timeout
-          getCurrentWebviewWindow().close()
-          return 0
-        }
-        return prev - 1
-      })
-    }, 1000)
-
-    return () => clearInterval(interval)
-  }, [remainingSeconds !== null])
 
   const handleAction = async (action: ApprovalAction) => {
     if (!details) return
@@ -85,9 +64,13 @@ export function FirewallApproval() {
     }
   }
 
+  const handleClose = () => {
+    getCurrentWebviewWindow().close()
+  }
+
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-screen bg-background">
+      <div className="flex items-center justify-center h-screen bg-background rounded-lg border border-border">
         <div className="text-muted-foreground text-sm">Loading...</div>
       </div>
     )
@@ -95,36 +78,58 @@ export function FirewallApproval() {
 
   if (error || !details) {
     return (
-      <div className="flex flex-col items-center justify-center h-screen bg-background p-4 gap-3">
-        <AlertTriangle className="h-8 w-8 text-destructive" />
-        <p className="text-sm text-destructive text-center">{error || "Request not found"}</p>
-        <Button
-          size="sm"
-          variant="outline"
-          onClick={() => getCurrentWebviewWindow().close()}
+      <div className="flex flex-col h-screen bg-background rounded-lg border border-border">
+        {/* Draggable header with close button */}
+        <div
+          data-tauri-drag-region
+          className="flex items-center justify-between p-3 border-b border-border cursor-move"
         >
-          Close
-        </Button>
+          <div className="flex items-center gap-2" data-tauri-drag-region>
+            <AlertTriangle className="h-5 w-5 text-destructive" />
+            <h1 className="text-sm font-semibold">Error</h1>
+          </div>
+          <button
+            type="button"
+            onClick={handleClose}
+            className="p-1 rounded hover:bg-muted transition-colors"
+            title="Close"
+          >
+            <X className="h-4 w-4 text-muted-foreground" />
+          </button>
+        </div>
+        <div className="flex flex-col items-center justify-center flex-1 p-4 gap-3">
+          <p className="text-sm text-destructive text-center">{error || "Request not found"}</p>
+          <Button size="sm" variant="outline" onClick={handleClose}>
+            Close
+          </Button>
+        </div>
       </div>
     )
   }
 
   return (
-    <div className="flex flex-col h-screen bg-background p-4 gap-3">
-      {/* Header */}
-      <div className="flex items-center gap-2">
-        <Shield className="h-5 w-5 text-amber-500" />
-        <h1 className="text-sm font-semibold">Tool Approval Required</h1>
-        {remainingSeconds !== null && remainingSeconds > 0 && (
-          <span className="ml-auto flex items-center gap-1 text-xs text-muted-foreground">
-            <Clock className="h-3 w-3" />
-            {remainingSeconds}s
-          </span>
-        )}
+    <div className="flex flex-col h-screen bg-background rounded-lg border border-border">
+      {/* Draggable header with close button */}
+      <div
+        data-tauri-drag-region
+        className="flex items-center justify-between p-3 border-b border-border cursor-move"
+      >
+        <div className="flex items-center gap-2" data-tauri-drag-region>
+          <Shield className="h-5 w-5 text-amber-500" />
+          <h1 className="text-sm font-semibold">Tool Approval Required</h1>
+        </div>
+        <button
+          type="button"
+          onClick={handleClose}
+          className="p-1 rounded hover:bg-muted transition-colors"
+          title="Close"
+        >
+          <X className="h-4 w-4 text-muted-foreground" />
+        </button>
       </div>
 
       {/* Details */}
-      <div className="space-y-2 flex-1 overflow-auto">
+      <div className="space-y-2 flex-1 overflow-auto p-4">
         <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5 text-xs">
           <span className="text-muted-foreground">Client:</span>
           <span className="font-medium truncate">{details.client_name}</span>
@@ -157,20 +162,8 @@ export function FirewallApproval() {
         )}
       </div>
 
-      {/* Timeout progress bar */}
-      {remainingSeconds !== null && details.timeout_seconds > 0 && (
-        <div className="h-1 bg-muted rounded-full overflow-hidden">
-          <div
-            className="h-full bg-amber-500 transition-all duration-1000 ease-linear"
-            style={{
-              width: `${(remainingSeconds / details.timeout_seconds) * 100}%`,
-            }}
-          />
-        </div>
-      )}
-
       {/* Action Buttons */}
-      <div className="flex gap-2">
+      <div className="flex gap-2 p-4 pt-0">
         <Button
           variant="destructive"
           size="sm"

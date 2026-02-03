@@ -2,7 +2,7 @@ import { useState, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
 import { toast } from "sonner"
-import { Plus, CheckCircle, XCircle, Loader2, RefreshCw, FlaskConical, Blocks } from "lucide-react"
+import { Plus, CheckCircle, XCircle, Loader2, RefreshCw, FlaskConical, Blocks, Grid, Settings, Store } from "lucide-react"
 import McpServerIcon from "@/components/McpServerIcon"
 import { Badge } from "@/components/ui/Badge"
 import { Button } from "@/components/ui/Button"
@@ -36,6 +36,7 @@ import LegacySelect from "@/components/ui/Select"
 import KeyValueInput from "@/components/ui/KeyValueInput"
 import { McpServerTemplates, McpServerTemplate } from "@/components/mcp/McpServerTemplates"
 import { McpOAuthModal } from "@/components/mcp/McpOAuthModal"
+import { MarketplaceSearchPanel } from "@/components/add-resource"
 import { cn } from "@/lib/utils"
 
 interface McpAuthConfig {
@@ -114,6 +115,7 @@ export function McpServersPanel({
 
   // Create modal state
   const [showCreateModal, setShowCreateModal] = useState(false)
+  const [createTab, setCreateTab] = useState<"templates" | "custom" | "marketplace">("templates")
   const [selectedTemplate, setSelectedTemplate] = useState<McpServerTemplate | null>(null)
   const [isCreating, setIsCreating] = useState(false)
 
@@ -210,6 +212,7 @@ export function McpServersPanel({
     setOauthClientId("")
     setOauthClientSecret("")
     setSelectedTemplate(null)
+    setCreateTab("templates")
   }
 
   const handleSelectTemplate = (template: McpServerTemplate) => {
@@ -233,6 +236,9 @@ export function McpServersPanel({
     } else {
       setAuthMethod("none")
     }
+
+    // Switch to custom tab to show the form
+    setCreateTab("custom")
   }
 
   const handleCreateServer = async (e: React.FormEvent) => {
@@ -989,100 +995,162 @@ export function McpServersPanel({
         if (!open) { setShowCreateModal(false); resetForm() }
       }}
     >
-      <DialogContent className={cn(
-        "max-h-[90vh] overflow-y-auto",
-        !selectedTemplate ? "max-w-2xl" : "max-w-lg"
-      )}>
+      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Add MCP</DialogTitle>
         </DialogHeader>
 
-        {!selectedTemplate ? (
-          <McpServerTemplates onSelectTemplate={handleSelectTemplate} />
-        ) : (
-          <form onSubmit={handleCreateServer} className="space-y-4">
-            <div>
-              <label className="block text-sm font-medium mb-2">Server Name</label>
-              <Input value={serverName} onChange={(e) => setServerName(e.target.value)} placeholder="My MCP Server" required />
-            </div>
-            <div>
-              <label className="block text-sm font-medium mb-2">Transport Type</label>
-              <LegacySelect value={transportType} onChange={(e) => setTransportType(e.target.value as "Stdio" | "Sse")}>
-                <option value="Stdio">STDIO (Subprocess)</option>
-                <option value="Sse">HTTP-SSE (Server-Sent Events)</option>
-              </LegacySelect>
-            </div>
-            {transportType === "Stdio" && (
-              <>
-                <div>
-                  <label className="block text-sm font-medium mb-2">Command</label>
-                  <Input value={command} onChange={(e) => setCommand(e.target.value)} placeholder="npx -y @modelcontextprotocol/server-everything" required />
-                  <p className="text-xs text-muted-foreground mt-1">Full command with arguments (e.g., npx -y @modelcontextprotocol/server-filesystem /tmp)</p>
-                </div>
-                <div>
-                  <label className="block text-sm font-medium mb-2">Environment Variables</label>
-                  <KeyValueInput value={envVars} onChange={setEnvVars} keyPlaceholder="KEY" valuePlaceholder="VALUE" />
-                </div>
-              </>
-            )}
-            {transportType === "Sse" && (
-              <div>
-                <label className="block text-sm font-medium mb-2">URL</label>
-                <Input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://api.example.com/mcp" required />
-              </div>
-            )}
-            {transportType === "Sse" && (
-              <div className="border-t pt-4 mt-4">
-                <h3 className="text-md font-semibold mb-3">Authentication (Optional)</h3>
-                <p className="text-sm text-muted-foreground mb-3">Configure how LocalRouter authenticates to this MCP server</p>
-                <div>
-                  <label className="block text-sm font-medium mb-2">Authentication Method</label>
-                  <LegacySelect value={authMethod} onChange={(e) => setAuthMethod(e.target.value as typeof authMethod)}>
-                    <option value="none">None / Via headers</option>
-                    <option value="bearer">Bearer Token</option>
-                    <option value="oauth_pregenerated">OAuth (Pre-generated credentials)</option>
-                  </LegacySelect>
-                </div>
-                {authMethod === "bearer" && (
-                  <div className="mt-3">
-                    <label className="block text-sm font-medium mb-2">Bearer Token</label>
-                    <Input type="password" value={bearerToken} onChange={(e) => setBearerToken(e.target.value)} placeholder="your-bearer-token" required />
-                    <p className="text-xs text-muted-foreground mt-1">Token will be stored securely in system keychain</p>
-                  </div>
-                )}
-                {authMethod === "oauth_pregenerated" && (
-                  <div className="mt-3 space-y-3">
-                    <div>
-                      <label className="block text-sm font-medium mb-2">Client ID</label>
-                      <Input value={oauthClientId} onChange={(e) => setOauthClientId(e.target.value)} placeholder="your-oauth-client-id" required />
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium mb-2">Client Secret</label>
-                      <Input type="password" value={oauthClientSecret} onChange={(e) => setOauthClientSecret(e.target.value)} placeholder="your-oauth-client-secret" required />
-                      <p className="text-xs text-muted-foreground mt-1">Stored securely in system keychain</p>
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-            {transportType === "Sse" && (
-              <div>
-                <label className="block text-sm font-medium mb-2">Headers (Optional)</label>
-                <KeyValueInput value={headers} onChange={setHeaders} keyPlaceholder="Header Name" valuePlaceholder="Header Value" />
-              </div>
-            )}
-            <div className="flex justify-end gap-2 pt-4">
-              <Button type="button" variant="secondary" onClick={() => { setShowCreateModal(false); resetForm() }} disabled={isCreating}>Cancel</Button>
-              <Button type="submit" disabled={isCreating}>{isCreating ? "Creating..." : "Create"}</Button>
-            </div>
-          </form>
-        )}
+        <Tabs value={createTab} onValueChange={(v) => setCreateTab(v as typeof createTab)}>
+          <TabsList className="grid w-full grid-cols-3">
+            <TabsTrigger value="templates" className="gap-2">
+              <Grid className="h-4 w-4" />
+              Templates
+            </TabsTrigger>
+            <TabsTrigger value="custom" className="gap-2">
+              <Settings className="h-4 w-4" />
+              Custom
+            </TabsTrigger>
+            <TabsTrigger value="marketplace" className="gap-2">
+              <Store className="h-4 w-4" />
+              Marketplace
+            </TabsTrigger>
+          </TabsList>
 
-        {selectedTemplate && (
-          <Button variant="ghost" size="sm" onClick={() => setSelectedTemplate(null)} className="mt-2">
-            Back to template selection
-          </Button>
-        )}
+          {/* Templates Tab */}
+          <TabsContent value="templates" className="mt-4">
+            <McpServerTemplates onSelectTemplate={handleSelectTemplate} />
+          </TabsContent>
+
+          {/* Custom Tab */}
+          <TabsContent value="custom" className="mt-4">
+            {/* Show selected template info if any */}
+            {selectedTemplate && selectedTemplate.id !== "custom" && (
+              <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded p-3 mb-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="text-2xl">{selectedTemplate.icon}</span>
+                    <div>
+                      <p className="text-sm font-medium text-blue-900 dark:text-blue-100">
+                        Using template: {selectedTemplate.name}
+                      </p>
+                      <p className="text-xs text-blue-700 dark:text-blue-300">
+                        Customize the settings below
+                      </p>
+                    </div>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => {
+                      setSelectedTemplate(null)
+                      setServerName("")
+                      setCommand("")
+                      setUrl("")
+                    }}
+                  >
+                    Clear
+                  </Button>
+                </div>
+                {selectedTemplate.setupInstructions && (
+                  <p className="text-xs text-blue-700 dark:text-blue-300 mt-2">
+                    {selectedTemplate.setupInstructions}
+                  </p>
+                )}
+              </div>
+            )}
+
+            <form onSubmit={handleCreateServer} className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium mb-2">Server Name</label>
+                <Input value={serverName} onChange={(e) => setServerName(e.target.value)} placeholder="My MCP Server" required />
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-2">Transport Type</label>
+                <LegacySelect value={transportType} onChange={(e) => setTransportType(e.target.value as "Stdio" | "Sse")}>
+                  <option value="Stdio">STDIO (Subprocess)</option>
+                  <option value="Sse">HTTP-SSE (Server-Sent Events)</option>
+                </LegacySelect>
+              </div>
+              {transportType === "Stdio" && (
+                <>
+                  <div>
+                    <label className="block text-sm font-medium mb-2">Command</label>
+                    <Input value={command} onChange={(e) => setCommand(e.target.value)} placeholder="npx -y @modelcontextprotocol/server-everything" required />
+                    <p className="text-xs text-muted-foreground mt-1">Full command with arguments (e.g., npx -y @modelcontextprotocol/server-filesystem /tmp)</p>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium mb-2">Environment Variables</label>
+                    <KeyValueInput value={envVars} onChange={setEnvVars} keyPlaceholder="KEY" valuePlaceholder="VALUE" />
+                  </div>
+                </>
+              )}
+              {transportType === "Sse" && (
+                <div>
+                  <label className="block text-sm font-medium mb-2">URL</label>
+                  <Input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://api.example.com/mcp" required />
+                </div>
+              )}
+              {transportType === "Sse" && (
+                <div className="border-t pt-4 mt-4">
+                  <h3 className="text-md font-semibold mb-3">Authentication (Optional)</h3>
+                  <p className="text-sm text-muted-foreground mb-3">Configure how LocalRouter authenticates to this MCP server</p>
+                  <div>
+                    <label className="block text-sm font-medium mb-2">Authentication Method</label>
+                    <LegacySelect value={authMethod} onChange={(e) => setAuthMethod(e.target.value as typeof authMethod)}>
+                      <option value="none">None / Via headers</option>
+                      <option value="bearer">Bearer Token</option>
+                      <option value="oauth_pregenerated">OAuth (Pre-generated credentials)</option>
+                    </LegacySelect>
+                  </div>
+                  {authMethod === "bearer" && (
+                    <div className="mt-3">
+                      <label className="block text-sm font-medium mb-2">Bearer Token</label>
+                      <Input type="password" value={bearerToken} onChange={(e) => setBearerToken(e.target.value)} placeholder="your-bearer-token" required />
+                      <p className="text-xs text-muted-foreground mt-1">Token will be stored securely in system keychain</p>
+                    </div>
+                  )}
+                  {authMethod === "oauth_pregenerated" && (
+                    <div className="mt-3 space-y-3">
+                      <div>
+                        <label className="block text-sm font-medium mb-2">Client ID</label>
+                        <Input value={oauthClientId} onChange={(e) => setOauthClientId(e.target.value)} placeholder="your-oauth-client-id" required />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium mb-2">Client Secret</label>
+                        <Input type="password" value={oauthClientSecret} onChange={(e) => setOauthClientSecret(e.target.value)} placeholder="your-oauth-client-secret" required />
+                        <p className="text-xs text-muted-foreground mt-1">Stored securely in system keychain</p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+              {transportType === "Sse" && (
+                <div>
+                  <label className="block text-sm font-medium mb-2">Headers (Optional)</label>
+                  <KeyValueInput value={headers} onChange={setHeaders} keyPlaceholder="Header Name" valuePlaceholder="Header Value" />
+                </div>
+              )}
+              <div className="flex justify-end gap-2 pt-4">
+                <Button type="button" variant="secondary" onClick={() => { setShowCreateModal(false); resetForm() }} disabled={isCreating}>Cancel</Button>
+                <Button type="submit" disabled={isCreating}>{isCreating ? "Creating..." : "Create"}</Button>
+              </div>
+            </form>
+          </TabsContent>
+
+          {/* Marketplace Tab */}
+          <TabsContent value="marketplace" className="mt-4">
+            <MarketplaceSearchPanel
+              type="mcp"
+              onInstallComplete={() => {
+                setShowCreateModal(false)
+                resetForm()
+                loadServersOnly()
+              }}
+              maxHeight="400px"
+            />
+          </TabsContent>
+        </Tabs>
       </DialogContent>
     </Dialog>
 

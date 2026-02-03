@@ -15,6 +15,7 @@ interface Client {
   mcp_access_mode: "none" | "all" | "specific"
   mcp_servers: string[]
   mcp_deferred_loading: boolean
+  marketplace_enabled: boolean
 }
 
 interface McpServer {
@@ -41,6 +42,7 @@ export function ClientMcpTab({ client, onUpdate }: McpTabProps) {
     new Set(client.mcp_servers)
   )
   const [deferredLoading, setDeferredLoading] = useState(client.mcp_deferred_loading)
+  const [marketplaceEnabled, setMarketplaceEnabled] = useState(client.marketplace_enabled)
 
   useEffect(() => {
     loadServers()
@@ -51,7 +53,8 @@ export function ClientMcpTab({ client, onUpdate }: McpTabProps) {
     setIncludeAllServers(client.mcp_access_mode === "all")
     setSelectedServers(new Set(client.mcp_servers))
     setDeferredLoading(client.mcp_deferred_loading)
-  }, [client.mcp_access_mode, client.mcp_servers, client.mcp_deferred_loading])
+    setMarketplaceEnabled(client.marketplace_enabled)
+  }, [client.mcp_access_mode, client.mcp_servers, client.mcp_deferred_loading, client.marketplace_enabled])
 
   const loadServers = async () => {
     try {
@@ -166,6 +169,24 @@ export function ClientMcpTab({ client, onUpdate }: McpTabProps) {
       onUpdate()
     } catch (error) {
       console.error("Failed to update deferred loading:", error)
+      toast.error("Failed to update settings")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleToggleMarketplace = async () => {
+    try {
+      setSaving(true)
+      await invoke("set_client_marketplace_enabled", {
+        clientId: client.client_id,
+        enabled: !marketplaceEnabled,
+      })
+      setMarketplaceEnabled(!marketplaceEnabled)
+      toast.success("Marketplace " + (!marketplaceEnabled ? "enabled" : "disabled"))
+      onUpdate()
+    } catch (error) {
+      console.error("Failed to update marketplace access:", error)
       toast.error("Failed to update settings")
     } finally {
       setSaving(false)
@@ -331,6 +352,43 @@ export function ClientMcpTab({ client, onUpdate }: McpTabProps) {
                   tools/listChanged
                 </code>{" "}
                 notification before enabling.
+              </p>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Marketplace Access */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-base">Marketplace Access</CardTitle>
+            <Switch
+              checked={marketplaceEnabled}
+              onCheckedChange={handleToggleMarketplace}
+              disabled={saving}
+            />
+          </div>
+          <CardDescription>
+            Allow this client to search and install MCP servers and skills from the marketplace
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="p-4 rounded-lg bg-muted/50 border">
+            <p className="text-sm text-muted-foreground">
+              When enabled, this client will have access to 4 marketplace tools:
+            </p>
+            <ul className="list-disc list-inside mt-2 text-sm text-muted-foreground space-y-1">
+              <li><code className="px-1 py-0.5 rounded bg-muted text-xs">marketplace__search_mcp_servers</code> - Search the MCP registry</li>
+              <li><code className="px-1 py-0.5 rounded bg-muted text-xs">marketplace__install_mcp_server</code> - Install an MCP server</li>
+              <li><code className="px-1 py-0.5 rounded bg-muted text-xs">marketplace__search_skills</code> - Browse skill repositories</li>
+              <li><code className="px-1 py-0.5 rounded bg-muted text-xs">marketplace__install_skill</code> - Install a skill</li>
+            </ul>
+          </div>
+          {marketplaceEnabled && (
+            <div className="p-3 rounded-lg border border-blue-500/30 bg-blue-500/10">
+              <p className="text-sm text-blue-600 dark:text-blue-400">
+                Install requests from AI clients will show a confirmation dialog before proceeding.
               </p>
             </div>
           )}
