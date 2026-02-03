@@ -7,6 +7,8 @@
 export { AllowedModelsSelector } from "./AllowedModelsSelector"
 export type { AllowedModelsSelection, Model } from "./AllowedModelsSelector"
 
+export { UnifiedModelsSelector } from "./UnifiedModelsSelector"
+
 export { PrioritizedModelSelector } from "./PrioritizedModelSelector"
 
 export { StrategyModelConfiguration } from "./StrategyModelConfiguration"

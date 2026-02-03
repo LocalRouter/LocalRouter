@@ -29,6 +29,8 @@ import {Progress} from "@/components/ui/progress"
 import {Label} from "@/components/ui/label"
 import {cn} from "@/lib/utils"
 import {AllowedModelsSelection, AllowedModelsSelector, Model,} from "./AllowedModelsSelector"
+import {UnifiedModelsSelector} from "./UnifiedModelsSelector"
+import type { ModelPermissions } from "@/components/permissions"
 import {DragThresholdModelSelector} from "./DragThresholdModelSelector"
 import {ThresholdSlider} from "@/components/routellm/ThresholdSlider"
 import {ROUTELLM_REQUIREMENTS, RouteLLMState, RouteLLMStatus, RouteLLMTestResult} from "@/components/routellm/types"
@@ -77,6 +79,15 @@ interface StrategyModelConfigurationProps {
      * Additional CSS classes
      */
     className?: string
+    /**
+     * Optional client context for unified model selection with permissions.
+     * When provided, uses the unified Allow/Ask/Off selector instead of checkboxes.
+     */
+    clientContext?: {
+        clientId: string
+        modelPermissions: ModelPermissions
+        onClientUpdate: () => void
+    }
 }
 
 export function StrategyModelConfiguration({
@@ -84,6 +95,7 @@ export function StrategyModelConfiguration({
                                                readOnly = false,
                                                onSave,
                                                className,
+                                               clientContext,
                                            }: StrategyModelConfigurationProps) {
     const [strategy, setStrategy] = useState<StrategyConfig | null>(null)
     const [models, setModels] = useState<Model[]>([])
@@ -240,7 +252,7 @@ export function StrategyModelConfiguration({
     }
 
     // Handler for routing mode change
-    const handleModeChange = (mode: RoutingMode) => {
+    const handleModeChange = async (mode: RoutingMode) => {
         setRoutingMode(mode)
         if (mode === 'auto') {
             // Enable auto-routing
@@ -252,6 +264,23 @@ export function StrategyModelConfiguration({
                 routellm_config: strategy?.auto_config?.routellm_config,
             }
             updateStrategy({auto_config: newConfig})
+
+            // Clear model permissions when switching to auto mode so they don't accidentally apply
+            if (clientContext) {
+                try {
+                    await invoke("clear_client_model_child_permissions", { clientId: clientContext.clientId })
+                    // Reset global permission to allow
+                    await invoke("set_client_model_permission", {
+                        clientId: clientContext.clientId,
+                        level: "global",
+                        key: null,
+                        state: "allow",
+                    })
+                    clientContext.onClientUpdate()
+                } catch (error) {
+                    console.error("Failed to clear model permissions:", error)
+                }
+            }
         } else {
             // Disable auto-routing (keep config but set enabled to false)
             if (strategy?.auto_config) {
@@ -483,16 +512,31 @@ export function StrategyModelConfiguration({
                                 <CardHeader>
                                     <CardTitle className="text-base">Allowed Models</CardTitle>
                                     <CardDescription>
-                                        Select which models the client can access
+                                        {clientContext
+                                            ? "Configure which models the client can access and their approval requirements"
+                                            : "Select which models the client can access"
+                                        }
                                     </CardDescription>
                                 </CardHeader>
                                 <CardContent>
-                                    <AllowedModelsSelector
-                                        models={models}
-                                        value={strategy.allowed_models}
-                                        onChange={handleAllowedModelsChange}
-                                        disabled={readOnly || saving}
-                                    />
+                                    {clientContext ? (
+                                        <UnifiedModelsSelector
+                                            models={models}
+                                            strategySelection={strategy.allowed_models}
+                                            clientId={clientContext.clientId}
+                                            clientPermissions={clientContext.modelPermissions}
+                                            onStrategyChange={handleAllowedModelsChange}
+                                            onClientUpdate={clientContext.onClientUpdate}
+                                            disabled={readOnly || saving}
+                                        />
+                                    ) : (
+                                        <AllowedModelsSelector
+                                            models={models}
+                                            value={strategy.allowed_models}
+                                            onChange={handleAllowedModelsChange}
+                                            disabled={readOnly || saving}
+                                        />
+                                    )}
                                 </CardContent>
                         </Card>
                     </div>
