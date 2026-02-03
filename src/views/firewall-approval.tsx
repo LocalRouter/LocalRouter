@@ -1,8 +1,14 @@
 import { useState, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow"
-import { Shield, AlertTriangle, X } from "lucide-react"
+import { Shield, AlertTriangle, X, ChevronDown } from "lucide-react"
 import { Button } from "@/components/ui/Button"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 
 interface ApprovalDetails {
   request_id: string
@@ -13,9 +19,10 @@ interface ApprovalDetails {
   arguments_preview: string
   timeout_seconds: number
   created_at_secs_ago: number
+  is_model_request?: boolean
 }
 
-type ApprovalAction = "deny" | "allow_once" | "allow_session"
+type ApprovalAction = "deny" | "allow_once" | "allow_session" | "allow_1_hour" | "allow_permanent"
 
 export function FirewallApproval() {
   const [details, setDetails] = useState<ApprovalDetails | null>(null)
@@ -116,7 +123,9 @@ export function FirewallApproval() {
       >
         <div className="flex items-center gap-2" data-tauri-drag-region>
           <Shield className="h-5 w-5 text-amber-500" />
-          <h1 className="text-sm font-semibold">Tool Approval Required</h1>
+          <h1 className="text-sm font-semibold">
+            {details.is_model_request ? "Model Approval Required" : "Tool Approval Required"}
+          </h1>
         </div>
         <button
           type="button"
@@ -134,12 +143,16 @@ export function FirewallApproval() {
           <span className="text-muted-foreground">Client:</span>
           <span className="font-medium truncate">{details.client_name}</span>
 
-          <span className="text-muted-foreground">Tool:</span>
+          <span className="text-muted-foreground">
+            {details.is_model_request ? "Model:" : "Tool:"}
+          </span>
           <code className="font-mono bg-muted px-1 py-0.5 rounded truncate">
             {details.tool_name}
           </code>
 
-          <span className="text-muted-foreground">Server:</span>
+          <span className="text-muted-foreground">
+            {details.is_model_request ? "Provider:" : "Server:"}
+          </span>
           <span className="truncate">{details.server_name}</span>
         </div>
 
@@ -167,7 +180,6 @@ export function FirewallApproval() {
         <Button
           variant="destructive"
           size="sm"
-          className="flex-1"
           onClick={() => handleAction("deny")}
           disabled={submitting}
         >
@@ -176,20 +188,38 @@ export function FirewallApproval() {
         <Button
           variant="outline"
           size="sm"
-          className="flex-1"
           onClick={() => handleAction("allow_once")}
           disabled={submitting}
         >
           Allow Once
         </Button>
-        <Button
-          size="sm"
-          className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white"
-          onClick={() => handleAction("allow_session")}
-          disabled={submitting}
-        >
-          Allow Session
-        </Button>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              size="sm"
+              className="bg-emerald-600 hover:bg-emerald-700 text-white"
+              disabled={submitting}
+            >
+              Allow
+              <ChevronDown className="ml-1 h-3 w-3" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            {!details.is_model_request && (
+              <DropdownMenuItem onClick={() => handleAction("allow_session")}>
+                Allow for Session
+              </DropdownMenuItem>
+            )}
+            {details.is_model_request && (
+              <DropdownMenuItem onClick={() => handleAction("allow_1_hour")}>
+                Allow for 1 Hour
+              </DropdownMenuItem>
+            )}
+            <DropdownMenuItem onClick={() => handleAction("allow_permanent")}>
+              Allow Permanently
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
     </div>
   )

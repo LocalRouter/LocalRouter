@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
 import { toast } from "sonner"
-import { CheckCircle, XCircle, AlertCircle, Plus, Loader2, RefreshCw, FlaskConical, Grid, Settings } from "lucide-react"
+import { CheckCircle, XCircle, AlertCircle, Plus, Loader2, RefreshCw, FlaskConical, Grid, Settings, ArrowLeft } from "lucide-react"
 import { ProvidersIcon } from "@/components/icons/category-icons"
 import { Badge } from "@/components/ui/Badge"
 import { Button } from "@/components/ui/Button"
@@ -102,6 +102,7 @@ export function ProvidersPanel({
   const [detailTab, setDetailTab] = useState("info")
 
   // Create form state
+  const [dialogPage, setDialogPage] = useState<"select" | "configure">("select")
   const [createTab, setCreateTab] = useState<"templates" | "custom">("templates")
   const [selectedProviderType, setSelectedProviderType] = useState<string>("")
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -112,6 +113,7 @@ export function ProvidersPanel({
       const typeExists = providerTypes.some(t => t.provider_type === initialAddProviderType)
       if (typeExists) {
         setSelectedProviderType(initialAddProviderType)
+        setDialogPage("configure")
         setCreateDialogOpen(true)
       }
     }
@@ -638,6 +640,7 @@ export function ProvidersPanel({
         setCreateDialogOpen(open)
         if (!open) {
           setSelectedProviderType("")
+          setDialogPage("select")
           setCreateTab("templates")
         }
       }}>
@@ -646,22 +649,23 @@ export function ProvidersPanel({
             <DialogTitle>Add Provider</DialogTitle>
           </DialogHeader>
 
-          <Tabs value={createTab} onValueChange={(v) => setCreateTab(v as typeof createTab)}>
-            <TabsList className="grid w-full grid-cols-2">
-              <TabsTrigger value="templates" className="gap-2">
-                <Grid className="h-4 w-4" />
-                Templates
-              </TabsTrigger>
-              <TabsTrigger value="custom" className="gap-2">
-                <Settings className="h-4 w-4" />
-                Custom
-              </TabsTrigger>
-            </TabsList>
+          {dialogPage === "select" ? (
+            /* Page 1: Selection */
+            <Tabs value={createTab} onValueChange={(v) => setCreateTab(v as typeof createTab)}>
+              <TabsList className="grid w-full grid-cols-2">
+                <TabsTrigger value="templates" className="gap-2">
+                  <Grid className="h-4 w-4" />
+                  Templates
+                </TabsTrigger>
+                <TabsTrigger value="custom" className="gap-2">
+                  <Settings className="h-4 w-4" />
+                  Custom
+                </TabsTrigger>
+              </TabsList>
 
-            {/* Templates Tab */}
-            <TabsContent value="templates" className="mt-4">
-              {!selectedProviderType ? (
-                (() => {
+              {/* Templates Tab */}
+              <TabsContent value="templates" className="mt-4">
+                {(() => {
                   // Group providers by category from backend (excluding generic for templates)
                   const localProviders = providerTypes.filter(t => t.category === 'local')
                   const subscriptionProviders = providerTypes.filter(t => t.category === 'subscription')
@@ -671,7 +675,10 @@ export function ProvidersPanel({
                   const ProviderButton = ({ type }: { type: ProviderType }) => (
                     <button
                       key={type.provider_type}
-                      onClick={() => setSelectedProviderType(type.provider_type)}
+                      onClick={() => {
+                        setSelectedProviderType(type.provider_type)
+                        setDialogPage("configure")
+                      }}
                       className={cn(
                         "flex flex-col items-center gap-2 p-4 rounded-lg border-2 border-muted",
                         "hover:border-primary hover:bg-accent transition-colors",
@@ -733,68 +740,90 @@ export function ProvidersPanel({
                       />
                     </div>
                   )
-                })()
-              ) : selectedTypeForCreate ? (
-                <>
-                  <ProviderForm
-                    mode="create"
-                    providerType={selectedTypeForCreate}
-                    onSubmit={handleCreateProvider}
-                    onCancel={() => {
-                      setCreateDialogOpen(false)
-                      setSelectedProviderType("")
-                    }}
-                    isSubmitting={isSubmitting}
-                  />
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => setSelectedProviderType("")}
-                    className="mt-2"
-                  >
-                    Back to provider selection
-                  </Button>
-                </>
-              ) : null}
-            </TabsContent>
+                })()}
+              </TabsContent>
 
-            {/* Custom Tab - Generic/OpenAI-compatible only */}
-            <TabsContent value="custom" className="mt-4">
-              {(() => {
-                const genericType = providerTypes.find(t => t.category === 'generic')
-                if (!genericType) {
+              {/* Custom Tab - Generic/OpenAI-compatible only */}
+              <TabsContent value="custom" className="mt-4">
+                {(() => {
+                  const genericType = providerTypes.find(t => t.category === 'generic')
+                  if (!genericType) {
+                    return (
+                      <div className="text-center py-8 text-muted-foreground">
+                        <p>Generic provider type not available</p>
+                      </div>
+                    )
+                  }
                   return (
-                    <div className="text-center py-8 text-muted-foreground">
-                      <p>Generic provider type not available</p>
+                    <div className="space-y-4">
+                      <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded p-3">
+                        <p className="text-sm font-medium text-blue-900 dark:text-blue-100">
+                          OpenAI-Compatible Provider
+                        </p>
+                        <p className="text-xs text-blue-700 dark:text-blue-300 mt-1">
+                          Connect to any API that follows the OpenAI API format
+                        </p>
+                      </div>
+                      <ProviderForm
+                        mode="create"
+                        providerType={genericType}
+                        onSubmit={handleCreateProvider}
+                        onCancel={() => {
+                          setCreateDialogOpen(false)
+                          setSelectedProviderType("")
+                          setCreateTab("templates")
+                        }}
+                        isSubmitting={isSubmitting}
+                      />
                     </div>
                   )
-                }
-                return (
-                  <div className="space-y-4">
-                    <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded p-3">
-                      <p className="text-sm font-medium text-blue-900 dark:text-blue-100">
-                        OpenAI-Compatible Provider
-                      </p>
-                      <p className="text-xs text-blue-700 dark:text-blue-300 mt-1">
-                        Connect to any API that follows the OpenAI API format
-                      </p>
+                })()}
+              </TabsContent>
+            </Tabs>
+          ) : (
+            /* Page 2: Configuration Form */
+            <div className="space-y-4">
+              {/* Back button and provider header */}
+              <div className="flex items-center gap-3 pb-2 border-b">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    setDialogPage("select")
+                    setSelectedProviderType("")
+                  }}
+                  className="h-8 px-2"
+                >
+                  <ArrowLeft className="h-4 w-4 mr-1" />
+                  Back
+                </Button>
+                {selectedTypeForCreate && (
+                  <div className="flex items-center gap-2">
+                    <ProviderIcon providerId={selectedTypeForCreate.provider_type.toLowerCase()} size={24} />
+                    <div>
+                      <p className="text-sm font-medium">{selectedTypeForCreate.display_name}</p>
+                      <p className="text-xs text-muted-foreground">{selectedTypeForCreate.description}</p>
                     </div>
-                    <ProviderForm
-                      mode="create"
-                      providerType={genericType}
-                      onSubmit={handleCreateProvider}
-                      onCancel={() => {
-                        setCreateDialogOpen(false)
-                        setSelectedProviderType("")
-                        setCreateTab("templates")
-                      }}
-                      isSubmitting={isSubmitting}
-                    />
                   </div>
-                )
-              })()}
-            </TabsContent>
-          </Tabs>
+                )}
+              </div>
+
+              {selectedTypeForCreate && (
+                <ProviderForm
+                  mode="create"
+                  providerType={selectedTypeForCreate}
+                  onSubmit={handleCreateProvider}
+                  onCancel={() => {
+                    setCreateDialogOpen(false)
+                    setSelectedProviderType("")
+                    setDialogPage("select")
+                  }}
+                  isSubmitting={isSubmitting}
+                />
+              )}
+            </div>
+          )}
         </DialogContent>
       </Dialog>
 
