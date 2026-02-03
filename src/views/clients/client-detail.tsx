@@ -9,7 +9,7 @@ import { ClientModelsTab } from "./tabs/models-tab"
 import { ClientMcpTab } from "./tabs/mcp-tab"
 import { ClientSkillsTab } from "./tabs/skills-tab"
 import { ClientSettingsTab } from "./tabs/settings-tab"
-import { ClientFirewallTab } from "./tabs/firewall-tab"
+import type { McpPermissions, SkillsPermissions, ModelPermissions, PermissionState } from "@/components/permissions"
 
 interface Client {
   id: string
@@ -23,7 +23,10 @@ interface Client {
   mcp_deferred_loading: boolean
   skills_access_mode: "none" | "all" | "specific"
   skills_names: string[]
-  marketplace_enabled: boolean
+  mcp_permissions: McpPermissions
+  skills_permissions: SkillsPermissions
+  model_permissions: ModelPermissions
+  marketplace_permission: PermissionState
   created_at: string
   last_used: string | null
 }
@@ -126,7 +129,6 @@ export function ClientDetail({
             <TabsTrigger value="models">Models</TabsTrigger>
             <TabsTrigger value="mcp">MCP</TabsTrigger>
             <TabsTrigger value="skills">Skills</TabsTrigger>
-            <TabsTrigger value="firewall">Firewall</TabsTrigger>
             <TabsTrigger value="settings">Settings</TabsTrigger>
           </TabsList>
 
@@ -149,10 +151,6 @@ export function ClientDetail({
 
           <TabsContent value="skills">
             <ClientSkillsTab client={client} onUpdate={loadClient} />
-          </TabsContent>
-
-          <TabsContent value="firewall">
-            <ClientFirewallTab client={client} onUpdate={loadClient} />
           </TabsContent>
 
           <TabsContent value="settings">

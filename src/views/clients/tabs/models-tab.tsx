@@ -6,6 +6,7 @@
  * 1. Strategy section - strategy selection
  * 2. Rate Limits section - nested under strategy with tree connector
  * 3. Model configuration - nested under strategy with tree connector
+ * 4. Model Permissions - when using specific models (not "all")
  */
 
 import { useState, useEffect, useCallback, useRef } from "react"
@@ -31,6 +32,7 @@ import {
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { StrategyModelConfiguration, StrategyConfig } from "@/components/strategy"
 import RateLimitEditor, { StrategyRateLimit } from "@/components/strategies/RateLimitEditor"
+import type { ModelPermissions } from "@/components/permissions"
 
 
 interface Client {
@@ -38,6 +40,7 @@ interface Client {
   name: string
   client_id: string
   strategy_id: string
+  model_permissions: ModelPermissions
 }
 
 interface ModelsTabProps {
@@ -286,7 +289,7 @@ export function ClientModelsTab({
             </Card>
           </div>
 
-          {/* Model Configuration */}
+          {/* Model Configuration - with unified permissions when using Allowed Models mode */}
           <div className="pt-4">
             <StrategyModelConfiguration
               strategyId={client.strategy_id}
@@ -294,6 +297,11 @@ export function ClientModelsTab({
               onSave={() => {
                 onUpdate()
                 loadStrategies(false)
+              }}
+              clientContext={{
+                clientId: client.client_id,
+                modelPermissions: client.model_permissions,
+                onClientUpdate: onUpdate,
               }}
             />
           </div>

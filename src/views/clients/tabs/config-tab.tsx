@@ -1,7 +1,7 @@
 
 import { useState, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
-import { toast } from "sonner"
+import { listen } from "@tauri-apps/api/event"
 import { HowToConnect } from "@/components/client/HowToConnect"
 
 interface Client {
@@ -20,11 +20,10 @@ interface ConfigTabProps {
   onUpdate: () => void
 }
 
-export function ClientConfigTab({ client, onUpdate }: ConfigTabProps) {
+export function ClientConfigTab({ client }: ConfigTabProps) {
   // Credentials state
   const [secret, setSecret] = useState<string | null>(null)
   const [loadingSecret, setLoadingSecret] = useState(true)
-  const [rotating, setRotating] = useState(false)
 
   // Fetch the secret from keychain when component mounts or client changes
   useEffect(() => {
@@ -41,24 +40,16 @@ export function ClientConfigTab({ client, onUpdate }: ConfigTabProps) {
       }
     }
     fetchSecret()
-  }, [client.id])
 
-  const handleRotateKey = async () => {
-    try {
-      setRotating(true)
-      await invoke("rotate_client_secret", { clientId: client.id })
-      // Refetch the new secret after rotation
-      const newSecret = await invoke<string>("get_client_value", { id: client.id })
-      setSecret(newSecret)
-      toast.success("Credentials rotated successfully")
-      onUpdate()
-    } catch (error) {
-      console.error("Failed to rotate credentials:", error)
-      toast.error("Failed to rotate credentials")
-    } finally {
-      setRotating(false)
+    // Also refetch when clients change (e.g., after credential rotation)
+    const unsubscribe = listen("clients-changed", () => {
+      fetchSecret()
+    })
+
+    return () => {
+      unsubscribe.then((fn) => fn())
     }
-  }
+  }, [client.id])
 
   return (
     <div className="space-y-6">
@@ -68,9 +59,6 @@ export function ClientConfigTab({ client, onUpdate }: ConfigTabProps) {
         clientUuid={client.id}
         secret={secret}
         loadingSecret={loadingSecret}
-        showRotateCredentials={true}
-        onRotate={handleRotateKey}
-        rotating={rotating}
       />
     </div>
   )

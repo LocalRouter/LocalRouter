@@ -39,6 +39,8 @@ export function ClientSettingsTab({ client, onUpdate, onDelete }: SettingsTabPro
   const [name, setName] = useState(client.name)
   const [saving, setSaving] = useState(false)
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
+  const [showRotateDialog, setShowRotateDialog] = useState(false)
+  const [rotating, setRotating] = useState(false)
 
   // Debounce ref for name updates
   const nameTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -98,6 +100,21 @@ export function ClientSettingsTab({ client, onUpdate, onDelete }: SettingsTabPro
     } catch (error) {
       console.error("Failed to toggle client:", error)
       toast.error("Failed to update client")
+    }
+  }
+
+  const handleRotateConfirm = async () => {
+    try {
+      setRotating(true)
+      await invoke("rotate_client_secret", { clientId: client.id })
+      toast.success("Credentials rotated successfully. View the new credentials in the Connect tab.")
+      onUpdate()
+    } catch (error) {
+      console.error("Failed to rotate credentials:", error)
+      toast.error("Failed to rotate credentials")
+    } finally {
+      setRotating(false)
+      setShowRotateDialog(false)
     }
   }
 
@@ -169,8 +186,25 @@ export function ClientSettingsTab({ client, onUpdate, onDelete }: SettingsTabPro
             Irreversible actions for this client
           </CardDescription>
         </CardHeader>
-        <CardContent>
+        <CardContent className="space-y-4">
           <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium">Rotate credentials</p>
+              <p className="text-sm text-muted-foreground">
+                Generate a new API key. The old key will stop working immediately.
+              </p>
+            </div>
+            <Button
+              variant="outline"
+              onClick={() => setShowRotateDialog(true)}
+              disabled={rotating}
+              className="border-red-200 text-red-600 hover:bg-red-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950"
+            >
+              {rotating ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+              Rotate Credentials
+            </Button>
+          </div>
+          <div className="flex items-center justify-between pt-4 border-t">
             <div>
               <p className="text-sm font-medium">Delete this client</p>
               <p className="text-sm text-muted-foreground">
@@ -186,6 +220,28 @@ export function ClientSettingsTab({ client, onUpdate, onDelete }: SettingsTabPro
           </div>
         </CardContent>
       </Card>
+
+      <AlertDialog open={showRotateDialog} onOpenChange={setShowRotateDialog}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Rotate Credentials?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will generate a new API key for "{client.name}". The old key will
+              stop working immediately. You'll need to update any applications using
+              this client's credentials.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleRotateConfirm}
+              className="bg-red-600 text-white hover:bg-red-700 dark:bg-red-600 dark:hover:bg-red-700"
+            >
+              Rotate
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <AlertDialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
         <AlertDialogContent>

@@ -13,6 +13,7 @@ import {
 import { ClientDetail } from "./client-detail"
 import { ClientCreationWizard } from "@/components/wizard/ClientCreationWizard"
 import { cn } from "@/lib/utils"
+import type { McpPermissions, SkillsPermissions, ModelPermissions, PermissionState } from "@/components/permissions"
 
 interface Client {
   id: string
@@ -26,7 +27,10 @@ interface Client {
   mcp_deferred_loading: boolean
   skills_access_mode: "none" | "all" | "specific"
   skills_names: string[]
-  marketplace_enabled: boolean
+  mcp_permissions: McpPermissions
+  skills_permissions: SkillsPermissions
+  model_permissions: ModelPermissions
+  marketplace_permission: PermissionState
   created_at: string
   last_used: string | null
 }

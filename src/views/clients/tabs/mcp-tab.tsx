@@ -1,29 +1,19 @@
-
 import { useState, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
-import { Info } from "lucide-react"
+import { Info, AlertTriangle } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Switch } from "@/components/ui/Toggle"
-import { Checkbox } from "@/components/ui/checkbox"
-import { cn } from "@/lib/utils"
+import { McpPermissionTree, PermissionStateButton } from "@/components/permissions"
+import type { McpPermissions, PermissionState } from "@/components/permissions"
 
 interface Client {
   id: string
   name: string
   client_id: string
-  mcp_access_mode: "none" | "all" | "specific"
-  mcp_servers: string[]
   mcp_deferred_loading: boolean
-  marketplace_enabled: boolean
-}
-
-interface McpServer {
-  id: string
-  name: string
-  enabled: boolean
-  proxy_url: string
-  gateway_url: string
+  mcp_permissions: McpPermissions
+  marketplace_permission: PermissionState
 }
 
 interface McpTabProps {
@@ -32,130 +22,16 @@ interface McpTabProps {
 }
 
 export function ClientMcpTab({ client, onUpdate }: McpTabProps) {
-  const [servers, setServers] = useState<McpServer[]>([])
-  const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
-
-  // Local state for UI
-  const [includeAllServers, setIncludeAllServers] = useState(client.mcp_access_mode === "all")
-  const [selectedServers, setSelectedServers] = useState<Set<string>>(
-    new Set(client.mcp_servers)
-  )
   const [deferredLoading, setDeferredLoading] = useState(client.mcp_deferred_loading)
-  const [marketplaceEnabled, setMarketplaceEnabled] = useState(client.marketplace_enabled)
+  const [marketplacePermission, setMarketplacePermission] = useState<PermissionState>(
+    client.marketplace_permission
+  )
 
   useEffect(() => {
-    loadServers()
-  }, [])
-
-  // Sync local state when client prop changes
-  useEffect(() => {
-    setIncludeAllServers(client.mcp_access_mode === "all")
-    setSelectedServers(new Set(client.mcp_servers))
     setDeferredLoading(client.mcp_deferred_loading)
-    setMarketplaceEnabled(client.marketplace_enabled)
-  }, [client.mcp_access_mode, client.mcp_servers, client.mcp_deferred_loading, client.marketplace_enabled])
-
-  const loadServers = async () => {
-    try {
-      const serverList = await invoke<McpServer[]>("list_mcp_servers")
-      setServers(serverList)
-    } catch (error) {
-      console.error("Failed to load MCP servers:", error)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const handleAllServersToggle = async () => {
-    try {
-      setSaving(true)
-      const newIncludeAll = !includeAllServers
-
-      if (newIncludeAll) {
-        // Enable all servers mode
-        await invoke("set_client_mcp_access", {
-          clientId: client.client_id,
-          mode: "all",
-          servers: [],
-        })
-        setIncludeAllServers(true)
-        toast.success("All MCP servers enabled")
-      } else {
-        // Switch to specific mode with current selections
-        const mode = selectedServers.size > 0 ? "specific" : "none"
-        await invoke("set_client_mcp_access", {
-          clientId: client.client_id,
-          mode,
-          servers: Array.from(selectedServers),
-        })
-        setIncludeAllServers(false)
-        toast.success("Switched to specific server selection")
-      }
-      onUpdate()
-    } catch (error) {
-      console.error("Failed to update MCP access:", error)
-      toast.error("Failed to update MCP settings")
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  const handleServerToggle = async (serverId: string) => {
-    // If includeAllServers is true, we need to demote to specific mode minus this server
-    if (includeAllServers) {
-      try {
-        setSaving(true)
-        const otherServers = servers
-          .filter(s => s.id !== serverId && s.enabled)
-          .map(s => s.id)
-
-        await invoke("set_client_mcp_access", {
-          clientId: client.client_id,
-          mode: otherServers.length > 0 ? "specific" : "none",
-          servers: otherServers,
-        })
-
-        setIncludeAllServers(false)
-        setSelectedServers(new Set(otherServers))
-        toast.success("MCP server access updated")
-        onUpdate()
-      } catch (error) {
-        console.error("Failed to update MCP server:", error)
-        toast.error("Failed to update server access")
-      } finally {
-        setSaving(false)
-      }
-      return
-    }
-
-    try {
-      setSaving(true)
-      const newSelected = new Set(selectedServers)
-
-      if (newSelected.has(serverId)) {
-        newSelected.delete(serverId)
-      } else {
-        newSelected.add(serverId)
-      }
-
-      const mode = newSelected.size > 0 ? "specific" : "none"
-      await invoke("set_client_mcp_access", {
-        clientId: client.client_id,
-        mode,
-        servers: Array.from(newSelected),
-      })
-      setSelectedServers(newSelected)
-      toast.success("MCP server access updated")
-
-      onUpdate()
-    } catch (error) {
-      console.error("Failed to update MCP server:", error)
-      toast.error("Failed to update server access")
-    } finally {
-      setSaving(false)
-    }
-  }
+    setMarketplacePermission(client.marketplace_permission)
+  }, [client.mcp_deferred_loading, client.marketplace_permission])
 
   const handleToggleDeferredLoading = async () => {
     try {
@@ -175,125 +51,88 @@ export function ClientMcpTab({ client, onUpdate }: McpTabProps) {
     }
   }
 
-  const handleToggleMarketplace = async () => {
+  const handleMarketplacePermissionChange = async (state: PermissionState) => {
     try {
       setSaving(true)
-      await invoke("set_client_marketplace_enabled", {
+      await invoke("set_client_marketplace_permission", {
         clientId: client.client_id,
-        enabled: !marketplaceEnabled,
+        state,
       })
-      setMarketplaceEnabled(!marketplaceEnabled)
-      toast.success("Marketplace " + (!marketplaceEnabled ? "enabled" : "disabled"))
+      setMarketplacePermission(state)
+      toast.success("Marketplace permission updated")
       onUpdate()
     } catch (error) {
-      console.error("Failed to update marketplace access:", error)
-      toast.error("Failed to update settings")
+      console.error("Failed to update marketplace permission:", error)
+      toast.error("Failed to update permission")
     } finally {
       setSaving(false)
     }
   }
 
-  const enabledServerCount = servers.filter((s) => s.enabled).length
-  const selectedCount = includeAllServers
-    ? enabledServerCount
-    : Array.from(selectedServers).filter((id) =>
-        servers.find((s) => s.id === id)?.enabled
-      ).length
-
-  // Check if indeterminate (some but not all selected)
-  const isIndeterminate = !includeAllServers && selectedCount > 0 && selectedCount < enabledServerCount
-
-  const isServerSelected = (serverId: string): boolean => {
-    if (includeAllServers) return true
-    return selectedServers.has(serverId)
-  }
-
   return (
     <div className="space-y-6">
-      {/* MCP Server Access */}
+      {/* MCP Server Permissions */}
       <Card>
         <CardHeader>
-          <CardTitle>MCP Server Access</CardTitle>
+          <CardTitle>MCP Server Permissions</CardTitle>
           <CardDescription>
-            Select which MCP servers this client can access
+            Control which MCP servers and their tools this client can access.
+            Use "Ask" to require approval before execution.
           </CardDescription>
         </CardHeader>
         <CardContent>
-          {loading ? (
-            <div className="p-8 text-center text-muted-foreground text-sm">
-              Loading servers...
-            </div>
-          ) : servers.length === 0 ? (
-            <div className="p-8 text-center text-muted-foreground text-sm">
-              No MCP servers configured. Add MCP servers in the Resources tab.
-            </div>
-          ) : (
-            <div className="border rounded-lg">
-              <div className="max-h-[400px] overflow-y-auto">
-                {/* All MCP Servers row */}
-                <div
-                  className="flex items-center gap-3 px-4 py-3 border-b bg-background sticky top-0 z-10 cursor-pointer hover:bg-muted/50 transition-colors"
-                  onClick={() => !saving && handleAllServersToggle()}
-                >
-                  <Checkbox
-                    checked={includeAllServers || isIndeterminate}
-                    onCheckedChange={handleAllServersToggle}
-                    disabled={saving}
-                    className={cn(
-                      "data-[state=checked]:bg-primary",
-                      isIndeterminate && "data-[state=checked]:bg-primary/60"
-                    )}
-                  />
-                  <span className="font-semibold text-sm">
-                    All MCP Servers
-                  </span>
-                  <span className="text-xs text-muted-foreground ml-auto">
-                    {includeAllServers ? (
-                      <span className="text-primary">All (including future servers)</span>
-                    ) : (
-                      `${selectedCount} / ${enabledServerCount} selected`
-                    )}
-                  </span>
-                </div>
+          <McpPermissionTree
+            clientId={client.client_id}
+            permissions={client.mcp_permissions}
+            onUpdate={onUpdate}
+          />
+        </CardContent>
+      </Card>
 
-                {/* Individual server rows */}
-                {servers.map((server) => {
-                  const isSelected = isServerSelected(server.id)
-                  const isDisabled = !server.enabled
-                  // Server row is clickable when all servers mode is not active
-                  const canToggle = !saving && !isDisabled
-
-                  return (
-                    <div
-                      key={server.id}
-                      className={cn(
-                        "flex items-center gap-3 px-4 py-2.5 border-b border-border/50",
-                        "hover:bg-muted/30 transition-colors",
-                        canToggle ? "cursor-pointer" : "",
-                        isDisabled && "opacity-50",
-                        includeAllServers && !isDisabled && "opacity-60"
-                      )}
-                      style={{ paddingLeft: "2rem" }}
-                      onClick={() => canToggle && handleServerToggle(server.id)}
-                    >
-                      <Checkbox
-                        checked={isSelected}
-                        onCheckedChange={() => handleServerToggle(server.id)}
-                        disabled={!canToggle}
-                      />
-                      <div className="flex-1 min-w-0">
-                        <span className="text-sm font-medium">{server.name}</span>
-                        {isDisabled && (
-                          <span className="ml-2 text-xs text-muted-foreground">(Disabled)</span>
-                        )}
-                      </div>
-                      <code className="text-xs text-muted-foreground truncate max-w-[200px]">
-                        {server.proxy_url}
-                      </code>
-                    </div>
-                  )
-                })}
+      {/* Marketplace Access */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-base">Marketplace Access</CardTitle>
+            <PermissionStateButton
+              value={marketplacePermission}
+              onChange={handleMarketplacePermissionChange}
+              disabled={saving}
+              size="sm"
+            />
+          </div>
+          <CardDescription>
+            Allow this client to search and install MCP servers and skills from the marketplace
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="p-4 rounded-lg bg-muted/50 border">
+            <p className="text-sm text-muted-foreground">
+              When enabled, this client will have access to 4 marketplace tools:
+            </p>
+            <ul className="list-disc list-inside mt-2 text-sm text-muted-foreground space-y-1">
+              <li><code className="px-1 py-0.5 rounded bg-muted text-xs">marketplace__search_mcp_servers</code> - Search the MCP registry</li>
+              <li><code className="px-1 py-0.5 rounded bg-muted text-xs">marketplace__install_mcp_server</code> - Install an MCP server</li>
+              <li><code className="px-1 py-0.5 rounded bg-muted text-xs">marketplace__search_skills</code> - Browse skill repositories</li>
+              <li><code className="px-1 py-0.5 rounded bg-muted text-xs">marketplace__install_skill</code> - Install a skill</li>
+            </ul>
+          </div>
+          {marketplacePermission === "allow" && (
+            <div className="p-3 rounded-lg border border-amber-500/30 bg-amber-500/10">
+              <div className="flex gap-2 items-start">
+                <AlertTriangle className="h-4 w-4 text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
+                <p className="text-sm text-amber-600 dark:text-amber-400">
+                  Warning: Allowing marketplace grants access to install any item without approval.
+                  Only enable if you trust the configured marketplace sources.
+                </p>
               </div>
+            </div>
+          )}
+          {marketplacePermission === "ask" && (
+            <div className="p-3 rounded-lg border border-blue-500/30 bg-blue-500/10">
+              <p className="text-sm text-blue-600 dark:text-blue-400">
+                Install requests from AI clients will show a confirmation dialog before proceeding.
+              </p>
             </div>
           )}
         </CardContent>
@@ -352,43 +191,6 @@ export function ClientMcpTab({ client, onUpdate }: McpTabProps) {
                   tools/listChanged
                 </code>{" "}
                 notification before enabling.
-              </p>
-            </div>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* Marketplace Access */}
-      <Card>
-        <CardHeader>
-          <div className="flex items-center justify-between">
-            <CardTitle className="text-base">Marketplace Access</CardTitle>
-            <Switch
-              checked={marketplaceEnabled}
-              onCheckedChange={handleToggleMarketplace}
-              disabled={saving}
-            />
-          </div>
-          <CardDescription>
-            Allow this client to search and install MCP servers and skills from the marketplace
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="p-4 rounded-lg bg-muted/50 border">
-            <p className="text-sm text-muted-foreground">
-              When enabled, this client will have access to 4 marketplace tools:
-            </p>
-            <ul className="list-disc list-inside mt-2 text-sm text-muted-foreground space-y-1">
-              <li><code className="px-1 py-0.5 rounded bg-muted text-xs">marketplace__search_mcp_servers</code> - Search the MCP registry</li>
-              <li><code className="px-1 py-0.5 rounded bg-muted text-xs">marketplace__install_mcp_server</code> - Install an MCP server</li>
-              <li><code className="px-1 py-0.5 rounded bg-muted text-xs">marketplace__search_skills</code> - Browse skill repositories</li>
-              <li><code className="px-1 py-0.5 rounded bg-muted text-xs">marketplace__install_skill</code> - Install a skill</li>
-            </ul>
-          </div>
-          {marketplaceEnabled && (
-            <div className="p-3 rounded-lg border border-blue-500/30 bg-blue-500/10">
-              <p className="text-sm text-blue-600 dark:text-blue-400">
-                Install requests from AI clients will show a confirmation dialog before proceeding.
               </p>
             </div>
           )}
