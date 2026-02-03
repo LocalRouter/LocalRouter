@@ -485,6 +485,75 @@ pub async fn marketplace_install_skill_direct(
     })
 }
 
+/// Delete a marketplace-installed skill
+#[tauri::command]
+pub async fn marketplace_delete_skill(
+    skill_name: String,
+    skill_path: String,
+    marketplace_service: State<'_, Option<Arc<MarketplaceService>>>,
+    config_manager: State<'_, ConfigManager>,
+    skill_manager: State<'_, Arc<lr_skills::SkillManager>>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    let service = marketplace_service
+        .inner()
+        .as_ref()
+        .ok_or_else(|| "Marketplace service not initialized".to_string())?;
+
+    // Verify the skill is from the marketplace directory
+    let skills_dir = service.skills_data_dir();
+    let skill_path_buf = std::path::PathBuf::from(&skill_path);
+
+    if !skill_path_buf.starts_with(&skills_dir) {
+        return Err(format!(
+            "Skill '{}' is not a marketplace-installed skill and cannot be deleted this way",
+            skill_name
+        ));
+    }
+
+    // Delete the skill directory
+    if skill_path_buf.exists() {
+        std::fs::remove_dir_all(&skill_path_buf)
+            .map_err(|e| format!("Failed to delete skill directory: {}", e))?;
+    }
+
+    // Remove path from config
+    config_manager
+        .update(|cfg| {
+            cfg.skills.paths.retain(|p| p != &skill_path);
+        })
+        .map_err(|e| e.to_string())?;
+
+    config_manager.save().await.map_err(|e| e.to_string())?;
+
+    // Trigger skill rescan
+    let config = config_manager.get();
+    skill_manager.rescan(&config.skills.paths, &config.skills.disabled_skills);
+
+    // Emit event
+    use tauri::Emitter;
+    let _ = app_handle.emit("skills-changed", ());
+
+    Ok(())
+}
+
+/// Check if a skill path is from the marketplace
+#[tauri::command]
+pub async fn marketplace_is_skill_from_marketplace(
+    skill_path: String,
+    marketplace_service: State<'_, Option<Arc<MarketplaceService>>>,
+) -> Result<bool, String> {
+    let service = match marketplace_service.inner().as_ref() {
+        Some(s) => s,
+        None => return Ok(false),
+    };
+
+    let skills_dir = service.skills_data_dir();
+    let skill_path_buf = std::path::PathBuf::from(&skill_path);
+
+    Ok(skill_path_buf.starts_with(&skills_dir))
+}
+
 // ============================================================================
 // Install Popup Commands (for AI-triggered installs)
 // ============================================================================

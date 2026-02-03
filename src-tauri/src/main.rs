@@ -1052,6 +1052,16 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::submit_firewall_approval,
             ui::commands::list_pending_firewall_approvals,
             ui::commands::get_firewall_approval_details,
+            // Unified permission commands
+            ui::commands::set_client_mcp_permission,
+            ui::commands::set_client_skills_permission,
+            ui::commands::set_client_model_permission,
+            ui::commands::set_client_marketplace_permission,
+            ui::commands::clear_client_mcp_child_permissions,
+            ui::commands::clear_client_skills_child_permissions,
+            ui::commands::clear_client_model_child_permissions,
+            ui::commands::get_mcp_server_capabilities,
+            ui::commands::get_skill_tools,
             // OpenAPI documentation commands
             ui::commands::get_openapi_spec,
             // Internal testing commands
@@ -1123,6 +1133,8 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands_marketplace::marketplace_search_skills,
             ui::commands_marketplace::marketplace_install_mcp_server_direct,
             ui::commands_marketplace::marketplace_install_skill_direct,
+            ui::commands_marketplace::marketplace_delete_skill,
+            ui::commands_marketplace::marketplace_is_skill_from_marketplace,
             ui::commands_marketplace::marketplace_get_pending_install,
             ui::commands_marketplace::marketplace_list_pending_installs,
             ui::commands_marketplace::marketplace_install_respond,
