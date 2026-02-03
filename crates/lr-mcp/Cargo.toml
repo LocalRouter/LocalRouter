@@ -37,6 +37,7 @@ axum = { workspace = true }
 lr-oauth = { workspace = true }
 lr-skills = { workspace = true }
 lr-router = { workspace = true }
+lr-marketplace = { workspace = true }
 lr-providers = { workspace = true }
 once_cell = { workspace = true }
 utoipa = { workspace = true }

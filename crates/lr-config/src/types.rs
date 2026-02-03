@@ -373,6 +373,10 @@ pub struct AppConfig {
     /// Skills configuration (AgentSkills.io)
     #[serde(default)]
     pub skills: SkillsConfig,
+
+    /// Marketplace configuration for MCP server and skill discovery
+    #[serde(default)]
+    pub marketplace: MarketplaceConfig,
 }
 
 /// Pricing override for a specific model
@@ -814,8 +818,98 @@ pub struct SkillsConfig {
     pub skill_paths: Vec<String>,
 }
 
+/// Marketplace configuration for MCP server and skill discovery
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MarketplaceConfig {
+    /// Whether marketplace is enabled globally
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// MCP server registry URL
+    #[serde(default = "default_marketplace_registry_url")]
+    pub registry_url: String,
+
+    /// Skill source repos to browse
+    #[serde(default = "default_marketplace_skill_sources")]
+    pub skill_sources: Vec<MarketplaceSkillSource>,
+}
+
+impl Default for MarketplaceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            registry_url: default_marketplace_registry_url(),
+            skill_sources: default_marketplace_skill_sources(),
+        }
+    }
+}
+
+fn default_marketplace_registry_url() -> String {
+    "https://registry.modelcontextprotocol.io/v0.1/servers".to_string()
+}
+
+fn default_marketplace_skill_sources() -> Vec<MarketplaceSkillSource> {
+    vec![
+        MarketplaceSkillSource {
+            repo_url: "https://github.com/anthropics/skills".to_string(),
+            branch: "main".to_string(),
+            path: "skills".to_string(),
+            label: "Anthropic".to_string(),
+        },
+        MarketplaceSkillSource {
+            repo_url: "https://github.com/vercel-labs/agent-skills".to_string(),
+            branch: "main".to_string(),
+            path: "skills".to_string(),
+            label: "Vercel".to_string(),
+        },
+        MarketplaceSkillSource {
+            repo_url: "https://github.com/openai/skills".to_string(),
+            branch: "main".to_string(),
+            path: "skills/.curated".to_string(),
+            label: "OpenAI".to_string(),
+        },
+        MarketplaceSkillSource {
+            repo_url: "https://github.com/microsoft/agent-skills".to_string(),
+            branch: "main".to_string(),
+            path: ".github/skills".to_string(),
+            label: "Microsoft".to_string(),
+        },
+        MarketplaceSkillSource {
+            repo_url: "https://github.com/sickn33/antigravity-awesome-skills".to_string(),
+            branch: "main".to_string(),
+            path: "skills".to_string(),
+            label: "Antigravity".to_string(),
+        },
+    ]
+}
+
+/// A skill source repository configuration
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MarketplaceSkillSource {
+    /// GitHub repository URL
+    pub repo_url: String,
+
+    /// Branch to use (default: main)
+    #[serde(default = "default_main_branch")]
+    pub branch: String,
+
+    /// Path within the repo containing skills
+    #[serde(default)]
+    pub path: String,
+
+    /// Human-readable label for this source
+    pub label: String,
+}
+
+fn default_main_branch() -> String {
+    "main".to_string()
+}
+
 /// Serializer for SkillsAccess that produces YAML-friendly format
-pub(crate) fn serialize_skills_access<S>(access: &SkillsAccess, serializer: S) -> Result<S::Ok, S::Error>
+pub(crate) fn serialize_skills_access<S>(
+    access: &SkillsAccess,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
 where
     S: serde::Serializer,
 {
@@ -973,6 +1067,11 @@ pub struct Client {
     /// Controls per-tool Allow/Ask/Deny policies
     #[serde(default)]
     pub firewall: FirewallRules,
+
+    /// Whether this client has marketplace access (search + install tools)
+    /// When this is set to true, the global marketplace.enabled is also auto-set to true
+    #[serde(default)]
+    pub marketplace_enabled: bool,
 }
 
 /// MCP server configuration
@@ -1454,7 +1553,9 @@ where
 
 /// Deserializer for McpServerAccess that supports backward compatibility
 /// with the old `allowed_mcp_servers: Vec<String>` format
-pub(crate) fn deserialize_mcp_server_access<'de, D>(deserializer: D) -> Result<McpServerAccess, D::Error>
+pub(crate) fn deserialize_mcp_server_access<'de, D>(
+    deserializer: D,
+) -> Result<McpServerAccess, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
@@ -1539,6 +1640,7 @@ impl Default for AppConfig {
             setup_wizard_shown: false,
             health_check: HealthCheckConfig::default(),
             skills: SkillsConfig::default(),
+            marketplace: MarketplaceConfig::default(),
         }
     }
 }
@@ -1656,6 +1758,7 @@ impl Client {
             mcp_sampling_max_tokens: None,
             mcp_sampling_rate_limit: None,
             firewall: FirewallRules::default(),
+            marketplace_enabled: false,
         }
     }
 

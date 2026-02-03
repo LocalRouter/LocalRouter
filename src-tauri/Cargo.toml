@@ -30,6 +30,7 @@ lr-mcp = { workspace = true }
 lr-skills = { workspace = true }
 lr-router = { workspace = true }
 lr-server = { workspace = true }
+lr-marketplace = { workspace = true }
 
 # External dependencies still needed by src-tauri (main.rs, ui/, updater/)
 tokio = { workspace = true }
@@ -56,6 +57,7 @@ if-addrs = { workspace = true }
 dirs = { workspace = true }
 dashmap = { workspace = true }
 serde_yaml = { workspace = true }
+keyring = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3.8"

@@ -298,6 +298,7 @@ impl ConfigManager {
             mcp_sampling_max_tokens: None,
             mcp_sampling_rate_limit: None,
             firewall: FirewallRules::default(),
+            marketplace_enabled: false,
         };
 
         self.update(|cfg| {

@@ -15,6 +15,7 @@ members = [
     "crates/lr-skills",
     "crates/lr-router",
     "crates/lr-server",
+    "crates/lr-marketplace",
 ]
 resolver = "2"
 
@@ -41,6 +42,7 @@ lr-mcp = { path = "crates/lr-mcp" }
 lr-skills = { path = "crates/lr-skills" }
 lr-router = { path = "crates/lr-router" }
 lr-server = { path = "crates/lr-server" }
+lr-marketplace = { path = "crates/lr-marketplace" }
 
 # Async runtime
 tokio = { version = "1.42", features = ["full"] }
