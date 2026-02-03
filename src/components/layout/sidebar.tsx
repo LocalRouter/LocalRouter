@@ -6,6 +6,7 @@ import {
   Settings,
   FlaskConical,
   RefreshCw,
+  Bug,
 } from "lucide-react"
 import { ProvidersIcon, McpIcon, SkillsIcon } from "@/components/icons/category-icons"
 import { Logo } from "@/components/Logo"
@@ -38,7 +39,7 @@ interface HealthCacheState {
   aggregate_status: AggregateHealthStatus
 }
 
-export type View = 'dashboard' | 'clients' | 'resources' | 'mcp-servers' | 'skills' | 'settings' | 'try-it-out'
+export type View = 'dashboard' | 'clients' | 'resources' | 'mcp-servers' | 'skills' | 'settings' | 'try-it-out' | 'debug'
 
 interface SidebarProps {
   activeView: View
@@ -60,6 +61,7 @@ const mainNavItems: NavItem[] = [
 ]
 
 const bottomNavItems: NavItem[] = [
+  ...(import.meta.env.DEV ? [{ id: 'debug' as View, icon: Bug, label: 'Debug', shortcut: '⌘0' }] : []),
   { id: 'try-it-out', icon: FlaskConical, label: 'Try It Out', shortcut: '⌘6' },
   { id: 'settings', icon: Settings, label: 'Settings', shortcut: '⌘7' },
 ]

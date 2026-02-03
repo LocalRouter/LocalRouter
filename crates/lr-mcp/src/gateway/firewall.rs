@@ -298,6 +298,11 @@ impl FirewallManager {
             .collect()
     }
 
+    /// Insert a pre-built pending approval session (for debug/testing)
+    pub fn insert_pending(&self, request_id: String, session: FirewallApprovalSession) {
+        self.pending.insert(request_id, session);
+    }
+
     /// Get the number of pending requests
     pub fn pending_count(&self) -> usize {
         self.pending.len()

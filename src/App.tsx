@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, lazy, Suspense } from 'react'
 import { listen } from '@tauri-apps/api/event'
 import { invoke } from '@tauri-apps/api/core'
 import { check } from '@tauri-apps/plugin-updater'
@@ -13,6 +13,10 @@ import { SkillsView } from './views/skills'
 import { TryItOutView } from './views/try-it-out'
 import { SettingsView } from './views/settings'
 import { ClientCreationWizard } from './components/wizard/ClientCreationWizard'
+
+const DebugView = import.meta.env.DEV
+  ? lazy(() => import('./views/debug').then(m => ({ default: m.DebugView })))
+  : () => null
 
 type McpAccessMode = 'none' | 'all' | 'specific'
 
@@ -204,6 +208,15 @@ function App() {
             onTabChange={handleChildViewChange}
           />
         )
+      case 'debug':
+        return import.meta.env.DEV ? (
+          <Suspense fallback={null}>
+            <DebugView
+              activeSubTab={activeSubTab}
+              onTabChange={handleChildViewChange}
+            />
+          </Suspense>
+        ) : null
       default:
         return <DashboardView onViewChange={handleChildViewChange} />
     }

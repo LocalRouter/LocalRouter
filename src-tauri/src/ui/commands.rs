@@ -11,7 +11,7 @@ use lr_monitoring::logger::AccessLogger;
 use lr_oauth::clients::OAuthClientManager;
 use lr_server::ServerManager;
 use serde::{Deserialize, Serialize};
-use tauri::{Emitter, Manager, State};
+use tauri::{Emitter, Manager, State, AppHandle};
 
 // Re-export submodules for backward compatibility with main.rs
 pub use crate::ui::commands_providers::*;
@@ -1798,4 +1798,72 @@ fn is_text_file(path: &std::path::Path) -> bool {
                 .unwrap_or(false)
         }
     }
+}
+
+// ============================================================================
+// Debug Commands (dev only)
+// ============================================================================
+
+/// Trigger a fake firewall approval popup after a 3 second delay.
+///
+/// This creates a real pending approval in the FirewallManager and opens
+/// the approval popup window after the delay. The timer runs on the backend
+/// so the caller can close the main window before the popup appears.
+#[tauri::command]
+pub async fn debug_trigger_firewall_popup(
+    app: AppHandle,
+    state: State<'_, Arc<lr_server::state::AppState>>,
+) -> Result<(), String> {
+    let firewall_manager = state.mcp_gateway.firewall_manager.clone();
+    let app_clone = app.clone();
+
+    // Spawn a background task so the frontend call returns immediately
+    tauri::async_runtime::spawn(async move {
+        // Wait 3 seconds
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+        // Create a fake approval request (this inserts into FirewallManager)
+        let request_id = uuid::Uuid::new_v4().to_string();
+        let timeout_secs: u64 = 30;
+
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        let session = lr_mcp::gateway::firewall::FirewallApprovalSession {
+            request_id: request_id.clone(),
+            client_id: "debug-client".to_string(),
+            client_name: "Debug Test Client".to_string(),
+            tool_name: "filesystem__write_file".to_string(),
+            server_name: "filesystem".to_string(),
+            arguments_preview: r#"{"path": "/tmp/test.txt", "content": "hello world"}"#.to_string(),
+            response_sender: Some(tx),
+            created_at: std::time::Instant::now(),
+            timeout_seconds: timeout_secs,
+        };
+
+        firewall_manager.insert_pending(request_id.clone(), session);
+
+        // Create the firewall approval popup window
+        use tauri::WebviewWindowBuilder;
+        match WebviewWindowBuilder::new(
+            &app_clone,
+            format!("firewall-approval-{}", request_id),
+            tauri::WebviewUrl::App("index.html".into()),
+        )
+        .title("Approve Tool")
+        .inner_size(400.0, 340.0)
+        .center()
+        .visible(true)
+        .resizable(false)
+        .build()
+        {
+            Ok(window) => {
+                let _ = window.set_focus();
+                tracing::info!("Debug firewall popup opened for request {}", request_id);
+            }
+            Err(e) => {
+                tracing::error!("Failed to create debug firewall popup: {}", e);
+            }
+        }
+    });
+
+    Ok(())
 }
