@@ -2,7 +2,7 @@ import { useState, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
 import { toast } from "sonner"
-import { Plus, CheckCircle, XCircle, Loader2, RefreshCw, FlaskConical, Blocks, Grid, Settings, Store } from "lucide-react"
+import { Plus, CheckCircle, XCircle, Loader2, RefreshCw, FlaskConical, Blocks, Grid, Store, ArrowLeft, Settings2 } from "lucide-react"
 import McpServerIcon from "@/components/McpServerIcon"
 import { Badge } from "@/components/ui/Badge"
 import { Button } from "@/components/ui/Button"
@@ -36,7 +36,8 @@ import LegacySelect from "@/components/ui/Select"
 import KeyValueInput from "@/components/ui/KeyValueInput"
 import { McpServerTemplates, McpServerTemplate } from "@/components/mcp/McpServerTemplates"
 import { McpOAuthModal } from "@/components/mcp/McpOAuthModal"
-import { MarketplaceSearchPanel } from "@/components/add-resource"
+import { MarketplaceSearchPanel, McpServerListing } from "@/components/add-resource"
+import ServiceIcon from "@/components/ServiceIcon"
 import { cn } from "@/lib/utils"
 
 interface McpAuthConfig {
@@ -115,8 +116,13 @@ export function McpServersPanel({
 
   // Create modal state
   const [showCreateModal, setShowCreateModal] = useState(false)
-  const [createTab, setCreateTab] = useState<"templates" | "custom" | "marketplace">("templates")
-  const [selectedTemplate, setSelectedTemplate] = useState<McpServerTemplate | null>(null)
+  const [dialogPage, setDialogPage] = useState<"select" | "configure">("select")
+  const [dialogTab, setDialogTab] = useState<"templates" | "marketplace" | "custom">("templates")
+  const [selectedSource, setSelectedSource] = useState<{
+    type: "template" | "marketplace"
+    template?: McpServerTemplate
+    listing?: McpServerListing
+  } | null>(null)
   const [isCreating, setIsCreating] = useState(false)
 
   // Form state
@@ -154,7 +160,8 @@ export function McpServersPanel({
       const template = MCP_SERVER_TEMPLATES.find((t: McpServerTemplate) => t.id === initialAddTemplateId)
       if (template) {
         setShowCreateModal(true)
-        setSelectedTemplate(template)
+        setSelectedSource({ type: "template", template })
+        setDialogPage("configure")
         setServerName(template.name)
         setTransportType(template.transport)
         if (template.transport === "Stdio") {
@@ -211,13 +218,14 @@ export function McpServersPanel({
     setBearerToken("")
     setOauthClientId("")
     setOauthClientSecret("")
-    setSelectedTemplate(null)
-    setCreateTab("templates")
+    setSelectedSource(null)
+    setDialogPage("select")
+    setDialogTab("templates")
   }
 
   const handleSelectTemplate = (template: McpServerTemplate) => {
-    setSelectedTemplate(template)
-    setServerName(template.id === "custom" ? "" : template.name)
+    setSelectedSource({ type: "template", template })
+    setServerName(template.name)
     setTransportType(template.transport)
 
     if (template.transport === "Stdio" && template.command) {
@@ -237,8 +245,39 @@ export function McpServersPanel({
       setAuthMethod("none")
     }
 
-    // Switch to custom tab to show the form
-    setCreateTab("custom")
+    // Switch to configure page
+    setDialogPage("configure")
+  }
+
+  const handleSelectMarketplaceMcp = (listing: McpServerListing) => {
+    setSelectedSource({ type: "marketplace", listing })
+    setServerName(listing.name)
+
+    // Pre-populate form based on listing
+    if (listing.available_transports.includes("stdio")) {
+      setTransportType("Stdio")
+      if (listing.packages.length > 0) {
+        const pkg = listing.packages[0]
+        if (pkg.runtime === "node" || pkg.registry === "npm") {
+          setCommand(`npx -y ${pkg.name}`)
+        } else if (pkg.runtime === "python" || pkg.registry === "pypi") {
+          setCommand(`uvx ${pkg.name}`)
+        }
+      }
+      setUrl("")
+    } else if (listing.remotes.length > 0) {
+      setTransportType("Sse")
+      setUrl(listing.remotes[0].url)
+      setCommand("")
+    }
+
+    setAuthMethod("none")
+    setDialogPage("configure")
+  }
+
+  const handleBackToSelect = () => {
+    setDialogPage("select")
+    // Keep form data in case user wants to go back
   }
 
   const handleCreateServer = async (e: React.FormEvent) => {
@@ -311,7 +350,7 @@ export function McpServersPanel({
   const populateFormFromServer = (server: McpServer) => {
     setServerName(server.name)
     setTransportType(server.transport === "Stdio" ? "Stdio" : "Sse")
-    setSelectedTemplate(null)
+    setSelectedSource(null)
 
     const tc = server.transport_config as Record<string, unknown>
     if (server.transport === "Stdio") {
@@ -995,68 +1034,170 @@ export function McpServersPanel({
         if (!open) { setShowCreateModal(false); resetForm() }
       }}
     >
-      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
-        <DialogHeader>
+      <DialogContent className="max-w-2xl max-h-[85vh] flex flex-col overflow-hidden">
+        <DialogHeader className="flex-shrink-0">
           <DialogTitle>Add MCP</DialogTitle>
         </DialogHeader>
 
-        <Tabs value={createTab} onValueChange={(v) => setCreateTab(v as typeof createTab)}>
-          <TabsList className="grid w-full grid-cols-3">
-            <TabsTrigger value="templates" className="gap-2">
-              <Grid className="h-4 w-4" />
-              Templates
-            </TabsTrigger>
-            <TabsTrigger value="custom" className="gap-2">
-              <Settings className="h-4 w-4" />
-              Custom
-            </TabsTrigger>
-            <TabsTrigger value="marketplace" className="gap-2">
-              <Store className="h-4 w-4" />
-              Marketplace
-            </TabsTrigger>
-          </TabsList>
+        {dialogPage === "select" ? (
+          /* Page 1: Selection */
+          <Tabs value={dialogTab} onValueChange={(v) => setDialogTab(v as typeof dialogTab)} className="flex-1 flex flex-col min-h-0">
+            <TabsList className="grid w-full grid-cols-3 flex-shrink-0">
+              <TabsTrigger value="templates" className="gap-2">
+                <Grid className="h-4 w-4" />
+                Templates
+              </TabsTrigger>
+              <TabsTrigger value="marketplace" className="gap-2">
+                <Store className="h-4 w-4" />
+                Marketplace
+              </TabsTrigger>
+              <TabsTrigger value="custom" className="gap-2">
+                <Settings2 className="h-4 w-4" />
+                Custom
+              </TabsTrigger>
+            </TabsList>
 
-          {/* Templates Tab */}
-          <TabsContent value="templates" className="mt-4">
-            <McpServerTemplates onSelectTemplate={handleSelectTemplate} />
-          </TabsContent>
+            {/* Templates Tab */}
+            <TabsContent value="templates" className="mt-4 flex-1 overflow-y-auto">
+              <McpServerTemplates onSelectTemplate={handleSelectTemplate} />
+            </TabsContent>
 
-          {/* Custom Tab */}
-          <TabsContent value="custom" className="mt-4">
-            {/* Show selected template info if any */}
-            {selectedTemplate && selectedTemplate.id !== "custom" && (
-              <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded p-3 mb-4">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <span className="text-2xl">{selectedTemplate.icon}</span>
-                    <div>
-                      <p className="text-sm font-medium text-blue-900 dark:text-blue-100">
-                        Using template: {selectedTemplate.name}
-                      </p>
-                      <p className="text-xs text-blue-700 dark:text-blue-300">
-                        Customize the settings below
-                      </p>
-                    </div>
-                  </div>
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    size="sm"
-                    onClick={() => {
-                      setSelectedTemplate(null)
-                      setServerName("")
-                      setCommand("")
-                      setUrl("")
-                    }}
-                  >
-                    Clear
-                  </Button>
+            {/* Marketplace Tab */}
+            <TabsContent value="marketplace" className="mt-4 flex-1 min-h-0 overflow-hidden">
+              <MarketplaceSearchPanel
+                type="mcp"
+                onSelectMcp={handleSelectMarketplaceMcp}
+                maxHeight="calc(85vh - 180px)"
+              />
+            </TabsContent>
+
+            {/* Custom Tab */}
+            <TabsContent value="custom" className="mt-4 flex-1 overflow-y-auto">
+              <form onSubmit={handleCreateServer} className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium mb-2">Server Name</label>
+                  <Input value={serverName} onChange={(e) => setServerName(e.target.value)} placeholder="My MCP Server" required />
                 </div>
-                {selectedTemplate.setupInstructions && (
-                  <p className="text-xs text-blue-700 dark:text-blue-300 mt-2">
-                    {selectedTemplate.setupInstructions}
-                  </p>
+                <div>
+                  <label className="block text-sm font-medium mb-2">Transport Type</label>
+                  <LegacySelect value={transportType} onChange={(e) => setTransportType(e.target.value as "Stdio" | "Sse")}>
+                    <option value="Stdio">STDIO (Subprocess)</option>
+                    <option value="Sse">HTTP-SSE (Server-Sent Events)</option>
+                  </LegacySelect>
+                </div>
+                {transportType === "Stdio" && (
+                  <>
+                    <div>
+                      <label className="block text-sm font-medium mb-2">Command</label>
+                      <Input value={command} onChange={(e) => setCommand(e.target.value)} placeholder="npx -y @modelcontextprotocol/server-everything" required />
+                      <p className="text-xs text-muted-foreground mt-1">Full command with arguments</p>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium mb-2">Environment Variables</label>
+                      <KeyValueInput value={envVars} onChange={setEnvVars} keyPlaceholder="KEY" valuePlaceholder="VALUE" />
+                    </div>
+                  </>
                 )}
+                {transportType === "Sse" && (
+                  <>
+                    <div>
+                      <label className="block text-sm font-medium mb-2">URL</label>
+                      <Input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://api.example.com/mcp" required />
+                    </div>
+                    <div className="border-t pt-4 mt-4">
+                      <h3 className="text-md font-semibold mb-3">Authentication (Optional)</h3>
+                      <div>
+                        <label className="block text-sm font-medium mb-2">Authentication Method</label>
+                        <LegacySelect value={authMethod} onChange={(e) => setAuthMethod(e.target.value as typeof authMethod)}>
+                          <option value="none">None / Via headers</option>
+                          <option value="bearer">Bearer Token</option>
+                          <option value="oauth_pregenerated">OAuth (Pre-generated credentials)</option>
+                        </LegacySelect>
+                      </div>
+                      {authMethod === "bearer" && (
+                        <div className="mt-3">
+                          <label className="block text-sm font-medium mb-2">Bearer Token</label>
+                          <Input type="password" value={bearerToken} onChange={(e) => setBearerToken(e.target.value)} placeholder="your-bearer-token" required />
+                        </div>
+                      )}
+                      {authMethod === "oauth_pregenerated" && (
+                        <div className="mt-3 space-y-3">
+                          <div>
+                            <label className="block text-sm font-medium mb-2">Client ID</label>
+                            <Input value={oauthClientId} onChange={(e) => setOauthClientId(e.target.value)} placeholder="your-oauth-client-id" required />
+                          </div>
+                          <div>
+                            <label className="block text-sm font-medium mb-2">Client Secret</label>
+                            <Input type="password" value={oauthClientSecret} onChange={(e) => setOauthClientSecret(e.target.value)} placeholder="your-oauth-client-secret" required />
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium mb-2">Headers (Optional)</label>
+                      <KeyValueInput value={headers} onChange={setHeaders} keyPlaceholder="Header Name" valuePlaceholder="Header Value" />
+                    </div>
+                  </>
+                )}
+                <div className="flex justify-end gap-2 pt-4">
+                  <Button type="button" variant="secondary" onClick={() => { setShowCreateModal(false); resetForm() }} disabled={isCreating}>Cancel</Button>
+                  <Button type="submit" disabled={isCreating}>{isCreating ? "Creating..." : "Create"}</Button>
+                </div>
+              </form>
+            </TabsContent>
+          </Tabs>
+        ) : (
+          /* Page 2: Configuration Form */
+          <div className="flex-1 flex flex-col min-h-0 overflow-y-auto space-y-4">
+            {/* Back button and source header */}
+            <div className="flex items-center gap-3 pb-2 border-b flex-shrink-0">
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={handleBackToSelect}
+                className="h-8 px-2"
+              >
+                <ArrowLeft className="h-4 w-4 mr-1" />
+                Back
+              </Button>
+              {selectedSource && (
+                <div className="flex items-center gap-2">
+                  {selectedSource.type === "template" && selectedSource.template && (
+                    <>
+                      <ServiceIcon service={selectedSource.template.id} size={24} fallbackToServerIcon />
+                      <div>
+                        <p className="text-sm font-medium">{selectedSource.template.name}</p>
+                        <p className="text-xs text-muted-foreground">{selectedSource.template.description}</p>
+                      </div>
+                    </>
+                  )}
+                  {selectedSource.type === "marketplace" && selectedSource.listing && (
+                    <>
+                      <ServiceIcon service={selectedSource.listing.name.toLowerCase().replace(/[^a-z0-9]/g, "")} size={24} fallbackToServerIcon />
+                      <div>
+                        <p className="text-sm font-medium">{selectedSource.listing.name}</p>
+                        <p className="text-xs text-muted-foreground">{selectedSource.listing.description}</p>
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Setup instructions */}
+            {selectedSource?.type === "template" && selectedSource.template?.setupInstructions && (
+              <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded p-3">
+                <p className="text-xs text-blue-700 dark:text-blue-300">
+                  {selectedSource.template.setupInstructions}
+                </p>
+              </div>
+            )}
+            {selectedSource?.type === "marketplace" && selectedSource.listing?.install_hint && (
+              <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded p-3">
+                <p className="text-xs text-blue-700 dark:text-blue-300">
+                  {selectedSource.listing.install_hint}
+                </p>
               </div>
             )}
 
@@ -1136,21 +1277,8 @@ export function McpServersPanel({
                 <Button type="submit" disabled={isCreating}>{isCreating ? "Creating..." : "Create"}</Button>
               </div>
             </form>
-          </TabsContent>
-
-          {/* Marketplace Tab */}
-          <TabsContent value="marketplace" className="mt-4">
-            <MarketplaceSearchPanel
-              type="mcp"
-              onInstallComplete={() => {
-                setShowCreateModal(false)
-                resetForm()
-                loadServersOnly()
-              }}
-              maxHeight="400px"
-            />
-          </TabsContent>
-        </Tabs>
+          </div>
+        )}
       </DialogContent>
     </Dialog>
 
