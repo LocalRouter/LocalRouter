@@ -4,7 +4,7 @@ import { listen } from "@tauri-apps/api/event"
 import { open } from "@tauri-apps/plugin-dialog"
 
 import { toast } from "sonner"
-import { RefreshCw, ExternalLink, ChevronDown, ChevronRight, FileText, FileCode, Image, Folder, FlaskConical, Play, BookOpen, Plus, Trash2, FolderOpen, Store } from "lucide-react"
+import { RefreshCw, ExternalLink, ChevronDown, ChevronRight, FileText, FileCode, Image, Folder, FlaskConical, Play, BookOpen, Plus, Trash2, FolderOpen, Store, ArrowLeft, Loader2, User, Tag, GitBranch, File } from "lucide-react"
 import { SkillsIcon } from "@/components/icons/category-icons"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
@@ -24,7 +24,18 @@ import {
   DialogTitle,
   DialogDescription,
 } from "@/components/ui/Modal"
-import { MarketplaceSearchPanel } from "@/components/add-resource"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog"
+import { MarketplaceSearchPanel, type SkillListing } from "@/components/add-resource"
 import { cn } from "@/lib/utils"
 
 interface SkillInfo {
@@ -71,11 +82,18 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
 
   // Skill paths dialog state
   const [showPathsDialog, setShowPathsDialog] = useState(false)
+  const [dialogPage, setDialogPage] = useState<"select" | "configure">("select")
   const [dialogTab, setDialogTab] = useState<"manage" | "marketplace">("manage")
+  const [selectedSkillListing, setSelectedSkillListing] = useState<SkillListing | null>(null)
+  const [isInstalling, setIsInstalling] = useState(false)
+  const [expandedPreviewFiles, setExpandedPreviewFiles] = useState<Set<string>>(new Set())
+  const [previewFileContents, setPreviewFileContents] = useState<Record<string, string>>({})
   const [skillPaths, setSkillPaths] = useState<string[]>([])
   const [newPath, setNewPath] = useState("")
   const [addingPath, setAddingPath] = useState(false)
   const [removingPath, setRemovingPath] = useState<string | null>(null)
+  const [isMarketplaceSkill, setIsMarketplaceSkill] = useState(false)
+  const [isDeleting, setIsDeleting] = useState(false)
 
   useEffect(() => {
     loadData()
@@ -93,15 +111,29 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
     setSelectedSkill(activeSubTab)
   }, [activeSubTab])
 
+  // Reset state when selected skill changes
   useEffect(() => {
     if (selectedSkill) {
       loadSkillFiles(selectedSkill)
     } else {
       setSkillFiles([])
       setExpandedFiles(new Set())
+      setIsMarketplaceSkill(false)
     }
     setDetailTab("info")
   }, [selectedSkill])
+
+  // Check marketplace status when skills list updates (separate to avoid resetting tab)
+  useEffect(() => {
+    if (selectedSkill) {
+      const skillInfo = skills.find(s => s.name === selectedSkill)
+      if (skillInfo) {
+        invoke<boolean>("marketplace_is_skill_from_marketplace", {
+          skillPath: skillInfo.source_path,
+        }).then(setIsMarketplaceSkill).catch(() => setIsMarketplaceSkill(false))
+      }
+    }
+  }, [selectedSkill, skills])
 
   const loadData = async () => {
     try {
@@ -174,6 +206,22 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
     }
   }
 
+  const handleDeleteSkill = async (skillName: string, skillPath: string) => {
+    setIsDeleting(true)
+    try {
+      await invoke("marketplace_delete_skill", { skillName, skillPath })
+      toast.success(`Skill "${skillName}" deleted`)
+      setSelectedSkill(null)
+      onTabChange("skills", null)
+      await loadData()
+    } catch (error) {
+      console.error("Failed to delete skill:", error)
+      toast.error(`Failed to delete skill: ${error}`)
+    } finally {
+      setIsDeleting(false)
+    }
+  }
+
   const loadSkillsConfig = async () => {
     try {
       const config = await invoke<SkillsConfig>("get_skills_config")
@@ -231,6 +279,82 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
       }
     } catch (error) {
       console.error("Failed to open browse dialog:", error)
+    }
+  }
+
+  const handleSelectMarketplaceSkill = (listing: SkillListing) => {
+    setSelectedSkillListing(listing)
+    setExpandedPreviewFiles(new Set())
+    setPreviewFileContents({})
+    setDialogPage("configure")
+  }
+
+  const togglePreviewFileExpanded = async (file: { path: string; url: string }) => {
+    const isExpanded = expandedPreviewFiles.has(file.path)
+
+    if (isExpanded) {
+      // Collapse
+      setExpandedPreviewFiles(prev => {
+        const next = new Set(prev)
+        next.delete(file.path)
+        return next
+      })
+    } else {
+      // Expand - fetch content if not already loaded
+      setExpandedPreviewFiles(prev => new Set(prev).add(file.path))
+
+      if (!previewFileContents[file.path]) {
+        try {
+          const response = await fetch(file.url)
+          if (response.ok) {
+            const content = await response.text()
+            // Limit preview to first 200 lines
+            const lines = content.split('\n')
+            const preview = lines.slice(0, 200).join('\n') + (lines.length > 200 ? '\n...(truncated)' : '')
+            setPreviewFileContents(prev => ({ ...prev, [file.path]: preview }))
+          } else {
+            setPreviewFileContents(prev => ({ ...prev, [file.path]: '(Failed to load content)' }))
+          }
+        } catch (error) {
+          console.error('Failed to fetch file content:', error)
+          setPreviewFileContents(prev => ({ ...prev, [file.path]: '(Failed to load content)' }))
+        }
+      }
+    }
+  }
+
+  const handleBackToSelect = () => {
+    setDialogPage("select")
+  }
+
+  const resetDialogState = () => {
+    setDialogPage("select")
+    setDialogTab("manage")
+    setSelectedSkillListing(null)
+    setIsInstalling(false)
+    setExpandedPreviewFiles(new Set())
+    setPreviewFileContents({})
+  }
+
+  const handleInstallSkill = async () => {
+    if (!selectedSkillListing) return
+
+    setIsInstalling(true)
+    try {
+      await invoke("marketplace_install_skill_direct", {
+        sourceUrl: selectedSkillListing.skill_md_url,
+        skillName: selectedSkillListing.name,
+      })
+      toast.success(`Skill "${selectedSkillListing.name}" installed`)
+      await loadData()
+      await handleRescan()
+      setShowPathsDialog(false)
+      resetDialogState()
+    } catch (error) {
+      console.error("Failed to install skill:", error)
+      toast.error(`Failed to install skill: ${error}`)
+    } finally {
+      setIsInstalling(false)
     }
   }
 
@@ -589,6 +713,55 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
                           </div>
                         </CardContent>
                       </Card>
+
+                      {/* Delete Skill (marketplace only) */}
+                      {isMarketplaceSkill && (
+                        <Card className="border-destructive/50">
+                          <CardHeader>
+                            <CardTitle className="text-destructive">Delete Skill</CardTitle>
+                            <CardDescription>
+                              Permanently remove this marketplace-installed skill
+                            </CardDescription>
+                          </CardHeader>
+                          <CardContent>
+                            <AlertDialog>
+                              <AlertDialogTrigger asChild>
+                                <Button variant="destructive" disabled={isDeleting}>
+                                  {isDeleting ? (
+                                    <>
+                                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                                      Deleting...
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Trash2 className="h-4 w-4 mr-2" />
+                                      Delete Skill
+                                    </>
+                                  )}
+                                </Button>
+                              </AlertDialogTrigger>
+                              <AlertDialogContent>
+                                <AlertDialogHeader>
+                                  <AlertDialogTitle>Delete "{selectedSkillInfo.name}"?</AlertDialogTitle>
+                                  <AlertDialogDescription>
+                                    This will permanently delete this skill and all its files.
+                                    This action cannot be undone.
+                                  </AlertDialogDescription>
+                                </AlertDialogHeader>
+                                <AlertDialogFooter>
+                                  <AlertDialogCancel>Cancel</AlertDialogCancel>
+                                  <AlertDialogAction
+                                    onClick={() => handleDeleteSkill(selectedSkillInfo.name, selectedSkillInfo.source_path)}
+                                    className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                                  >
+                                    Delete
+                                  </AlertDialogAction>
+                                </AlertDialogFooter>
+                              </AlertDialogContent>
+                            </AlertDialog>
+                          </CardContent>
+                        </Card>
+                      )}
                     </div>
                   </TabsContent>
                 </Tabs>
@@ -612,134 +785,311 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
       <Dialog open={showPathsDialog} onOpenChange={(open) => {
         setShowPathsDialog(open)
         if (!open) {
-          setDialogTab("manage")
+          resetDialogState()
         }
       }}>
         <DialogContent className="max-w-lg max-h-[80vh] flex flex-col overflow-hidden">
           <DialogHeader className="flex-shrink-0">
             <DialogTitle>Add Skills</DialogTitle>
-            <DialogDescription>
-              Manage local skill paths or install from the marketplace.
-            </DialogDescription>
+            {dialogPage === "select" && (
+              <DialogDescription>
+                Manage local skill paths or install from the marketplace.
+              </DialogDescription>
+            )}
           </DialogHeader>
 
-          <Tabs value={dialogTab} onValueChange={(v) => setDialogTab(v as typeof dialogTab)} className="flex-1 flex flex-col min-h-0">
-            <TabsList className="grid w-full grid-cols-2 flex-shrink-0">
-              <TabsTrigger value="manage" className="gap-2">
-                <FolderOpen className="h-4 w-4" />
-                Manage Paths
-              </TabsTrigger>
-              <TabsTrigger value="marketplace" className="gap-2">
-                <Store className="h-4 w-4" />
-                Marketplace
-              </TabsTrigger>
-            </TabsList>
+          {dialogPage === "select" ? (
+            /* Page 1: Selection */
+            <Tabs value={dialogTab} onValueChange={(v) => setDialogTab(v as typeof dialogTab)} className="flex-1 flex flex-col min-h-0">
+              <TabsList className="grid w-full grid-cols-2 flex-shrink-0">
+                <TabsTrigger value="manage" className="gap-2">
+                  <FolderOpen className="h-4 w-4" />
+                  Manage Paths
+                </TabsTrigger>
+                <TabsTrigger value="marketplace" className="gap-2">
+                  <Store className="h-4 w-4" />
+                  Marketplace
+                </TabsTrigger>
+              </TabsList>
 
-            {/* Manage Paths Tab */}
-            <TabsContent value="manage" className="mt-4 flex-1 flex flex-col min-h-0 data-[state=inactive]:hidden">
-              <div className="space-y-4 flex-1 overflow-y-auto">
-                {/* Existing Paths */}
-                <div className="space-y-2">
-                  <p className="text-sm font-medium">Current Paths</p>
-                  {skillPaths.length === 0 ? (
-                    <p className="text-sm text-muted-foreground py-2">No skill paths configured</p>
-                  ) : (
-                    <div className="space-y-1">
-                      {skillPaths.map((path) => (
-                        <div
-                          key={path}
-                          className="flex items-center gap-2 p-2 rounded-md bg-muted/50 group"
-                        >
-                          <Folder className="h-4 w-4 text-muted-foreground shrink-0" />
-                          <span className="text-sm flex-1 truncate" title={path}>
-                            {path}
-                          </span>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity"
-                            onClick={() => handleRemovePath(path)}
-                            disabled={removingPath === path}
+              {/* Manage Paths Tab */}
+              <TabsContent value="manage" className="mt-4 flex-1 flex flex-col min-h-0 data-[state=inactive]:hidden">
+                <div className="space-y-4 flex-1 overflow-y-auto">
+                  {/* Existing Paths */}
+                  <div className="space-y-2">
+                    <p className="text-sm font-medium">Current Paths</p>
+                    {skillPaths.length === 0 ? (
+                      <p className="text-sm text-muted-foreground py-2">No skill paths configured</p>
+                    ) : (
+                      <div className="space-y-1">
+                        {skillPaths.map((path) => (
+                          <div
+                            key={path}
+                            className="flex items-center gap-2 p-2 rounded-md bg-muted/50 group"
                           >
-                            <Trash2 className="h-3.5 w-3.5 text-destructive" />
-                          </Button>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
+                            <Folder className="h-4 w-4 text-muted-foreground shrink-0" />
+                            <span className="text-sm flex-1 truncate" title={path}>
+                              {path}
+                            </span>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity"
+                              onClick={() => handleRemovePath(path)}
+                              disabled={removingPath === path}
+                            >
+                              <Trash2 className="h-3.5 w-3.5 text-destructive" />
+                            </Button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
 
-                {/* Add New Path */}
-                <div className="space-y-2">
-                  <p className="text-sm font-medium">Add New Path</p>
-                  <div className="flex gap-2">
-                    <Input
-                      placeholder="Enter path or browse..."
-                      value={newPath}
-                      onChange={(e) => setNewPath(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" && newPath.trim()) {
-                          handleAddPath(newPath)
-                        }
-                      }}
-                      className="flex-1"
-                    />
+                  {/* Add New Path */}
+                  <div className="space-y-2">
+                    <p className="text-sm font-medium">Add New Path</p>
+                    <div className="flex gap-2">
+                      <Input
+                        placeholder="Enter path or browse..."
+                        value={newPath}
+                        onChange={(e) => setNewPath(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" && newPath.trim()) {
+                            handleAddPath(newPath)
+                          }
+                        }}
+                        className="flex-1"
+                      />
+                      <Button
+                        variant="outline"
+                        size="icon"
+                        onClick={() => handleAddPath(newPath)}
+                        disabled={!newPath.trim() || addingPath}
+                        title="Add path"
+                      >
+                        <Plus className="h-4 w-4" />
+                      </Button>
+                    </div>
                     <Button
                       variant="outline"
-                      size="icon"
-                      onClick={() => handleAddPath(newPath)}
-                      disabled={!newPath.trim() || addingPath}
-                      title="Add path"
+                      size="sm"
+                      className="w-full"
+                      onClick={handleBrowse}
+                      disabled={addingPath}
                     >
-                      <Plus className="h-4 w-4" />
+                      <FolderOpen className="h-4 w-4 mr-2" />
+                      Browse...
                     </Button>
                   </div>
+                </div>
+
+                {/* Footer with Rescan */}
+                <div className="flex-shrink-0 pt-4 border-t flex justify-between items-center mt-4">
                   <Button
                     variant="outline"
                     size="sm"
-                    className="w-full"
-                    onClick={handleBrowse}
-                    disabled={addingPath}
+                    onClick={handleRescan}
+                    disabled={rescanning}
                   >
-                    <FolderOpen className="h-4 w-4 mr-2" />
-                    Browse...
+                    <RefreshCw className={`h-4 w-4 mr-2 ${rescanning ? "animate-spin" : ""}`} />
+                    Rescan Skills
+                  </Button>
+                  <Button
+                    variant="default"
+                    size="sm"
+                    onClick={() => setShowPathsDialog(false)}
+                  >
+                    Done
                   </Button>
                 </div>
+              </TabsContent>
+
+              {/* Marketplace Tab */}
+              <TabsContent value="marketplace" className="mt-4 flex-1 min-h-0 data-[state=inactive]:hidden">
+                <MarketplaceSearchPanel
+                  type="skill"
+                  onSelectSkill={handleSelectMarketplaceSkill}
+                  installedSkillNames={skills.map(s => s.name)}
+                  maxHeight="350px"
+                />
+              </TabsContent>
+            </Tabs>
+          ) : (
+            /* Page 2: Skill Configuration/Preview */
+            <div className="space-y-4">
+              {/* Back button and skill header */}
+              <div className="flex items-center gap-3 pb-2 border-b">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={handleBackToSelect}
+                  className="h-8 px-2"
+                >
+                  <ArrowLeft className="h-4 w-4 mr-1" />
+                  Back
+                </Button>
+                {selectedSkillListing && (
+                  <div className="flex items-center gap-2 min-w-0">
+                    <SkillsIcon className="h-6 w-6 shrink-0" />
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium truncate">{selectedSkillListing.name}</p>
+                      <p className="text-xs text-muted-foreground truncate">{selectedSkillListing.description || "No description"}</p>
+                    </div>
+                  </div>
+                )}
               </div>
 
-              {/* Footer with Rescan */}
-              <div className="flex-shrink-0 pt-4 border-t flex justify-between items-center mt-4">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={handleRescan}
-                  disabled={rescanning}
-                >
-                  <RefreshCw className={`h-4 w-4 mr-2 ${rescanning ? "animate-spin" : ""}`} />
-                  Rescan Skills
-                </Button>
-                <Button
-                  variant="default"
-                  size="sm"
-                  onClick={() => setShowPathsDialog(false)}
-                >
-                  Done
-                </Button>
-              </div>
-            </TabsContent>
+              {selectedSkillListing && (
+                <div className="space-y-4">
+                  {/* Skill Details */}
+                  <Card>
+                    <CardHeader className="pb-3">
+                      <CardTitle className="text-sm">Details</CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-3">
+                      <div className="grid grid-cols-2 gap-2 text-sm">
+                        {selectedSkillListing.author && (
+                          <div className="flex items-center gap-1.5">
+                            <User className="h-3.5 w-3.5 text-muted-foreground" />
+                            <span className="text-muted-foreground">Author:</span>
+                            <span className="font-medium truncate">{selectedSkillListing.author}</span>
+                          </div>
+                        )}
+                        {selectedSkillListing.version && (
+                          <div className="flex items-center gap-1.5">
+                            <Tag className="h-3.5 w-3.5 text-muted-foreground" />
+                            <span className="text-muted-foreground">Version:</span>
+                            <span className="font-medium">{selectedSkillListing.version}</span>
+                          </div>
+                        )}
+                        <div className="flex items-center gap-1.5">
+                          <GitBranch className="h-3.5 w-3.5 text-muted-foreground" />
+                          <span className="text-muted-foreground">Source:</span>
+                          <span className="font-medium truncate">{selectedSkillListing.source_label}</span>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <File className="h-3.5 w-3.5 text-muted-foreground" />
+                          <span className="text-muted-foreground">Files:</span>
+                          <span className="font-medium">{selectedSkillListing.files.length}</span>
+                        </div>
+                      </div>
 
-            {/* Marketplace Tab */}
-            <TabsContent value="marketplace" className="mt-4 flex-1 min-h-0 data-[state=inactive]:hidden">
-              <MarketplaceSearchPanel
-                type="skill"
-                onInstallComplete={() => {
-                  loadData()
-                  handleRescan()
-                }}
-                maxHeight="350px"
-              />
-            </TabsContent>
-          </Tabs>
+                      {/* Tags */}
+                      {selectedSkillListing.tags.length > 0 && (
+                        <div className="flex flex-wrap gap-1.5 pt-1">
+                          {selectedSkillListing.tags.map((tag) => (
+                            <span
+                              key={tag}
+                              className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground"
+                            >
+                              {tag}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </CardContent>
+                  </Card>
+
+                  {/* Files Preview */}
+                  {selectedSkillListing.files.length > 0 && (
+                    <Card>
+                      <CardHeader className="pb-3">
+                        <CardTitle className="text-sm">Files to Install</CardTitle>
+                        <CardDescription className="text-xs">Click on a file to preview its contents</CardDescription>
+                      </CardHeader>
+                      <CardContent>
+                        <div className="rounded-md border border-border/50 bg-muted/20 py-1 max-h-64 overflow-y-auto">
+                          {/* Include SKILL.md at the top + other files */}
+                          {[
+                            { path: 'SKILL.md', url: selectedSkillListing.skill_md_url },
+                            ...selectedSkillListing.files
+                          ].map((file) => {
+                            const isExpanded = expandedPreviewFiles.has(file.path)
+                            const content = previewFileContents[file.path]
+                            const fileName = file.path.split('/').pop() || file.path
+                            const ext = fileName.split('.').pop()?.toLowerCase() ?? ''
+                            const isTextFile = ['md', 'txt', 'json', 'yaml', 'yml', 'sh', 'bash', 'py', 'js', 'ts', 'rb', 'pl', 'toml', 'xml', 'html', 'css', 'scss'].includes(ext)
+                            const isSkillMd = file.path === 'SKILL.md'
+
+                            return (
+                              <div key={file.path}>
+                                <button
+                                  className="w-full flex items-center gap-1.5 py-1 px-3 text-xs hover:bg-muted/50 transition-colors text-left"
+                                  onClick={() => isTextFile && togglePreviewFileExpanded(file)}
+                                  disabled={!isTextFile}
+                                >
+                                  {isTextFile ? (
+                                    isExpanded
+                                      ? <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" />
+                                      : <ChevronRight className="h-3 w-3 shrink-0 text-muted-foreground" />
+                                  ) : <div className="w-3" />}
+                                  <FileText className={cn("h-3.5 w-3.5 shrink-0", isSkillMd ? "text-amber-500" : "text-muted-foreground")} />
+                                  <span className="truncate" title={file.path}>{file.path}</span>
+                                  {isSkillMd && (
+                                    <span className="text-[9px] px-1 py-0.5 rounded bg-amber-500/10 text-amber-600 dark:text-amber-400 font-medium uppercase ml-1">Definition</span>
+                                  )}
+                                </button>
+                                {isExpanded && (
+                                  <pre
+                                    className="mx-3 mb-1 px-3 py-2 text-[10px] leading-relaxed bg-muted/30 rounded border border-border/50 overflow-x-auto max-h-48 whitespace-pre-wrap break-words"
+                                  >
+                                    {content || 'Loading...'}
+                                  </pre>
+                                )}
+                              </div>
+                            )
+                          })}
+                        </div>
+                      </CardContent>
+                    </Card>
+                  )}
+
+                  {/* Install Actions */}
+                  {(() => {
+                    const isAlreadyInstalled = skills.some(s => s.name === selectedSkillListing.name)
+                    return (
+                      <div className="flex justify-end gap-2 pt-2">
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          onClick={() => {
+                            setShowPathsDialog(false)
+                            resetDialogState()
+                          }}
+                          disabled={isInstalling}
+                        >
+                          Cancel
+                        </Button>
+                        <Button
+                          onClick={handleInstallSkill}
+                          disabled={isInstalling}
+                        >
+                          {isInstalling ? (
+                            <>
+                              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                              {isAlreadyInstalled ? "Replacing..." : "Installing..."}
+                            </>
+                          ) : isAlreadyInstalled ? (
+                            <>
+                              <RefreshCw className="h-4 w-4 mr-2" />
+                              Replace
+                            </>
+                          ) : (
+                            <>
+                              <Plus className="h-4 w-4 mr-2" />
+                              Install
+                            </>
+                          )}
+                        </Button>
+                      </div>
+                    )
+                  })()}
+                </div>
+              )}
+            </div>
+          )}
         </DialogContent>
       </Dialog>
     </div>
