@@ -1,9 +1,11 @@
 import { Link } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import Logo from '@/components/Logo'
+import { FirewallApprovalDemo } from '@/components/FirewallApprovalDemo'
 import {
   ArrowRight,
   Shield,
+  ShieldCheck,
   Check,
   Key,
   Route,
@@ -11,6 +13,10 @@ import {
   FlaskConical,
   Sparkles,
   Blocks,
+  Store,
+  Search,
+  Download,
+  Terminal,
 } from 'lucide-react'
 
 export default function Home() {
@@ -21,7 +27,7 @@ export default function Home() {
         <div className="mx-auto max-w-7xl px-4 py-24 sm:px-6 sm:py-32 lg:px-8">
           <div className="mx-auto max-w-3xl text-center">
             <h1 className="text-4xl font-bold tracking-tight sm:text-5xl lg:text-6xl">
-              Local Gateway for
+              Local Firewall for
               <br />
               <span className="text-primary">LLM</span>
               {"s, "}
@@ -36,7 +42,7 @@ export default function Home() {
             <div className="mt-10 flex flex-col items-center justify-center gap-4 sm:flex-row">
               <Button asChild size="xl">
                 <Link to="/download">
-                  Download for Free
+                  Download
                   <ArrowRight className="ml-2 h-4 w-4" />
                 </Link>
               </Button>
@@ -53,22 +59,25 @@ export default function Home() {
           </div>
 
           {/* Connection Graph Visual */}
-          <div className="relative mx-auto mt-16 max-w-5xl h-[500px] sm:h-[550px]">
-            {/* SVG Connection Lines - coordinates match node positions */}
-            <svg className="absolute inset-0 w-full h-full pointer-events-none" viewBox="0 0 1000 550" preserveAspectRatio="xMidYMid meet">
-              {/* Left to center connections (Apps to LocalRouter) - y coords: 94, 165, 237, 308 */}
-              <path d="M 200 94 Q 350 94 470 275" stroke="url(#gradient-blue)" strokeWidth="2" fill="none" className="animate-pulse-flow" />
-              <path d="M 200 165 Q 320 165 470 275" stroke="url(#gradient-blue)" strokeWidth="2" fill="none" className="animate-pulse-flow" style={{ animationDelay: '0.3s' }} />
-              <path d="M 200 237 Q 320 237 470 275" stroke="url(#gradient-blue)" strokeWidth="2" fill="none" className="animate-pulse-flow" style={{ animationDelay: '0.6s' }} />
-              <path d="M 200 308 Q 350 308 470 275" stroke="url(#gradient-blue)" strokeWidth="2" fill="none" className="animate-pulse-flow" style={{ animationDelay: '0.9s' }} />
+          <div className="relative mx-auto mt-16 w-full max-w-5xl aspect-[1000/550]">
+            {/* SVG Connection Lines */}
+            <svg className="absolute inset-0 w-full h-full pointer-events-none" viewBox="0 0 1000 550" preserveAspectRatio="none">
+              {/* Left to center connections - nodes at 20%, 34%, 48%, 62% (y: 110, 187, 264, 341) */}
+              <path d="M 120 110 Q 280 110 470 275" stroke="url(#gradient-blue)" strokeWidth="2" fill="none" className="animate-pulse-flow" />
+              <path d="M 120 187 Q 260 187 470 275" stroke="url(#gradient-blue)" strokeWidth="2" fill="none" className="animate-pulse-flow" style={{ animationDelay: '0.3s' }} />
+              <path d="M 120 264 Q 260 264 470 275" stroke="url(#gradient-blue)" strokeWidth="2" fill="none" className="animate-pulse-flow" style={{ animationDelay: '0.6s' }} />
+              <path d="M 120 341 Q 280 341 470 275" stroke="url(#gradient-blue)" strokeWidth="2" fill="none" className="animate-pulse-flow" style={{ animationDelay: '0.9s' }} />
 
-              {/* Center to right-top connections (LocalRouter to Providers) - y coords: 83, 149 */}
-              <path d="M 530 275 Q 650 83 800 83" stroke="url(#gradient-violet)" strokeWidth="2" fill="none" className="animate-pulse-flow" style={{ animationDelay: '0.2s' }} />
-              <path d="M 530 275 Q 650 149 800 149" stroke="url(#gradient-violet)" strokeWidth="2" fill="none" className="animate-pulse-flow" style={{ animationDelay: '0.5s' }} />
+              {/* Center to right-top connections - nodes at 18%, 30% (y: 99, 165) */}
+              <path d="M 530 275 Q 700 99 880 99" stroke="url(#gradient-violet)" strokeWidth="2" fill="none" className="animate-pulse-flow" style={{ animationDelay: '0.2s' }} />
+              <path d="M 530 275 Q 700 165 880 165" stroke="url(#gradient-violet)" strokeWidth="2" fill="none" className="animate-pulse-flow" style={{ animationDelay: '0.5s' }} />
 
-              {/* Center to right-bottom connections (LocalRouter to MCP) - y coords: 374, 440 */}
-              <path d="M 530 275 Q 650 374 800 374" stroke="url(#gradient-emerald)" strokeWidth="2" fill="none" className="animate-pulse-flow" style={{ animationDelay: '0.4s' }} />
-              <path d="M 530 275 Q 650 440 800 440" stroke="url(#gradient-emerald)" strokeWidth="2" fill="none" className="animate-pulse-flow" style={{ animationDelay: '0.7s' }} />
+              {/* Center to right-bottom connections - nodes at 66%, 78% (y: 363, 429) */}
+              <path d="M 530 275 Q 700 363 880 363" stroke="url(#gradient-emerald)" strokeWidth="2" fill="none" className="animate-pulse-flow" style={{ animationDelay: '0.4s' }} />
+              <path d="M 530 275 Q 700 429 880 429" stroke="url(#gradient-emerald)" strokeWidth="2" fill="none" className="animate-pulse-flow" style={{ animationDelay: '0.7s' }} />
+
+              {/* Center to permission dialog - at 25%, 92% (x: 250, y: 506) */}
+              <path d="M 470 310 Q 350 420 250 506" stroke="url(#gradient-orange)" strokeWidth="2" fill="none" className="animate-pulse-flow" style={{ animationDelay: '0.1s' }} />
 
               {/* Gradients */}
               <defs>
@@ -87,41 +96,46 @@ export default function Home() {
                   <stop offset="50%" stopColor="#10b981" stopOpacity="0.8" />
                   <stop offset="100%" stopColor="#10b981" stopOpacity="0.3" />
                 </linearGradient>
+                <linearGradient id="gradient-orange" x1="0%" y1="0%" x2="0%" y2="100%">
+                  <stop offset="0%" stopColor="#f97316" stopOpacity="0.5" />
+                  <stop offset="50%" stopColor="#f97316" stopOpacity="0.8" />
+                  <stop offset="100%" stopColor="#f97316" stopOpacity="0.3" />
+                </linearGradient>
               </defs>
             </svg>
 
             {/* Left side label */}
-            <div className="absolute left-[12%] sm:left-[15%] top-[1%] text-left">
-              <span className="text-xs font-medium text-blue-500 uppercase tracking-wide">Works With</span>
-              <h3 className="text-base sm:text-lg font-semibold"><i>bring-your-own-key</i> Apps</h3>
+            <div className="absolute left-[5%] top-0 text-left">
+              <span className="text-[8px] sm:text-xs font-medium text-blue-500 uppercase tracking-wide">Works With</span>
+              <h3 className="text-[10px] sm:text-lg font-semibold leading-tight"><i>bring-your-own-key</i> Apps</h3>
             </div>
 
-            {/* Left Apps - 17%, 30%, 43%, 56% of 550 = 94, 165, 237, 308 */}
-            <div className="absolute left-[12%] sm:left-[15%] top-[17%] -translate-y-1/2">
-              <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-blue-500/10 border border-blue-500/30 shadow-sm backdrop-blur-sm">
-                <img src="/icons/cursor.svg" alt="Cursor" className="h-6 w-6" />
-                <span className="text-sm font-medium hidden sm:inline">Cursor</span>
+            {/* Left Apps - spread from 20% to 62% to leave room for label */}
+            <div className="absolute left-[5%] top-[20%] -translate-y-1/2">
+              <div className="flex items-center gap-1 sm:gap-2 px-1.5 sm:px-3 py-1 sm:py-2 rounded-lg bg-blue-500/10 border border-blue-500/30 shadow-sm backdrop-blur-sm">
+                <img src="/icons/cursor.svg" alt="Cursor" className="h-4 w-4 sm:h-6 sm:w-6" />
+                <span className="text-xs sm:text-sm font-medium hidden sm:inline">Cursor</span>
               </div>
             </div>
-            <div className="absolute left-[12%] sm:left-[15%] top-[30%] -translate-y-1/2">
-              <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-blue-500/10 border border-blue-500/30 shadow-sm backdrop-blur-sm">
-                <div className="h-6 w-6 rounded bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white font-bold text-xs">{'</>'}</div>
-                <span className="text-sm font-medium hidden sm:inline">OpenCode</span>
+            <div className="absolute left-[5%] top-[34%] -translate-y-1/2">
+              <div className="flex items-center gap-1 sm:gap-2 px-1.5 sm:px-3 py-1 sm:py-2 rounded-lg bg-blue-500/10 border border-blue-500/30 shadow-sm backdrop-blur-sm">
+                <div className="h-4 w-4 sm:h-6 sm:w-6 rounded bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white font-bold text-[8px] sm:text-xs">{'</>'}</div>
+                <span className="text-xs sm:text-sm font-medium hidden sm:inline">OpenCode</span>
               </div>
             </div>
-            <div className="absolute left-[12%] sm:left-[15%] top-[43%] -translate-y-1/2">
-              <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-blue-500/10 border border-blue-500/30 shadow-sm backdrop-blur-sm">
-                <img src="/icons/open-webui.png" alt="Open WebUI" className="h-6 w-6" />
-                <span className="text-sm font-medium hidden sm:inline">Open WebUI</span>
+            <div className="absolute left-[5%] top-[48%] -translate-y-1/2">
+              <div className="flex items-center gap-1 sm:gap-2 px-1.5 sm:px-3 py-1 sm:py-2 rounded-lg bg-blue-500/10 border border-blue-500/30 shadow-sm backdrop-blur-sm">
+                <img src="/icons/open-webui.png" alt="Open WebUI" className="h-4 w-4 sm:h-6 sm:w-6" />
+                <span className="text-xs sm:text-sm font-medium hidden sm:inline">Open WebUI</span>
               </div>
             </div>
-            <div className="absolute left-[12%] sm:left-[15%] top-[56%] -translate-y-1/2">
-              <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-blue-500/10 border border-blue-500/30 shadow-sm backdrop-blur-sm">
-                <div className="h-6 w-6 rounded bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center text-white font-bold text-xs">C</div>
-                <span className="text-sm font-medium hidden sm:inline">Cline</span>
+            <div className="absolute left-[5%] top-[62%] -translate-y-1/2">
+              <div className="flex items-center gap-1 sm:gap-2 px-1.5 sm:px-3 py-1 sm:py-2 rounded-lg bg-blue-500/10 border border-blue-500/30 shadow-sm backdrop-blur-sm">
+                <div className="h-4 w-4 sm:h-6 sm:w-6 rounded bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center text-white font-bold text-[8px] sm:text-xs">C</div>
+                <span className="text-xs sm:text-sm font-medium hidden sm:inline">Cline</span>
               </div>
             </div>
-            <div className="absolute left-[12%] sm:left-[15%] top-[68%] text-muted-foreground text-xs">
+            <div className="absolute left-[5%] top-[74%] text-muted-foreground text-xs hidden sm:block">
               + any OpenAI-compatible app
             </div>
 
@@ -138,49 +152,70 @@ export default function Home() {
               </div>
             </div>
 
-            {/* Right side - LLM Providers label */}
-            <div className="absolute right-[12%] sm:right-[15%] top-[-1%] text-right">
-              <span className="text-xs font-medium text-violet-500 uppercase tracking-wide">Connects to</span>
-              <h3 className="text-base sm:text-lg font-semibold">Any LLM Provider</h3>
+            {/* Permission Dialog - positioned further left and lower to avoid center node */}
+            <div className="absolute left-[25%] top-[92%] -translate-y-1/2 -translate-x-1/2 z-10">
+              <div className="rounded-lg sm:rounded-xl border border-orange-500/30 bg-orange-500/10 p-1 sm:p-4 shadow-sm backdrop-blur-sm">
+                <div className="flex items-center gap-1 sm:gap-2 mb-0.5 sm:mb-2">
+                  <Shield className="h-2 w-2 sm:h-4 sm:w-4 text-orange-600" />
+                  <span className="text-orange-700 text-[6px] sm:text-xs font-medium uppercase tracking-wide">Permission Request</span>
+                </div>
+                <div className="text-slate-800 text-[7px] sm:text-sm mb-1 sm:mb-3">
+                  <span className="text-blue-700 font-medium">Cursor</span> wants <span className="text-emerald-700 font-medium">GitHub</span>
+                </div>
+                <div className="flex gap-0.5 sm:gap-2">
+                  <div className="px-1 sm:px-3 py-0.5 sm:py-1 rounded bg-emerald-500/20 text-emerald-700 text-[6px] sm:text-xs font-medium">
+                    Allow
+                  </div>
+                  <div className="px-1 sm:px-3 py-0.5 sm:py-1 rounded bg-red-500/20 text-red-700 text-[6px] sm:text-xs font-medium">
+                    Deny
+                  </div>
+                </div>
+              </div>
             </div>
 
-            {/* Right LLM Providers - 15%, 27% of 550 = 83, 149 */}
-            <div className="absolute right-[12%] sm:right-[15%] top-[15%] -translate-y-1/2">
-              <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-violet-500/10 border border-violet-500/30 shadow-sm backdrop-blur-sm">
-                <img src="/icons/chatgpt.svg" alt="OpenAI" className="h-6 w-6" />
-                <span className="text-sm font-medium hidden sm:inline">OpenAI</span>
+            {/* Right side - LLM Providers label */}
+            <div className="absolute right-[5%] top-0 text-right">
+              <span className="text-[8px] sm:text-xs font-medium text-violet-500 uppercase tracking-wide">Connects to</span>
+              <h3 className="text-[10px] sm:text-lg font-semibold leading-tight">Any LLM Provider</h3>
+            </div>
+
+            {/* Right LLM Providers - spread from 18% to 36% */}
+            <div className="absolute right-[5%] top-[18%] -translate-y-1/2">
+              <div className="flex items-center gap-1 sm:gap-2 px-1.5 sm:px-3 py-1 sm:py-2 rounded-lg bg-violet-500/10 border border-violet-500/30 shadow-sm backdrop-blur-sm">
+                <img src="/icons/chatgpt.svg" alt="OpenAI" className="h-4 w-4 sm:h-6 sm:w-6" />
+                <span className="text-xs sm:text-sm font-medium hidden sm:inline">OpenAI</span>
               </div>
             </div>
-            <div className="absolute right-[12%] sm:right-[15%] top-[27%] -translate-y-1/2">
-              <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-violet-500/10 border border-violet-500/30 shadow-sm backdrop-blur-sm">
-                <img src="/icons/ollama.svg" alt="Ollama" className="h-6 w-6" />
-                <span className="text-sm font-medium hidden sm:inline">Ollama</span>
+            <div className="absolute right-[5%] top-[30%] -translate-y-1/2">
+              <div className="flex items-center gap-1 sm:gap-2 px-1.5 sm:px-3 py-1 sm:py-2 rounded-lg bg-violet-500/10 border border-violet-500/30 shadow-sm backdrop-blur-sm">
+                <img src="/icons/ollama.svg" alt="Ollama" className="h-4 w-4 sm:h-6 sm:w-6" />
+                <span className="text-xs sm:text-sm font-medium hidden sm:inline">Ollama</span>
               </div>
             </div>
-            <div className="absolute right-[12%] sm:right-[15%] top-[36%] text-muted-foreground text-xs text-right">
+            <div className="absolute right-[5%] top-[40%] text-muted-foreground text-xs text-right hidden sm:block">
               + Anthropic, Gemini, more...
             </div>
 
             {/* Right side - MCP Servers label */}
-            <div className="absolute right-[12%] sm:right-[15%] top-[52%] text-right">
-              <span className="text-xs font-medium text-emerald-500 uppercase tracking-wide">Connects to</span>
-              <h3 className="text-base sm:text-lg font-semibold">Any MCP Server</h3>
+            <div className="absolute right-[5%] top-[50%] text-right">
+              <span className="text-[8px] sm:text-xs font-medium text-emerald-500 uppercase tracking-wide">Connects to</span>
+              <h3 className="text-[10px] sm:text-lg font-semibold leading-tight">Any MCP / Skill</h3>
             </div>
 
-            {/* Right MCP Servers - 68%, 80% of 550 = 374, 440 */}
-            <div className="absolute right-[12%] sm:right-[15%] top-[68%] -translate-y-1/2">
-              <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-emerald-500/10 border border-emerald-500/30 shadow-sm backdrop-blur-sm">
-                <img src="/icons/github.svg" alt="GitHub" className="h-6 w-6" />
-                <span className="text-sm font-medium hidden sm:inline">GitHub</span>
+            {/* Right MCP Servers - spread from 66% to 84% */}
+            <div className="absolute right-[5%] top-[66%] -translate-y-1/2">
+              <div className="flex items-center gap-1 sm:gap-2 px-1.5 sm:px-3 py-1 sm:py-2 rounded-lg bg-emerald-500/10 border border-emerald-500/30 shadow-sm backdrop-blur-sm">
+                <img src="/icons/github.svg" alt="GitHub" className="h-4 w-4 sm:h-6 sm:w-6" />
+                <span className="text-xs sm:text-sm font-medium hidden sm:inline">GitHub</span>
               </div>
             </div>
-            <div className="absolute right-[12%] sm:right-[15%] top-[80%] -translate-y-1/2">
-              <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-emerald-500/10 border border-emerald-500/30 shadow-sm backdrop-blur-sm">
-                <img src="/icons/filesystem.svg" alt="Filesystem" className="h-6 w-6" />
-                <span className="text-sm font-medium hidden sm:inline">Filesystem</span>
+            <div className="absolute right-[5%] top-[78%] -translate-y-1/2">
+              <div className="flex items-center gap-1 sm:gap-2 px-1.5 sm:px-3 py-1 sm:py-2 rounded-lg bg-emerald-500/10 border border-emerald-500/30 shadow-sm backdrop-blur-sm">
+                <Blocks className="h-4 w-4 sm:h-6 sm:w-6 text-emerald-400" />
+                <span className="text-xs sm:text-sm font-medium hidden sm:inline">Project Manager</span>
               </div>
             </div>
-            <div className="absolute right-[12%] sm:right-[15%] top-[89%] text-muted-foreground text-xs text-right">
+            <div className="absolute right-[5%] top-[88%] text-muted-foreground text-xs text-right hidden sm:block">
               + Jira, Slack, more...
             </div>
           </div>
@@ -564,12 +599,12 @@ export default function Home() {
 
                   {/* MCP Servers */}
                   <div className="flex flex-col gap-2">
-                    {/* Local Server */}
-                    <div className="rounded-lg bg-slate-500/10 border border-slate-500/30 p-2 flex items-center gap-2">
-                      <img src="/icons/filesystem.svg" alt="Filesystem" className="h-5 w-5" />
+                    {/* Skill Server */}
+                    <div className="rounded-lg bg-violet-500/10 border border-violet-500/30 p-2 flex items-center gap-2">
+                      <Blocks className="h-5 w-5 text-violet-400" />
                       <div>
-                        <div className="text-white text-xs font-medium">Filesystem</div>
-                        <div className="text-slate-400 text-[10px]">Local • Offline</div>
+                        <div className="text-white text-xs font-medium">Project Manager</div>
+                        <div className="text-violet-400 text-[10px]">Skill • Multi-step</div>
                       </div>
                     </div>
                     {/* Online Servers */}
@@ -729,6 +764,214 @@ export default function Home() {
         </div>
       </section>
 
+      {/* Feature 5: Marketplace */}
+      <section className="border-b py-16 sm:py-24 bg-muted/30">
+        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+          <div className="grid gap-12 lg:grid-cols-2 lg:gap-16 items-center">
+            <div>
+              <div className="flex items-center gap-2 mb-4">
+                <Store className="h-5 w-5 text-cyan-500" />
+                <span className="text-sm font-medium text-cyan-500 uppercase tracking-wide">Marketplace</span>
+              </div>
+              <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">
+                MCP &amp; Skill Marketplace
+              </h2>
+              <p className="mt-4 text-lg text-muted-foreground">
+                Discover and install MCP servers and Skills from multiple marketplaces. Browse catalogs, search by capability, and install with a single click — all with your explicit approval.
+              </p>
+              <ul className="mt-8 space-y-4">
+                <li className="flex gap-3">
+                  <Check className="h-5 w-5 shrink-0 text-cyan-500 mt-0.5" />
+                  <div>
+                    <span className="font-medium">Multiple marketplace sources</span>
+                    <p className="text-sm text-muted-foreground">Connect to various MCP and Skill registries — official, community, and private</p>
+                  </div>
+                </li>
+                <li className="flex gap-3">
+                  <Check className="h-5 w-5 shrink-0 text-cyan-500 mt-0.5" />
+                  <div>
+                    <span className="font-medium">AI-assisted discovery via MCP</span>
+                    <p className="text-sm text-muted-foreground">Marketplace exposed as an MCP tool — let your AI find and suggest relevant servers and skills</p>
+                  </div>
+                </li>
+                <li className="flex gap-3">
+                  <Check className="h-5 w-5 shrink-0 text-cyan-500 mt-0.5" />
+                  <div>
+                    <span className="font-medium">User-approved installations</span>
+                    <p className="text-sm text-muted-foreground">Nothing installs without your explicit permission — full control over what runs on your machine</p>
+                  </div>
+                </li>
+              </ul>
+            </div>
+            {/* Visual: Marketplace Browser */}
+            <div className="relative">
+              <div className="rounded-xl border-2 border-slate-700 bg-gradient-to-br from-slate-900 to-slate-800 p-6 shadow-2xl">
+                {/* Header */}
+                <div className="flex items-center gap-3 mb-5 pb-4 border-b border-slate-700">
+                  <div className="h-10 w-10 rounded-lg bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center">
+                    <Store className="h-5 w-5 text-white" />
+                  </div>
+                  <div>
+                    <div className="text-white font-semibold">Marketplace</div>
+                    <div className="text-slate-400 text-xs">3 sources connected</div>
+                  </div>
+                  <div className="ml-auto">
+                    <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-600">
+                      <Search className="h-4 w-4 text-slate-400" />
+                      <span className="text-slate-400 text-xs">Search MCPs &amp; Skills...</span>
+                    </div>
+                  </div>
+                </div>
+                {/* Results */}
+                <div className="space-y-3">
+                  {/* MCP Server */}
+                  <div className="rounded-lg bg-white/5 border border-white/10 p-3 hover:border-cyan-500/50 transition-colors cursor-pointer">
+                    <div className="flex items-start gap-3">
+                      <div className="h-10 w-10 rounded-lg bg-emerald-500/20 border border-emerald-500/30 flex items-center justify-center shrink-0">
+                        <img src="/icons/github.svg" alt="GitHub" className="h-5 w-5" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="text-white text-sm font-medium">GitHub MCP</span>
+                          <span className="px-1.5 py-0.5 rounded text-[10px] bg-emerald-500/20 text-emerald-400">MCP</span>
+                        </div>
+                        <p className="text-slate-400 text-xs mt-0.5 truncate">Create issues, PRs, search repos, manage workflows</p>
+                        <div className="flex items-center gap-3 mt-2">
+                          <span className="text-slate-500 text-[10px]">Official Registry</span>
+                          <span className="text-slate-500 text-[10px]">12 tools</span>
+                        </div>
+                      </div>
+                      <button className="px-2.5 py-1 rounded bg-cyan-500/20 text-cyan-400 text-xs font-medium hover:bg-cyan-500/30 transition-colors flex items-center gap-1">
+                        <Download className="h-3 w-3" />
+                        Install
+                      </button>
+                    </div>
+                  </div>
+                  {/* Skill */}
+                  <div className="rounded-lg bg-white/5 border border-white/10 p-3 hover:border-cyan-500/50 transition-colors cursor-pointer">
+                    <div className="flex items-start gap-3">
+                      <div className="h-10 w-10 rounded-lg bg-violet-500/20 border border-violet-500/30 flex items-center justify-center shrink-0">
+                        <Terminal className="h-5 w-5 text-violet-400" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="text-white text-sm font-medium">Code Review</span>
+                          <span className="px-1.5 py-0.5 rounded text-[10px] bg-violet-500/20 text-violet-400">Skill</span>
+                        </div>
+                        <p className="text-slate-400 text-xs mt-0.5 truncate">Multi-step code analysis with security scanning</p>
+                        <div className="flex items-center gap-3 mt-2">
+                          <span className="text-slate-500 text-[10px]">Community</span>
+                          <span className="text-slate-500 text-[10px]">4 steps</span>
+                        </div>
+                      </div>
+                      <button className="px-2.5 py-1 rounded bg-cyan-500/20 text-cyan-400 text-xs font-medium hover:bg-cyan-500/30 transition-colors flex items-center gap-1">
+                        <Download className="h-3 w-3" />
+                        Install
+                      </button>
+                    </div>
+                  </div>
+                  {/* Another MCP */}
+                  <div className="rounded-lg bg-white/5 border border-white/10 p-3 hover:border-cyan-500/50 transition-colors cursor-pointer">
+                    <div className="flex items-start gap-3">
+                      <div className="h-10 w-10 rounded-lg bg-blue-500/20 border border-blue-500/30 flex items-center justify-center shrink-0">
+                        <img src="/icons/jira.svg" alt="Jira" className="h-5 w-5" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="text-white text-sm font-medium">Jira MCP</span>
+                          <span className="px-1.5 py-0.5 rounded text-[10px] bg-emerald-500/20 text-emerald-400">MCP</span>
+                        </div>
+                        <p className="text-slate-400 text-xs mt-0.5 truncate">Create and manage Jira issues, sprints, boards</p>
+                        <div className="flex items-center gap-3 mt-2">
+                          <span className="text-slate-500 text-[10px]">Official Registry</span>
+                          <span className="text-slate-500 text-[10px]">8 tools</span>
+                        </div>
+                      </div>
+                      <div className="px-2.5 py-1 rounded bg-slate-700 text-slate-400 text-xs font-medium flex items-center gap-1">
+                        <Check className="h-3 w-3" />
+                        Installed
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* Feature 6: Firewall */}
+      <section className="border-b py-16 sm:py-24">
+        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+          <div className="grid gap-12 lg:grid-cols-2 lg:gap-16 items-center">
+            {/* Visual: Firewall Approval Popup */}
+            <div className="relative order-2 lg:order-1 flex justify-center">
+              <div className="relative">
+                {/* Glow effect */}
+                <div className="absolute inset-0 bg-amber-500/20 blur-3xl rounded-full" />
+                {/* The actual popup */}
+                <div className="relative">
+                  <FirewallApprovalDemo />
+                </div>
+                {/* Decorative elements */}
+                <div className="absolute -top-4 -right-4 px-2 py-1 rounded bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 text-[10px] font-medium">
+                  LLM Provider
+                </div>
+                <div className="absolute -bottom-4 -left-4 px-2 py-1 rounded bg-violet-500/20 border border-violet-500/30 text-violet-400 text-[10px] font-medium">
+                  MCP Tool
+                </div>
+                <div className="absolute top-1/2 -right-8 px-2 py-1 rounded bg-cyan-500/20 border border-cyan-500/30 text-cyan-400 text-[10px] font-medium">
+                  Skill Script
+                </div>
+              </div>
+            </div>
+
+            <div className="order-1 lg:order-2">
+              <div className="flex items-center gap-2 mb-4">
+                <ShieldCheck className="h-5 w-5 text-amber-500" />
+                <span className="text-sm font-medium text-amber-500 uppercase tracking-wide">Firewall</span>
+              </div>
+              <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">
+                Granular Approval Control
+              </h2>
+              <p className="mt-4 text-lg text-muted-foreground">
+                Stay in control of every action. LocalRouter&apos;s firewall prompts you before sensitive operations — approve once, for the session, or deny entirely.
+              </p>
+              <ul className="mt-8 space-y-4">
+                <li className="flex gap-3">
+                  <Check className="h-5 w-5 shrink-0 text-amber-500 mt-0.5" />
+                  <div>
+                    <span className="font-medium">LLM provider access control</span>
+                    <p className="text-sm text-muted-foreground">Approve which models and providers each app can use — prevent unauthorized API usage</p>
+                  </div>
+                </li>
+                <li className="flex gap-3">
+                  <Check className="h-5 w-5 shrink-0 text-amber-500 mt-0.5" />
+                  <div>
+                    <span className="font-medium">MCP tool, resource &amp; prompt approval</span>
+                    <p className="text-sm text-muted-foreground">Granular control over MCP operations — approve file reads, API calls, and prompt injections</p>
+                  </div>
+                </li>
+                <li className="flex gap-3">
+                  <Check className="h-5 w-5 shrink-0 text-amber-500 mt-0.5" />
+                  <div>
+                    <span className="font-medium">Skill script execution gates</span>
+                    <p className="text-sm text-muted-foreground">Skills that run shell commands or scripts require your explicit approval first</p>
+                  </div>
+                </li>
+                <li className="flex gap-3">
+                  <Check className="h-5 w-5 shrink-0 text-amber-500 mt-0.5" />
+                  <div>
+                    <span className="font-medium">Marketplace installation approval</span>
+                    <p className="text-sm text-muted-foreground">AI-suggested installations always require your confirmation — nothing runs without consent</p>
+                  </div>
+                </li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </section>
+
       {/* OLD CAROUSEL SECTIONS - COMMENTED OUT
       {/* Compatible Apps */}
       {/*<section className="border-b py-12 sm:py-16 bg-muted/30 overflow-hidden">
@@ -769,7 +1012,8 @@ export default function Home() {
             <Shield className="mx-auto h-12 w-12 text-primary" />
             <h2 className="mt-4 text-2xl font-bold sm:text-3xl">Privacy First</h2>
             <p className="mt-4 text-muted-foreground">
-              LocalRouter runs entirely on your machine. No telemetry, no analytics, no cloud sync.
+              LocalRouter runs entirely on your machine. No cloud sync, no telemetry, no analytics.
+              <br/>
               Your API keys and request data never leave your computer.
             </p>
             <div className="mt-8 flex flex-wrap justify-center gap-4 text-sm text-muted-foreground">
@@ -800,12 +1044,12 @@ export default function Home() {
           <div className="mx-auto max-w-3xl text-center">
             <h2 className="text-2xl font-bold sm:text-3xl">Get Started in Minutes</h2>
             <p className="mt-4 text-muted-foreground">
-              Download LocalRouter, add your provider keys, and start routing.
+              Download LocalRouter, add your providers, and start routing.
             </p>
             <div className="mt-8">
               <Button asChild size="xl">
                 <Link to="/download">
-                  Download for Free
+                  Download
                   <ArrowRight className="ml-2 h-4 w-4" />
                 </Link>
               </Button>

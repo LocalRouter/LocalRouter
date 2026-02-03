@@ -8,30 +8,30 @@ const platforms = [
     name: 'macOS',
     icon: Apple,
     requirements: ['macOS 10.15+ (Catalina)', 'Intel or Apple Silicon', '200MB disk space'],
-    downloadUrl: 'https://github.com/LocalRouter/LocalRouter/releases/latest/download/LocalRouter-AI_aarch64.dmg',
+    downloadUrl: 'https://github.com/LocalRouter/LocalRouter/releases/latest/download/LocalRouter_aarch64.dmg',
     downloadLabel: 'Download for Apple Silicon',
     altDownloads: [
-      { label: 'Intel Mac', url: 'https://github.com/LocalRouter/LocalRouter/releases/latest/download/LocalRouter-AI_x64.dmg' },
+      { label: 'Intel Mac', url: 'https://github.com/LocalRouter/LocalRouter/releases/latest/download/LocalRouter_x64.dmg' },
     ],
   },
   {
     name: 'Windows',
     icon: Monitor,
     requirements: ['Windows 10+ (64-bit)', '200MB disk space'],
-    downloadUrl: 'https://github.com/LocalRouter/LocalRouter/releases/latest/download/LocalRouter-AI_x64-setup.exe',
+    downloadUrl: 'https://github.com/LocalRouter/LocalRouter/releases/latest/download/LocalRouter_x64-setup.exe',
     downloadLabel: 'Download .exe',
     altDownloads: [
-      { label: '.msi', url: 'https://github.com/LocalRouter/LocalRouter/releases/latest/download/LocalRouter-AI_x64.msi' },
+      { label: '.msi', url: 'https://github.com/LocalRouter/LocalRouter/releases/latest/download/LocalRouter_x64.msi' },
     ],
   },
   {
     name: 'Linux',
     icon: Terminal,
     requirements: ['Modern Linux (glibc 2.31+)', 'DEB or AppImage'],
-    downloadUrl: 'https://github.com/LocalRouter/LocalRouter/releases/latest/download/LocalRouter-AI_amd64.deb',
+    downloadUrl: 'https://github.com/LocalRouter/LocalRouter/releases/latest/download/LocalRouter_amd64.deb',
     downloadLabel: 'Download .deb',
     altDownloads: [
-      { label: '.AppImage', url: 'https://github.com/LocalRouter/LocalRouter/releases/latest/download/LocalRouter-AI_amd64.AppImage' },
+      { label: '.AppImage', url: 'https://github.com/LocalRouter/LocalRouter/releases/latest/download/LocalRouter_amd64.AppImage' },
     ],
   },
 ]
