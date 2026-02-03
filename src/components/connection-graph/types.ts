@@ -4,7 +4,7 @@ import { Node, Edge } from 'reactflow'
 export type ItemHealthStatus = 'healthy' | 'degraded' | 'unhealthy' | 'ready' | 'pending' | 'disabled'
 
 // Graph node types
-export type GraphNodeType = 'accessKey' | 'provider' | 'mcpServer' | 'skill'
+export type GraphNodeType = 'accessKey' | 'provider' | 'mcpServer' | 'skill' | 'marketplace'
 
 // Base node data shared by all node types
 export interface BaseNodeData {
@@ -42,14 +42,20 @@ export interface SkillNodeData extends BaseNodeData {
   type: 'skill'
 }
 
+// Marketplace node data
+export interface MarketplaceNodeData extends BaseNodeData {
+  type: 'marketplace'
+}
+
 // Union type for all node data
-export type GraphNodeData = AccessKeyNodeData | ProviderNodeData | McpServerNodeData | SkillNodeData
+export type GraphNodeData = AccessKeyNodeData | ProviderNodeData | McpServerNodeData | SkillNodeData | MarketplaceNodeData
 
 // Typed nodes
 export type AccessKeyNode = Node<AccessKeyNodeData, 'accessKey'>
 export type ProviderNode = Node<ProviderNodeData, 'provider'>
 export type McpServerNode = Node<McpServerNodeData, 'mcpServer'>
 export type SkillNode = Node<SkillNodeData, 'skill'>
+export type MarketplaceNode = Node<MarketplaceNodeData, 'marketplace'>
 export type GraphNode = Node<GraphNodeData>
 
 // Edge type (use React Flow's Edge type directly)
@@ -67,6 +73,7 @@ export interface Client {
   mcp_servers: string[]
   skills_access_mode: 'none' | 'all' | 'specific'
   skills_names: string[]
+  marketplace_enabled: boolean
   firewall?: {
     default_policy?: 'allow' | 'ask' | 'deny'
     server_rules?: Record<string, 'allow' | 'ask' | 'deny'>

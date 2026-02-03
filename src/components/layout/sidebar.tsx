@@ -7,6 +7,7 @@ import {
   FlaskConical,
   RefreshCw,
   Bug,
+  Store,
 } from "lucide-react"
 import { ProvidersIcon, McpIcon, SkillsIcon } from "@/components/icons/category-icons"
 import { Logo } from "@/components/Logo"
@@ -39,7 +40,7 @@ interface HealthCacheState {
   aggregate_status: AggregateHealthStatus
 }
 
-export type View = 'dashboard' | 'clients' | 'resources' | 'mcp-servers' | 'skills' | 'settings' | 'try-it-out' | 'debug'
+export type View = 'dashboard' | 'clients' | 'resources' | 'mcp-servers' | 'skills' | 'marketplace' | 'settings' | 'try-it-out' | 'debug'
 
 interface SidebarProps {
   activeView: View
@@ -63,7 +64,8 @@ const mainNavItems: NavItem[] = [
 const bottomNavItems: NavItem[] = [
   ...(import.meta.env.DEV ? [{ id: 'debug' as View, icon: Bug, label: 'Debug', shortcut: '⌘0' }] : []),
   { id: 'try-it-out', icon: FlaskConical, label: 'Try It Out', shortcut: '⌘6' },
-  { id: 'settings', icon: Settings, label: 'Settings', shortcut: '⌘7' },
+  { id: 'marketplace', icon: Store, label: 'Marketplace', shortcut: '⌘7' },
+  { id: 'settings', icon: Settings, label: 'Settings', shortcut: '⌘8' },
 ]
 
 export function Sidebar({ activeView, onViewChange }: SidebarProps) {
@@ -206,6 +208,10 @@ export function Sidebar({ activeView, onViewChange }: SidebarProps) {
             onViewChange('try-it-out')
             break
           case '7':
+            e.preventDefault()
+            onViewChange('marketplace')
+            break
+          case '8':
             e.preventDefault()
             onViewChange('settings')
             break

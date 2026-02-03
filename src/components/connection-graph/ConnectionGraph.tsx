@@ -19,6 +19,7 @@ import { AccessKeyNode } from './nodes/AccessKeyNode'
 import { ProviderNode } from './nodes/ProviderNode'
 import { McpServerNode } from './nodes/McpServerNode'
 import { SkillNode } from './nodes/SkillNode'
+import { MarketplaceNode } from './nodes/MarketplaceNode'
 import type { GraphNodeData } from './types'
 
 // Register custom node types
@@ -27,6 +28,7 @@ const nodeTypes: NodeTypes = {
   provider: ProviderNode,
   mcpServer: McpServerNode,
   skill: SkillNode,
+  marketplace: MarketplaceNode,
 }
 
 // Props for the ConnectionGraph component
@@ -88,6 +90,9 @@ export function ConnectionGraph({ className, onViewChange }: ConnectionGraphProp
         break
       case 'skill':
         onViewChange('skills', id)
+        break
+      case 'marketplace':
+        onViewChange('marketplace')
         break
     }
   }, [onViewChange])

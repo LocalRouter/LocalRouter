@@ -12,6 +12,7 @@ import type {
   ProviderNodeData,
   McpServerNodeData,
   SkillNodeData,
+  MarketplaceNodeData,
   ItemHealthStatus,
 } from '../types'
 
@@ -39,14 +40,15 @@ function getMcpServerHealth(
   return health?.status ?? 'pending'
 }
 
-// Build nodes from data
+// Build nodes from data, only including providers/servers/skills that are connected to a client
 function buildNodes(
   clients: Client[],
   providers: Provider[],
   mcpServers: McpServer[],
   skills: Skill[],
   healthState: HealthCacheState | null,
-  activeConnections: string[]
+  activeConnections: string[],
+  connectedTargetIds: Set<string>
 ): GraphNode[] {
   const nodes: GraphNode[] = []
 
@@ -75,8 +77,10 @@ function buildNodes(
     })
   })
 
-  // Add Provider nodes (right-top)
+  // Add Provider nodes — only those connected to at least one client
   enabledProviders.forEach((provider) => {
+    if (!connectedTargetIds.has(`provider-${provider.instance_name}`)) return
+
     const nodeData: ProviderNodeData = {
       id: provider.instance_name,
       name: provider.instance_name,
@@ -94,8 +98,10 @@ function buildNodes(
     })
   })
 
-  // Add MCP Server nodes (right-bottom)
+  // Add MCP Server nodes — only those connected to at least one client
   enabledMcpServers.forEach((server) => {
+    if (!connectedTargetIds.has(`mcp-${server.id}`)) return
+
     const nodeData: McpServerNodeData = {
       id: server.id,
       name: server.name,
@@ -112,8 +118,10 @@ function buildNodes(
     })
   })
 
-  // Add Skill nodes
+  // Add Skill nodes — only those connected to at least one client
   skills.forEach((skill) => {
+    if (!connectedTargetIds.has(`skill-${skill.name}`)) return
+
     const nodeData: SkillNodeData = {
       id: skill.name,
       name: skill.name,
@@ -127,6 +135,23 @@ function buildNodes(
       position: { x: 0, y: 0 },
     })
   })
+
+  // Add Marketplace node if any client has marketplace enabled
+  const hasMarketplaceClient = enabledClients.some(c => c.marketplace_enabled)
+  if (hasMarketplaceClient && connectedTargetIds.has('marketplace')) {
+    const nodeData: MarketplaceNodeData = {
+      id: 'marketplace',
+      name: 'Marketplace',
+      type: 'marketplace',
+    }
+
+    nodes.push({
+      id: 'marketplace',
+      type: 'marketplace',
+      data: nodeData,
+      position: { x: 0, y: 0 },
+    })
+  }
 
   return nodes
 }
@@ -254,6 +279,21 @@ function buildEdges(
         data: { isActive: isConnected },
       })
     })
+
+    // Create edge to marketplace if client has marketplace enabled
+    if (client.marketplace_enabled) {
+      edges.push({
+        id: `edge-${client.id}-marketplace`,
+        source: `client-${client.id}`,
+        target: 'marketplace',
+        animated: isConnected,
+        style: {
+          stroke: isConnected ? '#ec4899' : '#64748b', // Pink for marketplace
+          strokeWidth: isConnected ? 2 : 1,
+        },
+        data: { isActive: isConnected },
+      })
+    }
   })
 
   return edges
@@ -330,8 +370,10 @@ export function buildGraph(
   healthState: HealthCacheState | null,
   activeConnections: string[]
 ): { nodes: GraphNode[]; edges: GraphEdge[]; bounds: { width: number; height: number } } {
-  const nodes = buildNodes(clients, providers, mcpServers, skills, healthState, activeConnections)
+  // Build edges first to determine which targets are connected to clients
   const edges = buildEdges(clients, providers, mcpServers, skills, activeConnections)
+  const connectedTargetIds = new Set(edges.map(e => e.target))
+  const nodes = buildNodes(clients, providers, mcpServers, skills, healthState, activeConnections, connectedTargetIds)
   const layoutedNodes = applyDagreLayout(nodes, edges)
   const bounds = calculateBounds(layoutedNodes)
 

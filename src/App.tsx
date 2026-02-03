@@ -10,6 +10,7 @@ import { ClientsView } from './views/clients'
 import { ResourcesView } from './views/resources'
 import { McpServersView } from './views/mcp-servers'
 import { SkillsView } from './views/skills'
+import { MarketplaceView } from './views/marketplace'
 import { TryItOutView } from './views/try-it-out'
 import { SettingsView } from './views/settings'
 import { ClientCreationWizard } from './components/wizard/ClientCreationWizard'
@@ -190,6 +191,13 @@ function App() {
       case 'skills':
         return (
           <SkillsView
+            activeSubTab={activeSubTab}
+            onTabChange={handleChildViewChange}
+          />
+        )
+      case 'marketplace':
+        return (
+          <MarketplaceView
             activeSubTab={activeSubTab}
             onTabChange={handleChildViewChange}
           />
