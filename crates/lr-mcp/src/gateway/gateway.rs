@@ -7,9 +7,8 @@ use std::time::Duration;
 use tokio::sync::RwLock;
 
 use crate::manager::McpServerManager;
-use crate::protocol::{
-    JsonRpcError, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse,
-};
+use crate::protocol::{JsonRpcError, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse};
+use lr_marketplace::MarketplaceService;
 use lr_router::Router;
 use lr_skills::executor::ScriptExecutor;
 use lr_skills::manager::SkillManager;
@@ -63,6 +62,10 @@ pub struct McpGateway {
 
     /// Override for skills async enabled (set via set_skills_async_enabled)
     pub(crate) skills_async_override: OnceLock<bool>,
+
+    /// Marketplace service (optional, for MCP server/skill discovery)
+    /// Uses OnceLock so it can be set after Arc construction via &self
+    pub(crate) marketplace_service: OnceLock<Arc<MarketplaceService>>,
 }
 
 impl McpGateway {
@@ -95,10 +98,9 @@ impl McpGateway {
 
         // Create firewall manager with broadcast support if available
         let firewall_manager = match &notification_broadcast {
-            Some(broadcast) => Arc::new(FirewallManager::new_with_broadcast(
-                120,
-                broadcast.clone(),
-            )),
+            Some(broadcast) => {
+                Arc::new(FirewallManager::new_with_broadcast(120, broadcast.clone()))
+            }
             None => Arc::new(FirewallManager::default()),
         };
 
@@ -114,6 +116,7 @@ impl McpGateway {
             skill_manager: OnceLock::new(),
             script_executor: OnceLock::new(),
             skills_async_override: OnceLock::new(),
+            marketplace_service: OnceLock::new(),
         }
     }
 
@@ -142,6 +145,12 @@ impl McpGateway {
         // mutate it after construction. Instead, we store the flag on the gateway
         // struct itself and check it in handle_request_with_skills.
         let _ = self.skills_async_override.set(enabled);
+    }
+
+    /// Set marketplace service for MCP server/skill discovery.
+    /// Uses OnceLock so this can be called on `&self` (gateway is behind Arc).
+    pub fn set_marketplace_service(&self, service: Arc<MarketplaceService>) {
+        let _ = self.marketplace_service.set(service);
     }
 
     /// Check if skill support has been configured
@@ -261,7 +270,10 @@ impl McpGateway {
         let mut mapping = std::collections::HashMap::new();
         for server_id in server_ids {
             if let Some(config) = self.server_manager.get_config(server_id) {
-                mapping.insert(server_id.clone(), crate::gateway::types::slugify(&config.name));
+                mapping.insert(
+                    server_id.clone(),
+                    crate::gateway::types::slugify(&config.name),
+                );
             }
         }
         mapping
@@ -284,6 +296,7 @@ impl McpGateway {
             lr_config::SkillsAccess::None,
             lr_config::FirewallRules::default(),
             String::new(),
+            false, // marketplace_enabled
             request,
         )
         .await
@@ -299,6 +312,7 @@ impl McpGateway {
         skills_access: lr_config::SkillsAccess,
         firewall_rules: lr_config::FirewallRules,
         client_name: String,
+        marketplace_enabled: bool,
         request: JsonRpcRequest,
     ) -> AppResult<JsonRpcResponse> {
         let method = request.method.clone();
@@ -331,11 +345,12 @@ impl McpGateway {
             session_write.skills_async_enabled = async_enabled;
         }
 
-        // Update firewall rules and client name on session (always refresh from config)
+        // Update firewall rules, client name, and marketplace access on session (always refresh from config)
         {
             let mut session_write = session.write().await;
             session_write.firewall_rules = firewall_rules;
             session_write.client_name = client_name;
+            session_write.marketplace_enabled = marketplace_enabled;
         }
 
         // Update last activity
@@ -1213,10 +1228,7 @@ impl McpGateway {
             Vec::new()
         };
 
-        let deferred_enabled = deferred_state
-            .as_ref()
-            .map(|d| d.enabled)
-            .unwrap_or(false);
+        let deferred_enabled = deferred_state.as_ref().map(|d| d.enabled).unwrap_or(false);
 
         // Get the full catalogs for building instructions.
         // In deferred mode, we already have them; in normal mode, fetch now.

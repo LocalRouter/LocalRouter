@@ -3,11 +3,13 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
 
-use crate::protocol::{JsonRpcError, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, McpTool};
+use crate::protocol::{
+    JsonRpcError, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, McpTool,
+};
 use lr_types::{AppError, AppResult};
 
-use super::deferred::{search_prompts, search_resources, search_tools, SearchMode};
 use super::deferred::create_search_tool;
+use super::deferred::{search_prompts, search_resources, search_tools, SearchMode};
 use super::merger::merge_tools;
 use super::router::{broadcast_request, separate_results};
 use super::session::GatewaySession;
@@ -29,8 +31,10 @@ impl McpGateway {
         if let Some(deferred) = &session_read.deferred_loading {
             if deferred.enabled {
                 // Return only search tool + activated tools + skill tools
-                let mut tools: Vec<serde_json::Value> =
-                    vec![serde_json::to_value(create_search_tool(deferred.resources_deferred, deferred.prompts_deferred)).unwrap_or_default()];
+                let mut tools: Vec<serde_json::Value> = vec![serde_json::to_value(
+                    create_search_tool(deferred.resources_deferred, deferred.prompts_deferred),
+                )
+                .unwrap_or_default()];
 
                 for tool_name in &deferred.activated_tools {
                     if let Some(tool) = deferred.full_catalog.iter().find(|t| t.name == *tool_name)
@@ -42,9 +46,17 @@ impl McpGateway {
                 let skills_access = session_read.skills_access.clone();
                 let info_loaded = session_read.skills_info_loaded.clone();
                 let async_enabled = session_read.skills_async_enabled;
+                let marketplace_enabled = session_read.marketplace_enabled;
                 drop(session_read);
 
-                self.append_skill_tools(&mut tools, &skills_access, &info_loaded, async_enabled, true);
+                self.append_skill_tools(
+                    &mut tools,
+                    &skills_access,
+                    &info_loaded,
+                    async_enabled,
+                    true,
+                );
+                self.append_marketplace_tools(&mut tools, marketplace_enabled);
 
                 return Ok(JsonRpcResponse::success(
                     request.id.unwrap_or(Value::Null),
@@ -65,9 +77,17 @@ impl McpGateway {
                 let skills_access = session_read.skills_access.clone();
                 let info_loaded = session_read.skills_info_loaded.clone();
                 let async_enabled = session_read.skills_async_enabled;
+                let marketplace_enabled = session_read.marketplace_enabled;
                 drop(session_read);
 
-                self.append_skill_tools(&mut tools, &skills_access, &info_loaded, async_enabled, false);
+                self.append_skill_tools(
+                    &mut tools,
+                    &skills_access,
+                    &info_loaded,
+                    async_enabled,
+                    false,
+                );
+                self.append_marketplace_tools(&mut tools, marketplace_enabled);
 
                 return Ok(JsonRpcResponse::success(
                     request.id.unwrap_or(Value::Null),
@@ -105,6 +125,7 @@ impl McpGateway {
         let skills_access = session_read.skills_access.clone();
         let info_loaded = session_read.skills_info_loaded.clone();
         let async_enabled = session_read.skills_async_enabled;
+        let marketplace_enabled = session_read.marketplace_enabled;
         drop(session_read);
 
         let mut all_tools: Vec<serde_json::Value> = tools
@@ -112,7 +133,14 @@ impl McpGateway {
             .map(|t| serde_json::to_value(t).unwrap_or_default())
             .collect();
 
-        self.append_skill_tools(&mut all_tools, &skills_access, &info_loaded, async_enabled, false);
+        self.append_skill_tools(
+            &mut all_tools,
+            &skills_access,
+            &info_loaded,
+            async_enabled,
+            false,
+        );
+        self.append_marketplace_tools(&mut all_tools, marketplace_enabled);
 
         let mut result = json!({"tools": all_tools});
         if let Some(failures) = failures {
@@ -206,6 +234,13 @@ impl McpGateway {
         // Check if it's the virtual search tool
         if tool_name == "search" {
             return self.handle_search_tool(session, request).await;
+        }
+
+        // Check if it's a marketplace tool
+        if lr_marketplace::is_marketplace_tool(&tool_name) {
+            return self
+                .handle_marketplace_tool_call(session, &tool_name, request)
+                .await;
         }
 
         // Check if it's a skill tool
@@ -305,9 +340,7 @@ impl McpGateway {
             .clone();
 
         // Check session-level approvals for Ask policy
-        let already_approved = session_read
-            .firewall_session_approvals
-            .contains(tool_name);
+        let already_approved = session_read.firewall_session_approvals.contains(tool_name);
 
         let client_id = session_read.client_id.clone();
         drop(session_read);
@@ -343,9 +376,7 @@ impl McpGateway {
             .resolve_skill_tool(tool_name, &skill_name)
             .clone();
 
-        let already_approved = session_read
-            .firewall_session_approvals
-            .contains(tool_name);
+        let already_approved = session_read.firewall_session_approvals.contains(tool_name);
 
         let client_id = session_read.client_id.clone();
         drop(session_read);
@@ -473,10 +504,7 @@ impl McpGateway {
                             request.id.clone().unwrap_or(Value::Null),
                             JsonRpcError::custom(
                                 -32600,
-                                format!(
-                                    "Tool call '{}' denied by user",
-                                    tool_name
-                                ),
+                                format!("Tool call '{}' denied by user", tool_name),
                                 None,
                             ),
                         )))
@@ -747,6 +775,90 @@ impl McpGateway {
             )),
         }
     }
+
+    /// Append marketplace tools to a tools list if the client has marketplace access
+    pub(crate) fn append_marketplace_tools(
+        &self,
+        tools: &mut Vec<serde_json::Value>,
+        marketplace_enabled: bool,
+    ) {
+        if !marketplace_enabled {
+            return;
+        }
+        if let Some(service) = self.marketplace_service.get() {
+            if service.is_enabled() {
+                let marketplace_tools = service.list_tools();
+                tools.extend(marketplace_tools);
+            }
+        }
+    }
+
+    /// Handle a marketplace tool call
+    pub(crate) async fn handle_marketplace_tool_call(
+        &self,
+        session: Arc<RwLock<GatewaySession>>,
+        tool_name: &str,
+        request: JsonRpcRequest,
+    ) -> AppResult<JsonRpcResponse> {
+        let marketplace_service = match self.marketplace_service.get() {
+            Some(service) => service,
+            None => {
+                return Ok(JsonRpcResponse::error(
+                    request.id.unwrap_or(Value::Null),
+                    JsonRpcError::custom(-32601, "Marketplace is not configured".to_string(), None),
+                ));
+            }
+        };
+
+        // Check if marketplace is enabled for this client
+        let session_read = session.read().await;
+        if !session_read.marketplace_enabled {
+            return Ok(JsonRpcResponse::error(
+                request.id.unwrap_or(Value::Null),
+                JsonRpcError::custom(
+                    -32601,
+                    "Marketplace access is not enabled for this client".to_string(),
+                    None,
+                ),
+            ));
+        }
+        let client_id = session_read.client_id.clone();
+        let client_name = session_read.client_name.clone();
+        drop(session_read);
+
+        // Extract arguments from params
+        let arguments = request
+            .params
+            .as_ref()
+            .and_then(|p| p.get("arguments"))
+            .cloned()
+            .unwrap_or(json!({}));
+
+        match marketplace_service
+            .handle_tool_call(tool_name, arguments, &client_id, &client_name)
+            .await
+        {
+            Ok(result) => Ok(JsonRpcResponse::success(
+                request.id.unwrap_or(Value::Null),
+                json!({
+                    "content": [{
+                        "type": "text",
+                        "text": serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string())
+                    }]
+                }),
+            )),
+            Err(e) => Ok(JsonRpcResponse::success(
+                request.id.unwrap_or(Value::Null),
+                json!({
+                    "content": [{
+                        "type": "text",
+                        "text": format!("Error: {}", e)
+                    }],
+                    "isError": true
+                }),
+            )),
+        }
+    }
 }
 
 /// Extract skill name from a skill tool name.
@@ -761,7 +873,13 @@ fn extract_skill_name_from_tool(tool_name: &str) -> String {
 
     // Try to find known action suffixes and extract the name before them
     // Order matters: check longer patterns first
-    for suffix in &["_get_async_status", "_get_info", "_run_async_", "_run_", "_read_"] {
+    for suffix in &[
+        "_get_async_status",
+        "_get_info",
+        "_run_async_",
+        "_run_",
+        "_read_",
+    ] {
         if let Some(pos) = rest.find(suffix) {
             if pos > 0 {
                 return rest[..pos].to_string();

@@ -113,7 +113,11 @@ fn tool_searchable_text(tool: &NamespacedTool) -> String {
         parts.push(desc.clone());
     }
     // Extract argument names and descriptions from input_schema
-    if let Some(props) = tool.input_schema.get("properties").and_then(|p| p.as_object()) {
+    if let Some(props) = tool
+        .input_schema
+        .get("properties")
+        .and_then(|p| p.as_object())
+    {
         for (arg_name, arg_schema) in props {
             parts.push(arg_name.clone());
             if let Some(arg_desc) = arg_schema.get("description").and_then(|d| d.as_str()) {
@@ -219,12 +223,7 @@ fn tokenize(text: &str) -> Vec<String> {
 }
 
 /// Search items using BM25 ranking.
-fn search_bm25<T, F>(
-    query: &str,
-    catalog: &[T],
-    limit: usize,
-    text_fn: F,
-) -> Vec<(T, f32)>
+fn search_bm25<T, F>(query: &str, catalog: &[T], limit: usize, text_fn: F) -> Vec<(T, f32)>
 where
     T: Clone,
     F: Fn(&T) -> String,
@@ -241,7 +240,10 @@ where
     let n = catalog.len() as f32;
 
     // Pre-tokenize all documents
-    let docs: Vec<Vec<String>> = catalog.iter().map(|item| tokenize(&text_fn(item))).collect();
+    let docs: Vec<Vec<String>> = catalog
+        .iter()
+        .map(|item| tokenize(&text_fn(item)))
+        .collect();
 
     // Compute average document length
     let avg_dl: f32 = if docs.is_empty() {
@@ -276,8 +278,8 @@ where
                 let idf = ((n - doc_freq + 0.5) / (doc_freq + 0.5) + 1.0).ln();
 
                 // BM25 term score
-                let tf_component = (tf * (BM25_K1 + 1.0))
-                    / (tf + BM25_K1 * (1.0 - BM25_B + BM25_B * dl / avg_dl));
+                let tf_component =
+                    (tf * (BM25_K1 + 1.0)) / (tf + BM25_K1 * (1.0 - BM25_B + BM25_B * dl / avg_dl));
 
                 score += idf * tf_component;
             }
@@ -388,7 +390,11 @@ mod tests {
         // Type enum should include all + individual types
         let type_enum = &tool.input_schema["properties"]["type"]["enum"];
         assert!(type_enum.as_array().unwrap().iter().any(|v| v == "all"));
-        assert!(type_enum.as_array().unwrap().iter().any(|v| v == "resources"));
+        assert!(type_enum
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v == "resources"));
         assert!(type_enum.as_array().unwrap().iter().any(|v| v == "prompts"));
     }
 
@@ -401,7 +407,12 @@ mod tests {
         assert!(!desc.contains("prompts"));
         // Type enum should only have "tools", no "all"
         let type_enum = &tool.input_schema["properties"]["type"]["enum"];
-        let values: Vec<&str> = type_enum.as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+        let values: Vec<&str> = type_enum
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
         assert_eq!(values, vec!["tools"]);
     }
 
@@ -412,7 +423,12 @@ mod tests {
         assert!(desc.contains("tools and resources"));
         assert!(!desc.contains("prompts"));
         let type_enum = &tool.input_schema["properties"]["type"]["enum"];
-        let values: Vec<&str> = type_enum.as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+        let values: Vec<&str> = type_enum
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
         assert_eq!(values, vec!["tools", "resources", "all"]);
     }
 

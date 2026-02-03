@@ -389,6 +389,7 @@ mod tests {
                 mcp_sampling_rate_limit: None,
                 firewall: FirewallRules::default(),
                 skills_access: lr_config::SkillsAccess::None,
+                marketplace_enabled: false,
             },
             Client {
                 id: "disabled_client".to_string(),
@@ -407,6 +408,7 @@ mod tests {
                 mcp_sampling_rate_limit: None,
                 firewall: FirewallRules::default(),
                 skills_access: lr_config::SkillsAccess::None,
+                marketplace_enabled: false,
             },
             Client {
                 id: "no_mcp_client".to_string(),
@@ -425,6 +427,7 @@ mod tests {
                 mcp_sampling_rate_limit: None,
                 firewall: FirewallRules::default(),
                 skills_access: lr_config::SkillsAccess::None,
+                marketplace_enabled: false,
             },
         ];
         config

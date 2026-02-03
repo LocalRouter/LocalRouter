@@ -638,9 +638,7 @@ mod tests {
         let ctx = InstructionsContext {
             servers: vec![McpServerInstructionInfo {
                 name: "filesystem".to_string(),
-                instructions: Some(
-                    "Use read_file to read and write_file to write.".to_string(),
-                ),
+                instructions: Some("Use read_file to read and write_file to write.".to_string()),
                 description: Some("File operations server".to_string()),
                 tool_names: vec![
                     "filesystem__read_file".to_string(),
@@ -889,10 +887,7 @@ mod tests {
                 instructions: None,
                 description: Some("Knowledge base server".to_string()),
                 tool_names: vec!["knowledge__search".to_string()],
-                resource_names: vec![
-                    "knowledge__docs".to_string(),
-                    "knowledge__faq".to_string(),
-                ],
+                resource_names: vec!["knowledge__docs".to_string(), "knowledge__faq".to_string()],
                 prompt_names: vec!["knowledge__summarize".to_string()],
             }],
             unavailable_servers: Vec::new(),

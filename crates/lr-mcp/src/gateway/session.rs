@@ -95,6 +95,9 @@ pub struct GatewaySession {
 
     /// Tools approved during this session via "Allow for Session" action
     pub firewall_session_approvals: HashSet<String>,
+
+    /// Whether this client has marketplace access (search + install tools)
+    pub marketplace_enabled: bool,
 }
 
 impl GatewaySession {
@@ -144,6 +147,7 @@ impl GatewaySession {
             client_name: String::new(),
             firewall_rules: lr_config::FirewallRules::default(),
             firewall_session_approvals: HashSet::new(),
+            marketplace_enabled: false,
         }
     }
 

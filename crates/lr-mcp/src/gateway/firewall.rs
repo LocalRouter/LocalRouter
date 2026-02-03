@@ -238,9 +238,7 @@ impl FirewallManager {
                 if let Some(sender) = session.response_sender.take() {
                     let response = FirewallApprovalResponse { action };
                     sender.send(response).map_err(|_| {
-                        AppError::Internal(
-                            "Failed to send firewall approval response".to_string(),
-                        )
+                        AppError::Internal("Failed to send firewall approval response".to_string())
                     })?;
                 }
 
@@ -313,8 +311,8 @@ impl FirewallManager {
         !self.pending.is_empty()
     }
 
-    /// Clean up expired sessions
-    pub fn cleanup_expired(&self) {
+    /// Clean up expired sessions and return the list of expired request IDs
+    pub fn cleanup_expired(&self) -> Vec<String> {
         let expired: Vec<String> = self
             .pending
             .iter()
@@ -322,10 +320,15 @@ impl FirewallManager {
             .map(|entry| entry.key().clone())
             .collect();
 
-        for request_id in expired {
-            warn!("Cleaning up expired firewall approval request {}", request_id);
-            self.pending.remove(&request_id);
+        for request_id in &expired {
+            warn!(
+                "Cleaning up expired firewall approval request {}",
+                request_id
+            );
+            self.pending.remove(request_id);
         }
+
+        expired
     }
 }
 
@@ -442,10 +445,7 @@ mod tests {
         // Should complete successfully
         let result = handle.await.unwrap();
         assert!(result.is_ok());
-        assert_eq!(
-            result.unwrap().action,
-            FirewallApprovalAction::AllowOnce
-        );
+        assert_eq!(result.unwrap().action, FirewallApprovalAction::AllowOnce);
     }
 
     #[tokio::test]
@@ -524,10 +524,7 @@ mod tests {
 
         // Test tool-level override
         let mut tool_rules = HashMap::new();
-        tool_rules.insert(
-            "filesystem__write_file".to_string(),
-            FirewallPolicy::Deny,
-        );
+        tool_rules.insert("filesystem__write_file".to_string(), FirewallPolicy::Deny);
         let rules = FirewallRules {
             default_policy: FirewallPolicy::Allow,
             tool_rules,
@@ -561,10 +558,7 @@ mod tests {
 
         // Test tool overrides server
         let mut tool_rules = HashMap::new();
-        tool_rules.insert(
-            "filesystem__write_file".to_string(),
-            FirewallPolicy::Deny,
-        );
+        tool_rules.insert("filesystem__write_file".to_string(), FirewallPolicy::Deny);
         let mut server_rules = HashMap::new();
         server_rules.insert("server-1".to_string(), FirewallPolicy::Ask);
         let rules = FirewallRules {
@@ -586,10 +580,7 @@ mod tests {
 
         // Test skill tool resolution
         let mut skill_tool_rules = HashMap::new();
-        skill_tool_rules.insert(
-            "skill_deploy_run_script".to_string(),
-            FirewallPolicy::Deny,
-        );
+        skill_tool_rules.insert("skill_deploy_run_script".to_string(), FirewallPolicy::Deny);
         let mut skill_rules = HashMap::new();
         skill_rules.insert("deploy".to_string(), FirewallPolicy::Ask);
         let rules = FirewallRules {

@@ -225,8 +225,7 @@ pub fn build_skill_tools(
         // Add run/read tools if:
         // - deferred loading is disabled (show all tools immediately), OR
         // - deferred loading is enabled AND info was loaded for this skill
-        let show_tools =
-            !deferred_loading || info_loaded.contains(&skill.metadata.name);
+        let show_tools = !deferred_loading || info_loaded.contains(&skill.metadata.name);
 
         if show_tools {
             any_loaded = true;
