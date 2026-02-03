@@ -6,7 +6,7 @@
 #![allow(dead_code)]
 
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
@@ -272,6 +272,70 @@ impl Default for SseConnectionManager {
     }
 }
 
+/// Tracks time-based model approvals for the model firewall
+///
+/// When a user clicks "Allow for 1 Hour" on a model permission popup,
+/// the approval is stored here and checked before triggering new popups.
+#[derive(Clone, Default)]
+pub struct ModelApprovalTracker {
+    /// Map of (client_id, provider__model_id) -> expiry_instant
+    approvals: Arc<DashMap<(String, String), Instant>>,
+}
+
+impl ModelApprovalTracker {
+    pub fn new() -> Self {
+        Self {
+            approvals: Arc::new(DashMap::new()),
+        }
+    }
+
+    /// Check if a model has a valid time-based approval
+    pub fn has_valid_approval(&self, client_id: &str, provider: &str, model_id: &str) -> bool {
+        let key = (client_id.to_string(), format!("{}__{}",  provider, model_id));
+        if let Some(entry) = self.approvals.get(&key) {
+            if *entry > Instant::now() {
+                return true;
+            }
+            // Expired, remove it
+            drop(entry);
+            self.approvals.remove(&key);
+        }
+        false
+    }
+
+    /// Add a time-based approval for a model (default: 1 hour)
+    pub fn add_approval(&self, client_id: &str, provider: &str, model_id: &str, duration: Duration) {
+        let key = (client_id.to_string(), format!("{}__{}",  provider, model_id));
+        let expiry = Instant::now() + duration;
+        self.approvals.insert(key, expiry);
+        tracing::info!(
+            "Added model approval: client={}, model={}__{}",  client_id, provider, model_id,
+        );
+    }
+
+    /// Add a 1-hour approval
+    pub fn add_1_hour_approval(&self, client_id: &str, provider: &str, model_id: &str) {
+        self.add_approval(client_id, provider, model_id, Duration::from_secs(3600));
+    }
+
+    /// Clean up expired approvals
+    pub fn cleanup_expired(&self) -> usize {
+        let now = Instant::now();
+        let expired: Vec<_> = self
+            .approvals
+            .iter()
+            .filter(|entry| *entry.value() <= now)
+            .map(|entry| entry.key().clone())
+            .collect();
+
+        let count = expired.len();
+        for key in expired {
+            self.approvals.remove(&key);
+        }
+        count
+    }
+}
+
 /// Server state shared across all handlers
 #[derive(Clone)]
 pub struct AppState {
@@ -340,6 +404,9 @@ pub struct AppState {
 
     /// Centralized health cache for providers and MCP servers
     pub health_cache: Arc<HealthCacheManager>,
+
+    /// Time-based model approval tracker for model firewall
+    pub model_approval_tracker: Arc<ModelApprovalTracker>,
 }
 
 impl AppState {
@@ -410,6 +477,7 @@ impl AppState {
             sse_connection_manager: Arc::new(SseConnectionManager::new()),
             mcp_notification_handlers_registered: Arc::new(DashMap::new()),
             health_cache: Arc::new(HealthCacheManager::new()),
+            model_approval_tracker: Arc::new(ModelApprovalTracker::new()),
         }
     }
 

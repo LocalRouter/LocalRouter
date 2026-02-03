@@ -90,6 +90,12 @@ pub async fn chat_completions(
     // Validate client provider access (if using client auth)
     validate_client_provider_access(&state, client_auth.as_ref().map(|e| &e.0), &request).await?;
 
+    // Check model firewall permission (if using client auth and not auto-routing)
+    if request.model != "localrouter/auto" {
+        check_model_firewall_permission(&state, client_auth.as_ref().map(|e| &e.0), &request)
+            .await?;
+    }
+
     // Check rate limits
     check_rate_limits(&state, &auth, &request).await?;
 
@@ -384,6 +390,165 @@ async fn validate_client_provider_access(
     );
 
     Ok(())
+}
+
+/// Check model firewall permission for LLM access
+///
+/// This enforces the model_permissions firewall for clients. When a model
+/// has "Ask" permission, the request is held pending user approval.
+async fn check_model_firewall_permission(
+    state: &AppState,
+    client_context: Option<&ClientAuthContext>,
+    request: &ChatCompletionRequest,
+) -> ApiResult<()> {
+    use lr_config::PermissionState;
+    use lr_mcp::gateway::firewall::FirewallApprovalAction;
+
+    // If no client context, skip firewall (using API key auth without client)
+    let Some(client_ctx) = client_context else {
+        return Ok(());
+    };
+
+    // Get enabled client
+    let client = get_enabled_client_from_manager(state, &client_ctx.client_id)?;
+
+    // Skip firewall for localrouter/auto (handled during routing)
+    if request.model == "localrouter/auto" {
+        return Ok(());
+    }
+
+    // Extract provider and model from request
+    let (provider, model_id) = if let Some((prov, model)) = request.model.split_once('/') {
+        (prov.to_string(), model.to_string())
+    } else {
+        // No provider specified - need to find which provider has this model
+        let all_models = state
+            .provider_registry
+            .list_all_models()
+            .await
+            .map_err(|e| {
+                ApiErrorResponse::internal_error(format!("Failed to list models: {}", e))
+            })?;
+
+        let matching_model = all_models
+            .iter()
+            .find(|m| m.id.eq_ignore_ascii_case(&request.model))
+            .ok_or_else(|| {
+                ApiErrorResponse::bad_request(format!("Model not found: {}", request.model))
+                    .with_param("model")
+            })?;
+
+        (matching_model.provider.clone(), matching_model.id.clone())
+    };
+
+    // Resolve model permission
+    let permission = client.model_permissions.resolve_model(&provider, &model_id);
+
+    match permission {
+        PermissionState::Allow => {
+            // Model is allowed, proceed
+            tracing::debug!(
+                "Model firewall: {} allowed for client {}",
+                request.model,
+                client.id
+            );
+            Ok(())
+        }
+        PermissionState::Off => {
+            // Model is disabled
+            tracing::warn!(
+                "Model firewall: {} denied for client {} (permission: Off)",
+                request.model,
+                client.id
+            );
+            Err(ApiErrorResponse::forbidden(format!(
+                "Access denied: Model '{}' is not allowed for this client",
+                request.model
+            ))
+            .with_param("model"))
+        }
+        PermissionState::Ask => {
+            // Model requires approval - check time-based approvals first
+            if state
+                .model_approval_tracker
+                .has_valid_approval(&client.id, &provider, &model_id)
+            {
+                tracing::debug!(
+                    "Model firewall: {} has time-based approval for client {}",
+                    request.model,
+                    client.id
+                );
+                return Ok(());
+            }
+
+            // No valid time-based approval, trigger firewall popup
+            tracing::info!(
+                "Model firewall: {} requires approval for client {}",
+                request.model,
+                client.id
+            );
+
+            // Request approval from the firewall manager
+            let response = state
+                .mcp_gateway
+                .firewall_manager
+                .request_model_approval(
+                    client.id.clone(),
+                    client.name.clone(),
+                    model_id.clone(),     // model as "tool_name"
+                    provider.clone(),     // provider as "server_name"
+                    Some(120),            // 2 minute timeout
+                )
+                .await
+                .map_err(|e| {
+                    ApiErrorResponse::internal_error(format!("Firewall approval failed: {}", e))
+                })?;
+
+            // Handle the approval response
+            match response.action {
+                FirewallApprovalAction::AllowOnce | FirewallApprovalAction::AllowSession => {
+                    tracing::info!(
+                        "Model firewall: {} approved (once) for client {}",
+                        request.model,
+                        client.id
+                    );
+                    Ok(())
+                }
+                FirewallApprovalAction::Allow1Hour => {
+                    // Time-based approval is already handled in submit_firewall_approval
+                    // by adding to model_approval_tracker, but the response reaches here first
+                    // So we just proceed
+                    tracing::info!(
+                        "Model firewall: {} approved (1 hour) for client {}",
+                        request.model,
+                        client.id
+                    );
+                    Ok(())
+                }
+                FirewallApprovalAction::AllowPermanent => {
+                    // Permission update is already handled in submit_firewall_approval
+                    tracing::info!(
+                        "Model firewall: {} approved (permanent) for client {}",
+                        request.model,
+                        client.id
+                    );
+                    Ok(())
+                }
+                FirewallApprovalAction::Deny => {
+                    tracing::warn!(
+                        "Model firewall: {} denied by user for client {}",
+                        request.model,
+                        client.id
+                    );
+                    Err(ApiErrorResponse::forbidden(format!(
+                        "Access denied: Model '{}' was denied by user",
+                        request.model
+                    ))
+                    .with_param("model"))
+                }
+            }
+        }
+    }
 }
 
 /// Check rate limits before processing request
