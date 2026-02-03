@@ -4,6 +4,7 @@
 
 pub mod commands;
 pub mod commands_clients;
+pub mod commands_marketplace;
 pub mod commands_mcp;
 pub mod commands_mcp_metrics;
 pub mod commands_metrics;

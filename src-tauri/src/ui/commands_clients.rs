@@ -1025,9 +1025,11 @@ pub async fn set_client_firewall_rule(
 /// Submit a response to a pending firewall approval request
 #[tauri::command]
 pub async fn submit_firewall_approval(
+    app: tauri::AppHandle,
     request_id: String,
     action: lr_mcp::gateway::firewall::FirewallApprovalAction,
     state: State<'_, Arc<lr_server::state::AppState>>,
+    tray_graph_manager: State<'_, Arc<crate::ui::tray::TrayGraphManager>>,
 ) -> Result<(), String> {
     tracing::info!(
         "Submitting firewall approval for request {}: {:?}",
@@ -1039,7 +1041,17 @@ pub async fn submit_firewall_approval(
         .mcp_gateway
         .firewall_manager
         .submit_response(&request_id, action)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+
+    // Rebuild tray menu to remove the pending approval item
+    if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
+        tracing::warn!("Failed to rebuild tray menu after firewall approval: {}", e);
+    }
+
+    // Trigger immediate tray icon update to remove the question mark overlay
+    tray_graph_manager.notify_activity();
+
+    Ok(())
 }
 
 /// List all pending firewall approval requests

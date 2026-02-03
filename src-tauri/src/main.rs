@@ -13,8 +13,8 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 // Re-exported crate aliases from lib.rs
 use localrouter::{
-    api_keys, clients, config, mcp, monitoring, oauth_browser, oauth_clients, providers, routellm,
-    router, server, skills, utils,
+    api_keys, clients, config, marketplace, mcp, monitoring, oauth_browser, oauth_clients,
+    providers, routellm, router, server, skills, utils,
 };
 
 use lr_providers::factory::{
@@ -487,6 +487,22 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             app.manage(script_executor.clone());
             info!("Skills system initialized");
 
+            // Initialize marketplace service (always created, checks enabled state internally)
+            let marketplace_service: Option<Arc<marketplace::MarketplaceService>> = {
+                let config = config_manager.get();
+                let data_dir = lr_utils::paths::config_dir()
+                    .unwrap_or_else(|_| std::path::PathBuf::from("."));
+
+                let service =
+                    marketplace::MarketplaceService::new(config.marketplace.clone(), data_dir);
+                info!(
+                    "Marketplace service initialized (enabled: {})",
+                    config.marketplace.enabled
+                );
+                Some(Arc::new(service))
+            };
+            app.manage(marketplace_service.clone());
+
             // Get AppState from server manager and manage it for Tauri commands
             if let Some(app_state) = server_manager.get_state() {
                 info!("Managing AppState for Tauri commands");
@@ -499,6 +515,14 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                     app_state.mcp_gateway.set_skills_async_enabled(true);
                 }
                 info!("Skills wired to MCP gateway");
+
+                // Wire marketplace service into MCP gateway if available
+                if let Some(ref service) = marketplace_service {
+                    app_state
+                        .mcp_gateway
+                        .set_marketplace_service(service.clone());
+                    info!("Marketplace wired to MCP gateway");
+                }
 
                 // Set app handle on AppState for event emission
                 app_state.set_app_handle(app.handle().clone());
@@ -1082,6 +1106,28 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::rescan_skills,
             ui::commands::set_client_skills_access,
             ui::commands::get_skill_files,
+            // Marketplace commands
+            ui::commands_marketplace::marketplace_get_config,
+            ui::commands_marketplace::marketplace_set_enabled,
+            ui::commands_marketplace::marketplace_set_registry_url,
+            ui::commands_marketplace::marketplace_list_skill_sources,
+            ui::commands_marketplace::marketplace_add_skill_source,
+            ui::commands_marketplace::marketplace_remove_skill_source,
+            ui::commands_marketplace::marketplace_add_default_skill_sources,
+            ui::commands_marketplace::marketplace_reset_registry_url,
+            ui::commands_marketplace::marketplace_get_cache_status,
+            ui::commands_marketplace::marketplace_refresh_cache,
+            ui::commands_marketplace::marketplace_clear_mcp_cache,
+            ui::commands_marketplace::marketplace_clear_skills_cache,
+            ui::commands_marketplace::marketplace_search_mcp_servers,
+            ui::commands_marketplace::marketplace_search_skills,
+            ui::commands_marketplace::marketplace_install_mcp_server_direct,
+            ui::commands_marketplace::marketplace_install_skill_direct,
+            ui::commands_marketplace::marketplace_get_pending_install,
+            ui::commands_marketplace::marketplace_list_pending_installs,
+            ui::commands_marketplace::marketplace_install_respond,
+            ui::commands_marketplace::set_client_marketplace_enabled,
+            ui::commands_marketplace::get_client_marketplace_enabled,
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {

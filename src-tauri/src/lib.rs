@@ -13,6 +13,7 @@ pub use lr_api_keys as api_keys;
 pub use lr_catalog as catalog;
 pub use lr_clients as clients;
 pub use lr_config as config;
+pub use lr_marketplace as marketplace;
 pub use lr_mcp as mcp;
 pub use lr_monitoring as monitoring;
 pub use lr_oauth::browser as oauth_browser;

@@ -5,7 +5,9 @@
 use std::sync::Arc;
 
 use lr_api_keys::keychain_trait::KeychainStorage;
-use lr_config::{ConfigManager, McpAuthConfig, McpServerConfig, McpTransportConfig, McpTransportType};
+use lr_config::{
+    ConfigManager, McpAuthConfig, McpServerConfig, McpTransportConfig, McpTransportType,
+};
 use lr_mcp::McpServerManager;
 use lr_server::ServerManager;
 use serde::{Deserialize, Serialize};

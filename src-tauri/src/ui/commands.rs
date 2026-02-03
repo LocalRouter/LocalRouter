@@ -11,12 +11,12 @@ use lr_monitoring::logger::AccessLogger;
 use lr_oauth::clients::OAuthClientManager;
 use lr_server::ServerManager;
 use serde::{Deserialize, Serialize};
-use tauri::{Emitter, Manager, State, AppHandle};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 // Re-export submodules for backward compatibility with main.rs
-pub use crate::ui::commands_providers::*;
-pub use crate::ui::commands_mcp::*;
 pub use crate::ui::commands_clients::*;
+pub use crate::ui::commands_mcp::*;
+pub use crate::ui::commands_providers::*;
 
 /// Get current configuration
 #[tauri::command]
@@ -1673,7 +1673,12 @@ pub async fn get_skill_files(
     }
 
     let mut files = Vec::new();
-    collect_skill_files_recursive(&skill.skill_dir, &skill.skill_dir, &category_map, &mut files);
+    collect_skill_files_recursive(
+        &skill.skill_dir,
+        &skill.skill_dir,
+        &category_map,
+        &mut files,
+    );
     files.sort_by(|a, b| a.name.cmp(&b.name));
 
     Ok(files)
@@ -1709,10 +1714,7 @@ fn collect_skill_files_recursive(
                 None
             };
 
-            let category = category_map
-                .get(&relative)
-                .cloned()
-                .unwrap_or_default();
+            let category = category_map.get(&relative).cloned().unwrap_or_default();
 
             files.push(SkillFileInfo {
                 name: relative,
@@ -1826,7 +1828,9 @@ pub async fn debug_trigger_firewall_popup(
         let request_id = uuid::Uuid::new_v4().to_string();
         let timeout_secs: u64 = 30;
 
-        let (tx, _rx) = tokio::sync::oneshot::channel();
+        // For debug purposes, we don't need a response channel since there's no
+        // real MCP request waiting for the approval. Setting response_sender to None
+        // allows the popup to work without errors when submitting a response.
         let session = lr_mcp::gateway::firewall::FirewallApprovalSession {
             request_id: request_id.clone(),
             client_id: "debug-client".to_string(),
@@ -1834,12 +1838,24 @@ pub async fn debug_trigger_firewall_popup(
             tool_name: "filesystem__write_file".to_string(),
             server_name: "filesystem".to_string(),
             arguments_preview: r#"{"path": "/tmp/test.txt", "content": "hello world"}"#.to_string(),
-            response_sender: Some(tx),
+            response_sender: None, // No response channel for debug mode
             created_at: std::time::Instant::now(),
             timeout_seconds: timeout_secs,
         };
 
         firewall_manager.insert_pending(request_id.clone(), session);
+
+        // Rebuild tray menu to show the pending approval item
+        if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app_clone) {
+            tracing::warn!("Failed to rebuild tray menu for firewall approval: {}", e);
+        }
+
+        // Trigger immediate tray icon update to show the question mark overlay
+        if let Some(tray_graph_manager) =
+            app_clone.try_state::<Arc<crate::ui::tray::TrayGraphManager>>()
+        {
+            tray_graph_manager.notify_activity();
+        }
 
         // Create the firewall approval popup window
         use tauri::WebviewWindowBuilder;
@@ -1853,6 +1869,7 @@ pub async fn debug_trigger_firewall_popup(
         .center()
         .visible(true)
         .resizable(false)
+        .decorations(false)
         .build()
         {
             Ok(window) => {
