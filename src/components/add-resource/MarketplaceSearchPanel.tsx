@@ -1,13 +1,16 @@
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
 import {
   Search,
-  Download,
   Loader2,
   Package,
   Globe,
+  Plus,
+  RefreshCw,
   Check,
+  ChevronRight,
+  ExternalLink,
 } from "lucide-react"
 import { McpIcon, SkillsIcon } from "@/components/icons/category-icons"
 import { Button } from "@/components/ui/Button"
@@ -22,29 +25,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/Select"
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog"
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog"
-import { Label } from "@/components/ui/label"
 import { DisabledOverlay } from "./DisabledOverlay"
 
-// Types matching the backend
-interface McpPackageInfo {
+// Types matching the backend - exported for use by parent components
+export interface McpPackageInfo {
   registry: string
   name: string
   version: string | null
@@ -52,12 +36,12 @@ interface McpPackageInfo {
   license: string | null
 }
 
-interface McpRemoteInfo {
+export interface McpRemoteInfo {
   transport_type: string
   url: string
 }
 
-interface McpServerListing {
+export interface McpServerListing {
   name: string
   description: string
   source_id: string
@@ -69,12 +53,12 @@ interface McpServerListing {
   install_hint: string | null
 }
 
-interface SkillFileInfo {
+export interface SkillFileInfo {
   path: string
   url: string
 }
 
-interface SkillListing {
+export interface SkillListing {
   name: string
   description: string | null
   source_id: string
@@ -90,18 +74,6 @@ interface SkillListing {
   files: SkillFileInfo[]
 }
 
-interface McpInstallConfig {
-  name: string
-  transport: string
-  command: string | null
-  args: string[]
-  url: string | null
-  env: Record<string, string>
-  auth_type: string
-  bearer_token: string | null
-  headers: Record<string, string>
-}
-
 interface MarketplaceConfig {
   enabled: boolean
   registry_url: string
@@ -112,50 +84,50 @@ type ResourceType = "mcp" | "skill"
 
 interface MarketplaceSearchPanelProps {
   type: ResourceType
+  /** Callback when an MCP server is selected for installation (type="mcp" only) */
+  onSelectMcp?: (item: McpServerListing) => void
+  /** Callback when a skill is selected for installation (type="skill" only) */
+  onSelectSkill?: (item: SkillListing) => void
+  /** @deprecated Use onSelectMcp or onSelectSkill instead. Legacy callback for direct install. */
   onInstallComplete?: () => void
+  /** List of already installed skill names (for showing "Replace" instead of "Add") */
+  installedSkillNames?: string[]
   className?: string
   maxHeight?: string
 }
 
 export function MarketplaceSearchPanel({
   type,
-  onInstallComplete,
+  onSelectMcp,
+  onSelectSkill,
+  onInstallComplete: _onInstallComplete,
+  installedSkillNames = [],
   className,
   maxHeight = "400px",
 }: MarketplaceSearchPanelProps) {
   const [config, setConfig] = useState<MarketplaceConfig | null>(null)
   const [loading, setLoading] = useState(true)
+  const hasInitialSearch = useRef(false)
 
   // MCP state
   const [mcpSearch, setMcpSearch] = useState("")
   const [mcpServers, setMcpServers] = useState<McpServerListing[]>([])
   const [searchingMcp, setSearchingMcp] = useState(false)
-  const [selectedMcpServer, setSelectedMcpServer] = useState<McpServerListing | null>(null)
-  const [showMcpInstallDialog, setShowMcpInstallDialog] = useState(false)
-  const [installingMcp, setInstallingMcp] = useState(false)
-
-  // MCP Install form state
-  const [installTransport, setInstallTransport] = useState<string>("stdio")
-  const [installCommand, setInstallCommand] = useState("")
-  const [installUrl, setInstallUrl] = useState("")
-  const [installAuthType, setInstallAuthType] = useState<string>("none")
-  const [installBearerToken, setInstallBearerToken] = useState("")
 
   // Skill state
   const [skillSearch, setSkillSearch] = useState("")
   const [skills, setSkills] = useState<SkillListing[]>([])
   const [searchingSkills, setSearchingSkills] = useState(false)
   const [selectedSkillSource, setSelectedSkillSource] = useState<string>("all")
-  const [selectedSkill, setSelectedSkill] = useState<SkillListing | null>(null)
-  const [showSkillInstallDialog, setShowSkillInstallDialog] = useState(false)
-  const [installingSkill, setInstallingSkill] = useState(false)
 
   useEffect(() => {
     loadConfig()
   }, [])
 
+  // Trigger initial search when config is loaded and enabled
   useEffect(() => {
-    if (config?.enabled) {
+    if (config?.enabled && !hasInitialSearch.current) {
+      hasInitialSearch.current = true
       if (type === "mcp") {
         loadMcpServers()
       } else {
@@ -203,62 +175,10 @@ export function MarketplaceSearchPanel({
     }
   }
 
-  const handleMcpInstallClick = (server: McpServerListing) => {
-    setSelectedMcpServer(server)
-    if (server.available_transports.includes("stdio")) {
-      setInstallTransport("stdio")
-      if (server.packages.length > 0) {
-        const pkg = server.packages[0]
-        if (pkg.runtime === "node" || pkg.registry === "npm") {
-          setInstallCommand(`npx -y ${pkg.name}`)
-        } else if (pkg.runtime === "python" || pkg.registry === "pypi") {
-          setInstallCommand(`uvx ${pkg.name}`)
-        }
-      }
-    } else if (server.remotes.length > 0) {
-      setInstallTransport("http_sse")
-      setInstallUrl(server.remotes[0].url)
+  const handleMcpClick = (server: McpServerListing) => {
+    if (onSelectMcp) {
+      onSelectMcp(server)
     }
-    setShowMcpInstallDialog(true)
-  }
-
-  const handleMcpInstall = async () => {
-    if (!selectedMcpServer) return
-
-    setInstallingMcp(true)
-    try {
-      const installConfig: McpInstallConfig = {
-        name: selectedMcpServer.name,
-        transport: installTransport,
-        command: installTransport === "stdio" ? installCommand : null,
-        args: [],
-        url: installTransport === "http_sse" ? installUrl : null,
-        env: {},
-        auth_type: installAuthType,
-        bearer_token: installAuthType === "bearer" ? installBearerToken : null,
-        headers: {},
-      }
-
-      await invoke("marketplace_install_mcp_server_direct", { config: installConfig })
-      toast.success(`Installed ${selectedMcpServer.name}`)
-      setShowMcpInstallDialog(false)
-      resetMcpInstallForm()
-      onInstallComplete?.()
-    } catch (error) {
-      console.error("Failed to install MCP server:", error)
-      toast.error(`Failed to install: ${error}`)
-    } finally {
-      setInstallingMcp(false)
-    }
-  }
-
-  const resetMcpInstallForm = () => {
-    setSelectedMcpServer(null)
-    setInstallTransport("stdio")
-    setInstallCommand("")
-    setInstallUrl("")
-    setInstallAuthType("none")
-    setInstallBearerToken("")
   }
 
   // Skill functions
@@ -278,29 +198,9 @@ export function MarketplaceSearchPanel({
     }
   }
 
-  const handleSkillInstallClick = (skill: SkillListing) => {
-    setSelectedSkill(skill)
-    setShowSkillInstallDialog(true)
-  }
-
-  const handleSkillInstall = async () => {
-    if (!selectedSkill) return
-
-    setInstallingSkill(true)
-    try {
-      await invoke("marketplace_install_skill_direct", {
-        sourceUrl: selectedSkill.skill_md_url,
-        skillName: selectedSkill.name,
-      })
-      toast.success(`Installed ${selectedSkill.name}`)
-      setShowSkillInstallDialog(false)
-      setSelectedSkill(null)
-      onInstallComplete?.()
-    } catch (error) {
-      console.error("Failed to install skill:", error)
-      toast.error(`Failed to install: ${error}`)
-    } finally {
-      setInstallingSkill(false)
+  const handleSkillClick = (skill: SkillListing) => {
+    if (onSelectSkill) {
+      onSelectSkill(skill)
     }
   }
 
@@ -348,155 +248,86 @@ export function MarketplaceSearchPanel({
         </div>
 
         {/* Results */}
-        <ScrollArea style={{ maxHeight }}>
-          {searchingMcp ? (
-            <div className="flex items-center justify-center py-12">
-              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-            </div>
-          ) : mcpServers.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">
-              <McpIcon className="h-8 w-8 mb-2" />
-              <p className="text-sm">No MCP servers found</p>
-            </div>
-          ) : (
-            <div className="space-y-3">
-              {mcpServers.map((server) => (
-                <Card key={server.name} className="p-3">
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="flex-1 min-w-0">
-                      <p className="font-medium text-sm truncate">{server.name}</p>
-                      {server.vendor && (
-                        <p className="text-xs text-muted-foreground">by {server.vendor}</p>
-                      )}
-                      <p className="text-xs text-muted-foreground line-clamp-2 mt-1">
-                        {server.description}
-                      </p>
-                      <div className="flex gap-1 mt-2">
-                        {server.available_transports.includes("stdio") && (
-                          <Badge variant="secondary" className="text-xs">
-                            <Package className="h-3 w-3 mr-1" />
-                            stdio
-                          </Badge>
-                        )}
-                        {server.remotes.length > 0 && (
-                          <Badge variant="secondary" className="text-xs">
-                            <Globe className="h-3 w-3 mr-1" />
-                            remote
-                          </Badge>
-                        )}
-                      </div>
-                    </div>
-                    <Button size="sm" onClick={() => handleMcpInstallClick(server)}>
-                      <Download className="h-4 w-4" />
-                    </Button>
-                  </div>
-                </Card>
-              ))}
-            </div>
-          )}
-        </ScrollArea>
-
-        {/* MCP Install Dialog */}
-        <Dialog open={showMcpInstallDialog} onOpenChange={setShowMcpInstallDialog}>
-          <DialogContent className="max-w-md">
-            <DialogHeader>
-              <DialogTitle>Install {selectedMcpServer?.name}</DialogTitle>
-              <DialogDescription>
-                Configure how to connect to this MCP server
-              </DialogDescription>
-            </DialogHeader>
-
-            <div className="space-y-4">
-              <div className="space-y-2">
-                <Label>Transport</Label>
-                <Select value={installTransport} onValueChange={setInstallTransport}>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {selectedMcpServer?.available_transports.includes("stdio") && (
-                      <SelectItem value="stdio">Stdio (Local Process)</SelectItem>
-                    )}
-                    {(selectedMcpServer?.remotes.length ?? 0) > 0 && (
-                      <SelectItem value="http_sse">HTTP+SSE (Remote)</SelectItem>
-                    )}
-                  </SelectContent>
-                </Select>
+        <div className="flex-1 min-h-0 overflow-hidden" style={{ maxHeight }}>
+          <ScrollArea className="h-full">
+            {searchingMcp ? (
+              <div className="flex items-center justify-center py-12">
+                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
               </div>
-
-              {installTransport === "stdio" && (
-                <div className="space-y-2">
-                  <Label>Command</Label>
-                  <Input
-                    value={installCommand}
-                    onChange={(e) => setInstallCommand(e.target.value)}
-                    placeholder="npx -y @modelcontextprotocol/server-name"
-                  />
-                  {selectedMcpServer?.install_hint && (
-                    <p className="text-xs text-muted-foreground">{selectedMcpServer.install_hint}</p>
-                  )}
-                </div>
-              )}
-
-              {installTransport === "http_sse" && (
-                <>
-                  <div className="space-y-2">
-                    <Label>URL</Label>
-                    <Input
-                      value={installUrl}
-                      onChange={(e) => setInstallUrl(e.target.value)}
-                      placeholder="https://server.example.com/mcp"
-                    />
-                  </div>
-
-                  <div className="space-y-2">
-                    <Label>Authentication</Label>
-                    <Select value={installAuthType} onValueChange={setInstallAuthType}>
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="none">None</SelectItem>
-                        <SelectItem value="bearer">Bearer Token</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-
-                  {installAuthType === "bearer" && (
-                    <div className="space-y-2">
-                      <Label>Bearer Token</Label>
-                      <Input
-                        type="password"
-                        value={installBearerToken}
-                        onChange={(e) => setInstallBearerToken(e.target.value)}
-                        placeholder="Enter your API token"
-                      />
-                    </div>
-                  )}
-                </>
-              )}
-            </div>
-
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setShowMcpInstallDialog(false)}>
-                Cancel
-              </Button>
-              <Button onClick={handleMcpInstall} disabled={installingMcp}>
-                {installingMcp ? (
-                  <>
-                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                    Installing...
-                  </>
-                ) : (
-                  <>
-                    <Check className="h-4 w-4 mr-2" />
-                    Install
-                  </>
-                )}
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
+            ) : mcpServers.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">
+                <McpIcon className="h-8 w-8 mb-2" />
+                <p className="text-sm">No MCP servers found</p>
+              </div>
+            ) : (
+              <div className="space-y-3 pr-4">
+                {mcpServers.map((server) => {
+                  const pkg = server.packages[0]
+                  return (
+                    <Card key={server.name} className="p-3">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2">
+                            <p className="font-medium text-sm truncate">{server.name}</p>
+                            {pkg?.version && (
+                              <span className="text-xs text-muted-foreground">v{pkg.version}</span>
+                            )}
+                          </div>
+                          {server.vendor && (
+                            <p className="text-xs text-muted-foreground">by {server.vendor}</p>
+                          )}
+                          <p className="text-xs text-muted-foreground line-clamp-2 mt-1">
+                            {server.description}
+                          </p>
+                          <div className="flex flex-wrap items-center gap-1 mt-2">
+                            {server.available_transports.includes("stdio") && (
+                              <Badge variant="secondary" className="text-xs">
+                                <Package className="h-3 w-3 mr-1" />
+                                stdio
+                              </Badge>
+                            )}
+                            {server.remotes.length > 0 && (
+                              <Badge variant="secondary" className="text-xs">
+                                <Globe className="h-3 w-3 mr-1" />
+                                remote
+                              </Badge>
+                            )}
+                            {pkg?.license && (
+                              <Badge variant="outline" className="text-xs">
+                                {pkg.license}
+                              </Badge>
+                            )}
+                            {pkg?.runtime && (
+                              <Badge variant="outline" className="text-xs">
+                                {pkg.runtime}
+                              </Badge>
+                            )}
+                          </div>
+                          {server.homepage && (
+                            <a
+                              href={server.homepage}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1 text-xs text-primary hover:underline mt-2"
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              <ExternalLink className="h-3 w-3" />
+                              Source
+                            </a>
+                          )}
+                        </div>
+                        <Button size="sm" variant="secondary" onClick={() => handleMcpClick(server)}>
+                          View
+                          <ChevronRight className="h-4 w-4 ml-1" />
+                        </Button>
+                      </div>
+                    </Card>
+                  )
+                })}
+              </div>
+            )}
+          </ScrollArea>
+        </div>
       </div>
     )
   }
@@ -505,7 +336,7 @@ export function MarketplaceSearchPanel({
   return (
     <div className={className}>
       {/* Search bar */}
-      <div className="flex gap-2 mb-4">
+      <div className="flex items-center gap-2 mb-4">
         <div className="relative flex-1">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
           <Input
@@ -513,11 +344,11 @@ export function MarketplaceSearchPanel({
             value={skillSearch}
             onChange={(e) => setSkillSearch(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && searchSkills()}
-            className="pl-9"
+            className="pl-9 h-9"
           />
         </div>
         <Select value={selectedSkillSource} onValueChange={setSelectedSkillSource}>
-          <SelectTrigger className="w-[140px]">
+          <SelectTrigger className="w-[140px] h-9">
             <SelectValue placeholder="Source" />
           </SelectTrigger>
           <SelectContent>
@@ -529,83 +360,82 @@ export function MarketplaceSearchPanel({
             ))}
           </SelectContent>
         </Select>
-        <Button onClick={searchSkills} disabled={searchingSkills} size="sm">
+        <Button onClick={searchSkills} disabled={searchingSkills} className="h-9">
           {searchingSkills ? <Loader2 className="h-4 w-4 animate-spin" /> : "Search"}
         </Button>
       </div>
 
       {/* Results */}
-      <ScrollArea style={{ maxHeight }}>
-        {searchingSkills ? (
-          <div className="flex items-center justify-center py-12">
-            <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-          </div>
-        ) : skills.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">
-            <SkillsIcon className="h-8 w-8 mb-2" />
-            <p className="text-sm">No skills found</p>
-          </div>
-        ) : (
-          <div className="space-y-3">
-            {skills.slice(0, 20).map((skill) => (
-              <Card key={`${skill.source_label}-${skill.name}`} className="p-3">
-                <div className="flex items-start justify-between gap-2">
-                  <div className="flex-1 min-w-0">
-                    <p className="font-medium text-sm truncate">{skill.name}</p>
-                    <div className="flex items-center gap-1 text-xs text-muted-foreground">
-                      {skill.author && <span>by {skill.author}</span>}
-                      <Badge variant="outline" className="text-xs ml-1">
-                        {skill.source_label}
-                      </Badge>
-                    </div>
-                    <p className="text-xs text-muted-foreground line-clamp-2 mt-1">
-                      {skill.description || "No description available"}
-                    </p>
-                    {skill.tags.length > 0 && (
-                      <div className="flex flex-wrap gap-1 mt-2">
-                        {skill.tags.slice(0, 3).map((tag) => (
-                          <Badge key={tag} variant="secondary" className="text-xs">
-                            {tag}
+      <div className="flex-1 min-h-0 overflow-hidden" style={{ maxHeight }}>
+        <ScrollArea className="h-full">
+          {searchingSkills ? (
+            <div className="flex items-center justify-center py-12">
+              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+            </div>
+          ) : skills.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">
+              <SkillsIcon className="h-8 w-8 mb-2" />
+              <p className="text-sm">No skills found</p>
+              {(!config?.skill_sources || config.skill_sources.length === 0) && (
+                <p className="text-xs mt-2 text-center max-w-[280px]">
+                  No skill sources configured. Add sources in Settings → Marketplace to browse available skills.
+                </p>
+              )}
+            </div>
+          ) : (
+            <div className="space-y-3 pr-4">
+              {skills.slice(0, 20).map((skill) => {
+                const isInstalled = installedSkillNames.includes(skill.name)
+                return (
+                <Card key={`${skill.source_label}-${skill.name}`} className="p-3">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <p className="font-medium text-sm truncate">{skill.name}</p>
+                        {isInstalled && (
+                          <Badge variant="secondary" className="text-xs shrink-0">
+                            <Check className="h-3 w-3 mr-0.5" />
+                            Installed
                           </Badge>
-                        ))}
+                        )}
                       </div>
+                      <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                        {skill.author && <span>by {skill.author}</span>}
+                        <Badge variant="outline" className="text-xs ml-1">
+                          {skill.source_label}
+                        </Badge>
+                      </div>
+                      <p className="text-xs text-muted-foreground line-clamp-2 mt-1">
+                        {skill.description || "No description available"}
+                      </p>
+                      {skill.tags.length > 0 && (
+                        <div className="flex flex-wrap gap-1 mt-2">
+                          {skill.tags.slice(0, 3).map((tag) => (
+                            <Badge key={tag} variant="secondary" className="text-xs">
+                              {tag}
+                            </Badge>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    {isInstalled ? (
+                      <Button size="sm" variant="secondary" onClick={() => handleSkillClick(skill)}>
+                        <RefreshCw className="h-4 w-4 mr-1" />
+                        Replace
+                      </Button>
+                    ) : (
+                      <Button size="sm" onClick={() => handleSkillClick(skill)}>
+                        <Plus className="h-4 w-4 mr-1" />
+                        Add
+                      </Button>
                     )}
                   </div>
-                  <Button size="sm" onClick={() => handleSkillInstallClick(skill)}>
-                    <Download className="h-4 w-4" />
-                  </Button>
-                </div>
-              </Card>
-            ))}
-          </div>
-        )}
-      </ScrollArea>
-
-      {/* Skill Install Dialog */}
-      <AlertDialog open={showSkillInstallDialog} onOpenChange={setShowSkillInstallDialog}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Install {selectedSkill?.name}?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This will download the skill files from GitHub and add them to your local skills directory.
-              {selectedSkill?.files.length ? ` (${selectedSkill.files.length + 1} files)` : ""}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={installingSkill}>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={handleSkillInstall} disabled={installingSkill}>
-              {installingSkill ? (
-                <>
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  Installing...
-                </>
-              ) : (
-                "Install"
-              )}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+                </Card>
+              )})}
+            </div>
+          )}
+        </ScrollArea>
+      </div>
     </div>
   )
 }
