@@ -28,8 +28,12 @@ pub enum FirewallApprovalAction {
     Deny,
     /// Allow this single tool call
     AllowOnce,
-    /// Allow this tool for the rest of the session
+    /// Allow this tool for the rest of the session (MCP/Skills)
     AllowSession,
+    /// Allow this for 1 hour (Models only, since requests are stateless)
+    Allow1Hour,
+    /// Allow permanently by updating client permissions to Allow
+    AllowPermanent,
 }
 
 /// Response from the user for a firewall approval request
@@ -50,10 +54,10 @@ pub struct FirewallApprovalSession {
     /// Human-readable client name
     pub client_name: String,
 
-    /// Namespaced tool name (e.g. "filesystem__write_file")
+    /// Namespaced tool name (e.g. "filesystem__write_file") or model name for model requests
     pub tool_name: String,
 
-    /// Human-readable server or skill name
+    /// Human-readable server or skill name, or provider name for model requests
     pub server_name: String,
 
     /// Preview of tool call arguments (truncated JSON)
@@ -67,6 +71,9 @@ pub struct FirewallApprovalSession {
 
     /// Timeout in seconds
     pub timeout_seconds: u64,
+
+    /// Whether this is a model approval request (vs MCP/skill tool)
+    pub is_model_request: bool,
 }
 
 impl FirewallApprovalSession {
@@ -87,6 +94,9 @@ pub struct PendingApprovalInfo {
     pub arguments_preview: String,
     pub created_at_secs_ago: u64,
     pub timeout_seconds: u64,
+    /// Whether this is a model approval request (vs MCP/skill tool)
+    #[serde(default)]
+    pub is_model_request: bool,
 }
 
 /// Manages firewall approval lifecycle for MCP gateway
@@ -137,12 +147,64 @@ impl FirewallManager {
         arguments_preview: String,
         timeout_secs: Option<u64>,
     ) -> AppResult<FirewallApprovalResponse> {
+        self.request_approval_internal(
+            client_id,
+            client_name,
+            tool_name,
+            server_name,
+            arguments_preview,
+            timeout_secs,
+            false, // MCP/skill tool request
+        )
+        .await
+    }
+
+    /// Request user approval for a model access
+    ///
+    /// Similar to `request_approval` but for LLM model access.
+    /// The popup shows different options (Allow for 1 Hour instead of Allow for Session).
+    pub async fn request_model_approval(
+        &self,
+        client_id: String,
+        client_name: String,
+        model_name: String,
+        provider_name: String,
+        timeout_secs: Option<u64>,
+    ) -> AppResult<FirewallApprovalResponse> {
+        self.request_approval_internal(
+            client_id,
+            client_name,
+            model_name,       // model as "tool_name"
+            provider_name,    // provider as "server_name"
+            String::new(),    // no arguments for model requests
+            timeout_secs,
+            true, // model request
+        )
+        .await
+    }
+
+    /// Internal approval request handler
+    async fn request_approval_internal(
+        &self,
+        client_id: String,
+        client_name: String,
+        tool_name: String,
+        server_name: String,
+        arguments_preview: String,
+        timeout_secs: Option<u64>,
+        is_model_request: bool,
+    ) -> AppResult<FirewallApprovalResponse> {
         let request_id = Uuid::new_v4().to_string();
         let timeout = timeout_secs.unwrap_or(self.default_timeout_secs);
 
         debug!(
-            "Creating firewall approval request {} for client {} tool {} (timeout: {}s)",
-            request_id, client_id, tool_name, timeout
+            "Creating firewall approval request {} for client {} {} {} (timeout: {}s, model: {})",
+            request_id,
+            client_id,
+            if is_model_request { "model" } else { "tool" },
+            tool_name,
+            timeout,
+            is_model_request
         );
 
         // Create response channel
@@ -159,6 +221,7 @@ impl FirewallManager {
             response_sender: Some(tx),
             created_at: Instant::now(),
             timeout_seconds: timeout,
+            is_model_request,
         };
 
         // Store session
@@ -182,6 +245,7 @@ impl FirewallManager {
                     "server_name": server_name,
                     "arguments_preview": arguments_preview,
                     "timeout_seconds": timeout,
+                    "is_model_request": is_model_request,
                 })),
             };
 
@@ -291,6 +355,7 @@ impl FirewallManager {
                     arguments_preview: session.arguments_preview.clone(),
                     created_at_secs_ago: session.created_at.elapsed().as_secs(),
                     timeout_seconds: session.timeout_seconds,
+                    is_model_request: session.is_model_request,
                 }
             })
             .collect()
@@ -390,6 +455,7 @@ mod tests {
             response_sender: None,
             created_at: Instant::now() - Duration::from_secs(150),
             timeout_seconds: 120,
+            is_model_request: false,
         };
         assert!(session.is_expired());
     }
@@ -406,6 +472,7 @@ mod tests {
             response_sender: None,
             created_at: Instant::now(),
             timeout_seconds: 120,
+            is_model_request: false,
         };
         assert!(!session.is_expired());
     }

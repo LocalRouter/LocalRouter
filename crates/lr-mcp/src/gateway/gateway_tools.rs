@@ -494,6 +494,24 @@ impl McpGateway {
                             .insert(tool_name.to_string());
                         Ok(None)
                     }
+                    FirewallApprovalAction::Allow1Hour => {
+                        tracing::info!(
+                            "Firewall: tool {} allowed for 1 hour (client={})",
+                            tool_name,
+                            client_id
+                        );
+                        // Time-based approval is tracked by the firewall manager
+                        Ok(None)
+                    }
+                    FirewallApprovalAction::AllowPermanent => {
+                        tracing::info!(
+                            "Firewall: tool {} allowed permanently (client={})",
+                            tool_name,
+                            client_id
+                        );
+                        // Permission update is handled by the approval handler
+                        Ok(None)
+                    }
                     FirewallApprovalAction::Deny => {
                         tracing::info!(
                             "Firewall: user denied tool {} (client={})",

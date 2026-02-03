@@ -367,7 +367,7 @@ fn find_first_enabled_client(config: &AppConfig) -> AppResult<&Client> {
 mod tests {
     use super::*;
     use chrono::Utc;
-    use lr_config::FirewallRules;
+    use lr_config::{FirewallRules, McpPermissions, SkillsPermissions, ModelPermissions, PermissionState};
 
     fn test_config() -> AppConfig {
         let mut config = AppConfig::default();
@@ -390,6 +390,10 @@ mod tests {
                 firewall: FirewallRules::default(),
                 skills_access: lr_config::SkillsAccess::None,
                 marketplace_enabled: false,
+                mcp_permissions: McpPermissions::default(),
+                skills_permissions: SkillsPermissions::default(),
+                model_permissions: ModelPermissions::default(),
+                marketplace_permission: PermissionState::Off,
             },
             Client {
                 id: "disabled_client".to_string(),
@@ -409,6 +413,10 @@ mod tests {
                 firewall: FirewallRules::default(),
                 skills_access: lr_config::SkillsAccess::None,
                 marketplace_enabled: false,
+                mcp_permissions: McpPermissions::default(),
+                skills_permissions: SkillsPermissions::default(),
+                model_permissions: ModelPermissions::default(),
+                marketplace_permission: PermissionState::Off,
             },
             Client {
                 id: "no_mcp_client".to_string(),
@@ -428,6 +436,10 @@ mod tests {
                 firewall: FirewallRules::default(),
                 skills_access: lr_config::SkillsAccess::None,
                 marketplace_enabled: false,
+                mcp_permissions: McpPermissions::default(),
+                skills_permissions: SkillsPermissions::default(),
+                model_permissions: ModelPermissions::default(),
+                marketplace_permission: PermissionState::Off,
             },
         ];
         config
