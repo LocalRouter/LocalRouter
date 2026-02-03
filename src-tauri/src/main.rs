@@ -1021,6 +1021,13 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::delete_strategy,
             ui::commands::get_clients_using_strategy,
             ui::commands::assign_client_strategy,
+            // Firewall commands
+            ui::commands::get_client_firewall_rules,
+            ui::commands::set_client_default_firewall_policy,
+            ui::commands::set_client_firewall_rule,
+            ui::commands::submit_firewall_approval,
+            ui::commands::list_pending_firewall_approvals,
+            ui::commands::get_firewall_approval_details,
             // OpenAPI documentation commands
             ui::commands::get_openapi_spec,
             // Internal testing commands

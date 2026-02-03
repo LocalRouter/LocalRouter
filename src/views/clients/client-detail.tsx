@@ -9,6 +9,7 @@ import { ClientModelsTab } from "./tabs/models-tab"
 import { ClientMcpTab } from "./tabs/mcp-tab"
 import { ClientSkillsTab } from "./tabs/skills-tab"
 import { ClientSettingsTab } from "./tabs/settings-tab"
+import { ClientFirewallTab } from "./tabs/firewall-tab"
 
 interface Client {
   id: string
@@ -124,6 +125,7 @@ export function ClientDetail({
             <TabsTrigger value="models">Models</TabsTrigger>
             <TabsTrigger value="mcp">MCP</TabsTrigger>
             <TabsTrigger value="skills">Skills</TabsTrigger>
+            <TabsTrigger value="firewall">Firewall</TabsTrigger>
             <TabsTrigger value="settings">Settings</TabsTrigger>
           </TabsList>
 
@@ -146,6 +148,10 @@ export function ClientDetail({
 
           <TabsContent value="skills">
             <ClientSkillsTab client={client} onUpdate={loadClient} />
+          </TabsContent>
+
+          <TabsContent value="firewall">
+            <ClientFirewallTab client={client} onUpdate={loadClient} />
           </TabsContent>
 
           <TabsContent value="settings">

@@ -5,6 +5,7 @@
 
 pub mod deferred;
 pub mod elicitation;
+pub mod firewall;
 #[allow(clippy::module_inception)]
 mod gateway;
 mod gateway_prompts;

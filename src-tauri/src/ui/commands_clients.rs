@@ -4,7 +4,10 @@
 
 use std::sync::Arc;
 
-use lr_config::{client_strategy_name, ConfigManager, McpServerAccess, SkillsAccess};
+use lr_config::{
+    client_strategy_name, ConfigManager, FirewallPolicy, FirewallRules, McpServerAccess,
+    SkillsAccess,
+};
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, State};
 
@@ -53,6 +56,8 @@ pub struct ClientInfo {
     pub skills_names: Vec<String>,
     pub created_at: String,
     pub last_used: Option<String>,
+    /// Firewall rules for this client
+    pub firewall: FirewallRules,
 }
 
 /// Skills access mode for the UI
@@ -111,6 +116,7 @@ pub async fn list_clients(
                 skills_names,
                 created_at: c.created_at.to_rfc3339(),
                 last_used: c.last_used.map(|t| t.to_rfc3339()),
+                firewall: c.firewall.clone(),
             }
         })
         .collect())
@@ -170,6 +176,7 @@ pub async fn create_client(
         skills_names,
         created_at: client.created_at.to_rfc3339(),
         last_used: client.last_used.map(|t| t.to_rfc3339()),
+        firewall: client.firewall.clone(),
     };
 
     Ok((secret, client_info))
@@ -888,4 +895,159 @@ pub async fn assign_client_strategy(
     tracing::info!("Client {} assigned to strategy {}", client_id, strategy_id);
 
     Ok(())
+}
+
+// ============================================================================
+// Firewall Commands
+// ============================================================================
+
+/// Get firewall rules for a client
+#[tauri::command]
+pub async fn get_client_firewall_rules(
+    client_id: String,
+    config_manager: State<'_, ConfigManager>,
+) -> Result<FirewallRules, String> {
+    let config = config_manager.get();
+    let client = config
+        .clients
+        .iter()
+        .find(|c| c.id == client_id)
+        .ok_or_else(|| format!("Client not found: {}", client_id))?;
+    Ok(client.firewall.clone())
+}
+
+/// Set default firewall policy for a client
+#[tauri::command]
+pub async fn set_client_default_firewall_policy(
+    client_id: String,
+    policy: FirewallPolicy,
+    config_manager: State<'_, ConfigManager>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    tracing::info!(
+        "Setting default firewall policy for client {} to {:?}",
+        client_id,
+        policy
+    );
+
+    let mut found = false;
+    config_manager
+        .update(|cfg| {
+            if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
+                client.firewall.default_policy = policy.clone();
+                found = true;
+            }
+        })
+        .map_err(|e| e.to_string())?;
+
+    if !found {
+        return Err(format!("Client not found: {}", client_id));
+    }
+
+    config_manager.save().await.map_err(|e| e.to_string())?;
+
+    if let Err(e) = app.emit("clients-changed", ()) {
+        tracing::error!("Failed to emit clients-changed event: {}", e);
+    }
+
+    Ok(())
+}
+
+/// Set a firewall rule for a client
+///
+/// # Arguments
+/// * `client_id` - Client ID
+/// * `rule_type` - One of: "server", "tool", "skill", "skill_tool"
+/// * `key` - The rule key (server_id, tool_name, skill_name, or skill_tool_name)
+/// * `policy` - The policy to set, or null to remove the rule
+#[tauri::command]
+pub async fn set_client_firewall_rule(
+    client_id: String,
+    rule_type: String,
+    key: String,
+    policy: Option<FirewallPolicy>,
+    config_manager: State<'_, ConfigManager>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    tracing::info!(
+        "Setting firewall rule for client {}: type={}, key={}, policy={:?}",
+        client_id,
+        rule_type,
+        key,
+        policy
+    );
+
+    let mut found = false;
+    config_manager
+        .update(|cfg| {
+            if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
+                let rules_map = match rule_type.as_str() {
+                    "server" => &mut client.firewall.server_rules,
+                    "tool" => &mut client.firewall.tool_rules,
+                    "skill" => &mut client.firewall.skill_rules,
+                    "skill_tool" => &mut client.firewall.skill_tool_rules,
+                    _ => return,
+                };
+                match policy {
+                    Some(p) => {
+                        rules_map.insert(key.clone(), p);
+                    }
+                    None => {
+                        rules_map.remove(&key);
+                    }
+                }
+                found = true;
+            }
+        })
+        .map_err(|e| e.to_string())?;
+
+    if !found {
+        return Err(format!("Client not found: {}", client_id));
+    }
+
+    config_manager.save().await.map_err(|e| e.to_string())?;
+
+    if let Err(e) = app.emit("clients-changed", ()) {
+        tracing::error!("Failed to emit clients-changed event: {}", e);
+    }
+
+    Ok(())
+}
+
+/// Submit a response to a pending firewall approval request
+#[tauri::command]
+pub async fn submit_firewall_approval(
+    request_id: String,
+    action: lr_mcp::gateway::firewall::FirewallApprovalAction,
+    state: State<'_, Arc<lr_server::state::AppState>>,
+) -> Result<(), String> {
+    tracing::info!(
+        "Submitting firewall approval for request {}: {:?}",
+        request_id,
+        action
+    );
+
+    state
+        .mcp_gateway
+        .firewall_manager
+        .submit_response(&request_id, action)
+        .map_err(|e| e.to_string())
+}
+
+/// List all pending firewall approval requests
+#[tauri::command]
+pub async fn list_pending_firewall_approvals(
+    state: State<'_, Arc<lr_server::state::AppState>>,
+) -> Result<Vec<lr_mcp::gateway::firewall::PendingApprovalInfo>, String> {
+    Ok(state.mcp_gateway.firewall_manager.list_pending())
+}
+
+/// Get details for a specific pending firewall approval request
+#[tauri::command]
+pub async fn get_firewall_approval_details(
+    request_id: String,
+    state: State<'_, Arc<lr_server::state::AppState>>,
+) -> Result<Option<lr_mcp::gateway::firewall::PendingApprovalInfo>, String> {
+    let pending = state.mcp_gateway.firewall_manager.list_pending();
+    Ok(pending.into_iter().find(|p| p.request_id == request_id))
 }

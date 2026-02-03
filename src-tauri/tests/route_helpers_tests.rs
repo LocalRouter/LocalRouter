@@ -7,7 +7,7 @@ use std::sync::Arc;
 use chrono::Utc;
 use localrouter::clients::{ClientManager, TokenStore};
 use localrouter::config::{
-    AppConfig, Client, ConfigManager, McpServerAccess, SkillsAccess, Strategy,
+    AppConfig, Client, ConfigManager, FirewallRules, McpServerAccess, SkillsAccess, Strategy,
 };
 use localrouter::monitoring::metrics::MetricsCollector;
 use localrouter::monitoring::storage::MetricsDatabase;
@@ -36,6 +36,7 @@ fn create_test_client(id: &str, name: &str, enabled: bool, strategy_id: &str) ->
         mcp_sampling_requires_approval: true,
         mcp_sampling_max_tokens: None,
         mcp_sampling_rate_limit: None,
+        firewall: FirewallRules::default(),
     }
 }
 

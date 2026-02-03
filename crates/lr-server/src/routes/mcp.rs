@@ -602,6 +602,7 @@ pub async fn mcp_gateway_handler(
             client.mcp_deferred_loading,
             roots,
             client.skills_access.clone(),
+            client.firewall.clone(),
             request,
         )
         .await

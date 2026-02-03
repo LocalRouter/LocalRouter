@@ -86,6 +86,12 @@ pub struct GatewaySession {
 
     /// Whether async skill tools are enabled
     pub skills_async_enabled: bool,
+
+    /// Firewall rules for this session (copied from client config at session creation)
+    pub firewall_rules: lr_config::FirewallRules,
+
+    /// Tools approved during this session via "Allow for Session" action
+    pub firewall_session_approvals: HashSet<String>,
 }
 
 impl GatewaySession {
@@ -132,6 +138,8 @@ impl GatewaySession {
             skills_access: lr_config::SkillsAccess::None,
             skills_info_loaded: HashSet::new(),
             skills_async_enabled: false,
+            firewall_rules: lr_config::FirewallRules::default(),
+            firewall_session_approvals: HashSet::new(),
         }
     }
 

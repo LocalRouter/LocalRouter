@@ -367,6 +367,7 @@ fn find_first_enabled_client(config: &AppConfig) -> AppResult<&Client> {
 mod tests {
     use super::*;
     use chrono::Utc;
+    use lr_config::FirewallRules;
 
     fn test_config() -> AppConfig {
         let mut config = AppConfig::default();
@@ -386,6 +387,7 @@ mod tests {
                 mcp_sampling_requires_approval: true,
                 mcp_sampling_max_tokens: None,
                 mcp_sampling_rate_limit: None,
+                firewall: FirewallRules::default(),
                 skills_access: lr_config::SkillsAccess::None,
             },
             Client {
@@ -403,6 +405,7 @@ mod tests {
                 mcp_sampling_requires_approval: true,
                 mcp_sampling_max_tokens: None,
                 mcp_sampling_rate_limit: None,
+                firewall: FirewallRules::default(),
                 skills_access: lr_config::SkillsAccess::None,
             },
             Client {
@@ -420,6 +423,7 @@ mod tests {
                 mcp_sampling_requires_approval: true,
                 mcp_sampling_max_tokens: None,
                 mcp_sampling_rate_limit: None,
+                firewall: FirewallRules::default(),
                 skills_access: lr_config::SkillsAccess::None,
             },
         ];

@@ -698,6 +698,98 @@ impl SkillsAccess {
     }
 }
 
+/// Firewall policy for MCP tool/skill access control
+///
+/// Determines how tool calls are handled:
+/// - `Allow`: Tool call proceeds without restriction
+/// - `Ask`: Tool call is held pending user approval (via popup)
+/// - `Deny`: Tool call is rejected immediately
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum FirewallPolicy {
+    /// Allow tool calls without restriction (default)
+    #[default]
+    Allow,
+    /// Hold tool call and ask user for approval
+    Ask,
+    /// Deny tool call immediately
+    Deny,
+}
+
+/// Per-client firewall rules for MCP tools and skills
+///
+/// Resolution order (most specific wins):
+/// 1. `tool_rules["server__tool_name"]` — exact tool match
+/// 2. `skill_tool_rules["skill_tool_name"]` — exact skill tool match
+/// 3. `server_rules[server_id]` — server-level policy
+/// 4. `skill_rules[skill_name]` — skill-level policy
+/// 5. `default_policy` — fallback
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct FirewallRules {
+    /// Default policy when no specific rule matches (default: Allow)
+    #[serde(default)]
+    pub default_policy: FirewallPolicy,
+
+    /// Per-server policies (server_id -> policy)
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub server_rules: std::collections::HashMap<String, FirewallPolicy>,
+
+    /// Per-tool policies (namespaced tool name e.g. "filesystem__write_file" -> policy)
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub tool_rules: std::collections::HashMap<String, FirewallPolicy>,
+
+    /// Per-skill policies (skill name -> policy)
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub skill_rules: std::collections::HashMap<String, FirewallPolicy>,
+
+    /// Per-skill-tool policies (skill tool name -> policy)
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub skill_tool_rules: std::collections::HashMap<String, FirewallPolicy>,
+}
+
+impl FirewallRules {
+    /// Resolve the effective policy for an MCP tool call
+    ///
+    /// Checks in order: tool_rules -> server_rules -> default_policy
+    pub fn resolve_mcp_tool(&self, tool_name: &str, server_id: &str) -> &FirewallPolicy {
+        // Most specific: exact tool name match
+        if let Some(policy) = self.tool_rules.get(tool_name) {
+            return policy;
+        }
+        // Server-level match
+        if let Some(policy) = self.server_rules.get(server_id) {
+            return policy;
+        }
+        // Fallback
+        &self.default_policy
+    }
+
+    /// Resolve the effective policy for a skill tool call
+    ///
+    /// Checks in order: skill_tool_rules -> skill_rules -> default_policy
+    pub fn resolve_skill_tool(&self, tool_name: &str, skill_name: &str) -> &FirewallPolicy {
+        // Most specific: exact skill tool name match
+        if let Some(policy) = self.skill_tool_rules.get(tool_name) {
+            return policy;
+        }
+        // Skill-level match
+        if let Some(policy) = self.skill_rules.get(skill_name) {
+            return policy;
+        }
+        // Fallback
+        &self.default_policy
+    }
+
+    /// Check if any rules are configured (non-default)
+    pub fn has_any_rules(&self) -> bool {
+        !matches!(self.default_policy, FirewallPolicy::Allow)
+            || !self.server_rules.is_empty()
+            || !self.tool_rules.is_empty()
+            || !self.skill_rules.is_empty()
+            || !self.skill_tool_rules.is_empty()
+    }
+}
+
 /// Skills configuration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct SkillsConfig {
@@ -876,6 +968,11 @@ pub struct Client {
     /// None = unlimited
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mcp_sampling_rate_limit: Option<u32>,
+
+    /// Firewall rules for MCP tool/skill access control
+    /// Controls per-tool Allow/Ask/Deny policies
+    #[serde(default)]
+    pub firewall: FirewallRules,
 }
 
 /// MCP server configuration
@@ -1558,6 +1655,7 @@ impl Client {
             mcp_sampling_requires_approval: true,
             mcp_sampling_max_tokens: None,
             mcp_sampling_rate_limit: None,
+            firewall: FirewallRules::default(),
         }
     }
 

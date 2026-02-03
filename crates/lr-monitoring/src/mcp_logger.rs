@@ -51,6 +51,11 @@ pub struct McpAccessLogEntry {
 
     /// Unique request ID
     pub request_id: String,
+
+    /// Firewall action taken (if any)
+    /// Values: "allowed", "denied", "asked:allowed_once", "asked:allowed_session", "asked:denied", "asked:timeout"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub firewall_action: Option<String>,
 }
 
 impl McpAccessLogEntry {
@@ -74,6 +79,7 @@ impl McpAccessLogEntry {
             latency_ms,
             transport: transport.into(),
             request_id: request_id.into(),
+            firewall_action: None,
         }
     }
 
@@ -100,6 +106,7 @@ impl McpAccessLogEntry {
             latency_ms,
             transport: transport.into(),
             request_id: request_id.into(),
+            firewall_action: None,
         }
     }
 }

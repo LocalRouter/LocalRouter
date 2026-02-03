@@ -297,6 +297,7 @@ impl ConfigManager {
             mcp_sampling_requires_approval: true,
             mcp_sampling_max_tokens: None,
             mcp_sampling_rate_limit: None,
+            firewall: FirewallRules::default(),
         };
 
         self.update(|cfg| {

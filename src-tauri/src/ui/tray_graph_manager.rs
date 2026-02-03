@@ -432,14 +432,22 @@ impl TrayGraphManager {
                     TrayOverlay::Warning(StatusDotColors::for_status(status))
                 }
                 _ => {
-                    // Check if an update is available
-                    let update_available = app_handle
-                        .try_state::<Arc<UpdateNotificationState>>()
-                        .is_some_and(|state| state.is_update_available());
-                    if update_available {
-                        TrayOverlay::UpdateAvailable
+                    // Check if firewall approvals are pending
+                    let firewall_pending = app_handle
+                        .try_state::<Arc<lr_server::state::AppState>>()
+                        .is_some_and(|state| state.mcp_gateway.firewall_manager.has_pending());
+                    if firewall_pending {
+                        TrayOverlay::FirewallPending
                     } else {
-                        TrayOverlay::None
+                        // Check if an update is available
+                        let update_available = app_handle
+                            .try_state::<Arc<UpdateNotificationState>>()
+                            .is_some_and(|state| state.is_update_available());
+                        if update_available {
+                            TrayOverlay::UpdateAvailable
+                        } else {
+                            TrayOverlay::None
+                        }
                     }
                 }
             }

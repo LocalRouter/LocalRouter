@@ -16,6 +16,7 @@ use lr_skills::manager::SkillManager;
 use lr_types::{AppError, AppResult};
 
 use super::elicitation::ElicitationManager;
+use super::firewall::FirewallManager;
 use super::merger::{
     build_gateway_instructions, merge_initialize_results, InstructionsContext,
     McpServerInstructionInfo, SkillInfo, UnavailableServerInfo,
@@ -49,6 +50,9 @@ pub struct McpGateway {
 
     /// Elicitation manager for handling structured user input requests
     pub(crate) elicitation_manager: Arc<ElicitationManager>,
+
+    /// Firewall manager for tool call approval flow
+    pub firewall_manager: Arc<FirewallManager>,
 
     /// Skill manager (optional, for AgentSkills.io support)
     /// Uses OnceLock so it can be set after Arc construction via &self
@@ -89,6 +93,15 @@ impl McpGateway {
             None => Arc::new(ElicitationManager::default()),
         };
 
+        // Create firewall manager with broadcast support if available
+        let firewall_manager = match &notification_broadcast {
+            Some(broadcast) => Arc::new(FirewallManager::new_with_broadcast(
+                120,
+                broadcast.clone(),
+            )),
+            None => Arc::new(FirewallManager::default()),
+        };
+
         Self {
             sessions: Arc::new(DashMap::new()),
             server_manager,
@@ -97,6 +110,7 @@ impl McpGateway {
             notification_broadcast,
             router,
             elicitation_manager,
+            firewall_manager,
             skill_manager: OnceLock::new(),
             script_executor: OnceLock::new(),
             skills_async_override: OnceLock::new(),
@@ -268,6 +282,7 @@ impl McpGateway {
             enable_deferred_loading,
             roots,
             lr_config::SkillsAccess::None,
+            lr_config::FirewallRules::default(),
             request,
         )
         .await
@@ -281,6 +296,7 @@ impl McpGateway {
         enable_deferred_loading: bool,
         roots: Vec<crate::protocol::Root>,
         skills_access: lr_config::SkillsAccess,
+        firewall_rules: lr_config::FirewallRules,
         request: JsonRpcRequest,
     ) -> AppResult<JsonRpcResponse> {
         let method = request.method.clone();
@@ -311,6 +327,12 @@ impl McpGateway {
             let mut session_write = session.write().await;
             session_write.skills_access = skills_access;
             session_write.skills_async_enabled = async_enabled;
+        }
+
+        // Update firewall rules on session (always refresh from config)
+        {
+            let mut session_write = session.write().await;
+            session_write.firewall_rules = firewall_rules;
         }
 
         // Update last activity

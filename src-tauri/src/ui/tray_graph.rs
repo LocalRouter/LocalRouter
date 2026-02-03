@@ -20,6 +20,8 @@ pub enum TrayOverlay {
     Warning(Rgba<u8>),
     /// Down-arrow in foreground color (update available)
     UpdateAvailable,
+    /// Question mark in green (firewall approval pending)
+    FirewallPending,
 }
 
 /// Data point for graph rendering
@@ -211,6 +213,37 @@ fn draw_down_arrow(img: &mut RgbaImage, color: Rgba<u8>) {
     }
     // Row y=10: x=6..7 (2px wide)
     img.put_pixel(6, 10, color);
+    img.put_pixel(7, 10, color);
+}
+
+/// Draw a question mark in the top-left corner cutout area
+///
+/// Used for the firewall pending approval indicator.
+/// Green question mark drawn at roughly the same position as exclamation mark.
+fn draw_question_mark(img: &mut RgbaImage, color: Rgba<u8>) {
+    // Top curve of ? : arc at top (x=4..9, y=0..4)
+    // Row y=0: x=5,6,7
+    for x in 5u32..=7 { img.put_pixel(x, 0, color); }
+    // Row y=1: x=4,8
+    img.put_pixel(4, 1, color);
+    img.put_pixel(8, 1, color);
+    // Row y=2: x=8
+    img.put_pixel(8, 2, color);
+    // Row y=3: x=7
+    img.put_pixel(7, 3, color);
+    // Row y=4: x=6
+    img.put_pixel(6, 4, color);
+    // Stem: x=6, y=5..6
+    img.put_pixel(6, 5, color);
+    img.put_pixel(6, 6, color);
+
+    // Dot: x=6, y=9..10 (gap then dot)
+    img.put_pixel(6, 9, color);
+    img.put_pixel(6, 10, color);
+    // Make dot thicker: x=5..7, y=9..10
+    img.put_pixel(5, 9, color);
+    img.put_pixel(7, 9, color);
+    img.put_pixel(5, 10, color);
     img.put_pixel(7, 10, color);
 }
 
@@ -582,6 +615,9 @@ pub fn generate_graph(
         }
         TrayOverlay::UpdateAvailable => {
             draw_down_arrow(&mut img, config.foreground);
+        }
+        TrayOverlay::FirewallPending => {
+            draw_question_mark(&mut img, StatusDotColors::green());
         }
     }
 

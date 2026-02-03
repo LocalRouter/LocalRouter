@@ -13,6 +13,7 @@ use super::router::{broadcast_request, separate_results};
 use super::session::GatewaySession;
 use super::types::*;
 
+use super::firewall::{self, FirewallApprovalAction};
 use super::gateway::McpGateway;
 
 impl McpGateway {
@@ -209,6 +210,14 @@ impl McpGateway {
 
         // Check if it's a skill tool
         if self.is_skill_tool(&tool_name) {
+            // Firewall check for skill tools
+            if let Some(err_response) = self
+                .check_firewall_skill_tool(&session, &tool_name, &request)
+                .await?
+            {
+                return Ok(err_response);
+            }
+
             return self
                 .handle_skill_tool_call(session, &tool_name, request)
                 .await;
@@ -229,6 +238,14 @@ impl McpGateway {
             }
         };
         drop(session_read);
+
+        // Firewall check for MCP tools
+        if let Some(err_response) = self
+            .check_firewall_mcp_tool(&session, &tool_name, &server_id, &request)
+            .await?
+        {
+            return Ok(err_response);
+        }
 
         // Transform request: Strip namespace
         let mut transformed_request = request.clone();
@@ -270,6 +287,197 @@ impl McpGateway {
         }
 
         result
+    }
+
+    /// Check firewall policy for an MCP tool call.
+    /// Returns `Some(error_response)` if the call should be blocked, `None` to proceed.
+    async fn check_firewall_mcp_tool(
+        &self,
+        session: &Arc<RwLock<GatewaySession>>,
+        tool_name: &str,
+        server_id: &str,
+        request: &JsonRpcRequest,
+    ) -> AppResult<Option<JsonRpcResponse>> {
+        let session_read = session.read().await;
+        let policy = session_read
+            .firewall_rules
+            .resolve_mcp_tool(tool_name, server_id)
+            .clone();
+
+        // Check session-level approvals for Ask policy
+        let already_approved = session_read
+            .firewall_session_approvals
+            .contains(tool_name);
+
+        let client_id = session_read.client_id.clone();
+        drop(session_read);
+
+        self.apply_firewall_policy(
+            session,
+            &policy,
+            already_approved,
+            &client_id,
+            tool_name,
+            server_id,
+            request,
+        )
+        .await
+    }
+
+    /// Check firewall policy for a skill tool call.
+    /// Returns `Some(error_response)` if the call should be blocked, `None` to proceed.
+    async fn check_firewall_skill_tool(
+        &self,
+        session: &Arc<RwLock<GatewaySession>>,
+        tool_name: &str,
+        request: &JsonRpcRequest,
+    ) -> AppResult<Option<JsonRpcResponse>> {
+        // Extract skill name from tool name using simple heuristic:
+        // skill tools follow pattern `skill_{name}_{action}` where action is
+        // get_info, run_{file}, run_async_{file}, read_{file}
+        let skill_name = extract_skill_name_from_tool(tool_name);
+
+        let session_read = session.read().await;
+        let policy = session_read
+            .firewall_rules
+            .resolve_skill_tool(tool_name, &skill_name)
+            .clone();
+
+        let already_approved = session_read
+            .firewall_session_approvals
+            .contains(tool_name);
+
+        let client_id = session_read.client_id.clone();
+        drop(session_read);
+
+        self.apply_firewall_policy(
+            session,
+            &policy,
+            already_approved,
+            &client_id,
+            tool_name,
+            &skill_name,
+            request,
+        )
+        .await
+    }
+
+    /// Apply firewall policy, returning an error response if blocked or None to proceed.
+    async fn apply_firewall_policy(
+        &self,
+        session: &Arc<RwLock<GatewaySession>>,
+        policy: &lr_config::FirewallPolicy,
+        already_approved: bool,
+        client_id: &str,
+        tool_name: &str,
+        server_or_skill_name: &str,
+        request: &JsonRpcRequest,
+    ) -> AppResult<Option<JsonRpcResponse>> {
+        match policy {
+            lr_config::FirewallPolicy::Allow => Ok(None),
+            lr_config::FirewallPolicy::Deny => {
+                tracing::info!(
+                    "Firewall denied tool call: client={}, tool={}",
+                    client_id,
+                    tool_name
+                );
+                Ok(Some(JsonRpcResponse::error(
+                    request.id.clone().unwrap_or(Value::Null),
+                    JsonRpcError::custom(
+                        -32600,
+                        format!("Tool call '{}' denied by firewall policy", tool_name),
+                        None,
+                    ),
+                )))
+            }
+            lr_config::FirewallPolicy::Ask => {
+                // Check if already approved for this session
+                if already_approved {
+                    tracing::debug!(
+                        "Firewall: tool {} already approved for session (client={})",
+                        tool_name,
+                        client_id
+                    );
+                    return Ok(None);
+                }
+
+                // Get client name for display
+                let client_name = {
+                    let session_read = session.read().await;
+                    session_read.client_id.clone() // Use client_id as name fallback
+                };
+
+                // Extract arguments preview
+                let arguments_preview = request
+                    .params
+                    .as_ref()
+                    .and_then(|p| p.get("arguments"))
+                    .map(|args| firewall::truncate_arguments_preview(args, 200))
+                    .unwrap_or_else(|| "{}".to_string());
+
+                tracing::info!(
+                    "Firewall requesting approval: client={}, tool={}, server/skill={}",
+                    client_id,
+                    tool_name,
+                    server_or_skill_name
+                );
+
+                // Request approval (blocks until user responds or timeout)
+                let response = self
+                    .firewall_manager
+                    .request_approval(
+                        client_id.to_string(),
+                        client_name,
+                        tool_name.to_string(),
+                        server_or_skill_name.to_string(),
+                        arguments_preview,
+                        None,
+                    )
+                    .await?;
+
+                match response.action {
+                    FirewallApprovalAction::AllowOnce => {
+                        tracing::info!(
+                            "Firewall: tool {} allowed once (client={})",
+                            tool_name,
+                            client_id
+                        );
+                        Ok(None)
+                    }
+                    FirewallApprovalAction::AllowSession => {
+                        tracing::info!(
+                            "Firewall: tool {} allowed for session (client={})",
+                            tool_name,
+                            client_id
+                        );
+                        // Add to session approvals
+                        let mut session_write = session.write().await;
+                        session_write
+                            .firewall_session_approvals
+                            .insert(tool_name.to_string());
+                        Ok(None)
+                    }
+                    FirewallApprovalAction::Deny => {
+                        tracing::info!(
+                            "Firewall: user denied tool {} (client={})",
+                            tool_name,
+                            client_id
+                        );
+                        Ok(Some(JsonRpcResponse::error(
+                            request.id.clone().unwrap_or(Value::Null),
+                            JsonRpcError::custom(
+                                -32600,
+                                format!(
+                                    "Tool call '{}' denied by user",
+                                    tool_name
+                                ),
+                                None,
+                            ),
+                        )))
+                    }
+                }
+            }
+        }
     }
 
     /// Handle search tool call (for deferred loading)
@@ -533,4 +741,33 @@ impl McpGateway {
             )),
         }
     }
+}
+
+/// Extract skill name from a skill tool name.
+///
+/// Skill tools follow the pattern `skill_{sanitized_name}_{action}` where action is
+/// one of: `get_info`, `run_{file}`, `run_async_{file}`, `read_{file}`, `get_async_status`.
+///
+/// This is a best-effort extraction for firewall rule matching. It strips the `skill_` prefix
+/// and tries to identify the skill name portion before the action suffix.
+fn extract_skill_name_from_tool(tool_name: &str) -> String {
+    let rest = tool_name.strip_prefix("skill_").unwrap_or(tool_name);
+
+    // Try to find known action suffixes and extract the name before them
+    // Order matters: check longer patterns first
+    for suffix in &["_get_async_status", "_get_info", "_run_async_", "_run_", "_read_"] {
+        if let Some(pos) = rest.find(suffix) {
+            if pos > 0 {
+                return rest[..pos].to_string();
+            }
+        }
+    }
+
+    // If the tool name is exactly `skill_get_async_status` (global), return empty
+    if rest == "get_async_status" {
+        return String::new();
+    }
+
+    // Fallback: return the rest as the skill name
+    rest.to_string()
 }

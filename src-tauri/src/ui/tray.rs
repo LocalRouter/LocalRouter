@@ -158,8 +158,18 @@ pub fn setup_tray<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
                     app.exit(0);
                 }
                 _ => {
+                    // Handle firewall approval: firewall_approve_<request_id>
+                    if let Some(request_id) = id.strip_prefix("firewall_approve_") {
+                        info!("Firewall approval requested from tray for {}", request_id);
+                        let app_clone = app.clone();
+                        let request_id = request_id.to_string();
+                        // Emit event to open/focus the approval popup
+                        if let Err(e) = app_clone.emit("firewall-open-approval", &request_id) {
+                            error!("Failed to emit firewall-open-approval event: {}", e);
+                        }
+                    }
                     // Handle copy MCP URL: copy_mcp_url_<client_id>_<server_id>
-                    if let Some(rest) = id.strip_prefix("copy_mcp_url_") {
+                    else if let Some(rest) = id.strip_prefix("copy_mcp_url_") {
                         if let Some((client_id, server_id)) = rest.split_once('_') {
                             info!(
                                 "Copy MCP URL requested: client={}, server={}",

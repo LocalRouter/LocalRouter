@@ -131,6 +131,50 @@ function buildNodes(
   return nodes
 }
 
+// Determine edge style based on firewall rules for a client's connection
+function getFirewallEdgeStyle(
+  client: Client,
+  targetType: 'server' | 'skill',
+  targetId: string,
+  isConnected: boolean
+): Record<string, string | number> {
+  const fw = client.firewall
+  if (!fw || !fw.default_policy) {
+    // No firewall rules — use default colors
+    const defaultColor = targetType === 'server' ? '#10b981' : '#f59e0b'
+    return {
+      stroke: isConnected ? defaultColor : '#64748b',
+      strokeWidth: isConnected ? 2 : 1,
+    }
+  }
+
+  // Check for server/skill-level rule
+  const rules = targetType === 'server' ? fw.server_rules : fw.skill_rules
+  const policy = rules[targetId] ?? fw.default_policy
+
+  if (policy === 'deny') {
+    return {
+      stroke: '#ef4444',
+      strokeWidth: isConnected ? 2 : 1,
+      strokeDasharray: '5,5',
+    }
+  }
+  if (policy === 'ask') {
+    return {
+      stroke: isConnected ? '#f59e0b' : '#64748b',
+      strokeWidth: isConnected ? 2 : 1,
+      strokeDasharray: '4,4',
+    }
+  }
+
+  // Allow — standard style
+  const defaultColor = targetType === 'server' ? '#10b981' : '#f59e0b'
+  return {
+    stroke: isConnected ? defaultColor : '#64748b',
+    strokeWidth: isConnected ? 2 : 1,
+  }
+}
+
 // Build edges from data
 function buildEdges(
   clients: Client[],
@@ -181,15 +225,13 @@ function buildEdges(
         : []
 
     clientMcpServers.forEach((serverId) => {
+      const firewallStyle = getFirewallEdgeStyle(client, 'server', serverId, isConnected)
       edges.push({
         id: `edge-${client.id}-mcp-${serverId}`,
         source: `client-${client.id}`,
         target: `mcp-${serverId}`,
         animated: isConnected,
-        style: {
-          stroke: isConnected ? '#10b981' : '#64748b',
-          strokeWidth: isConnected ? 2 : 1,
-        },
+        style: firewallStyle,
         data: { isActive: isConnected },
       })
     })
@@ -202,15 +244,13 @@ function buildEdges(
         : []
 
     clientSkills.forEach((skillName) => {
+      const firewallStyle = getFirewallEdgeStyle(client, 'skill', skillName, isConnected)
       edges.push({
         id: `edge-${client.id}-skill-${skillName}`,
         source: `client-${client.id}`,
         target: `skill-${skillName}`,
         animated: isConnected,
-        style: {
-          stroke: isConnected ? '#f59e0b' : '#64748b',
-          strokeWidth: isConnected ? 2 : 1,
-        },
+        style: firewallStyle,
         data: { isActive: isConnected },
       })
     })

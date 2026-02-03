@@ -139,6 +139,27 @@ pub(crate) fn build_tray_menu<R: Runtime, M: Manager<R>>(app: &M) -> tauri::Resu
         }
     }
 
+    // 5b. Firewall pending approvals section (shown when approvals are pending)
+    if let Some(app_state) = app.try_state::<Arc<lr_server::state::AppState>>() {
+        let pending = app_state.mcp_gateway.firewall_manager.list_pending();
+        for approval in &pending {
+            // Truncate tool name for display
+            let tool_display = if approval.tool_name.len() > 25 {
+                format!("{}…", &approval.tool_name[..25])
+            } else {
+                approval.tool_name.clone()
+            };
+            let label = format!(
+                "❓ Approve: \"{}\" for {}",
+                tool_display, approval.client_name
+            );
+            menu_builder = menu_builder.text(
+                format!("firewall_approve_{}", approval.request_id),
+                label,
+            );
+        }
+    }
+
     // Add separator before clients
     menu_builder = menu_builder.separator();
 

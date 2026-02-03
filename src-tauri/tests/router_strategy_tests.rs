@@ -10,7 +10,7 @@
 
 use localrouter::config::ConfigManager;
 use localrouter::config::{
-    AppConfig, AutoModelConfig, AvailableModelsSelection, Client, McpServerAccess,
+    AppConfig, AutoModelConfig, AvailableModelsSelection, Client, FirewallRules, McpServerAccess,
     RateLimitTimeWindow, RateLimitType, SkillsAccess, Strategy, StrategyRateLimit,
 };
 use localrouter::monitoring::metrics::MetricsCollector;
@@ -49,6 +49,7 @@ fn create_test_config(
         mcp_sampling_requires_approval: true,
         mcp_sampling_max_tokens: None,
         mcp_sampling_rate_limit: None,
+        firewall: FirewallRules::default(),
         mcp_deferred_loading: false,
         skills_access: SkillsAccess::default(),
         created_at: chrono::Utc::now(),
@@ -468,6 +469,7 @@ async fn test_disabled_client_returns_unauthorized() {
         mcp_sampling_requires_approval: true,
         mcp_sampling_max_tokens: None,
         mcp_sampling_rate_limit: None,
+        firewall: FirewallRules::default(),
         mcp_deferred_loading: false,
         skills_access: SkillsAccess::default(),
         created_at: chrono::Utc::now(),
@@ -506,6 +508,7 @@ async fn test_client_with_missing_strategy() {
         mcp_sampling_requires_approval: true,
         mcp_sampling_max_tokens: None,
         mcp_sampling_rate_limit: None,
+        firewall: FirewallRules::default(),
         mcp_deferred_loading: false,
         skills_access: SkillsAccess::default(),
         created_at: chrono::Utc::now(),
