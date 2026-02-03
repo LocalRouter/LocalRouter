@@ -417,6 +417,33 @@ impl TrayGraphManager {
             }
         };
 
+        // Detect if system is in dark mode for color adjustments
+        let dark_mode = detect_dark_mode(&app_handle);
+
+        // Clean up expired firewall approval requests and close their popups
+        if let Some(app_state) = app_handle.try_state::<Arc<lr_server::state::AppState>>() {
+            let expired_requests = app_state.mcp_gateway.firewall_manager.cleanup_expired();
+            if !expired_requests.is_empty() {
+                debug!(
+                    "Cleaned up {} expired firewall approval requests",
+                    expired_requests.len()
+                );
+                // Close any popup windows for expired requests
+                for request_id in &expired_requests {
+                    if let Some(window) =
+                        app_handle.get_webview_window(&format!("firewall-approval-{}", request_id))
+                    {
+                        let _ = window.close();
+                        debug!("Closed popup for expired firewall request {}", request_id);
+                    }
+                }
+                // Rebuild tray menu to remove expired items
+                if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app_handle) {
+                    error!("Failed to rebuild tray menu after firewall cleanup: {}", e);
+                }
+            }
+        }
+
         // Determine overlay: Warning/Error health > UpdateAvailable > None
         let overlay = {
             use crate::ui::tray_graph::{StatusDotColors, TrayOverlay};
@@ -429,7 +456,7 @@ impl TrayGraphManager {
             match health_status {
                 Some(AggregateHealthStatus::Yellow) | Some(AggregateHealthStatus::Red) => {
                     let status = health_status.unwrap();
-                    TrayOverlay::Warning(StatusDotColors::for_status(status))
+                    TrayOverlay::Warning(StatusDotColors::for_status(status, dark_mode))
                 }
                 _ => {
                     // Check if firewall approvals are pending
@@ -455,8 +482,9 @@ impl TrayGraphManager {
 
         // Generate graph PNG with overlay
         let graph_config = platform_graph_config();
-        let png_bytes = crate::ui::tray_graph::generate_graph(&data_points, &graph_config, overlay)
-            .ok_or_else(|| anyhow::anyhow!("Failed to generate graph PNG"))?;
+        let png_bytes =
+            crate::ui::tray_graph::generate_graph(&data_points, &graph_config, overlay, dark_mode)
+                .ok_or_else(|| anyhow::anyhow!("Failed to generate graph PNG"))?;
 
         // Calculate simple hash of PNG bytes to detect changes
         use std::hash::{Hash, Hasher};
@@ -524,6 +552,33 @@ impl TrayGraphManager {
 impl lr_types::TokenRecorder for TrayGraphManager {
     fn record_tokens(&self, tokens: u64) {
         self.record_tokens(tokens);
+    }
+}
+
+/// Detect if the system is in dark mode
+///
+/// Uses the main window's theme if available, otherwise defaults based on platform.
+/// On macOS, defaults to true (dark mode) since the menu bar needs bright colors for visibility.
+fn detect_dark_mode(app_handle: &AppHandle) -> bool {
+    // Try to get theme from the main window if it exists
+    if let Some(window) = app_handle.get_webview_window("main") {
+        if let Ok(theme) = window.theme() {
+            return theme == tauri::Theme::Dark;
+        }
+    }
+
+    // Platform-specific fallback for when no window exists
+    #[cfg(target_os = "macos")]
+    {
+        // On macOS, default to dark mode for better tray icon visibility
+        // The menu bar typically uses template icons or needs bright colors in dark mode
+        true
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        // On Windows/Linux, default to light mode
+        false
     }
 }
 

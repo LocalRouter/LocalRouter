@@ -26,7 +26,9 @@ pub(crate) const TRAY_INDENT: &str = "\u{2003}\u{2009}\u{2009}";
 pub(crate) const ICON_PAD: &str = "\u{2009}\u{2009}";
 
 /// Build the system tray menu
-pub(crate) fn build_tray_menu<R: Runtime, M: Manager<R>>(app: &M) -> tauri::Result<tauri::menu::Menu<R>> {
+pub(crate) fn build_tray_menu<R: Runtime, M: Manager<R>>(
+    app: &M,
+) -> tauri::Result<tauri::menu::Menu<R>> {
     let mut menu_builder = MenuBuilder::new(app);
 
     // Get server status and config early for header
@@ -153,10 +155,30 @@ pub(crate) fn build_tray_menu<R: Runtime, M: Manager<R>>(app: &M) -> tauri::Resu
                 "❓ Approve: \"{}\" for {}",
                 tool_display, approval.client_name
             );
-            menu_builder = menu_builder.text(
-                format!("firewall_approve_{}", approval.request_id),
-                label,
-            );
+
+            // Create submenu with approval options
+            let request_id = &approval.request_id;
+            let submenu = SubmenuBuilder::new(app, label)
+                .text(
+                    format!("firewall_deny_{}", request_id),
+                    format!("{}✕ Deny", TRAY_INDENT),
+                )
+                .text(
+                    format!("firewall_allow_once_{}", request_id),
+                    format!("{}✓ Allow Once", TRAY_INDENT),
+                )
+                .text(
+                    format!("firewall_allow_session_{}", request_id),
+                    format!("{}✓ Allow Session", TRAY_INDENT),
+                )
+                .separator()
+                .text(
+                    format!("firewall_open_{}", request_id),
+                    format!("{}Open Popup…", TRAY_INDENT),
+                )
+                .build()?;
+
+            menu_builder = menu_builder.item(&submenu);
         }
     }
 
@@ -169,7 +191,11 @@ pub(crate) fn build_tray_menu<R: Runtime, M: Manager<R>>(app: &M) -> tauri::Resu
 
     // Get client manager and build client list
     if let Some(client_manager) = app.try_state::<Arc<ClientManager>>() {
-        let clients: Vec<_> = client_manager.list_clients().into_iter().filter(|c| !c.name.starts_with("_test_strategy_")).collect();
+        let clients: Vec<_> = client_manager
+            .list_clients()
+            .into_iter()
+            .filter(|c| !c.name.starts_with("_test_strategy_"))
+            .collect();
         let mcp_server_manager = app.try_state::<Arc<McpServerManager>>();
         let config_manager = app.try_state::<ConfigManager>();
 
@@ -642,7 +668,9 @@ pub(crate) async fn handle_prioritized_list<R: Runtime>(
 /// - All models allowed (via strategy)
 /// - No MCP access
 /// - No prioritized models
-pub(crate) async fn handle_create_and_copy_api_key<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
+pub(crate) async fn handle_create_and_copy_api_key<R: Runtime>(
+    app: &AppHandle<R>,
+) -> tauri::Result<()> {
     info!("Quick creating new client and copying API key from tray");
 
     // Get managers from state

@@ -75,31 +75,49 @@ impl GraphConfig {
     }
 }
 
-/// Status dot colors
+/// Status dot colors with dark/light mode variants
 pub struct StatusDotColors;
 
 impl StatusDotColors {
-    /// Green color for healthy status (#22c55e)
-    pub fn green() -> Rgba<u8> {
-        Rgba([34, 197, 94, 255])
+    /// Green color for healthy status
+    /// Light mode: #22c55e (darker green for contrast on light backgrounds)
+    /// Dark mode: #4ade80 (brighter green for visibility on dark backgrounds)
+    pub fn green(dark_mode: bool) -> Rgba<u8> {
+        if dark_mode {
+            Rgba([74, 222, 128, 255]) // #4ade80 - green-400
+        } else {
+            Rgba([34, 197, 94, 255]) // #22c55e - green-500
+        }
     }
 
-    /// Yellow color for degraded/warning status (#eab308)
-    pub fn yellow() -> Rgba<u8> {
-        Rgba([234, 179, 8, 255])
+    /// Yellow color for degraded/warning status
+    /// Light mode: #eab308 (darker yellow for contrast on light backgrounds)
+    /// Dark mode: #facc15 (brighter yellow for visibility on dark backgrounds)
+    pub fn yellow(dark_mode: bool) -> Rgba<u8> {
+        if dark_mode {
+            Rgba([250, 204, 21, 255]) // #facc15 - yellow-400
+        } else {
+            Rgba([234, 179, 8, 255]) // #eab308 - yellow-500
+        }
     }
 
-    /// Red color for unhealthy/down status (#ef4444)
-    pub fn red() -> Rgba<u8> {
-        Rgba([239, 68, 68, 255])
+    /// Red color for unhealthy/down status
+    /// Light mode: #ef4444 (standard red for contrast on light backgrounds)
+    /// Dark mode: #f87171 (brighter red for visibility on dark backgrounds)
+    pub fn red(dark_mode: bool) -> Rgba<u8> {
+        if dark_mode {
+            Rgba([248, 113, 113, 255]) // #f87171 - red-400
+        } else {
+            Rgba([239, 68, 68, 255]) // #ef4444 - red-500
+        }
     }
 
     /// Get color for aggregate health status
-    pub fn for_status(status: AggregateHealthStatus) -> Rgba<u8> {
+    pub fn for_status(status: AggregateHealthStatus, dark_mode: bool) -> Rgba<u8> {
         match status {
-            AggregateHealthStatus::Green => Self::green(),
-            AggregateHealthStatus::Yellow => Self::yellow(),
-            AggregateHealthStatus::Red => Self::red(),
+            AggregateHealthStatus::Green => Self::green(dark_mode),
+            AggregateHealthStatus::Yellow => Self::yellow(dark_mode),
+            AggregateHealthStatus::Red => Self::red(dark_mode),
         }
     }
 }
@@ -216,35 +234,50 @@ fn draw_down_arrow(img: &mut RgbaImage, color: Rgba<u8>) {
     img.put_pixel(7, 10, color);
 }
 
-/// Draw a question mark in the top-left corner cutout area
+/// Draw a bold question mark in the top-left corner cutout area
 ///
 /// Used for the firewall pending approval indicator.
-/// Green question mark drawn at roughly the same position as exclamation mark.
+/// Bold question mark with 2-3px thick strokes, matching exclamation mark weight.
 fn draw_question_mark(img: &mut RgbaImage, color: Rgba<u8>) {
-    // Top curve of ? : arc at top (x=4..9, y=0..4)
-    // Row y=0: x=5,6,7
-    for x in 5u32..=7 { img.put_pixel(x, 0, color); }
-    // Row y=1: x=4,8
-    img.put_pixel(4, 1, color);
-    img.put_pixel(8, 1, color);
-    // Row y=2: x=8
-    img.put_pixel(8, 2, color);
-    // Row y=3: x=7
-    img.put_pixel(7, 3, color);
-    // Row y=4: x=6
-    img.put_pixel(6, 4, color);
-    // Stem: x=6, y=5..6
-    img.put_pixel(6, 5, color);
-    img.put_pixel(6, 6, color);
+    // Bold top curve of ? with 2px thick lines
+    // Top arc: rows y=0-1 (top of curve)
+    for x in 5u32..=8 {
+        img.put_pixel(x, 0, color);
+    }
+    for x in 4u32..=9 {
+        img.put_pixel(x, 1, color);
+    }
+    // Sides of curve: y=2-3
+    // Left side (outer)
+    img.put_pixel(3, 2, color);
+    img.put_pixel(4, 2, color);
+    img.put_pixel(3, 3, color);
+    img.put_pixel(4, 3, color);
+    // Right side (outer)
+    img.put_pixel(9, 2, color);
+    img.put_pixel(10, 2, color);
+    img.put_pixel(9, 3, color);
+    img.put_pixel(10, 3, color);
 
-    // Dot: x=6, y=9..10 (gap then dot)
-    img.put_pixel(6, 9, color);
-    img.put_pixel(6, 10, color);
-    // Make dot thicker: x=5..7, y=9..10
-    img.put_pixel(5, 9, color);
-    img.put_pixel(7, 9, color);
-    img.put_pixel(5, 10, color);
-    img.put_pixel(7, 10, color);
+    // Curving down on right side: y=4-5
+    img.put_pixel(8, 4, color);
+    img.put_pixel(9, 4, color);
+    img.put_pixel(7, 5, color);
+    img.put_pixel(8, 5, color);
+
+    // Vertical stem: x=5-7, y=6-7 (bold 3px wide)
+    for y in 6u32..=7 {
+        for x in 5u32..=7 {
+            img.put_pixel(x, y, color);
+        }
+    }
+
+    // Dot: 4x3 block at y=10-12 (gap at y=8-9)
+    for y in 10u32..=12 {
+        for x in 5u32..=8 {
+            img.put_pixel(x, y, color);
+        }
+    }
 }
 
 /// Draw a thick line between two points using Bresenham's algorithm with thickness
@@ -366,6 +399,7 @@ pub fn generate_graph(
     data_points: &[DataPoint],
     config: &GraphConfig,
     overlay: TrayOverlay,
+    dark_mode: bool,
 ) -> Option<Vec<u8>> {
     const WIDTH: u32 = 32;
     const HEIGHT: u32 = 32;
@@ -617,7 +651,7 @@ pub fn generate_graph(
             draw_down_arrow(&mut img, config.foreground);
         }
         TrayOverlay::FirewallPending => {
-            draw_question_mark(&mut img, StatusDotColors::green());
+            draw_question_mark(&mut img, StatusDotColors::green(dark_mode));
         }
     }
 
@@ -663,7 +697,7 @@ mod tests {
     #[test]
     fn test_generate_empty_graph() {
         let config = GraphConfig::macos_template();
-        let png = generate_graph(&[], &config, TrayOverlay::None);
+        let png = generate_graph(&[], &config, TrayOverlay::None, false);
         assert!(png.is_some());
         assert!(!png.unwrap().is_empty());
     }
@@ -675,7 +709,7 @@ mod tests {
             timestamp: Utc::now(),
             total_tokens: 1000,
         }];
-        let png = generate_graph(&data, &config, TrayOverlay::None);
+        let png = generate_graph(&data, &config, TrayOverlay::None, false);
         assert!(png.is_some());
         assert!(!png.unwrap().is_empty());
     }
@@ -694,7 +728,7 @@ mod tests {
             });
         }
 
-        let png = generate_graph(&data, &config, TrayOverlay::None);
+        let png = generate_graph(&data, &config, TrayOverlay::None, false);
         assert!(png.is_some());
         assert!(!png.unwrap().is_empty());
     }
@@ -720,7 +754,7 @@ mod tests {
             },
         ];
 
-        let png = generate_graph(&data, &config, TrayOverlay::None);
+        let png = generate_graph(&data, &config, TrayOverlay::None, false);
         assert!(png.is_some());
         assert!(!png.unwrap().is_empty());
     }
@@ -746,7 +780,7 @@ mod tests {
             },
         ];
 
-        let png = generate_graph(&data, &config, TrayOverlay::None);
+        let png = generate_graph(&data, &config, TrayOverlay::None, false);
         assert!(png.is_some());
         assert!(!png.unwrap().is_empty());
     }
@@ -792,7 +826,7 @@ mod tests {
             total_tokens: 1000,
         });
 
-        let png = generate_graph(&data, &config, TrayOverlay::None);
+        let png = generate_graph(&data, &config, TrayOverlay::None, false);
         assert!(png.is_some());
         assert!(!png.unwrap().is_empty());
 
@@ -814,7 +848,7 @@ mod tests {
             });
         }
 
-        let png = generate_graph(&data, &config, TrayOverlay::None);
+        let png = generate_graph(&data, &config, TrayOverlay::None, false);
         assert!(png.is_some());
         assert!(!png.unwrap().is_empty());
 
@@ -824,7 +858,7 @@ mod tests {
     #[test]
     fn test_overlay_none() {
         let config = GraphConfig::macos_template();
-        let png = generate_graph(&[], &config, TrayOverlay::None);
+        let png = generate_graph(&[], &config, TrayOverlay::None, false);
         assert!(png.is_some());
         assert!(!png.unwrap().is_empty());
     }
@@ -835,7 +869,8 @@ mod tests {
         let png = generate_graph(
             &[],
             &config,
-            TrayOverlay::Warning(StatusDotColors::yellow()),
+            TrayOverlay::Warning(StatusDotColors::yellow(false)),
+            false,
         );
         assert!(png.is_some());
         assert!(!png.unwrap().is_empty());
@@ -844,7 +879,12 @@ mod tests {
     #[test]
     fn test_overlay_warning_red() {
         let config = GraphConfig::macos_template();
-        let png = generate_graph(&[], &config, TrayOverlay::Warning(StatusDotColors::red()));
+        let png = generate_graph(
+            &[],
+            &config,
+            TrayOverlay::Warning(StatusDotColors::red(false)),
+            false,
+        );
         assert!(png.is_some());
         assert!(!png.unwrap().is_empty());
     }
@@ -852,16 +892,23 @@ mod tests {
     #[test]
     fn test_overlay_update_available() {
         let config = GraphConfig::macos_template();
-        let png = generate_graph(&[], &config, TrayOverlay::UpdateAvailable);
+        let png = generate_graph(&[], &config, TrayOverlay::UpdateAvailable, false);
         assert!(png.is_some());
         assert!(!png.unwrap().is_empty());
     }
 
     #[test]
-    fn test_status_dot_colors() {
-        assert_eq!(StatusDotColors::green(), Rgba([34, 197, 94, 255]));
-        assert_eq!(StatusDotColors::yellow(), Rgba([234, 179, 8, 255]));
-        assert_eq!(StatusDotColors::red(), Rgba([239, 68, 68, 255]));
+    fn test_status_dot_colors_light_mode() {
+        assert_eq!(StatusDotColors::green(false), Rgba([34, 197, 94, 255]));
+        assert_eq!(StatusDotColors::yellow(false), Rgba([234, 179, 8, 255]));
+        assert_eq!(StatusDotColors::red(false), Rgba([239, 68, 68, 255]));
+    }
+
+    #[test]
+    fn test_status_dot_colors_dark_mode() {
+        assert_eq!(StatusDotColors::green(true), Rgba([74, 222, 128, 255]));
+        assert_eq!(StatusDotColors::yellow(true), Rgba([250, 204, 21, 255]));
+        assert_eq!(StatusDotColors::red(true), Rgba([248, 113, 113, 255]));
     }
 
     #[test]
@@ -872,7 +919,7 @@ mod tests {
             timestamp: Utc::now(),
             total_tokens: 100,
         }];
-        let png = generate_graph(&data, &config, TrayOverlay::None);
+        let png = generate_graph(&data, &config, TrayOverlay::None, false);
         assert!(png.is_some());
         assert!(!png.unwrap().is_empty());
     }
@@ -888,7 +935,8 @@ mod tests {
         let png = generate_graph(
             &data,
             &config,
-            TrayOverlay::Warning(StatusDotColors::yellow()),
+            TrayOverlay::Warning(StatusDotColors::yellow(false)),
+            false,
         );
         assert!(png.is_some());
         assert!(!png.unwrap().is_empty());
@@ -909,12 +957,13 @@ mod tests {
             });
         }
 
-        // Generate Windows/Linux version with Warning overlay
+        // Generate Windows/Linux version with Warning overlay (light mode)
         let config = GraphConfig::windows_linux();
         let png = generate_graph(
             &data,
             &config,
-            TrayOverlay::Warning(StatusDotColors::yellow()),
+            TrayOverlay::Warning(StatusDotColors::yellow(false)),
+            false,
         );
         assert!(png.is_some());
         let png_bytes = png.unwrap();
@@ -922,21 +971,22 @@ mod tests {
         file.write_all(&png_bytes).unwrap();
         println!("Wrote Windows/Linux graph (warning) to /tmp/test_tray_graph.png");
 
-        // Generate macOS version with Warning overlay
+        // Generate macOS version with Warning overlay (dark mode)
         let config_mac = GraphConfig::macos();
         let png_mac = generate_graph(
             &data,
             &config_mac,
-            TrayOverlay::Warning(StatusDotColors::yellow()),
+            TrayOverlay::Warning(StatusDotColors::yellow(true)),
+            true,
         );
         assert!(png_mac.is_some());
         let png_bytes_mac = png_mac.unwrap();
         let mut file_mac = File::create("/tmp/test_tray_graph_macos.png").unwrap();
         file_mac.write_all(&png_bytes_mac).unwrap();
-        println!("Wrote macOS graph (warning) to /tmp/test_tray_graph_macos.png");
+        println!("Wrote macOS graph (warning, dark mode) to /tmp/test_tray_graph_macos.png");
 
         // Generate macOS version with UpdateAvailable overlay
-        let png_update = generate_graph(&data, &config_mac, TrayOverlay::UpdateAvailable);
+        let png_update = generate_graph(&data, &config_mac, TrayOverlay::UpdateAvailable, true);
         assert!(png_update.is_some());
         let png_bytes_update = png_update.unwrap();
         let mut file_update = File::create("/tmp/test_tray_graph_macos_update.png").unwrap();
@@ -944,7 +994,7 @@ mod tests {
         println!("Wrote macOS graph (update) to /tmp/test_tray_graph_macos_update.png");
 
         // Generate macOS version with no overlay
-        let png_none = generate_graph(&data, &config_mac, TrayOverlay::None);
+        let png_none = generate_graph(&data, &config_mac, TrayOverlay::None, true);
         assert!(png_none.is_some());
         let png_bytes_none = png_none.unwrap();
         let mut file_none = File::create("/tmp/test_tray_graph_macos_none.png").unwrap();
