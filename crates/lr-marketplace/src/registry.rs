@@ -125,6 +125,7 @@ struct RegistryServer {
 
     /// Version
     #[serde(default)]
+    #[allow(dead_code)]
     version: Option<String>,
 
     /// Vendor/author

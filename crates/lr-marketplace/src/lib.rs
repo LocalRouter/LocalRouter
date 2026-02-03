@@ -16,7 +16,6 @@ pub use types::*;
 
 use crate::registry::McpRegistryClient;
 use crate::skill_sources::SkillSourcesClient;
-use chrono::{DateTime, Utc};
 use lr_config::MarketplaceConfig;
 use parking_lot::RwLock;
 use serde_json::Value;
@@ -328,6 +327,7 @@ impl MarketplaceService {
     }
 
     /// Emit marketplace-changed event to frontend
+    #[allow(dead_code)]
     fn emit_marketplace_changed(&self) {
         if let Some(ref handle) = *self.app_handle.read() {
             use tauri::Emitter;

@@ -720,6 +720,182 @@ pub enum FirewallPolicy {
     Deny,
 }
 
+/// Unified permission state for access control
+///
+/// Merges access control and firewall into a single state:
+/// - `Allow`: enabled, no approval needed
+/// - `Ask`: enabled, requires approval popup
+/// - `Off`: disabled (not accessible)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionState {
+    /// Resource is enabled and allowed without restriction
+    Allow,
+    /// Resource is enabled but requires user approval
+    Ask,
+    /// Resource is disabled/not accessible
+    #[default]
+    Off,
+}
+
+impl PermissionState {
+    /// Check if the resource is enabled (Allow or Ask)
+    pub fn is_enabled(&self) -> bool {
+        !matches!(self, PermissionState::Off)
+    }
+
+    /// Check if the resource requires approval
+    pub fn requires_approval(&self) -> bool {
+        matches!(self, PermissionState::Ask)
+    }
+
+    /// Convert to FirewallPolicy for compatibility
+    pub fn to_firewall_policy(&self) -> FirewallPolicy {
+        match self {
+            PermissionState::Allow => FirewallPolicy::Allow,
+            PermissionState::Ask => FirewallPolicy::Ask,
+            PermissionState::Off => FirewallPolicy::Deny,
+        }
+    }
+}
+
+/// MCP permission configuration for a client
+///
+/// Hierarchical permission system:
+/// - global: applies to all MCP servers
+/// - servers: per-server overrides
+/// - tools: per-tool overrides (key: "server_id__tool_name")
+/// - resources: per-resource overrides (key: "server_id__resource_uri")
+/// - prompts: per-prompt overrides (key: "server_id__prompt_name")
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct McpPermissions {
+    /// Global permission for all MCP servers
+    #[serde(default)]
+    pub global: PermissionState,
+    /// Per-server permission overrides (server_id -> state)
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub servers: std::collections::HashMap<String, PermissionState>,
+    /// Per-tool permission overrides (server_id__tool_name -> state)
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub tools: std::collections::HashMap<String, PermissionState>,
+    /// Per-resource permission overrides (server_id__resource_uri -> state)
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub resources: std::collections::HashMap<String, PermissionState>,
+    /// Per-prompt permission overrides (server_id__prompt_name -> state)
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub prompts: std::collections::HashMap<String, PermissionState>,
+}
+
+impl McpPermissions {
+    /// Resolve the effective permission for an MCP server
+    pub fn resolve_server(&self, server_id: &str) -> PermissionState {
+        self.servers.get(server_id).cloned().unwrap_or(self.global.clone())
+    }
+
+    /// Resolve the effective permission for an MCP tool
+    ///
+    /// Resolution order: tool -> server -> global
+    pub fn resolve_tool(&self, server_id: &str, tool_name: &str) -> PermissionState {
+        let tool_key = format!("{}__{}", server_id, tool_name);
+        if let Some(state) = self.tools.get(&tool_key) {
+            return state.clone();
+        }
+        self.resolve_server(server_id)
+    }
+
+    /// Resolve the effective permission for an MCP resource
+    pub fn resolve_resource(&self, server_id: &str, resource_uri: &str) -> PermissionState {
+        let resource_key = format!("{}__{}", server_id, resource_uri);
+        if let Some(state) = self.resources.get(&resource_key) {
+            return state.clone();
+        }
+        self.resolve_server(server_id)
+    }
+
+    /// Resolve the effective permission for an MCP prompt
+    pub fn resolve_prompt(&self, server_id: &str, prompt_name: &str) -> PermissionState {
+        let prompt_key = format!("{}__{}", server_id, prompt_name);
+        if let Some(state) = self.prompts.get(&prompt_key) {
+            return state.clone();
+        }
+        self.resolve_server(server_id)
+    }
+}
+
+/// Skills permission configuration for a client
+///
+/// Hierarchical permission system:
+/// - global: applies to all skills
+/// - skills: per-skill overrides
+/// - tools: per-skill-tool overrides (key: "skill_name__tool_name")
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct SkillsPermissions {
+    /// Global permission for all skills
+    #[serde(default)]
+    pub global: PermissionState,
+    /// Per-skill permission overrides (skill_name -> state)
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub skills: std::collections::HashMap<String, PermissionState>,
+    /// Per-skill-tool permission overrides (skill_name__tool_name -> state)
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub tools: std::collections::HashMap<String, PermissionState>,
+}
+
+impl SkillsPermissions {
+    /// Resolve the effective permission for a skill
+    pub fn resolve_skill(&self, skill_name: &str) -> PermissionState {
+        self.skills.get(skill_name).cloned().unwrap_or(self.global.clone())
+    }
+
+    /// Resolve the effective permission for a skill tool
+    ///
+    /// Resolution order: tool -> skill -> global
+    pub fn resolve_tool(&self, skill_name: &str, tool_name: &str) -> PermissionState {
+        let tool_key = format!("{}__{}", skill_name, tool_name);
+        if let Some(state) = self.tools.get(&tool_key) {
+            return state.clone();
+        }
+        self.resolve_skill(skill_name)
+    }
+}
+
+/// Model permission configuration for a client
+///
+/// Hierarchical permission system:
+/// - global: applies to all models
+/// - providers: per-provider overrides
+/// - models: per-model overrides (key: "provider__model_id")
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct ModelPermissions {
+    /// Global permission for all models
+    #[serde(default)]
+    pub global: PermissionState,
+    /// Per-provider permission overrides (provider_name -> state)
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub providers: std::collections::HashMap<String, PermissionState>,
+    /// Per-model permission overrides (provider__model_id -> state)
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub models: std::collections::HashMap<String, PermissionState>,
+}
+
+impl ModelPermissions {
+    /// Resolve the effective permission for a provider
+    pub fn resolve_provider(&self, provider_name: &str) -> PermissionState {
+        self.providers.get(provider_name).cloned().unwrap_or(self.global.clone())
+    }
+
+    /// Resolve the effective permission for a model
+    ///
+    /// Resolution order: model -> provider -> global
+    pub fn resolve_model(&self, provider_name: &str, model_id: &str) -> PermissionState {
+        let model_key = format!("{}__{}", provider_name, model_id);
+        if let Some(state) = self.models.get(&model_key) {
+            return state.clone();
+        }
+        self.resolve_provider(provider_name)
+    }
+}
+
 /// Per-client firewall rules for MCP tools and skills
 ///
 /// Resolution order (most specific wins):
@@ -1072,6 +1248,22 @@ pub struct Client {
     /// When this is set to true, the global marketplace.enabled is also auto-set to true
     #[serde(default)]
     pub marketplace_enabled: bool,
+
+    /// Unified MCP permissions (hierarchical Allow/Ask/Off)
+    #[serde(default)]
+    pub mcp_permissions: McpPermissions,
+
+    /// Unified Skills permissions (hierarchical Allow/Ask/Off)
+    #[serde(default)]
+    pub skills_permissions: SkillsPermissions,
+
+    /// Unified Model permissions (hierarchical Allow/Ask/Off)
+    #[serde(default)]
+    pub model_permissions: ModelPermissions,
+
+    /// Marketplace permission state (Allow/Ask/Off)
+    #[serde(default)]
+    pub marketplace_permission: PermissionState,
 }
 
 /// MCP server configuration
@@ -1759,6 +1951,10 @@ impl Client {
             mcp_sampling_rate_limit: None,
             firewall: FirewallRules::default(),
             marketplace_enabled: false,
+            mcp_permissions: McpPermissions::default(),
+            skills_permissions: SkillsPermissions::default(),
+            model_permissions: ModelPermissions::default(),
+            marketplace_permission: PermissionState::default(),
         }
     }
 

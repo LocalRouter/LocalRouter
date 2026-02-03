@@ -299,6 +299,10 @@ impl ConfigManager {
             mcp_sampling_rate_limit: None,
             firewall: FirewallRules::default(),
             marketplace_enabled: false,
+            mcp_permissions: McpPermissions::default(),
+            skills_permissions: SkillsPermissions::default(),
+            model_permissions: ModelPermissions::default(),
+            marketplace_permission: PermissionState::default(),
         };
 
         self.update(|cfg| {
