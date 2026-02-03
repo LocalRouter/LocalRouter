@@ -363,6 +363,7 @@ impl McpGateway {
     }
 
     /// Apply firewall policy, returning an error response if blocked or None to proceed.
+    #[allow(clippy::too_many_arguments)]
     async fn apply_firewall_policy(
         &self,
         session: &Arc<RwLock<GatewaySession>>,
@@ -404,7 +405,12 @@ impl McpGateway {
                 // Get client name for display
                 let client_name = {
                     let session_read = session.read().await;
-                    session_read.client_id.clone() // Use client_id as name fallback
+                    let name = session_read.client_name.clone();
+                    if name.is_empty() {
+                        session_read.client_id.clone()
+                    } else {
+                        name
+                    }
                 };
 
                 // Extract arguments preview

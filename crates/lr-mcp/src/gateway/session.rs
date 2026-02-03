@@ -87,6 +87,9 @@ pub struct GatewaySession {
     /// Whether async skill tools are enabled
     pub skills_async_enabled: bool,
 
+    /// Human-readable client name (for firewall approval display)
+    pub client_name: String,
+
     /// Firewall rules for this session (copied from client config at session creation)
     pub firewall_rules: lr_config::FirewallRules,
 
@@ -138,6 +141,7 @@ impl GatewaySession {
             skills_access: lr_config::SkillsAccess::None,
             skills_info_loaded: HashSet::new(),
             skills_async_enabled: false,
+            client_name: String::new(),
             firewall_rules: lr_config::FirewallRules::default(),
             firewall_session_approvals: HashSet::new(),
         }

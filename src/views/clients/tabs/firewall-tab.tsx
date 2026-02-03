@@ -50,7 +50,14 @@ export function ClientFirewallTab({ client, onUpdate }: FirewallTabProps) {
       const result = await invoke<FirewallRules>("get_client_firewall_rules", {
         clientId: client.id,
       })
-      setRules(result)
+      // Normalize: backend omits empty maps via skip_serializing_if
+      setRules({
+        default_policy: result.default_policy ?? "allow",
+        server_rules: result.server_rules ?? {},
+        tool_rules: result.tool_rules ?? {},
+        skill_rules: result.skill_rules ?? {},
+        skill_tool_rules: result.skill_tool_rules ?? {},
+      })
     } catch (error) {
       console.error("Failed to load firewall rules:", error)
       toast.error("Failed to load firewall rules")

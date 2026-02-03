@@ -603,6 +603,7 @@ pub async fn mcp_gateway_handler(
             roots,
             client.skills_access.clone(),
             client.firewall.clone(),
+            client.name.clone(),
             request,
         )
         .await

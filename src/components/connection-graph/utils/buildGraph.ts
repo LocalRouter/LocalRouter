@@ -150,7 +150,7 @@ function getFirewallEdgeStyle(
 
   // Check for server/skill-level rule
   const rules = targetType === 'server' ? fw.server_rules : fw.skill_rules
-  const policy = rules[targetId] ?? fw.default_policy
+  const policy = rules?.[targetId] ?? fw.default_policy
 
   if (policy === 'deny') {
     return {

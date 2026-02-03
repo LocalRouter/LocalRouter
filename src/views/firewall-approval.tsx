@@ -12,7 +12,7 @@ interface ApprovalDetails {
   server_name: string
   arguments_preview: string
   timeout_seconds: number
-  elapsed_seconds: number
+  created_at_secs_ago: number
 }
 
 type ApprovalAction = "deny" | "allow_once" | "allow_session"
@@ -37,7 +37,7 @@ export function FirewallApproval() {
           requestId,
         })
         setDetails(result)
-        setRemainingSeconds(result.timeout_seconds - result.elapsed_seconds)
+        setRemainingSeconds(Math.max(0, result.timeout_seconds - result.created_at_secs_ago))
       } catch (err) {
         console.error("Failed to load approval details:", err)
         setError(typeof err === "string" ? err : "Failed to load approval details")

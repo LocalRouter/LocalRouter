@@ -68,11 +68,11 @@ export interface Client {
   skills_access_mode: 'none' | 'all' | 'specific'
   skills_names: string[]
   firewall?: {
-    default_policy: 'allow' | 'ask' | 'deny'
-    server_rules: Record<string, 'allow' | 'ask' | 'deny'>
-    tool_rules: Record<string, 'allow' | 'ask' | 'deny'>
-    skill_rules: Record<string, 'allow' | 'ask' | 'deny'>
-    skill_tool_rules: Record<string, 'allow' | 'ask' | 'deny'>
+    default_policy?: 'allow' | 'ask' | 'deny'
+    server_rules?: Record<string, 'allow' | 'ask' | 'deny'>
+    tool_rules?: Record<string, 'allow' | 'ask' | 'deny'>
+    skill_rules?: Record<string, 'allow' | 'ask' | 'deny'>
+    skill_tool_rules?: Record<string, 'allow' | 'ask' | 'deny'>
   }
 }
 

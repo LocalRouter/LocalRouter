@@ -283,6 +283,7 @@ impl McpGateway {
             roots,
             lr_config::SkillsAccess::None,
             lr_config::FirewallRules::default(),
+            String::new(),
             request,
         )
         .await
@@ -297,6 +298,7 @@ impl McpGateway {
         roots: Vec<crate::protocol::Root>,
         skills_access: lr_config::SkillsAccess,
         firewall_rules: lr_config::FirewallRules,
+        client_name: String,
         request: JsonRpcRequest,
     ) -> AppResult<JsonRpcResponse> {
         let method = request.method.clone();
@@ -329,10 +331,11 @@ impl McpGateway {
             session_write.skills_async_enabled = async_enabled;
         }
 
-        // Update firewall rules on session (always refresh from config)
+        // Update firewall rules and client name on session (always refresh from config)
         {
             let mut session_write = session.write().await;
             session_write.firewall_rules = firewall_rules;
+            session_write.client_name = client_name;
         }
 
         // Update last activity

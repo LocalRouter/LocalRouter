@@ -977,6 +977,14 @@ pub async fn set_client_firewall_rule(
         policy
     );
 
+    // Validate rule_type before updating config
+    if !["server", "tool", "skill", "skill_tool"].contains(&rule_type.as_str()) {
+        return Err(format!(
+            "Invalid rule_type '{}': must be one of server, tool, skill, skill_tool",
+            rule_type
+        ));
+    }
+
     let mut found = false;
     config_manager
         .update(|cfg| {
@@ -986,7 +994,7 @@ pub async fn set_client_firewall_rule(
                     "tool" => &mut client.firewall.tool_rules,
                     "skill" => &mut client.firewall.skill_rules,
                     "skill_tool" => &mut client.firewall.skill_tool_rules,
-                    _ => return,
+                    _ => unreachable!(), // validated above
                 };
                 match policy {
                     Some(p) => {

@@ -350,7 +350,12 @@ pub fn truncate_arguments_preview(args: &serde_json::Value, max_len: usize) -> S
     if s.len() <= max_len {
         s
     } else {
-        format!("{}...", &s[..max_len])
+        // Find a valid UTF-8 boundary at or before max_len
+        let truncated = match s.char_indices().take_while(|(i, _)| *i < max_len).last() {
+            Some((i, c)) => &s[..i + c.len_utf8()],
+            None => "",
+        };
+        format!("{}...", truncated)
     }
 }
 
