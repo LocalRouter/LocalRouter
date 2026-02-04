@@ -67,15 +67,19 @@ export function ChatPanel({
     }
   }, [])
 
+  // Detect demo mode (running at /demo route, typically in iframe)
+  const isDemo = typeof window !== "undefined" && window.location.pathname === "/demo"
+
   // Get the last message content for scroll dependency (to scroll during streaming)
   const lastMessageContent = messages[messages.length - 1]?.content
 
   // Auto-scroll to bottom when messages change or content streams in
+  // Disabled in demo mode to prevent scrolling issues in iframe
   useEffect(() => {
-    if (messages.length > 0) {
+    if (messages.length > 0 && !isDemo) {
       messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
     }
-  }, [messages.length, lastMessageContent])
+  }, [messages.length, lastMessageContent, isDemo])
 
   const handleStop = useCallback(() => {
     if (abortControllerRef.current) {
