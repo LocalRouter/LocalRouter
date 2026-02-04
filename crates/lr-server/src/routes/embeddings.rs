@@ -322,7 +322,7 @@ async fn check_rate_limits(
 
 /// Validate that the client has access to the requested LLM provider
 ///
-/// This enforces the allowed_llm_providers access control list for clients.
+/// This enforces the model_permissions access control for clients.
 /// Returns 403 Forbidden if the client doesn't have access to the provider.
 async fn validate_client_provider_access(
     state: &AppState,
@@ -372,13 +372,10 @@ async fn validate_client_provider_access(
         matching_model.provider.clone()
     };
 
-    // Check if provider is in allowed list (case-insensitive comparison)
-    let is_allowed = client
-        .allowed_llm_providers
-        .iter()
-        .any(|p| p.eq_ignore_ascii_case(&provider));
+    // Check if provider is enabled using model_permissions (hierarchical: model -> provider -> global)
+    let permission_state = client.model_permissions.resolve_provider(&provider);
 
-    if !is_allowed {
+    if !permission_state.is_enabled() {
         tracing::warn!(
             "Client {} attempted to access unauthorized LLM provider: {}",
             client.id,
@@ -393,9 +390,10 @@ async fn validate_client_provider_access(
     }
 
     tracing::debug!(
-        "Client {} authorized for LLM provider: {}",
+        "Client {} authorized for LLM provider: {} (permission: {:?})",
         client.id,
-        provider
+        provider,
+        permission_state
     );
 
     Ok(())

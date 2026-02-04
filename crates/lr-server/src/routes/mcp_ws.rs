@@ -17,7 +17,6 @@ use super::helpers::get_enabled_client_from_manager;
 use crate::middleware::client_auth::ClientAuthContext;
 use crate::middleware::error::ApiErrorResponse;
 use crate::state::AppState;
-use lr_config::McpServerAccess;
 
 /// WebSocket upgrade handler for MCP notifications
 ///
@@ -76,15 +75,15 @@ pub async fn mcp_websocket_handler(
         Err(e) => return e.into_response(),
     };
 
-    // Check MCP access mode
-    if !client.mcp_server_access.has_any_access() {
+    // Check MCP access using mcp_permissions (hierarchical)
+    if !client.mcp_permissions.global.is_enabled() && client.mcp_permissions.servers.is_empty() {
         return ApiErrorResponse::forbidden(
-            "Client has no MCP server access. Configure mcp_server_access in client settings.",
+            "Client has no MCP server access. Configure mcp_permissions in client settings.",
         )
         .into_response();
     }
 
-    // Get allowed servers based on access mode
+    // Get allowed servers based on mcp_permissions
     let all_server_ids: Vec<String> = state
         .config_manager
         .get()
@@ -93,10 +92,14 @@ pub async fn mcp_websocket_handler(
         .map(|s| s.id.clone())
         .collect();
 
-    let allowed_servers: Vec<String> = match &client.mcp_server_access {
-        McpServerAccess::None => vec![],
-        McpServerAccess::All => all_server_ids,
-        McpServerAccess::Specific(servers) => servers.clone(),
+    let allowed_servers: Vec<String> = if client.mcp_permissions.global.is_enabled() {
+        all_server_ids
+    } else {
+        // Filter to only servers with explicit Allow/Ask permission
+        all_server_ids
+            .into_iter()
+            .filter(|server_id| client.mcp_permissions.resolve_server(server_id).is_enabled())
+            .collect()
     };
 
     tracing::info!(

@@ -19,7 +19,7 @@ use super::helpers::get_enabled_client_from_manager;
 use crate::middleware::client_auth::ClientAuthContext;
 use crate::middleware::error::ApiErrorResponse;
 use crate::state::{AppState, SseConnectionManager, SseMessage};
-use lr_config::{McpServerAccess, RootConfig};
+use lr_config::RootConfig;
 use lr_mcp::protocol::{JsonRpcRequest, JsonRpcResponse, Root};
 
 /// Send a JSON-RPC response via SSE stream (preferred) or HTTP body (fallback)
@@ -160,19 +160,24 @@ pub async fn mcp_gateway_get_handler(
             Err(e) => return e.into_response(),
         };
 
-        // Check MCP access mode
-        if !client.mcp_server_access.has_any_access() {
+        // Check MCP access using mcp_permissions (hierarchical)
+        if !client.mcp_permissions.global.is_enabled() && client.mcp_permissions.servers.is_empty() {
             return ApiErrorResponse::forbidden(
-                "Client has no MCP server access. Configure mcp_server_access in client settings.",
+                "Client has no MCP server access. Configure mcp_permissions in client settings.",
             )
             .into_response();
         }
 
-        // Get allowed servers based on access mode
-        match &client.mcp_server_access {
-            McpServerAccess::None => vec![],
-            McpServerAccess::All => all_server_ids,
-            McpServerAccess::Specific(servers) => servers.clone(),
+        // Get allowed servers based on mcp_permissions
+        // If global is enabled, allow all servers; otherwise filter by server-level permissions
+        if client.mcp_permissions.global.is_enabled() {
+            all_server_ids
+        } else {
+            // Filter to only servers with explicit Allow/Ask permission
+            all_server_ids
+                .into_iter()
+                .filter(|server_id| client.mcp_permissions.resolve_server(server_id).is_enabled())
+                .collect()
         }
     };
 
@@ -397,31 +402,32 @@ pub async fn mcp_gateway_handler(
         // Apply deferred loading from header for internal test client only
         test_client.mcp_deferred_loading = deferred_loading_header;
 
-        // Apply MCP server access from header
+        // Apply MCP server access from header using mcp_permissions
         let allowed = if mcp_access_header.eq_ignore_ascii_case("none") {
-            test_client.mcp_server_access = McpServerAccess::None;
+            test_client.mcp_permissions.global = lr_config::PermissionState::Off;
             vec![]
         } else if mcp_access_header.eq_ignore_ascii_case("all") {
-            test_client.mcp_server_access = McpServerAccess::All;
+            test_client.mcp_permissions.global = lr_config::PermissionState::Allow;
             all_server_ids.clone()
         } else {
             // Specific server ID
             let server_id = mcp_access_header.to_string();
-            test_client.mcp_server_access = McpServerAccess::Specific(vec![server_id.clone()]);
+            test_client.mcp_permissions.global = lr_config::PermissionState::Off;
+            test_client.mcp_permissions.servers.insert(server_id.clone(), lr_config::PermissionState::Allow);
             vec![server_id]
         };
 
-        // Apply skills access from header
+        // Apply skills access from header using skills_permissions
         match &skills_access_header {
             Some(v) if v.eq_ignore_ascii_case("all") => {
-                test_client.skills_access = lr_config::SkillsAccess::All;
+                test_client.skills_permissions.global = lr_config::PermissionState::Allow;
             }
             Some(skill_name) if !skill_name.is_empty() => {
-                test_client.skills_access =
-                    lr_config::SkillsAccess::Specific(vec![skill_name.clone()]);
+                test_client.skills_permissions.global = lr_config::PermissionState::Off;
+                test_client.skills_permissions.skills.insert(skill_name.clone(), lr_config::PermissionState::Allow);
             }
             _ => {
-                test_client.skills_access = lr_config::SkillsAccess::None;
+                test_client.skills_permissions.global = lr_config::PermissionState::Off;
             }
         }
 
@@ -439,19 +445,24 @@ pub async fn mcp_gateway_handler(
             Err(e) => return e.into_response(),
         };
 
-        // Check MCP access mode
-        if !client.mcp_server_access.has_any_access() {
+        // Check MCP access using mcp_permissions (hierarchical)
+        if !client.mcp_permissions.global.is_enabled() && client.mcp_permissions.servers.is_empty() {
             return ApiErrorResponse::forbidden(
-                "Client has no MCP server access. Configure mcp_server_access in client settings.",
+                "Client has no MCP server access. Configure mcp_permissions in client settings.",
             )
             .into_response();
         }
 
-        // Get allowed servers based on access mode
-        let allowed = match &client.mcp_server_access {
-            McpServerAccess::None => vec![],
-            McpServerAccess::All => all_server_ids.clone(),
-            McpServerAccess::Specific(servers) => servers.clone(),
+        // Get allowed servers based on mcp_permissions
+        let allowed = if client.mcp_permissions.global.is_enabled() {
+            all_server_ids.clone()
+        } else {
+            // Filter to only servers with explicit Allow/Ask permission
+            all_server_ids
+                .iter()
+                .filter(|server_id| client.mcp_permissions.resolve_server(server_id).is_enabled())
+                .cloned()
+                .collect()
         };
 
         (client, allowed)
@@ -601,10 +612,10 @@ pub async fn mcp_gateway_handler(
             allowed_servers,
             client.mcp_deferred_loading,
             roots,
-            client.skills_access.clone(),
+            client.skills_permissions.clone(),
             client.firewall.clone(),
             client.name.clone(),
-            client.marketplace_enabled,
+            client.marketplace_permission.clone(),
             request,
         )
         .await
