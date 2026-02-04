@@ -23,7 +23,7 @@ export default function Home() {
   return (
     <div className="flex flex-col">
       {/* Hero */}
-      <section className="relative overflow-hidden border-b bg-gradient-to-b from-muted/50 to-background">
+      <section className="relative overflow-hidden bg-gradient-to-b from-muted/50 to-background">
         <div className="mx-auto max-w-7xl px-4 py-24 sm:px-6 sm:py-32 lg:px-8">
           <div className="mx-auto max-w-3xl text-center">
             <h1 className="text-4xl font-bold tracking-tight sm:text-5xl lg:text-6xl">
@@ -37,7 +37,7 @@ export default function Home() {
               s.
             </h1>
             <p className="mt-6 text-lg text-muted-foreground sm:text-xl">
-              A vault for managing your keys in one place to provide granular access to your local AI-powered apps. Smart LLM Model routing with fallback to offline models. One MCP gateway for all MCPs and skills.
+              Centralized API key storage with per-client access control. Automatic model failover across providers. Single Unified MCP Gateway aggregating all MCPs and skills.
             </p>
             <div className="mt-10 flex flex-col items-center justify-center gap-4 sm:flex-row">
               <Button asChild size="xl">
@@ -72,12 +72,12 @@ export default function Home() {
               <path d="M 530 275 Q 700 99 880 99" stroke="url(#gradient-violet)" strokeWidth="2" fill="none" className="animate-pulse-flow" style={{ animationDelay: '0.2s' }} />
               <path d="M 530 275 Q 700 165 880 165" stroke="url(#gradient-violet)" strokeWidth="2" fill="none" className="animate-pulse-flow" style={{ animationDelay: '0.5s' }} />
 
-              {/* Center to right-bottom connections - nodes at 66%, 78% (y: 363, 429) */}
-              <path d="M 530 275 Q 700 363 880 363" stroke="url(#gradient-emerald)" strokeWidth="2" fill="none" className="animate-pulse-flow" style={{ animationDelay: '0.4s' }} />
-              <path d="M 530 275 Q 700 429 880 429" stroke="url(#gradient-emerald)" strokeWidth="2" fill="none" className="animate-pulse-flow" style={{ animationDelay: '0.7s' }} />
+              {/* Center to right-bottom connections - nodes at 74%, 86% (y: 407, 473) */}
+              <path d="M 530 275 Q 700 407 880 407" stroke="url(#gradient-emerald)" strokeWidth="2" fill="none" className="animate-pulse-flow" style={{ animationDelay: '0.4s' }} />
+              <path d="M 530 275 Q 700 473 880 473" stroke="url(#gradient-emerald)" strokeWidth="2" fill="none" className="animate-pulse-flow" style={{ animationDelay: '0.7s' }} />
 
-              {/* Center to permission dialog - at 25%, 92% (x: 250, y: 506) */}
-              <path d="M 470 310 Q 350 420 250 506" stroke="url(#gradient-orange)" strokeWidth="2" fill="none" className="animate-pulse-flow" style={{ animationDelay: '0.1s' }} />
+              {/* Center to permission dialog - at 35%, 92% (x: 350, y: 506) */}
+              <path d="M 470 310 Q 400 420 350 506" stroke="url(#gradient-orange)" strokeWidth="2" fill="none" className="animate-pulse-flow" style={{ animationDelay: '0.1s' }} />
 
               {/* Gradients */}
               <defs>
@@ -104,13 +104,13 @@ export default function Home() {
               </defs>
             </svg>
 
-            {/* Left side label */}
-            <div className="absolute left-[5%] top-0 text-left">
+            {/* Left side label - anchored from bottom to stay above first node */}
+            <div className="absolute left-[5%] top-[20%] -translate-y-full pb-8 text-left">
               <span className="text-[8px] sm:text-xs font-medium text-blue-500 uppercase tracking-wide">Works With</span>
               <h3 className="text-[10px] sm:text-lg font-semibold leading-tight"><i>bring-your-own-key</i> Apps</h3>
             </div>
 
-            {/* Left Apps - spread from 20% to 62% to leave room for label */}
+            {/* Left Apps - spread from 20% to 62% */}
             <div className="absolute left-[5%] top-[20%] -translate-y-1/2">
               <div className="flex items-center gap-1 sm:gap-2 px-1.5 sm:px-3 py-1 sm:py-2 rounded-lg bg-blue-500/10 border border-blue-500/30 shadow-sm backdrop-blur-sm">
                 <img src="/icons/cursor.svg" alt="Cursor" className="h-4 w-4 sm:h-6 sm:w-6" />
@@ -141,19 +141,18 @@ export default function Home() {
 
             {/* Center: LocalRouter Hub */}
             <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-10">
-              <div className="relative rounded-2xl border-2 border-primary bg-gradient-to-br from-primary/20 to-violet-500/20 p-4 sm:p-6 shadow-2xl backdrop-blur">
+              <div className="relative rounded-xl sm:rounded-2xl border-2 border-primary bg-gradient-to-br from-primary/20 to-violet-500/20 p-2 sm:p-5 shadow-2xl backdrop-blur">
                 <div className="text-center">
-                  <div className="h-12 w-12 sm:h-16 sm:w-16 rounded-xl bg-gradient-to-br from-primary to-violet-600 flex items-center justify-center mx-auto mb-2 shadow-lg">
-                    <Logo className="h-8 w-auto sm:h-10 text-white" />
+                  <div className="h-8 w-8 sm:h-14 sm:w-14 rounded-lg sm:rounded-xl bg-gradient-to-br from-primary to-violet-600 flex items-center justify-center mx-auto mb-1 sm:mb-2 shadow-lg">
+                    <Logo className="h-5 w-auto sm:h-9 text-white" />
                   </div>
-                  <div className="font-bold text-sm sm:text-lg">LocalRouter</div>
-                  <div className="text-[10px] sm:text-xs text-muted-foreground">localhost:3625</div>
+                  <div className="font-bold text-[10px] sm:text-base">LocalRouter</div>
                 </div>
               </div>
             </div>
 
-            {/* Permission Dialog - positioned further left and lower to avoid center node */}
-            <div className="absolute left-[25%] top-[92%] -translate-y-1/2 -translate-x-1/2 z-10">
+            {/* Permission Dialog */}
+            <div className="absolute left-[35%] top-[92%] -translate-y-1/2 -translate-x-1/2 z-10">
               <div className="rounded-lg sm:rounded-xl border border-orange-500/30 bg-orange-500/10 p-1 sm:p-4 shadow-sm backdrop-blur-sm">
                 <div className="flex items-center gap-1 sm:gap-2 mb-0.5 sm:mb-2">
                   <Shield className="h-2 w-2 sm:h-4 sm:w-4 text-orange-600" />
@@ -173,8 +172,8 @@ export default function Home() {
               </div>
             </div>
 
-            {/* Right side - LLM Providers label */}
-            <div className="absolute right-[5%] top-0 text-right">
+            {/* Right side - LLM Providers label - anchored from bottom */}
+            <div className="absolute right-[5%] top-[18%] -translate-y-full pb-8 text-right">
               <span className="text-[8px] sm:text-xs font-medium text-violet-500 uppercase tracking-wide">Connects to</span>
               <h3 className="text-[10px] sm:text-lg font-semibold leading-tight">Any LLM Provider</h3>
             </div>
@@ -196,30 +195,43 @@ export default function Home() {
               + Anthropic, Gemini, more...
             </div>
 
-            {/* Right side - MCP Servers label */}
-            <div className="absolute right-[5%] top-[50%] text-right">
+            {/* Right side - MCP Servers label - anchored from bottom */}
+            <div className="absolute right-[5%] top-[74%] -translate-y-full pb-8 text-right">
               <span className="text-[8px] sm:text-xs font-medium text-emerald-500 uppercase tracking-wide">Connects to</span>
               <h3 className="text-[10px] sm:text-lg font-semibold leading-tight">Any MCP / Skill</h3>
             </div>
 
-            {/* Right MCP Servers - spread from 66% to 84% */}
-            <div className="absolute right-[5%] top-[66%] -translate-y-1/2">
+            {/* Right MCP Servers - spread from 74% to 96% */}
+            <div className="absolute right-[5%] top-[74%] -translate-y-1/2">
               <div className="flex items-center gap-1 sm:gap-2 px-1.5 sm:px-3 py-1 sm:py-2 rounded-lg bg-emerald-500/10 border border-emerald-500/30 shadow-sm backdrop-blur-sm">
                 <img src="/icons/github.svg" alt="GitHub" className="h-4 w-4 sm:h-6 sm:w-6" />
                 <span className="text-xs sm:text-sm font-medium hidden sm:inline">GitHub</span>
               </div>
             </div>
-            <div className="absolute right-[5%] top-[78%] -translate-y-1/2">
+            <div className="absolute right-[5%] top-[86%] -translate-y-1/2">
               <div className="flex items-center gap-1 sm:gap-2 px-1.5 sm:px-3 py-1 sm:py-2 rounded-lg bg-emerald-500/10 border border-emerald-500/30 shadow-sm backdrop-blur-sm">
                 <Blocks className="h-4 w-4 sm:h-6 sm:w-6 text-emerald-400" />
                 <span className="text-xs sm:text-sm font-medium hidden sm:inline">Project Manager</span>
               </div>
             </div>
-            <div className="absolute right-[5%] top-[88%] text-muted-foreground text-xs text-right hidden sm:block">
+            <div className="absolute right-[5%] top-[96%] text-muted-foreground text-xs text-right hidden sm:block">
               + Jira, Slack, more...
             </div>
           </div>
         </div>
+      </section>
+
+      {/* Windows XP Demo - Full Width */}
+      <section className="border-b">
+        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-8 text-center">
+          <h2 className="text-2xl font-bold sm:text-3xl">App Demo</h2>
+        </div>
+        <iframe
+          src="/winxp/index.html"
+          className="w-full bg-[#235cdc]"
+          style={{ height: '700px' }}
+          title="LocalRouter Windows XP Demo"
+        />
       </section>
 
       {/* Feature 1: Credential Management */}
@@ -232,112 +244,166 @@ export default function Home() {
                 <span className="text-sm font-medium text-blue-500 uppercase tracking-wide">Credential Management</span>
               </div>
               <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">
-                One Place for your Credentials
+                Centralized Credential Store
               </h2>
               <p className="mt-4 text-lg text-muted-foreground">
-                Stop scattering API keys across config files. LocalRouter securely stores all your provider credentials and gives each app exactly the access it needs.
+                Store provider API keys once. Issue per-client keys with scoped permissions. All secrets encrypted in OS keychain.
               </p>
               <ul className="mt-8 space-y-4">
                 <li className="flex gap-3">
                   <Check className="h-5 w-5 shrink-0 text-blue-500 mt-0.5" />
                   <div>
-                    <span className="font-medium">Flexible client authentication</span>
-                    <p className="text-sm text-muted-foreground">API keys, OAuth, or STDIO auth for each connected app</p>
+                    <span className="font-medium">Multiple auth methods</span>
+                    <p className="text-sm text-muted-foreground">API key, OAuth, or STDIO-based authentication per client</p>
                   </div>
                 </li>
                 <li className="flex gap-3">
                   <Check className="h-5 w-5 shrink-0 text-blue-500 mt-0.5" />
                   <div>
-                    <span className="font-medium">Per-client permissions</span>
-                    <p className="text-sm text-muted-foreground">Assign specific models and MCP servers to each client</p>
+                    <span className="font-medium">Scoped access</span>
+                    <p className="text-sm text-muted-foreground">Restrict each client to specific models, providers, and MCP servers</p>
                   </div>
                 </li>
                 <li className="flex gap-3">
                   <Check className="h-5 w-5 shrink-0 text-blue-500 mt-0.5" />
                   <div>
-                    <span className="font-medium">OS keychain integration</span>
-                    <p className="text-sm text-muted-foreground">Secrets stored securely using your system&apos;s native keychain</p>
+                    <span className="font-medium">OS keychain storage</span>
+                    <p className="text-sm text-muted-foreground">Secrets encrypted via macOS Keychain, Windows Credential Manager, or libsecret</p>
                   </div>
                 </li>
               </ul>
             </div>
-            {/* Visual: Credential Vault */}
+            {/* Visual: Auth Flow Diagram */}
             <div className="relative">
               <div className="rounded-xl border-2 border-slate-700 bg-gradient-to-br from-slate-900 to-slate-800 p-6 shadow-2xl">
-                {/* Vault Header */}
-                <div className="flex items-center gap-3 mb-5 pb-4 border-b border-slate-700">
-                  <div className="h-10 w-10 rounded-lg bg-gradient-to-br from-amber-500 to-yellow-600 flex items-center justify-center">
-                    <Shield className="h-5 w-5 text-white" />
+                {/* Five-column flow layout: Clients → Connector → LocalRouter → Connector → Providers */}
+                <div className="flex items-stretch gap-2">
+                  {/* Left: Clients */}
+                  <div className="flex flex-col gap-2">
+                    <div className="text-center mb-1">
+                      <span className="text-blue-400 text-[10px] font-medium uppercase tracking-wide">Clients</span>
+                    </div>
+                    {/* Client 1 */}
+                    <div className="flex items-center gap-2 px-2 py-1.5 rounded-lg bg-blue-500/10 border border-blue-500/30">
+                      <img src="/icons/cursor.svg" alt="Cursor" className="h-4 w-4" />
+                      <span className="text-white text-xs">Cursor</span>
+                      <div className="ml-auto flex items-center gap-1">
+                        <Key className="h-3 w-3 text-blue-400" />
+                        <span className="text-blue-400 text-[10px] font-mono">key-1</span>
+                      </div>
+                    </div>
+                    {/* Client 2 */}
+                    <div className="flex items-center gap-2 px-2 py-1.5 rounded-lg bg-blue-500/10 border border-blue-500/30">
+                      <div className="h-4 w-4 rounded bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center text-white font-bold text-[8px]">C</div>
+                      <span className="text-white text-xs">Cline</span>
+                      <div className="ml-auto flex items-center gap-1">
+                        <Key className="h-3 w-3 text-blue-400" />
+                        <span className="text-blue-400 text-[10px] font-mono">key-2</span>
+                      </div>
+                    </div>
+                    {/* Client 3 */}
+                    <div className="flex items-center gap-2 px-2 py-1.5 rounded-lg bg-blue-500/10 border border-blue-500/30">
+                      <img src="/icons/open-webui.png" alt="Open WebUI" className="h-4 w-4" />
+                      <span className="text-white text-xs">WebUI</span>
+                      <div className="ml-auto flex items-center gap-1">
+                        <Key className="h-3 w-3 text-blue-400" />
+                        <span className="text-blue-400 text-[10px] font-mono">key-3</span>
+                      </div>
+                    </div>
                   </div>
-                  <div>
-                    <div className="text-white font-semibold">Credential Vault</div>
-                    <div className="text-slate-400 text-xs">Secured by OS Keychain</div>
+
+                  {/* Left Connector */}
+                  <div className="flex flex-col items-center justify-center">
+                    <div className="flex items-center gap-1">
+                      <div className="w-4 h-0.5 bg-blue-500/50" />
+                      <div className="px-1 py-0.5 rounded bg-blue-900/50 text-blue-400 text-[8px] font-mono">Auth</div>
+                      <div className="w-4 h-0.5 bg-blue-500/50" />
+                    </div>
                   </div>
-                  <div className="ml-auto flex items-center gap-1.5">
-                    <div className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
-                    <span className="text-emerald-400 text-xs">Encrypted</span>
+
+                  {/* Center: LocalRouter Hub */}
+                  <div className="flex flex-col items-center justify-center">
+                    <div className="rounded-xl border-2 border-primary bg-gradient-to-br from-primary/20 to-violet-500/20 p-3 shadow-lg">
+                      <div className="h-10 w-10 rounded-lg bg-gradient-to-br from-primary to-violet-600 flex items-center justify-center mx-auto mb-1">
+                        <Shield className="h-5 w-5 text-white" />
+                      </div>
+                      <div className="text-white text-xs font-semibold text-center">LocalRouter</div>
+                    </div>
+                  </div>
+
+                  {/* Right Connector */}
+                  <div className="flex flex-col items-center justify-center">
+                    <div className="flex items-center gap-1">
+                      <div className="w-4 h-0.5 bg-violet-500/50" />
+                      <div className="px-1 py-0.5 rounded bg-violet-900/50 text-violet-400 text-[8px] font-mono">API</div>
+                      <div className="w-4 h-0.5 bg-violet-500/50" />
+                    </div>
+                  </div>
+
+                  {/* Right: Providers */}
+                  <div className="flex flex-col gap-2">
+                    <div className="text-center mb-1">
+                      <span className="text-violet-400 text-[10px] font-medium uppercase tracking-wide">Providers</span>
+                    </div>
+                    {/* Provider 1 */}
+                    <div className="flex items-center gap-2 px-2 py-1.5 rounded-lg bg-violet-500/10 border border-violet-500/30">
+                      <div className="flex items-center gap-1">
+                        <Key className="h-3 w-3 text-violet-400" />
+                        <span className="text-violet-400 text-[10px] font-mono">sk-...4f</span>
+                      </div>
+                      <img src="/icons/chatgpt.svg" alt="OpenAI" className="h-4 w-4 ml-auto" />
+                      <span className="text-white text-xs">OpenAI</span>
+                    </div>
+                    {/* Provider 2 */}
+                    <div className="flex items-center gap-2 px-2 py-1.5 rounded-lg bg-violet-500/10 border border-violet-500/30">
+                      <div className="flex items-center gap-1">
+                        <Key className="h-3 w-3 text-violet-400" />
+                        <span className="text-violet-400 text-[10px] font-mono">sk-...8k</span>
+                      </div>
+                      <img src="/icons/anthropic.svg" alt="Anthropic" className="h-4 w-4 ml-auto" />
+                      <span className="text-white text-xs">Anthropic</span>
+                    </div>
+                    {/* Provider 3 */}
+                    <div className="flex items-center gap-2 px-2 py-1.5 rounded-lg bg-violet-500/10 border border-violet-500/30">
+                      <div className="flex items-center gap-1">
+                        <Key className="h-3 w-3 text-violet-400" />
+                        <span className="text-violet-400 text-[10px] font-mono">gsk-...2n</span>
+                      </div>
+                      <div className="h-4 w-4 rounded bg-orange-500/30 flex items-center justify-center text-orange-400 text-[8px] font-bold ml-auto">G</div>
+                      <span className="text-white text-xs">Groq</span>
+                    </div>
                   </div>
                 </div>
-                {/* Credentials Grid */}
-                <div className="space-y-3">
-                  {/* API Key Credentials */}
-                  <div className="rounded-lg bg-white/5 border border-white/10 p-3">
-                    <div className="flex items-center gap-2 mb-2">
-                      <Key className="h-4 w-4 text-blue-400" />
-                      <span className="text-slate-300 text-xs font-medium uppercase tracking-wide">API Keys</span>
-                    </div>
-                    <div className="grid grid-cols-2 gap-2">
-                      <div className="flex items-center gap-2 px-2 py-1.5 rounded bg-emerald-500/10 border border-emerald-500/20">
-                        <img src="/icons/chatgpt.svg" alt="OpenAI" className="h-4 w-4" />
-                        <span className="text-white text-xs">OpenAI</span>
-                        <span className="ml-auto text-emerald-400 text-xs font-mono">sk-...4f2x</span>
+
+                {/* Bottom: System Keychain */}
+                <div className="mt-5 pt-4 border-t border-slate-700">
+                  <div className="flex items-center justify-center gap-3">
+                    <div className="rounded-lg bg-amber-500/10 border border-amber-500/30 px-4 py-2 flex items-center gap-3">
+                      <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-amber-500 to-yellow-600 flex items-center justify-center">
+                        <svg className="h-4 w-4 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                          <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                        </svg>
                       </div>
-                      <div className="flex items-center gap-2 px-2 py-1.5 rounded bg-violet-500/10 border border-violet-500/20">
-                        <img src="/icons/anthropic.svg" alt="Anthropic" className="h-4 w-4" />
-                        <span className="text-white text-xs">Anthropic</span>
-                        <span className="ml-auto text-violet-400 text-xs font-mono">sk-...8k1m</span>
+                      <div>
+                        <div className="text-white text-xs font-medium">System Keychain</div>
+                        <div className="text-amber-400 text-[10px]">All keys securely stored</div>
                       </div>
-                      <div className="flex items-center gap-2 px-2 py-1.5 rounded bg-blue-500/10 border border-blue-500/20">
-                        <img src="/icons/openrouter.svg" alt="OpenRouter" className="h-4 w-4" />
-                        <span className="text-white text-xs">OpenRouter</span>
-                        <span className="ml-auto text-blue-400 text-xs font-mono">sk-...9p3q</span>
-                      </div>
-                      <div className="flex items-center gap-2 px-2 py-1.5 rounded bg-orange-500/10 border border-orange-500/20">
-                        <div className="h-4 w-4 rounded bg-orange-500/30 flex items-center justify-center text-orange-400 text-[8px] font-bold">G</div>
-                        <span className="text-white text-xs">Groq</span>
-                        <span className="ml-auto text-orange-400 text-xs font-mono">gsk-...2n7b</span>
+                      <div className="flex items-center gap-1.5 ml-2">
+                        <div className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
+                        <span className="text-emerald-400 text-[10px]">Encrypted</span>
                       </div>
                     </div>
                   </div>
-                  {/* OAuth Credentials */}
-                  <div className="rounded-lg bg-white/5 border border-white/10 p-3">
-                    <div className="flex items-center gap-2 mb-2">
-                      <svg className="h-4 w-4 text-amber-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                        <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4M10 17l5-5-5-5M13.8 12H3" />
-                      </svg>
-                      <span className="text-slate-300 text-xs font-medium uppercase tracking-wide">OAuth Tokens</span>
+                  {/* Key indicators */}
+                  <div className="flex justify-center gap-8 mt-3">
+                    <div className="flex items-center gap-1">
+                      <Key className="h-3 w-3 text-blue-400" />
+                      <span className="text-slate-500 text-[10px]">Client Keys</span>
                     </div>
-                    <div className="grid grid-cols-2 gap-2">
-                      <div className="flex items-center gap-2 px-2 py-1.5 rounded bg-slate-500/10 border border-slate-500/20">
-                        <img src="/icons/github.svg" alt="GitHub" className="h-4 w-4" />
-                        <span className="text-white text-xs">GitHub</span>
-                        <span className="ml-auto text-slate-400 text-xs">Connected</span>
-                      </div>
-                      <div className="flex items-center gap-2 px-2 py-1.5 rounded bg-blue-500/10 border border-blue-500/20">
-                        <img src="/icons/jira.svg" alt="Jira" className="h-4 w-4" />
-                        <span className="text-white text-xs">Jira</span>
-                        <span className="ml-auto text-blue-400 text-xs">Connected</span>
-                      </div>
-                      <div className="flex items-center gap-2 px-2 py-1.5 rounded bg-red-500/10 border border-red-500/20">
-                        <img src="/icons/gmail.svg" alt="Gmail" className="h-4 w-4" />
-                        <span className="text-white text-xs">Gmail</span>
-                        <span className="ml-auto text-red-400 text-xs">Connected</span>
-                      </div>
-                      <div className="flex items-center gap-2 px-2 py-1.5 rounded bg-purple-500/10 border border-purple-500/20">
-                        <div className="h-4 w-4 rounded bg-purple-500/30 flex items-center justify-center text-purple-400 text-[8px] font-bold">S</div>
-                        <span className="text-white text-xs">Slack</span>
-                        <span className="ml-auto text-purple-400 text-xs">Connected</span>
-                      </div>
+                    <div className="flex items-center gap-1">
+                      <Key className="h-3 w-3 text-violet-400" />
+                      <span className="text-slate-500 text-[10px]">Provider Keys</span>
                     </div>
                   </div>
                 </div>
@@ -351,109 +417,135 @@ export default function Home() {
       <section className="border-b py-16 sm:py-24 bg-muted/30">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
           <div className="grid gap-12 lg:grid-cols-2 lg:gap-16 items-center">
-            {/* Visual: Decision Tree */}
+            {/* Visual: Decision Tree Flowchart */}
             <div className="relative order-2 lg:order-1">
               <div className="rounded-xl border bg-gradient-to-br from-violet-950 to-slate-900 p-6 shadow-2xl">
-                {/* Incoming Request */}
-                <div className="flex justify-center mb-3">
-                  <div className="px-4 py-2 rounded-lg bg-white/10 border border-white/10 text-white text-sm">
-                    model: <span className="text-violet-400">&quot;auto&quot;</span>
-                  </div>
-                </div>
-                {/* Arrow down */}
-                <div className="flex justify-center mb-2">
-                  <div className="w-0.5 h-4 bg-violet-500/50" />
-                </div>
-                {/* Decision Node */}
-                <div className="flex justify-center mb-3">
-                  <div className="px-4 py-2 rounded-full bg-violet-500/20 border-2 border-violet-500/50 text-violet-300 text-sm font-medium">
-                    Is request complex?
-                  </div>
-                </div>
-                {/* Branches */}
-                <div className="grid grid-cols-2 gap-4">
-                  {/* Complex Branch */}
-                  <div>
-                    <div className="flex justify-center mb-2">
-                      <div className="flex items-center gap-1">
-                        <div className="w-8 h-0.5 bg-emerald-500/50" />
-                        <span className="text-emerald-400 text-xs font-medium">Yes</span>
-                        <div className="w-0.5 h-4 bg-emerald-500/50" />
-                      </div>
-                    </div>
-                    <div className="rounded-lg bg-emerald-500/10 border border-emerald-500/30 p-3">
-                      <div className="text-emerald-400 text-xs font-medium uppercase tracking-wide mb-2 text-center">Strong Models</div>
-                      <div className="space-y-1.5">
-                        <div className="flex items-center justify-between px-2 py-1 rounded bg-white/5">
-                          <div className="flex items-center gap-1.5">
-                            <img src="/icons/chatgpt.svg" alt="OpenAI" className="h-3.5 w-3.5" />
-                            <span className="text-white text-xs">GPT-5.2</span>
-                          </div>
-                          <span className="text-emerald-400 text-[10px]">Primary</span>
-                        </div>
-                        <div className="flex items-center justify-between px-2 py-1 rounded bg-white/5">
-                          <div className="flex items-center gap-1.5">
-                            <img src="/icons/anthropic.svg" alt="Anthropic" className="h-3.5 w-3.5" />
-                            <span className="text-white text-xs">Opus 4.5</span>
-                          </div>
-                          <span className="text-blue-400 text-[10px]">Secondary</span>
-                        </div>
-                        <div className="flex items-center justify-between px-2 py-1 rounded bg-white/5">
-                          <div className="flex items-center gap-1.5">
-                            <img src="/icons/ollama.svg" alt="Ollama" className="h-3.5 w-3.5" />
-                            <span className="text-white text-xs">Llama 4 405B</span>
-                          </div>
-                          <span className="text-slate-400 text-[10px]">Offline</span>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                  {/* Simple Branch */}
-                  <div>
-                    <div className="flex justify-center mb-2">
-                      <div className="flex items-center gap-1">
-                        <div className="w-8 h-0.5 bg-amber-500/50" />
-                        <span className="text-amber-400 text-xs font-medium">No</span>
-                        <div className="w-0.5 h-4 bg-amber-500/50" />
-                      </div>
-                    </div>
-                    <div className="rounded-lg bg-amber-500/10 border border-amber-500/30 p-3">
-                      <div className="text-amber-400 text-xs font-medium uppercase tracking-wide mb-2 text-center">Fast Models</div>
-                      <div className="space-y-1.5">
-                        <div className="flex items-center justify-between px-2 py-1 rounded bg-white/5">
-                          <div className="flex items-center gap-1.5">
-                            <img src="/icons/chatgpt.svg" alt="OpenAI" className="h-3.5 w-3.5" />
-                            <span className="text-white text-xs">GPT-4o mini</span>
-                          </div>
-                          <span className="text-emerald-400 text-[10px]">Primary</span>
-                        </div>
-                        <div className="flex items-center justify-between px-2 py-1 rounded bg-white/5">
-                          <div className="flex items-center gap-1.5">
-                            <img src="/icons/anthropic.svg" alt="Anthropic" className="h-3.5 w-3.5" />
-                            <span className="text-white text-xs">Haiku 3.5</span>
-                          </div>
-                          <span className="text-blue-400 text-[10px]">Secondary</span>
-                        </div>
-                        <div className="flex items-center justify-between px-2 py-1 rounded bg-white/5">
-                          <div className="flex items-center gap-1.5">
-                            <img src="/icons/ollama.svg" alt="Ollama" className="h-3.5 w-3.5" />
-                            <span className="text-white text-xs">Llama 3.2 3B</span>
-                          </div>
-                          <span className="text-slate-400 text-[10px]">Offline</span>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
+                {/* SVG Flowchart */}
+                <svg viewBox="0 0 400 340" className="w-full h-auto" preserveAspectRatio="xMidYMid meet">
+                  {/* Definitions */}
+                  <defs>
+                    <marker id="arrowhead" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+                      <polygon points="0 0, 8 3, 0 6" fill="#8b5cf6" fillOpacity="0.7" />
+                    </marker>
+                    <marker id="arrowhead-amber" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+                      <polygon points="0 0, 8 3, 0 6" fill="#f59e0b" fillOpacity="0.7" />
+                    </marker>
+                    <marker id="arrowhead-emerald" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+                      <polygon points="0 0, 8 3, 0 6" fill="#10b981" fillOpacity="0.7" />
+                    </marker>
+                    <marker id="arrowhead-red" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+                      <polygon points="0 0, 8 3, 0 6" fill="#ef4444" fillOpacity="0.7" />
+                    </marker>
+                    <marker id="arrowhead-slate" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+                      <polygon points="0 0, 8 3, 0 6" fill="#64748b" fillOpacity="0.7" />
+                    </marker>
+                  </defs>
+
+                  {/* Incoming Request */}
+                  <rect x="140" y="8" width="120" height="28" rx="6" fill="rgba(255,255,255,0.1)" stroke="rgba(255,255,255,0.2)" />
+                  <text x="200" y="26" textAnchor="middle" fill="white" fontSize="11" fontFamily="system-ui">
+                    <tspan fill="#a78bfa">model:</tspan> &quot;auto&quot;
+                  </text>
+
+                  {/* Arrow to decision */}
+                  <line x1="200" y1="36" x2="200" y2="54" stroke="#8b5cf6" strokeWidth="2" markerEnd="url(#arrowhead)" />
+
+                  {/* Decision Diamond */}
+                  <polygon points="200,58 260,88 200,118 140,88" fill="rgba(139,92,246,0.2)" stroke="rgba(139,92,246,0.5)" strokeWidth="2" />
+                  <text x="200" y="85" textAnchor="middle" fill="#c4b5fd" fontSize="9" fontFamily="system-ui">Complex?</text>
+                  <text x="200" y="97" textAnchor="middle" fill="#a78bfa" fontSize="8" fontFamily="system-ui">(RouteLLM)</text>
+
+                  {/* Yes branch - to Strong */}
+                  <line x1="140" y1="88" x2="80" y2="88" stroke="#10b981" strokeWidth="2" />
+                  <line x1="80" y1="88" x2="80" y2="130" stroke="#10b981" strokeWidth="2" markerEnd="url(#arrowhead-emerald)" />
+                  <text x="108" y="82" textAnchor="middle" fill="#10b981" fontSize="9" fontWeight="600">Yes</text>
+
+                  {/* No branch - to Weak */}
+                  <line x1="260" y1="88" x2="320" y2="88" stroke="#f59e0b" strokeWidth="2" />
+                  <line x1="320" y1="88" x2="320" y2="130" stroke="#f59e0b" strokeWidth="2" markerEnd="url(#arrowhead-amber)" />
+                  <text x="292" y="82" textAnchor="middle" fill="#f59e0b" fontSize="9" fontWeight="600">No</text>
+
+                  {/* Strong Models Box */}
+                  <rect x="20" y="134" width="120" height="32" rx="6" fill="rgba(16,185,129,0.15)" stroke="rgba(16,185,129,0.4)" strokeWidth="1.5" />
+                  <text x="80" y="145" textAnchor="middle" fill="#34d399" fontSize="8" fontWeight="600" textTransform="uppercase">STRONG</text>
+                  <text x="80" y="158" textAnchor="middle" fill="white" fontSize="10">GPT-5.2 / Opus</text>
+
+                  {/* Weak Models Box */}
+                  <rect x="260" y="134" width="120" height="32" rx="6" fill="rgba(245,158,11,0.15)" stroke="rgba(245,158,11,0.4)" strokeWidth="1.5" />
+                  <text x="320" y="145" textAnchor="middle" fill="#fbbf24" fontSize="8" fontWeight="600" textTransform="uppercase">WEAK</text>
+                  <text x="320" y="158" textAnchor="middle" fill="white" fontSize="10">GPT-4o mini / Haiku</text>
+
+                  {/* Fallback arrows from Strong/Weak to Secondary Provider */}
+                  {/* Strong fail arrow */}
+                  <line x1="80" y1="166" x2="80" y2="194" stroke="#ef4444" strokeWidth="1.5" strokeDasharray="4,2" markerEnd="url(#arrowhead-red)" />
+                  <text x="92" y="185" fill="#f87171" fontSize="7">fail</text>
+
+                  {/* Weak fail arrow */}
+                  <line x1="320" y1="166" x2="320" y2="194" stroke="#ef4444" strokeWidth="1.5" strokeDasharray="4,2" markerEnd="url(#arrowhead-red)" />
+                  <text x="332" y="185" fill="#f87171" fontSize="7">fail</text>
+
+                  {/* Secondary Provider - Strong side */}
+                  <rect x="20" y="198" width="120" height="32" rx="6" fill="rgba(59,130,246,0.15)" stroke="rgba(59,130,246,0.4)" strokeWidth="1.5" />
+                  <text x="80" y="209" textAnchor="middle" fill="#60a5fa" fontSize="8" fontWeight="600" textTransform="uppercase">FALLBACK PROVIDER</text>
+                  <text x="80" y="222" textAnchor="middle" fill="white" fontSize="10">Anthropic / Gemini</text>
+
+                  {/* Secondary Provider - Weak side */}
+                  <rect x="260" y="198" width="120" height="32" rx="6" fill="rgba(59,130,246,0.15)" stroke="rgba(59,130,246,0.4)" strokeWidth="1.5" />
+                  <text x="320" y="209" textAnchor="middle" fill="#60a5fa" fontSize="8" fontWeight="600" textTransform="uppercase">FALLBACK PROVIDER</text>
+                  <text x="320" y="222" textAnchor="middle" fill="white" fontSize="10">Anthropic / Groq</text>
+
+                  {/* Fallback arrows to Offline */}
+                  {/* Strong side to offline */}
+                  <line x1="80" y1="230" x2="80" y2="258" stroke="#ef4444" strokeWidth="1.5" strokeDasharray="4,2" markerEnd="url(#arrowhead-red)" />
+                  <text x="92" y="249" fill="#f87171" fontSize="7">fail</text>
+
+                  {/* Weak side to offline */}
+                  <line x1="320" y1="230" x2="320" y2="258" stroke="#ef4444" strokeWidth="1.5" strokeDasharray="4,2" markerEnd="url(#arrowhead-red)" />
+                  <text x="332" y="249" fill="#f87171" fontSize="7">fail</text>
+
+                  {/* Offline Models - Strong side */}
+                  <rect x="20" y="262" width="120" height="32" rx="6" fill="rgba(100,116,139,0.2)" stroke="rgba(100,116,139,0.4)" strokeWidth="1.5" />
+                  <text x="80" y="273" textAnchor="middle" fill="#94a3b8" fontSize="8" fontWeight="600" textTransform="uppercase">OFFLINE FALLBACK</text>
+                  <text x="80" y="286" textAnchor="middle" fill="white" fontSize="10">Llama 4 405B (local)</text>
+
+                  {/* Offline Models - Weak side */}
+                  <rect x="260" y="262" width="120" height="32" rx="6" fill="rgba(100,116,139,0.2)" stroke="rgba(100,116,139,0.4)" strokeWidth="1.5" />
+                  <text x="320" y="273" textAnchor="middle" fill="#94a3b8" fontSize="8" fontWeight="600" textTransform="uppercase">OFFLINE FALLBACK</text>
+                  <text x="320" y="286" textAnchor="middle" fill="white" fontSize="10">Llama 3.2 3B (local)</text>
+
+                  {/* Success checkmarks */}
+                  <circle cx="150" cy="150" r="8" fill="rgba(16,185,129,0.3)" />
+                  <text x="150" y="154" textAnchor="middle" fill="#10b981" fontSize="10">✓</text>
+
+                  <circle cx="250" cy="150" r="8" fill="rgba(245,158,11,0.3)" />
+                  <text x="250" y="154" textAnchor="middle" fill="#fbbf24" fontSize="10">✓</text>
+
+                  <circle cx="150" cy="214" r="8" fill="rgba(59,130,246,0.3)" />
+                  <text x="150" y="218" textAnchor="middle" fill="#60a5fa" fontSize="10">✓</text>
+
+                  <circle cx="250" cy="214" r="8" fill="rgba(59,130,246,0.3)" />
+                  <text x="250" y="218" textAnchor="middle" fill="#60a5fa" fontSize="10">✓</text>
+
+                  <circle cx="150" cy="278" r="8" fill="rgba(100,116,139,0.3)" />
+                  <text x="150" y="282" textAnchor="middle" fill="#94a3b8" fontSize="10">✓</text>
+
+                  <circle cx="250" cy="278" r="8" fill="rgba(100,116,139,0.3)" />
+                  <text x="250" y="282" textAnchor="middle" fill="#94a3b8" fontSize="10">✓</text>
+                </svg>
+
                 {/* Legend */}
-                <div className="mt-4 pt-3 border-t border-white/10 flex justify-center gap-4">
+                <div className="mt-4 pt-3 border-t border-white/10 flex flex-wrap justify-center gap-3">
                   <div className="flex items-center gap-1.5">
                     <div className="h-2 w-2 rounded-full bg-emerald-500" />
-                    <span className="text-slate-400 text-[10px]">Primary Online</span>
+                    <span className="text-slate-400 text-[10px]">Strong Model</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <div className="h-2 w-2 rounded-full bg-amber-500" />
+                    <span className="text-slate-400 text-[10px]">Weak Model</span>
                   </div>
                   <div className="flex items-center gap-1.5">
                     <div className="h-2 w-2 rounded-full bg-blue-500" />
-                    <span className="text-slate-400 text-[10px]">Secondary Online</span>
+                    <span className="text-slate-400 text-[10px]">Provider Fallback</span>
                   </div>
                   <div className="flex items-center gap-1.5">
                     <div className="h-2 w-2 rounded-full bg-slate-500" />
@@ -468,38 +560,38 @@ export default function Home() {
                 <span className="text-sm font-medium text-violet-500 uppercase tracking-wide">Smart Routing</span>
               </div>
               <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">
-                Intelligent LLM Auto Router
+                Automatic Model Routing
               </h2>
               <p className="mt-4 text-lg text-muted-foreground">
-                Never worry about provider outages, rate limits, policy violation again. LocalRouter automatically routes requests to the next available model and based on prompt complexity.
+                Request <code className="text-sm bg-muted px-1 rounded">model: &quot;auto&quot;</code> to route by prompt complexity. Automatic failover on rate limits, outages, or policy errors.
               </p>
               <ul className="mt-8 space-y-4">
                 <li className="flex gap-3">
                   <Check className="h-5 w-5 shrink-0 text-violet-500 mt-0.5" />
                   <div>
-                    <span className="font-medium">Complexity-based routing</span>
-                    <p className="text-sm text-muted-foreground">Route complex requests to powerful models, simple ones to fast models</p>
+                    <span className="font-medium">Prompt complexity routing</span>
+                    <p className="text-sm text-muted-foreground">RouteLLM classifier routes complex prompts to capable models, simple ones to fast/cheap models</p>
                   </div>
                 </li>
                 <li className="flex gap-3">
                   <Check className="h-5 w-5 shrink-0 text-violet-500 mt-0.5" />
                   <div>
-                    <span className="font-medium">Automatic offline fallback</span>
-                    <p className="text-sm text-muted-foreground">Seamlessly fall back to local models when offline</p>
+                    <span className="font-medium">Offline fallback</span>
+                    <p className="text-sm text-muted-foreground">Falls back to local Ollama/LMStudio models when cloud providers are unreachable</p>
                   </div>
                 </li>
                 <li className="flex gap-3">
                   <Check className="h-5 w-5 shrink-0 text-violet-500 mt-0.5" />
                   <div>
-                    <span className="font-medium">Multi-provider redundancy</span>
-                    <p className="text-sm text-muted-foreground">Primary and secondary providers ensure high availability</p>
+                    <span className="font-medium">Provider failover chain</span>
+                    <p className="text-sm text-muted-foreground">Configure primary → secondary → offline provider sequence per model tier</p>
                   </div>
                 </li>
                 <li className="flex gap-3">
                   <FlaskConical className="h-5 w-5 shrink-0 text-amber-500 mt-0.5" />
                   <div>
-                    <span className="font-medium text-amber-600 dark:text-amber-400">Experimental: Strong/Weak model selection</span>
-                    <p className="text-sm text-muted-foreground">ML model to determine if prompt is complex/simple to determine whether strong/weak LLM should be used</p>
+                    <span className="font-medium text-amber-600 dark:text-amber-400">Experimental: Strong/Weak classification</span>
+                    <p className="text-sm text-muted-foreground">ML classifier determines prompt complexity to select strong vs weak model tier</p>
                   </div>
                 </li>
               </ul>
@@ -521,28 +613,28 @@ export default function Home() {
                 Unified MCP Gateway
               </h2>
               <p className="mt-4 text-lg text-muted-foreground">
-                Connect once, access all your tools. LocalRouter is a reverse proxy to unify multiple MCP servers into a single endpoint with per-client access control.
+                Reverse proxy merging multiple MCP servers into one endpoint. Tools from all servers appear in a single namespace with client-level access control.
               </p>
               <ul className="mt-8 space-y-4">
                 <li className="flex gap-3">
                   <Check className="h-5 w-5 shrink-0 text-emerald-500 mt-0.5" />
                   <div>
-                    <span className="font-medium">Merged tool namespace</span>
-                    <p className="text-sm text-muted-foreground">Single MCP endpoint exposes tools from all allowed servers</p>
+                    <span className="font-medium">Unified tool namespace</span>
+                    <p className="text-sm text-muted-foreground">All MCP server tools aggregated under one STDIO or SSE endpoint</p>
                   </div>
                 </li>
                 <li className="flex gap-3">
                   <Check className="h-5 w-5 shrink-0 text-emerald-500 mt-0.5" />
                   <div>
-                    <span className="font-medium">Per-client access control</span>
-                    <p className="text-sm text-muted-foreground">Control which MCP servers each client can access</p>
+                    <span className="font-medium">Client-level server restrictions</span>
+                    <p className="text-sm text-muted-foreground">Whitelist specific MCP servers per client—others are hidden</p>
                   </div>
                 </li>
                 <li className="flex gap-3">
                   <FlaskConical className="h-5 w-5 shrink-0 text-amber-500 mt-0.5" />
                   <div>
                     <span className="font-medium text-amber-600 dark:text-amber-400">Experimental: Deferred tool loading</span>
-                    <p className="text-sm text-muted-foreground">Minimize token context with on-demand tool discovery</p>
+                    <p className="text-sm text-muted-foreground">Load tool schemas on-demand to reduce context token usage</p>
                   </div>
                 </li>
               </ul>
@@ -731,31 +823,31 @@ export default function Home() {
                 <span className="text-sm font-medium text-violet-500 uppercase tracking-wide">Skills</span>
               </div>
               <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">
-                Unified Skills via MCP
+                Skills as MCP Tools
               </h2>
               <p className="mt-4 text-lg text-muted-foreground">
-                Give apps granular access to a curated set of skills — multi-step workflows exposed as tools through the unified MCP gateway. Each client gets only the skills it needs.
+                Multi-step workflows exposed as callable MCP tools. Web search, code review, document summarization—each skill chains multiple operations behind a single tool call.
               </p>
               <ul className="mt-8 space-y-4">
                 <li className="flex gap-3">
                   <Check className="h-5 w-5 shrink-0 text-violet-500 mt-0.5" />
                   <div>
-                    <span className="font-medium">Multi-step workflows as tools</span>
-                    <p className="text-sm text-muted-foreground">Skills combine multiple actions into a single callable tool — search the web, review code, summarize documents, and more</p>
+                    <span className="font-medium">Composite workflows</span>
+                    <p className="text-sm text-muted-foreground">Each skill orchestrates multiple sub-operations—API calls, file I/O, shell commands—as a single atomic tool</p>
                   </div>
                 </li>
                 <li className="flex gap-3">
                   <Check className="h-5 w-5 shrink-0 text-violet-500 mt-0.5" />
                   <div>
-                    <span className="font-medium">Per-client skill assignment</span>
-                    <p className="text-sm text-muted-foreground">Control exactly which skills each app can invoke — give Claude Code full access while limiting others</p>
+                    <span className="font-medium">Per-client skill whitelist</span>
+                    <p className="text-sm text-muted-foreground">Assign specific skills to each client—others remain inaccessible</p>
                   </div>
                 </li>
                 <li className="flex gap-3">
                   <Check className="h-5 w-5 shrink-0 text-violet-500 mt-0.5" />
                   <div>
-                    <span className="font-medium">Exposed via MCP gateway</span>
-                    <p className="text-sm text-muted-foreground">Skills appear as standard MCP tools — any MCP-compatible app can use them with zero integration work</p>
+                    <span className="font-medium">Standard MCP interface</span>
+                    <p className="text-sm text-muted-foreground">Skills exposed via MCP protocol—compatible with any MCP client without custom integration</p>
                   </div>
                 </li>
               </ul>
@@ -764,8 +856,170 @@ export default function Home() {
         </div>
       </section>
 
-      {/* Feature 5: Marketplace */}
+      {/* Feature 5: Firewall */}
       <section className="border-b py-16 sm:py-24 bg-muted/30">
+        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+          <div className="grid gap-12 lg:grid-cols-2 lg:gap-16 items-center">
+            {/* Visual: Firewall Architecture */}
+            <div className="relative order-2 lg:order-1">
+              <div className="relative w-full aspect-[4/3]">
+                {/* SVG Connection Lines */}
+                <svg className="absolute inset-0 w-full h-full pointer-events-none" viewBox="0 0 400 300" preserveAspectRatio="xMidYMid meet">
+                  {/* Left clients to firewall */}
+                  {/* Cursor (front) right edge → Firewall left edge */}
+                  <path d="M 88 66 Q 120 66 155 112" stroke="url(#fw-gradient-blue)" strokeWidth="2" fill="none" opacity="0.7" />
+                  {/* Cline (middle) right edge → Firewall left edge */}
+                  <path d="M 94 78 Q 125 78 155 117" stroke="url(#fw-gradient-blue)" strokeWidth="2" fill="none" opacity="0.7" />
+                  {/* WebUI (back) right edge → Firewall left edge */}
+                  <path d="M 100 90 Q 128 90 155 122" stroke="url(#fw-gradient-blue)" strokeWidth="2" fill="none" opacity="0.7" />
+
+                  {/* Firewall to right resources */}
+                  {/* Firewall right edge → LLMs (front) left edge */}
+                  <path d="M 245 109 Q 274 66 302 66" stroke="url(#fw-gradient-multi)" strokeWidth="2" fill="none" opacity="0.7" />
+                  {/* Firewall right edge → MCPs left edge */}
+                  <path d="M 245 114 Q 274 78 302 78" stroke="url(#fw-gradient-multi)" strokeWidth="2" fill="none" opacity="0.7" />
+                  {/* Firewall right edge → Skills left edge */}
+                  <path d="M 245 119 Q 270 90 296 90" stroke="url(#fw-gradient-multi)" strokeWidth="2" fill="none" opacity="0.7" />
+                  {/* Firewall right edge → Marketplace left edge */}
+                  <path d="M 245 124 Q 268 102 290 102" stroke="url(#fw-gradient-multi)" strokeWidth="2" fill="none" opacity="0.7" />
+
+                  {/* Firewall down to permission dialog */}
+                  <path d="M 200 159 L 200 204" stroke="url(#fw-gradient-amber)" strokeWidth="2.5" fill="none" />
+                  <circle cx="200" cy="204" r="3" fill="#f59e0b" />
+
+                  <defs>
+                    <linearGradient id="fw-gradient-blue" x1="0%" y1="0%" x2="100%" y2="0%">
+                      <stop offset="0%" stopColor="#3b82f6" stopOpacity="0.8" />
+                      <stop offset="100%" stopColor="#f59e0b" stopOpacity="0.5" />
+                    </linearGradient>
+                    <linearGradient id="fw-gradient-multi" x1="0%" y1="0%" x2="100%" y2="0%">
+                      <stop offset="0%" stopColor="#f59e0b" stopOpacity="0.5" />
+                      <stop offset="100%" stopColor="#8b5cf6" stopOpacity="0.8" />
+                    </linearGradient>
+                    <linearGradient id="fw-gradient-amber" x1="0%" y1="0%" x2="0%" y2="100%">
+                      <stop offset="0%" stopColor="#f59e0b" stopOpacity="0.8" />
+                      <stop offset="100%" stopColor="#f59e0b" stopOpacity="0.5" />
+                    </linearGradient>
+                  </defs>
+                </svg>
+
+                {/* Left: Clients Stack (diagonally offset) */}
+                <div className="absolute left-[2%] top-[12%]">
+                  <div className="text-[9px] sm:text-xs font-medium text-blue-500 uppercase tracking-wide mb-2">Clients</div>
+                  <div className="relative">
+                    {/* Client 3 (back) */}
+                    <div className="absolute top-8 left-4 flex items-center gap-1.5 px-2 py-1.5 rounded-lg bg-blue-500/10 border border-blue-500/30 shadow-sm backdrop-blur-sm">
+                      <img src="/icons/open-webui.png" alt="Open WebUI" className="h-4 w-4" />
+                      <span className="text-[10px] sm:text-xs font-medium text-white/80">WebUI</span>
+                    </div>
+                    {/* Client 2 (middle) */}
+                    <div className="absolute top-4 left-2 flex items-center gap-1.5 px-2 py-1.5 rounded-lg bg-blue-500/15 border border-blue-500/40 shadow-sm backdrop-blur-sm">
+                      <div className="h-4 w-4 rounded bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center text-white font-bold text-[7px]">C</div>
+                      <span className="text-[10px] sm:text-xs font-medium text-white/90">Cline</span>
+                    </div>
+                    {/* Client 1 (front) */}
+                    <div className="relative flex items-center gap-1.5 px-2 py-1.5 rounded-lg bg-blue-500/20 border border-blue-500/50 shadow-lg backdrop-blur-sm">
+                      <img src="/icons/cursor.svg" alt="Cursor" className="h-4 w-4" />
+                      <span className="text-[10px] sm:text-xs font-medium text-white">Cursor</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Center: LocalRouter Firewall */}
+                <div className="absolute left-1/2 top-[28%] -translate-x-1/2">
+                  <div className="rounded-xl border-2 border-amber-500/50 bg-gradient-to-br from-amber-500/20 to-orange-500/20 p-3 shadow-xl backdrop-blur-sm">
+                    <div className="text-center">
+                      <div className="h-10 w-10 rounded-lg bg-gradient-to-br from-amber-500 to-orange-600 flex items-center justify-center mx-auto mb-1 shadow-lg">
+                        <Shield className="h-5 w-5 text-white" />
+                      </div>
+                      <div className="font-bold text-xs text-white">LocalRouter</div>
+                      <div className="text-[9px] text-amber-400">Firewall</div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Right: Resources Stack (diagonally offset) */}
+                <div className="absolute right-[2%] top-[12%]">
+                  <div className="text-[9px] sm:text-xs font-medium text-violet-500 uppercase tracking-wide mb-2 text-right">Resources</div>
+                  <div className="relative">
+                    {/* Resource 4 (back) */}
+                    <div className="absolute top-12 -left-4 flex items-center gap-1.5 px-2 py-1.5 rounded-lg bg-cyan-500/10 border border-cyan-500/30 shadow-sm backdrop-blur-sm">
+                      <Store className="h-4 w-4 text-cyan-400" />
+                      <span className="text-[10px] sm:text-xs font-medium text-white/80">Marketplace</span>
+                    </div>
+                    {/* Resource 3 */}
+                    <div className="absolute top-8 -left-2 flex items-center gap-1.5 px-2 py-1.5 rounded-lg bg-violet-500/10 border border-violet-500/30 shadow-sm backdrop-blur-sm">
+                      <Sparkles className="h-4 w-4 text-violet-400" />
+                      <span className="text-[10px] sm:text-xs font-medium text-white/85">Skills</span>
+                    </div>
+                    {/* Resource 2 */}
+                    <div className="absolute top-4 left-0 flex items-center gap-1.5 px-2 py-1.5 rounded-lg bg-emerald-500/15 border border-emerald-500/40 shadow-sm backdrop-blur-sm">
+                      <Wrench className="h-4 w-4 text-emerald-400" />
+                      <span className="text-[10px] sm:text-xs font-medium text-white/90">MCPs</span>
+                    </div>
+                    {/* Resource 1 (front) */}
+                    <div className="relative flex items-center gap-1.5 px-2 py-1.5 rounded-lg bg-violet-500/20 border border-violet-500/50 shadow-lg backdrop-blur-sm">
+                      <img src="/icons/chatgpt.svg" alt="LLM" className="h-4 w-4" />
+                      <span className="text-[10px] sm:text-xs font-medium text-white">LLMs</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Bottom: Permission Dialog */}
+                <div className="absolute left-1/2 top-[68%] -translate-x-1/2 scale-75 origin-top">
+                  <FirewallApprovalDemo />
+                </div>
+              </div>
+            </div>
+
+            <div className="order-1 lg:order-2">
+              <div className="flex items-center gap-2 mb-4">
+                <ShieldCheck className="h-5 w-5 text-amber-500" />
+                <span className="text-sm font-medium text-amber-500 uppercase tracking-wide">Firewall</span>
+              </div>
+              <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">
+                Runtime Approval Firewall
+              </h2>
+              <p className="mt-4 text-lg text-muted-foreground">
+                Interactive approval prompts for sensitive operations. Allow once, allow for session, or deny. Configurable per client, model, MCP server, and skill.
+              </p>
+              <ul className="mt-8 space-y-4">
+                <li className="flex gap-3">
+                  <Check className="h-5 w-5 shrink-0 text-amber-500 mt-0.5" />
+                  <div>
+                    <span className="font-medium">Model/provider gating</span>
+                    <p className="text-sm text-muted-foreground">Require approval before a client can access specific models or providers</p>
+                  </div>
+                </li>
+                <li className="flex gap-3">
+                  <Check className="h-5 w-5 shrink-0 text-amber-500 mt-0.5" />
+                  <div>
+                    <span className="font-medium">MCP operation approval</span>
+                    <p className="text-sm text-muted-foreground">Gate tool calls, resource reads, and prompt injections on a per-server basis</p>
+                  </div>
+                </li>
+                <li className="flex gap-3">
+                  <Check className="h-5 w-5 shrink-0 text-amber-500 mt-0.5" />
+                  <div>
+                    <span className="font-medium">Skill execution gates</span>
+                    <p className="text-sm text-muted-foreground">Skills with shell/script actions require explicit user confirmation</p>
+                  </div>
+                </li>
+                <li className="flex gap-3">
+                  <Check className="h-5 w-5 shrink-0 text-amber-500 mt-0.5" />
+                  <div>
+                    <span className="font-medium">Installation approval</span>
+                    <p className="text-sm text-muted-foreground">Marketplace installs triggered by AI require user confirmation before execution</p>
+                  </div>
+                </li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* Feature 6: Marketplace */}
+      <section className="border-b py-16 sm:py-24">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
           <div className="grid gap-12 lg:grid-cols-2 lg:gap-16 items-center">
             <div>
@@ -777,28 +1031,28 @@ export default function Home() {
                 MCP &amp; Skill Marketplace
               </h2>
               <p className="mt-4 text-lg text-muted-foreground">
-                Discover and install MCP servers and Skills from multiple marketplaces. Browse catalogs, search by capability, and install with a single click — all with your explicit approval.
+                Browse and install MCP servers and skills from multiple registries. Search exposed as MCP tool for AI-assisted discovery. All installs require explicit user approval.
               </p>
               <ul className="mt-8 space-y-4">
                 <li className="flex gap-3">
                   <Check className="h-5 w-5 shrink-0 text-cyan-500 mt-0.5" />
                   <div>
-                    <span className="font-medium">Multiple marketplace sources</span>
-                    <p className="text-sm text-muted-foreground">Connect to various MCP and Skill registries — official, community, and private</p>
+                    <span className="font-medium">Multiple registry sources</span>
+                    <p className="text-sm text-muted-foreground">Connect official, community, and private MCP/Skill registries</p>
                   </div>
                 </li>
                 <li className="flex gap-3">
                   <Check className="h-5 w-5 shrink-0 text-cyan-500 mt-0.5" />
                   <div>
-                    <span className="font-medium">AI-assisted discovery via MCP</span>
-                    <p className="text-sm text-muted-foreground">Marketplace exposed as an MCP tool — let your AI find and suggest relevant servers and skills</p>
+                    <span className="font-medium">MCP-exposed search</span>
+                    <p className="text-sm text-muted-foreground">Marketplace search available as MCP tool—AI agents can query and suggest installations</p>
                   </div>
                 </li>
                 <li className="flex gap-3">
                   <Check className="h-5 w-5 shrink-0 text-cyan-500 mt-0.5" />
                   <div>
-                    <span className="font-medium">User-approved installations</span>
-                    <p className="text-sm text-muted-foreground">Nothing installs without your explicit permission — full control over what runs on your machine</p>
+                    <span className="font-medium">Gated installation</span>
+                    <p className="text-sm text-muted-foreground">No package executes without explicit user confirmation via approval dialog</p>
                   </div>
                 </li>
               </ul>
@@ -807,7 +1061,7 @@ export default function Home() {
             <div className="relative">
               <div className="rounded-xl border-2 border-slate-700 bg-gradient-to-br from-slate-900 to-slate-800 p-6 shadow-2xl">
                 {/* Header */}
-                <div className="flex items-center gap-3 mb-5 pb-4 border-b border-slate-700">
+                <div className="flex items-center gap-3 mb-5 pb-8 border-b border-slate-700">
                   <div className="h-10 w-10 rounded-lg bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center">
                     <Store className="h-5 w-5 text-white" />
                   </div>
@@ -900,78 +1154,6 @@ export default function Home() {
         </div>
       </section>
 
-      {/* Feature 6: Firewall */}
-      <section className="border-b py-16 sm:py-24">
-        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-          <div className="grid gap-12 lg:grid-cols-2 lg:gap-16 items-center">
-            {/* Visual: Firewall Approval Popup */}
-            <div className="relative order-2 lg:order-1 flex justify-center">
-              <div className="relative">
-                {/* Glow effect */}
-                <div className="absolute inset-0 bg-amber-500/20 blur-3xl rounded-full" />
-                {/* The actual popup */}
-                <div className="relative">
-                  <FirewallApprovalDemo />
-                </div>
-                {/* Decorative elements */}
-                <div className="absolute -top-4 -right-4 px-2 py-1 rounded bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 text-[10px] font-medium">
-                  LLM Provider
-                </div>
-                <div className="absolute -bottom-4 -left-4 px-2 py-1 rounded bg-violet-500/20 border border-violet-500/30 text-violet-400 text-[10px] font-medium">
-                  MCP Tool
-                </div>
-                <div className="absolute top-1/2 -right-8 px-2 py-1 rounded bg-cyan-500/20 border border-cyan-500/30 text-cyan-400 text-[10px] font-medium">
-                  Skill Script
-                </div>
-              </div>
-            </div>
-
-            <div className="order-1 lg:order-2">
-              <div className="flex items-center gap-2 mb-4">
-                <ShieldCheck className="h-5 w-5 text-amber-500" />
-                <span className="text-sm font-medium text-amber-500 uppercase tracking-wide">Firewall</span>
-              </div>
-              <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">
-                Granular Approval Control
-              </h2>
-              <p className="mt-4 text-lg text-muted-foreground">
-                Stay in control of every action. LocalRouter&apos;s firewall prompts you before sensitive operations — approve once, for the session, or deny entirely.
-              </p>
-              <ul className="mt-8 space-y-4">
-                <li className="flex gap-3">
-                  <Check className="h-5 w-5 shrink-0 text-amber-500 mt-0.5" />
-                  <div>
-                    <span className="font-medium">LLM provider access control</span>
-                    <p className="text-sm text-muted-foreground">Approve which models and providers each app can use — prevent unauthorized API usage</p>
-                  </div>
-                </li>
-                <li className="flex gap-3">
-                  <Check className="h-5 w-5 shrink-0 text-amber-500 mt-0.5" />
-                  <div>
-                    <span className="font-medium">MCP tool, resource &amp; prompt approval</span>
-                    <p className="text-sm text-muted-foreground">Granular control over MCP operations — approve file reads, API calls, and prompt injections</p>
-                  </div>
-                </li>
-                <li className="flex gap-3">
-                  <Check className="h-5 w-5 shrink-0 text-amber-500 mt-0.5" />
-                  <div>
-                    <span className="font-medium">Skill script execution gates</span>
-                    <p className="text-sm text-muted-foreground">Skills that run shell commands or scripts require your explicit approval first</p>
-                  </div>
-                </li>
-                <li className="flex gap-3">
-                  <Check className="h-5 w-5 shrink-0 text-amber-500 mt-0.5" />
-                  <div>
-                    <span className="font-medium">Marketplace installation approval</span>
-                    <p className="text-sm text-muted-foreground">AI-suggested installations always require your confirmation — nothing runs without consent</p>
-                  </div>
-                </li>
-              </ul>
-            </div>
-          </div>
-        </div>
-      </section>
-
       {/* OLD CAROUSEL SECTIONS - COMMENTED OUT
       {/* Compatible Apps */}
       {/*<section className="border-b py-12 sm:py-16 bg-muted/30 overflow-hidden">
@@ -1010,11 +1192,11 @@ export default function Home() {
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
           <div className="mx-auto max-w-3xl text-center">
             <Shield className="mx-auto h-12 w-12 text-primary" />
-            <h2 className="mt-4 text-2xl font-bold sm:text-3xl">Privacy First</h2>
+            <h2 className="mt-4 text-2xl font-bold sm:text-3xl">Local-Only by Design</h2>
             <p className="mt-4 text-muted-foreground">
-              LocalRouter runs entirely on your machine. No cloud sync, no telemetry, no analytics.
+              Runs entirely on your machine. Zero telemetry, zero cloud sync, zero analytics.
               <br/>
-              Your API keys and request data never leave your computer.
+              API keys and request payloads never leave your device.
             </p>
             <div className="mt-8 flex flex-wrap justify-center gap-4 text-sm text-muted-foreground">
               <div className="flex items-center gap-2">
@@ -1042,9 +1224,9 @@ export default function Home() {
       <section className="py-16 sm:py-24">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
           <div className="mx-auto max-w-3xl text-center">
-            <h2 className="text-2xl font-bold sm:text-3xl">Get Started in Minutes</h2>
+            <h2 className="text-2xl font-bold sm:text-3xl">Get Started</h2>
             <p className="mt-4 text-muted-foreground">
-              Download LocalRouter, add your providers, and start routing.
+              Download, configure providers, point your apps to <code className="text-sm bg-muted px-1 rounded">localhost:3625</code>.
             </p>
             <div className="mt-8">
               <Button asChild size="xl">
