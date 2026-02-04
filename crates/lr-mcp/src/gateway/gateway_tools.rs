@@ -80,12 +80,13 @@ impl McpGateway {
                 let marketplace_permission = session_read.marketplace_permission.clone();
                 drop(session_read);
 
+                // Skills always use their own deferred loading (get_info unlocks run/read)
                 self.append_skill_tools(
                     &mut tools,
                     &skills_permissions,
                     &info_loaded,
                     async_enabled,
-                    false,
+                    true,
                 );
                 self.append_marketplace_tools(&mut tools, &marketplace_permission);
 
@@ -133,12 +134,13 @@ impl McpGateway {
             .map(|t| serde_json::to_value(t).unwrap_or_default())
             .collect();
 
+        // Skills always use their own deferred loading (get_info unlocks run/read)
         self.append_skill_tools(
             &mut all_tools,
             &skills_permissions,
             &info_loaded,
             async_enabled,
-            false,
+            true,
         );
         self.append_marketplace_tools(&mut all_tools, &marketplace_permission);
 
