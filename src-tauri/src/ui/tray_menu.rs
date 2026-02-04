@@ -1,4 +1,18 @@
 //! Tray menu building and event handlers
+//!
+//! ## WEBSITE DEMO SYNC REQUIRED
+//!
+//! The tray menu structure is replicated in the website demo at:
+//!   `website/src/components/demo/MacOSTrayMenu.tsx`
+//!
+//! When modifying the menu structure, labels, or icons, please also
+//! update the website demo component to match.
+//!
+//! Key sync points:
+//! - TRAY_INDENT and ICON_PAD constants
+//! - Menu item order and labels
+//! - Submenu structure for clients
+//! - Header text format ("LocalRouter on {host}:{port}")
 
 #![allow(dead_code)]
 
@@ -864,22 +878,17 @@ pub(crate) async fn handle_toggle_mcp_access<R: Runtime>(
     let client_manager = app.state::<Arc<ClientManager>>();
     let config_manager = app.state::<ConfigManager>();
 
-    // Get current access state
-    let current_access = client_manager
-        .get_mcp_server_access(client_id)
-        .ok_or_else(|| tauri::Error::Anyhow(anyhow::anyhow!("Client not found")))?;
-
-    // Check if server is currently allowed and toggle
-    let is_allowed = current_access.can_access(server_id);
+    // Check if server is currently allowed and toggle using new permission system
+    let is_allowed = client_manager.has_mcp_server_access(client_id, server_id);
 
     if is_allowed {
-        // Remove MCP server from client's allowed list
+        // Remove MCP server permission (set to Off)
         client_manager
             .remove_mcp_server(client_id, server_id)
             .map_err(|e| tauri::Error::Anyhow(e.into()))?;
         info!("MCP {} removed from client {}", server_id, client_id);
     } else {
-        // Add MCP server to client's allowed list
+        // Add MCP server permission (set to Allow)
         client_manager
             .add_mcp_server(client_id, server_id)
             .map_err(|e| tauri::Error::Anyhow(e.into()))?;
@@ -910,6 +919,7 @@ pub(crate) async fn handle_toggle_mcp_access<R: Runtime>(
 }
 
 /// Toggle skill access for a client from tray menu
+/// Uses the new skills_permissions system
 pub(crate) async fn handle_toggle_skill_access<R: Runtime>(
     app: &AppHandle<R>,
     client_id: &str,
@@ -922,55 +932,26 @@ pub(crate) async fn handle_toggle_skill_access<R: Runtime>(
 
     let config_manager = app.state::<ConfigManager>();
 
-    // Read current access and toggle by skill name
+    // Read current access and toggle by skill name using new permission system
     let mut found = false;
     config_manager
         .update(|cfg| {
             if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
-                let is_allowed = client.skills_access.can_access_by_name(skill_name);
+                // Check if skill is currently allowed using the new permission system
+                let is_allowed = client.skills_permissions.resolve_skill(skill_name).is_enabled();
                 if is_allowed {
-                    // Remove skill name
-                    match &client.skills_access {
-                        lr_config::SkillsAccess::All => {
-                            // Switching from All: better UX handled by frontend
-                            client.set_skills_access(lr_config::SkillsAccess::None);
-                        }
-                        lr_config::SkillsAccess::Specific(names) => {
-                            let new_names: Vec<String> = names
-                                .iter()
-                                .filter(|n| n.as_str() != skill_name)
-                                .cloned()
-                                .collect();
-                            if new_names.is_empty() {
-                                client.set_skills_access(lr_config::SkillsAccess::None);
-                            } else {
-                                client.set_skills_access(lr_config::SkillsAccess::Specific(
-                                    new_names,
-                                ));
-                            }
-                        }
-                        lr_config::SkillsAccess::None => {} // Already none
-                    }
+                    // Set skill permission to Off
+                    client
+                        .skills_permissions
+                        .skills
+                        .insert(skill_name.to_string(), lr_config::PermissionState::Off);
                     info!("Skill {} removed from client {}", skill_name, client_id);
                 } else {
-                    // Add skill name
-                    match &client.skills_access {
-                        lr_config::SkillsAccess::None => {
-                            client.set_skills_access(lr_config::SkillsAccess::Specific(vec![
-                                skill_name.to_string(),
-                            ]));
-                        }
-                        lr_config::SkillsAccess::Specific(names) => {
-                            if !names.contains(&skill_name.to_string()) {
-                                let mut new_names = names.clone();
-                                new_names.push(skill_name.to_string());
-                                client.set_skills_access(lr_config::SkillsAccess::Specific(
-                                    new_names,
-                                ));
-                            }
-                        }
-                        lr_config::SkillsAccess::All => {} // Already all
-                    }
+                    // Set skill permission to Allow
+                    client
+                        .skills_permissions
+                        .skills
+                        .insert(skill_name.to_string(), lr_config::PermissionState::Allow);
                     info!("Skill {} added to client {}", skill_name, client_id);
                 }
                 found = true;

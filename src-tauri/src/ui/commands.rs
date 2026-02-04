@@ -1,12 +1,29 @@
 //! Tauri command handlers
 //!
 //! Functions exposed to the frontend via Tauri IPC.
+//!
+//! ## WEBSITE DEMO SYNC REQUIRED
+//!
+//! Frontend commands are mocked in the website demo at:
+//!   `website/src/components/demo/TauriMockSetup.ts`
+//!   `website/src/components/demo/mockData.ts`
+//!
+//! When adding new commands or changing command signatures:
+//! 1. Add a mock handler in TauriMockSetup.ts
+//! 2. Add mock data in mockData.ts if needed
+//! 3. If no mock is added, a toast will warn users in demo mode
+//!
+//! Currently mocked commands include:
+//! - list_clients, get_client, create_client, delete_client
+//! - list_provider_instances, list_mcp_servers, list_strategies
+//! - list_all_models, get_aggregate_stats, get_health_cache
+//! - get_server_config, get_setup_wizard_shown, list_skills
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use lr_config::{ConfigManager, SkillsAccess, SkillsConfig};
+use lr_config::{ConfigManager, SkillsConfig};
 use lr_monitoring::logger::AccessLogger;
 use lr_oauth::clients::OAuthClientManager;
 use lr_server::ServerManager;
@@ -1658,50 +1675,6 @@ pub async fn get_skill_tools(
     Ok(tools)
 }
 
-/// Set skills access for a client
-#[tauri::command]
-pub async fn set_client_skills_access(
-    client_id: String,
-    mode: SkillsAccessMode,
-    skill_names: Vec<String>,
-    config_manager: State<'_, ConfigManager>,
-    app: tauri::AppHandle,
-) -> Result<(), String> {
-    let access = match mode {
-        SkillsAccessMode::None => SkillsAccess::None,
-        SkillsAccessMode::All => SkillsAccess::All,
-        SkillsAccessMode::Specific => SkillsAccess::Specific(skill_names),
-    };
-
-    tracing::info!(
-        "Setting skills access for client {} to {:?}",
-        client_id,
-        access
-    );
-
-    let mut found = false;
-    config_manager
-        .update(|cfg| {
-            if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
-                client.set_skills_access(access.clone());
-                found = true;
-            }
-        })
-        .map_err(|e| e.to_string())?;
-
-    if !found {
-        return Err(format!("Client not found: {}", client_id));
-    }
-
-    config_manager.save().await.map_err(|e| e.to_string())?;
-
-    if let Err(e) = app.emit("clients-changed", ()) {
-        tracing::error!("Failed to emit clients-changed event: {}", e);
-    }
-
-    Ok(())
-}
-
 /// Get files for a specific skill with content previews.
 /// Walks the entire skill directory recursively to list all files.
 /// Each file is categorized based on the skill's discovery logic:
@@ -1866,82 +1839,126 @@ fn is_text_file(path: &std::path::Path) -> bool {
 // Debug Commands (dev only)
 // ============================================================================
 
-/// Trigger a fake firewall approval popup after a 3 second delay.
+/// Debug firewall popup type
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DebugFirewallType {
+    /// MCP tool approval (default)
+    McpTool,
+    /// LLM model approval
+    LlmModel,
+    /// Skill approval
+    Skill,
+    /// Marketplace approval
+    Marketplace,
+}
+
+impl Default for DebugFirewallType {
+    fn default() -> Self {
+        Self::McpTool
+    }
+}
+
+/// Trigger a fake firewall approval popup immediately.
 ///
 /// This creates a real pending approval in the FirewallManager and opens
-/// the approval popup window after the delay. The timer runs on the backend
-/// so the caller can close the main window before the popup appears.
+/// the approval popup window.
 #[tauri::command]
 pub async fn debug_trigger_firewall_popup(
+    popup_type: Option<DebugFirewallType>,
     app: AppHandle,
     state: State<'_, Arc<lr_server::state::AppState>>,
 ) -> Result<(), String> {
+    let popup_type = popup_type.unwrap_or_default();
     let firewall_manager = state.mcp_gateway.firewall_manager.clone();
-    let app_clone = app.clone();
 
-    // Spawn a background task so the frontend call returns immediately
-    tauri::async_runtime::spawn(async move {
-        // Wait 3 seconds
-        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    // Create a fake approval request (this inserts into FirewallManager)
+    let request_id = uuid::Uuid::new_v4().to_string();
+    let timeout_secs: u64 = 30;
 
-        // Create a fake approval request (this inserts into FirewallManager)
-        let request_id = uuid::Uuid::new_v4().to_string();
-        let timeout_secs: u64 = 30;
+    // Configure based on popup type
+    let (tool_name, server_name, arguments_preview, is_model_request) = match popup_type {
+        DebugFirewallType::McpTool => (
+            "filesystem__write_file".to_string(),
+            "filesystem".to_string(),
+            r#"{"path": "/tmp/test.txt", "content": "hello world"}"#.to_string(),
+            false,
+        ),
+        DebugFirewallType::LlmModel => (
+            "claude-3-5-sonnet".to_string(),
+            "anthropic".to_string(),
+            r#"{"prompt": "Hello, how are you?", "max_tokens": 1000}"#.to_string(),
+            true,
+        ),
+        DebugFirewallType::Skill => (
+            "skill_web_search_search".to_string(),
+            "web-search".to_string(),
+            r#"{"query": "rust programming", "max_results": 10}"#.to_string(),
+            false,
+        ),
+        DebugFirewallType::Marketplace => (
+            "marketplace__install_package".to_string(),
+            "marketplace".to_string(),
+            r#"{"package": "code-review-tool", "version": "1.2.0"}"#.to_string(),
+            false,
+        ),
+    };
 
-        // For debug purposes, we don't need a response channel since there's no
-        // real MCP request waiting for the approval. Setting response_sender to None
-        // allows the popup to work without errors when submitting a response.
-        let session = lr_mcp::gateway::firewall::FirewallApprovalSession {
-            request_id: request_id.clone(),
-            client_id: "debug-client".to_string(),
-            client_name: "Debug Test Client".to_string(),
-            tool_name: "filesystem__write_file".to_string(),
-            server_name: "filesystem".to_string(),
-            arguments_preview: r#"{"path": "/tmp/test.txt", "content": "hello world"}"#.to_string(),
-            response_sender: None, // No response channel for debug mode
-            created_at: std::time::Instant::now(),
-            timeout_seconds: timeout_secs,
-            is_model_request: false,
-        };
+    // For debug purposes, we don't need a response channel since there's no
+    // real MCP request waiting for the approval. Setting response_sender to None
+    // allows the popup to work without errors when submitting a response.
+    let session = lr_mcp::gateway::firewall::FirewallApprovalSession {
+        request_id: request_id.clone(),
+        client_id: "debug-client".to_string(),
+        client_name: "Debug Test Client".to_string(),
+        tool_name,
+        server_name,
+        arguments_preview,
+        response_sender: None, // No response channel for debug mode
+        created_at: std::time::Instant::now(),
+        timeout_seconds: timeout_secs,
+        is_model_request,
+    };
 
-        firewall_manager.insert_pending(request_id.clone(), session);
+    firewall_manager.insert_pending(request_id.clone(), session);
 
-        // Rebuild tray menu to show the pending approval item
-        if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app_clone) {
-            tracing::warn!("Failed to rebuild tray menu for firewall approval: {}", e);
+    // Rebuild tray menu to show the pending approval item
+    if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
+        tracing::warn!("Failed to rebuild tray menu for firewall approval: {}", e);
+    }
+
+    // Trigger immediate tray icon update to show the question mark overlay
+    if let Some(tray_graph_manager) = app.try_state::<Arc<crate::ui::tray::TrayGraphManager>>() {
+        tray_graph_manager.notify_activity();
+    }
+
+    // Create the firewall approval popup window
+    use tauri::WebviewWindowBuilder;
+    match WebviewWindowBuilder::new(
+        &app,
+        format!("firewall-approval-{}", request_id),
+        tauri::WebviewUrl::App("index.html".into()),
+    )
+    .title("Approval Required")
+    .inner_size(400.0, 320.0)
+    .center()
+    .visible(true)
+    .resizable(false)
+    .decorations(true)
+    .build()
+    {
+        Ok(window) => {
+            let _ = window.set_focus();
+            tracing::info!(
+                "Debug firewall popup ({:?}) opened for request {}",
+                popup_type,
+                request_id
+            );
         }
-
-        // Trigger immediate tray icon update to show the question mark overlay
-        if let Some(tray_graph_manager) =
-            app_clone.try_state::<Arc<crate::ui::tray::TrayGraphManager>>()
-        {
-            tray_graph_manager.notify_activity();
+        Err(e) => {
+            tracing::error!("Failed to create debug firewall popup: {}", e);
         }
-
-        // Create the firewall approval popup window
-        use tauri::WebviewWindowBuilder;
-        match WebviewWindowBuilder::new(
-            &app_clone,
-            format!("firewall-approval-{}", request_id),
-            tauri::WebviewUrl::App("index.html".into()),
-        )
-        .title("Approve Tool")
-        .inner_size(400.0, 340.0)
-        .center()
-        .visible(true)
-        .resizable(false)
-        .decorations(false)
-        .build()
-        {
-            Ok(window) => {
-                let _ = window.set_focus();
-                tracing::info!("Debug firewall popup opened for request {}", request_id);
-            }
-            Err(e) => {
-                tracing::error!("Failed to create debug firewall popup: {}", e);
-            }
-        }
-    });
+    }
 
     Ok(())
 }

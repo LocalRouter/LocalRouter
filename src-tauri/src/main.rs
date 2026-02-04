@@ -8,7 +8,7 @@ mod updater;
 use std::sync::Arc;
 
 use tauri::{Listener, Manager};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 // Re-exported crate aliases from lib.rs
@@ -701,7 +701,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
 
                         loop {
                             interval.tick().await;
-                            info!("Running periodic health checks...");
+                            debug!("Running periodic health checks...");
 
                             // Check all providers
                             let providers = provider_registry_for_task.list_providers();
@@ -792,7 +792,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                             }
 
                             health_cache_for_task.mark_refresh();
-                            info!("Periodic health checks completed");
+                            debug!("Periodic health checks completed");
                         }
                     });
                     info!(
@@ -1031,11 +1031,6 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::toggle_client_enabled,
             ui::commands::rotate_client_secret,
             ui::commands::toggle_client_deferred_loading,
-            ui::commands::add_client_llm_provider,
-            ui::commands::remove_client_llm_provider,
-            ui::commands::add_client_mcp_server,
-            ui::commands::remove_client_mcp_server,
-            ui::commands::set_client_mcp_access,
             ui::commands::get_client_value,
             // Strategy management commands
             ui::commands::list_strategies,
@@ -1114,7 +1109,6 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::remove_skill_source,
             ui::commands::set_skill_enabled,
             ui::commands::rescan_skills,
-            ui::commands::set_client_skills_access,
             ui::commands::get_skill_files,
             // Marketplace commands
             ui::commands_marketplace::marketplace_get_config,

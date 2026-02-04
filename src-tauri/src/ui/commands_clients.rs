@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use lr_config::{
     client_strategy_name, ConfigManager, FirewallPolicy, FirewallRules, McpPermissions,
-    McpServerAccess, ModelPermissions, PermissionState, SkillsAccess, SkillsPermissions,
+    ModelPermissions, PermissionState, SkillsPermissions,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, State};
@@ -14,18 +14,6 @@ use tauri::{Emitter, State};
 // ============================================================================
 // Unified Client Management Commands
 // ============================================================================
-
-/// MCP server access mode for the UI
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum McpAccessMode {
-    /// No MCP access
-    None,
-    /// Access to all MCP servers
-    All,
-    /// Access to specific servers only
-    Specific,
-}
 
 /// Client information for display
 ///
@@ -44,16 +32,7 @@ pub struct ClientInfo {
     pub client_id: String,
     pub enabled: bool,
     pub strategy_id: String,
-    pub allowed_llm_providers: Vec<String>,
-    /// The MCP access mode: "none", "all", or "specific"
-    pub mcp_access_mode: McpAccessMode,
-    /// List of specific MCP server IDs (only relevant when mcp_access_mode is "specific")
-    pub mcp_servers: Vec<String>,
     pub mcp_deferred_loading: bool,
-    /// Skills access mode: "none", "all", or "specific"
-    pub skills_access_mode: SkillsAccessMode,
-    /// List of specific skill names (only relevant when skills_access_mode is "specific")
-    pub skills_names: Vec<String>,
     pub created_at: String,
     pub last_used: Option<String>,
     /// Firewall rules for this client
@@ -68,36 +47,6 @@ pub struct ClientInfo {
     pub marketplace_permission: PermissionState,
 }
 
-/// Skills access mode for the UI
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum SkillsAccessMode {
-    /// No skills access
-    None,
-    /// Access to all discovered skills
-    All,
-    /// Access to specific skills only
-    Specific,
-}
-
-/// Convert SkillsAccess to UI representation
-fn skills_access_to_ui(access: &SkillsAccess) -> (SkillsAccessMode, Vec<String>) {
-    match access {
-        SkillsAccess::None => (SkillsAccessMode::None, vec![]),
-        SkillsAccess::All => (SkillsAccessMode::All, vec![]),
-        SkillsAccess::Specific(names) => (SkillsAccessMode::Specific, names.clone()),
-    }
-}
-
-/// Convert McpServerAccess to UI representation
-fn mcp_access_to_ui(access: &McpServerAccess) -> (McpAccessMode, Vec<String>) {
-    match access {
-        McpServerAccess::None => (McpAccessMode::None, vec![]),
-        McpServerAccess::All => (McpAccessMode::All, vec![]),
-        McpServerAccess::Specific(servers) => (McpAccessMode::Specific, servers.clone()),
-    }
-}
-
 /// List all clients
 #[tauri::command]
 pub async fn list_clients(
@@ -107,29 +56,20 @@ pub async fn list_clients(
     Ok(clients
         .into_iter()
         .filter(|c| !c.name.starts_with("_test_strategy_"))
-        .map(|c| {
-            let (mcp_access_mode, mcp_servers) = mcp_access_to_ui(&c.mcp_server_access);
-            let (skills_access_mode, skills_names) = skills_access_to_ui(&c.skills_access);
-            ClientInfo {
-                id: c.id.clone(),
-                name: c.name.clone(),
-                client_id: c.id.clone(),
-                enabled: c.enabled,
-                strategy_id: c.strategy_id.clone(),
-                allowed_llm_providers: c.allowed_llm_providers.clone(),
-                mcp_access_mode,
-                mcp_servers,
-                mcp_deferred_loading: c.mcp_deferred_loading,
-                skills_access_mode,
-                skills_names,
-                created_at: c.created_at.to_rfc3339(),
-                last_used: c.last_used.map(|t| t.to_rfc3339()),
-                firewall: c.firewall.clone(),
-                mcp_permissions: c.mcp_permissions.clone(),
-                skills_permissions: c.skills_permissions.clone(),
-                model_permissions: c.model_permissions.clone(),
-                marketplace_permission: c.marketplace_permission.clone(),
-            }
+        .map(|c| ClientInfo {
+            id: c.id.clone(),
+            name: c.name.clone(),
+            client_id: c.id.clone(),
+            enabled: c.enabled,
+            strategy_id: c.strategy_id.clone(),
+            mcp_deferred_loading: c.mcp_deferred_loading,
+            created_at: c.created_at.to_rfc3339(),
+            last_used: c.last_used.map(|t| t.to_rfc3339()),
+            firewall: c.firewall.clone(),
+            mcp_permissions: c.mcp_permissions.clone(),
+            skills_permissions: c.skills_permissions.clone(),
+            model_permissions: c.model_permissions.clone(),
+            marketplace_permission: c.marketplace_permission.clone(),
         })
         .collect())
 }
@@ -172,20 +112,13 @@ pub async fn create_client(
         tracing::error!("Failed to emit strategies-changed event: {}", e);
     }
 
-    let (mcp_access_mode, mcp_servers) = mcp_access_to_ui(&client.mcp_server_access);
-    let (skills_access_mode, skills_names) = skills_access_to_ui(&client.skills_access);
     let client_info = ClientInfo {
         id: client.id.clone(),
         name: client.name.clone(),
         client_id: client.id.clone(),
         enabled: client.enabled,
         strategy_id: client.strategy_id.clone(),
-        allowed_llm_providers: client.allowed_llm_providers.clone(),
-        mcp_access_mode,
-        mcp_servers,
         mcp_deferred_loading: client.mcp_deferred_loading,
-        skills_access_mode,
-        skills_names,
         created_at: client.created_at.to_rfc3339(),
         last_used: client.last_used.map(|t| t.to_rfc3339()),
         firewall: client.firewall.clone(),
@@ -405,242 +338,6 @@ pub async fn toggle_client_deferred_loading(
             }
         })
         .map_err(|e| e.to_string())?;
-
-    // Persist to disk
-    config_manager.save().await.map_err(|e| e.to_string())?;
-
-    // Emit clients-changed event for UI updates
-    if let Err(e) = app.emit("clients-changed", ()) {
-        tracing::error!("Failed to emit clients-changed event: {}", e);
-    }
-
-    Ok(())
-}
-
-/// Add an LLM provider to a client's allowed list
-#[tauri::command]
-pub async fn add_client_llm_provider(
-    client_id: String,
-    provider: String,
-    client_manager: State<'_, Arc<lr_clients::ClientManager>>,
-    config_manager: State<'_, ConfigManager>,
-    app: tauri::AppHandle,
-) -> Result<(), String> {
-    tracing::info!("Adding LLM provider {} to client {}", provider, client_id);
-
-    // Update in client manager
-    client_manager
-        .add_llm_provider(&client_id, &provider)
-        .map_err(|e| e.to_string())?;
-
-    // Update in config
-    let mut found = false;
-    config_manager
-        .update(|cfg| {
-            if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
-                if !client.allowed_llm_providers.contains(&provider) {
-                    client.allowed_llm_providers.push(provider.clone());
-                }
-                found = true;
-            }
-        })
-        .map_err(|e| e.to_string())?;
-
-    if !found {
-        return Err(format!("Client not found: {}", client_id));
-    }
-
-    // Persist to disk
-    config_manager.save().await.map_err(|e| e.to_string())?;
-
-    // Emit clients-changed event for UI updates
-    if let Err(e) = app.emit("clients-changed", ()) {
-        tracing::error!("Failed to emit clients-changed event: {}", e);
-    }
-
-    Ok(())
-}
-
-/// Remove an LLM provider from a client's allowed list
-#[tauri::command]
-pub async fn remove_client_llm_provider(
-    client_id: String,
-    provider: String,
-    client_manager: State<'_, Arc<lr_clients::ClientManager>>,
-    config_manager: State<'_, ConfigManager>,
-    app: tauri::AppHandle,
-) -> Result<(), String> {
-    tracing::info!(
-        "Removing LLM provider {} from client {}",
-        provider,
-        client_id
-    );
-
-    // Update in client manager
-    client_manager
-        .remove_llm_provider(&client_id, &provider)
-        .map_err(|e| e.to_string())?;
-
-    // Update in config
-    let mut found = false;
-    config_manager
-        .update(|cfg| {
-            if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
-                client.allowed_llm_providers.retain(|p| p != &provider);
-                found = true;
-            }
-        })
-        .map_err(|e| e.to_string())?;
-
-    if !found {
-        return Err(format!("Client not found: {}", client_id));
-    }
-
-    // Persist to disk
-    config_manager.save().await.map_err(|e| e.to_string())?;
-
-    // Emit clients-changed event for UI updates
-    if let Err(e) = app.emit("clients-changed", ()) {
-        tracing::error!("Failed to emit clients-changed event: {}", e);
-    }
-
-    Ok(())
-}
-
-/// Add an MCP server to a client's allowed list
-#[tauri::command]
-pub async fn add_client_mcp_server(
-    client_id: String,
-    server_id: String,
-    client_manager: State<'_, Arc<lr_clients::ClientManager>>,
-    config_manager: State<'_, ConfigManager>,
-    app: tauri::AppHandle,
-) -> Result<(), String> {
-    tracing::info!("Adding MCP server {} to client {}", server_id, client_id);
-
-    // Update in client manager
-    client_manager
-        .add_mcp_server(&client_id, &server_id)
-        .map_err(|e| e.to_string())?;
-
-    // Update in config
-    let mut found = false;
-    config_manager
-        .update(|cfg| {
-            if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
-                client.add_mcp_server(server_id.clone());
-                found = true;
-            }
-        })
-        .map_err(|e| e.to_string())?;
-
-    if !found {
-        return Err(format!("Client not found: {}", client_id));
-    }
-
-    // Persist to disk
-    config_manager.save().await.map_err(|e| e.to_string())?;
-
-    // Emit clients-changed event for UI updates
-    if let Err(e) = app.emit("clients-changed", ()) {
-        tracing::error!("Failed to emit clients-changed event: {}", e);
-    }
-
-    Ok(())
-}
-
-/// Remove an MCP server from a client's allowed list
-#[tauri::command]
-pub async fn remove_client_mcp_server(
-    client_id: String,
-    server_id: String,
-    client_manager: State<'_, Arc<lr_clients::ClientManager>>,
-    config_manager: State<'_, ConfigManager>,
-    app: tauri::AppHandle,
-) -> Result<(), String> {
-    tracing::info!(
-        "Removing MCP server {} from client {}",
-        server_id,
-        client_id
-    );
-
-    // Update in client manager
-    client_manager
-        .remove_mcp_server(&client_id, &server_id)
-        .map_err(|e| e.to_string())?;
-
-    // Update in config
-    let mut found = false;
-    config_manager
-        .update(|cfg| {
-            if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
-                client.remove_mcp_server(&server_id);
-                found = true;
-            }
-        })
-        .map_err(|e| e.to_string())?;
-
-    if !found {
-        return Err(format!("Client not found: {}", client_id));
-    }
-
-    // Persist to disk
-    config_manager.save().await.map_err(|e| e.to_string())?;
-
-    // Emit clients-changed event for UI updates
-    if let Err(e) = app.emit("clients-changed", ()) {
-        tracing::error!("Failed to emit clients-changed event: {}", e);
-    }
-
-    Ok(())
-}
-
-/// Set MCP server access mode for a client
-///
-/// # Arguments
-/// * `client_id` - The client ID
-/// * `mode` - The access mode: "none", "all", or "specific"
-/// * `servers` - List of server IDs (only used when mode is "specific")
-#[tauri::command]
-pub async fn set_client_mcp_access(
-    client_id: String,
-    mode: McpAccessMode,
-    servers: Vec<String>,
-    client_manager: State<'_, Arc<lr_clients::ClientManager>>,
-    config_manager: State<'_, ConfigManager>,
-    app: tauri::AppHandle,
-) -> Result<(), String> {
-    let access = match mode {
-        McpAccessMode::None => McpServerAccess::None,
-        McpAccessMode::All => McpServerAccess::All,
-        McpAccessMode::Specific => McpServerAccess::Specific(servers),
-    };
-
-    tracing::info!(
-        "Setting MCP access for client {} to {:?}",
-        client_id,
-        access
-    );
-
-    // Update in client manager
-    client_manager
-        .set_mcp_server_access(&client_id, access.clone())
-        .map_err(|e| e.to_string())?;
-
-    // Update in config
-    let mut found = false;
-    config_manager
-        .update(|cfg| {
-            if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
-                client.set_mcp_server_access(access.clone());
-                found = true;
-            }
-        })
-        .map_err(|e| e.to_string())?;
-
-    if !found {
-        return Err(format!("Client not found: {}", client_id));
-    }
 
     // Persist to disk
     config_manager.save().await.map_err(|e| e.to_string())?;
@@ -1308,22 +1005,27 @@ pub enum ModelPermissionLevel {
 /// * `level` - Permission level: global, server, tool, resource, prompt
 /// * `key` - The key for the permission (e.g., server_id, tool_name)
 /// * `state` - The permission state to set
+/// * `clear` - If true, removes the override (inherits from parent). If false/None, sets the state.
 #[tauri::command]
 pub async fn set_client_mcp_permission(
     client_id: String,
     level: McpPermissionLevel,
     key: Option<String>,
     state: PermissionState,
+    clear: Option<bool>,
     config_manager: State<'_, ConfigManager>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     tracing::info!(
-        "Setting MCP permission for client {}: level={:?}, key={:?}, state={:?}",
+        "Setting MCP permission for client {}: level={:?}, key={:?}, state={:?}, clear={:?}",
         client_id,
         level,
         key,
-        state
+        state,
+        clear
     );
+
+    let should_clear = clear.unwrap_or(false);
 
     let mut found = false;
     config_manager
@@ -1335,7 +1037,7 @@ pub async fn set_client_mcp_permission(
                     }
                     McpPermissionLevel::Server => {
                         if let Some(k) = key.clone() {
-                            if state == PermissionState::default() {
+                            if should_clear {
                                 client.mcp_permissions.servers.remove(&k);
                             } else {
                                 client.mcp_permissions.servers.insert(k, state.clone());
@@ -1344,7 +1046,7 @@ pub async fn set_client_mcp_permission(
                     }
                     McpPermissionLevel::Tool => {
                         if let Some(k) = key.clone() {
-                            if state == PermissionState::default() {
+                            if should_clear {
                                 client.mcp_permissions.tools.remove(&k);
                             } else {
                                 client.mcp_permissions.tools.insert(k, state.clone());
@@ -1353,7 +1055,7 @@ pub async fn set_client_mcp_permission(
                     }
                     McpPermissionLevel::Resource => {
                         if let Some(k) = key.clone() {
-                            if state == PermissionState::default() {
+                            if should_clear {
                                 client.mcp_permissions.resources.remove(&k);
                             } else {
                                 client.mcp_permissions.resources.insert(k, state.clone());
@@ -1362,7 +1064,7 @@ pub async fn set_client_mcp_permission(
                     }
                     McpPermissionLevel::Prompt => {
                         if let Some(k) = key.clone() {
-                            if state == PermissionState::default() {
+                            if should_clear {
                                 client.mcp_permissions.prompts.remove(&k);
                             } else {
                                 client.mcp_permissions.prompts.insert(k, state.clone());
@@ -1395,22 +1097,27 @@ pub async fn set_client_mcp_permission(
 /// * `level` - Permission level: global, skill, tool
 /// * `key` - The key for the permission (e.g., skill_name, tool_name)
 /// * `state` - The permission state to set
+/// * `clear` - If true, removes the override (inherits from parent). If false/None, sets the state.
 #[tauri::command]
 pub async fn set_client_skills_permission(
     client_id: String,
     level: SkillsPermissionLevel,
     key: Option<String>,
     state: PermissionState,
+    clear: Option<bool>,
     config_manager: State<'_, ConfigManager>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     tracing::info!(
-        "Setting Skills permission for client {}: level={:?}, key={:?}, state={:?}",
+        "Setting Skills permission for client {}: level={:?}, key={:?}, state={:?}, clear={:?}",
         client_id,
         level,
         key,
-        state
+        state,
+        clear
     );
+
+    let should_clear = clear.unwrap_or(false);
 
     let mut found = false;
     config_manager
@@ -1422,7 +1129,7 @@ pub async fn set_client_skills_permission(
                     }
                     SkillsPermissionLevel::Skill => {
                         if let Some(k) = key.clone() {
-                            if state == PermissionState::default() {
+                            if should_clear {
                                 client.skills_permissions.skills.remove(&k);
                             } else {
                                 client.skills_permissions.skills.insert(k, state.clone());
@@ -1431,7 +1138,7 @@ pub async fn set_client_skills_permission(
                     }
                     SkillsPermissionLevel::Tool => {
                         if let Some(k) = key.clone() {
-                            if state == PermissionState::default() {
+                            if should_clear {
                                 client.skills_permissions.tools.remove(&k);
                             } else {
                                 client.skills_permissions.tools.insert(k, state.clone());
@@ -1464,22 +1171,27 @@ pub async fn set_client_skills_permission(
 /// * `level` - Permission level: global, provider, model
 /// * `key` - The key for the permission (e.g., provider_name, model_id)
 /// * `state` - The permission state to set
+/// * `clear` - If true, removes the override (inherits from parent). If false/None, sets the state.
 #[tauri::command]
 pub async fn set_client_model_permission(
     client_id: String,
     level: ModelPermissionLevel,
     key: Option<String>,
     state: PermissionState,
+    clear: Option<bool>,
     config_manager: State<'_, ConfigManager>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     tracing::info!(
-        "Setting Model permission for client {}: level={:?}, key={:?}, state={:?}",
+        "Setting Model permission for client {}: level={:?}, key={:?}, state={:?}, clear={:?}",
         client_id,
         level,
         key,
-        state
+        state,
+        clear
     );
+
+    let should_clear = clear.unwrap_or(false);
 
     let mut found = false;
     config_manager
@@ -1491,7 +1203,7 @@ pub async fn set_client_model_permission(
                     }
                     ModelPermissionLevel::Provider => {
                         if let Some(k) = key.clone() {
-                            if state == PermissionState::default() {
+                            if should_clear {
                                 client.model_permissions.providers.remove(&k);
                             } else {
                                 client.model_permissions.providers.insert(k, state.clone());
@@ -1500,7 +1212,7 @@ pub async fn set_client_model_permission(
                     }
                     ModelPermissionLevel::Model => {
                         if let Some(k) = key.clone() {
-                            if state == PermissionState::default() {
+                            if should_clear {
                                 client.model_permissions.models.remove(&k);
                             } else {
                                 client.model_permissions.models.insert(k, state.clone());

@@ -13,7 +13,7 @@ mod mcp_tests;
 
 use localrouter::config::AppConfig;
 use localrouter::config::ConfigManager;
-use localrouter::config::SkillsAccess;
+use localrouter::config::{PermissionState, SkillsPermissions};
 use localrouter::mcp::gateway::types::DeferredLoadingState;
 use localrouter::mcp::gateway::{GatewayConfig, McpGateway};
 use localrouter::mcp::protocol::JsonRpcRequest;
@@ -137,7 +137,11 @@ async fn test_skills_e2e_all_tool_commands() {
     let gateway = Arc::new(gateway);
 
     let client_id = "test-skills-client";
-    let skills_access = SkillsAccess::Specific(vec!["get-current-time".to_string()]);
+    let skills_permissions = {
+        let mut perms = SkillsPermissions::default();
+        perms.skills.insert("get-current-time".to_string(), PermissionState::Allow);
+        perms
+    };
 
     // ── Step 1: tools/list (before get_info) ──────────────────────
     // Only get_info tools should be visible initially
@@ -148,10 +152,10 @@ async fn test_skills_e2e_all_tool_commands() {
             vec![],
             false,
             vec![],
-            skills_access.clone(),
+            skills_permissions.clone(),
             lr_config::FirewallRules::default(),
             "Test Client".to_string(),
-            false,
+            PermissionState::Off,
             tools_list_req,
         )
         .await
@@ -193,10 +197,10 @@ async fn test_skills_e2e_all_tool_commands() {
             vec![],
             false,
             vec![],
-            skills_access.clone(),
+            skills_permissions.clone(),
             lr_config::FirewallRules::default(),
             "Test Client".to_string(),
-            false,
+            PermissionState::Off,
             show_req,
         )
         .await
@@ -245,10 +249,10 @@ async fn test_skills_e2e_all_tool_commands() {
             vec![],
             false,
             vec![],
-            skills_access.clone(),
+            skills_permissions.clone(),
             lr_config::FirewallRules::default(),
             "Test Client".to_string(),
-            false,
+            PermissionState::Off,
             tools_list_req2,
         )
         .await
@@ -301,10 +305,10 @@ async fn test_skills_e2e_all_tool_commands() {
             vec![],
             false,
             vec![],
-            skills_access.clone(),
+            skills_permissions.clone(),
             lr_config::FirewallRules::default(),
             "Test Client".to_string(),
-            false,
+            PermissionState::Off,
             resource_req,
         )
         .await
@@ -343,10 +347,10 @@ async fn test_skills_e2e_all_tool_commands() {
             vec![],
             false,
             vec![],
-            skills_access.clone(),
+            skills_permissions.clone(),
             lr_config::FirewallRules::default(),
             "Test Client".to_string(),
-            false,
+            PermissionState::Off,
             run_sync_req,
         )
         .await
@@ -407,10 +411,10 @@ async fn test_skills_e2e_all_tool_commands() {
             vec![],
             false,
             vec![],
-            skills_access.clone(),
+            skills_permissions.clone(),
             lr_config::FirewallRules::default(),
             "Test Client".to_string(),
-            false,
+            PermissionState::Off,
             run_async_req,
         )
         .await
@@ -448,10 +452,10 @@ async fn test_skills_e2e_all_tool_commands() {
                 vec![],
                 false,
                 vec![],
-                skills_access.clone(),
+                skills_permissions.clone(),
                 lr_config::FirewallRules::default(),
                 "Test Client".to_string(),
-                false,
+                PermissionState::Off,
                 poll_req,
             )
             .await
@@ -567,10 +571,10 @@ async fn test_no_skill_tools_when_no_skills_configured() {
             vec![],
             false,
             vec![],
-            SkillsAccess::None,
+            SkillsPermissions::default(),
             lr_config::FirewallRules::default(),
             "Test Client".to_string(),
-            false,
+            PermissionState::Off,
             req,
         )
         .await
@@ -592,7 +596,11 @@ async fn test_skill_tools_present_after_cache_hit() {
     let (gateway, _temp_dir) = setup_gateway_with_skill().await;
 
     let client_id = "cache-test-client";
-    let skills_access = SkillsAccess::Specific(vec!["get-current-time".to_string()]);
+    let skills_permissions = {
+        let mut perms = SkillsPermissions::default();
+        perms.skills.insert("get-current-time".to_string(), PermissionState::Allow);
+        perms
+    };
 
     // First call: populates cache
     let req = JsonRpcRequest::with_id(1, "tools/list".to_string(), Some(json!({})));
@@ -602,10 +610,10 @@ async fn test_skill_tools_present_after_cache_hit() {
             vec![],
             false,
             vec![],
-            skills_access.clone(),
+            skills_permissions.clone(),
             lr_config::FirewallRules::default(),
             "Test Client".to_string(),
-            false,
+            PermissionState::Off,
             req,
         )
         .await
@@ -626,10 +634,10 @@ async fn test_skill_tools_present_after_cache_hit() {
             vec![],
             false,
             vec![],
-            skills_access.clone(),
+            skills_permissions.clone(),
             lr_config::FirewallRules::default(),
             "Test Client".to_string(),
-            false,
+            PermissionState::Off,
             req2,
         )
         .await
@@ -649,7 +657,11 @@ async fn test_skill_tools_present_with_deferred_loading() {
     let (gateway, _temp_dir) = setup_gateway_with_skill().await;
 
     let client_id = "deferred-test-client";
-    let skills_access = SkillsAccess::Specific(vec!["get-current-time".to_string()]);
+    let skills_permissions = {
+        let mut perms = SkillsPermissions::default();
+        perms.skills.insert("get-current-time".to_string(), PermissionState::Allow);
+        perms
+    };
 
     // First call to create the session and set allowed_skills
     let req = JsonRpcRequest::with_id(1, "tools/list".to_string(), Some(json!({})));
@@ -659,10 +671,10 @@ async fn test_skill_tools_present_with_deferred_loading() {
             vec![],
             false,
             vec![],
-            skills_access.clone(),
+            skills_permissions.clone(),
             lr_config::FirewallRules::default(),
             "Test Client".to_string(),
-            false,
+            PermissionState::Off,
             req,
         )
         .await
@@ -695,10 +707,10 @@ async fn test_skill_tools_present_with_deferred_loading() {
             vec![],
             false,
             vec![],
-            skills_access.clone(),
+            skills_permissions.clone(),
             lr_config::FirewallRules::default(),
             "Test Client".to_string(),
-            false,
+            PermissionState::Off,
             req2,
         )
         .await
@@ -719,7 +731,11 @@ async fn test_run_tool_blocked_before_get_info() {
     let (gateway, _temp_dir) = setup_gateway_with_skill().await;
 
     let client_id = "gate-test-client";
-    let skills_access = SkillsAccess::Specific(vec!["get-current-time".to_string()]);
+    let skills_permissions = {
+        let mut perms = SkillsPermissions::default();
+        perms.skills.insert("get-current-time".to_string(), PermissionState::Allow);
+        perms
+    };
 
     // Create session first
     let req = JsonRpcRequest::with_id(1, "tools/list".to_string(), Some(json!({})));
@@ -729,10 +745,10 @@ async fn test_run_tool_blocked_before_get_info() {
             vec![],
             false,
             vec![],
-            skills_access.clone(),
+            skills_permissions.clone(),
             lr_config::FirewallRules::default(),
             "Test Client".to_string(),
-            false,
+            PermissionState::Off,
             req,
         )
         .await
@@ -753,10 +769,10 @@ async fn test_run_tool_blocked_before_get_info() {
             vec![],
             false,
             vec![],
-            skills_access.clone(),
+            skills_permissions.clone(),
             lr_config::FirewallRules::default(),
             "Test Client".to_string(),
-            false,
+            PermissionState::Off,
             run_req,
         )
         .await

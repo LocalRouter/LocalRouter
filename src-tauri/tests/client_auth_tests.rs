@@ -227,37 +227,32 @@ fn test_client_mcp_server_access() -> AppResult<()> {
     let (_client_id, _secret, client) =
         manager.create_client("MCP Access Test".to_string(), "default".to_string())?;
 
-    // Initially no servers allowed
-    assert!(!client.mcp_server_access.has_any_access());
+    // Initially no servers allowed (using new permission system)
+    assert!(!client.mcp_permissions.global.is_enabled());
+    assert!(client.mcp_permissions.servers.is_empty());
 
     // Add a server
     manager.add_mcp_server(&client.id, "server-1")?;
 
-    // Verify server was added
+    // Verify server was added (using new permission system)
     let updated_client = manager.get_client(&client.id).unwrap();
-    let servers = updated_client.mcp_server_access.specific_servers().unwrap();
-    assert_eq!(servers.len(), 1);
-    assert!(servers.contains(&"server-1".to_string()));
+    assert!(updated_client.mcp_permissions.resolve_server("server-1").is_enabled());
 
     // Add another server
     manager.add_mcp_server(&client.id, "server-2")?;
 
-    // Verify both servers
+    // Verify both servers (using new permission system)
     let updated_client = manager.get_client(&client.id).unwrap();
-    let servers = updated_client.mcp_server_access.specific_servers().unwrap();
-    assert_eq!(servers.len(), 2);
-    assert!(servers.contains(&"server-1".to_string()));
-    assert!(servers.contains(&"server-2".to_string()));
+    assert!(updated_client.mcp_permissions.resolve_server("server-1").is_enabled());
+    assert!(updated_client.mcp_permissions.resolve_server("server-2").is_enabled());
 
     // Remove a server
     manager.remove_mcp_server(&client.id, "server-1")?;
 
-    // Verify only server-2 remains
+    // Verify only server-2 remains (using new permission system)
     let updated_client = manager.get_client(&client.id).unwrap();
-    let servers = updated_client.mcp_server_access.specific_servers().unwrap();
-    assert_eq!(servers.len(), 1);
-    assert!(servers.contains(&"server-2".to_string()));
-    assert!(!servers.contains(&"server-1".to_string()));
+    assert!(!updated_client.mcp_permissions.resolve_server("server-1").is_enabled());
+    assert!(updated_client.mcp_permissions.resolve_server("server-2").is_enabled());
 
     Ok(())
 }

@@ -389,13 +389,13 @@ pub fn setup_tray<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
 
 /// Rebuild the system tray menu with updated API keys
 pub fn rebuild_tray_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
-    info!("Rebuilding system tray menu");
+    debug!("Rebuilding system tray menu");
 
     let menu = build_tray_menu(app)?;
 
     if let Some(tray) = app.tray_by_id("main") {
         tray.set_menu(Some(menu))?;
-        info!("System tray menu updated");
+        debug!("System tray menu updated");
     }
 
     Ok(())
