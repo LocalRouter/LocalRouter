@@ -8,6 +8,9 @@ export default function Demo() {
   const [ready, setReady] = useState(false)
 
   useEffect(() => {
+    // Dynamically load the main app's CSS (avoids bundling with site-wide CSS)
+    import('@app/index.css')
+
     // Initialize Tauri mocks
     stubTauriInternals()
     setupTauriMocks()
