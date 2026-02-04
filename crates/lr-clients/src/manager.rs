@@ -281,7 +281,7 @@ impl ClientManager {
         clients
             .iter()
             .find(|c| c.id == client_id && c.enabled)
-            .map(|c| c.mcp_server_access.can_access(server_id))
+            .map(|c| c.mcp_permissions.resolve_server(server_id).is_enabled())
             .unwrap_or(false)
     }
 

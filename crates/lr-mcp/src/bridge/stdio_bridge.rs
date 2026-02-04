@@ -371,6 +371,11 @@ mod tests {
 
     fn test_config() -> AppConfig {
         let mut config = AppConfig::default();
+
+        // Create mcp_permissions with filesystem server enabled
+        let mut test_mcp_permissions = McpPermissions::default();
+        test_mcp_permissions.servers.insert("filesystem".to_string(), PermissionState::Allow);
+
         config.clients = vec![
             Client {
                 id: "test_client".to_string(),
@@ -390,7 +395,7 @@ mod tests {
                 firewall: FirewallRules::default(),
                 skills_access: lr_config::SkillsAccess::None,
                 marketplace_enabled: false,
-                mcp_permissions: McpPermissions::default(),
+                mcp_permissions: test_mcp_permissions,
                 skills_permissions: SkillsPermissions::default(),
                 model_permissions: ModelPermissions::default(),
                 marketplace_permission: PermissionState::Off,
