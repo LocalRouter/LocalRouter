@@ -357,6 +357,12 @@ impl Default for CallbackServerManager {
 mod tests {
     use super::*;
 
+    /// Find an available port by binding to port 0 and getting the assigned port
+    fn find_available_port() -> u16 {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap().port()
+    }
+
     #[test]
     fn test_callback_server_manager_creation() {
         let manager = CallbackServerManager::new();
@@ -368,7 +374,7 @@ mod tests {
     async fn test_register_listener() {
         let manager = CallbackServerManager::new();
         let flow_id = FlowId::new();
-        let port = 8888;
+        let port = find_available_port();
         let state = "test_state".to_string();
 
         let _rx = manager
@@ -385,7 +391,7 @@ mod tests {
         let manager = CallbackServerManager::new();
         let flow_id1 = FlowId::new();
         let flow_id2 = FlowId::new();
-        let port = 8889;
+        let port = find_available_port();
 
         let _rx1 = manager
             .register_listener(flow_id1, port, "state1".to_string())
@@ -405,7 +411,7 @@ mod tests {
     async fn test_cancel_flow() {
         let manager = CallbackServerManager::new();
         let flow_id = FlowId::new();
-        let port = 8890;
+        let port = find_available_port();
 
         let _rx = manager
             .register_listener(flow_id, port, "test_state".to_string())
