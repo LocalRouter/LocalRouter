@@ -18,7 +18,7 @@ function resolveAppAlias(): Plugin {
       }
 
       // Determine which src folder to use based on where the import is from
-      if (importer && importer.includes('/localrouterai/src/') && !importer.includes('/localrouterai/website/')) {
+      if (importer && importer.startsWith(mainAppSrc) && !importer.startsWith(websiteSrc)) {
         // Import from main app - resolve to main app's src
         const resolved = source.replace('@/', mainAppSrc + '/')
         return this.resolve(resolved, importer, { skipSelf: true })
