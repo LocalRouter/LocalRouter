@@ -86,8 +86,6 @@ export const ThresholdSelector: React.FC<ThresholdSelectorProps> = ({
     onEstimateUpdate?.({ weak: profile.weak, strong: profile.strong });
   }, [value, profile.weak, profile.strong, onEstimateUpdate]);
 
-  const currentPreset = THRESHOLD_PRESETS.find((p) => Math.abs(p.value - value) < 0.05);
-
   const runTest = async (prompt: string) => {
     if (!prompt.trim() || isTesting) return;
 

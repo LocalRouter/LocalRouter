@@ -456,26 +456,31 @@ fn test_memory_efficiency() {
     let db = Arc::new(MetricsDatabase::new(db_path).unwrap());
     let collector = MetricsCollector::new(db);
 
+    // Use a fixed timestamp to avoid flakiness from minute boundary crossings
+    let fixed_time = Utc::now();
+
     // Record many metrics
     for i in 0..1000 {
-        collector.record_success(&RequestMetrics {
-            api_key_name: &format!("key{}", i % 10),
-            provider: "openai",
-            model: "gpt-4",
-            input_tokens: 100,
-            output_tokens: 200,
-            cost_usd: 0.05,
-            latency_ms: 1000,
-            strategy_id: "default",
-        });
+        collector.record_success_at(
+            &RequestMetrics {
+                api_key_name: &format!("key{}", i % 10),
+                provider: "openai",
+                model: "gpt-4",
+                input_tokens: 100,
+                output_tokens: 200,
+                cost_usd: 0.05,
+                latency_ms: 1000,
+                strategy_id: "default",
+            },
+            fixed_time,
+        );
     }
 
     // All data should be in SQLite, not in-memory
     // We can't directly measure memory, but we can verify the data is retrievable
-    let now = Utc::now();
     let global = collector.get_global_range(
-        now - chrono::Duration::minutes(30),
-        now + chrono::Duration::minutes(30),
+        fixed_time - chrono::Duration::minutes(30),
+        fixed_time + chrono::Duration::minutes(30),
     );
 
     assert!(!global.is_empty(), "Should have data stored");
