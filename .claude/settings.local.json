@@ -43,7 +43,9 @@
       "Bash(DISABLE_ESLINT_PLUGIN=true npm run build:*)",
       "Bash(pkill:*)",
       "Bash(comm:*)",
-      "Bash(/Users/matus/dev/localrouterai/scripts/build-winxp.sh:*)"
+      "Bash(/Users/matus/dev/localrouterai/scripts/build-winxp.sh:*)",
+      "Bash(./scripts/build-winxp.sh:*)",
+      "Bash(RUST_LOG=lr_routellm::candle_router=debug cargo test:*)"
     ]
   }
 }
