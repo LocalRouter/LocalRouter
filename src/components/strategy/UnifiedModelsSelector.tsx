@@ -420,7 +420,6 @@ export function UnifiedModelsSelector({
           const providerModels = groupedModels[provider]
           const isExpanded = expandedProviders.has(provider)
           const effectivePermission = getProviderEffectivePermission(provider)
-          const canExpand = effectivePermission !== "off"
 
           return (
             <div key={provider}>
@@ -435,12 +434,8 @@ export function UnifiedModelsSelector({
                 {/* Expand/collapse button */}
                 <button
                   type="button"
-                  onClick={() => canExpand && toggleProvider(provider)}
-                  className={cn(
-                    "p-0.5 rounded hover:bg-muted",
-                    !canExpand && "opacity-30 cursor-not-allowed"
-                  )}
-                  disabled={!canExpand}
+                  onClick={() => toggleProvider(provider)}
+                  className="p-0.5 rounded hover:bg-muted"
                 >
                   {isExpanded ? (
                     <ChevronDown className="h-4 w-4 text-muted-foreground" />

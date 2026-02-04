@@ -60,7 +60,7 @@ export function PermissionTreeSelector({
     const hasChildren = node.children && node.children.length > 0
     const effectivePermission = getEffectivePermission(node.id, parentPermission)
     const inherited = isInherited(node.id)
-    const canExpand = hasChildren && effectivePermission !== "off"
+    const canExpand = hasChildren
 
     // For group nodes (Tools/Resources/Prompts), make the whole row clickable
     const handleRowClick = () => {
