@@ -128,4 +128,36 @@ Anthropic, Cerebras, Cohere, DeepInfra, Gemini, Groq, LMStudio, Mistral, Ollama,
 
 ---
 
+## Windows XP Demo (Website)
+
+The website includes a Windows XP demo that showcases LocalRouter. The source is in a separate repo.
+
+### Source Location
+- **Repo**: `/Users/matus/dev/winXP` (external, not part of this repo)
+- **Key files**:
+  - `src/WinXP/apps/LocalRouter/index.js` - LocalRouter app component
+  - `src/WinXP/apps/index.js` - App registry and icons
+  - `src/WinXP/Footer/TrayMenu.js` - System tray menu (synced with `src-tauri/src/ui/tray_menu.rs`)
+  - `src/WinXP/Footer/index.js` - Taskbar with tray icon
+  - `src/assets/windowsIcons/localrouter.svg` - LocalRouter icon
+
+### Build & Deploy
+After editing the winXP repo, always run the build script:
+
+```bash
+./scripts/build-winxp.sh
+```
+
+This script:
+1. Builds winXP with `homepage: /winxp` for correct asset paths
+2. Copies build to `website/public/winxp/`
+3. Updates index.html with LocalRouter metadata
+
+### Important Notes
+- The tray menu should stay in sync with `src-tauri/src/ui/tray_menu.rs`
+- Uses mock data for demo purposes (clients, strategies, MCP servers, skills)
+- The LocalRouter app embeds `/demo` in an iframe
+
+---
+
 **Version**: 0.1.0 | **License**: AGPL-3.0-or-later | **Updated**: 2026-01-25

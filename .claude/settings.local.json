@@ -36,7 +36,14 @@
       "Bash([ -s \"$NVM_DIR/nvm.sh\" ])",
       "Bash(source \"$NVM_DIR/nvm.sh\")",
       "Bash(nvm ls:*)",
-      "Bash(nvm use:*)"
+      "Bash(nvm use:*)",
+      "WebFetch(domain:www.pulsemcp.com)",
+      "WebFetch(domain:fonts.google.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(DISABLE_ESLINT_PLUGIN=true npm run build:*)",
+      "Bash(pkill:*)",
+      "Bash(comm:*)",
+      "Bash(/Users/matus/dev/localrouterai/scripts/build-winxp.sh:*)"
     ]
   }
 }
