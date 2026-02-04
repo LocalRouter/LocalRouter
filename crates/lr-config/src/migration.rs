@@ -53,6 +53,11 @@ pub fn migrate_config(mut config: AppConfig) -> AppResult<AppConfig> {
         config = migrate_to_v5(config)?;
     }
 
+    // Migrate to v6: Unified permission system (replaces old access fields)
+    if config.version < 6 {
+        config = migrate_to_v6(config)?;
+    }
+
     // Update version to current
     config.version = CONFIG_VERSION;
 
@@ -225,6 +230,90 @@ fn migrate_to_v5(mut config: AppConfig) -> AppResult<AppConfig> {
     }
 
     config.version = 5;
+    Ok(config)
+}
+
+/// Migrate to version 6: Unified permission system
+///
+/// Replaces old access fields with new hierarchical permission system:
+/// - allowed_llm_providers → model_permissions
+/// - mcp_server_access → mcp_permissions
+/// - skills_access → skills_permissions
+/// - marketplace_enabled → marketplace_permission
+fn migrate_to_v6(mut config: AppConfig) -> AppResult<AppConfig> {
+    use super::{McpServerAccess, PermissionState, SkillsAccess};
+
+    info!("Migrating to version 6: Unified permission system");
+
+    for client in &mut config.clients {
+        // Migrate allowed_llm_providers → model_permissions
+        if !client.allowed_llm_providers.is_empty() {
+            // Set global to Off, then set specific providers to Allow
+            client.model_permissions.global = PermissionState::Off;
+            for provider in &client.allowed_llm_providers {
+                client.model_permissions.providers.insert(provider.clone(), PermissionState::Allow);
+            }
+            info!(
+                "Client '{}': migrated {} LLM providers to model_permissions",
+                client.name,
+                client.allowed_llm_providers.len()
+            );
+        } else {
+            // Empty list means no access
+            client.model_permissions.global = PermissionState::Off;
+        }
+
+        // Migrate mcp_server_access → mcp_permissions
+        match &client.mcp_server_access {
+            McpServerAccess::None => {
+                client.mcp_permissions.global = PermissionState::Off;
+            }
+            McpServerAccess::All => {
+                client.mcp_permissions.global = PermissionState::Allow;
+            }
+            McpServerAccess::Specific(servers) => {
+                client.mcp_permissions.global = PermissionState::Off;
+                for server_id in servers {
+                    client.mcp_permissions.servers.insert(server_id.clone(), PermissionState::Allow);
+                }
+                info!(
+                    "Client '{}': migrated {} MCP servers to mcp_permissions",
+                    client.name,
+                    servers.len()
+                );
+            }
+        }
+
+        // Migrate skills_access → skills_permissions
+        match &client.skills_access {
+            SkillsAccess::None => {
+                client.skills_permissions.global = PermissionState::Off;
+            }
+            SkillsAccess::All => {
+                client.skills_permissions.global = PermissionState::Allow;
+            }
+            SkillsAccess::Specific(skills) => {
+                client.skills_permissions.global = PermissionState::Off;
+                for skill_name in skills {
+                    client.skills_permissions.skills.insert(skill_name.clone(), PermissionState::Allow);
+                }
+                info!(
+                    "Client '{}': migrated {} skills to skills_permissions",
+                    client.name,
+                    skills.len()
+                );
+            }
+        }
+
+        // Migrate marketplace_enabled → marketplace_permission
+        if client.marketplace_enabled {
+            client.marketplace_permission = PermissionState::Allow;
+        } else {
+            client.marketplace_permission = PermissionState::Off;
+        }
+    }
+
+    config.version = 6;
     Ok(config)
 }
 

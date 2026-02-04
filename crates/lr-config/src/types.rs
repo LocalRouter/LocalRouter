@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use uuid::Uuid;
 
-pub(crate) const CONFIG_VERSION: u32 = 5;
+pub(crate) const CONFIG_VERSION: u32 = 6;
 
 /// Suffix for auto-generated client strategy names
 pub const CLIENT_STRATEGY_NAME_SUFFIX: &str = "'s strategy";
@@ -1081,27 +1081,7 @@ fn default_main_branch() -> String {
     "main".to_string()
 }
 
-/// Serializer for SkillsAccess that produces YAML-friendly format
-pub(crate) fn serialize_skills_access<S>(
-    access: &SkillsAccess,
-    serializer: S,
-) -> Result<S::Ok, S::Error>
-where
-    S: serde::Serializer,
-{
-    match access {
-        SkillsAccess::None => serializer.serialize_str("none"),
-        SkillsAccess::All => serializer.serialize_str("all"),
-        SkillsAccess::Specific(skills) => {
-            use serde::ser::SerializeMap;
-            let mut map = serializer.serialize_map(Some(1))?;
-            map.serialize_entry("specific", skills)?;
-            map.end()
-        }
-    }
-}
-
-/// Deserializer for SkillsAccess
+/// Deserializer for SkillsAccess (migration shim)
 pub(crate) fn deserialize_skills_access<'de, D>(deserializer: D) -> Result<SkillsAccess, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -1170,19 +1150,17 @@ pub struct Client {
     #[serde(default = "default_true")]
     pub enabled: bool,
 
-    /// LLM providers this client can access
-    /// Empty = no LLM access
-    #[serde(default)]
+    /// Migration shim: old LLM providers access (deserialize only)
+    /// Use model_permissions instead
+    #[serde(default, skip_serializing)]
     pub allowed_llm_providers: Vec<String>,
 
-    /// MCP server access control
-    /// - None: No MCP access (default)
-    /// - All: Access to all configured MCP servers
-    /// - Specific: Access only to listed server IDs
+    /// Migration shim: old MCP server access (deserialize only)
+    /// Use mcp_permissions instead
     #[serde(
         default,
-        deserialize_with = "deserialize_mcp_server_access",
-        serialize_with = "serialize_mcp_server_access"
+        skip_serializing,
+        deserialize_with = "deserialize_mcp_server_access"
     )]
     pub mcp_server_access: McpServerAccess,
 
@@ -1192,14 +1170,12 @@ pub struct Client {
     #[serde(default)]
     pub mcp_deferred_loading: bool,
 
-    /// Skills access control (by skill name)
-    /// - None: No skills access (default)
-    /// - All: Access to all discovered skills
-    /// - Specific: Access only to specific skills by name
+    /// Migration shim: old skills access (deserialize only)
+    /// Use skills_permissions instead
     #[serde(
         default,
-        deserialize_with = "deserialize_skills_access",
-        serialize_with = "serialize_skills_access"
+        skip_serializing,
+        deserialize_with = "deserialize_skills_access"
     )]
     pub skills_access: SkillsAccess,
 
@@ -1244,9 +1220,9 @@ pub struct Client {
     #[serde(default)]
     pub firewall: FirewallRules,
 
-    /// Whether this client has marketplace access (search + install tools)
-    /// When this is set to true, the global marketplace.enabled is also auto-set to true
-    #[serde(default)]
+    /// Migration shim: old marketplace enabled flag (deserialize only)
+    /// Use marketplace_permission instead
+    #[serde(default, skip_serializing)]
     pub marketplace_enabled: bool,
 
     /// Unified MCP permissions (hierarchical Allow/Ask/Off)
@@ -1721,29 +1697,7 @@ pub(crate) fn default_true() -> bool {
 fn default_log_retention() -> u32 {
     31
 }
-
-/// Serializer for McpServerAccess that produces YAML-friendly format
-/// Matches the format expected by deserialize_mcp_server_access
-pub(crate) fn serialize_mcp_server_access<S>(
-    access: &McpServerAccess,
-    serializer: S,
-) -> Result<S::Ok, S::Error>
-where
-    S: serde::Serializer,
-{
-    match access {
-        McpServerAccess::None => serializer.serialize_str("none"),
-        McpServerAccess::All => serializer.serialize_str("all"),
-        McpServerAccess::Specific(servers) => {
-            use serde::ser::SerializeMap;
-            let mut map = serializer.serialize_map(Some(1))?;
-            map.serialize_entry("specific", servers)?;
-            map.end()
-        }
-    }
-}
-
-/// Deserializer for McpServerAccess that supports backward compatibility
+/// Deserializer for McpServerAccess (migration shim) that supports backward compatibility
 /// with the old `allowed_mcp_servers: Vec<String>` format
 pub(crate) fn deserialize_mcp_server_access<'de, D>(
     deserializer: D,
@@ -1961,107 +1915,6 @@ impl Client {
     /// Update last used timestamp
     pub fn mark_used(&mut self) {
         self.last_used = Some(Utc::now());
-    }
-
-    /// Check if this client can access a specific LLM provider
-    pub fn can_access_llm_provider(&self, provider_name: &str) -> bool {
-        self.enabled
-            && self
-                .allowed_llm_providers
-                .contains(&provider_name.to_string())
-    }
-
-    /// Check if this client can access a specific MCP server
-    pub fn can_access_mcp_server(&self, server_id: &str) -> bool {
-        self.enabled && self.mcp_server_access.can_access(server_id)
-    }
-
-    /// Add LLM provider access
-    pub fn add_llm_provider(&mut self, provider_name: String) {
-        if !self.allowed_llm_providers.contains(&provider_name) {
-            self.allowed_llm_providers.push(provider_name);
-        }
-    }
-
-    /// Remove LLM provider access
-    pub fn remove_llm_provider(&mut self, provider_name: &str) -> bool {
-        if let Some(pos) = self
-            .allowed_llm_providers
-            .iter()
-            .position(|p| p == provider_name)
-        {
-            self.allowed_llm_providers.remove(pos);
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Add MCP server access
-    /// If mode is None, converts to Specific with this server
-    /// If mode is All, no change needed
-    /// If mode is Specific, adds to the list if not present
-    pub fn add_mcp_server(&mut self, server_id: String) {
-        match &mut self.mcp_server_access {
-            McpServerAccess::None => {
-                self.mcp_server_access = McpServerAccess::Specific(vec![server_id]);
-            }
-            McpServerAccess::All => {
-                // Already has access to all, no change needed
-            }
-            McpServerAccess::Specific(servers) => {
-                if !servers.contains(&server_id) {
-                    servers.push(server_id);
-                }
-            }
-        }
-    }
-
-    /// Remove MCP server access
-    /// If mode is None, no change
-    /// If mode is All, cannot remove individual servers (caller should set to Specific first)
-    /// If mode is Specific, removes from the list and converts to None if empty
-    pub fn remove_mcp_server(&mut self, server_id: &str) -> bool {
-        match &mut self.mcp_server_access {
-            McpServerAccess::None => false,
-            McpServerAccess::All => false, // Can't remove from "All" mode
-            McpServerAccess::Specific(servers) => {
-                if let Some(pos) = servers.iter().position(|s| s == server_id) {
-                    servers.remove(pos);
-                    if servers.is_empty() {
-                        self.mcp_server_access = McpServerAccess::None;
-                    }
-                    true
-                } else {
-                    false
-                }
-            }
-        }
-    }
-
-    /// Set MCP server access mode
-    pub fn set_mcp_server_access(&mut self, access: McpServerAccess) {
-        self.mcp_server_access = access;
-    }
-
-    /// Get MCP server access mode
-    pub fn mcp_server_access(&self) -> &McpServerAccess {
-        &self.mcp_server_access
-    }
-
-    /// Check if this client can access a specific skill by name
-    pub fn can_access_skill(&self, skill_name: &str) -> bool {
-        self.enabled && self.skills_access.can_access_by_name(skill_name)
-    }
-
-    /// Set skills access mode
-    pub fn set_skills_access(&mut self, access: SkillsAccess) {
-        self.skills_access = access;
-    }
-
-    /// Get skills access mode
-    pub fn skills_access(&self) -> &SkillsAccess {
-        &self.skills_access
     }
 }
 
