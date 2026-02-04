@@ -5,6 +5,8 @@
 #![allow(dead_code)]
 
 use crate::oauth::McpOAuthManager;
+use once_cell::sync::Lazy;
+use std::collections::HashMap;
 use crate::protocol::{JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, StreamingChunk};
 use crate::transport::{SseTransport, StdioTransport, Transport, WebSocketTransport};
 use dashmap::DashMap;
@@ -21,6 +23,81 @@ use std::sync::Arc;
 /// Called when a notification is received from an MCP server.
 /// Receives the server_id and the notification.
 pub type NotificationCallback = Arc<dyn Fn(String, JsonRpcNotification) + Send + Sync>;
+
+/// Cached shell environment for spawning subprocess commands.
+///
+/// On macOS, GUI apps don't inherit the user's shell PATH. This lazily fetches
+/// the PATH from the user's login shell to ensure commands like `npx`, `node`, etc.
+/// can be found when spawning MCP server processes.
+static SHELL_ENV: Lazy<HashMap<String, String>> = Lazy::new(|| {
+    let mut env = HashMap::new();
+
+    // On macOS, get PATH from user's login shell
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(path) = get_shell_path() {
+            tracing::info!("Using shell PATH for MCP processes: {}", path);
+            env.insert("PATH".to_string(), path);
+        } else {
+            tracing::warn!("Failed to get shell PATH, using system default");
+            // Fall back to current process PATH
+            if let Ok(path) = std::env::var("PATH") {
+                env.insert("PATH".to_string(), path);
+            }
+        }
+    }
+
+    // On other platforms, just use the current process environment
+    #[cfg(not(target_os = "macos"))]
+    {
+        if let Ok(path) = std::env::var("PATH") {
+            env.insert("PATH".to_string(), path);
+        }
+    }
+
+    env
+});
+
+/// Get PATH from the user's login shell on macOS.
+///
+/// This runs the user's default shell in login/interactive mode to source
+/// their profile and get the actual PATH they use in terminals.
+#[cfg(target_os = "macos")]
+fn get_shell_path() -> Option<String> {
+    use std::process::Command;
+
+    // Get user's default shell
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+
+    tracing::debug!("Getting PATH from shell: {}", shell);
+
+    // Run shell in login mode to source profile and echo PATH
+    // -l = login shell (sources profile)
+    // -i = interactive (sources rc files)
+    // -c = run command
+    let output = Command::new(&shell)
+        .args(["-lic", "echo $PATH"])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        tracing::warn!(
+            "Failed to get PATH from shell {}: {}",
+            shell,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return None;
+    }
+
+    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+    if path.is_empty() {
+        tracing::warn!("Empty PATH returned from shell {}", shell);
+        return None;
+    }
+
+    Some(path)
+}
 
 /// Notification handler with unique ID for removal
 #[derive(Clone)]
@@ -303,14 +380,22 @@ impl McpServerManager {
     /// Start a STDIO MCP server
     async fn start_stdio_server(&self, server_id: &str, config: &McpServerConfig) -> AppResult<()> {
         // Parse STDIO command using shell-words (handles both new single-command and legacy formats)
-        let (command, args, mut env) = config
+        let (command, args, config_env) = config
             .transport_config
             .parse_stdio_command()
             .map_err(AppError::Mcp)?;
 
+        // Build environment: shell env (PATH) -> config env -> auth env
+        // Later entries override earlier ones, so user config takes precedence
+        let mut env = SHELL_ENV.clone();
+
+        // Merge config environment variables
+        for (key, value) in config_env {
+            env.insert(key, value);
+        }
+
         // Merge auth config environment variables (if specified)
         if let Some(lr_config::McpAuthConfig::EnvVars { env: auth_env }) = &config.auth_config {
-            // Merge auth env vars with base env vars
             // Auth env vars override base env vars
             for (key, value) in auth_env {
                 env.insert(key.clone(), value.clone());
@@ -886,10 +971,18 @@ impl McpServerManager {
         match &config.transport_config {
             McpTransportConfig::Stdio { .. } => {
                 // Parse the command using shell-words
-                let (command, args, env) = match config.transport_config.parse_stdio_command() {
+                let (command, args, config_env) = match config.transport_config.parse_stdio_command()
+                {
                     Ok(parsed) => parsed,
                     Err(e) => return (HealthStatus::Unhealthy, None, Some(e)),
                 };
+
+                // Build environment: shell env (PATH) -> config env
+                let mut env = SHELL_ENV.clone();
+                for (key, value) in config_env {
+                    env.insert(key, value);
+                }
+
                 // Try to spawn the command briefly to verify it can run
                 // Don't report latency for STDIO - it's not meaningful (not network latency)
                 match Self::try_spawn_command(&command, &args, &env).await {
