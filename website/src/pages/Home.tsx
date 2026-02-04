@@ -869,7 +869,7 @@ export default function Home() {
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
           <div className="grid gap-12 lg:grid-cols-2 lg:gap-16 items-center">
             {/* Visual: Firewall Architecture */}
-            <div className="relative">
+            <div className="relative order-2 lg:order-2">
               <div className="relative w-full aspect-[4/3]">
                 {/* SVG Connection Lines */}
                 <svg className="absolute inset-0 w-full h-full pointer-events-none" viewBox="0 0 400 300" preserveAspectRatio="xMidYMid meet">
@@ -980,7 +980,7 @@ export default function Home() {
               </div>
             </div>
 
-            <div>
+            <div className="order-1 lg:order-1">
               <div className="flex items-center gap-2 mb-4">
                 <ShieldCheck className="h-5 w-5 text-amber-500" />
                 <span className="text-sm font-medium text-amber-500 uppercase tracking-wide">Firewall</span>
