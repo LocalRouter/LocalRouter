@@ -2,22 +2,23 @@
 //!
 //! Functions exposed to the frontend via Tauri IPC.
 //!
-//! ## WEBSITE DEMO SYNC REQUIRED
+//! ## SYNC REQUIRED WHEN MODIFYING COMMANDS
 //!
-//! Frontend commands are mocked in the website demo at:
-//!   `website/src/components/demo/TauriMockSetup.ts`
-//!   `website/src/components/demo/mockData.ts`
+//! When adding or modifying Tauri commands, update these files:
 //!
-//! When adding new commands or changing command signatures:
-//! 1. Add a mock handler in TauriMockSetup.ts
-//! 2. Add mock data in mockData.ts if needed
-//! 3. If no mock is added, a toast will warn users in demo mode
+//! 1. **TypeScript types**: `src/types/tauri-commands.ts`
+//!    - Add/update the return type interface
+//!    - Include a comment linking back to this Rust source
 //!
-//! Currently mocked commands include:
-//! - list_clients, get_client, create_client, delete_client
-//! - list_provider_instances, list_mcp_servers, list_strategies
-//! - list_all_models, get_aggregate_stats, get_health_cache
-//! - get_server_config, get_setup_wizard_shown, list_skills
+//! 2. **Demo mocks**: `website/src/components/demo/TauriMockSetup.ts`
+//!    - Add a mock handler returning data matching the TypeScript type
+//!    - Update `mockData.ts` if persistent mock state is needed
+//!
+//! 3. Run `npx tsc --noEmit` to verify TypeScript types compile
+//!
+//! See CLAUDE.md "Adding/Modifying Tauri Commands" for the full checklist.
+//!
+//! Note: Unimplemented commands show a toast warning in demo mode.
 
 use std::collections::HashMap;
 use std::path::PathBuf;

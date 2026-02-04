@@ -1,4 +1,10 @@
 //! Tauri commands for RouteLLM intelligent routing
+//!
+//! !! SYNC REQUIRED !!
+//! When modifying command return types, also update:
+//! - TypeScript types: src/types/tauri-commands.ts
+//! - Demo mocks: website/src/components/demo/TauriMockSetup.ts
+//! See CLAUDE.md "Adding/Modifying Tauri Commands" for details.
 
 use lr_routellm::{RouteLLMStatus, RouteLLMTestResult};
 use lr_server::state::AppState;
