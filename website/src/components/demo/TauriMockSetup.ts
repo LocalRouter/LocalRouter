@@ -4,9 +4,16 @@
  * This module sets up mock IPC handlers so the actual Tauri frontend
  * components can run in the website demo without a real backend.
  *
- * !! SYNC REQUIRED !!
- * When new Tauri commands are added to the main app, add mock handlers here.
- * Unimplemented commands will show a toast warning in demo mode.
+ * !! SYNC REQUIRED - UPDATE WHEN MODIFYING TAURI COMMANDS !!
+ *
+ * When you add or modify a Tauri command:
+ * 1. Add/update the mock handler in mockHandlers below
+ * 2. Import the return type from @app/types/tauri-commands
+ * 3. Add explicit return type annotation: `'cmd': (args): MyType => ...`
+ * 4. Update mockData.ts if the mock needs persistent state
+ *
+ * Return types must match: src/types/tauri-commands.ts
+ * See CLAUDE.md "Adding/Modifying Tauri Commands" for full checklist.
  */
 
 import { mockIPC, mockWindows, clearMocks } from '@tauri-apps/api/mocks'
@@ -14,6 +21,8 @@ import { emit } from '@tauri-apps/api/event'
 import type { InvokeArgs } from '@tauri-apps/api/core'
 import { toast } from 'sonner'
 import { mockData } from './mockData'
+// Types for mock return values - see src/types/tauri-commands.ts for full type definitions
+import type { RouteLLMTestResult, GraphData } from '@app/types/tauri-commands'
 
 // Track warned commands to avoid spam (only warn once per command)
 const warnedCommands = new Set<string>()
@@ -56,7 +65,8 @@ function emitMcpHealthEvents() {
 }
 
 // Helper to generate mock graph data for metrics
-function generateMockGraphData(datasetLabel = "Requests", baseValue = 200, variance = 150) {
+// Returns: GraphData (src/types/tauri-commands.ts)
+function generateMockGraphData(datasetLabel = "Requests", baseValue = 200, variance = 150): GraphData {
   const now = new Date()
   const labels: string[] = []
   const data: number[] = []
@@ -86,7 +96,15 @@ function generateMockGraphData(datasetLabel = "Requests", baseValue = 200, varia
   }
 }
 
-// Explicit map of implemented mock handlers
+/**
+ * Mock handlers for Tauri commands.
+ *
+ * Return types should match the TypeScript types defined in:
+ * src/types/tauri-commands.ts
+ *
+ * When adding/modifying handlers, ensure the return value structure
+ * matches the corresponding type (e.g., RouteLLMTestResult, ClientInfo, etc.)
+ */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const mockHandlers: Record<string, (args?: any) => unknown> = {
   // ============================================================================
@@ -811,14 +829,17 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     toast.success('RouteLLM model unloaded (demo)')
     return null
   },
-  'routellm_test_prediction': (args) => {
+  // Returns: RouteLLMTestResult (src/types/tauri-commands.ts)
+  'routellm_test_prediction': (args): RouteLLMTestResult => {
     // Simulate a realistic prediction based on prompt complexity
     const prompt = args?.prompt || ''
-    const complexity = prompt.length > 200 || prompt.includes('code') || prompt.includes('analyze') ? 'strong' : 'weak'
-    const confidence = 0.65 + Math.random() * 0.3 // 0.65-0.95
+    const threshold = args?.threshold ?? 0.3
+    // Generate a score that varies based on prompt characteristics
+    const baseScore = prompt.length > 200 || prompt.includes('code') || prompt.includes('analyze') ? 0.7 : 0.2
+    const winRate = Math.min(1, Math.max(0, baseScore + (Math.random() * 0.3 - 0.15)))
     return {
-      prediction: complexity,
-      confidence: Number(confidence.toFixed(2)),
+      win_rate: winRate,
+      is_strong: winRate >= threshold,
       latency_ms: Math.floor(Math.random() * 50) + 20,
     }
   },
@@ -844,7 +865,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   },
   'skip_update_version': (args) => {
     if (args?.version) {
-      mockData.updateConfig.skipped_versions.push(args.version)
+      mockData.updateConfig.skipped_version = args.version
     }
     return null
   },

@@ -1,62 +1,15 @@
-// Mock data for website demo
-// Comprehensive dummy data for all app features
-// Types imported from main app for type safety
+/**
+ * Mock data for website demo
+ *
+ * Types are imported from src/types/tauri-commands.ts to ensure
+ * mock data matches the expected Tauri command return types.
+ */
 
-// Permission types - must match @/components/permissions/types.ts
-type PermissionState = "allow" | "ask" | "off"
+// Types for mock data validation - see src/types/tauri-commands.ts for full definitions
+import type { RouteLLMStatus } from '@app/types/tauri-commands'
 
-interface McpPermissions {
-  global: PermissionState
-  servers: Record<string, PermissionState>
-  tools: Record<string, PermissionState>
-  resources: Record<string, PermissionState>
-  prompts: Record<string, PermissionState>
-}
-
-interface SkillsPermissions {
-  global: PermissionState
-  skills: Record<string, PermissionState>
-  tools: Record<string, PermissionState>
-}
-
-interface ModelPermissions {
-  global: PermissionState
-  providers: Record<string, PermissionState>
-  models: Record<string, PermissionState>
-}
-
-// Client interface - must match src/views/clients/index.tsx
-interface Client {
-  id: string
-  name: string
-  client_id: string
-  enabled: boolean
-  strategy_id: string
-  mcp_deferred_loading: boolean
-  mcp_permissions: McpPermissions
-  skills_permissions: SkillsPermissions
-  model_permissions: ModelPermissions
-  marketplace_permission: PermissionState
-  created_at: string
-  last_used: string | null
-}
-
-// Skill interface - must match src/views/skills/index.tsx SkillInfo
-interface SkillInfo {
-  name: string
-  description: string | null
-  version: string | null
-  author: string | null
-  tags: string[]
-  extra: Record<string, unknown>
-  source_path: string
-  script_count: number
-  reference_count: number
-  asset_count: number
-  enabled: boolean
-}
-
-// MCP Server interface - must match src/views/resources/mcp-servers-panel.tsx
+// MCP Server interface - simplified for mock data
+// Full type: McpServerInfo from @app/types/tauri-commands
 interface McpServer {
   id: string
   name: string | null
@@ -670,45 +623,45 @@ export const mockData = {
     },
   ],
 
+  // RouteLLMStatus - matches src/types/tauri-commands.ts
   routellmStatus: {
-    enabled: false,
-    model_loaded: false,
-    model_path: null,
-    threshold: 0.5,
-    cache_size: 1000,
-  },
+    state: 'downloaded_not_running',
+    memory_usage_mb: null,
+    last_access_secs_ago: null,
+  } satisfies RouteLLMStatus,
 
+  // UpdateConfig - matches src/types/tauri-commands.ts
   updateConfig: {
-    auto_check: true,
-    check_interval_hours: 24,
+    mode: 'automatic' as const,
+    check_interval_days: 1,
     last_check: new Date(Date.now() - 3600000).toISOString(),
-    skipped_versions: [] as string[],
+    skipped_version: null,
   },
 
+  // MarketplaceConfig - matches src/types/tauri-commands.ts
   marketplaceConfig: {
     enabled: true,
     registry_url: "https://registry.localrouter.ai",
     skill_sources: [
       {
+        label: "Official Skills",
         repo_url: "https://github.com/localrouter/skills",
         branch: "main",
-        path: "skills",
-        label: "Official Skills",
+        skills_path: "skills",
       },
       {
+        label: "Community Skills",
         repo_url: "https://github.com/community/localrouter-skills",
         branch: "main",
-        path: ".",
-        label: "Community Skills",
+        skills_path: null,
       },
     ],
   },
 
+  // TrayGraphSettings - matches src/types/tauri-commands.ts
   trayGraphSettings: {
     enabled: true,
     refresh_rate_secs: 10,
-    show_requests: true,
-    show_tokens: true,
   },
 
   activeConnections: [
