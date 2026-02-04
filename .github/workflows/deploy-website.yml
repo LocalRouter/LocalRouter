@@ -41,6 +41,10 @@ jobs:
         working-directory: ./website/dist
         run: echo "localrouter.ai" > CNAME
 
+      - name: Add 404.html for SPA routing
+        working-directory: ./website/dist
+        run: cp index.html 404.html
+
       - name: Setup Pages
         uses: actions/configure-pages@v4
 
