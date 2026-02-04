@@ -17,12 +17,7 @@ interface Client {
   client_id: string
   enabled: boolean
   strategy_id: string
-  allowed_llm_providers: string[]
-  mcp_access_mode: "none" | "all" | "specific"
-  mcp_servers: string[]
   mcp_deferred_loading: boolean
-  skills_access_mode: "none" | "all" | "specific"
-  skills_names: string[]
   mcp_permissions: McpPermissions
   skills_permissions: SkillsPermissions
   model_permissions: ModelPermissions

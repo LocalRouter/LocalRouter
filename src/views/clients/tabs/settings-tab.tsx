@@ -24,9 +24,6 @@ interface Client {
   client_id: string
   enabled: boolean
   strategy_id: string
-  allowed_llm_providers: string[]
-  mcp_access_mode: "none" | "all" | "specific"
-  mcp_servers: string[]
 }
 
 interface SettingsTabProps {

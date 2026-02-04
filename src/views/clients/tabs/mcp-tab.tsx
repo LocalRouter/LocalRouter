@@ -118,10 +118,10 @@ export function ClientMcpTab({ client, onUpdate }: McpTabProps) {
             </ul>
           </div>
           {marketplacePermission === "allow" && (
-            <div className="p-3 rounded-lg border border-amber-500/30 bg-amber-500/10">
+            <div className="p-3 rounded-lg border border-amber-600/50 bg-amber-500/10">
               <div className="flex gap-2 items-start">
                 <AlertTriangle className="h-4 w-4 text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
-                <p className="text-sm text-amber-600 dark:text-amber-400">
+                <p className="text-sm text-amber-900 dark:text-amber-400">
                   Warning: Allowing marketplace grants access to install any item without approval.
                   Only enable if you trust the configured marketplace sources.
                 </p>
@@ -129,8 +129,8 @@ export function ClientMcpTab({ client, onUpdate }: McpTabProps) {
             </div>
           )}
           {marketplacePermission === "ask" && (
-            <div className="p-3 rounded-lg border border-blue-500/30 bg-blue-500/10">
-              <p className="text-sm text-blue-600 dark:text-blue-400">
+            <div className="p-3 rounded-lg border border-blue-600/50 bg-blue-500/10">
+              <p className="text-sm text-blue-900 dark:text-blue-400">
                 Install requests from AI clients will show a confirmation dialog before proceeding.
               </p>
             </div>
@@ -144,7 +144,7 @@ export function ClientMcpTab({ client, onUpdate }: McpTabProps) {
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               <CardTitle className="text-base">Deferred Loading</CardTitle>
-              <span className="text-xs px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-700 dark:text-purple-300 font-medium">
+              <span className="text-xs px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-900 dark:text-purple-300 font-medium">
                 EXPERIMENTAL
               </span>
             </div>
@@ -160,19 +160,19 @@ export function ClientMcpTab({ client, onUpdate }: McpTabProps) {
         </CardHeader>
         <CardContent className="space-y-4">
           {/* How it works - Blue info panel */}
-          <div className="p-4 rounded-lg bg-blue-500/10 border border-blue-500/20">
+          <div className="p-4 rounded-lg bg-blue-500/10 border border-blue-600/50">
             <div className="flex items-start gap-3">
               <Info className="h-5 w-5 text-blue-600 dark:text-blue-400 mt-0.5 shrink-0" />
               <div className="space-y-2">
-                <p className="text-sm font-medium text-blue-700 dark:text-blue-300">
+                <p className="text-sm font-medium text-blue-900 dark:text-blue-300">
                   How Deferred Loading Works
                 </p>
-                <p className="text-sm text-blue-600/90 dark:text-blue-400/90">
+                <p className="text-sm text-blue-900 dark:text-blue-400">
                   Deferred loading reduces the initial token overhead by not sending all
                   tool definitions upfront. Instead, a single search tool is provided
                   that allows the LLM to discover and load tools on-demand.
                 </p>
-                <p className="text-sm text-blue-600/90 dark:text-blue-400/90">
+                <p className="text-sm text-blue-900 dark:text-blue-400">
                   If client does not support dynamic tool loading via{" "}
                   <code className="px-1 py-0.5 rounded bg-blue-500/20 text-xs">
                     tools/listChanged
@@ -183,8 +183,8 @@ export function ClientMcpTab({ client, onUpdate }: McpTabProps) {
           </div>
 
           {deferredLoading && (
-            <div className="p-3 rounded-lg border border-amber-500/30 bg-amber-500/10">
-              <p className="text-sm text-amber-600 dark:text-amber-400">
+            <div className="p-3 rounded-lg border border-amber-600/50 bg-amber-500/10">
+              <p className="text-sm text-amber-900 dark:text-amber-400">
                 This feature is experimental and may not work with all clients.
                 Ensure your client properly handles the{" "}
                 <code className="px-1 py-0.5 rounded bg-muted text-xs">

@@ -80,6 +80,7 @@ const frontendDependencies: Dependency[] = [
   { name: "cmdk", license: "MIT", url: "https://cmdk.paco.me" },
   { name: "Sonner", license: "MIT", url: "https://sonner.emilkowal.ski" },
   { name: "OpenAI SDK", license: "Apache-2.0", url: "https://github.com/openai/openai-node" },
+  { name: "WinXP", license: "MIT", url: "https://github.com/nicholasyang/winXP" },
 ]
 
 export function AboutTab() {

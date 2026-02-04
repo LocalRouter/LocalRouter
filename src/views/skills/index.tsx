@@ -520,13 +520,13 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
                           {/* Capabilities */}
                           <div className="flex gap-2">
                             {selectedSkillInfo.script_count > 0 && (
-                              <span className="text-xs px-2 py-1 rounded bg-blue-500/10 text-blue-600 dark:text-blue-400 flex items-center gap-1">
+                              <span className="text-xs px-2 py-1 rounded bg-blue-500/10 text-blue-800 dark:text-blue-400 flex items-center gap-1">
                                 <Play className="h-3 w-3" />
                                 {selectedSkillInfo.script_count} Executable{selectedSkillInfo.script_count > 1 ? "s" : ""}
                               </span>
                             )}
                             {(selectedSkillInfo.reference_count > 0 || selectedSkillInfo.asset_count > 0) && (
-                              <span className="text-xs px-2 py-1 rounded bg-green-500/10 text-green-600 dark:text-green-400 flex items-center gap-1">
+                              <span className="text-xs px-2 py-1 rounded bg-green-500/10 text-green-800 dark:text-green-400 flex items-center gap-1">
                                 <BookOpen className="h-3 w-3" />
                                 {selectedSkillInfo.reference_count + selectedSkillInfo.asset_count} Resource{selectedSkillInfo.reference_count + selectedSkillInfo.asset_count > 1 ? "s" : ""}
                               </span>
@@ -584,10 +584,10 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
                                 }
 
                                 const getCategoryBadge = (category: string) => {
-                                  if (category === "skill_md") return <span className="text-[9px] px-1 py-0.5 rounded bg-amber-500/10 text-amber-600 dark:text-amber-400 font-medium uppercase">Definition</span>
-                                  if (category === "script") return <span className="text-[9px] px-1 py-0.5 rounded bg-blue-500/10 text-blue-600 dark:text-blue-400 font-medium uppercase">Executable</span>
-                                  if (category === "reference") return <span className="text-[9px] px-1 py-0.5 rounded bg-green-500/10 text-green-600 dark:text-green-400 font-medium uppercase">Resource</span>
-                                  if (category === "asset") return <span className="text-[9px] px-1 py-0.5 rounded bg-purple-500/10 text-purple-600 dark:text-purple-400 font-medium uppercase">Resource</span>
+                                  if (category === "skill_md") return <span className="text-[9px] px-1 py-0.5 rounded bg-amber-500/10 text-amber-800 dark:text-amber-400 font-medium uppercase">Definition</span>
+                                  if (category === "script") return <span className="text-[9px] px-1 py-0.5 rounded bg-blue-500/10 text-blue-800 dark:text-blue-400 font-medium uppercase">Executable</span>
+                                  if (category === "reference") return <span className="text-[9px] px-1 py-0.5 rounded bg-green-500/10 text-green-800 dark:text-green-400 font-medium uppercase">Resource</span>
+                                  if (category === "asset") return <span className="text-[9px] px-1 py-0.5 rounded bg-purple-500/10 text-purple-800 dark:text-purple-400 font-medium uppercase">Resource</span>
                                   return null
                                 }
 
@@ -906,7 +906,7 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
               </TabsContent>
 
               {/* Marketplace Tab */}
-              <TabsContent value="marketplace" className="mt-4 flex-1 min-h-0 data-[state=inactive]:hidden">
+              <TabsContent value="marketplace" className="mt-4 flex-1 flex flex-col min-h-0 data-[state=inactive]:hidden overflow-hidden">
                 <MarketplaceSearchPanel
                   type="skill"
                   onSelectSkill={handleSelectMarketplaceSkill}
@@ -917,7 +917,7 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
             </Tabs>
           ) : (
             /* Page 2: Skill Configuration/Preview */
-            <div className="space-y-4">
+            <div className="flex-1 flex flex-col min-h-0 overflow-y-auto space-y-4">
               {/* Back button and skill header */}
               <div className="flex items-center gap-3 pb-2 border-b">
                 <Button
@@ -1028,7 +1028,7 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
                                   <FileText className={cn("h-3.5 w-3.5 shrink-0", isSkillMd ? "text-amber-500" : "text-muted-foreground")} />
                                   <span className="truncate" title={file.path}>{file.path}</span>
                                   {isSkillMd && (
-                                    <span className="text-[9px] px-1 py-0.5 rounded bg-amber-500/10 text-amber-600 dark:text-amber-400 font-medium uppercase ml-1">Definition</span>
+                                    <span className="text-[9px] px-1 py-0.5 rounded bg-amber-500/10 text-amber-800 dark:text-amber-400 font-medium uppercase ml-1">Definition</span>
                                   )}
                                 </button>
                                 {isExpanded && (

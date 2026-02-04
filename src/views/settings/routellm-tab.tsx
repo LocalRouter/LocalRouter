@@ -204,7 +204,7 @@ export function RouteLLMTab() {
                 </CardDescription>
               </div>
             </div>
-            <Badge variant="outline" className="bg-purple-500/10 text-purple-600">
+            <Badge variant="outline" className="bg-purple-500/10 text-purple-900 dark:text-purple-400">
               EXPERIMENTAL
             </Badge>
           </div>
@@ -261,21 +261,21 @@ export function RouteLLMTab() {
           <CardContent className="space-y-4">
             <div className="grid grid-cols-3 gap-3 text-center">
               <div className="p-3 bg-green-500/10 rounded-lg">
-                <p className="text-lg font-bold text-green-600">30-60%</p>
+                <p className="text-lg font-bold text-green-800 dark:text-green-400">30-60%</p>
                 <p className="text-xs text-muted-foreground">Cost Savings</p>
               </div>
               <div className="p-3 bg-blue-500/10 rounded-lg">
-                <p className="text-lg font-bold text-blue-600">85-95%</p>
+                <p className="text-lg font-bold text-blue-800 dark:text-blue-400">85-95%</p>
                 <p className="text-xs text-muted-foreground">Quality Retained</p>
               </div>
               <div className="p-3 bg-purple-500/10 rounded-lg">
-                <p className="text-lg font-bold text-purple-600">{ROUTELLM_REQUIREMENTS.PER_REQUEST_MS}ms</p>
+                <p className="text-lg font-bold text-purple-800 dark:text-purple-400">{ROUTELLM_REQUIREMENTS.PER_REQUEST_MS}ms</p>
                 <p className="text-xs text-muted-foreground">Selection Time</p>
               </div>
             </div>
 
-            <div className="p-3 bg-yellow-500/10 border border-yellow-500/20 rounded-lg">
-              <p className="text-xs text-yellow-600 dark:text-yellow-400">
+            <div className="p-3 bg-yellow-500/10 border border-yellow-600/50 rounded-lg">
+              <p className="text-xs text-yellow-900 dark:text-yellow-400">
                 <strong>Download Required:</strong> Models ({ROUTELLM_REQUIREMENTS.DISK_GB} GB) will be downloaded to{" "}
                 <code className="bg-yellow-500/20 px-1 rounded">~/.localrouter/routellm/</code>
               </p>
@@ -308,9 +308,9 @@ export function RouteLLMTab() {
       {isReady && (
         <>
           {/* Resource Info */}
-          <Card className="border-yellow-500/30 bg-yellow-500/5">
+          <Card className="border-yellow-600/50 bg-yellow-500/5">
             <CardHeader className="pb-3">
-              <CardTitle className="text-sm text-yellow-700 dark:text-yellow-400">Resource Requirements</CardTitle>
+              <CardTitle className="text-sm text-yellow-900 dark:text-yellow-400">Resource Requirements</CardTitle>
             </CardHeader>
             <CardContent>
               <div className="grid grid-cols-2 gap-4 text-sm">

@@ -34,7 +34,7 @@ import {
 } from "@/components/ui/alert-dialog"
 import LegacySelect from "@/components/ui/Select"
 import KeyValueInput from "@/components/ui/KeyValueInput"
-import { McpServerTemplates, McpServerTemplate } from "@/components/mcp/McpServerTemplates"
+import { McpServerTemplates, McpServerTemplate, MCP_SERVER_TEMPLATES } from "@/components/mcp/McpServerTemplates"
 import { McpOAuthModal } from "@/components/mcp/McpOAuthModal"
 import { MarketplaceSearchPanel, McpServerListing } from "@/components/add-resource"
 import ServiceIcon from "@/components/ServiceIcon"
@@ -156,7 +156,6 @@ export function McpServersPanel({
   // Handle initial add template from navigation
   useEffect(() => {
     if (initialAddTemplateId) {
-      const { MCP_SERVER_TEMPLATES } = require("@/components/mcp/McpServerTemplates")
       const template = MCP_SERVER_TEMPLATES.find((t: McpServerTemplate) => t.id === initialAddTemplateId)
       if (template) {
         setShowCreateModal(true)
@@ -1063,7 +1062,7 @@ export function McpServersPanel({
             </TabsContent>
 
             {/* Marketplace Tab */}
-            <TabsContent value="marketplace" className="mt-4 flex-1 min-h-0 overflow-hidden">
+            <TabsContent value="marketplace" className="mt-4 flex-1 flex flex-col min-h-0 overflow-hidden">
               <MarketplaceSearchPanel
                 type="mcp"
                 onSelectMcp={handleSelectMarketplaceMcp}
@@ -1187,15 +1186,15 @@ export function McpServersPanel({
 
             {/* Setup instructions */}
             {selectedSource?.type === "template" && selectedSource.template?.setupInstructions && (
-              <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded p-3">
-                <p className="text-xs text-blue-700 dark:text-blue-300">
+              <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-400 dark:border-blue-800 rounded p-3">
+                <p className="text-xs text-foreground">
                   {selectedSource.template.setupInstructions}
                 </p>
               </div>
             )}
             {selectedSource?.type === "marketplace" && selectedSource.listing?.install_hint && (
-              <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded p-3">
-                <p className="text-xs text-blue-700 dark:text-blue-300">
+              <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-400 dark:border-blue-800 rounded p-3">
+                <p className="text-xs text-foreground">
                   {selectedSource.listing.install_hint}
                 </p>
               </div>

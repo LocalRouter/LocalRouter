@@ -72,7 +72,9 @@ export function ChatPanel({
 
   // Auto-scroll to bottom when messages change or content streams in
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
+    if (messages.length > 0) {
+      messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
+    }
   }, [messages.length, lastMessageContent])
 
   const handleStop = useCallback(() => {
@@ -288,7 +290,7 @@ export function ChatPanel({
   }
 
   return (
-    <Card className="flex flex-col h-full">
+    <Card className="flex flex-col h-full min-h-[400px]">
       <CardHeader className="pb-3 flex-shrink-0">
         <div className="flex items-center justify-between">
           <CardTitle className="text-base">Chat</CardTitle>
