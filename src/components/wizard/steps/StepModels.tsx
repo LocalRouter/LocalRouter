@@ -31,7 +31,7 @@ import {
 } from "@/components/ui/dialog"
 import { PermissionTreeSelector } from "@/components/permissions/PermissionTreeSelector"
 import { DragThresholdModelSelector } from "@/components/strategy/DragThresholdModelSelector"
-import { ThresholdSlider } from "@/components/routellm/ThresholdSlider"
+import { ThresholdSelector } from "@/components/routellm/ThresholdSelector"
 import ProviderForm, { ProviderType } from "@/components/ProviderForm"
 import type { PermissionState, TreeNode, ModelPermissions } from "@/components/permissions/types"
 
@@ -439,9 +439,10 @@ export function StepModels({
                   onChange={onWeakModelsChange}
                   disableDragOverlay
                 />
-                <ThresholdSlider
+                <ThresholdSelector
                   value={routeLLMThreshold}
                   onChange={onRouteLLMThresholdChange}
+                  compact
                 />
               </div>
             )}
