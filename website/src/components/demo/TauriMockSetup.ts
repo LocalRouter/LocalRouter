@@ -129,109 +129,178 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     }
     mockData.clients.push(newClient)
     toast.success(`Client "${args?.name}" created (demo)`)
+    // Emit clients-changed event to trigger UI refresh
+    setTimeout(() => emit('clients-changed', {}), 10)
     // Return tuple [secret, clientInfo] as expected by the wizard
     const secret = `lr_demo_${generateId()}_${generateId()}`
     return [secret, newClient]
   },
   'update_client_name': (args) => {
-    const client = mockData.clients.find(c => c.id === args?.id)
-    if (client) client.name = args?.name
+    const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.id)
+    if (client) {
+      client.name = args?.name
+      setTimeout(() => emit('clients-changed', {}), 10)
+    }
     return null
   },
   'toggle_client_enabled': (args) => {
-    const client = mockData.clients.find(c => c.id === args?.id)
-    if (client) client.enabled = !client.enabled
+    const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.id)
+    if (client) {
+      client.enabled = args?.enabled !== undefined ? args.enabled : !client.enabled
+      setTimeout(() => emit('clients-changed', {}), 10)
+    }
     return null
   },
   'toggle_client_deferred_loading': (args) => {
-    const client = mockData.clients.find(c => c.id === args?.id)
-    if (client) client.mcp_deferred_loading = !client.mcp_deferred_loading
+    const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.id)
+    if (client) {
+      client.mcp_deferred_loading = args?.enabled !== undefined ? args.enabled : !client.mcp_deferred_loading
+      setTimeout(() => emit('clients-changed', {}), 10)
+    }
     return null
   },
   'delete_client': (args) => {
-    const idx = mockData.clients.findIndex(c => c.id === args?.id)
-    if (idx !== -1) mockData.clients.splice(idx, 1)
-    toast.success('Client deleted (demo)')
+    const idx = mockData.clients.findIndex(c => c.client_id === args?.clientId || c.id === args?.id)
+    if (idx !== -1) {
+      mockData.clients.splice(idx, 1)
+      toast.success('Client deleted (demo)')
+      setTimeout(() => emit('clients-changed', {}), 10)
+    }
     return null
   },
-  'rotate_client_secret': () => ({ secret: `demo-secret-${generateId()}` }),
+  'rotate_client_secret': () => {
+    setTimeout(() => emit('clients-changed', {}), 10)
+    return { secret: `demo-secret-${generateId()}` }
+  },
   'assign_client_strategy': (args) => {
-    const client = mockData.clients.find(c => c.id === args?.clientId)
-    if (client) client.strategy_id = args?.strategyId
+    const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.clientId)
+    if (client) {
+      client.strategy_id = args?.strategyId
+      setTimeout(() => emit('clients-changed', {}), 10)
+    }
     return null
   },
   'get_client_value': () => null,
 
-  // Client permissions
+  // Client permissions - find by either client_id (string identifier) or id (uuid)
   'set_client_mcp_permission': (args) => {
-    const client = mockData.clients.find(c => c.id === args?.clientId)
+    const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.clientId)
     if (client && args?.level && args?.state) {
-      if (args.level === 'global') {
-        client.mcp_permissions.global = args.state
-      } else if (args.level === 'server' && args.key) {
-        client.mcp_permissions.servers[args.key] = args.state
-      } else if (args.level === 'tool' && args.key) {
-        client.mcp_permissions.tools[args.key] = args.state
+      // Handle clear flag - if set, remove the permission instead of setting it
+      if (args.clear && args.level !== 'global') {
+        if (args.level === 'server' && args.key) {
+          delete client.mcp_permissions.servers[args.key]
+        } else if (args.level === 'tool' && args.key) {
+          delete client.mcp_permissions.tools[args.key]
+        } else if (args.level === 'resource' && args.key) {
+          delete client.mcp_permissions.resources[args.key]
+        } else if (args.level === 'prompt' && args.key) {
+          delete client.mcp_permissions.prompts[args.key]
+        }
+      } else {
+        if (args.level === 'global') {
+          client.mcp_permissions.global = args.state
+        } else if (args.level === 'server' && args.key) {
+          client.mcp_permissions.servers[args.key] = args.state
+        } else if (args.level === 'tool' && args.key) {
+          client.mcp_permissions.tools[args.key] = args.state
+        } else if (args.level === 'resource' && args.key) {
+          client.mcp_permissions.resources[args.key] = args.state
+        } else if (args.level === 'prompt' && args.key) {
+          client.mcp_permissions.prompts[args.key] = args.state
+        }
       }
+      // Emit clients-changed event to trigger UI refresh
+      setTimeout(() => emit('clients-changed', {}), 10)
     }
     return null
   },
   'set_client_skills_permission': (args) => {
-    const client = mockData.clients.find(c => c.id === args?.clientId)
+    const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.clientId)
     if (client && args?.level && args?.state) {
-      if (args.level === 'global') {
-        client.skills_permissions.global = args.state
-      } else if (args.level === 'skill' && args.key) {
-        client.skills_permissions.skills[args.key] = args.state
-      } else if (args.level === 'tool' && args.key) {
-        client.skills_permissions.tools[args.key] = args.state
+      // Handle clear flag
+      if (args.clear && args.level !== 'global') {
+        if (args.level === 'skill' && args.key) {
+          delete client.skills_permissions.skills[args.key]
+        } else if (args.level === 'tool' && args.key) {
+          delete client.skills_permissions.tools[args.key]
+        }
+      } else {
+        if (args.level === 'global') {
+          client.skills_permissions.global = args.state
+        } else if (args.level === 'skill' && args.key) {
+          client.skills_permissions.skills[args.key] = args.state
+        } else if (args.level === 'tool' && args.key) {
+          client.skills_permissions.tools[args.key] = args.state
+        }
       }
+      // Emit clients-changed event to trigger UI refresh
+      setTimeout(() => emit('clients-changed', {}), 10)
     }
     return null
   },
   'set_client_model_permission': (args) => {
-    const client = mockData.clients.find(c => c.id === args?.clientId)
+    const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.clientId)
     if (client && args?.level && args?.state) {
-      if (args.level === 'global') {
-        client.model_permissions.global = args.state
-      } else if (args.level === 'provider' && args.key) {
-        client.model_permissions.providers[args.key] = args.state
-      } else if (args.level === 'model' && args.key) {
-        client.model_permissions.models[args.key] = args.state
+      // Handle clear flag
+      if (args.clear && args.level !== 'global') {
+        if (args.level === 'provider' && args.key) {
+          delete client.model_permissions.providers[args.key]
+        } else if (args.level === 'model' && args.key) {
+          delete client.model_permissions.models[args.key]
+        }
+      } else {
+        if (args.level === 'global') {
+          client.model_permissions.global = args.state
+        } else if (args.level === 'provider' && args.key) {
+          client.model_permissions.providers[args.key] = args.state
+        } else if (args.level === 'model' && args.key) {
+          client.model_permissions.models[args.key] = args.state
+        }
       }
+      // Emit clients-changed event to trigger UI refresh
+      setTimeout(() => emit('clients-changed', {}), 10)
     }
     return null
   },
   'set_client_marketplace_permission': (args) => {
-    const client = mockData.clients.find(c => c.id === args?.clientId)
+    const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.clientId)
     if (client && args?.state) {
       client.marketplace_permission = args.state
+      // Emit clients-changed event to trigger UI refresh
+      setTimeout(() => emit('clients-changed', {}), 10)
     }
     return null
   },
   'clear_client_mcp_child_permissions': (args) => {
-    const client = mockData.clients.find(c => c.id === args?.clientId)
+    const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.clientId)
     if (client) {
       client.mcp_permissions.servers = {}
       client.mcp_permissions.tools = {}
       client.mcp_permissions.resources = {}
       client.mcp_permissions.prompts = {}
+      // Emit clients-changed event to trigger UI refresh
+      setTimeout(() => emit('clients-changed', {}), 10)
     }
     return null
   },
   'clear_client_skills_child_permissions': (args) => {
-    const client = mockData.clients.find(c => c.id === args?.clientId)
+    const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.clientId)
     if (client) {
       client.skills_permissions.skills = {}
       client.skills_permissions.tools = {}
+      // Emit clients-changed event to trigger UI refresh
+      setTimeout(() => emit('clients-changed', {}), 10)
     }
     return null
   },
   'clear_client_model_child_permissions': (args) => {
-    const client = mockData.clients.find(c => c.id === args?.clientId)
+    const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.clientId)
     if (client) {
       client.model_permissions.providers = {}
       client.model_permissions.models = {}
+      // Emit clients-changed event to trigger UI refresh
+      setTimeout(() => emit('clients-changed', {}), 10)
     }
     return null
   },
