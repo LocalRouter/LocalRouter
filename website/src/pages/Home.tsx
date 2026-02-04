@@ -274,8 +274,8 @@ export default function Home() {
               </ul>
             </div>
             {/* Visual: Auth Flow Diagram */}
-            <div className="relative">
-              <div className="rounded-xl border-2 border-slate-700 bg-gradient-to-br from-slate-900 to-slate-800 p-6 shadow-2xl">
+            <div className="relative overflow-x-auto">
+              <div className="rounded-xl border-2 border-slate-700 bg-gradient-to-br from-slate-900 to-slate-800 p-6 shadow-2xl min-w-[480px]">
                 {/* Five-column flow layout: Clients → Connector → LocalRouter → Connector → Providers */}
                 <div className="flex items-stretch gap-2">
                   {/* Left: Clients */}
@@ -640,8 +640,8 @@ export default function Home() {
               </ul>
             </div>
             {/* Visual: MCP Architecture */}
-            <div className="relative">
-              <div className="rounded-xl border bg-gradient-to-br from-emerald-950 to-slate-900 p-6 shadow-2xl">
+            <div className="relative overflow-x-auto">
+              <div className="rounded-xl border bg-gradient-to-br from-emerald-950 to-slate-900 p-6 shadow-2xl min-w-[480px]">
                 {/* Three-column layout: Client → Gateway → Servers */}
                 <div className="flex items-stretch gap-3">
                   {/* Client */}
@@ -739,8 +739,8 @@ export default function Home() {
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
           <div className="grid gap-12 lg:grid-cols-2 lg:gap-16 items-center">
             {/* Visual: Skills Architecture */}
-            <div className="relative order-2 lg:order-1">
-              <div className="rounded-xl border bg-gradient-to-br from-violet-950 to-slate-900 p-6 shadow-2xl">
+            <div className="relative order-2 lg:order-1 overflow-x-auto">
+              <div className="rounded-xl border bg-gradient-to-br from-violet-950 to-slate-900 p-6 shadow-2xl min-w-[480px]">
                 {/* Three-column layout: App → Gateway → Skills */}
                 <div className="flex items-stretch gap-3">
                   {/* App */}
@@ -1058,8 +1058,8 @@ export default function Home() {
               </ul>
             </div>
             {/* Visual: Marketplace Browser */}
-            <div className="relative">
-              <div className="rounded-xl border-2 border-slate-700 bg-gradient-to-br from-slate-900 to-slate-800 p-6 shadow-2xl">
+            <div className="relative overflow-x-auto">
+              <div className="rounded-xl border-2 border-slate-700 bg-gradient-to-br from-slate-900 to-slate-800 p-6 shadow-2xl min-w-[480px]">
                 {/* Header */}
                 <div className="flex items-center gap-3 mb-5 pb-8 border-b border-slate-700">
                   <div className="h-10 w-10 rounded-lg bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center">
