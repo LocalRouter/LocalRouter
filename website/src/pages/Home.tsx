@@ -227,17 +227,19 @@ export default function Home() {
         </div>
       </section>
 
-      {/* Windows XP Demo - Full Width */}
+      {/* Windows XP Demo */}
       <section className="border-b">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-8 text-center">
           <h2 className="text-2xl font-bold sm:text-3xl">App Demo</h2>
         </div>
-        <iframe
-          src="/winxp/index.html"
-          className="w-full bg-[#235cdc]"
-          style={{ height: '700px' }}
-          title="LocalRouter Windows XP Demo"
-        />
+        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 pb-8">
+          <iframe
+            src="/winxp/index.html"
+            className="w-full bg-[#235cdc] rounded-xl overflow-hidden"
+            style={{ height: '700px' }}
+            title="LocalRouter Windows XP Demo"
+          />
+        </div>
       </section>
 
       {/* Feature 1: Credential Management */}
