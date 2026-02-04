@@ -474,15 +474,15 @@ async fn test_gateway_tools_list_merges_and_namespaces() {
         .map(|t| t["name"].as_str().unwrap().to_string())
         .collect();
 
-    assert!(tool_names.contains(&"Test Server 1__read_file".to_string()));
-    assert!(tool_names.contains(&"Test Server 1__write_file".to_string()));
-    assert!(tool_names.contains(&"Test Server 2__list_directory".to_string()));
-    assert!(tool_names.contains(&"Test Server 2__delete_file".to_string()));
+    assert!(tool_names.contains(&"test-server-1__read_file".to_string()));
+    assert!(tool_names.contains(&"test-server-1__write_file".to_string()));
+    assert!(tool_names.contains(&"test-server-2__list_directory".to_string()));
+    assert!(tool_names.contains(&"test-server-2__delete_file".to_string()));
 
     // Verify descriptions are unchanged
     let read_file_tool = tools
         .iter()
-        .find(|t| t["name"] == "Test Server 1__read_file")
+        .find(|t| t["name"] == "test-server-1__read_file")
         .unwrap();
     assert_eq!(
         read_file_tool["description"].as_str().unwrap(),
@@ -491,7 +491,7 @@ async fn test_gateway_tools_list_merges_and_namespaces() {
 
     let list_dir_tool = tools
         .iter()
-        .find(|t| t["name"] == "Test Server 2__list_directory")
+        .find(|t| t["name"] == "test-server-2__list_directory")
         .unwrap();
     assert_eq!(
         list_dir_tool["description"].as_str().unwrap(),
@@ -535,7 +535,7 @@ async fn test_gateway_tools_list_with_empty_server() {
 
     // Should have 1 tool from server1
     assert_eq!(tools.len(), 1);
-    assert_eq!(tools[0]["name"], "Test Server 1__tool1");
+    assert_eq!(tools[0]["name"], "test-server-1__tool1");
 }
 
 // ============================================================================
@@ -597,13 +597,13 @@ async fn test_gateway_resources_list_merges_and_namespaces() {
         .map(|r| r["name"].as_str().unwrap().to_string())
         .collect();
 
-    assert!(resource_names.contains(&"Test Server 1__config".to_string()));
-    assert!(resource_names.contains(&"Test Server 2__logs".to_string()));
+    assert!(resource_names.contains(&"test-server-1__config".to_string()));
+    assert!(resource_names.contains(&"test-server-2__logs".to_string()));
 
     // Verify URIs are unchanged
     let config_resource = resources
         .iter()
-        .find(|r| r["name"] == "Test Server 1__config")
+        .find(|r| r["name"] == "test-server-1__config")
         .unwrap();
     assert_eq!(config_resource["uri"], "file:///config.json");
 }
@@ -651,8 +651,8 @@ async fn test_gateway_prompts_list_merges_and_namespaces() {
         .map(|p| p["name"].as_str().unwrap().to_string())
         .collect();
 
-    assert!(prompt_names.contains(&"Test Server 1__code_review".to_string()));
-    assert!(prompt_names.contains(&"Test Server 2__summarize".to_string()));
+    assert!(prompt_names.contains(&"test-server-1__code_review".to_string()));
+    assert!(prompt_names.contains(&"test-server-2__summarize".to_string()));
 }
 
 // ============================================================================
@@ -716,7 +716,7 @@ async fn test_gateway_tools_call_routes_to_correct_server() {
     let call_request = request_with_params(
         "tools/call",
         json!({
-            "name": "Test Server 1__read_file",
+            "name": "test-server-1__read_file",
             "arguments": {"path": "/test.txt"}
         }),
     );
@@ -981,7 +981,7 @@ async fn test_gateway_deferred_loading_activates_tools() {
     assert!(!activated.is_empty());
     assert!(activated
         .iter()
-        .any(|v| v.as_str().unwrap() == "Test Server 1__read_file"));
+        .any(|v| v.as_str().unwrap() == "test-server-1__read_file"));
 
     // Now tools/list should return search tool + activated tools
     let list_request =
@@ -1006,7 +1006,7 @@ async fn test_gateway_deferred_loading_activates_tools() {
     assert!(tools.iter().any(|t| t["name"] == "search"));
     assert!(tools
         .iter()
-        .any(|t| t["name"] == "Test Server 1__read_file"));
+        .any(|t| t["name"] == "test-server-1__read_file"));
 }
 
 // ============================================================================
@@ -1201,7 +1201,7 @@ async fn test_resources_read_by_name() {
 
     // Read resource by namespaced name
     let read_request =
-        request_with_params("resources/read", json!({"name": "Test Server 1__logs"}));
+        request_with_params("resources/read", json!({"name": "test-server-1__logs"}));
 
     let response = gateway
         .handle_request(
@@ -1248,7 +1248,7 @@ async fn test_resources_read_not_found() {
     // Try to read non-existent resource
     let read_request = request_with_params(
         "resources/read",
-        json!({"name": "Test Server 1__nonexistent"}),
+        json!({"name": "test-server-1__nonexistent"}),
     );
 
     let result = gateway
@@ -1391,8 +1391,8 @@ async fn test_resources_list_with_templates() {
         .any(|r| r["uri"].as_str().unwrap().contains("{id}")));
 
     // Should namespace names only
-    assert!(resources.iter().any(|r| r["name"] == "Test Server 1__file"));
-    assert!(resources.iter().any(|r| r["name"] == "Test Server 2__user"));
+    assert!(resources.iter().any(|r| r["name"] == "test-server-1__file"));
+    assert!(resources.iter().any(|r| r["name"] == "test-server-2__user"));
 }
 
 // ============================================================================
@@ -1446,7 +1446,7 @@ async fn test_prompts_get_routes_by_namespace() {
         .await;
 
     // Get prompt by namespaced name
-    let get_request = request_with_params("prompts/get", json!({"name": "Test Server 1__review"}));
+    let get_request = request_with_params("prompts/get", json!({"name": "test-server-1__review"}));
 
     let response = gateway
         .handle_request(
@@ -1514,7 +1514,7 @@ async fn test_prompts_get_with_arguments() {
 
     let get_request = request_with_params(
         "prompts/get",
-        json!({"name": "Test Server 1__greet", "arguments": {"name": "Alice"}}),
+        json!({"name": "test-server-1__greet", "arguments": {"name": "Alice"}}),
     );
 
     let response = gateway
@@ -1558,7 +1558,7 @@ async fn test_prompts_get_not_found() {
 
     // Try to get non-existent prompt
     let get_request =
-        request_with_params("prompts/get", json!({"name": "Test Server 1__nonexistent"}));
+        request_with_params("prompts/get", json!({"name": "test-server-1__nonexistent"}));
 
     let result = gateway
         .handle_request(
@@ -1620,13 +1620,13 @@ async fn test_prompts_list_with_arguments() {
     // Should preserve argument schemas
     let translate = prompts
         .iter()
-        .find(|p| p["name"] == "Test Server 1__translate")
+        .find(|p| p["name"] == "test-server-1__translate")
         .unwrap();
     assert_eq!(translate["arguments"].as_array().unwrap().len(), 2);
 
     let summarize = prompts
         .iter()
-        .find(|p| p["name"] == "Test Server 2__summarize")
+        .find(|p| p["name"] == "test-server-2__summarize")
         .unwrap();
     assert_eq!(summarize["arguments"].as_array().unwrap().len(), 2);
 }
@@ -1660,17 +1660,17 @@ async fn test_tools_list_handles_duplicates() {
     let tools = result["tools"].as_array().unwrap();
 
     // Both should be returned with different namespaces
-    assert!(tools.iter().any(|t| t["name"] == "Test Server 1__read"));
-    assert!(tools.iter().any(|t| t["name"] == "Test Server 2__read"));
+    assert!(tools.iter().any(|t| t["name"] == "test-server-1__read"));
+    assert!(tools.iter().any(|t| t["name"] == "test-server-2__read"));
 
     // Descriptions should be different
     let read1 = tools
         .iter()
-        .find(|t| t["name"] == "Test Server 1__read")
+        .find(|t| t["name"] == "test-server-1__read")
         .unwrap();
     let read2 = tools
         .iter()
-        .find(|t| t["name"] == "Test Server 2__read")
+        .find(|t| t["name"] == "test-server-2__read")
         .unwrap();
     assert_ne!(read1["description"], read2["description"]);
 }
@@ -1711,7 +1711,7 @@ async fn test_tools_call_strips_namespace() {
 
     let call_request = request_with_params(
         "tools/call",
-        json!({"name": "Test Server 1__execute", "arguments": {"cmd": "ls"}}),
+        json!({"name": "test-server-1__execute", "arguments": {"cmd": "ls"}}),
     );
 
     let response = gateway
@@ -1767,7 +1767,7 @@ async fn test_tools_call_passes_arguments() {
     let call_request = request_with_params(
         "tools/call",
         json!({
-            "name": "Test Server 1__calc",
+            "name": "test-server-1__calc",
             "arguments": {
                 "operation": "multiply",
                 "operands": [6, 7],
@@ -1822,7 +1822,7 @@ async fn test_tools_call_handles_error_response() {
 
     let call_request = request_with_params(
         "tools/call",
-        json!({"name": "Test Server 1__fail", "arguments": {}}),
+        json!({"name": "test-server-1__fail", "arguments": {}}),
     );
 
     let response = gateway
@@ -1925,12 +1925,12 @@ async fn test_concurrent_clients() {
     // Client 1 should only see server1 tools
     assert!(tools1
         .iter()
-        .any(|t| t["name"] == "Test Server 1__server1_tool"));
+        .any(|t| t["name"] == "test-server-1__server1_tool"));
 
     // Client 2 should only see server2 tools
     assert!(tools2
         .iter()
-        .any(|t| t["name"] == "Test Server 2__server2_tool"));
+        .any(|t| t["name"] == "test-server-2__server2_tool"));
 }
 
 // ============================================================================
@@ -2244,7 +2244,7 @@ async fn test_tools_call_overhead() {
 
     let call_request = request_with_params(
         "tools/call",
-        json!({"name": "Test Server 1__fast_tool", "arguments": {}}),
+        json!({"name": "test-server-1__fast_tool", "arguments": {}}),
     );
 
     let start = Instant::now();
@@ -2532,7 +2532,7 @@ async fn test_tools_list_partial_failure() {
     let tools = result["tools"].as_array().unwrap();
 
     // Should return server1's tools despite server2 failing
-    assert!(tools.iter().any(|t| t["name"] == "Test Server 1__tool1"));
+    assert!(tools.iter().any(|t| t["name"] == "test-server-1__tool1"));
 
     // Response metadata might indicate partial failure
     // (depending on implementation)
@@ -2742,13 +2742,13 @@ async fn test_deferred_loading_falls_back_without_client_capability() {
     assert!(tools.len() > 1); // Should have multiple tools, not just search
     assert!(tools
         .iter()
-        .any(|t| t["name"] == "Test Server 1__read_file"));
+        .any(|t| t["name"] == "test-server-1__read_file"));
     assert!(tools
         .iter()
-        .any(|t| t["name"] == "Test Server 1__write_file"));
+        .any(|t| t["name"] == "test-server-1__write_file"));
     assert!(tools
         .iter()
-        .any(|t| t["name"] == "Test Server 2__github_issue"));
+        .any(|t| t["name"] == "test-server-2__github_issue"));
 
     // Should NOT have the search tool
     assert!(!tools.iter().any(|t| t["name"] == "search"));
@@ -2839,8 +2839,8 @@ async fn test_deferred_loading_not_requested() {
 
     // Normal mode - should see all tools from both servers
     assert!(tools.len() >= 2);
-    assert!(tools.iter().any(|t| t["name"] == "Test Server 1__tool1"));
-    assert!(tools.iter().any(|t| t["name"] == "Test Server 2__tool2"));
+    assert!(tools.iter().any(|t| t["name"] == "test-server-1__tool1"));
+    assert!(tools.iter().any(|t| t["name"] == "test-server-2__tool2"));
 
     // Should NOT have the search tool
     assert!(!tools.iter().any(|t| t["name"] == "search"));
