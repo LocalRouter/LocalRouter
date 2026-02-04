@@ -1,10 +1,12 @@
 {
   "files": {
     "main.css": "/winxp/static/css/main.f012863c.css",
-    "main.js": "/winxp/static/js/main.4bc6b04c.js",
+    "main.js": "/winxp/static/js/main.fbd2c639.js",
     "static/media/error.wav": "/winxp/static/media/error.c8da1695dd177fc9e8ec.wav",
     "static/media/narrator.ico": "/winxp/static/media/narrator.aeadcf16c506a1b17f3e.ico",
+    "static/media/lmstudio.ico": "/winxp/static/media/lmstudio.870369af9e9896e41c10.ico",
     "static/media/restart.ico": "/winxp/static/media/restart.dc491046c84e4c14e552.ico",
+    "static/media/ollama.svg": "/winxp/static/media/ollama.441257b748d3c7f747456496f4f41bee.svg",
     "static/media/all-programs.ico": "/winxp/static/media/all-programs.bcaf5973986a068c6a92.ico",
     "static/media/restore.ico": "/winxp/static/media/restore.13115734763eedd58881.ico",
     "static/media/view-info.ico": "/winxp/static/media/view-info.5e4c445dd01928577a8f.ico",
@@ -13,10 +15,10 @@
     "static/media/localrouter.svg": "/winxp/static/media/localrouter.7e6cbb264d79c5b55ac10314cd0371d7.svg",
     "static/media/find.svg": "/winxp/static/media/find.303b87f499358979b1c66a3da1584e67.svg",
     "main.f012863c.css.map": "/winxp/static/css/main.f012863c.css.map",
-    "main.4bc6b04c.js.map": "/winxp/static/js/main.4bc6b04c.js.map"
+    "main.fbd2c639.js.map": "/winxp/static/js/main.fbd2c639.js.map"
   },
   "entrypoints": [
     "static/css/main.f012863c.css",
-    "static/js/main.4bc6b04c.js"
+    "static/js/main.fbd2c639.js"
   ]
 }
