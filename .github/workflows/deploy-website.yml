@@ -1,11 +1,6 @@
 name: Deploy Website to GitHub Pages
 
 on:
-  push:
-    branches: ['master']
-    paths:
-      - 'website/**'
-      - '.github/workflows/deploy-website.yml'
   workflow_dispatch:
 
 permissions:
