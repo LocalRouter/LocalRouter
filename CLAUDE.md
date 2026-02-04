@@ -11,6 +11,51 @@ Local OpenAI-compatible API gateway with intelligent routing, multi-provider sup
 - Frontend: **camelCase** in `invoke()` (`{ clientId: "..." }`)
 - No native dialogs (`window.confirm`) - use Radix UI `AlertDialog`
 
+### Adding/Modifying Tauri Commands
+
+When creating or modifying a Tauri command, update **all locations**:
+
+1. **Rust backend** (`src-tauri/src/ui/commands*.rs`)
+   ```rust
+   #[derive(Serialize)]
+   pub struct MyResult { pub field: String }
+
+   #[tauri::command]
+   pub async fn my_command(my_param: String) -> Result<MyResult, String> { ... }
+   ```
+
+2. **TypeScript types** (`src/types/tauri-commands.ts`)
+   ```typescript
+   // Response type (top of file, with other response types)
+   /** Rust: src-tauri/src/ui/commands.rs - MyResult struct */
+   export interface MyResult { field: string }
+
+   // Request params (bottom of file, in "Command Parameters" section)
+   /** Params for my_command */
+   export interface MyCommandParams { myParam: string }
+   ```
+
+3. **Demo mock** (`website/src/components/demo/TauriMockSetup.ts`)
+   ```typescript
+   'my_command': (args): MyResult => ({
+     field: 'demo value',
+   }),
+   ```
+
+4. **Usage in frontend**
+   ```typescript
+   import type { MyResult, MyCommandParams } from '@/types/tauri-commands'
+   const result = await invoke<MyResult>('my_command', params satisfies MyCommandParams)
+   ```
+
+**Type sync checklist:**
+- [ ] Response type added/updated (matches Rust return struct)
+- [ ] Request params type added/updated (camelCase, matches Rust params)
+- [ ] Optional fields: `Option<T>` in Rust → `T | null` in TypeScript
+- [ ] Enums: `#[serde(rename_all = "snake_case")]` in Rust
+- [ ] Mock handler returns data matching response type
+- [ ] Run `npx tsc --noEmit` to verify types
+
 ### Privacy Policy (CRITICAL)
 - **No telemetry** - zero analytics or tracking
 - **No external assets** - all bundled at build time
