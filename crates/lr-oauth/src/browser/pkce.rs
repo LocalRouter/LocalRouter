@@ -31,8 +31,8 @@ pub struct PkceChallenge {
 /// * PKCE challenge containing verifier, challenge, and method ("S256")
 ///
 /// # Example
-/// ```no_run
-/// use oauth_browser::generate_pkce_challenge;
+/// ```ignore
+/// use lr_oauth::browser::generate_pkce_challenge;
 ///
 /// let pkce = generate_pkce_challenge();
 /// // Use pkce.code_challenge in authorization URL
@@ -76,8 +76,8 @@ pub fn generate_pkce_challenge() -> PkceChallenge {
 /// * Random 32-character state string
 ///
 /// # Example
-/// ```no_run
-/// use oauth_browser::generate_state;
+/// ```ignore
+/// use lr_oauth::browser::generate_state;
 ///
 /// let state = generate_state();
 /// // Store state in session

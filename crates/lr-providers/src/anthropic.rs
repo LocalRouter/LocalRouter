@@ -1203,6 +1203,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore] // Requires valid ANTHROPIC_API_KEY
     async fn test_list_models() {
         let provider = AnthropicProvider::new("test-key".to_string()).unwrap();
         let models = provider.list_models().await.unwrap();

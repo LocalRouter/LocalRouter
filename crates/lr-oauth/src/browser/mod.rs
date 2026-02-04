@@ -12,8 +12,8 @@
 //! - Flow timeout and cancellation support
 //!
 //! # Usage Example
-//! ```no_run
-//! use oauth_browser::{OAuthFlowManager, OAuthFlowConfig};
+//! ```ignore
+//! use lr_oauth::browser::{OAuthFlowManager, OAuthFlowConfig};
 //!
 //! let manager = OAuthFlowManager::new(keychain);
 //! let config = OAuthFlowConfig {

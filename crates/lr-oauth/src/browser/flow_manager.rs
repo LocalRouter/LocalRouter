@@ -54,8 +54,8 @@ impl OAuthFlowManager {
     /// * Flow start information (flow_id, auth_url, state)
     ///
     /// # Example
-    /// ```no_run
-    /// let config = OAuthFlowConfig { ... };
+    /// ```ignore
+    /// let config = OAuthFlowConfig { /* ... */ };
     /// let start_result = manager.start_flow(config).await?;
     /// // Open start_result.auth_url in browser
     /// // Poll with manager.poll_status(start_result.flow_id)

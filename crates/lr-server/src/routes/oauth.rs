@@ -141,7 +141,7 @@ fn extract_basic_auth(auth_header: Option<&str>) -> Option<(String, String)> {
 /// ```
 ///
 /// Or using Basic Authentication:
-/// ```
+/// ```text
 /// POST /oauth/token
 /// Authorization: Basic base64(client_id:client_secret)
 /// Content-Type: application/x-www-form-urlencoded

@@ -25,7 +25,7 @@ pub fn content_hash_of_file(path: &Path) -> Result<String, String> {
 /// Parse a SKILL.md file into metadata and body
 ///
 /// Expected format:
-/// ```
+/// ```text
 /// ---
 /// name: my-skill
 /// description: A useful skill

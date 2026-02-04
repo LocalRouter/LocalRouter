@@ -217,7 +217,9 @@ mod tests {
 
     #[test]
     fn test_openapi_spec_validity() {
-        let spec = ApiDoc::openapi();
+        let mut spec = ApiDoc::openapi();
+        // Apply the same version override as get_openapi_json/yaml
+        spec.info.version = env!("CARGO_PKG_VERSION").to_string();
 
         // Note: OpenAPI version is validated by utoipa at compile time
         // We trust utoipa to use the correct version (3.1.0)
