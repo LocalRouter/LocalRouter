@@ -81,7 +81,10 @@ export default defineConfig({
     alias: {
       "@app": path.resolve(__dirname, "../src"),       // Main Tauri app src
       // Stub Tauri plugins for demo mode
+      "@tauri-apps/api/core": path.resolve(__dirname, "./src/stubs/tauri-api-core.ts"),
       "@tauri-apps/api/event": path.resolve(__dirname, "./src/stubs/tauri-api-event.ts"),
+      "@tauri-apps/api/mocks": path.resolve(__dirname, "./src/stubs/tauri-api-mocks.ts"),
+      "@tauri-apps/api/webviewWindow": path.resolve(__dirname, "./src/stubs/tauri-api-webviewWindow.ts"),
       "@tauri-apps/plugin-dialog": path.resolve(__dirname, "./src/stubs/tauri-plugin-dialog.ts"),
       "@tauri-apps/plugin-shell": path.resolve(__dirname, "./src/stubs/tauri-plugin-shell.ts"),
       "@tauri-apps/plugin-updater": path.resolve(__dirname, "./src/stubs/tauri-plugin-updater.ts"),
