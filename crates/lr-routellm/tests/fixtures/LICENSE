@@ -1,0 +1,16 @@
+The benchmark data in this directory is derived from the RouteLLM project
+(https://github.com/lm-sys/RouteLLM).
+
+Original Copyright: LMSYS
+License: Apache License 2.0
+
+The data includes model evaluation results from:
+- GSM8K (Grade School Math 8K) benchmark
+- MMLU (Massive Multitask Language Understanding) benchmark
+
+For the full Apache 2.0 license text, see:
+https://www.apache.org/licenses/LICENSE-2.0
+
+Attribution:
+RouteLLM: Learning to Route LLMs with Preference Data
+https://arxiv.org/abs/2406.18665
