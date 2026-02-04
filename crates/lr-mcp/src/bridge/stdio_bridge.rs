@@ -8,7 +8,7 @@
 
 use crate::protocol::{JsonRpcError, JsonRpcRequest, JsonRpcResponse};
 use lr_api_keys::keychain_trait::{CachedKeychain, KeychainStorage};
-use lr_config::{AppConfig, Client, ConfigManager, McpServerAccess};
+use lr_config::{AppConfig, Client, ConfigManager};
 use lr_types::{AppError, AppResult};
 use serde_json::Value;
 use std::path::PathBuf;
@@ -65,25 +65,25 @@ impl StdioBridge {
         // Resolve client and secret
         let (client_id, client_secret) = resolve_client_secret(client_id, &config).await?;
 
-        // Validate client has MCP servers configured
+        // Validate client has MCP servers configured using mcp_permissions
         let client = find_client_by_id(&client_id, &config)?;
-        if !client.mcp_server_access.has_any_access() {
+        if !client.mcp_permissions.global.is_enabled() && client.mcp_permissions.servers.is_empty() {
             return Err(AppError::Config(format!(
-                "Client '{}' has no MCP servers configured. Set 'mcp_server_access' in config.yaml",
+                "Client '{}' has no MCP servers configured. Set 'mcp_permissions' in config.yaml",
                 client_id
             )));
         }
 
         // Get server count for logging
-        let server_count = match &client.mcp_server_access {
-            McpServerAccess::None => 0,
-            McpServerAccess::All => config.mcp_servers.len(),
-            McpServerAccess::Specific(servers) => servers.len(),
+        let server_count = if client.mcp_permissions.global.is_enabled() {
+            config.mcp_servers.len()
+        } else {
+            client.mcp_permissions.servers.len()
         };
 
         info!(
-            "Bridge initialized for client '{}' with {} MCP servers (mode: {:?})",
-            client_id, server_count, client.mcp_server_access
+            "Bridge initialized for client '{}' with {} MCP servers (global: {:?})",
+            client_id, server_count, client.mcp_permissions.global
         );
 
         Ok(Self {
@@ -242,7 +242,7 @@ impl StdioBridge {
                     "Invalid client credentials. Check LOCALROUTER_CLIENT_SECRET or run GUI once to store credentials.".to_string()
                 ),
                 403 => AppError::Mcp(format!(
-                    "Client '{}' is not allowed to access MCP servers. Check 'mcp_server_access' in config.yaml",
+                    "Client '{}' is not allowed to access MCP servers. Check 'mcp_permissions' in config.yaml",
                     self.client_id
                 )),
                 404 => AppError::Mcp(
@@ -354,7 +354,7 @@ fn find_first_enabled_client(config: &AppConfig) -> AppResult<&Client> {
     config
         .clients
         .iter()
-        .find(|c| c.enabled && c.mcp_server_access.has_any_access())
+        .find(|c| c.enabled && (c.mcp_permissions.global.is_enabled() || !c.mcp_permissions.servers.is_empty()))
         .ok_or_else(|| {
             AppError::Config(
                 "No enabled clients with MCP servers found. Configure a client in config.yaml"
@@ -367,7 +367,7 @@ fn find_first_enabled_client(config: &AppConfig) -> AppResult<&Client> {
 mod tests {
     use super::*;
     use chrono::Utc;
-    use lr_config::{FirewallRules, McpPermissions, SkillsPermissions, ModelPermissions, PermissionState};
+    use lr_config::{FirewallRules, McpPermissions, McpServerAccess, SkillsPermissions, ModelPermissions, PermissionState};
 
     fn test_config() -> AppConfig {
         let mut config = AppConfig::default();

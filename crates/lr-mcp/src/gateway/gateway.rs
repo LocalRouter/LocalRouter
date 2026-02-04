@@ -139,7 +139,7 @@ impl McpGateway {
         // Note: config is not behind a lock since it's set at construction time.
         // This is a best-effort update for the async flag; new sessions will
         // pick it up via handle_request_with_skills.
-        // For existing sessions, it's propagated when skills_access is set.
+        // For existing sessions, it's propagated when skills_permissions is set.
         //
         // Since GatewayConfig is in a plain field (not Arc/RwLock), we can't
         // mutate it after construction. Instead, we store the flag on the gateway
@@ -159,9 +159,11 @@ impl McpGateway {
     }
 
     /// Collect skill info for building gateway instructions.
-    /// Returns skill metadata for all skills accessible to the given access level.
-    fn collect_skill_info(&self, access: &lr_config::SkillsAccess) -> Vec<SkillInfo> {
-        if !access.has_any_access() {
+    /// Returns skill metadata for all skills accessible to the given permissions.
+    fn collect_skill_info(&self, permissions: &lr_config::SkillsPermissions) -> Vec<SkillInfo> {
+        // Check if any skills access is enabled
+        let has_any_access = permissions.global.is_enabled() || !permissions.skills.is_empty();
+        if !has_any_access {
             return Vec::new();
         }
         let Some(sm) = self.skill_manager.get() else {
@@ -170,7 +172,7 @@ impl McpGateway {
         let all_skills = sm.get_all();
         all_skills
             .iter()
-            .filter(|s| s.enabled && access.can_access_by_name(&s.metadata.name))
+            .filter(|s| s.enabled && permissions.resolve_skill(&s.metadata.name).is_enabled())
             .map(|s| {
                 let sname = lr_skills::types::sanitize_name(&s.metadata.name);
                 SkillInfo {
@@ -293,10 +295,10 @@ impl McpGateway {
             allowed_servers,
             enable_deferred_loading,
             roots,
-            lr_config::SkillsAccess::None,
+            lr_config::SkillsPermissions::default(),
             lr_config::FirewallRules::default(),
             String::new(),
-            false, // marketplace_enabled
+            lr_config::PermissionState::Off, // marketplace_permission
             request,
         )
         .await
@@ -309,10 +311,10 @@ impl McpGateway {
         allowed_servers: Vec<String>,
         enable_deferred_loading: bool,
         roots: Vec<crate::protocol::Root>,
-        skills_access: lr_config::SkillsAccess,
+        skills_permissions: lr_config::SkillsPermissions,
         firewall_rules: lr_config::FirewallRules,
         client_name: String,
-        marketplace_enabled: bool,
+        marketplace_permission: lr_config::PermissionState,
         request: JsonRpcRequest,
     ) -> AppResult<JsonRpcResponse> {
         let method = request.method.clone();
@@ -333,24 +335,24 @@ impl McpGateway {
             .get_or_create_session(client_id, allowed_servers, enable_deferred_loading, roots)
             .await?;
 
-        // Update skills access and async config on session
-        if skills_access.has_any_access() {
+        // Update skills permissions and async config on session
+        if skills_permissions.global.is_enabled() || !skills_permissions.skills.is_empty() {
             let async_enabled = self
                 .skills_async_override
                 .get()
                 .copied()
                 .unwrap_or(self.config.skills_async_enabled);
             let mut session_write = session.write().await;
-            session_write.skills_access = skills_access;
+            session_write.skills_permissions = skills_permissions;
             session_write.skills_async_enabled = async_enabled;
         }
 
-        // Update firewall rules, client name, and marketplace access on session (always refresh from config)
+        // Update firewall rules, client name, and marketplace permission on session (always refresh from config)
         {
             let mut session_write = session.write().await;
             session_write.firewall_rules = firewall_rules;
             session_write.client_name = client_name;
-            session_write.marketplace_enabled = marketplace_enabled;
+            session_write.marketplace_permission = marketplace_permission;
         }
 
         // Update last activity
@@ -871,7 +873,7 @@ impl McpGateway {
             // Check if this session has skills access and the gateway has skill support
             let session_read = session.read().await;
             let has_skills =
-                session_read.skills_access.has_any_access() && self.has_skill_support();
+                (session_read.skills_permissions.global.is_enabled() || !session_read.skills_permissions.skills.is_empty()) && self.has_skill_support();
             drop(session_read);
 
             if has_skills {
@@ -880,10 +882,10 @@ impl McpGateway {
                 );
 
                 let session_read = session.read().await;
-                let skills_access = session_read.skills_access.clone();
+                let skills_permissions = session_read.skills_permissions.clone();
                 drop(session_read);
 
-                let skill_infos = self.collect_skill_info(&skills_access);
+                let skill_infos = self.collect_skill_info(&skills_permissions);
                 let unavailable = self.build_unavailable_server_infos(&start_failures);
                 let instructions = build_gateway_instructions(&InstructionsContext {
                     servers: Vec::new(),
@@ -1000,7 +1002,7 @@ impl McpGateway {
         if init_results.is_empty() && !failures.is_empty() {
             let session_read = session.read().await;
             let has_skills =
-                session_read.skills_access.has_any_access() && self.has_skill_support();
+                (session_read.skills_permissions.global.is_enabled() || !session_read.skills_permissions.skills.is_empty()) && self.has_skill_support();
             drop(session_read);
 
             if has_skills {
@@ -1009,10 +1011,10 @@ impl McpGateway {
                 );
 
                 let session_read = session.read().await;
-                let skills_access = session_read.skills_access.clone();
+                let skills_permissions = session_read.skills_permissions.clone();
                 drop(session_read);
 
-                let skill_infos = self.collect_skill_info(&skills_access);
+                let skill_infos = self.collect_skill_info(&skills_permissions);
                 let unavailable = self.build_unavailable_server_infos(&failures);
                 let instructions = build_gateway_instructions(&InstructionsContext {
                     servers: Vec::new(),
@@ -1216,14 +1218,14 @@ impl McpGateway {
 
         // Build gateway instructions based on the full context
         let session_read = session.read().await;
-        let skills_access = session_read.skills_access.clone();
+        let skills_permissions = session_read.skills_permissions.clone();
         let deferred_state = session_read.deferred_loading.clone();
         let active_server_ids = session_read.allowed_servers.clone();
         drop(session_read);
 
-        let has_skills = skills_access.has_any_access() && self.has_skill_support();
+        let has_skills = (skills_permissions.global.is_enabled() || !skills_permissions.skills.is_empty()) && self.has_skill_support();
         let skill_infos = if has_skills {
-            self.collect_skill_info(&skills_access)
+            self.collect_skill_info(&skills_permissions)
         } else {
             Vec::new()
         };

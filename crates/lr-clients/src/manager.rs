@@ -13,7 +13,7 @@
 
 use lr_api_keys::keychain_trait::KeychainStorage;
 use lr_api_keys::CachedKeychain;
-use lr_config::{Client, McpServerAccess};
+use lr_config::{Client, PermissionState};
 use lr_types::{AppError, AppResult};
 use lr_utils::crypto;
 use parking_lot::RwLock;
@@ -318,10 +318,8 @@ impl ClientManager {
         Ok(())
     }
 
-    /// Add an MCP server to a client's allowed list
-    /// If access mode is None, converts to Specific with this server
-    /// If access mode is All, no change needed (already has access)
-    /// If access mode is Specific, adds to the list
+    /// Add an MCP server permission (sets to Allow)
+    /// Uses the new mcp_permissions system
     pub fn add_mcp_server(&self, client_id: &str, server_id: &str) -> AppResult<()> {
         let mut clients = self.clients.write();
 
@@ -330,13 +328,17 @@ impl ClientManager {
             .find(|c| c.id == client_id)
             .ok_or_else(|| AppError::Config(format!("Client not found: {}", client_id)))?;
 
-        client.add_mcp_server(server_id.to_string());
+        // Set server permission to Allow using the new permission system
+        client
+            .mcp_permissions
+            .servers
+            .insert(server_id.to_string(), PermissionState::Allow);
 
         Ok(())
     }
 
-    /// Remove an MCP server from a client's allowed list
-    /// Note: Cannot remove individual servers when access mode is All
+    /// Remove an MCP server permission (sets to Off)
+    /// Uses the new mcp_permissions system
     pub fn remove_mcp_server(&self, client_id: &str, server_id: &str) -> AppResult<()> {
         let mut clients = self.clients.write();
 
@@ -345,32 +347,24 @@ impl ClientManager {
             .find(|c| c.id == client_id)
             .ok_or_else(|| AppError::Config(format!("Client not found: {}", client_id)))?;
 
-        client.remove_mcp_server(server_id);
+        // Set server permission to Off using the new permission system
+        client
+            .mcp_permissions
+            .servers
+            .insert(server_id.to_string(), PermissionState::Off);
 
         Ok(())
     }
 
-    /// Set MCP server access mode for a client
-    pub fn set_mcp_server_access(&self, client_id: &str, access: McpServerAccess) -> AppResult<()> {
-        let mut clients = self.clients.write();
-
-        let client = clients
-            .iter_mut()
-            .find(|c| c.id == client_id)
-            .ok_or_else(|| AppError::Config(format!("Client not found: {}", client_id)))?;
-
-        client.set_mcp_server_access(access);
-
-        Ok(())
-    }
-
-    /// Get MCP server access mode for a client
-    pub fn get_mcp_server_access(&self, client_id: &str) -> Option<McpServerAccess> {
+    /// Check if a client has MCP server access
+    /// Uses the new mcp_permissions system
+    pub fn has_mcp_server_access(&self, client_id: &str, server_id: &str) -> bool {
         let clients = self.clients.read();
         clients
             .iter()
             .find(|c| c.id == client_id)
-            .map(|c| c.mcp_server_access.clone())
+            .map(|c| c.mcp_permissions.resolve_server(server_id).is_enabled())
+            .unwrap_or(false)
     }
 
     /// Set MCP deferred loading for a client

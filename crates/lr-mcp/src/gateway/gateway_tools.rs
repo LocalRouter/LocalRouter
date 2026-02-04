@@ -43,20 +43,20 @@ impl McpGateway {
                     }
                 }
 
-                let skills_access = session_read.skills_access.clone();
+                let skills_permissions = session_read.skills_permissions.clone();
                 let info_loaded = session_read.skills_info_loaded.clone();
                 let async_enabled = session_read.skills_async_enabled;
-                let marketplace_enabled = session_read.marketplace_enabled;
+                let marketplace_permission = session_read.marketplace_permission.clone();
                 drop(session_read);
 
                 self.append_skill_tools(
                     &mut tools,
-                    &skills_access,
+                    &skills_permissions,
                     &info_loaded,
                     async_enabled,
                     true,
                 );
-                self.append_marketplace_tools(&mut tools, marketplace_enabled);
+                self.append_marketplace_tools(&mut tools, &marketplace_permission);
 
                 return Ok(JsonRpcResponse::success(
                     request.id.unwrap_or(Value::Null),
@@ -74,20 +74,20 @@ impl McpGateway {
                     .map(|t| serde_json::to_value(t).unwrap_or_default())
                     .collect();
 
-                let skills_access = session_read.skills_access.clone();
+                let skills_permissions = session_read.skills_permissions.clone();
                 let info_loaded = session_read.skills_info_loaded.clone();
                 let async_enabled = session_read.skills_async_enabled;
-                let marketplace_enabled = session_read.marketplace_enabled;
+                let marketplace_permission = session_read.marketplace_permission.clone();
                 drop(session_read);
 
                 self.append_skill_tools(
                     &mut tools,
-                    &skills_access,
+                    &skills_permissions,
                     &info_loaded,
                     async_enabled,
                     false,
                 );
-                self.append_marketplace_tools(&mut tools, marketplace_enabled);
+                self.append_marketplace_tools(&mut tools, &marketplace_permission);
 
                 return Ok(JsonRpcResponse::success(
                     request.id.unwrap_or(Value::Null),
@@ -122,10 +122,10 @@ impl McpGateway {
         } else {
             None
         };
-        let skills_access = session_read.skills_access.clone();
+        let skills_permissions = session_read.skills_permissions.clone();
         let info_loaded = session_read.skills_info_loaded.clone();
         let async_enabled = session_read.skills_async_enabled;
-        let marketplace_enabled = session_read.marketplace_enabled;
+        let marketplace_permission = session_read.marketplace_permission.clone();
         drop(session_read);
 
         let mut all_tools: Vec<serde_json::Value> = tools
@@ -135,12 +135,12 @@ impl McpGateway {
 
         self.append_skill_tools(
             &mut all_tools,
-            &skills_access,
+            &skills_permissions,
             &info_loaded,
             async_enabled,
             false,
         );
-        self.append_marketplace_tools(&mut all_tools, marketplace_enabled);
+        self.append_marketplace_tools(&mut all_tools, &marketplace_permission);
 
         let mut result = json!({"tools": all_tools});
         if let Some(failures) = failures {
@@ -668,16 +668,17 @@ impl McpGateway {
     pub(crate) fn append_skill_tools(
         &self,
         tools: &mut Vec<serde_json::Value>,
-        access: &lr_config::SkillsAccess,
+        permissions: &lr_config::SkillsPermissions,
         info_loaded: &std::collections::HashSet<String>,
         async_enabled: bool,
         deferred_loading: bool,
     ) {
-        if access.has_any_access() {
+        let has_any_access = permissions.global.is_enabled() || !permissions.skills.is_empty();
+        if has_any_access {
             if let Some(sm) = self.skill_manager.get() {
                 let skill_tools = lr_skills::mcp_tools::build_skill_tools(
                     sm,
-                    access,
+                    permissions,
                     info_loaded,
                     async_enabled,
                     deferred_loading,
@@ -716,9 +717,9 @@ impl McpGateway {
                 }
             };
 
-        // Get skills access and info_loaded from session
+        // Get skills permissions and info_loaded from session
         let session_read = session.read().await;
-        let skills_access = session_read.skills_access.clone();
+        let skills_permissions = session_read.skills_permissions.clone();
         let info_loaded = session_read.skills_info_loaded.clone();
         let async_enabled = session_read.skills_async_enabled;
         drop(session_read);
@@ -736,7 +737,7 @@ impl McpGateway {
             &arguments,
             skill_manager,
             script_executor,
-            &skills_access,
+            &skills_permissions,
             &info_loaded,
             async_enabled,
         )
@@ -798,9 +799,9 @@ impl McpGateway {
     pub(crate) fn append_marketplace_tools(
         &self,
         tools: &mut Vec<serde_json::Value>,
-        marketplace_enabled: bool,
+        marketplace_permission: &lr_config::PermissionState,
     ) {
-        if !marketplace_enabled {
+        if !marketplace_permission.is_enabled() {
             return;
         }
         if let Some(service) = self.marketplace_service.get() {
@@ -830,7 +831,7 @@ impl McpGateway {
 
         // Check if marketplace is enabled for this client
         let session_read = session.read().await;
-        if !session_read.marketplace_enabled {
+        if !session_read.marketplace_permission.is_enabled() {
             return Ok(JsonRpcResponse::error(
                 request.id.unwrap_or(Value::Null),
                 JsonRpcError::custom(

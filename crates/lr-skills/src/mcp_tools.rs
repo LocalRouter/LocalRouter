@@ -7,7 +7,7 @@
 use super::executor::ScriptExecutor;
 use super::manager::SkillManager;
 use super::types::{sanitize_name, sanitize_tool_segment, SkillDefinition};
-use lr_config::SkillsAccess;
+use lr_config::SkillsPermissions;
 use lr_types::McpTool;
 use serde_json::json;
 use std::collections::HashSet;
@@ -194,21 +194,23 @@ fn build_get_async_status_tool() -> McpTool {
 /// - Includes `skill_get_async_status` only when `async_enabled` and any skill has tools.
 pub fn build_skill_tools(
     skill_manager: &SkillManager,
-    access: &SkillsAccess,
+    permissions: &SkillsPermissions,
     info_loaded: &HashSet<String>,
     async_enabled: bool,
     deferred_loading: bool,
 ) -> Vec<McpTool> {
-    if !access.has_any_access() {
+    // Check if any skills access is enabled
+    let has_any_access = permissions.global.is_enabled() || !permissions.skills.is_empty();
+    if !has_any_access {
         return Vec::new();
     }
 
     let all_skills = skill_manager.get_all();
 
-    // Filter: enabled AND client-allowed
+    // Filter: enabled AND client-allowed (using hierarchical permissions)
     let allowed: Vec<&SkillDefinition> = all_skills
         .iter()
-        .filter(|s| s.enabled && access.can_access_by_name(&s.metadata.name))
+        .filter(|s| s.enabled && permissions.resolve_skill(&s.metadata.name).is_enabled())
         .collect();
 
     if allowed.is_empty() {
@@ -266,7 +268,7 @@ pub fn build_skill_tools(
 fn parse_skill_tool_name(
     tool_name: &str,
     skill_manager: &SkillManager,
-    access: &SkillsAccess,
+    permissions: &SkillsPermissions,
 ) -> Option<SkillToolParsed> {
     // Global async status tool
     if tool_name == "skill_get_async_status" {
@@ -281,7 +283,7 @@ fn parse_skill_tool_name(
 
     // Try to match against each allowed skill
     for skill in all_skills.iter() {
-        if !skill.enabled || !access.can_access_by_name(&skill.metadata.name) {
+        if !skill.enabled || !permissions.resolve_skill(&skill.metadata.name).is_enabled() {
             continue;
         }
 
@@ -369,11 +371,11 @@ pub async fn handle_skill_tool_call(
     arguments: &serde_json::Value,
     skill_manager: &SkillManager,
     script_executor: &ScriptExecutor,
-    access: &SkillsAccess,
+    permissions: &SkillsPermissions,
     info_loaded: &HashSet<String>,
     async_enabled: bool,
 ) -> Result<Option<SkillToolResult>, String> {
-    let parsed = match parse_skill_tool_name(tool_name, skill_manager, access) {
+    let parsed = match parse_skill_tool_name(tool_name, skill_manager, permissions) {
         Some(p) => p,
         None => return Ok(None),
     };
