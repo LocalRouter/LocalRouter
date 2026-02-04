@@ -3,7 +3,7 @@ import { useState, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
 import { toast } from "sonner"
-import { Download, FolderOpen, Cpu, Trash2 } from "lucide-react"
+import { Download, FolderOpen, Cpu } from "lucide-react"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Badge } from "@/components/ui/Badge"
@@ -16,52 +16,16 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/Select"
-import { Input } from "@/components/ui/Input"
 import { ROUTELLM_REQUIREMENTS } from "@/components/routellm/types"
-
-type RouteLLMState =
-  | "not_downloaded"
-  | "downloading"
-  | "downloaded_not_running"
-  | "initializing"
-  | "started"
-
-interface RouteLLMStatus {
-  state: RouteLLMState
-  memory_usage_mb?: number
-}
-
-interface RouteLLMTestResult {
-  win_rate: number
-  is_strong: boolean
-  latency_ms: number
-}
-
-interface TestHistoryItem {
-  prompt: string
-  score: number
-  isStrong: boolean
-  latencyMs: number
-  threshold: number
-}
-
-const THRESHOLD_PRESETS = [
-  { name: "Cost Saving", value: 0.5, description: "Maximize cost savings (more weak model usage)" },
-  { name: "Balanced", value: 0.3, description: "Default balanced approach (recommended)" },
-  { name: "Quality Optimized", value: 0.1, description: "Prioritize quality (more strong model usage)" },
-]
+import { ThresholdSelector } from "@/components/routellm/ThresholdSelector"
+import type { RouteLLMStatus, RouteLLMState } from "@/types/tauri-commands"
 
 export function RouteLLMTab() {
   const [status, setStatus] = useState<RouteLLMStatus | null>(null)
   const [idleTimeout, setIdleTimeout] = useState(600)
   const [isDownloading, setIsDownloading] = useState(false)
   const [downloadProgress, setDownloadProgress] = useState(0)
-
-  // Threshold testing state
-  const [testPrompt, setTestPrompt] = useState("")
   const [testThreshold, setTestThreshold] = useState(0.3)
-  const [testHistory, setTestHistory] = useState<TestHistoryItem[]>([])
-  const [isTesting, setIsTesting] = useState(false)
 
   useEffect(() => {
     loadStatus()
@@ -112,16 +76,6 @@ export function RouteLLMTab() {
     }
   }
 
-  const handleUnload = async () => {
-    try {
-      await invoke("routellm_unload")
-      await loadStatus()
-      toast.success("Strong/Weak models unloaded from memory")
-    } catch (error: any) {
-      toast.error(`Unload failed: ${error.message || error}`)
-    }
-  }
-
   const updateSettings = async () => {
     try {
       await invoke("routellm_update_settings", {
@@ -142,33 +96,6 @@ export function RouteLLMTab() {
     }
   }
 
-  const handleTest = async () => {
-    if (!testPrompt.trim()) return
-
-    setIsTesting(true)
-    try {
-      const result = await invoke<RouteLLMTestResult>("routellm_test_prediction", {
-        prompt: testPrompt.trim(),
-        threshold: testThreshold,
-      })
-
-      const historyItem: TestHistoryItem = {
-        prompt: testPrompt.trim(),
-        score: result.win_rate,
-        isStrong: result.is_strong,
-        latencyMs: result.latency_ms,
-        threshold: testThreshold,
-      }
-
-      setTestHistory((prev) => [historyItem, ...prev].slice(0, 10))
-      setTestPrompt("")
-    } catch (err: any) {
-      toast.error(`Test failed: ${err.toString()}`)
-    } finally {
-      setIsTesting(false)
-    }
-  }
-
   const getStatusInfo = (state: RouteLLMState) => {
     switch (state) {
       case "not_downloaded":
@@ -176,11 +103,11 @@ export function RouteLLMTab() {
       case "downloading":
         return { label: "Downloading...", variant: "default" as const, icon: "⏬️" }
       case "downloaded_not_running":
-        return { label: "Inactive", variant: "outline" as const, icon: "⏸️" }
+        return { label: "Model not loaded", variant: "outline" as const, icon: "⏸️" }
       case "initializing":
-        return { label: "Activating...", variant: "default" as const, icon: "🔄" }
+        return { label: "Loading...", variant: "default" as const, icon: "🔄" }
       case "started":
-        return { label: "Active", variant: "success" as const, icon: "▶️" }
+        return { label: "Model loaded", variant: "success" as const, icon: "▶️" }
       default:
         return { label: "Unknown", variant: "secondary" as const, icon: "❓" }
     }
@@ -200,7 +127,7 @@ export function RouteLLMTab() {
               <div>
                 <CardTitle className="text-sm">Strong/Weak Intelligent Routing</CardTitle>
                 <CardDescription>
-                  ML-based selection to optimize costs while maintaining quality
+                  Analyzes each request's complexity to route simple queries to faster, cheaper models and complex ones to stronger models
                 </CardDescription>
               </div>
             </div>
@@ -218,11 +145,6 @@ export function RouteLLMTab() {
                   <Badge variant={getStatusInfo(status.state).variant}>
                     {getStatusInfo(status.state).label}
                   </Badge>
-                  {status.memory_usage_mb && (
-                    <p className="text-xs text-muted-foreground mt-1">
-                      Memory: {(status.memory_usage_mb / 1024).toFixed(2)} GB
-                    </p>
-                  )}
                 </div>
               </div>
               <div className="flex gap-2">
@@ -230,12 +152,6 @@ export function RouteLLMTab() {
                   <Button variant="outline" size="sm" onClick={handleDownload}>
                     <Download className="h-3 w-3 mr-1" />
                     Download
-                  </Button>
-                )}
-                {status.state === "started" && (
-                  <Button variant="outline" size="sm" onClick={handleUnload}>
-                    <Trash2 className="h-3 w-3 mr-1" />
-                    Unload
                   </Button>
                 )}
                 <Button variant="ghost" size="sm" onClick={openFolder}>
@@ -375,109 +291,12 @@ export function RouteLLMTab() {
                 Test prompts to see selection decisions and confidence scores
               </CardDescription>
             </CardHeader>
-            <CardContent className="space-y-4">
-              {/* Threshold Slider */}
-              <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <Label>Threshold</Label>
-                  <span className="text-sm font-mono text-blue-600">
-                    {testThreshold.toFixed(2)}
-                  </span>
-                </div>
-
-                <input
-                  type="range"
-                  min="0"
-                  max="1"
-                  step="0.01"
-                  value={testThreshold}
-                  onChange={(e) => setTestThreshold(parseFloat(e.target.value))}
-                  className="w-full h-2 bg-muted rounded-lg appearance-none cursor-pointer accent-blue-500"
-                />
-
-                <div className="flex gap-2">
-                  {THRESHOLD_PRESETS.map((preset) => (
-                    <Button
-                      key={preset.name}
-                      variant={Math.abs(preset.value - testThreshold) < 0.01 ? "default" : "outline"}
-                      size="sm"
-                      className="flex-1"
-                      onClick={() => setTestThreshold(preset.value)}
-                    >
-                      {preset.name}
-                    </Button>
-                  ))}
-                </div>
-
-                {THRESHOLD_PRESETS.find((p) => Math.abs(p.value - testThreshold) < 0.01)?.description && (
-                  <p className="text-xs text-muted-foreground italic">
-                    {THRESHOLD_PRESETS.find((p) => Math.abs(p.value - testThreshold) < 0.01)?.description}
-                  </p>
-                )}
-              </div>
-
-              {/* Test Input */}
-              <div className="flex gap-2">
-                <Input
-                  value={testPrompt}
-                  onChange={(e) => setTestPrompt(e.target.value)}
-                  placeholder="Type a prompt and press Enter..."
-                  onKeyDown={(e) => e.key === "Enter" && !isTesting && handleTest()}
-                />
-                <Button onClick={handleTest} disabled={isTesting || !testPrompt.trim()}>
-                  {isTesting ? "Testing..." : "Test"}
-                </Button>
-              </div>
-
-              {/* Test History */}
-              {testHistory.length > 0 && (
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <Label>Test History</Label>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => setTestHistory([])}
-                    >
-                      Clear
-                    </Button>
-                  </div>
-
-                  <div className="space-y-2 max-h-64 overflow-y-auto">
-                    {testHistory.map((item, idx) => (
-                      <div
-                        key={idx}
-                        className="p-3 bg-muted rounded-lg space-y-2"
-                      >
-                        <p className="text-sm">
-                          <span className="text-muted-foreground">&gt;</span> {item.prompt}
-                        </p>
-                        <div className="flex items-center justify-between text-xs">
-                          <span className="text-muted-foreground">
-                            Score:{" "}
-                            <span className="font-mono text-blue-600">
-                              {item.score.toFixed(3)}
-                            </span>
-                          </span>
-                          <Badge variant={item.isStrong ? "default" : "secondary"}>
-                            {item.isStrong ? "STRONG" : "weak"} model
-                          </Badge>
-                        </div>
-                        <div className="w-full bg-background rounded h-2 overflow-hidden">
-                          <div
-                            className="h-full bg-gradient-to-r from-green-500 to-orange-500"
-                            style={{ width: `${item.score * 100}%` }}
-                          />
-                        </div>
-                        <div className="flex gap-4 text-xs text-muted-foreground">
-                          <span>Threshold: {item.threshold.toFixed(2)}</span>
-                          <span>Latency: {item.latencyMs}ms</span>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
+            <CardContent>
+              <ThresholdSelector
+                value={testThreshold}
+                onChange={setTestThreshold}
+                showTryItOut
+              />
             </CardContent>
           </Card>
         </>

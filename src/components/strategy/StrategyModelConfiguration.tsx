@@ -18,12 +18,11 @@ import {useCallback, useEffect, useRef, useState} from "react"
 import {invoke} from "@tauri-apps/api/core"
 import {listen} from "@tauri-apps/api/event"
 import {toast} from "sonner"
-import {Bot, Brain, Download, MessageSquareWarning, Trash2} from "lucide-react"
+import {Bot, Brain, Download, MessageSquareWarning} from "lucide-react"
 import {Card, CardContent, CardDescription, CardHeader, CardTitle,} from "@/components/ui/Card"
 import {Select, SelectContent, SelectItem, SelectTrigger, SelectValue} from "@/components/ui/Select"
 import {Switch} from "@/components/ui/Toggle"
 import {Input} from "@/components/ui/Input"
-import {Badge} from "@/components/ui/Badge"
 import {Button} from "@/components/ui/Button"
 import {Progress} from "@/components/ui/progress"
 import {Label} from "@/components/ui/label"
@@ -32,8 +31,8 @@ import {AllowedModelsSelection, AllowedModelsSelector, Model,} from "./AllowedMo
 import {UnifiedModelsSelector} from "./UnifiedModelsSelector"
 import type { ModelPermissions } from "@/components/permissions"
 import {DragThresholdModelSelector} from "./DragThresholdModelSelector"
-import {ThresholdSlider} from "@/components/routellm/ThresholdSlider"
-import {ROUTELLM_REQUIREMENTS, RouteLLMState, RouteLLMStatus, RouteLLMTestResult} from "@/components/routellm/types"
+import {ThresholdSelector} from "@/components/routellm/ThresholdSelector"
+import {ROUTELLM_REQUIREMENTS, RouteLLMStatus} from "@/components/routellm/types"
 
 // Strategy configuration types
 export interface AutoModelConfig {
@@ -105,11 +104,8 @@ export function StrategyModelConfiguration({
     // Routing mode: 'allowed' shows only selected models, 'auto' shows only the auto router model
     const [routingMode, setRoutingMode] = useState<RoutingMode>('allowed')
 
-    // RouteLLM test state
+    // RouteLLM state
     const [routellmStatus, setRoutellmStatus] = useState<RouteLLMStatus | null>(null)
-    const [testPrompt, setTestPrompt] = useState("")
-    const [isTesting, setIsTesting] = useState(false)
-    const [testResult, setTestResult] = useState<RouteLLMTestResult | null>(null)
 
     // RouteLLM download state
     const [isDownloading, setIsDownloading] = useState(false)
@@ -362,28 +358,6 @@ export function StrategyModelConfiguration({
         })
     }
 
-    // Handler for testing a prompt
-    const handleTest = async () => {
-        if (!testPrompt.trim() || !strategy?.auto_config?.routellm_config) return
-
-        setIsTesting(true)
-        setTestResult(null)
-        try {
-            const result = await invoke<RouteLLMTestResult>("routellm_test_prediction", {
-                prompt: testPrompt.trim(),
-                threshold: strategy.auto_config.routellm_config.threshold,
-            })
-            setTestResult(result)
-            // Refresh status after test (it may have loaded the model)
-            const status = await invoke<RouteLLMStatus>("routellm_get_status")
-            setRoutellmStatus(status)
-        } catch (err: any) {
-            console.error("Test failed:", err)
-        } finally {
-            setIsTesting(false)
-        }
-    }
-
     // Handler for downloading RouteLLM model
     const handleDownload = async () => {
         setIsDownloading(true)
@@ -398,38 +372,8 @@ export function StrategyModelConfiguration({
         }
     }
 
-    // Handler for unloading RouteLLM model from memory
-    const handleUnload = async () => {
-        try {
-            await invoke("routellm_unload")
-            const status = await invoke<RouteLLMStatus>("routellm_get_status")
-            setRoutellmStatus(status)
-            toast.success("Strong/Weak model unloaded from memory")
-        } catch (error: any) {
-            toast.error(`Unload failed: ${error.message || error}`)
-        }
-    }
-
     // Check if RouteLLM model is downloaded
     const isRouteLLMDownloaded = routellmStatus?.state !== 'not_downloaded' && routellmStatus?.state !== 'downloading' && !isDownloading
-
-    // Get status display info
-    const getStatusInfo = (state: RouteLLMState) => {
-        switch (state) {
-            case "not_downloaded":
-                return {label: "Not Downloaded", variant: "secondary" as const, icon: "⬇️"}
-            case "downloading":
-                return {label: "Downloading...", variant: "default" as const, icon: "⏳"}
-            case "downloaded_not_running":
-                return {label: "Ready", variant: "outline" as const, icon: "⏸️"}
-            case "initializing":
-                return {label: "Initializing...", variant: "default" as const, icon: "🔄"}
-            case "started":
-                return {label: "Active", variant: "success" as const, icon: "✓"}
-            default:
-                return {label: "Unknown", variant: "secondary" as const, icon: "?"}
-        }
-    }
 
     if (loading) {
         return (
@@ -692,86 +636,12 @@ export function StrategyModelConfiguration({
                                                             disabled={readOnly || saving}
                                                         />
 
-                                                        {/* Threshold Slider */}
-                                                        <ThresholdSlider
+                                                        {/* Threshold Selector with Try It Out */}
+                                                        <ThresholdSelector
                                                             value={routellmConfig.threshold}
                                                             onChange={handleThresholdChange}
+                                                            showTryItOut
                                                         />
-
-                                                        {/* Test It Out Section */}
-                                                        <div className="mt-4 pt-4 border-t border-border/50">
-                                                            <div className="space-y-3">
-                                                                <div className="flex items-center justify-between">
-                                                                    <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                                                                        Try it out
-                                                                    </span>
-                                                                    {routellmStatus && (
-                                                                        <div className="flex items-center gap-1.5">
-                                                                            <span className="text-sm">{getStatusInfo(routellmStatus.state).icon}</span>
-                                                                            <Badge variant={getStatusInfo(routellmStatus.state).variant} className="text-xs">
-                                                                                {getStatusInfo(routellmStatus.state).label}
-                                                                            </Badge>
-                                                                            {routellmStatus.state === "started" && (
-                                                                                <Button
-                                                                                    variant="ghost"
-                                                                                    size="sm"
-                                                                                    className="h-5 px-1.5 text-xs"
-                                                                                    onClick={handleUnload}
-                                                                                >
-                                                                                    <Trash2 className="h-3 w-3" />
-                                                                                </Button>
-                                                                            )}
-                                                                        </div>
-                                                                    )}
-                                                                </div>
-
-                                                                <Input
-                                                                    value={testPrompt}
-                                                                    onChange={(e) => setTestPrompt(e.target.value)}
-                                                                    placeholder="Type a prompt and press Enter..."
-                                                                    onKeyDown={(e) => e.key === "Enter" && !isTesting && handleTest()}
-                                                                    disabled={isTesting || routellmStatus?.state === "not_downloaded" || routellmStatus?.state === "downloading"}
-                                                                    className="text-sm"
-                                                                />
-
-                                                                {isTesting && (
-                                                                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                                                                        <span className="animate-spin">🔄</span>
-                                                                        <span>
-                                                                            {routellmStatus?.state === "initializing"
-                                                                                ? "Loading model..."
-                                                                                : "Testing..."}
-                                                                        </span>
-                                                                    </div>
-                                                                )}
-
-                                                                {testResult && !isTesting && (
-                                                                    <div className="p-3 bg-muted rounded-lg space-y-2">
-                                                                        <div className="flex items-center justify-between">
-                                                                            <span className="text-xs text-muted-foreground">
-                                                                                Score:{" "}
-                                                                                <span className="font-mono text-primary">
-                                                                                    {testResult.win_rate.toFixed(3)}
-                                                                                </span>
-                                                                            </span>
-                                                                            <Badge variant={testResult.is_strong ? "default" : "secondary"}>
-                                                                                {testResult.is_strong ? "STRONG" : "weak"} model
-                                                                            </Badge>
-                                                                        </div>
-                                                                        <div className="w-full bg-background rounded h-1.5 overflow-hidden">
-                                                                            <div
-                                                                                className="h-full bg-gradient-to-r from-green-500 to-orange-500"
-                                                                                style={{width: `${testResult.win_rate * 100}%`}}
-                                                                            />
-                                                                        </div>
-                                                                        <div className="text-xs text-muted-foreground">
-                                                                            Latency: {testResult.latency_ms}ms
-                                                                        </div>
-                                                                    </div>
-                                                                )}
-
-                                                            </div>
-                                                        </div>
                                                     </>
                                                 )}
                                             </CardContent>

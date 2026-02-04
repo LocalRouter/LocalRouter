@@ -1,6 +1,19 @@
 /**
  * RouteLLM type definitions
+ *
+ * Tauri command types are imported from src/types/tauri-commands.ts
+ * UI-specific types are defined here.
  */
+
+// Re-export Tauri command types for convenience
+// Rust source: crates/lr-routellm/src/status.rs
+export type {
+  RouteLLMState,
+  RouteLLMStatus,
+  RouteLLMTestResult,
+  RouteLLMTestPredictionParams,
+  RouteLLMUpdateSettingsParams,
+} from '@/types/tauri-commands';
 
 // Resource requirement constants for RouteLLM
 export const ROUTELLM_REQUIREMENTS = {
@@ -10,24 +23,7 @@ export const ROUTELLM_REQUIREMENTS = {
   PER_REQUEST_MS: '~10',
 } as const;
 
-export type RouteLLMState =
-  | 'not_downloaded'
-  | 'downloading'
-  | 'downloaded_not_running'
-  | 'initializing'
-  | 'started';
-
-export interface RouteLLMStatus {
-  state: RouteLLMState;
-  memory_usage_mb: number | null;
-  last_access_secs_ago: number | null;
-}
-
-export interface RouteLLMTestResult {
-  is_strong: boolean;
-  win_rate: number;
-  latency_ms: number;
-}
+// UI-specific types (not from Tauri commands)
 
 export interface RouteLLMConfig {
   enabled: boolean;

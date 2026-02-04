@@ -3,11 +3,7 @@
  * Centralized exports for all RouteLLM components
  */
 
-export { RouteLLMConfigEditor } from './RouteLLMConfigEditor';
-export { RouteLLMStatusIndicator } from './RouteLLMStatusIndicator';
-export { RouteLLMValueProp } from './RouteLLMValueProp';
-export { ThresholdSlider } from './ThresholdSlider';
-export { RouteLLMTester } from './RouteLLMTester';
+export { ThresholdSelector } from './ThresholdSelector';
 export type {
   RouteLLMConfig,
   RouteLLMStatus,
