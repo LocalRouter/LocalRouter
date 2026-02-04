@@ -303,6 +303,7 @@ impl CandleRouter {
             original_len,
             original_len > MAX_TOKENS
         );
+        debug!("Input IDs (first 20): {:?}", &input_ids[..input_ids.len().min(20)]);
 
         // Convert to tensors
         let input_ids_tensor = Tensor::new(input_ids, &self.device).map_err(|e| {
@@ -342,12 +343,13 @@ impl CandleRouter {
         })?;
         debug!("Token type IDs shape: {:?}", token_type_ids_tensor.shape());
 
+        // BertModel.forward() signature: (input_ids, token_type_ids, attention_mask: Option)
         let bert_output = self
             .model
             .forward(
                 &input_ids_tensor,
-                &attention_mask_tensor,
-                Some(&token_type_ids_tensor),
+                &token_type_ids_tensor,
+                Some(&attention_mask_tensor),
             )
             .map_err(|e| {
                 RouteLLMError::PredictionFailed(format!("BERT forward pass failed: {}", e))
@@ -390,12 +392,25 @@ impl CandleRouter {
             RouteLLMError::PredictionFailed(format!("Failed to squeeze logits: {}", e))
         })?;
 
+        // Debug: print raw logits
+        let logits_vec = logits.to_vec1::<f32>().map_err(|e| {
+            RouteLLMError::PredictionFailed(format!("Failed to extract logits for debug: {}", e))
+        })?;
+        debug!("Raw logits: [{:.4}, {:.4}, {:.4}]", logits_vec[0], logits_vec[1], logits_vec[2]);
+
         // Apply softmax to get class probabilities
-        // LABEL_0: Weak model, LABEL_1: Medium, LABEL_2: Strong model
+        // According to Python RouteLLM BERTRouter implementation:
+        //   binary_prob = softmax[-2:] = probs[1] + probs[2] (tie + weak wins)
+        //   win_rate = 1 - binary_prob = probs[0] (strong model wins)
+        // So the labels are:
+        //   LABEL_0: Strong model wins (tier 1 wins)
+        //   LABEL_1: Tie
+        //   LABEL_2: Weak model wins (tier 2 wins)
         let probs = softmax(&logits)?;
 
-        // Return probability of LABEL_2 (strong model needed) as win_rate
-        let win_rate = probs[2];
+        // Return probability of LABEL_0 (strong model needed) as win_rate
+        // This matches Python: win_rate = 1 - (probs[1] + probs[2]) = probs[0]
+        let win_rate = probs[0];
 
         debug!(
             "Win rate: {:.3} (class probs: [{:.3}, {:.3}, {:.3}])",

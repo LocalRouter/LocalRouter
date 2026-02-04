@@ -262,6 +262,9 @@ unsafe impl Sync for RouteLLMService {}
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+mod benchmark_test;
+
 // Re-export for tests
 #[cfg(test)]
 pub use downloader::download_models;

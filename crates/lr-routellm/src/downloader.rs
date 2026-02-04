@@ -124,8 +124,6 @@ fn check_disk_space(path: &Path) -> RouteLLMResult<u64> {
 
     #[cfg(target_os = "windows")]
     {
-        use std::ffi::OsStr;
-        use std::os::windows::ffi::OsStrExt;
         use std::process::Command;
 
         // Get the parent directory or the path itself
