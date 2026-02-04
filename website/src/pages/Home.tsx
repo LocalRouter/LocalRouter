@@ -3,7 +3,6 @@ import { Button } from '@/components/ui/button'
 import Logo from '@/components/Logo'
 import { FirewallApprovalDemo } from '@/components/FirewallApprovalDemo'
 import {
-  ArrowRight,
   Shield,
   ShieldCheck,
   Check,
@@ -43,7 +42,11 @@ export default function Home() {
               <Button asChild size="xl">
                 <Link to="/download">
                   Download
-                  <ArrowRight className="ml-2 h-4 w-4" />
+                  <span className="ml-3 flex items-center gap-1.5">
+                    <img src="/icons/apple.svg" alt="macOS" className="h-4 w-4 fill-current" style={{ filter: 'invert(1)' }} />
+                    <img src="/icons/microsoft-windows.svg" alt="Windows" className="h-4 w-4 fill-current" style={{ filter: 'invert(1)' }} />
+                    <img src="/icons/penguin.svg" alt="Linux" className="h-4 w-4 fill-current" style={{ filter: 'invert(1)' }} />
+                  </span>
                 </Link>
               </Button>
               <Button asChild variant="outline" size="xl">
@@ -56,6 +59,9 @@ export default function Home() {
                 </a>
               </Button>
             </div>
+            <p className="mt-6 text-sm text-muted-foreground sm:text-md italic">
+              Built with Claude and a hammer.
+            </p>
           </div>
 
           {/* Connection Graph Visual */}
@@ -1232,7 +1238,11 @@ export default function Home() {
               <Button asChild size="xl">
                 <Link to="/download">
                   Download
-                  <ArrowRight className="ml-2 h-4 w-4" />
+                  <span className="ml-3 flex items-center gap-1.5">
+                    <img src="/icons/apple.svg" alt="macOS" className="h-4 w-4 fill-current" style={{ filter: 'invert(1)' }} />
+                    <img src="/icons/microsoft-windows.svg" alt="Windows" className="h-4 w-4 fill-current" style={{ filter: 'invert(1)' }} />
+                    <img src="/icons/penguin.svg" alt="Linux" className="h-4 w-4 fill-current" style={{ filter: 'invert(1)' }} />
+                  </span>
                 </Link>
               </Button>
             </div>

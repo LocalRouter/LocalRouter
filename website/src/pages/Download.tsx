@@ -1,12 +1,12 @@
 import { Link } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Apple, Monitor, Terminal, Check, ArrowRight, ExternalLink } from 'lucide-react'
+import { Check, ArrowRight, ExternalLink } from 'lucide-react'
 
 const platforms = [
   {
     name: 'macOS',
-    icon: Apple,
+    iconSrc: '/icons/apple.svg',
     requirements: ['macOS 10.15+ (Catalina)', 'Intel or Apple Silicon', '200MB disk space'],
     downloadUrl: 'https://github.com/LocalRouter/LocalRouter/releases/latest/download/LocalRouter_aarch64.dmg',
     downloadLabel: 'Download for Apple Silicon',
@@ -16,7 +16,7 @@ const platforms = [
   },
   {
     name: 'Windows',
-    icon: Monitor,
+    iconSrc: '/icons/microsoft-windows.svg',
     requirements: ['Windows 10+ (64-bit)', '200MB disk space'],
     downloadUrl: 'https://github.com/LocalRouter/LocalRouter/releases/latest/download/LocalRouter_x64-setup.exe',
     downloadLabel: 'Download .exe',
@@ -26,7 +26,7 @@ const platforms = [
   },
   {
     name: 'Linux',
-    icon: Terminal,
+    iconSrc: '/icons/penguin.svg',
     requirements: ['Modern Linux (glibc 2.31+)', 'DEB or AppImage'],
     downloadUrl: 'https://github.com/LocalRouter/LocalRouter/releases/latest/download/LocalRouter_amd64.deb',
     downloadLabel: 'Download .deb',
@@ -60,7 +60,7 @@ export default function Download() {
             {platforms.map((platform) => (
               <Card key={platform.name} className="relative overflow-hidden">
                 <CardHeader className="text-center pb-4">
-                  <platform.icon className="mx-auto h-12 w-12 text-muted-foreground" />
+                  <img src={platform.iconSrc} alt={platform.name} className="mx-auto h-12 w-12 opacity-70 dark:invert" />
                   <CardTitle className="mt-4">{platform.name}</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-4">
