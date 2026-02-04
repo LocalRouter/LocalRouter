@@ -4,11 +4,15 @@ import {
   Users,
   Settings,
   Server,
-  Key,
   Cpu,
   Route,
   RefreshCw,
   Plus,
+  Store,
+  FlaskConical,
+  FileText,
+  ScrollText,
+  Info,
 } from "lucide-react"
 import { ProvidersIcon, McpIcon } from "@/components/icons/category-icons"
 import {
@@ -116,6 +120,20 @@ export function CommandPalette({
             <span>Settings</span>
             <CommandShortcut>⌘4</CommandShortcut>
           </CommandItem>
+          <CommandItem
+            onSelect={() => runCommand(() => onViewChange('marketplace'))}
+          >
+            <Store className="mr-2 h-4 w-4" />
+            <span>Marketplace</span>
+            <CommandShortcut>⌘5</CommandShortcut>
+          </CommandItem>
+          <CommandItem
+            onSelect={() => runCommand(() => onViewChange('try-it-out'))}
+          >
+            <FlaskConical className="mr-2 h-4 w-4" />
+            <span>Try it out</span>
+            <CommandShortcut>⌘6</CommandShortcut>
+          </CommandItem>
         </CommandGroup>
 
         <CommandSeparator />
@@ -139,12 +157,6 @@ export function CommandPalette({
           >
             <McpIcon className="mr-2 h-4 w-4" />
             <span>MCP</span>
-          </CommandItem>
-          <CommandItem
-            onSelect={() => runCommand(() => onViewChange('resources', 'oauth-clients'))}
-          >
-            <Key className="mr-2 h-4 w-4" />
-            <span>OAuth Clients</span>
           </CommandItem>
         </CommandGroup>
 
@@ -175,6 +187,24 @@ export function CommandPalette({
           >
             <RefreshCw className="mr-2 h-4 w-4" />
             <span>Updates</span>
+          </CommandItem>
+          <CommandItem
+            onSelect={() => runCommand(() => onViewChange('settings', 'logging'))}
+          >
+            <ScrollText className="mr-2 h-4 w-4" />
+            <span>Logging</span>
+          </CommandItem>
+          <CommandItem
+            onSelect={() => runCommand(() => onViewChange('settings', 'docs'))}
+          >
+            <FileText className="mr-2 h-4 w-4" />
+            <span>Documentation</span>
+          </CommandItem>
+          <CommandItem
+            onSelect={() => runCommand(() => onViewChange('settings', 'about'))}
+          >
+            <Info className="mr-2 h-4 w-4" />
+            <span>About</span>
           </CommandItem>
         </CommandGroup>
 

@@ -1,11 +1,11 @@
 /**
  * Step 3: Select MCP Servers
  *
- * MCP server selection.
- * Shows empty state with option to add servers if none configured.
+ * MCP server permission selection using Allow/Ask/Off states.
+ * Supports hierarchical permissions for servers, tools, resources, and prompts.
  */
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
 import { Loader2, Info, Plus, Grid, Store, ArrowLeft } from "lucide-react"
@@ -21,10 +21,11 @@ import {
 } from "@/components/ui/Modal"
 import LegacySelect from "@/components/ui/Select"
 import KeyValueInput from "@/components/ui/KeyValueInput"
-import { McpServerSelector } from "@/components/mcp/McpServerSelector"
+import { PermissionTreeSelector } from "@/components/permissions/PermissionTreeSelector"
 import { McpServerTemplates, McpServerTemplate } from "@/components/mcp/McpServerTemplates"
 import { MarketplaceSearchPanel, McpServerListing } from "@/components/add-resource"
 import ServiceIcon from "@/components/ServiceIcon"
+import type { PermissionState, TreeNode, McpPermissions } from "@/components/permissions/types"
 
 interface McpServer {
   id: string
@@ -33,16 +34,20 @@ interface McpServer {
   proxy_url: string
 }
 
-type McpAccessMode = "none" | "all" | "specific"
-
-interface StepMcpProps {
-  accessMode: McpAccessMode
-  selectedServers: string[]
-  onChange: (mode: McpAccessMode, servers: string[]) => void
+interface McpServerCapabilities {
+  tools: Array<{ name: string; description: string | null }>
+  resources: Array<{ uri: string; name: string; description: string | null }>
+  prompts: Array<{ name: string; description: string | null }>
 }
 
-export function StepMcp({ accessMode, selectedServers, onChange }: StepMcpProps) {
+interface StepMcpProps {
+  permissions: McpPermissions
+  onChange: (permissions: McpPermissions) => void
+}
+
+export function StepMcp({ permissions, onChange }: StepMcpProps) {
   const [servers, setServers] = useState<McpServer[]>([])
+  const [capabilities, setCapabilities] = useState<Record<string, McpServerCapabilities>>({})
   const [loading, setLoading] = useState(true)
 
   // MCP server creation state
@@ -64,22 +69,35 @@ export function StepMcp({ accessMode, selectedServers, onChange }: StepMcpProps)
   const [url, setUrl] = useState("")
   const [headers, setHeaders] = useState<Record<string, string>>({})
 
-  useEffect(() => {
-    loadServers()
-  }, [])
-
-  const loadServers = async () => {
+  const loadServers = useCallback(async () => {
     try {
       setLoading(true)
       const serverList = await invoke<McpServer[]>("list_mcp_servers")
-      setServers(serverList)
+      const enabledServers = serverList.filter((s) => s.enabled)
+      setServers(enabledServers)
+
+      // Eagerly load capabilities for all enabled servers
+      for (const server of enabledServers) {
+        try {
+          const caps = await invoke<McpServerCapabilities>("get_mcp_server_capabilities", {
+            serverId: server.id,
+          })
+          setCapabilities((prev) => ({ ...prev, [server.id]: caps }))
+        } catch (error) {
+          console.error(`Failed to load capabilities for ${server.id}:`, error)
+        }
+      }
     } catch (error) {
       console.error("Failed to load MCP servers:", error)
       setServers([])
     } finally {
       setLoading(false)
     }
-  }
+  }, [])
+
+  useEffect(() => {
+    loadServers()
+  }, [loadServers])
 
   const resetForm = () => {
     setServerName("")
@@ -177,6 +195,161 @@ export function StepMcp({ accessMode, selectedServers, onChange }: StepMcpProps)
     }
   }
 
+  // Handle permission changes
+  const handlePermissionChange = (key: string, state: PermissionState, parentState: PermissionState) => {
+    // If the new state matches the parent, remove the override (inherit from parent)
+    // Otherwise, set an explicit override
+    const shouldClear = state === parentState
+
+    // Parse the key to determine the level
+    // Format: server_id or server_id__type__name
+    const parts = key.split("__")
+
+    const newPermissions = { ...permissions }
+
+    if (parts.length === 1) {
+      // Server level
+      const newServers = { ...permissions.servers }
+      if (shouldClear) {
+        delete newServers[key]
+      } else {
+        newServers[key] = state
+      }
+      newPermissions.servers = newServers
+    } else if (parts.length === 3) {
+      // Tool/resource/prompt level
+      const [serverId, type, name] = parts
+      const compositeKey = `${serverId}__${name}`
+
+      if (type === "tool") {
+        const newTools = { ...permissions.tools }
+        if (shouldClear) {
+          delete newTools[compositeKey]
+        } else {
+          newTools[compositeKey] = state
+        }
+        newPermissions.tools = newTools
+      } else if (type === "resource") {
+        const newResources = { ...permissions.resources }
+        if (shouldClear) {
+          delete newResources[compositeKey]
+        } else {
+          newResources[compositeKey] = state
+        }
+        newPermissions.resources = newResources
+      } else if (type === "prompt") {
+        const newPrompts = { ...permissions.prompts }
+        if (shouldClear) {
+          delete newPrompts[compositeKey]
+        } else {
+          newPrompts[compositeKey] = state
+        }
+        newPermissions.prompts = newPrompts
+      }
+    }
+
+    onChange(newPermissions)
+  }
+
+  const handleGlobalChange = (state: PermissionState) => {
+    // Clear all child customizations when global changes
+    onChange({
+      global: state,
+      servers: {},
+      tools: {},
+      resources: {},
+      prompts: {},
+    })
+  }
+
+  // Build tree nodes from servers
+  const buildTree = (): TreeNode[] => {
+    return servers.map((server) => {
+      const caps = capabilities[server.id]
+      const children: TreeNode[] = []
+
+      if (caps) {
+        // Tools group
+        if (caps.tools.length > 0) {
+          children.push({
+            id: `${server.id}__tools`,
+            label: "Tools",
+            isGroup: true,
+            children: caps.tools.map((tool) => ({
+              id: `${server.id}__tool__${tool.name}`,
+              label: tool.name,
+              description: tool.description || undefined,
+            })),
+          })
+        }
+
+        // Resources group
+        if (caps.resources.length > 0) {
+          children.push({
+            id: `${server.id}__resources`,
+            label: "Resources",
+            isGroup: true,
+            children: caps.resources.map((res) => ({
+              id: `${server.id}__resource__${res.uri}`,
+              label: res.name,
+              description: res.description || undefined,
+            })),
+          })
+        }
+
+        // Prompts group
+        if (caps.prompts.length > 0) {
+          children.push({
+            id: `${server.id}__prompts`,
+            label: "Prompts",
+            isGroup: true,
+            children: caps.prompts.map((prompt) => ({
+              id: `${server.id}__prompt__${prompt.name}`,
+              label: prompt.name,
+              description: prompt.description || undefined,
+            })),
+          })
+        }
+      }
+
+      return {
+        id: server.id,
+        label: server.name,
+        children: children.length > 0 ? children : undefined,
+      }
+    })
+  }
+
+  // Build flat permissions map for the tree
+  const buildPermissionsMap = (): Record<string, PermissionState> => {
+    const map: Record<string, PermissionState> = {}
+
+    // Server permissions
+    for (const [serverId, state] of Object.entries(permissions.servers)) {
+      map[serverId] = state
+    }
+
+    // Tool permissions
+    for (const [key, state] of Object.entries(permissions.tools)) {
+      const [serverId, toolName] = key.split("__")
+      map[`${serverId}__tool__${toolName}`] = state
+    }
+
+    // Resource permissions
+    for (const [key, state] of Object.entries(permissions.resources)) {
+      const [serverId, uri] = key.split("__")
+      map[`${serverId}__resource__${uri}`] = state
+    }
+
+    // Prompt permissions
+    for (const [key, state] of Object.entries(permissions.prompts)) {
+      const [serverId, promptName] = key.split("__")
+      map[`${serverId}__prompt__${promptName}`] = state
+    }
+
+    return map
+  }
+
   // Render the dialog content
   const renderAddMcpDialog = () => (
     <Dialog
@@ -262,15 +435,15 @@ export function StepMcp({ accessMode, selectedServers, onChange }: StepMcpProps)
 
             {/* Setup instructions */}
             {selectedSource?.type === "template" && selectedSource.template?.setupInstructions && (
-              <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded p-3">
-                <p className="text-xs text-blue-700 dark:text-blue-300">
+              <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-400 dark:border-blue-800 rounded p-3">
+                <p className="text-xs text-foreground">
                   {selectedSource.template.setupInstructions}
                 </p>
               </div>
             )}
             {selectedSource?.type === "marketplace" && selectedSource.listing?.install_hint && (
-              <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded p-3">
-                <p className="text-xs text-blue-700 dark:text-blue-300">
+              <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-400 dark:border-blue-800 rounded p-3">
+                <p className="text-xs text-foreground">
                   {selectedSource.listing.install_hint}
                 </p>
               </div>
@@ -385,14 +558,14 @@ export function StepMcp({ accessMode, selectedServers, onChange }: StepMcpProps)
   if (servers.length === 0) {
     return (
       <div className="space-y-4">
-        <div className="rounded-lg border border-blue-500/30 bg-blue-500/10 p-4">
+        <div className="rounded-lg border border-blue-600/50 bg-blue-500/10 p-4">
           <div className="flex items-start gap-3">
             <Info className="h-5 w-5 text-blue-600 dark:text-blue-400 mt-0.5 shrink-0" />
             <div className="space-y-1">
-              <p className="text-sm font-medium text-blue-700 dark:text-blue-300">
+              <p className="text-sm font-medium text-blue-900 dark:text-blue-300">
                 No MCP servers configured
               </p>
-              <p className="text-sm text-blue-600/90 dark:text-blue-400/90">
+              <p className="text-sm text-blue-900 dark:text-blue-400">
                 MCP servers provide tools and resources to LLM applications.
                 You can add servers now or configure access later.
               </p>
@@ -417,14 +590,17 @@ export function StepMcp({ accessMode, selectedServers, onChange }: StepMcpProps)
   return (
     <div className="space-y-4">
       <p className="text-sm text-muted-foreground">
-        Select which MCP servers this client can access.
+        Configure MCP server access for this client. Use Allow, Ask, or Off for each server.
       </p>
 
-      <McpServerSelector
-        servers={servers}
-        accessMode={accessMode}
-        selectedServers={selectedServers}
-        onChange={onChange}
+      <PermissionTreeSelector
+        nodes={buildTree()}
+        permissions={buildPermissionsMap()}
+        globalPermission={permissions.global}
+        onPermissionChange={handlePermissionChange}
+        onGlobalChange={handleGlobalChange}
+        globalLabel="All MCP Servers"
+        emptyMessage="No MCP servers configured"
       />
 
       <div className="flex items-center justify-between pt-2">

@@ -75,9 +75,13 @@ export function SkillsPermissionTree({ clientId, permissions, onUpdate }: Skills
     }
   }
 
-  const handlePermissionChange = async (key: string, state: PermissionState) => {
+  const handlePermissionChange = async (key: string, state: PermissionState, parentState: PermissionState) => {
     setSaving(true)
     try {
+      // If the new state matches the parent, clear the override (inherit from parent)
+      // If the new state differs, set an explicit override
+      const shouldClear = state === parentState
+
       // Parse the key to determine the level
       // Format: skill_name or skill_name__tool__tool_name
       const parts = key.split("__")
@@ -89,6 +93,7 @@ export function SkillsPermissionTree({ clientId, permissions, onUpdate }: Skills
           level: "skill",
           key,
           state,
+          clear: shouldClear,
         })
         // Load tools when skill is enabled
         if (state !== "off") {
@@ -102,6 +107,7 @@ export function SkillsPermissionTree({ clientId, permissions, onUpdate }: Skills
           level: "tool",
           key: `${skillName}__${toolName}`,
           state,
+          clear: shouldClear,
         })
       }
       onUpdate()

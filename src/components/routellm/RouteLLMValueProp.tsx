@@ -25,21 +25,21 @@ export const RouteLLMValueProp: React.FC = () => {
 
       <div className="grid grid-cols-3 gap-2 text-xs">
         <div className="bg-white dark:bg-gray-800 p-2 rounded border border-blue-100 dark:border-blue-800">
-          <div className="font-semibold text-green-600 dark:text-green-400">30-60%</div>
+          <div className="font-semibold text-green-800 dark:text-green-400">30-60%</div>
           <div className="text-gray-600 dark:text-gray-400">Cost Savings</div>
         </div>
         <div className="bg-white dark:bg-gray-800 p-2 rounded border border-blue-100 dark:border-blue-800">
-          <div className="font-semibold text-blue-600 dark:text-blue-400">85-95%</div>
+          <div className="font-semibold text-blue-800 dark:text-blue-400">85-95%</div>
           <div className="text-gray-600 dark:text-gray-400">Quality Retained</div>
         </div>
         <div className="bg-white dark:bg-gray-800 p-2 rounded border border-blue-100 dark:border-blue-800">
-          <div className="font-semibold text-purple-600 dark:text-purple-400">{ROUTELLM_REQUIREMENTS.PER_REQUEST_MS}ms</div>
+          <div className="font-semibold text-purple-800 dark:text-purple-400">{ROUTELLM_REQUIREMENTS.PER_REQUEST_MS}ms</div>
           <div className="text-gray-600 dark:text-gray-400">Selection Time</div>
         </div>
       </div>
 
       <div className="mt-3 pt-3 border-t border-blue-200 dark:border-blue-700">
-        <p className="text-xs text-blue-700 dark:text-blue-300">
+        <p className="text-xs text-blue-900 dark:text-blue-300">
           💡 <strong>How it works:</strong> A BERT classifier analyzes prompt complexity and
           intelligently routes simple queries to fast, cheap models and complex queries to
           powerful, expensive models.

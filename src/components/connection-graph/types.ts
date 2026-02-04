@@ -1,4 +1,5 @@
 import { Node, Edge } from 'reactflow'
+import type { McpPermissions, SkillsPermissions, ModelPermissions, PermissionState } from '@/components/permissions'
 
 // Health status from backend
 export type ItemHealthStatus = 'healthy' | 'degraded' | 'unhealthy' | 'ready' | 'pending' | 'disabled'
@@ -68,12 +69,13 @@ export interface Client {
   client_id: string
   enabled: boolean
   strategy_id: string
-  allowed_llm_providers: string[]
-  mcp_access_mode: 'none' | 'all' | 'specific'
-  mcp_servers: string[]
-  skills_access_mode: 'none' | 'all' | 'specific'
-  skills_names: string[]
-  marketplace_enabled: boolean
+  mcp_deferred_loading: boolean
+  created_at: string
+  last_used: string | null
+  mcp_permissions: McpPermissions
+  skills_permissions: SkillsPermissions
+  model_permissions: ModelPermissions
+  marketplace_permission: PermissionState
   firewall?: {
     default_policy?: 'allow' | 'ask' | 'deny'
     server_rules?: Record<string, 'allow' | 'ask' | 'deny'>

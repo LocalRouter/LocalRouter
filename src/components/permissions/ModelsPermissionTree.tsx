@@ -35,9 +35,13 @@ export function ModelsPermissionTree({
     {} as Record<string, StrategyModel[]>
   )
 
-  const handlePermissionChange = async (key: string, state: PermissionState) => {
+  const handlePermissionChange = async (key: string, state: PermissionState, parentState: PermissionState) => {
     setSaving(true)
     try {
+      // If the new state matches the parent, clear the override (inherit from parent)
+      // If the new state differs, set an explicit override
+      const shouldClear = state === parentState
+
       // Parse the key to determine the level
       // Format: provider_name or provider_name__model_id
       const parts = key.split("__")
@@ -49,6 +53,7 @@ export function ModelsPermissionTree({
           level: "provider",
           key,
           state,
+          clear: shouldClear,
         })
       } else {
         // Model level
@@ -57,6 +62,7 @@ export function ModelsPermissionTree({
           level: "model",
           key,
           state,
+          clear: shouldClear,
         })
       }
       onUpdate()

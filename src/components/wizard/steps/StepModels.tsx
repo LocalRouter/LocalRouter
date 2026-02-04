@@ -2,7 +2,7 @@
  * Step 2: Select Models
  *
  * Model selection configuration with two modes:
- * - Allowed Models: Client sees and chooses from selected models
+ * - Allowed Models: Client sees and chooses from selected models with Allow/Ask/Off permissions
  * - Auto Route: Client sees only the auto router model, LocalRouter picks the best
  *
  * Also allows adding a provider if none exist.
@@ -29,27 +29,29 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import {
-  AllowedModelsSelector,
-  type AllowedModelsSelection,
-  type Model,
-} from "@/components/strategy/AllowedModelsSelector"
+import { PermissionTreeSelector } from "@/components/permissions/PermissionTreeSelector"
 import { DragThresholdModelSelector } from "@/components/strategy/DragThresholdModelSelector"
 import { ThresholdSlider } from "@/components/routellm/ThresholdSlider"
 import ProviderForm, { ProviderType } from "@/components/ProviderForm"
+import type { PermissionState, TreeNode, ModelPermissions } from "@/components/permissions/types"
 
 type RoutingMode = "allowed" | "auto"
 
+interface Model {
+  id: string
+  provider: string
+}
+
 interface StepModelsProps {
   routingMode: RoutingMode
-  allowedModels: AllowedModelsSelection
+  modelPermissions: ModelPermissions
   autoModelName: string
   prioritizedModels: [string, string][]
   routeLLMEnabled: boolean
   routeLLMThreshold: number
   weakModels: [string, string][]
   onRoutingModeChange: (mode: RoutingMode) => void
-  onAllowedModelsChange: (selection: AllowedModelsSelection) => void
+  onModelPermissionsChange: (permissions: ModelPermissions) => void
   onAutoModelNameChange: (name: string) => void
   onPrioritizedModelsChange: (models: [string, string][]) => void
   onRouteLLMEnabledChange: (enabled: boolean) => void
@@ -59,14 +61,14 @@ interface StepModelsProps {
 
 export function StepModels({
   routingMode,
-  allowedModels,
+  modelPermissions,
   autoModelName,
   prioritizedModels,
   routeLLMEnabled,
   routeLLMThreshold,
   weakModels,
   onRoutingModeChange,
-  onAllowedModelsChange,
+  onModelPermissionsChange,
   onAutoModelNameChange,
   onPrioritizedModelsChange,
   onRouteLLMEnabledChange,
@@ -133,6 +135,91 @@ export function StepModels({
     }
   }
 
+  // Handle permission changes
+  const handlePermissionChange = (key: string, state: PermissionState, parentState: PermissionState) => {
+    // If the new state matches the parent, remove the override (inherit from parent)
+    // Otherwise, set an explicit override
+    const shouldClear = state === parentState
+
+    // Parse the key to determine the level
+    // Format: provider_name or provider_name__model_id
+    const parts = key.split("__")
+
+    const newPermissions = { ...modelPermissions }
+
+    if (parts.length === 1) {
+      // Provider level
+      const newProviders = { ...modelPermissions.providers }
+      if (shouldClear) {
+        delete newProviders[key]
+      } else {
+        newProviders[key] = state
+      }
+      newPermissions.providers = newProviders
+    } else {
+      // Model level (provider__model_id)
+      const newModels = { ...modelPermissions.models }
+      if (shouldClear) {
+        delete newModels[key]
+      } else {
+        newModels[key] = state
+      }
+      newPermissions.models = newModels
+    }
+
+    onModelPermissionsChange(newPermissions)
+  }
+
+  const handleGlobalChange = (state: PermissionState) => {
+    // Clear all child customizations when global changes
+    onModelPermissionsChange({
+      global: state,
+      providers: {},
+      models: {},
+    })
+  }
+
+  // Build tree nodes from models grouped by provider
+  const buildTree = (): TreeNode[] => {
+    // Group models by provider
+    const modelsByProvider = models.reduce(
+      (acc, model) => {
+        if (!acc[model.provider]) {
+          acc[model.provider] = []
+        }
+        acc[model.provider].push(model)
+        return acc
+      },
+      {} as Record<string, Model[]>
+    )
+
+    return Object.entries(modelsByProvider).map(([provider, providerModels]) => ({
+      id: provider,
+      label: provider,
+      children: providerModels.map((model) => ({
+        id: `${provider}__${model.id}`,
+        label: model.id,
+      })),
+    }))
+  }
+
+  // Build flat permissions map for the tree
+  const buildPermissionsMap = (): Record<string, PermissionState> => {
+    const map: Record<string, PermissionState> = {}
+
+    // Provider permissions
+    for (const [provider, state] of Object.entries(modelPermissions.providers)) {
+      map[provider] = state
+    }
+
+    // Model permissions
+    for (const [key, state] of Object.entries(modelPermissions.models)) {
+      map[key] = state
+    }
+
+    return map
+  }
+
   const selectedTypeForCreate = providerTypes.find((t) => t.provider_type === selectedProviderType)
 
   if (loading) {
@@ -146,14 +233,14 @@ export function StepModels({
   if (models.length === 0) {
     return (
       <div className="space-y-4">
-        <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-4">
+        <div className="rounded-lg border border-amber-600/50 bg-amber-500/10 p-4">
           <div className="flex items-start gap-3">
             <Info className="h-5 w-5 text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
             <div className="space-y-1">
-              <p className="text-sm font-medium text-amber-700 dark:text-amber-300">
+              <p className="text-sm font-medium text-amber-900 dark:text-amber-300">
                 No models available
               </p>
-              <p className="text-sm text-amber-600/90 dark:text-amber-400/90">
+              <p className="text-sm text-amber-900 dark:text-amber-400">
                 Add a provider to get started with models. You can also continue
                 creating this client and configure models later.
               </p>
@@ -264,10 +351,14 @@ export function StepModels({
       {/* Mode-specific content */}
       {routingMode === "allowed" ? (
         <div className="space-y-4">
-          <AllowedModelsSelector
-            models={models}
-            value={allowedModels}
-            onChange={onAllowedModelsChange}
+          <PermissionTreeSelector
+            nodes={buildTree()}
+            permissions={buildPermissionsMap()}
+            globalPermission={modelPermissions.global}
+            onPermissionChange={handlePermissionChange}
+            onGlobalChange={handleGlobalChange}
+            globalLabel="All Models"
+            emptyMessage="No models available"
           />
           <div className="flex items-center justify-between pt-2 border-t">
             <p className="text-xs text-muted-foreground">
@@ -325,7 +416,7 @@ export function StepModels({
                 <div>
                   <Label className="flex items-center gap-2">
                     Weak Model
-                    <span className="text-xs px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-700 dark:text-purple-300 font-medium">
+                    <span className="text-xs px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-900 dark:text-purple-300 font-medium">
                       EXPERIMENTAL
                     </span>
                   </Label>

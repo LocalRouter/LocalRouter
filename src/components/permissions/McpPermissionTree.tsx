@@ -76,9 +76,13 @@ export function McpPermissionTree({ clientId, permissions, onUpdate }: McpPermis
     }
   }
 
-  const handlePermissionChange = async (key: string, state: PermissionState) => {
+  const handlePermissionChange = async (key: string, state: PermissionState, parentState: PermissionState) => {
     setSaving(true)
     try {
+      // If the new state matches the parent, clear the override (inherit from parent)
+      // If the new state differs, set an explicit override
+      const shouldClear = state === parentState
+
       // Parse the key to determine the level
       // Format: server_id or server_id__type__name
       const parts = key.split("__")
@@ -90,6 +94,7 @@ export function McpPermissionTree({ clientId, permissions, onUpdate }: McpPermis
           level: "server",
           key,
           state,
+          clear: shouldClear,
         })
         // Load capabilities when server is enabled
         if (state !== "off") {
@@ -103,6 +108,7 @@ export function McpPermissionTree({ clientId, permissions, onUpdate }: McpPermis
           level: type as "tool" | "resource" | "prompt",
           key: `${serverId}__${name}`,
           state,
+          clear: shouldClear,
         })
       }
       onUpdate()

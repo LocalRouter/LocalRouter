@@ -613,7 +613,7 @@ export function StrategyModelConfiguration({
                                                         <div>
                                                             <CardTitle className="text-base flex items-center gap-2">
                                                                 Weak Model
-                                                                <span className="text-xs px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-700 dark:text-purple-300 font-medium">
+                                                                <span className="text-xs px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-900 dark:text-purple-300 font-medium">
                                                                     EXPERIMENTAL
                                                                 </span>
                                                             </CardTitle>
@@ -633,11 +633,11 @@ export function StrategyModelConfiguration({
                                                 {!routellmConfig?.enabled ? (
                                                     <div className="space-y-4">
                                                         {/* Resource Requirements - shown when disabled */}
-                                                        <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/20">
+                                                        <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-600/50">
                                                             <div className="flex items-start gap-2">
                                                                 <MessageSquareWarning
                                                                     className="h-4 w-4 text-amber-600 dark:text-amber-400 mt-0.5 shrink-0"/>
-                                                                <div className="text-xs text-amber-700 dark:text-amber-300">
+                                                                <div className="text-xs text-amber-900 dark:text-amber-300">
                                                                     <p className="font-medium mb-2">Resource Requirements</p>
                                                                     <div className="grid grid-cols-2 gap-x-4 gap-y-1">
                                                                         <span>Disk Space:</span>

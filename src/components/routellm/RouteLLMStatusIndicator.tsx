@@ -106,7 +106,7 @@ export const RouteLLMStatusIndicator: React.FC<RouteLLMStatusIndicatorProps> = (
             Unload
           </button>
         )}
-        <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-300">
+        <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-900 dark:bg-purple-900/30 dark:text-purple-300">
           EXPERIMENTAL
         </span>
       </div>
@@ -119,7 +119,7 @@ export const RouteLLMStatusIndicator: React.FC<RouteLLMStatusIndicatorProps> = (
       <div className="flex-1">
         <div className="flex items-center gap-2 mb-1">
           <span className={`font-semibold ${config.color}`}>{config.label}</span>
-          <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-300">
+          <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-900 dark:bg-purple-900/30 dark:text-purple-300">
             EXPERIMENTAL
           </span>
         </div>

@@ -196,31 +196,56 @@ export default function ServiceIcon({
           style={{ display: 'none' }}
         >
           {emoji
-            ? <span style={{ fontSize: `${size * 0.6}px`, lineHeight: '1' }}>{emoji}</span>
+            ? <span style={{ fontSize: `${size}px`, lineHeight: '1' }}>{emoji}</span>
             : fallbackToServerIcon
-              ? <McpIcon style={{ width: size * 0.6, height: size * 0.6 }} />
-              : <ProvidersIcon style={{ width: size * 0.6, height: size * 0.6 }} />
+              ? <McpIcon style={{ width: size, height: size }} />
+              : <ProvidersIcon style={{ width: size, height: size }} />
           }
         </span>
       </span>
     )
   }
 
-  // Emoji fallback
+  // Emoji fallback - use same container as icons for consistent alignment
   if (emoji) {
+    const padding = Math.max(4, size * 0.15)
+    const containerSize = size + padding * 2
+
     return (
-      <span className={className} style={{ fontSize: `${size * 0.6}px`, lineHeight: '1' }}>
-        {emoji}
+      <span
+        className={`inline-flex items-center justify-center ${className}`}
+        style={{ width: containerSize, height: containerSize }}
+      >
+        <span style={{ fontSize: `${size}px`, lineHeight: '1' }}>
+          {emoji}
+        </span>
       </span>
     )
   }
 
-  // Ultimate fallback - use category icons matching the sidebar
+  // Ultimate fallback - use category icons with same container
+  const padding = Math.max(4, size * 0.15)
+  const containerSize = size + padding * 2
+
   if (fallbackToServerIcon) {
-    return <McpIcon className={className} style={{ width: size * 0.6, height: size * 0.6 }} />
+    return (
+      <span
+        className={`inline-flex items-center justify-center ${className}`}
+        style={{ width: containerSize, height: containerSize }}
+      >
+        <McpIcon style={{ width: size, height: size }} />
+      </span>
+    )
   }
 
-  return <ProvidersIcon className={className} style={{ width: size * 0.6, height: size * 0.6 }} />
+  return (
+    <span
+      className={`inline-flex items-center justify-center ${className}`}
+      style={{ width: containerSize, height: containerSize }}
+    >
+      <ProvidersIcon style={{ width: size, height: size }} />
+    </span>
+  )
 }
 
 // Re-export for backwards compatibility

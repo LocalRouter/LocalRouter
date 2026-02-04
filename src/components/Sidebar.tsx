@@ -22,9 +22,6 @@ interface Client {
   name: string
   client_id: string
   enabled: boolean
-  allowed_llm_providers: string[]
-  mcp_access_mode: "none" | "all" | "specific"
-  mcp_servers: string[]
 }
 
 interface Model {

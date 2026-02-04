@@ -8,7 +8,8 @@ interface PermissionTreeSelectorProps {
   nodes: TreeNode[]
   permissions: Record<string, PermissionState>
   globalPermission: PermissionState
-  onPermissionChange: (key: string, state: PermissionState) => void
+  /** Called when a node's permission changes. parentState is the inherited value from the parent. */
+  onPermissionChange: (key: string, state: PermissionState, parentState: PermissionState) => void
   onGlobalChange: (state: PermissionState) => void
   disabled?: boolean
   globalLabel?: string
@@ -61,21 +62,33 @@ export function PermissionTreeSelector({
     const inherited = isInherited(node.id)
     const canExpand = hasChildren && effectivePermission !== "off"
 
+    // For group nodes (Tools/Resources/Prompts), make the whole row clickable
+    const handleRowClick = () => {
+      if (node.isGroup && canExpand) {
+        toggleNode(node.id)
+      }
+    }
+
     return (
       <div key={node.id}>
         <div
           className={cn(
             "flex items-center gap-2 py-2 border-b border-border/50",
             "hover:bg-muted/30 transition-colors",
-            depth > 0 && "text-sm"
+            depth > 0 && "text-sm",
+            node.isGroup && canExpand && "cursor-pointer"
           )}
           style={{ paddingLeft: `${12 + depth * 16}px`, paddingRight: "12px" }}
+          onClick={handleRowClick}
         >
           {/* Expand/collapse button */}
           {hasChildren ? (
             <button
               type="button"
-              onClick={() => canExpand && toggleNode(node.id)}
+              onClick={(e) => {
+                e.stopPropagation()
+                canExpand && toggleNode(node.id)
+              }}
               className={cn(
                 "p-0.5 rounded hover:bg-muted",
                 !canExpand && "opacity-30 cursor-not-allowed"
@@ -106,7 +119,7 @@ export function PermissionTreeSelector({
           {!node.isGroup && (
             <PermissionStateButton
               value={effectivePermission}
-              onChange={(state) => onPermissionChange(node.id, state)}
+              onChange={(state) => onPermissionChange(node.id, state, parentPermission)}
               disabled={disabled}
               size="sm"
               inherited={inherited}
@@ -149,7 +162,6 @@ export function PermissionTreeSelector({
         <div
           className="flex items-center gap-2 px-3 py-3 border-b bg-background sticky top-0 z-10"
         >
-          <div className="w-5" /> {/* Spacer for alignment with chevrons */}
           <span className="font-semibold text-sm flex-1">{globalLabel}</span>
           <PermissionStateButton
             value={globalPermission}

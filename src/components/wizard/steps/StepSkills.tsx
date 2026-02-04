@@ -1,104 +1,155 @@
 /**
  * Step 4: Select Skills
  *
- * Skills access selection for the client.
- * Supports All / Specific / None access modes with per-skill selection.
+ * Skills permission selection using Allow/Ask/Off states.
+ * Supports hierarchical permissions for skills and their tools.
  */
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
-import { Info } from "lucide-react"
-import { Checkbox } from "@/components/ui/checkbox"
-import { cn } from "@/lib/utils"
-
-type SkillsAccessMode = "none" | "all" | "specific"
+import { Loader2, Info } from "lucide-react"
+import { PermissionTreeSelector } from "@/components/permissions/PermissionTreeSelector"
+import type { PermissionState, TreeNode, SkillsPermissions } from "@/components/permissions/types"
 
 interface SkillInfo {
   name: string
   description: string | null
-  source_path: string
-  script_count: number
-  reference_count: number
   enabled: boolean
 }
 
-interface StepSkillsProps {
-  accessMode: SkillsAccessMode
-  selectedSkills: string[]
-  onChange: (mode: SkillsAccessMode, skills: string[]) => void
+interface SkillToolInfo {
+  name: string
+  description: string | null
 }
 
-export function StepSkills({ accessMode, selectedSkills, onChange }: StepSkillsProps) {
+interface StepSkillsProps {
+  permissions: SkillsPermissions
+  onChange: (permissions: SkillsPermissions) => void
+}
+
+export function StepSkills({ permissions, onChange }: StepSkillsProps) {
   const [skills, setSkills] = useState<SkillInfo[]>([])
+  const [skillTools, setSkillTools] = useState<Record<string, SkillToolInfo[]>>({})
   const [loading, setLoading] = useState(true)
 
-  useEffect(() => {
-    loadSkills()
-  }, [])
-
-  const loadSkills = async () => {
+  const loadSkills = useCallback(async () => {
     try {
+      setLoading(true)
       const skillList = await invoke<SkillInfo[]>("list_skills")
-      setSkills(skillList)
+      const enabledSkills = skillList.filter((s) => s.enabled)
+      setSkills(enabledSkills)
+
+      // Eagerly load tools for all enabled skills
+      for (const skill of enabledSkills) {
+        try {
+          const tools = await invoke<SkillToolInfo[]>("get_skill_tools", {
+            skillName: skill.name,
+          })
+          setSkillTools((prev) => ({ ...prev, [skill.name]: tools }))
+        } catch (error) {
+          console.error(`Failed to load tools for skill ${skill.name}:`, error)
+        }
+      }
     } catch (error) {
       console.error("Failed to load skills:", error)
+      setSkills([])
     } finally {
       setLoading(false)
     }
+  }, [])
+
+  useEffect(() => {
+    loadSkills()
+  }, [loadSkills])
+
+  // Handle permission changes
+  const handlePermissionChange = (key: string, state: PermissionState, parentState: PermissionState) => {
+    // If the new state matches the parent, remove the override (inherit from parent)
+    // Otherwise, set an explicit override
+    const shouldClear = state === parentState
+
+    // Parse the key to determine the level
+    // Format: skill_name or skill_name__tool__tool_name
+    const parts = key.split("__")
+
+    const newPermissions = { ...permissions }
+
+    if (parts.length === 1) {
+      // Skill level
+      const newSkills = { ...permissions.skills }
+      if (shouldClear) {
+        delete newSkills[key]
+      } else {
+        newSkills[key] = state
+      }
+      newPermissions.skills = newSkills
+    } else if (parts.length === 3 && parts[1] === "tool") {
+      // Tool level
+      const [skillName, , toolName] = parts
+      const compositeKey = `${skillName}__${toolName}`
+
+      const newTools = { ...permissions.tools }
+      if (shouldClear) {
+        delete newTools[compositeKey]
+      } else {
+        newTools[compositeKey] = state
+      }
+      newPermissions.tools = newTools
+    }
+
+    onChange(newPermissions)
   }
 
-  const enabledSkills = skills.filter(s => s.enabled)
-  const skillNames = enabledSkills.map(s => s.name)
-
-  const includeAll = accessMode === "all"
-  const selectedSet = new Set(selectedSkills)
-  const selectedCount = includeAll
-    ? skillNames.length
-    : Array.from(selectedSet).filter(n => skillNames.includes(n)).length
-  const isIndeterminate = !includeAll && selectedCount > 0 && selectedCount < skillNames.length
-
-  const handleAllToggle = () => {
-    if (includeAll) {
-      // Switch from All to None
-      onChange("none", [])
-    } else {
-      onChange("all", [])
-    }
+  const handleGlobalChange = (state: PermissionState) => {
+    // Clear all child customizations when global changes
+    onChange({
+      global: state,
+      skills: {},
+      tools: {},
+    })
   }
 
-  const handleSkillToggle = (skillName: string) => {
-    if (includeAll) {
-      // Switch from All to Specific, excluding this skill
-      const otherSkills = skillNames.filter(n => n !== skillName)
-      onChange(otherSkills.length > 0 ? "specific" : "none", otherSkills)
-      return
-    }
+  // Build tree nodes from skills
+  const buildTree = (): TreeNode[] => {
+    return skills.map((skill) => {
+      const tools = skillTools[skill.name]
+      const children: TreeNode[] | undefined = tools?.map((tool) => ({
+        id: `${skill.name}__tool__${tool.name}`,
+        label: tool.name,
+        description: tool.description || undefined,
+      }))
 
-    const newSelected = new Set(selectedSet)
-    if (newSelected.has(skillName)) {
-      newSelected.delete(skillName)
-    } else {
-      newSelected.add(skillName)
-    }
-
-    const allSelected = skillNames.length > 0 && skillNames.every(n => newSelected.has(n))
-    if (allSelected) {
-      onChange("all", [])
-    } else {
-      const names = Array.from(newSelected)
-      onChange(names.length > 0 ? "specific" : "none", names)
-    }
+      return {
+        id: skill.name,
+        label: skill.name,
+        description: skill.description || undefined,
+        children: children && children.length > 0 ? children : undefined,
+      }
+    })
   }
 
-  const isSkillSelected = (skillName: string): boolean => {
-    if (includeAll) return true
-    return selectedSet.has(skillName)
+  // Build flat permissions map for the tree
+  const buildPermissionsMap = (): Record<string, PermissionState> => {
+    const map: Record<string, PermissionState> = {}
+
+    // Skill permissions
+    for (const [skillName, state] of Object.entries(permissions.skills)) {
+      map[skillName] = state
+    }
+
+    // Tool permissions
+    for (const [key, state] of Object.entries(permissions.tools)) {
+      const [skillName, toolName] = key.split("__")
+      map[`${skillName}__tool__${toolName}`] = state
+    }
+
+    return map
   }
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-32 text-muted-foreground text-sm">
-        Loading skills...
+      <div className="flex items-center justify-center py-12">
+        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
       </div>
     )
   }
@@ -122,65 +173,23 @@ export function StepSkills({ accessMode, selectedSkills, onChange }: StepSkillsP
 
   return (
     <div className="space-y-4">
-      <div className="border rounded-lg">
-        <div className="max-h-[350px] overflow-y-auto">
-          {/* All Skills row */}
-          <div
-            className="flex items-center gap-3 px-4 py-3 border-b bg-background sticky top-0 z-10 cursor-pointer hover:bg-muted/50 transition-colors"
-            onClick={handleAllToggle}
-          >
-            <Checkbox
-              checked={includeAll || isIndeterminate}
-              onCheckedChange={handleAllToggle}
-              className={cn(
-                "data-[state=checked]:bg-primary",
-                isIndeterminate && "data-[state=checked]:bg-primary/60"
-              )}
-            />
-            <span className="font-semibold text-sm">All Skills</span>
-            <span className="text-xs text-muted-foreground ml-auto">
-              {includeAll ? (
-                <span className="text-primary">All (including future skills)</span>
-              ) : (
-                `${selectedCount} / ${skillNames.length} skill${skillNames.length !== 1 ? "s" : ""} selected`
-              )}
-            </span>
-          </div>
+      <p className="text-sm text-muted-foreground">
+        Configure skills access for this client. Use Allow, Ask, or Off for each skill.
+      </p>
 
-          {/* Individual skills */}
-          {skills.map((skill) => {
-            const isSelected = isSkillSelected(skill.name)
+      <PermissionTreeSelector
+        nodes={buildTree()}
+        permissions={buildPermissionsMap()}
+        globalPermission={permissions.global}
+        onPermissionChange={handlePermissionChange}
+        onGlobalChange={handleGlobalChange}
+        globalLabel="All Skills"
+        emptyMessage="No skills discovered"
+      />
 
-            return (
-              <div
-                key={skill.name}
-                className={cn(
-                  "flex items-center gap-3 px-4 py-2.5 border-b",
-                  "hover:bg-muted/30 transition-colors",
-                  skill.enabled ? "cursor-pointer" : "",
-                  !skill.enabled && "opacity-40",
-                  includeAll && skill.enabled && "opacity-60"
-                )}
-                onClick={() => skill.enabled && handleSkillToggle(skill.name)}
-              >
-                <Checkbox
-                  checked={isSelected}
-                  onCheckedChange={() => handleSkillToggle(skill.name)}
-                  disabled={!skill.enabled}
-                />
-                <div className="flex-1 min-w-0">
-                  <span className="text-sm font-medium">{skill.name}</span>
-                  {skill.description && (
-                    <p className="text-xs text-muted-foreground truncate">
-                      {skill.description}
-                    </p>
-                  )}
-                </div>
-              </div>
-            )
-          })}
-        </div>
-      </div>
+      <p className="text-xs text-muted-foreground">
+        Skills provide domain-specific tools and capabilities to LLM applications.
+      </p>
     </div>
   )
 }

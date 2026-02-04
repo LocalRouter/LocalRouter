@@ -19,18 +19,21 @@ const DebugView = import.meta.env.DEV
   ? lazy(() => import('./views/debug').then(m => ({ default: m.DebugView })))
   : () => null
 
-type McpAccessMode = 'none' | 'all' | 'specific'
+import type { McpPermissions, SkillsPermissions, ModelPermissions, PermissionState } from '@/components/permissions'
 
 interface Client {
   id: string
   name: string
   client_id: string
   enabled: boolean
-  allowed_llm_providers: string[]
-  mcp_access_mode: McpAccessMode
-  mcp_servers: string[]
+  strategy_id: string
+  mcp_deferred_loading: boolean
   created_at: string
   last_used: string | null
+  mcp_permissions: McpPermissions
+  skills_permissions: SkillsPermissions
+  model_permissions: ModelPermissions
+  marketplace_permission: PermissionState
 }
 
 function App() {

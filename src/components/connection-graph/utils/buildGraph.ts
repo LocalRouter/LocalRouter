@@ -59,14 +59,28 @@ function buildNodes(
 
   // Add Access Key nodes (left column)
   enabledClients.forEach((client) => {
+    // Derive allowed providers from model_permissions (both 'allow' and 'ask' are enabled)
+    const allowedProviders = client.model_permissions.global !== 'off'
+      ? [] // Empty means all providers
+      : Object.entries(client.model_permissions.providers ?? {})
+          .filter(([, state]) => state !== 'off')
+          .map(([name]) => name)
+
+    // Derive MCP servers from mcp_permissions (both 'allow' and 'ask' are enabled)
+    const mcpServers = client.mcp_permissions.global !== 'off'
+      ? [] // Empty means all servers
+      : Object.entries(client.mcp_permissions.servers ?? {})
+          .filter(([, state]) => state !== 'off')
+          .map(([name]) => name)
+
     const nodeData: AccessKeyNodeData = {
       id: client.id,
       name: client.name,
       type: 'accessKey',
       isConnected: activeConnections.includes(client.id),
       enabled: client.enabled,
-      allowedProviders: client.allowed_llm_providers,
-      mcpServers: client.mcp_servers,
+      allowedProviders,
+      mcpServers,
     }
 
     nodes.push({
@@ -136,8 +150,8 @@ function buildNodes(
     })
   })
 
-  // Add Marketplace node if any client has marketplace enabled
-  const hasMarketplaceClient = enabledClients.some(c => c.marketplace_enabled)
+  // Add Marketplace node if any client has marketplace permission enabled (both 'allow' and 'ask')
+  const hasMarketplaceClient = enabledClients.some(c => c.marketplace_permission !== 'off')
   if (hasMarketplaceClient && connectedTargetIds.has('marketplace')) {
     const nodeData: MarketplaceNodeData = {
       id: 'marketplace',
@@ -222,11 +236,14 @@ function buildEdges(
   enabledClients.forEach((client) => {
     const isConnected = activeConnections.includes(client.id)
 
-    // Create edges to providers
-    // If allowedProviders is empty, client has access to all providers
-    const clientProviders = client.allowed_llm_providers.length > 0
-      ? client.allowed_llm_providers.filter(p => providerNames.has(p))
-      : Array.from(providerNames)
+    // Create edges to providers based on model_permissions
+    // If global is not 'off', client has access to all providers
+    // Otherwise, check specific provider permissions (both 'allow' and 'ask' are enabled)
+    const clientProviders = client.model_permissions.global !== 'off'
+      ? Array.from(providerNames)
+      : Object.entries(client.model_permissions.providers ?? {})
+          .filter(([name, state]) => state !== 'off' && providerNames.has(name))
+          .map(([name]) => name)
 
     clientProviders.forEach((providerId) => {
       edges.push({
@@ -242,12 +259,14 @@ function buildEdges(
       })
     })
 
-    // Create edges to MCP servers
-    const clientMcpServers = client.mcp_access_mode === 'all'
+    // Create edges to MCP servers based on mcp_permissions
+    // If global is not 'off', client has access to all servers
+    // Otherwise, check specific server permissions (both 'allow' and 'ask' are enabled)
+    const clientMcpServers = client.mcp_permissions.global !== 'off'
       ? Array.from(mcpServerIds)
-      : client.mcp_access_mode === 'specific'
-        ? client.mcp_servers.filter(s => mcpServerIds.has(s))
-        : []
+      : Object.entries(client.mcp_permissions.servers ?? {})
+          .filter(([id, state]) => state !== 'off' && mcpServerIds.has(id))
+          .map(([id]) => id)
 
     clientMcpServers.forEach((serverId) => {
       const firewallStyle = getFirewallEdgeStyle(client, 'server', serverId, isConnected)
@@ -261,12 +280,14 @@ function buildEdges(
       })
     })
 
-    // Create edges to skills
-    const clientSkills = client.skills_access_mode === 'all'
+    // Create edges to skills based on skills_permissions
+    // If global is not 'off', client has access to all skills
+    // Otherwise, check specific skill permissions (both 'allow' and 'ask' are enabled)
+    const clientSkills = client.skills_permissions.global !== 'off'
       ? Array.from(skillNames)
-      : client.skills_access_mode === 'specific'
-        ? client.skills_names.filter(s => skillNames.has(s))
-        : []
+      : Object.entries(client.skills_permissions.skills ?? {})
+          .filter(([name, state]) => state !== 'off' && skillNames.has(name))
+          .map(([name]) => name)
 
     clientSkills.forEach((skillName) => {
       const firewallStyle = getFirewallEdgeStyle(client, 'skill', skillName, isConnected)
@@ -280,8 +301,8 @@ function buildEdges(
       })
     })
 
-    // Create edge to marketplace if client has marketplace enabled
-    if (client.marketplace_enabled) {
+    // Create edge to marketplace if client has marketplace permission enabled (both 'allow' and 'ask')
+    if (client.marketplace_permission !== 'off') {
       edges.push({
         id: `edge-${client.id}-marketplace`,
         source: `client-${client.id}`,

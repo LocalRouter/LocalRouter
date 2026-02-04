@@ -30,10 +30,8 @@ import { StepModels } from "./steps/StepModels"
 import { StepMcp } from "./steps/StepMcp"
 import { StepSkills } from "./steps/StepSkills"
 import { StepCredentials } from "./steps/StepCredentials"
-import type { AllowedModelsSelection } from "@/components/strategy/AllowedModelsSelector"
+import type { McpPermissions, SkillsPermissions, ModelPermissions } from "@/components/permissions/types"
 
-type McpAccessMode = "none" | "all" | "specific"
-type SkillsAccessMode = "none" | "all" | "specific"
 type RoutingMode = "allowed" | "auto"
 
 export interface AutoModelConfig {
@@ -56,7 +54,7 @@ interface WizardState {
 
   // Step 2 - Models
   routingMode: RoutingMode
-  allowedModels: AllowedModelsSelection
+  modelPermissions: ModelPermissions
   autoModelName: string
   prioritizedModels: [string, string][]
   routeLLMEnabled: boolean
@@ -64,12 +62,10 @@ interface WizardState {
   weakModels: [string, string][]
 
   // Step 3 - MCP
-  mcpAccessMode: McpAccessMode
-  selectedMcpServers: string[]
+  mcpPermissions: McpPermissions
 
   // Step 4 - Skills
-  skillsAccessMode: SkillsAccessMode
-  selectedSkills: string[]
+  skillsPermissions: SkillsPermissions
 
   // After creation
   clientId?: string
@@ -122,20 +118,28 @@ export function ClientCreationWizard({
   const [state, setState] = useState<WizardState>({
     clientName: "",
     routingMode: "allowed",
-    allowedModels: {
-      selected_all: true,
-      selected_providers: [],
-      selected_models: [],
+    modelPermissions: {
+      global: "allow",
+      providers: {},
+      models: {},
     },
     autoModelName: "localrouter/auto",
     prioritizedModels: [],
     routeLLMEnabled: false,
     routeLLMThreshold: 0.3,
     weakModels: [],
-    mcpAccessMode: "none",
-    selectedMcpServers: [],
-    skillsAccessMode: "none",
-    selectedSkills: [],
+    mcpPermissions: {
+      global: "off",
+      servers: {},
+      tools: {},
+      resources: {},
+      prompts: {},
+    },
+    skillsPermissions: {
+      global: "off",
+      skills: {},
+      tools: {},
+    },
   })
 
   // Build step arrays based on whether welcome is shown
@@ -206,38 +210,123 @@ export function ClientCreationWizard({
         name: state.clientName.trim(),
       })
 
-      // Step 2: Update strategy with model routing configuration
-      const autoConfig: AutoModelConfig | null = state.routingMode === "auto" ? {
-        enabled: true,
-        model_name: state.autoModelName,
-        prioritized_models: state.prioritizedModels,
-        available_models: [],
-        routellm_config: state.routeLLMEnabled ? {
+      // Step 2: Update strategy with auto routing configuration (if auto mode)
+      if (state.routingMode === "auto") {
+        const autoConfig: AutoModelConfig = {
           enabled: true,
-          threshold: state.routeLLMThreshold,
-          weak_models: state.weakModels,
-        } : undefined,
-      } : null
+          model_name: state.autoModelName,
+          prioritized_models: state.prioritizedModels,
+          available_models: [],
+          routellm_config: state.routeLLMEnabled ? {
+            enabled: true,
+            threshold: state.routeLLMThreshold,
+            weak_models: state.weakModels,
+          } : undefined,
+        }
 
-      await invoke("update_strategy", {
-        strategyId: clientInfo.strategy_id,
-        allowedModels: state.routingMode === "allowed" ? state.allowedModels : null,
-        autoConfig,
-      })
+        await invoke("update_strategy", {
+          strategyId: clientInfo.strategy_id,
+          allowedModels: null,
+          autoConfig,
+        })
+      }
 
-      // Step 3: Set MCP access
-      await invoke("set_client_mcp_access", {
+      // Step 3: Set model permissions using the new hierarchical system
+      // Set global permission
+      await invoke("set_client_model_permission", {
         clientId: clientInfo.client_id,
-        mode: state.mcpAccessMode,
-        servers: state.selectedMcpServers,
+        level: "global",
+        key: null,
+        state: state.modelPermissions.global,
       })
-
-      // Step 4: Set skills access
-      if (state.skillsAccessMode !== "none") {
-        await invoke("set_client_skills_access", {
+      // Set provider-level overrides
+      for (const [provider, permState] of Object.entries(state.modelPermissions.providers)) {
+        await invoke("set_client_model_permission", {
           clientId: clientInfo.client_id,
-          mode: state.skillsAccessMode,
-          skillNames: state.selectedSkills,
+          level: "provider",
+          key: provider,
+          state: permState,
+        })
+      }
+      // Set model-level overrides
+      for (const [key, permState] of Object.entries(state.modelPermissions.models)) {
+        await invoke("set_client_model_permission", {
+          clientId: clientInfo.client_id,
+          level: "model",
+          key,
+          state: permState,
+        })
+      }
+
+      // Step 4: Set MCP permissions
+      // Set global permission
+      await invoke("set_client_mcp_permission", {
+        clientId: clientInfo.client_id,
+        level: "global",
+        key: null,
+        state: state.mcpPermissions.global,
+      })
+      // Set server-level overrides
+      for (const [serverId, permState] of Object.entries(state.mcpPermissions.servers)) {
+        await invoke("set_client_mcp_permission", {
+          clientId: clientInfo.client_id,
+          level: "server",
+          key: serverId,
+          state: permState,
+        })
+      }
+      // Set tool-level overrides
+      for (const [key, permState] of Object.entries(state.mcpPermissions.tools)) {
+        await invoke("set_client_mcp_permission", {
+          clientId: clientInfo.client_id,
+          level: "tool",
+          key,
+          state: permState,
+        })
+      }
+      // Set resource-level overrides
+      for (const [key, permState] of Object.entries(state.mcpPermissions.resources)) {
+        await invoke("set_client_mcp_permission", {
+          clientId: clientInfo.client_id,
+          level: "resource",
+          key,
+          state: permState,
+        })
+      }
+      // Set prompt-level overrides
+      for (const [key, permState] of Object.entries(state.mcpPermissions.prompts)) {
+        await invoke("set_client_mcp_permission", {
+          clientId: clientInfo.client_id,
+          level: "prompt",
+          key,
+          state: permState,
+        })
+      }
+
+      // Step 5: Set skills permissions
+      // Set global permission
+      await invoke("set_client_skills_permission", {
+        clientId: clientInfo.client_id,
+        level: "global",
+        key: null,
+        state: state.skillsPermissions.global,
+      })
+      // Set skill-level overrides
+      for (const [skillName, permState] of Object.entries(state.skillsPermissions.skills)) {
+        await invoke("set_client_skills_permission", {
+          clientId: clientInfo.client_id,
+          level: "skill",
+          key: skillName,
+          state: permState,
+        })
+      }
+      // Set tool-level overrides
+      for (const [key, permState] of Object.entries(state.skillsPermissions.tools)) {
+        await invoke("set_client_skills_permission", {
+          clientId: clientInfo.client_id,
+          level: "tool",
+          key,
+          state: permState,
         })
       }
 
@@ -272,20 +361,28 @@ export function ClientCreationWizard({
     setState({
       clientName: "",
       routingMode: "allowed",
-      allowedModels: {
-        selected_all: true,
-        selected_providers: [],
-        selected_models: [],
+      modelPermissions: {
+        global: "allow",
+        providers: {},
+        models: {},
       },
       autoModelName: "localrouter/auto",
       prioritizedModels: [],
       routeLLMEnabled: false,
       routeLLMThreshold: 0.3,
       weakModels: [],
-      mcpAccessMode: "none",
-      selectedMcpServers: [],
-      skillsAccessMode: "none",
-      selectedSkills: [],
+      mcpPermissions: {
+        global: "off",
+        servers: {},
+        tools: {},
+        resources: {},
+        prompts: {},
+      },
+      skillsPermissions: {
+        global: "off",
+        skills: {},
+        tools: {},
+      },
     })
     onOpenChange(false)
   }
@@ -308,7 +405,7 @@ export function ClientCreationWizard({
       return (
         <StepModels
           routingMode={state.routingMode}
-          allowedModels={state.allowedModels}
+          modelPermissions={state.modelPermissions}
           autoModelName={state.autoModelName}
           prioritizedModels={state.prioritizedModels}
           routeLLMEnabled={state.routeLLMEnabled}
@@ -317,8 +414,8 @@ export function ClientCreationWizard({
           onRoutingModeChange={(mode) =>
             setState((prev) => ({ ...prev, routingMode: mode }))
           }
-          onAllowedModelsChange={(selection) =>
-            setState((prev) => ({ ...prev, allowedModels: selection }))
+          onModelPermissionsChange={(permissions) =>
+            setState((prev) => ({ ...prev, modelPermissions: permissions }))
           }
           onAutoModelNameChange={(name) =>
             setState((prev) => ({ ...prev, autoModelName: name }))
@@ -341,13 +438,11 @@ export function ClientCreationWizard({
     if (currentStep === mcpStepIndex) {
       return (
         <StepMcp
-          accessMode={state.mcpAccessMode}
-          selectedServers={state.selectedMcpServers}
-          onChange={(mode, servers) =>
+          permissions={state.mcpPermissions}
+          onChange={(permissions) =>
             setState((prev) => ({
               ...prev,
-              mcpAccessMode: mode,
-              selectedMcpServers: servers,
+              mcpPermissions: permissions,
             }))
           }
         />
@@ -356,13 +451,11 @@ export function ClientCreationWizard({
     if (currentStep === skillsStepIndex) {
       return (
         <StepSkills
-          accessMode={state.skillsAccessMode}
-          selectedSkills={state.selectedSkills}
-          onChange={(mode, skills) =>
+          permissions={state.skillsPermissions}
+          onChange={(permissions) =>
             setState((prev) => ({
               ...prev,
-              skillsAccessMode: mode,
-              selectedSkills: skills,
+              skillsPermissions: permissions,
             }))
           }
         />
