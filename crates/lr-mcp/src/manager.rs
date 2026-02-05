@@ -5,8 +5,6 @@
 #![allow(dead_code)]
 
 use crate::oauth::McpOAuthManager;
-use once_cell::sync::Lazy;
-use std::collections::HashMap;
 use crate::protocol::{JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, StreamingChunk};
 use crate::transport::{SseTransport, StdioTransport, Transport, WebSocketTransport};
 use dashmap::DashMap;
@@ -14,7 +12,9 @@ use futures_util::stream::Stream;
 use lr_api_keys::keychain_trait::KeychainStorage;
 use lr_config::{McpServerConfig, McpTransportConfig, McpTransportType};
 use lr_types::{AppError, AppResult};
+use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -187,6 +187,26 @@ impl McpServerManager {
             websocket_transports: Arc::new(DashMap::new()),
             configs: Arc::new(DashMap::new()),
             oauth_manager: Arc::new(McpOAuthManager::new()),
+            notification_handlers: Arc::new(DashMap::new()),
+            next_handler_id: Arc::new(std::sync::atomic::AtomicU64::new(1)),
+        }
+    }
+
+    /// Create a new MCP server manager for testing
+    ///
+    /// Uses in-memory storage (MockKeychain) instead of file/system keychain.
+    /// This ensures tests are idempotent and don't depend on disk state.
+    pub fn new_for_test() -> Self {
+        let mock_keychain = lr_api_keys::MockKeychain::new();
+        let cached_keychain = lr_api_keys::CachedKeychain::new(std::sync::Arc::new(mock_keychain));
+        let oauth_manager = McpOAuthManager::new_with_keychain(cached_keychain);
+
+        Self {
+            stdio_transports: Arc::new(DashMap::new()),
+            sse_transports: Arc::new(DashMap::new()),
+            websocket_transports: Arc::new(DashMap::new()),
+            configs: Arc::new(DashMap::new()),
+            oauth_manager: Arc::new(oauth_manager),
             notification_handlers: Arc::new(DashMap::new()),
             next_handler_id: Arc::new(std::sync::atomic::AtomicU64::new(1)),
         }
@@ -971,11 +991,11 @@ impl McpServerManager {
         match &config.transport_config {
             McpTransportConfig::Stdio { .. } => {
                 // Parse the command using shell-words
-                let (command, args, config_env) = match config.transport_config.parse_stdio_command()
-                {
-                    Ok(parsed) => parsed,
-                    Err(e) => return (HealthStatus::Unhealthy, None, Some(e)),
-                };
+                let (command, args, config_env) =
+                    match config.transport_config.parse_stdio_command() {
+                        Ok(parsed) => parsed,
+                        Err(e) => return (HealthStatus::Unhealthy, None, Some(e)),
+                    };
 
                 // Build environment: shell env (PATH) -> config env
                 let mut env = SHELL_ENV.clone();

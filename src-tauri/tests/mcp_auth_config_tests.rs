@@ -9,7 +9,7 @@ use std::collections::HashMap;
 
 #[test]
 fn test_mcp_server_with_no_auth() -> AppResult<()> {
-    let manager = McpServerManager::new();
+    let manager = McpServerManager::new_for_test();
 
     // Create server with no auth config
     let config = McpServerConfig::new(
@@ -37,7 +37,7 @@ fn test_mcp_server_with_no_auth() -> AppResult<()> {
 
 #[test]
 fn test_mcp_server_with_env_vars_auth() -> AppResult<()> {
-    let manager = McpServerManager::new();
+    let manager = McpServerManager::new_for_test();
 
     // Create auth config with environment variables
     let mut env_vars = HashMap::new();
@@ -81,7 +81,7 @@ fn test_mcp_server_with_env_vars_auth() -> AppResult<()> {
 
 #[test]
 fn test_mcp_server_with_bearer_token_auth() -> AppResult<()> {
-    let manager = McpServerManager::new();
+    let manager = McpServerManager::new_for_test();
 
     // Create auth config with bearer token
     let auth_config = McpAuthConfig::BearerToken {
@@ -118,7 +118,7 @@ fn test_mcp_server_with_bearer_token_auth() -> AppResult<()> {
 
 #[test]
 fn test_mcp_server_with_custom_headers_auth() -> AppResult<()> {
-    let manager = McpServerManager::new();
+    let manager = McpServerManager::new_for_test();
 
     // Create auth config with custom headers
     let mut headers = HashMap::new();
@@ -161,7 +161,7 @@ fn test_mcp_server_with_custom_headers_auth() -> AppResult<()> {
 
 #[test]
 fn test_mcp_server_with_oauth_auth() -> AppResult<()> {
-    let manager = McpServerManager::new();
+    let manager = McpServerManager::new_for_test();
 
     // Create auth config with OAuth
     let auth_config = McpAuthConfig::OAuth {
@@ -214,7 +214,7 @@ fn test_mcp_server_with_oauth_auth() -> AppResult<()> {
 
 #[test]
 fn test_mcp_server_auth_config_update() -> AppResult<()> {
-    let manager = McpServerManager::new();
+    let manager = McpServerManager::new_for_test();
 
     // Create server with no auth
     let mut config = McpServerConfig::new(
@@ -310,7 +310,7 @@ fn test_mcp_server_config_serialization() -> AppResult<()> {
 
 #[test]
 fn test_multiple_servers_with_different_auth() -> AppResult<()> {
-    let manager = McpServerManager::new();
+    let manager = McpServerManager::new_for_test();
 
     // Server 1: No auth
     let config1 = McpServerConfig::new(

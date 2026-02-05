@@ -6,4 +6,4 @@
 mod keychain;
 pub mod keychain_trait;
 
-pub use keychain_trait::{CachedKeychain, KeychainStorage};
+pub use keychain_trait::{CachedKeychain, KeychainStorage, MockKeychain};

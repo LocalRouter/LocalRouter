@@ -481,6 +481,17 @@ impl McpOAuthManager {
         }
     }
 
+    /// Create a new OAuth manager with a custom keychain
+    ///
+    /// Useful for testing with MockKeychain or custom keychain implementations.
+    pub fn new_with_keychain(keychain: CachedKeychain) -> Self {
+        Self {
+            client: Client::new(),
+            keychain,
+            token_cache: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
     /// Discover OAuth configuration for an MCP server
     ///
     /// Implements the two-step OAuth discovery process per RFC 9728 and RFC 8414:
