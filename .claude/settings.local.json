@@ -45,7 +45,8 @@
       "Bash(comm:*)",
       "Bash(/Users/matus/dev/localrouterai/scripts/build-winxp.sh:*)",
       "Bash(./scripts/build-winxp.sh:*)",
-      "Bash(RUST_LOG=lr_routellm::candle_router=debug cargo test:*)"
+      "Bash(RUST_LOG=lr_routellm::candle_router=debug cargo test:*)",
+      "Bash(while read id)"
     ]
   }
 }
