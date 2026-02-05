@@ -291,7 +291,7 @@ impl ModelApprovalTracker {
 
     /// Check if a model has a valid time-based approval
     pub fn has_valid_approval(&self, client_id: &str, provider: &str, model_id: &str) -> bool {
-        let key = (client_id.to_string(), format!("{}__{}",  provider, model_id));
+        let key = (client_id.to_string(), format!("{}__{}", provider, model_id));
         if let Some(entry) = self.approvals.get(&key) {
             if *entry > Instant::now() {
                 return true;
@@ -304,12 +304,21 @@ impl ModelApprovalTracker {
     }
 
     /// Add a time-based approval for a model (default: 1 hour)
-    pub fn add_approval(&self, client_id: &str, provider: &str, model_id: &str, duration: Duration) {
-        let key = (client_id.to_string(), format!("{}__{}",  provider, model_id));
+    pub fn add_approval(
+        &self,
+        client_id: &str,
+        provider: &str,
+        model_id: &str,
+        duration: Duration,
+    ) {
+        let key = (client_id.to_string(), format!("{}__{}", provider, model_id));
         let expiry = Instant::now() + duration;
         self.approvals.insert(key, expiry);
         tracing::info!(
-            "Added model approval: client={}, model={}__{}",  client_id, provider, model_id,
+            "Added model approval: client={}, model={}__{}",
+            client_id,
+            provider,
+            model_id,
         );
     }
 

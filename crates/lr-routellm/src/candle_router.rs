@@ -303,7 +303,10 @@ impl CandleRouter {
             original_len,
             original_len > MAX_TOKENS
         );
-        debug!("Input IDs (first 20): {:?}", &input_ids[..input_ids.len().min(20)]);
+        debug!(
+            "Input IDs (first 20): {:?}",
+            &input_ids[..input_ids.len().min(20)]
+        );
 
         // Convert to tensors
         let input_ids_tensor = Tensor::new(input_ids, &self.device).map_err(|e| {
@@ -396,7 +399,10 @@ impl CandleRouter {
         let logits_vec = logits.to_vec1::<f32>().map_err(|e| {
             RouteLLMError::PredictionFailed(format!("Failed to extract logits for debug: {}", e))
         })?;
-        debug!("Raw logits: [{:.4}, {:.4}, {:.4}]", logits_vec[0], logits_vec[1], logits_vec[2]);
+        debug!(
+            "Raw logits: [{:.4}, {:.4}, {:.4}]",
+            logits_vec[0], logits_vec[1], logits_vec[2]
+        );
 
         // Apply softmax to get class probabilities
         // According to Python RouteLLM BERTRouter implementation:

@@ -789,7 +789,10 @@ pub struct McpPermissions {
 impl McpPermissions {
     /// Resolve the effective permission for an MCP server
     pub fn resolve_server(&self, server_id: &str) -> PermissionState {
-        self.servers.get(server_id).cloned().unwrap_or(self.global.clone())
+        self.servers
+            .get(server_id)
+            .cloned()
+            .unwrap_or(self.global.clone())
     }
 
     /// Resolve the effective permission for an MCP tool
@@ -844,7 +847,10 @@ pub struct SkillsPermissions {
 impl SkillsPermissions {
     /// Resolve the effective permission for a skill
     pub fn resolve_skill(&self, skill_name: &str) -> PermissionState {
-        self.skills.get(skill_name).cloned().unwrap_or(self.global.clone())
+        self.skills
+            .get(skill_name)
+            .cloned()
+            .unwrap_or(self.global.clone())
     }
 
     /// Resolve the effective permission for a skill tool
@@ -881,7 +887,10 @@ pub struct ModelPermissions {
 impl ModelPermissions {
     /// Resolve the effective permission for a provider
     pub fn resolve_provider(&self, provider_name: &str) -> PermissionState {
-        self.providers.get(provider_name).cloned().unwrap_or(self.global.clone())
+        self.providers
+            .get(provider_name)
+            .cloned()
+            .unwrap_or(self.global.clone())
     }
 
     /// Resolve the effective permission for a model

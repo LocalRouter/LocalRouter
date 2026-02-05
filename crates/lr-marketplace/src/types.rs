@@ -505,7 +505,10 @@ mod tests {
     fn test_tokenize_name() {
         assert_eq!(tokenize_name("My Marketplace"), "my-marketplace");
         assert_eq!(tokenize_name("Anthropic"), "anthropic");
-        assert_eq!(tokenize_name("Awesome Claude Skills"), "awesome-claude-skills");
+        assert_eq!(
+            tokenize_name("Awesome Claude Skills"),
+            "awesome-claude-skills"
+        );
         assert_eq!(tokenize_name("foo__bar  baz"), "foo-bar-baz");
         assert_eq!(tokenize_name("TEST-123"), "test-123");
     }

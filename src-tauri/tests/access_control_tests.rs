@@ -107,26 +107,44 @@ fn test_client_mcp_server_access_control() -> AppResult<()> {
 
     // Verify client has access to server1 (using new permission system)
     let updated_client = client_manager.get_client(&client.id).unwrap();
-    assert!(updated_client.mcp_permissions.resolve_server(&server1_id).is_enabled());
+    assert!(updated_client
+        .mcp_permissions
+        .resolve_server(&server1_id)
+        .is_enabled());
 
     // Verify client does NOT have access to server2
-    assert!(!updated_client.mcp_permissions.resolve_server(&server2_id).is_enabled());
+    assert!(!updated_client
+        .mcp_permissions
+        .resolve_server(&server2_id)
+        .is_enabled());
 
     // Grant access to server2
     client_manager.add_mcp_server(&client.id, &server2_id)?;
 
     // Verify client has access to both servers
     let updated_client = client_manager.get_client(&client.id).unwrap();
-    assert!(updated_client.mcp_permissions.resolve_server(&server1_id).is_enabled());
-    assert!(updated_client.mcp_permissions.resolve_server(&server2_id).is_enabled());
+    assert!(updated_client
+        .mcp_permissions
+        .resolve_server(&server1_id)
+        .is_enabled());
+    assert!(updated_client
+        .mcp_permissions
+        .resolve_server(&server2_id)
+        .is_enabled());
 
     // Revoke access to server1
     client_manager.remove_mcp_server(&client.id, &server1_id)?;
 
     // Verify client only has server2 access now
     let updated_client = client_manager.get_client(&client.id).unwrap();
-    assert!(!updated_client.mcp_permissions.resolve_server(&server1_id).is_enabled());
-    assert!(updated_client.mcp_permissions.resolve_server(&server2_id).is_enabled());
+    assert!(!updated_client
+        .mcp_permissions
+        .resolve_server(&server1_id)
+        .is_enabled());
+    assert!(updated_client
+        .mcp_permissions
+        .resolve_server(&server2_id)
+        .is_enabled());
 
     Ok(())
 }
@@ -232,8 +250,14 @@ fn test_access_control_persists_across_updates() -> AppResult<()> {
     let updated_client = manager.get_client(&client.id).unwrap();
     assert_eq!(updated_client.name, "New Name");
     assert_eq!(updated_client.allowed_llm_providers.len(), 2);
-    assert!(updated_client.mcp_permissions.resolve_server("server-1").is_enabled());
-    assert!(updated_client.mcp_permissions.resolve_server("server-2").is_enabled());
+    assert!(updated_client
+        .mcp_permissions
+        .resolve_server("server-1")
+        .is_enabled());
+    assert!(updated_client
+        .mcp_permissions
+        .resolve_server("server-2")
+        .is_enabled());
     assert!(updated_client
         .allowed_llm_providers
         .contains(&"openai".to_string()));
@@ -249,8 +273,14 @@ fn test_access_control_persists_across_updates() -> AppResult<()> {
     let updated_client = manager.get_client(&client.id).unwrap();
     assert!(updated_client.enabled);
     assert_eq!(updated_client.allowed_llm_providers.len(), 2);
-    assert!(updated_client.mcp_permissions.resolve_server("server-1").is_enabled());
-    assert!(updated_client.mcp_permissions.resolve_server("server-2").is_enabled());
+    assert!(updated_client
+        .mcp_permissions
+        .resolve_server("server-1")
+        .is_enabled());
+    assert!(updated_client
+        .mcp_permissions
+        .resolve_server("server-2")
+        .is_enabled());
 
     Ok(())
 }
@@ -282,7 +312,10 @@ fn test_duplicate_access_grants_are_idempotent() -> AppResult<()> {
     // Verify only one entry exists (using new permission system)
     let updated_client = manager.get_client(&client.id).unwrap();
     assert_eq!(updated_client.mcp_permissions.servers.len(), 1);
-    assert!(updated_client.mcp_permissions.resolve_server("server-1").is_enabled());
+    assert!(updated_client
+        .mcp_permissions
+        .resolve_server("server-1")
+        .is_enabled());
 
     Ok(())
 }
@@ -307,7 +340,10 @@ fn test_removing_nonexistent_access_is_safe() -> AppResult<()> {
     assert!(updated_client.allowed_llm_providers.is_empty());
     // After removing a server that wasn't granted, the entry is set to Off
     // but the permission system still resolves correctly
-    assert!(!updated_client.mcp_permissions.resolve_server("server-1").is_enabled());
+    assert!(!updated_client
+        .mcp_permissions
+        .resolve_server("server-1")
+        .is_enabled());
 
     Ok(())
 }
@@ -327,8 +363,14 @@ fn test_client_deletion_removes_all_access() -> AppResult<()> {
     // Verify access was granted (using new permission system)
     let client_before = manager.get_client(&client.id).unwrap();
     assert_eq!(client_before.allowed_llm_providers.len(), 2);
-    assert!(client_before.mcp_permissions.resolve_server("server-1").is_enabled());
-    assert!(client_before.mcp_permissions.resolve_server("server-2").is_enabled());
+    assert!(client_before
+        .mcp_permissions
+        .resolve_server("server-1")
+        .is_enabled());
+    assert!(client_before
+        .mcp_permissions
+        .resolve_server("server-2")
+        .is_enabled());
 
     // Delete the client
     manager.delete_client(&client.id)?;

@@ -527,10 +527,7 @@ mod model_permissions {
         assert_eq!(perms.resolve_provider("anthropic"), PermissionState::Allow);
 
         // Models on openai inherit from provider override
-        assert_eq!(
-            perms.resolve_model("openai", "gpt-4"),
-            PermissionState::Ask
-        );
+        assert_eq!(perms.resolve_model("openai", "gpt-4"), PermissionState::Ask);
         assert_eq!(
             perms.resolve_model("openai", "gpt-3.5-turbo"),
             PermissionState::Ask
@@ -565,10 +562,7 @@ mod model_permissions {
         );
 
         // gpt-4 has Ask override
-        assert_eq!(
-            perms.resolve_model("openai", "gpt-4"),
-            PermissionState::Ask
-        );
+        assert_eq!(perms.resolve_model("openai", "gpt-4"), PermissionState::Ask);
 
         // o1-preview has Off override
         assert_eq!(
@@ -608,10 +602,7 @@ mod model_permissions {
             PermissionState::Allow
         );
         // gpt-4 inherits from provider (Ask)
-        assert_eq!(
-            perms.resolve_model("openai", "gpt-4"),
-            PermissionState::Ask
-        );
+        assert_eq!(perms.resolve_model("openai", "gpt-4"), PermissionState::Ask);
         // o1-preview has explicit Off override
         assert_eq!(
             perms.resolve_model("openai", "o1-preview"),

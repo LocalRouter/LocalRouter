@@ -8,7 +8,10 @@ use std::sync::Arc;
 use lr_config::ConfigManager;
 use lr_marketplace::{
     install_popup::{InstallAction, PendingInstallInfo},
-    types::{InstalledServer, InstalledSkill, McpInstallConfig, McpServerListing, SkillListing, MCP_REGISTRY_SOURCE_ID},
+    types::{
+        InstalledServer, InstalledSkill, McpInstallConfig, McpServerListing, SkillListing,
+        MCP_REGISTRY_SOURCE_ID,
+    },
     MarketplaceService,
 };
 use serde_json::Value;

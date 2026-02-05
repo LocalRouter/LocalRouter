@@ -67,7 +67,8 @@ impl StdioBridge {
 
         // Validate client has MCP servers configured using mcp_permissions
         let client = find_client_by_id(&client_id, &config)?;
-        if !client.mcp_permissions.global.is_enabled() && client.mcp_permissions.servers.is_empty() {
+        if !client.mcp_permissions.global.is_enabled() && client.mcp_permissions.servers.is_empty()
+        {
             return Err(AppError::Config(format!(
                 "Client '{}' has no MCP servers configured. Set 'mcp_permissions' in config.yaml",
                 client_id
@@ -354,7 +355,10 @@ fn find_first_enabled_client(config: &AppConfig) -> AppResult<&Client> {
     config
         .clients
         .iter()
-        .find(|c| c.enabled && (c.mcp_permissions.global.is_enabled() || !c.mcp_permissions.servers.is_empty()))
+        .find(|c| {
+            c.enabled
+                && (c.mcp_permissions.global.is_enabled() || !c.mcp_permissions.servers.is_empty())
+        })
         .ok_or_else(|| {
             AppError::Config(
                 "No enabled clients with MCP servers found. Configure a client in config.yaml"
@@ -367,14 +371,19 @@ fn find_first_enabled_client(config: &AppConfig) -> AppResult<&Client> {
 mod tests {
     use super::*;
     use chrono::Utc;
-    use lr_config::{FirewallRules, McpPermissions, McpServerAccess, SkillsPermissions, ModelPermissions, PermissionState};
+    use lr_config::{
+        FirewallRules, McpPermissions, McpServerAccess, ModelPermissions, PermissionState,
+        SkillsPermissions,
+    };
 
     fn test_config() -> AppConfig {
         let mut config = AppConfig::default();
 
         // Create mcp_permissions with filesystem server enabled
         let mut test_mcp_permissions = McpPermissions::default();
-        test_mcp_permissions.servers.insert("filesystem".to_string(), PermissionState::Allow);
+        test_mcp_permissions
+            .servers
+            .insert("filesystem".to_string(), PermissionState::Allow);
 
         config.clients = vec![
             Client {

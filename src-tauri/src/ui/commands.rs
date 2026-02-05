@@ -1661,7 +1661,10 @@ pub async fn get_skill_tools(
 
             SkillToolInfo {
                 name: tool_name,
-                description: Some(format!("Execute {} script from {} skill", script_name, skill.metadata.name)),
+                description: Some(format!(
+                    "Execute {} script from {} skill",
+                    script_name, skill.metadata.name
+                )),
             }
         })
         .collect();

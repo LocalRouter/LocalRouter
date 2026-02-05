@@ -938,7 +938,10 @@ pub(crate) async fn handle_toggle_skill_access<R: Runtime>(
         .update(|cfg| {
             if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
                 // Check if skill is currently allowed using the new permission system
-                let is_allowed = client.skills_permissions.resolve_skill(skill_name).is_enabled();
+                let is_allowed = client
+                    .skills_permissions
+                    .resolve_skill(skill_name)
+                    .is_enabled();
                 if is_allowed {
                     // Set skill permission to Off
                     client

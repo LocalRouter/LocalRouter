@@ -490,8 +490,8 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             // Initialize marketplace service (always created, checks enabled state internally)
             let marketplace_service: Option<Arc<marketplace::MarketplaceService>> = {
                 let config = config_manager.get();
-                let data_dir = lr_utils::paths::config_dir()
-                    .unwrap_or_else(|_| std::path::PathBuf::from("."));
+                let data_dir =
+                    lr_utils::paths::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
 
                 let service =
                     marketplace::MarketplaceService::new(config.marketplace.clone(), data_dir);

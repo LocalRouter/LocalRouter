@@ -2,7 +2,9 @@
 //!
 //! Queries the official MCP server registry at registry.modelcontextprotocol.io
 
-use crate::types::{MarketplaceError, McpPackageInfo, McpRemoteInfo, McpServerListing, MCP_REGISTRY_SOURCE_ID};
+use crate::types::{
+    MarketplaceError, McpPackageInfo, McpRemoteInfo, McpServerListing, MCP_REGISTRY_SOURCE_ID,
+};
 use parking_lot::RwLock;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -228,7 +230,11 @@ fn convert_registry_server(server: RegistryServer) -> McpServerListing {
         })
         .map(|p| {
             // Get args from transport if available
-            let transport_args = p.transport.as_ref().map(|t| t.args.clone()).unwrap_or_default();
+            let transport_args = p
+                .transport
+                .as_ref()
+                .map(|t| t.args.clone())
+                .unwrap_or_default();
 
             // Generate default command based on registry type
             let (command, args) =

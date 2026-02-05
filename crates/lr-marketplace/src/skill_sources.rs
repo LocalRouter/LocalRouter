@@ -3,7 +3,9 @@
 //! Browses GitHub repos via Contents API to discover skills.
 //! Downloads skill files via raw.githubusercontent.com URLs.
 
-use crate::types::{tokenize_name, MarketplaceCache, MarketplaceError, SkillFileInfo, SkillListing};
+use crate::types::{
+    tokenize_name, MarketplaceCache, MarketplaceError, SkillFileInfo, SkillListing,
+};
 use lr_config::MarketplaceSkillSource;
 use parking_lot::RwLock;
 use serde::Deserialize;

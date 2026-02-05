@@ -98,7 +98,12 @@ pub async fn mcp_websocket_handler(
         // Filter to only servers with explicit Allow/Ask permission
         all_server_ids
             .into_iter()
-            .filter(|server_id| client.mcp_permissions.resolve_server(server_id).is_enabled())
+            .filter(|server_id| {
+                client
+                    .mcp_permissions
+                    .resolve_server(server_id)
+                    .is_enabled()
+            })
             .collect()
     };
 

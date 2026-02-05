@@ -139,7 +139,9 @@ async fn test_skills_e2e_all_tool_commands() {
     let client_id = "test-skills-client";
     let skills_permissions = {
         let mut perms = SkillsPermissions::default();
-        perms.skills.insert("get-current-time".to_string(), PermissionState::Allow);
+        perms
+            .skills
+            .insert("get-current-time".to_string(), PermissionState::Allow);
         perms
     };
 
@@ -598,7 +600,9 @@ async fn test_skill_tools_present_after_cache_hit() {
     let client_id = "cache-test-client";
     let skills_permissions = {
         let mut perms = SkillsPermissions::default();
-        perms.skills.insert("get-current-time".to_string(), PermissionState::Allow);
+        perms
+            .skills
+            .insert("get-current-time".to_string(), PermissionState::Allow);
         perms
     };
 
@@ -659,7 +663,9 @@ async fn test_skill_tools_present_with_deferred_loading() {
     let client_id = "deferred-test-client";
     let skills_permissions = {
         let mut perms = SkillsPermissions::default();
-        perms.skills.insert("get-current-time".to_string(), PermissionState::Allow);
+        perms
+            .skills
+            .insert("get-current-time".to_string(), PermissionState::Allow);
         perms
     };
 
@@ -733,7 +739,9 @@ async fn test_run_tool_blocked_before_get_info() {
     let client_id = "gate-test-client";
     let skills_permissions = {
         let mut perms = SkillsPermissions::default();
-        perms.skills.insert("get-current-time".to_string(), PermissionState::Allow);
+        perms
+            .skills
+            .insert("get-current-time".to_string(), PermissionState::Allow);
         perms
     };
 

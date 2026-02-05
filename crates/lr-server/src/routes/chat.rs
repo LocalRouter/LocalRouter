@@ -494,9 +494,9 @@ async fn check_model_firewall_permission(
                 .request_model_approval(
                     client.id.clone(),
                     client.name.clone(),
-                    model_id.clone(),     // model as "tool_name"
-                    provider.clone(),     // provider as "server_name"
-                    Some(120),            // 2 minute timeout
+                    model_id.clone(), // model as "tool_name"
+                    provider.clone(), // provider as "server_name"
+                    Some(120),        // 2 minute timeout
                 )
                 .await
                 .map_err(|e| {

@@ -161,7 +161,8 @@ pub async fn mcp_gateway_get_handler(
         };
 
         // Check MCP access using mcp_permissions (hierarchical)
-        if !client.mcp_permissions.global.is_enabled() && client.mcp_permissions.servers.is_empty() {
+        if !client.mcp_permissions.global.is_enabled() && client.mcp_permissions.servers.is_empty()
+        {
             return ApiErrorResponse::forbidden(
                 "Client has no MCP server access. Configure mcp_permissions in client settings.",
             )
@@ -176,7 +177,12 @@ pub async fn mcp_gateway_get_handler(
             // Filter to only servers with explicit Allow/Ask permission
             all_server_ids
                 .into_iter()
-                .filter(|server_id| client.mcp_permissions.resolve_server(server_id).is_enabled())
+                .filter(|server_id| {
+                    client
+                        .mcp_permissions
+                        .resolve_server(server_id)
+                        .is_enabled()
+                })
                 .collect()
         }
     };
@@ -413,7 +419,10 @@ pub async fn mcp_gateway_handler(
             // Specific server ID
             let server_id = mcp_access_header.to_string();
             test_client.mcp_permissions.global = lr_config::PermissionState::Off;
-            test_client.mcp_permissions.servers.insert(server_id.clone(), lr_config::PermissionState::Allow);
+            test_client
+                .mcp_permissions
+                .servers
+                .insert(server_id.clone(), lr_config::PermissionState::Allow);
             vec![server_id]
         };
 
@@ -424,7 +433,10 @@ pub async fn mcp_gateway_handler(
             }
             Some(skill_name) if !skill_name.is_empty() => {
                 test_client.skills_permissions.global = lr_config::PermissionState::Off;
-                test_client.skills_permissions.skills.insert(skill_name.clone(), lr_config::PermissionState::Allow);
+                test_client
+                    .skills_permissions
+                    .skills
+                    .insert(skill_name.clone(), lr_config::PermissionState::Allow);
             }
             _ => {
                 test_client.skills_permissions.global = lr_config::PermissionState::Off;
@@ -446,7 +458,8 @@ pub async fn mcp_gateway_handler(
         };
 
         // Check MCP access using mcp_permissions (hierarchical)
-        if !client.mcp_permissions.global.is_enabled() && client.mcp_permissions.servers.is_empty() {
+        if !client.mcp_permissions.global.is_enabled() && client.mcp_permissions.servers.is_empty()
+        {
             return ApiErrorResponse::forbidden(
                 "Client has no MCP server access. Configure mcp_permissions in client settings.",
             )
@@ -460,7 +473,12 @@ pub async fn mcp_gateway_handler(
             // Filter to only servers with explicit Allow/Ask permission
             all_server_ids
                 .iter()
-                .filter(|server_id| client.mcp_permissions.resolve_server(server_id).is_enabled())
+                .filter(|server_id| {
+                    client
+                        .mcp_permissions
+                        .resolve_server(server_id)
+                        .is_enabled()
+                })
                 .cloned()
                 .collect()
         };

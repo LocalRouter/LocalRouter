@@ -236,23 +236,38 @@ fn test_client_mcp_server_access() -> AppResult<()> {
 
     // Verify server was added (using new permission system)
     let updated_client = manager.get_client(&client.id).unwrap();
-    assert!(updated_client.mcp_permissions.resolve_server("server-1").is_enabled());
+    assert!(updated_client
+        .mcp_permissions
+        .resolve_server("server-1")
+        .is_enabled());
 
     // Add another server
     manager.add_mcp_server(&client.id, "server-2")?;
 
     // Verify both servers (using new permission system)
     let updated_client = manager.get_client(&client.id).unwrap();
-    assert!(updated_client.mcp_permissions.resolve_server("server-1").is_enabled());
-    assert!(updated_client.mcp_permissions.resolve_server("server-2").is_enabled());
+    assert!(updated_client
+        .mcp_permissions
+        .resolve_server("server-1")
+        .is_enabled());
+    assert!(updated_client
+        .mcp_permissions
+        .resolve_server("server-2")
+        .is_enabled());
 
     // Remove a server
     manager.remove_mcp_server(&client.id, "server-1")?;
 
     // Verify only server-2 remains (using new permission system)
     let updated_client = manager.get_client(&client.id).unwrap();
-    assert!(!updated_client.mcp_permissions.resolve_server("server-1").is_enabled());
-    assert!(updated_client.mcp_permissions.resolve_server("server-2").is_enabled());
+    assert!(!updated_client
+        .mcp_permissions
+        .resolve_server("server-1")
+        .is_enabled());
+    assert!(updated_client
+        .mcp_permissions
+        .resolve_server("server-2")
+        .is_enabled());
 
     Ok(())
 }

@@ -251,7 +251,10 @@ fn migrate_to_v6(mut config: AppConfig) -> AppResult<AppConfig> {
             // Set global to Off, then set specific providers to Allow
             client.model_permissions.global = PermissionState::Off;
             for provider in &client.allowed_llm_providers {
-                client.model_permissions.providers.insert(provider.clone(), PermissionState::Allow);
+                client
+                    .model_permissions
+                    .providers
+                    .insert(provider.clone(), PermissionState::Allow);
             }
             info!(
                 "Client '{}': migrated {} LLM providers to model_permissions",
@@ -274,7 +277,10 @@ fn migrate_to_v6(mut config: AppConfig) -> AppResult<AppConfig> {
             McpServerAccess::Specific(servers) => {
                 client.mcp_permissions.global = PermissionState::Off;
                 for server_id in servers {
-                    client.mcp_permissions.servers.insert(server_id.clone(), PermissionState::Allow);
+                    client
+                        .mcp_permissions
+                        .servers
+                        .insert(server_id.clone(), PermissionState::Allow);
                 }
                 info!(
                     "Client '{}': migrated {} MCP servers to mcp_permissions",
@@ -295,7 +301,10 @@ fn migrate_to_v6(mut config: AppConfig) -> AppResult<AppConfig> {
             SkillsAccess::Specific(skills) => {
                 client.skills_permissions.global = PermissionState::Off;
                 for skill_name in skills {
-                    client.skills_permissions.skills.insert(skill_name.clone(), PermissionState::Allow);
+                    client
+                        .skills_permissions
+                        .skills
+                        .insert(skill_name.clone(), PermissionState::Allow);
                 }
                 info!(
                     "Client '{}': migrated {} skills to skills_permissions",

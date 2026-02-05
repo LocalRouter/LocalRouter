@@ -174,9 +174,9 @@ impl FirewallManager {
         self.request_approval_internal(
             client_id,
             client_name,
-            model_name,       // model as "tool_name"
-            provider_name,    // provider as "server_name"
-            String::new(),    // no arguments for model requests
+            model_name,    // model as "tool_name"
+            provider_name, // provider as "server_name"
+            String::new(), // no arguments for model requests
             timeout_secs,
             true, // model request
         )

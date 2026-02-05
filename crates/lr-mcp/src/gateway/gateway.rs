@@ -872,8 +872,9 @@ impl McpGateway {
         if started_servers.is_empty() {
             // Check if this session has skills access and the gateway has skill support
             let session_read = session.read().await;
-            let has_skills =
-                (session_read.skills_permissions.global.is_enabled() || !session_read.skills_permissions.skills.is_empty()) && self.has_skill_support();
+            let has_skills = (session_read.skills_permissions.global.is_enabled()
+                || !session_read.skills_permissions.skills.is_empty())
+                && self.has_skill_support();
             drop(session_read);
 
             if has_skills {
@@ -1001,8 +1002,9 @@ impl McpGateway {
         // If all servers failed, check if skills can serve as fallback
         if init_results.is_empty() && !failures.is_empty() {
             let session_read = session.read().await;
-            let has_skills =
-                (session_read.skills_permissions.global.is_enabled() || !session_read.skills_permissions.skills.is_empty()) && self.has_skill_support();
+            let has_skills = (session_read.skills_permissions.global.is_enabled()
+                || !session_read.skills_permissions.skills.is_empty())
+                && self.has_skill_support();
             drop(session_read);
 
             if has_skills {
@@ -1223,7 +1225,9 @@ impl McpGateway {
         let active_server_ids = session_read.allowed_servers.clone();
         drop(session_read);
 
-        let has_skills = (skills_permissions.global.is_enabled() || !skills_permissions.skills.is_empty()) && self.has_skill_support();
+        let has_skills = (skills_permissions.global.is_enabled()
+            || !skills_permissions.skills.is_empty())
+            && self.has_skill_support();
         let skill_infos = if has_skills {
             self.collect_skill_info(&skills_permissions)
         } else {

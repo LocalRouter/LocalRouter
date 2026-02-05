@@ -800,9 +800,11 @@ pub async fn submit_firewall_approval(
                 if info.is_model_request {
                     // Add time-based model approval (1 hour)
                     // server_name contains provider, tool_name contains model_id
-                    state
-                        .model_approval_tracker
-                        .add_1_hour_approval(&info.client_id, &info.server_name, &info.tool_name);
+                    state.model_approval_tracker.add_1_hour_approval(
+                        &info.client_id,
+                        &info.server_name,
+                        &info.tool_name,
+                    );
                     tracing::info!(
                         "Added 1-hour model approval for client {} model {}__{}",
                         info.client_id,
@@ -843,8 +845,8 @@ async fn update_model_permission_for_allow_permanent(
     tracing::info!(
         "Updating model permissions for AllowPermanent: client={}, provider={}, model={}",
         info.client_id,
-        info.server_name,  // provider
-        info.tool_name     // model_id
+        info.server_name, // provider
+        info.tool_name    // model_id
     );
 
     config_manager
@@ -856,12 +858,12 @@ async fn update_model_permission_for_allow_permanent(
                     .model_permissions
                     .models
                     .insert(model_key.clone(), PermissionState::Allow);
-                tracing::info!(
-                    "Set model permission to Allow: {}",
-                    model_key
-                );
+                tracing::info!("Set model permission to Allow: {}", model_key);
             } else {
-                tracing::warn!("Client {} not found for AllowPermanent model update", info.client_id);
+                tracing::warn!(
+                    "Client {} not found for AllowPermanent model update",
+                    info.client_id
+                );
             }
         })
         .map_err(|e: lr_types::AppError| e.to_string())?;
@@ -900,7 +902,7 @@ async fn update_permission_for_allow_permanent(
                     // Tool name format: skill_skillname_tool_type_script_name
                     // We need to store it as "skillname__full_tool_name" in the permissions
                     let skill_name = &info.server_name;
-                    let key = format!("{}__{}",  skill_name, info.tool_name);
+                    let key = format!("{}__{}", skill_name, info.tool_name);
                     client
                         .skills_permissions
                         .tools
@@ -917,13 +919,10 @@ async fn update_permission_for_allow_permanent(
                         .mcp_permissions
                         .tools
                         .insert(info.tool_name.clone(), PermissionState::Allow);
-                    tracing::info!(
-                        "Set MCP tool permission to Allow: {}",
-                        info.tool_name
-                    );
+                    tracing::info!("Set MCP tool permission to Allow: {}", info.tool_name);
                 } else {
                     // Unknown format, try to set as MCP tool with server prefix
-                    let key = format!("{}__{}",  info.server_name, info.tool_name);
+                    let key = format!("{}__{}", info.server_name, info.tool_name);
                     client
                         .mcp_permissions
                         .tools
@@ -934,7 +933,10 @@ async fn update_permission_for_allow_permanent(
                     );
                 }
             } else {
-                tracing::warn!("Client {} not found for AllowPermanent update", info.client_id);
+                tracing::warn!(
+                    "Client {} not found for AllowPermanent update",
+                    info.client_id
+                );
             }
         })
         .map_err(|e: lr_types::AppError| e.to_string())?;
@@ -1282,10 +1284,7 @@ pub async fn clear_client_skills_child_permissions(
     config_manager: State<'_, ConfigManager>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    tracing::info!(
-        "Clearing Skills child permissions for client {}",
-        client_id
-    );
+    tracing::info!("Clearing Skills child permissions for client {}", client_id);
 
     let mut found = false;
     config_manager
@@ -1319,10 +1318,7 @@ pub async fn clear_client_model_child_permissions(
     config_manager: State<'_, ConfigManager>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    tracing::info!(
-        "Clearing Model child permissions for client {}",
-        client_id
-    );
+    tracing::info!("Clearing Model child permissions for client {}", client_id);
 
     let mut found = false;
     config_manager
