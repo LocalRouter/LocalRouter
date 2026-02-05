@@ -10,6 +10,10 @@
 //! https://github.com/lm-sys/RouteLLM
 //! See tests/fixtures/LICENSE for attribution details.
 
+// The benchmark data contains win rates from Python that happen to be close to mathematical
+// constants (e.g., 0.7854 ≈ π/4). These are actual test values, not approximations of constants.
+#![allow(clippy::approx_constant)]
+
 use crate::candle_router::CandleRouter;
 use csv::Reader;
 use serde::{Deserialize, Deserializer};
@@ -37,9 +41,15 @@ where
 #[derive(Debug, Deserialize)]
 struct BenchmarkRecord {
     prompt: String,
-    #[serde(rename = "mistralai/Mixtral-8x7B-Instruct-v0.1", deserialize_with = "deserialize_python_bool")]
+    #[serde(
+        rename = "mistralai/Mixtral-8x7B-Instruct-v0.1",
+        deserialize_with = "deserialize_python_bool"
+    )]
     weak_model_correct: bool,
-    #[serde(rename = "gpt-4-1106-preview", deserialize_with = "deserialize_python_bool")]
+    #[serde(
+        rename = "gpt-4-1106-preview",
+        deserialize_with = "deserialize_python_bool"
+    )]
     strong_model_correct: bool,
 }
 
@@ -199,11 +209,13 @@ mod tests {
         let (model_path, tokenizer_path) = get_model_paths();
 
         println!("Loading router from {:?}", model_path);
-        let router = CandleRouter::new(&model_path, &tokenizer_path)
-            .expect("Failed to load router");
+        let router =
+            CandleRouter::new(&model_path, &tokenizer_path).expect("Failed to load router");
 
         // Load MMLU abstract algebra benchmark
-        let benchmark_path = Path::new("/Users/matus/dev/RouteLLM/routellm/evals/mmlu/responses/mmlu_abstract_algebra.csv");
+        let benchmark_path = Path::new(
+            "/Users/matus/dev/RouteLLM/routellm/evals/mmlu/responses/mmlu_abstract_algebra.csv",
+        );
 
         if !benchmark_path.exists() {
             println!("Benchmark file not found at {:?}", benchmark_path);
@@ -211,8 +223,7 @@ mod tests {
             return;
         }
 
-        let records = load_benchmark_csv(benchmark_path)
-            .expect("Failed to load benchmark CSV");
+        let records = load_benchmark_csv(benchmark_path).expect("Failed to load benchmark CSV");
 
         println!("Loaded {} benchmark records", records.len());
 
@@ -231,8 +242,8 @@ mod tests {
         let (model_path, tokenizer_path) = get_model_paths();
 
         println!("Loading router from {:?}", model_path);
-        let router = CandleRouter::new(&model_path, &tokenizer_path)
-            .expect("Failed to load router");
+        let router =
+            CandleRouter::new(&model_path, &tokenizer_path).expect("Failed to load router");
 
         // Load GSM8K benchmark from local fixtures
         let benchmark_path = get_fixtures_path().join("gsm8k_sample.csv");
@@ -244,10 +255,12 @@ mod tests {
             );
         }
 
-        let records = load_benchmark_csv(&benchmark_path)
-            .expect("Failed to load benchmark CSV");
+        let records = load_benchmark_csv(&benchmark_path).expect("Failed to load benchmark CSV");
 
-        println!("Loaded {} benchmark records from local fixture", records.len());
+        println!(
+            "Loaded {} benchmark records from local fixture",
+            records.len()
+        );
 
         // Test with balanced threshold (0.5 - the default)
         let results = evaluate_benchmark(&router, &records, 0.5);
@@ -269,7 +282,10 @@ mod tests {
         );
 
         println!("\nAssertions passed:");
-        println!("  Quality retention: {:.1}% (>= 80%)", quality_retention * 100.0);
+        println!(
+            "  Quality retention: {:.1}% (>= 80%)",
+            quality_retention * 100.0
+        );
         println!("  Cost savings: {:.1}% (>= 25%)", cost_savings * 100.0);
     }
 
@@ -280,8 +296,8 @@ mod tests {
         let (model_path, tokenizer_path) = get_model_paths();
 
         println!("Loading router from {:?}", model_path);
-        let router = CandleRouter::new(&model_path, &tokenizer_path)
-            .expect("Failed to load router");
+        let router =
+            CandleRouter::new(&model_path, &tokenizer_path).expect("Failed to load router");
 
         // Load GSM8K benchmark from local fixtures
         let benchmark_path = get_fixtures_path().join("gsm8k_sample.csv");
@@ -290,8 +306,7 @@ mod tests {
             panic!("Benchmark fixture not found at {:?}", benchmark_path);
         }
 
-        let records = load_benchmark_csv(&benchmark_path)
-            .expect("Failed to load benchmark CSV");
+        let records = load_benchmark_csv(&benchmark_path).expect("Failed to load benchmark CSV");
 
         println!("Loaded {} benchmark records\n", records.len());
 
@@ -299,19 +314,28 @@ mod tests {
         let thresholds: Vec<f32> = (1..=9).map(|i| i as f32 * 0.1).collect();
 
         println!("=== Threshold Calibration Sweep ===\n");
-        println!("{:>10} | {:>10} | {:>10} | {:>10} | {:>12}",
-                 "Threshold", "Strong %", "Weak %", "Quality %", "Correctness");
+        println!(
+            "{:>10} | {:>10} | {:>10} | {:>10} | {:>12}",
+            "Threshold", "Strong %", "Weak %", "Quality %", "Correctness"
+        );
         println!("{}", "-".repeat(62));
 
         for threshold in thresholds {
             let results = evaluate_benchmark(&router, &records, threshold);
 
-            let strong_pct = 100.0 * results.strong_model_count as f64 / results.total_prompts as f64;
+            let strong_pct =
+                100.0 * results.strong_model_count as f64 / results.total_prompts as f64;
             let weak_pct = 100.0 * results.weak_model_count as f64 / results.total_prompts as f64;
             let quality_pct = 100.0 * results.actual_correctness / results.strong_baseline;
 
-            println!("{:>10.2} | {:>9.1}% | {:>9.1}% | {:>9.1}% | {:>11.2}%",
-                     threshold, strong_pct, weak_pct, quality_pct, results.actual_correctness * 100.0);
+            println!(
+                "{:>10.2} | {:>9.1}% | {:>9.1}% | {:>9.1}% | {:>11.2}%",
+                threshold,
+                strong_pct,
+                weak_pct,
+                quality_pct,
+                results.actual_correctness * 100.0
+            );
         }
 
         println!("\n=== Recommended Thresholds ===\n");
@@ -330,12 +354,11 @@ mod tests {
         const DEFAULT_THRESHOLD: f32 = 0.5; // Must match lr-config default
 
         let (model_path, tokenizer_path) = get_model_paths();
-        let router = CandleRouter::new(&model_path, &tokenizer_path)
-            .expect("Failed to load router");
+        let router =
+            CandleRouter::new(&model_path, &tokenizer_path).expect("Failed to load router");
 
         let benchmark_path = get_fixtures_path().join("gsm8k_sample.csv");
-        let records = load_benchmark_csv(&benchmark_path)
-            .expect("Failed to load benchmark CSV");
+        let records = load_benchmark_csv(&benchmark_path).expect("Failed to load benchmark CSV");
 
         let results = evaluate_benchmark(&router, &records, DEFAULT_THRESHOLD);
 
@@ -369,8 +392,8 @@ mod tests {
         let (model_path, tokenizer_path) = get_model_paths();
 
         println!("Loading router from {:?}", model_path);
-        let router = CandleRouter::new(&model_path, &tokenizer_path)
-            .expect("Failed to load router");
+        let router =
+            CandleRouter::new(&model_path, &tokenizer_path).expect("Failed to load router");
 
         let mmlu_dir = Path::new("/Users/matus/dev/RouteLLM/routellm/evals/mmlu/responses");
 
@@ -409,8 +432,8 @@ mod tests {
         let (model_path, tokenizer_path) = get_model_paths();
 
         println!("Loading router from {:?}", model_path);
-        let router = CandleRouter::new(&model_path, &tokenizer_path)
-            .expect("Failed to load router");
+        let router =
+            CandleRouter::new(&model_path, &tokenizer_path).expect("Failed to load router");
 
         // Test prompts with known expected behavior
         let test_cases = vec![
@@ -468,8 +491,8 @@ mod tests {
         let (model_path, tokenizer_path) = get_model_paths();
 
         println!("Loading router from {:?}", model_path);
-        let router = CandleRouter::new(&model_path, &tokenizer_path)
-            .expect("Failed to load router");
+        let router =
+            CandleRouter::new(&model_path, &tokenizer_path).expect("Failed to load router");
 
         // These prompts are from the MMLU benchmark
         // We can compare our win_rates with what Python produces
@@ -504,8 +527,8 @@ mod tests {
         let (model_path, tokenizer_path) = get_model_paths();
 
         println!("Loading router from {:?}", model_path);
-        let router = CandleRouter::new(&model_path, &tokenizer_path)
-            .expect("Failed to load router");
+        let router =
+            CandleRouter::new(&model_path, &tokenizer_path).expect("Failed to load router");
 
         // Same prompts as Python test
         let prompts = vec![
@@ -519,7 +542,10 @@ mod tests {
         ];
 
         println!("\n=== Rust vs Python Comparison ===\n");
-        println!("{:<60} | {:>10} | {:>10} | {:>10}", "Prompt", "Python", "Rust", "Diff");
+        println!(
+            "{:<60} | {:>10} | {:>10} | {:>10}",
+            "Prompt", "Python", "Rust", "Diff"
+        );
         println!("{}", "-".repeat(100));
 
         let mut total_diff: f32 = 0.0;
@@ -545,7 +571,10 @@ mod tests {
         }
 
         println!();
-        println!("Average absolute difference: {:.4}", total_diff / prompts.len() as f32);
+        println!(
+            "Average absolute difference: {:.4}",
+            total_diff / prompts.len() as f32
+        );
         println!();
 
         if total_diff / prompts.len() as f32 > 0.1 {
@@ -557,7 +586,10 @@ mod tests {
     }
 
     fn print_results(results: &BenchmarkResults, benchmark_name: &str) {
-        println!("\n======== {} Results (threshold={:.2}) ========", benchmark_name, results.threshold);
+        println!(
+            "\n======== {} Results (threshold={:.2}) ========",
+            benchmark_name, results.threshold
+        );
         println!("Total prompts: {}", results.total_prompts);
         println!(
             "Model distribution: {} strong / {} weak ({:.1}% strong)",
@@ -568,16 +600,28 @@ mod tests {
         println!("Average win_rate: {:.4}", results.avg_win_rate);
         println!();
         println!("Baselines:");
-        println!("  Weak model (Mixtral): {:.2}%", results.weak_baseline * 100.0);
+        println!(
+            "  Weak model (Mixtral): {:.2}%",
+            results.weak_baseline * 100.0
+        );
         println!(
             "  Strong model (GPT-4): {:.2}%",
             results.strong_baseline * 100.0
         );
-        println!("  Optimal (ceiling):    {:.2}%", results.optimal_correctness * 100.0);
+        println!(
+            "  Optimal (ceiling):    {:.2}%",
+            results.optimal_correctness * 100.0
+        );
         println!();
         println!("Router performance:");
-        println!("  Actual correctness:   {:.2}%", results.actual_correctness * 100.0);
-        println!("  Routing accuracy:     {:.2}%", results.routing_accuracy * 100.0);
+        println!(
+            "  Actual correctness:   {:.2}%",
+            results.actual_correctness * 100.0
+        );
+        println!(
+            "  Routing accuracy:     {:.2}%",
+            results.routing_accuracy * 100.0
+        );
         println!();
 
         // Calculate quality retention
