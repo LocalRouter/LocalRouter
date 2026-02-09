@@ -65,3 +65,5 @@ tests/e2e/playwright-report/
 tests/e2e/test-results/
 playwright-report/
 test-results/
+
+.mcp.json
