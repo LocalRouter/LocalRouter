@@ -404,6 +404,12 @@ pub struct AppState {
     pub mcp_notification_broadcast:
         Arc<tokio::sync::broadcast::Sender<(String, JsonRpcNotification)>>,
 
+    /// Broadcast channel for per-client permission change notifications
+    /// Used to notify connected MCP clients when their permissions change
+    /// Format: (client_id, notification)
+    pub client_notification_broadcast:
+        Arc<tokio::sync::broadcast::Sender<(String, JsonRpcNotification)>>,
+
     /// SSE connection manager for MCP HTTP+SSE transport
     /// Tracks active SSE connections and routes responses to the correct stream
     pub sse_connection_manager: Arc<SseConnectionManager>,
@@ -457,6 +463,9 @@ impl AppState {
         // Capacity of 1000 messages - old messages dropped if no subscribers are reading fast enough
         let (notification_tx, _rx) = tokio::sync::broadcast::channel(1000);
 
+        // Create broadcast channel for per-client permission change notifications
+        let (client_notification_tx, _) = tokio::sync::broadcast::channel(100);
+
         // Create placeholder MCP manager and gateway (will be replaced by with_mcp)
         let mcp_server_manager = Arc::new(McpServerManager::new());
         let mcp_gateway = Arc::new(McpGateway::new(
@@ -483,6 +492,7 @@ impl AppState {
             routellm_service: None,
             tray_graph_manager: Arc::new(RwLock::new(None)),
             mcp_notification_broadcast: Arc::new(notification_tx),
+            client_notification_broadcast: Arc::new(client_notification_tx),
             sse_connection_manager: Arc::new(SseConnectionManager::new()),
             mcp_notification_handlers_registered: Arc::new(DashMap::new()),
             health_cache: Arc::new(HealthCacheManager::new()),

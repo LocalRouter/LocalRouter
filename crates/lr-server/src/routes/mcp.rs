@@ -160,37 +160,37 @@ pub async fn mcp_gateway_get_handler(
             Err(e) => return e.into_response(),
         };
 
-        // Check MCP access using mcp_permissions (hierarchical)
-        if !client.mcp_permissions.global.is_enabled() && client.mcp_permissions.servers.is_empty()
-        {
+        // Check MCP or skills access using hierarchical permissions
+        let has_mcp_access = client.mcp_permissions.has_any_access();
+        let has_skills_access = (client.skills_permissions.global.is_enabled()
+            || !client.skills_permissions.skills.is_empty())
+            && state.mcp_gateway.has_skill_support();
+
+        if !has_mcp_access && !has_skills_access {
             return ApiErrorResponse::forbidden(
-                "Client has no MCP server access. Configure mcp_permissions in client settings.",
+                "Client has no MCP server or skills access. Configure permissions in client settings.",
             )
             .into_response();
         }
 
         // Get allowed servers based on mcp_permissions
-        // If global is enabled, allow all servers; otherwise filter by server-level permissions
+        // If global is enabled, allow all servers; otherwise filter by permissions
         if client.mcp_permissions.global.is_enabled() {
             all_server_ids
         } else {
-            // Filter to only servers with explicit Allow/Ask permission
+            // Filter to servers with enabled permission at server or sub-item level
             all_server_ids
                 .into_iter()
-                .filter(|server_id| {
-                    client
-                        .mcp_permissions
-                        .resolve_server(server_id)
-                        .is_enabled()
-                })
+                .filter(|server_id| client.mcp_permissions.has_any_enabled_for_server(server_id))
                 .collect()
         }
     };
 
     tracing::debug!(
-        "Unified SSE connection established for client {} with {} servers",
+        "Unified SSE connection established for client {} with {} servers (skills support: {})",
         client_id,
-        allowed_servers.len()
+        allowed_servers.len(),
+        state.mcp_gateway.has_skill_support()
     );
 
     // Register with SSE connection manager to receive responses
@@ -198,6 +198,9 @@ pub async fn mcp_gateway_get_handler(
 
     // Subscribe to notification broadcast
     let mut notification_rx = state.mcp_notification_broadcast.subscribe();
+
+    // Subscribe to per-client permission change notifications
+    let mut client_notification_rx = state.client_notification_broadcast.subscribe();
 
     // Clone for cleanup
     let client_id_cleanup = client_id.clone();
@@ -307,6 +310,31 @@ pub async fn mcp_gateway_get_handler(
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                             tracing::debug!("Notification broadcast closed");
+                            break;
+                        }
+                    }
+                }
+
+                // Handle per-client permission change notifications
+                client_notif_result = client_notification_rx.recv() => {
+                    match client_notif_result {
+                        Ok((target_client_id, notification)) => {
+                            if target_client_id == client_id {
+                                if let Ok(json) = serde_json::to_string(&notification) {
+                                    tracing::info!(
+                                        "SSE: sending permission change notification to client {}: {}",
+                                        client_id,
+                                        notification.method
+                                    );
+                                    yield Ok::<_, Infallible>(Event::default().event("message").data(json));
+                                }
+                            }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                            tracing::warn!("Client notification channel lagged for {}, missed {} messages", client_id, n);
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                            tracing::debug!("Client notification broadcast closed");
                             break;
                         }
                     }
@@ -443,11 +471,35 @@ pub async fn mcp_gateway_handler(
             }
         }
 
+        // Determine if this is "All MCPs & Skills" mode vs direct mode
+        let is_all_mode = mcp_access_header.eq_ignore_ascii_case("all")
+            && skills_access_header
+                .as_ref()
+                .map_or(false, |s| s.eq_ignore_ascii_case("all"));
+
+        // Marketplace:
+        // - "All" mode: enable only if globally enabled
+        // - Direct mode (specific server/skill): disabled
+        if is_all_mode && state.config_manager.get().marketplace.enabled {
+            test_client.marketplace_permission = lr_config::PermissionState::Allow;
+        } else {
+            test_client.marketplace_permission = lr_config::PermissionState::Off;
+        }
+
+        // Deferred loading:
+        // - "All" mode: use header setting
+        // - Direct mode: always off
+        if !is_all_mode {
+            test_client.mcp_deferred_loading = false;
+        }
+
         tracing::info!(
-            "Internal test client: deferred_loading={}, mcp_access={}, skills_access={:?}",
-            deferred_loading_header,
+            "Internal test client: deferred_loading={}, mcp_access={}, skills_access={:?}, marketplace={:?}, is_all_mode={}",
+            test_client.mcp_deferred_loading,
             mcp_access_header,
             skills_access_header,
+            test_client.marketplace_permission,
+            is_all_mode,
         );
         (test_client, allowed)
     } else {
@@ -457,11 +509,15 @@ pub async fn mcp_gateway_handler(
             Err(e) => return e.into_response(),
         };
 
-        // Check MCP access using mcp_permissions (hierarchical)
-        if !client.mcp_permissions.global.is_enabled() && client.mcp_permissions.servers.is_empty()
-        {
+        // Check MCP or skills access using hierarchical permissions
+        let has_mcp_access = client.mcp_permissions.has_any_access();
+        let has_skills_access = (client.skills_permissions.global.is_enabled()
+            || !client.skills_permissions.skills.is_empty())
+            && state.mcp_gateway.has_skill_support();
+
+        if !has_mcp_access && !has_skills_access {
             return ApiErrorResponse::forbidden(
-                "Client has no MCP server access. Configure mcp_permissions in client settings.",
+                "Client has no MCP server or skills access. Configure permissions in client settings.",
             )
             .into_response();
         }
@@ -470,15 +526,10 @@ pub async fn mcp_gateway_handler(
         let allowed = if client.mcp_permissions.global.is_enabled() {
             all_server_ids.clone()
         } else {
-            // Filter to only servers with explicit Allow/Ask permission
+            // Filter to servers with enabled permission at server or sub-item level
             all_server_ids
                 .iter()
-                .filter(|server_id| {
-                    client
-                        .mcp_permissions
-                        .resolve_server(server_id)
-                        .is_enabled()
-                })
+                .filter(|server_id| client.mcp_permissions.has_any_enabled_for_server(server_id))
                 .cloned()
                 .collect()
         };
@@ -488,11 +539,12 @@ pub async fn mcp_gateway_handler(
 
     let request_id = request.id.clone();
     tracing::info!(
-        "Gateway POST request from client {}: method={}, request_id={:?}, servers={}",
+        "Gateway POST request from client {}: method={}, request_id={:?}, servers={}, skills_support={}",
         client_id,
         request.method,
         request_id,
-        allowed_servers.len()
+        allowed_servers.len(),
+        state.mcp_gateway.has_skill_support()
     );
 
     // Merge global and per-client roots
@@ -630,8 +682,8 @@ pub async fn mcp_gateway_handler(
             allowed_servers,
             client.mcp_deferred_loading,
             roots,
+            client.mcp_permissions.clone(),
             client.skills_permissions.clone(),
-            client.firewall.clone(),
             client.name.clone(),
             client.marketplace_permission.clone(),
             request,

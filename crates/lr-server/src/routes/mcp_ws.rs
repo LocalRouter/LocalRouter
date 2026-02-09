@@ -131,6 +131,9 @@ async fn handle_websocket(
     // Subscribe to broadcast channel
     let mut notification_rx = state.mcp_notification_broadcast.subscribe();
 
+    // Subscribe to per-client permission change notifications
+    let mut client_notification_rx = state.client_notification_broadcast.subscribe();
+
     // Create channel for sending messages from multiple tasks
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Message>();
 
@@ -183,6 +186,37 @@ async fn handle_websocket(
                         }
                         Err(_) => {
                             // Broadcast channel closed
+                            break;
+                        }
+                    }
+                }
+                // Handle per-client permission change notifications
+                client_result = client_notification_rx.recv() => {
+                    match client_result {
+                        Ok((target_client_id, notification)) => {
+                            if target_client_id == client_id_forward {
+                                let text = match serde_json::to_string(&notification) {
+                                    Ok(t) => t,
+                                    Err(e) => {
+                                        tracing::error!("Failed to serialize client notification: {}", e);
+                                        continue;
+                                    }
+                                };
+
+                                tracing::info!(
+                                    "WS: sending permission change notification to client {}: {}",
+                                    client_id_forward,
+                                    notification.method
+                                );
+
+                                if tx_clone.send(Message::Text(text)).is_err() {
+                                    tracing::debug!("Send channel closed for client {}", client_id_forward);
+                                    break;
+                                }
+                            }
+                        }
+                        Err(_) => {
+                            // Client notification broadcast channel closed
                             break;
                         }
                     }

@@ -400,7 +400,7 @@ async fn check_model_firewall_permission(
     client_context: Option<&ClientAuthContext>,
     request: &ChatCompletionRequest,
 ) -> ApiResult<()> {
-    use lr_config::PermissionState;
+    use lr_mcp::gateway::access_control::{self, AccessDecision};
     use lr_mcp::gateway::firewall::FirewallApprovalAction;
 
     // If no client context, skip firewall (using API key auth without client)
@@ -440,11 +440,12 @@ async fn check_model_firewall_permission(
         (matching_model.provider.clone(), matching_model.id.clone())
     };
 
-    // Resolve model permission
-    let permission = client.model_permissions.resolve_model(&provider, &model_id);
+    // Resolve model access decision
+    let decision =
+        access_control::check_model_access(&client.model_permissions, &provider, &model_id);
 
-    match permission {
-        PermissionState::Allow => {
+    match decision {
+        AccessDecision::Allow => {
             // Model is allowed, proceed
             tracing::debug!(
                 "Model firewall: {} allowed for client {}",
@@ -453,7 +454,7 @@ async fn check_model_firewall_permission(
             );
             Ok(())
         }
-        PermissionState::Off => {
+        AccessDecision::Deny => {
             // Model is disabled
             tracing::warn!(
                 "Model firewall: {} denied for client {} (permission: Off)",
@@ -466,7 +467,7 @@ async fn check_model_firewall_permission(
             ))
             .with_param("model"))
         }
-        PermissionState::Ask => {
+        AccessDecision::Ask => {
             // Model requires approval - check time-based approvals first
             if state
                 .model_approval_tracker
@@ -533,7 +534,9 @@ async fn check_model_firewall_permission(
                     );
                     Ok(())
                 }
-                FirewallApprovalAction::Deny => {
+                FirewallApprovalAction::Deny
+                | FirewallApprovalAction::DenySession
+                | FirewallApprovalAction::DenyAlways => {
                     tracing::warn!(
                         "Model firewall: {} denied by user for client {}",
                         request.model,
