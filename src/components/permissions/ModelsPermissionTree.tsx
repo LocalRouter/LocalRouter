@@ -47,7 +47,11 @@ export function ModelsPermissionTree({
       const parts = key.split("__")
 
       if (parts.length === 1) {
-        // Provider level
+        // Provider level - also clear all child permissions (models)
+        await invoke("clear_client_model_child_permissions", {
+          clientId,
+          provider: key,
+        })
         await invoke("set_client_model_permission", {
           clientId,
           level: "provider",

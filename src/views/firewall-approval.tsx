@@ -23,7 +23,7 @@ interface ApprovalDetails {
   is_model_request?: boolean
 }
 
-type ApprovalAction = "deny" | "allow_once" | "allow_session" | "allow_1_hour" | "allow_permanent"
+type ApprovalAction = "deny" | "deny_session" | "deny_always" | "allow_once" | "allow_session" | "allow_1_hour" | "allow_permanent"
 
 // Parse JSON arguments into key-value pairs for display
 function parseArguments(jsonStr: string): { key: string; value: string }[] {
@@ -258,14 +258,38 @@ export function FirewallApproval() {
 
         {/* Action Buttons */}
         <div className="flex gap-2 pt-3 mt-auto flex-shrink-0">
-          <Button
-            variant="destructive"
-            className="flex-1 h-10 font-bold"
-            onClick={() => handleAction("deny")}
-            disabled={submitting}
-          >
-            Deny
-          </Button>
+          {/* Split button: Deny Once (main) + dropdown for other options */}
+          <div className="flex flex-1">
+            <Button
+              variant="destructive"
+              className="flex-1 h-10 rounded-r-none font-bold"
+              onClick={() => handleAction("deny")}
+              disabled={submitting}
+            >
+              Deny
+            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="destructive"
+                  className="h-10 px-2 rounded-l-none border-l border-red-700"
+                  disabled={submitting}
+                >
+                  <ChevronDown className="h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start">
+                {!details.is_model_request && (
+                  <DropdownMenuItem onClick={() => handleAction("deny_session")}>
+                    Deny for Session
+                  </DropdownMenuItem>
+                )}
+                <DropdownMenuItem onClick={() => handleAction("deny_always")}>
+                  Deny Always
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
 
           {/* Split button: Allow Once (main) + dropdown for other options */}
           <div className="flex flex-1">

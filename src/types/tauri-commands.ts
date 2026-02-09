@@ -28,27 +28,10 @@
 // =============================================================================
 
 /**
- * Unified permission state for firewall rules.
+ * Unified permission state for access control.
  * Rust: crates/lr-config/src/types.rs - PermissionState enum
  */
 export type PermissionState = 'allow' | 'ask' | 'off'
-
-/**
- * Firewall policy for individual rules.
- * Rust: crates/lr-config/src/types.rs - FirewallPolicy enum
- */
-export type FirewallPolicy = 'allow' | 'ask' | 'deny'
-
-/**
- * Per-client firewall rules for MCP tools/skills.
- * Rust: crates/lr-config/src/types.rs - FirewallRules struct
- */
-export interface FirewallRules {
-  default_policy: FirewallPolicy
-  mcp_tools: Record<string, FirewallPolicy>
-  mcp_resources: Record<string, FirewallPolicy>
-  skill_tools: Record<string, FirewallPolicy>
-}
 
 /**
  * Hierarchical MCP permission system.
@@ -100,7 +83,6 @@ export interface ClientInfo {
   mcp_deferred_loading: boolean
   created_at: string
   last_used: string | null
-  firewall: FirewallRules
   mcp_permissions: McpPermissions
   skills_permissions: SkillsPermissions
   model_permissions: ModelPermissions
@@ -928,9 +910,9 @@ export interface PendingApprovalInfo {
 
 /**
  * Firewall approval action.
- * Rust: src-tauri/src/ui/commands_clients.rs - FirewallApprovalAction enum
+ * Rust: crates/lr-mcp/src/gateway/firewall.rs - FirewallApprovalAction enum
  */
-export type FirewallApprovalAction = 'allow_once' | 'allow_always' | 'deny_once' | 'deny_always'
+export type FirewallApprovalAction = 'deny' | 'deny_session' | 'deny_always' | 'allow_once' | 'allow_session' | 'allow_1_hour' | 'allow_permanent'
 
 // =============================================================================
 // Active Connections Types
@@ -1206,16 +1188,22 @@ export interface SetClientMarketplacePermissionParams {
 /** Params for clear_client_mcp_child_permissions */
 export interface ClearClientMcpChildPermissionsParams {
   clientId: string
+  /** If provided, only clear children of this server. If null, clear all children. */
+  serverId?: string | null
 }
 
 /** Params for clear_client_skills_child_permissions */
 export interface ClearClientSkillsChildPermissionsParams {
   clientId: string
+  /** If provided, only clear children of this skill. If null, clear all children. */
+  skillName?: string | null
 }
 
 /** Params for clear_client_model_child_permissions */
 export interface ClearClientModelChildPermissionsParams {
   clientId: string
+  /** If provided, only clear children of this provider. If null, clear all children. */
+  provider?: string | null
 }
 
 // =============================================================================
@@ -1256,6 +1244,17 @@ export interface UpdateProviderInstanceParams {
   instanceName: string
   providerType: string
   config: Record<string, string>
+}
+
+/** Params for rename_provider_instance */
+export interface RenameProviderInstanceParams {
+  instanceName: string
+  newName: string
+}
+
+/** Params for get_provider_api_key */
+export interface GetProviderApiKeyParams {
+  instanceName: string
 }
 
 /** Params for remove_provider_instance */
@@ -1720,25 +1719,6 @@ export interface GetOAuthClientLinkedServersParams {
 // Firewall Commands
 // Rust: src-tauri/src/ui/commands_clients.rs
 // =============================================================================
-
-/** Params for get_client_firewall_rules */
-export interface GetClientFirewallRulesParams {
-  clientId: string
-}
-
-/** Params for set_client_default_firewall_policy */
-export interface SetClientDefaultFirewallPolicyParams {
-  clientId: string
-  policy: FirewallPolicy
-}
-
-/** Params for set_client_firewall_rule */
-export interface SetClientFirewallRuleParams {
-  clientId: string
-  ruleType: string
-  key: string
-  policy?: FirewallPolicy | null
-}
 
 /** Params for submit_firewall_approval */
 export interface SubmitFirewallApprovalParams {

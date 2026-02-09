@@ -170,35 +170,29 @@ function buildNodes(
   return nodes
 }
 
-// Determine edge style based on firewall rules for a client's connection
-function getFirewallEdgeStyle(
+// Determine edge style based on permission state for a client's connection
+function getPermissionEdgeStyle(
   client: Client,
   targetType: 'server' | 'skill',
   targetId: string,
   isConnected: boolean
 ): Record<string, string | number> {
-  const fw = client.firewall
-  if (!fw || !fw.default_policy) {
-    // No firewall rules — use default colors
-    const defaultColor = targetType === 'server' ? '#10b981' : '#f59e0b'
-    return {
-      stroke: isConnected ? defaultColor : '#64748b',
-      strokeWidth: isConnected ? 2 : 1,
-    }
+  // Resolve permission state from the hierarchical permissions
+  let state: string
+  if (targetType === 'server') {
+    state = client.mcp_permissions?.servers?.[targetId] ?? client.mcp_permissions?.global ?? 'off'
+  } else {
+    state = client.skills_permissions?.skills?.[targetId] ?? client.skills_permissions?.global ?? 'off'
   }
 
-  // Check for server/skill-level rule
-  const rules = targetType === 'server' ? fw.server_rules : fw.skill_rules
-  const policy = rules?.[targetId] ?? fw.default_policy
-
-  if (policy === 'deny') {
+  if (state === 'off') {
     return {
       stroke: '#ef4444',
       strokeWidth: isConnected ? 2 : 1,
       strokeDasharray: '5,5',
     }
   }
-  if (policy === 'ask') {
+  if (state === 'ask') {
     return {
       stroke: isConnected ? '#f59e0b' : '#64748b',
       strokeWidth: isConnected ? 2 : 1,
@@ -269,7 +263,7 @@ function buildEdges(
           .map(([id]) => id)
 
     clientMcpServers.forEach((serverId) => {
-      const firewallStyle = getFirewallEdgeStyle(client, 'server', serverId, isConnected)
+      const firewallStyle = getPermissionEdgeStyle(client, 'server', serverId, isConnected)
       edges.push({
         id: `edge-${client.id}-mcp-${serverId}`,
         source: `client-${client.id}`,
@@ -290,7 +284,7 @@ function buildEdges(
           .map(([name]) => name)
 
     clientSkills.forEach((skillName) => {
-      const firewallStyle = getFirewallEdgeStyle(client, 'skill', skillName, isConnected)
+      const firewallStyle = getPermissionEdgeStyle(client, 'skill', skillName, isConnected)
       edges.push({
         id: `edge-${client.id}-skill-${skillName}`,
         source: `client-${client.id}`,

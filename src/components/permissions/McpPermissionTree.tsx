@@ -88,7 +88,11 @@ export function McpPermissionTree({ clientId, permissions, onUpdate }: McpPermis
       const parts = key.split("__")
 
       if (parts.length === 1) {
-        // Server level
+        // Server level - also clear all child permissions (tools/resources/prompts)
+        await invoke("clear_client_mcp_child_permissions", {
+          clientId,
+          serverId: key,
+        })
         await invoke("set_client_mcp_permission", {
           clientId,
           level: "server",

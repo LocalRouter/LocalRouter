@@ -76,13 +76,6 @@ export interface Client {
   skills_permissions: SkillsPermissions
   model_permissions: ModelPermissions
   marketplace_permission: PermissionState
-  firewall?: {
-    default_policy?: 'allow' | 'ask' | 'deny'
-    server_rules?: Record<string, 'allow' | 'ask' | 'deny'>
-    tool_rules?: Record<string, 'allow' | 'ask' | 'deny'>
-    skill_rules?: Record<string, 'allow' | 'ask' | 'deny'>
-    skill_tool_rules?: Record<string, 'allow' | 'ask' | 'deny'>
-  }
 }
 
 // Provider info from backend

@@ -165,7 +165,7 @@ export function ClientMcpTab({ client, onUpdate }: McpTabProps) {
               <Info className="h-5 w-5 text-blue-600 dark:text-blue-400 mt-0.5 shrink-0" />
               <div className="space-y-2">
                 <p className="text-sm font-medium text-blue-900 dark:text-blue-300">
-                  How Deferred Loading Works
+                  How it works
                 </p>
                 <p className="text-sm text-blue-900 dark:text-blue-400">
                   Deferred loading reduces the initial token overhead by not sending all
@@ -182,18 +182,6 @@ export function ClientMcpTab({ client, onUpdate }: McpTabProps) {
             </div>
           </div>
 
-          {deferredLoading && (
-            <div className="p-3 rounded-lg border border-amber-600/50 bg-amber-500/10">
-              <p className="text-sm text-amber-900 dark:text-amber-400">
-                This feature is experimental and may not work with all clients.
-                Ensure your client properly handles the{" "}
-                <code className="px-1 py-0.5 rounded bg-muted text-xs">
-                  tools/listChanged
-                </code>{" "}
-                notification before enabling.
-              </p>
-            </div>
-          )}
         </CardContent>
       </Card>
     </div>

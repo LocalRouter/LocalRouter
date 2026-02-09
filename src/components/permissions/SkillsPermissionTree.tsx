@@ -87,7 +87,11 @@ export function SkillsPermissionTree({ clientId, permissions, onUpdate }: Skills
       const parts = key.split("__")
 
       if (parts.length === 1) {
-        // Skill level
+        // Skill level - also clear all child permissions (tools)
+        await invoke("clear_client_skills_child_permissions", {
+          clientId,
+          skillName: key,
+        })
         await invoke("set_client_skills_permission", {
           clientId,
           level: "skill",

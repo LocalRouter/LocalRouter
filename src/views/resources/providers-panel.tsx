@@ -1,8 +1,8 @@
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect, useCallback, useRef } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
 import { toast } from "sonner"
-import { CheckCircle, XCircle, AlertCircle, Plus, Loader2, RefreshCw, FlaskConical, Grid, Settings, ArrowLeft } from "lucide-react"
+import { CheckCircle, XCircle, AlertCircle, Plus, Loader2, RefreshCw, FlaskConical, Grid, Settings, ArrowLeft, Eye, EyeOff } from "lucide-react"
 import { ProvidersIcon } from "@/components/icons/category-icons"
 import { Badge } from "@/components/ui/Badge"
 import { Button } from "@/components/ui/Button"
@@ -133,8 +133,13 @@ export function ProvidersPanel({
     }
   }, [])
 
-  // Reset detail tab when selection changes
+  // Reset detail tab when a different provider is selected (not during rename)
+  const skipTabResetRef = useRef(false)
   useEffect(() => {
+    if (skipTabResetRef.current) {
+      skipTabResetRef.current = false
+      return
+    }
     setDetailTab("info")
   }, [selectedId])
 
@@ -251,23 +256,6 @@ export function ProvidersPanel({
     }
   }
 
-  const handleEditProvider = async (_instanceName: string, config: Record<string, string>) => {
-    if (!selectedProvider) return
-    setIsSubmitting(true)
-    try {
-      await invoke("update_provider_instance", {
-        instanceName: selectedProvider.instance_name,
-        updates: { config },
-      })
-      toast.success("Provider updated")
-      loadProvidersOnly()
-    } catch (error) {
-      toast.error(`Failed to update provider: ${error}`)
-    } finally {
-      setIsSubmitting(false)
-    }
-  }
-
   const filteredProviders = providers.filter((p) =>
     p.instance_name.toLowerCase().includes(search.toLowerCase()) ||
     p.provider_type.toLowerCase().includes(search.toLowerCase())
@@ -278,6 +266,107 @@ export function ProvidersPanel({
   const selectedTypeForEdit = selectedProvider
     ? providerTypes.find((t) => t.provider_type === selectedProvider.provider_type)
     : null
+
+  // --- Inline edit state for settings tab ---
+  const [editName, setEditName] = useState("")
+  const [editConfig, setEditConfig] = useState<Record<string, string>>({})
+  const [configLoading, setConfigLoading] = useState(false)
+  const [visibleFields, setVisibleFields] = useState<Set<string>>(new Set())
+
+  // Debounce refs
+  const renameTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const configTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const pendingConfigRef = useRef<Record<string, string> | null>(null)
+
+  // Cleanup debounce timeouts on unmount
+  useEffect(() => {
+    return () => {
+      if (renameTimeoutRef.current) clearTimeout(renameTimeoutRef.current)
+      if (configTimeoutRef.current) clearTimeout(configTimeoutRef.current)
+    }
+  }, [])
+
+  // Load config when switching to settings tab or selecting a different provider
+  useEffect(() => {
+    if (detailTab === "settings" && selectedId) {
+      setConfigLoading(true)
+      setVisibleFields(new Set())
+      setEditName(selectedId)
+      invoke<Record<string, string>>("get_provider_config", { instanceName: selectedId })
+        .then((config) => setEditConfig(config))
+        .catch(() => setEditConfig({}))
+        .finally(() => setConfigLoading(false))
+    }
+  }, [detailTab, selectedId])
+
+  // Debounced rename
+  const debouncedRename = useCallback((newName: string) => {
+    if (!selectedProvider) return
+    if (renameTimeoutRef.current) clearTimeout(renameTimeoutRef.current)
+    renameTimeoutRef.current = setTimeout(async () => {
+      const trimmed = newName.trim()
+      if (!trimmed || trimmed === selectedProvider.instance_name) return
+      try {
+        await invoke("rename_provider_instance", {
+          instanceName: selectedProvider.instance_name,
+          newName: trimmed,
+        })
+        toast.success("Provider renamed")
+        await loadProvidersOnly()
+        skipTabResetRef.current = true
+        onSelect(trimmed)
+      } catch (error) {
+        toast.error(`Failed to rename: ${error}`)
+      }
+    }, 500)
+  }, [selectedProvider, onSelect])
+
+  // Debounced config update
+  const debouncedConfigUpdate = useCallback((updatedConfig: Record<string, string>) => {
+    if (!selectedProvider) return
+    pendingConfigRef.current = updatedConfig
+    if (configTimeoutRef.current) clearTimeout(configTimeoutRef.current)
+    configTimeoutRef.current = setTimeout(async () => {
+      const config = pendingConfigRef.current
+      pendingConfigRef.current = null
+      if (!config) return
+      try {
+        await invoke("update_provider_instance", {
+          instanceName: selectedProvider.instance_name,
+          providerType: selectedProvider.provider_type,
+          config,
+        })
+        toast.success("Provider updated")
+        loadProvidersOnly()
+      } catch (error) {
+        toast.error(`Failed to update provider: ${error}`)
+      }
+    }, 500)
+  }, [selectedProvider])
+
+  const handleConfigFieldChange = (key: string, value: string) => {
+    const updated = { ...editConfig, [key]: value }
+    setEditConfig(updated)
+    debouncedConfigUpdate(updated)
+  }
+
+  const toggleFieldVisibility = (key: string) => {
+    setVisibleFields((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }
+
+  // Generate a clean default instance name like "Perplexity", "Perplexity (2)", etc.
+  const generateDefaultName = (displayName: string): string => {
+    const existingNames = new Set(providers.map(p => p.instance_name))
+    if (!existingNames.has(displayName)) return displayName
+    let i = 2
+    while (existingNames.has(`${displayName} (${i})`)) i++
+    return `${displayName} (${i})`
+  }
 
   return (
     <>
@@ -543,25 +632,97 @@ export function ProvidersPanel({
 
                   <TabsContent value="settings">
                     <div className="space-y-6">
-                      {/* Inline Edit Form */}
+                      {/* Inline Edit Fields */}
                       {selectedTypeForEdit && (
                         <Card>
                           <CardHeader>
                             <CardTitle>Provider Configuration</CardTitle>
                             <CardDescription>
-                              Update the configuration for this provider
+                              Changes are saved automatically
                             </CardDescription>
                           </CardHeader>
-                          <CardContent>
-                            <ProviderForm
-                              mode="edit"
-                              providerType={selectedTypeForEdit}
-                              initialInstanceName={selectedProvider.instance_name}
-                              initialConfig={selectedProvider.config || {}}
-                              onSubmit={handleEditProvider}
-                              onCancel={() => setDetailTab("info")}
-                              isSubmitting={isSubmitting}
-                            />
+                          <CardContent className="space-y-4">
+                            {configLoading ? (
+                              <div className="flex items-center gap-2 text-muted-foreground">
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                                <span>Loading configuration...</span>
+                              </div>
+                            ) : (
+                              <>
+                                {/* Instance Name */}
+                                <div>
+                                  <label className="block text-sm font-medium mb-2">Instance Name</label>
+                                  <Input
+                                    value={editName}
+                                    onChange={(e) => {
+                                      setEditName(e.target.value)
+                                      debouncedRename(e.target.value)
+                                    }}
+                                    placeholder="e.g., OpenAI, Groq"
+                                  />
+                                </div>
+
+                                {/* Dynamic Parameter Fields */}
+                                {selectedTypeForEdit.setup_parameters
+                                  .filter((param) => param.param_type !== "oauth")
+                                  .map((param) => {
+                                    const isSensitive = param.sensitive
+                                    const isVisible = visibleFields.has(param.key)
+
+                                    if (param.param_type === "boolean") {
+                                      return (
+                                        <div key={param.key} className="flex items-center gap-2">
+                                          <input
+                                            type="checkbox"
+                                            id={`edit-${param.key}`}
+                                            checked={editConfig[param.key] === "true"}
+                                            onChange={(e) => handleConfigFieldChange(param.key, e.target.checked.toString())}
+                                            className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500"
+                                          />
+                                          <label htmlFor={`edit-${param.key}`} className="text-sm font-medium">
+                                            {param.description}
+                                          </label>
+                                        </div>
+                                      )
+                                    }
+
+                                    const fieldType = isSensitive && !isVisible
+                                      ? "password"
+                                      : param.param_type === "number"
+                                      ? "number"
+                                      : "text"
+                                    const label = `${param.description}${param.required ? "" : " (Optional)"}`
+
+                                    return (
+                                      <div key={param.key}>
+                                        <label className="block text-sm font-medium mb-2">{label}</label>
+                                        <div className="relative">
+                                          <Input
+                                            type={fieldType}
+                                            placeholder={param.default_value || ""}
+                                            value={editConfig[param.key] || ""}
+                                            onChange={(e) => handleConfigFieldChange(param.key, e.target.value)}
+                                          />
+                                          {isSensitive && (
+                                            <button
+                                              type="button"
+                                              onClick={() => toggleFieldVisibility(param.key)}
+                                              className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                                              title={isVisible ? "Hide" : "Show"}
+                                            >
+                                              {isVisible ? (
+                                                <EyeOff className="h-4 w-4" />
+                                              ) : (
+                                                <Eye className="h-4 w-4" />
+                                              )}
+                                            </button>
+                                          )}
+                                        </div>
+                                      </div>
+                                    )
+                                  })}
+                              </>
+                            )}
                           </CardContent>
                         </Card>
                       )}
@@ -767,6 +928,7 @@ export function ProvidersPanel({
                       <ProviderForm
                         mode="create"
                         providerType={genericType}
+                        initialInstanceName={generateDefaultName(genericType.display_name)}
                         onSubmit={handleCreateProvider}
                         onCancel={() => {
                           setCreateDialogOpen(false)
@@ -813,6 +975,7 @@ export function ProvidersPanel({
                 <ProviderForm
                   mode="create"
                   providerType={selectedTypeForCreate}
+                  initialInstanceName={generateDefaultName(selectedTypeForCreate.display_name)}
                   onSubmit={handleCreateProvider}
                   onCancel={() => {
                     setCreateDialogOpen(false)

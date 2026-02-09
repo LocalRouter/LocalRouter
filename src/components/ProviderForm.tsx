@@ -74,12 +74,12 @@ export default function ProviderForm({
   const hasOAuthParam = providerType.setup_parameters.some(p => p.param_type === 'oauth')
   const oauthProviderId = OAUTH_PROVIDER_MAP[providerType.provider_type]
 
-  // Generate default instance name for create mode
+  // Generate default instance name for create mode (fallback if none provided)
   useEffect(() => {
     if (mode === 'create' && !initialInstanceName) {
-      setInstanceName(`${providerType.provider_type}-${Date.now()}`)
+      setInstanceName(providerType.display_name)
     }
-  }, [mode, providerType.provider_type, initialInstanceName])
+  }, [mode, providerType.display_name, initialInstanceName])
 
   // Check if OAuth is already authenticated
   useEffect(() => {
@@ -213,7 +213,7 @@ export default function ProviderForm({
       {/* Instance Name Field */}
       <Input
         label="Instance Name *"
-        placeholder="e.g., my-openai, groq-prod"
+        placeholder="e.g., OpenAI, Groq"
         value={instanceName}
         onChange={(e) => setInstanceName(e.target.value)}
         required

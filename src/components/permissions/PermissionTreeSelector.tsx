@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useState, useMemo } from "react"
 import { ChevronRight, ChevronDown } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { PermissionStateButton } from "./PermissionStateButton"
@@ -55,12 +55,79 @@ export function PermissionTreeSelector({
     return permissions[nodeId] === undefined
   }
 
+  // Compute child rollup states for a node - collect all explicit permissions from descendants
+  const getChildRollupStates = useMemo(() => {
+    const cache = new Map<string, Set<PermissionState>>()
+
+    const computeForNode = (node: TreeNode): Set<PermissionState> => {
+      if (cache.has(node.id)) {
+        return cache.get(node.id)!
+      }
+
+      const states = new Set<PermissionState>()
+
+      // Check this node's explicit permission (only if it has children - we're computing for parent)
+      if (node.children) {
+        for (const child of node.children) {
+          // Add child's explicit permission if set
+          if (permissions[child.id] !== undefined) {
+            states.add(permissions[child.id])
+          }
+          // Recursively get grandchildren's states
+          const grandchildStates = computeForNode(child)
+          grandchildStates.forEach(s => states.add(s))
+        }
+      }
+
+      cache.set(node.id, states)
+      return states
+    }
+
+    // Build the lookup function
+    return (nodeId: string): Set<PermissionState> => {
+      const node = findNode(nodes, nodeId)
+      if (!node) return new Set()
+      return computeForNode(node)
+    }
+  }, [nodes, permissions])
+
+  // Helper to find a node by ID
+  const findNode = (nodes: TreeNode[], id: string): TreeNode | undefined => {
+    for (const node of nodes) {
+      if (node.id === id) return node
+      if (node.children) {
+        const found = findNode(node.children, id)
+        if (found) return found
+      }
+    }
+    return undefined
+  }
+
+  // Compute global-level child rollup states
+  const globalChildRollupStates = useMemo(() => {
+    const states = new Set<PermissionState>()
+
+    // Collect all explicit permissions at any level
+    for (const node of nodes) {
+      // Check node's explicit permission
+      if (permissions[node.id] !== undefined) {
+        states.add(permissions[node.id])
+      }
+      // Get descendants' states
+      const childStates = getChildRollupStates(node.id)
+      childStates.forEach(s => states.add(s))
+    }
+
+    return states
+  }, [nodes, permissions, getChildRollupStates])
+
   const renderNode = (node: TreeNode, parentPermission: PermissionState, depth: number = 0) => {
     const isExpanded = expandedNodes.has(node.id)
     const hasChildren = node.children && node.children.length > 0
     const effectivePermission = getEffectivePermission(node.id, parentPermission)
     const inherited = isInherited(node.id)
     const canExpand = hasChildren
+    const childRollupStates = hasChildren ? getChildRollupStates(node.id) : undefined
 
     // For group nodes (Tools/Resources/Prompts), make the whole row clickable
     const handleRowClick = () => {
@@ -123,6 +190,7 @@ export function PermissionTreeSelector({
               disabled={disabled}
               size="sm"
               inherited={inherited}
+              childRollupStates={childRollupStates}
             />
           )}
         </div>
@@ -168,6 +236,7 @@ export function PermissionTreeSelector({
             onChange={onGlobalChange}
             disabled={disabled}
             size="sm"
+            childRollupStates={globalChildRollupStates}
           />
         </div>
 

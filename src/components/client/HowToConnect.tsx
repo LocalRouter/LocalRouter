@@ -213,7 +213,7 @@ export function HowToConnect({
     mcpServers: {
       localrouter: {
         url: baseUrl,
-        transport: "http",
+        type: "http",
         headers: {
           Authorization: `Bearer ${masked ? maskedSecret : (secret || "<your_client_secret>")}`
         }
@@ -226,7 +226,7 @@ export function HowToConnect({
     mcpServers: {
       localrouter: {
         url: baseUrl,
-        transport: "http",
+        type: "http",
         clientId: clientUuid,
         clientSecret: masked ? maskedSecret : (secret || "<your_client_secret>")
       }

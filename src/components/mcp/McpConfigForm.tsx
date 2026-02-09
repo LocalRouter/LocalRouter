@@ -1,3 +1,5 @@
+import { useState } from 'react'
+import { Eye, EyeOff } from 'lucide-react'
 import Input from '../ui/Input'
 import Select from '../ui/Select'
 import KeyValueInput from '../ui/KeyValueInput'
@@ -83,6 +85,10 @@ interface McpConfigFormProps {
 }
 
 export default function McpConfigForm({ formData, onChange, disabled = false, showTransportType = true, disableTransportTypeChange = false }: McpConfigFormProps) {
+  const [showBearerToken, setShowBearerToken] = useState(false)
+  const [showOauthSecret, setShowOauthSecret] = useState(false)
+  const [showOauthBrowserSecret, setShowOauthBrowserSecret] = useState(false)
+
   return (
     <div className="space-y-4">
       <div>
@@ -213,14 +219,25 @@ export default function McpConfigForm({ formData, onChange, disabled = false, sh
             <label className="block text-sm font-medium mb-2">
               Bearer Token
             </label>
-            <Input
-              type="password"
-              value={formData.bearerToken}
-              onChange={(e) => onChange('bearerToken', e.target.value)}
-              placeholder="your-bearer-token"
-              disabled={disabled}
-              required
-            />
+            <div className="relative">
+              <Input
+                type={showBearerToken ? "text" : "password"}
+                value={formData.bearerToken}
+                onChange={(e) => onChange('bearerToken', e.target.value)}
+                placeholder="your-bearer-token"
+                disabled={disabled}
+                required
+                className="pr-10"
+              />
+              <button
+                type="button"
+                onClick={() => setShowBearerToken(!showBearerToken)}
+                className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-400 hover:text-gray-300 transition-colors"
+                tabIndex={-1}
+              >
+                {showBearerToken ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+              </button>
+            </div>
             <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
               Token will be stored securely in system keychain
             </p>
@@ -265,14 +282,25 @@ export default function McpConfigForm({ formData, onChange, disabled = false, sh
               <label className="block text-sm font-medium mb-2">
                 OAuth Client Secret
               </label>
-              <Input
-                type="password"
-                value={formData.oauthClientSecret}
-                onChange={(e) => onChange('oauthClientSecret', e.target.value)}
-                placeholder="your-client-secret"
-                disabled={disabled}
-                required
-              />
+              <div className="relative">
+                <Input
+                  type={showOauthSecret ? "text" : "password"}
+                  value={formData.oauthClientSecret}
+                  onChange={(e) => onChange('oauthClientSecret', e.target.value)}
+                  placeholder="your-client-secret"
+                  disabled={disabled}
+                  required
+                  className="pr-10"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowOauthSecret(!showOauthSecret)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-400 hover:text-gray-300 transition-colors"
+                  tabIndex={-1}
+                >
+                  {showOauthSecret ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
+              </div>
               <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
                 Secret will be stored securely in system keychain
               </p>
@@ -330,14 +358,25 @@ export default function McpConfigForm({ formData, onChange, disabled = false, sh
               <label className="block text-sm font-medium mb-2">
                 OAuth Client Secret
               </label>
-              <Input
-                type="password"
-                value={formData.oauthBrowserClientSecret}
-                onChange={(e) => onChange('oauthBrowserClientSecret', e.target.value)}
-                placeholder="your-oauth-app-client-secret"
-                disabled={disabled}
-                required
-              />
+              <div className="relative">
+                <Input
+                  type={showOauthBrowserSecret ? "text" : "password"}
+                  value={formData.oauthBrowserClientSecret}
+                  onChange={(e) => onChange('oauthBrowserClientSecret', e.target.value)}
+                  placeholder="your-oauth-app-client-secret"
+                  disabled={disabled}
+                  required
+                  className="pr-10"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowOauthBrowserSecret(!showOauthBrowserSecret)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-400 hover:text-gray-300 transition-colors"
+                  tabIndex={-1}
+                >
+                  {showOauthBrowserSecret ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
+              </div>
               <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
                 Secret will be stored securely in system keychain
               </p>

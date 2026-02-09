@@ -120,6 +120,8 @@ interface McpClient {
   name: string
   client_id: string
   enabled: boolean
+  mcp_deferred_loading: boolean
+  marketplace_permission: "allow" | "ask" | "off"
 }
 
 interface McpServer {
@@ -197,6 +199,7 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
   const [autoApproveSampling, setAutoApproveSampling] = useState(false)
 
   // Deferred loading for unified gateway (reduces token consumption for large catalogs)
+  // In "client" mode, initialized from client settings; in "all" mode, starts false
   const [deferredLoading, setDeferredLoading] = useState(false)
 
   // Sampling panel state (lifted to persist across tab switches)
@@ -489,6 +492,18 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
     setResourceUpdates(new Map())
   }, [])
 
+  // Get selected client's data
+  const selectedClient = useMemo(() => {
+    return clients.find(c => c.id === selectedClientId)
+  }, [clients, selectedClientId])
+
+  // Sync deferred loading from client settings when selected client changes
+  useEffect(() => {
+    if (mode === "client" && selectedClient) {
+      setDeferredLoading(selectedClient.mcp_deferred_loading)
+    }
+  }, [mode, selectedClient])
+
   // Compute whether we have enough settings to connect
   const canConnect = useMemo(() => {
     if (!serverPort) return false
@@ -519,11 +534,19 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
       _isDirectSkill ? _directTarget!.name :
       mode === "all" ? "all" : undefined
 
+    // Deferred loading:
+    // - "all" mode: use the toggle state
+    // - "client" mode: use the toggle state (initialized from client settings)
+    // - "direct" mode: always off (undefined)
+    const effectiveDeferredLoading: boolean | undefined =
+      (mode === "all" || mode === "client") ? (deferredLoading || undefined) :
+      undefined
+
     return {
       serverPort,
       clientToken: token,
       transportType: "sse" as const,
-      deferredLoading: deferredLoading || undefined,
+      deferredLoading: effectiveDeferredLoading,
       mcpAccess,
       skillsAccess,
     }
@@ -715,29 +738,32 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
                 </div>
               )}
 
-              <div className="flex items-center gap-2">
-                <Checkbox
-                  id="deferred-loading"
-                  checked={deferredLoading}
-                  onCheckedChange={(checked) => setDeferredLoading(checked === true)}
-                />
-                <Label htmlFor="deferred-loading" className="text-sm cursor-pointer">
-                  Deferred Loading
-                </Label>
-                <TooltipProvider>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Info className="h-3.5 w-3.5 text-muted-foreground cursor-help" />
-                    </TooltipTrigger>
-                    <TooltipContent side="bottom" className="max-w-[300px]">
-                      <p>
-                        When enabled, tools and resources are loaded on-demand via search
-                        instead of all at once. Reduces token consumption for large catalogs.
-                      </p>
-                    </TooltipContent>
-                  </Tooltip>
-                </TooltipProvider>
-              </div>
+              {/* Deferred loading toggle - for "client" and "all" modes */}
+              {(mode === "client" || mode === "all") && (
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    id="deferred-loading"
+                    checked={deferredLoading}
+                    onCheckedChange={(checked) => setDeferredLoading(checked === true)}
+                  />
+                  <Label htmlFor="deferred-loading" className="text-sm cursor-pointer">
+                    Deferred Loading
+                  </Label>
+                  <TooltipProvider>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Info className="h-3.5 w-3.5 text-muted-foreground cursor-help" />
+                      </TooltipTrigger>
+                      <TooltipContent side="bottom" className="max-w-[300px]">
+                        <p>
+                          When enabled, tools and resources are loaded on-demand via search
+                          instead of all at once. Reduces token consumption for large catalogs.
+                        </p>
+                      </TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
+                </div>
+              )}
             </div>
           </div>
 
