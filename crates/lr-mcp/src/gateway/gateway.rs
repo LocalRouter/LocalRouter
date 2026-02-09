@@ -154,7 +154,7 @@ impl McpGateway {
     }
 
     /// Check if skill support has been configured
-    fn has_skill_support(&self) -> bool {
+    pub fn has_skill_support(&self) -> bool {
         self.skill_manager.get().is_some() && self.script_executor.get().is_some()
     }
 
@@ -282,6 +282,9 @@ impl McpGateway {
     }
 
     /// Handle an MCP gateway request
+    ///
+    /// Uses Allow-all permissions since no explicit permissions are provided.
+    /// For permission-controlled access, use `handle_request_with_skills`.
     pub async fn handle_request(
         &self,
         client_id: &str,
@@ -290,13 +293,18 @@ impl McpGateway {
         roots: Vec<crate::protocol::Root>,
         request: JsonRpcRequest,
     ) -> AppResult<JsonRpcResponse> {
+        // Default to Allow-all MCP permissions when no explicit permissions are provided
+        let mcp_permissions = lr_config::McpPermissions {
+            global: lr_config::PermissionState::Allow,
+            ..Default::default()
+        };
         self.handle_request_with_skills(
             client_id,
             allowed_servers,
             enable_deferred_loading,
             roots,
+            mcp_permissions,
             lr_config::SkillsPermissions::default(),
-            lr_config::FirewallRules::default(),
             String::new(),
             lr_config::PermissionState::Off, // marketplace_permission
             request,
@@ -311,8 +319,8 @@ impl McpGateway {
         allowed_servers: Vec<String>,
         enable_deferred_loading: bool,
         roots: Vec<crate::protocol::Root>,
+        mcp_permissions: lr_config::McpPermissions,
         skills_permissions: lr_config::SkillsPermissions,
-        firewall_rules: lr_config::FirewallRules,
         client_name: String,
         marketplace_permission: lr_config::PermissionState,
         request: JsonRpcRequest,
@@ -335,22 +343,24 @@ impl McpGateway {
             .get_or_create_session(client_id, allowed_servers, enable_deferred_loading, roots)
             .await?;
 
-        // Update skills permissions and async config on session
-        if skills_permissions.global.is_enabled() || !skills_permissions.skills.is_empty() {
-            let async_enabled = self
-                .skills_async_override
-                .get()
-                .copied()
-                .unwrap_or(self.config.skills_async_enabled);
-            let mut session_write = session.write().await;
-            session_write.skills_permissions = skills_permissions;
-            session_write.skills_async_enabled = async_enabled;
-        }
-
-        // Update firewall rules, client name, and marketplace permission on session (always refresh from config)
+        // Update mcp_permissions, skills permissions and async config on session
         {
             let mut session_write = session.write().await;
-            session_write.firewall_rules = firewall_rules;
+            session_write.mcp_permissions = mcp_permissions;
+            if skills_permissions.global.is_enabled() || !skills_permissions.skills.is_empty() {
+                let async_enabled = self
+                    .skills_async_override
+                    .get()
+                    .copied()
+                    .unwrap_or(self.config.skills_async_enabled);
+                session_write.skills_permissions = skills_permissions;
+                session_write.skills_async_enabled = async_enabled;
+            }
+        }
+
+        // Update client name and marketplace permission on session (always refresh from config)
+        {
+            let mut session_write = session.write().await;
             session_write.client_name = client_name;
             session_write.marketplace_permission = marketplace_permission;
         }
@@ -1106,13 +1116,13 @@ impl McpGateway {
             // Check if client supports receiving listChanged notifications
             // For internal-test client (Try it out UI), we skip this check since we know it can handle notifications
             let is_internal_test = client_id_for_log == "internal-test";
-            let client_supports_notifications = is_internal_test
+            let client_supports_tools_list_changed = is_internal_test
                 || client_capabilities
                     .as_ref()
                     .map(|caps| caps.supports_tools_list_changed())
                     .unwrap_or(false);
 
-            if !client_supports_notifications {
+            if !client_supports_tools_list_changed {
                 tracing::warn!(
                     "Deferred loading requested for client {} but client does not support tools.listChanged notifications. \
                      Falling back to normal mode. Client must declare {{ tools: {{ listChanged: true }} }} in initialize capabilities.",
@@ -1209,13 +1219,13 @@ impl McpGateway {
                 });
 
                 tracing::info!(
-                "Deferred loading enabled for client {}: {} tools, {} resources, {} prompts in catalog",
-                client_id_for_log,
-                tools.len(),
-                resources.len(),
-                prompts.len(),
-            );
-            } // end of if client_supports_notifications
+                    "Deferred loading enabled for client {}: {} tools, {} resources, {} prompts in catalog",
+                    client_id_for_log,
+                    tools.len(),
+                    resources.len(),
+                    prompts.len(),
+                );
+            } // end of if client_supports_tools_list_changed
         } // end of if should_enable_deferred
 
         // Build gateway instructions based on the full context
@@ -1405,6 +1415,119 @@ impl McpGateway {
             if let Ok(mut session_write) = session.try_write() {
                 session_write.invalidate_resources_cache();
             }
+        }
+    }
+
+    /// Invalidate prompts cache for a session
+    pub fn invalidate_prompts_cache(&self, client_id: &str) {
+        if let Some(session) = self.sessions.get(client_id) {
+            if let Ok(mut session_write) = session.try_write() {
+                session_write.invalidate_prompts_cache();
+            }
+        }
+    }
+
+    /// Invalidate all caches for a session
+    pub fn invalidate_all_caches(&self, client_id: &str) {
+        if let Some(session) = self.sessions.get(client_id) {
+            if let Ok(mut session_write) = session.try_write() {
+                session_write.invalidate_all_caches();
+            }
+        }
+    }
+
+    /// Check all active sessions for permission changes and notify clients.
+    ///
+    /// Compares stored permission snapshots with current client config.
+    /// For each session with changed permissions, invalidates relevant caches,
+    /// updates the stored snapshot, and calls the `notify` callback.
+    ///
+    /// # Arguments
+    /// * `clients` - Current client configs from the config manager
+    /// * `all_enabled_server_ids` - All enabled MCP server IDs (for computing allowed servers)
+    /// * `notify` - Callback called with (client_id, tools_changed, resources_changed, prompts_changed)
+    pub fn check_and_notify_permission_changes(
+        &self,
+        clients: &[lr_config::Client],
+        all_enabled_server_ids: &[String],
+        notify: impl Fn(&str, bool, bool, bool),
+    ) {
+        for entry in self.sessions.iter() {
+            let client_id = entry.key();
+            let session = entry.value();
+
+            // Find matching client in config
+            let Some(client) = clients.iter().find(|c| c.id == *client_id) else {
+                continue; // Client may have been deleted
+            };
+
+            // Try to acquire write lock (non-blocking to avoid deadlocks)
+            let Ok(mut session_write) = session.try_write() else {
+                tracing::debug!(
+                    "Could not acquire session lock for permission check: {}",
+                    client_id
+                );
+                continue;
+            };
+
+            let old_mcp = &session_write.mcp_permissions;
+            let old_skills = &session_write.skills_permissions;
+            let new_mcp = &client.mcp_permissions;
+            let new_skills = &client.skills_permissions;
+
+            // Check if anything changed
+            if old_mcp == new_mcp && old_skills == new_skills {
+                continue;
+            }
+
+            tracing::info!(
+                "Permission change detected for client {}, computing notifications",
+                client_id
+            );
+
+            // Determine what changed
+            let tools_changed = old_mcp.global != new_mcp.global
+                || old_mcp.servers != new_mcp.servers
+                || old_mcp.tools != new_mcp.tools
+                || old_skills != new_skills;
+
+            let resources_changed = old_mcp.global != new_mcp.global
+                || old_mcp.servers != new_mcp.servers
+                || old_mcp.resources != new_mcp.resources;
+
+            let prompts_changed = old_mcp.global != new_mcp.global
+                || old_mcp.servers != new_mcp.servers
+                || old_mcp.prompts != new_mcp.prompts;
+
+            // Invalidate relevant caches
+            if tools_changed {
+                session_write.invalidate_tools_cache();
+            }
+            if resources_changed {
+                session_write.invalidate_resources_cache();
+            }
+            if prompts_changed {
+                session_write.invalidate_prompts_cache();
+            }
+
+            // Update allowed_servers based on new permissions
+            let new_allowed: Vec<String> = if new_mcp.global.is_enabled() {
+                all_enabled_server_ids.to_vec()
+            } else {
+                all_enabled_server_ids
+                    .iter()
+                    .filter(|sid| new_mcp.has_any_enabled_for_server(sid))
+                    .cloned()
+                    .collect()
+            };
+            session_write.allowed_servers = new_allowed;
+
+            // Update stored snapshots
+            session_write.mcp_permissions = new_mcp.clone();
+            session_write.skills_permissions = new_skills.clone();
+
+            // Call notify callback
+            notify(client_id, tools_changed, resources_changed, prompts_changed);
         }
     }
 

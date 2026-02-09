@@ -24,8 +24,12 @@ use lr_types::{AppError, AppResult};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum FirewallApprovalAction {
-    /// Deny this tool call
+    /// Deny this single tool call
     Deny,
+    /// Deny this tool for the rest of the session (MCP/Skills)
+    DenySession,
+    /// Deny permanently by updating client permissions to Off
+    DenyAlways,
     /// Allow this single tool call
     AllowOnce,
     /// Allow this tool for the rest of the session (MCP/Skills)

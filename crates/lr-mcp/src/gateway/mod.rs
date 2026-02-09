@@ -3,6 +3,7 @@
 //! Provides a unified gateway endpoint that aggregates multiple MCP servers
 //! into a single interface with namespace-based routing and deferred loading.
 
+pub mod access_control;
 pub mod deferred;
 pub mod elicitation;
 pub mod firewall;

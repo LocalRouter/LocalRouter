@@ -78,6 +78,9 @@ pub struct GatewaySession {
     /// Tracks which resources this session has subscribed to for change notifications
     pub subscribed_resources: HashMap<String, String>,
 
+    /// MCP permissions snapshot for this client (for change detection)
+    pub mcp_permissions: lr_config::McpPermissions,
+
     /// Skills permissions for this client (hierarchical Allow/Ask/Off)
     pub skills_permissions: lr_config::SkillsPermissions,
 
@@ -90,11 +93,11 @@ pub struct GatewaySession {
     /// Human-readable client name (for firewall approval display)
     pub client_name: String,
 
-    /// Firewall rules for this session (copied from client config at session creation)
-    pub firewall_rules: lr_config::FirewallRules,
-
     /// Tools approved during this session via "Allow for Session" action
     pub firewall_session_approvals: HashSet<String>,
+
+    /// Tools denied during this session via "Deny for Session" action
+    pub firewall_session_denials: HashSet<String>,
 
     /// Marketplace permission state for this client
     pub marketplace_permission: lr_config::PermissionState,
@@ -141,12 +144,13 @@ impl GatewaySession {
             resources_list_fetched: false,
             roots,
             subscribed_resources: HashMap::new(),
+            mcp_permissions: lr_config::McpPermissions::default(),
             skills_permissions: lr_config::SkillsPermissions::default(),
             skills_info_loaded: HashSet::new(),
             skills_async_enabled: false,
             client_name: String::new(),
-            firewall_rules: lr_config::FirewallRules::default(),
             firewall_session_approvals: HashSet::new(),
+            firewall_session_denials: HashSet::new(),
             marketplace_permission: lr_config::PermissionState::default(),
         }
     }

@@ -15,6 +15,7 @@ use super::router::{broadcast_request, separate_results};
 use super::session::GatewaySession;
 use super::types::*;
 
+use super::access_control::{self, AccessDecision};
 use super::firewall::{self, FirewallApprovalAction};
 use super::gateway::McpGateway;
 
@@ -277,8 +278,9 @@ impl McpGateway {
         drop(session_read);
 
         // Firewall check for MCP tools
+        // Pass both namespaced name (for session tracking/display) and original name (for permission lookup)
         if let Some(err_response) = self
-            .check_firewall_mcp_tool(&session, &tool_name, &server_id, &request)
+            .check_firewall_mcp_tool(&session, &tool_name, &original_name, &server_id, &request)
             .await?
         {
             return Ok(err_response);
@@ -326,31 +328,41 @@ impl McpGateway {
         result
     }
 
-    /// Check firewall policy for an MCP tool call.
+    /// Check access control for an MCP tool call.
     /// Returns `Some(error_response)` if the call should be blocked, `None` to proceed.
+    ///
+    /// `tool_name` is the namespaced name (e.g. `filesystem__write_file`) used for session tracking.
+    /// `original_tool_name` is the raw name (e.g. `write_file`) used for permission lookup.
+    /// `server_id` is the UUID used for permission lookup and routing.
     async fn check_firewall_mcp_tool(
         &self,
         session: &Arc<RwLock<GatewaySession>>,
         tool_name: &str,
+        original_tool_name: &str,
         server_id: &str,
         request: &JsonRpcRequest,
     ) -> AppResult<Option<JsonRpcResponse>> {
         let session_read = session.read().await;
-        let policy = session_read
-            .firewall_rules
-            .resolve_mcp_tool(tool_name, server_id)
-            .clone();
+        // Use server UUID + original tool name for permission resolution
+        // (key format: "UUID__original_name", matching what the UI stores)
+        let decision = access_control::check_mcp_tool_access(
+            &session_read.mcp_permissions,
+            server_id,
+            original_tool_name,
+        );
 
-        // Check session-level approvals for Ask policy
+        // Session tracking uses the namespaced name (what the client sends in requests)
         let already_approved = session_read.firewall_session_approvals.contains(tool_name);
+        let already_denied = session_read.firewall_session_denials.contains(tool_name);
 
         let client_id = session_read.client_id.clone();
         drop(session_read);
 
-        self.apply_firewall_policy(
+        self.apply_access_decision(
             session,
-            &policy,
+            &decision,
             already_approved,
+            already_denied,
             &client_id,
             tool_name,
             server_id,
@@ -359,7 +371,7 @@ impl McpGateway {
         .await
     }
 
-    /// Check firewall policy for a skill tool call.
+    /// Check access control for a skill tool call.
     /// Returns `Some(error_response)` if the call should be blocked, `None` to proceed.
     async fn check_firewall_skill_tool(
         &self,
@@ -372,21 +384,30 @@ impl McpGateway {
         // get_info, run_{file}, run_async_{file}, read_{file}
         let skill_name = extract_skill_name_from_tool(tool_name);
 
+        // Global utility tools (e.g. skill_get_async_status) have no skill name.
+        // These don't execute skill code, so skip permission checks.
+        if skill_name.is_empty() {
+            return Ok(None);
+        }
+
         let session_read = session.read().await;
-        let policy = session_read
-            .firewall_rules
-            .resolve_skill_tool(tool_name, &skill_name)
-            .clone();
+        let decision = access_control::check_skill_tool_access(
+            &session_read.skills_permissions,
+            &skill_name,
+            tool_name,
+        );
 
         let already_approved = session_read.firewall_session_approvals.contains(tool_name);
+        let already_denied = session_read.firewall_session_denials.contains(tool_name);
 
         let client_id = session_read.client_id.clone();
         drop(session_read);
 
-        self.apply_firewall_policy(
+        self.apply_access_decision(
             session,
-            &policy,
+            &decision,
             already_approved,
+            already_denied,
             &client_id,
             tool_name,
             &skill_name,
@@ -395,21 +416,22 @@ impl McpGateway {
         .await
     }
 
-    /// Apply firewall policy, returning an error response if blocked or None to proceed.
+    /// Apply access decision, returning an error response if blocked or None to proceed.
     #[allow(clippy::too_many_arguments)]
-    async fn apply_firewall_policy(
+    async fn apply_access_decision(
         &self,
         session: &Arc<RwLock<GatewaySession>>,
-        policy: &lr_config::FirewallPolicy,
+        decision: &AccessDecision,
         already_approved: bool,
+        already_denied: bool,
         client_id: &str,
         tool_name: &str,
         server_or_skill_name: &str,
         request: &JsonRpcRequest,
     ) -> AppResult<Option<JsonRpcResponse>> {
-        match policy {
-            lr_config::FirewallPolicy::Allow => Ok(None),
-            lr_config::FirewallPolicy::Deny => {
+        match decision {
+            AccessDecision::Allow => Ok(None),
+            AccessDecision::Deny => {
                 tracing::info!(
                     "Firewall denied tool call: client={}, tool={}",
                     client_id,
@@ -424,7 +446,24 @@ impl McpGateway {
                     ),
                 )))
             }
-            lr_config::FirewallPolicy::Ask => {
+            AccessDecision::Ask => {
+                // Check if already denied for this session
+                if already_denied {
+                    tracing::debug!(
+                        "Firewall: tool {} already denied for session (client={})",
+                        tool_name,
+                        client_id
+                    );
+                    return Ok(Some(JsonRpcResponse::error(
+                        request.id.clone().unwrap_or(Value::Null),
+                        JsonRpcError::custom(
+                            -32600,
+                            format!("Tool call '{}' denied by user", tool_name),
+                            None,
+                        ),
+                    )));
+                }
+
                 // Check if already approved for this session
                 if already_approved {
                     tracing::debug!(
@@ -520,6 +559,42 @@ impl McpGateway {
                             tool_name,
                             client_id
                         );
+                        Ok(Some(JsonRpcResponse::error(
+                            request.id.clone().unwrap_or(Value::Null),
+                            JsonRpcError::custom(
+                                -32600,
+                                format!("Tool call '{}' denied by user", tool_name),
+                                None,
+                            ),
+                        )))
+                    }
+                    FirewallApprovalAction::DenySession => {
+                        tracing::info!(
+                            "Firewall: tool {} denied for session (client={})",
+                            tool_name,
+                            client_id
+                        );
+                        // Add to session denials so future calls are auto-denied
+                        let mut session_write = session.write().await;
+                        session_write
+                            .firewall_session_denials
+                            .insert(tool_name.to_string());
+                        Ok(Some(JsonRpcResponse::error(
+                            request.id.clone().unwrap_or(Value::Null),
+                            JsonRpcError::custom(
+                                -32600,
+                                format!("Tool call '{}' denied by user", tool_name),
+                                None,
+                            ),
+                        )))
+                    }
+                    FirewallApprovalAction::DenyAlways => {
+                        tracing::info!(
+                            "Firewall: tool {} denied permanently (client={})",
+                            tool_name,
+                            client_id
+                        );
+                        // Permission update is handled by the approval handler
                         Ok(Some(JsonRpcResponse::error(
                             request.id.clone().unwrap_or(Value::Null),
                             JsonRpcError::custom(
@@ -831,21 +906,31 @@ impl McpGateway {
             }
         };
 
-        // Check if marketplace is enabled for this client
+        // Check marketplace access control
         let session_read = session.read().await;
-        if !session_read.marketplace_permission.is_enabled() {
-            return Ok(JsonRpcResponse::error(
-                request.id.unwrap_or(Value::Null),
-                JsonRpcError::custom(
-                    -32601,
-                    "Marketplace access is not enabled for this client".to_string(),
-                    None,
-                ),
-            ));
-        }
+        let decision =
+            access_control::check_marketplace_access(&session_read.marketplace_permission);
+        let already_approved = session_read.firewall_session_approvals.contains(tool_name);
+        let already_denied = session_read.firewall_session_denials.contains(tool_name);
         let client_id = session_read.client_id.clone();
         let client_name = session_read.client_name.clone();
         drop(session_read);
+
+        if let Some(err_response) = self
+            .apply_access_decision(
+                &session,
+                &decision,
+                already_approved,
+                already_denied,
+                &client_id,
+                tool_name,
+                "marketplace",
+                &request,
+            )
+            .await?
+        {
+            return Ok(err_response);
+        }
 
         // Extract arguments from params
         let arguments = request
