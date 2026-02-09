@@ -748,15 +748,6 @@ impl PermissionState {
     pub fn requires_approval(&self) -> bool {
         matches!(self, PermissionState::Ask)
     }
-
-    /// Convert to FirewallPolicy for compatibility
-    pub fn to_firewall_policy(&self) -> FirewallPolicy {
-        match self {
-            PermissionState::Allow => FirewallPolicy::Allow,
-            PermissionState::Ask => FirewallPolicy::Ask,
-            PermissionState::Off => FirewallPolicy::Deny,
-        }
-    }
 }
 
 /// MCP permission configuration for a client
@@ -823,6 +814,87 @@ impl McpPermissions {
         }
         self.resolve_server(server_id)
     }
+
+    /// Check if a server has any enabled permissions (server-level or sub-item level)
+    ///
+    /// Returns true if:
+    /// - The server itself is enabled (Allow/Ask), OR
+    /// - Any tool under this server is explicitly enabled, OR
+    /// - Any resource under this server is explicitly enabled, OR
+    /// - Any prompt under this server is explicitly enabled
+    pub fn has_any_enabled_for_server(&self, server_id: &str) -> bool {
+        // Check server-level permission
+        if self.resolve_server(server_id).is_enabled() {
+            return true;
+        }
+
+        // Check if any tools for this server are enabled
+        let prefix = format!("{server_id}__");
+        for (key, state) in &self.tools {
+            if key.starts_with(&prefix) && state.is_enabled() {
+                return true;
+            }
+        }
+
+        // Check if any resources for this server are enabled
+        for (key, state) in &self.resources {
+            if key.starts_with(&prefix) && state.is_enabled() {
+                return true;
+            }
+        }
+
+        // Check if any prompts for this server are enabled
+        for (key, state) in &self.prompts {
+            if key.starts_with(&prefix) && state.is_enabled() {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    /// Check if the client has any MCP access configured at any level
+    ///
+    /// Returns true if:
+    /// - Global MCP permission is enabled, OR
+    /// - Any server has an enabled permission, OR
+    /// - Any tool/resource/prompt is explicitly enabled
+    pub fn has_any_access(&self) -> bool {
+        // Check global permission
+        if self.global.is_enabled() {
+            return true;
+        }
+
+        // Check server-level permissions
+        for state in self.servers.values() {
+            if state.is_enabled() {
+                return true;
+            }
+        }
+
+        // Check tool-level permissions
+        for state in self.tools.values() {
+            if state.is_enabled() {
+                return true;
+            }
+        }
+
+        // Check resource-level permissions
+        for state in self.resources.values() {
+            if state.is_enabled() {
+                return true;
+            }
+        }
+
+        // Check prompt-level permissions
+        for state in self.prompts.values() {
+            if state.is_enabled() {
+                return true;
+            }
+        }
+
+        false
+    }
 }
 
 /// Skills permission configuration for a client
@@ -863,6 +935,57 @@ impl SkillsPermissions {
         }
         self.resolve_skill(skill_name)
     }
+
+    /// Check if a skill has any enabled permissions (skill-level or tool-level)
+    ///
+    /// Returns true if:
+    /// - The skill itself is enabled (Allow/Ask), OR
+    /// - Any tool under this skill is explicitly enabled
+    pub fn has_any_enabled_for_skill(&self, skill_name: &str) -> bool {
+        // Check skill-level permission
+        if self.resolve_skill(skill_name).is_enabled() {
+            return true;
+        }
+
+        // Check if any tools for this skill are enabled
+        let prefix = format!("{skill_name}__");
+        for (key, state) in &self.tools {
+            if key.starts_with(&prefix) && state.is_enabled() {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    /// Check if the client has any skills access configured at any level
+    ///
+    /// Returns true if:
+    /// - Global skills permission is enabled, OR
+    /// - Any skill has an enabled permission, OR
+    /// - Any skill tool is explicitly enabled
+    pub fn has_any_access(&self) -> bool {
+        // Check global permission
+        if self.global.is_enabled() {
+            return true;
+        }
+
+        // Check skill-level permissions
+        for state in self.skills.values() {
+            if state.is_enabled() {
+                return true;
+            }
+        }
+
+        // Check tool-level permissions
+        for state in self.tools.values() {
+            if state.is_enabled() {
+                return true;
+            }
+        }
+
+        false
+    }
 }
 
 /// Model permission configuration for a client
@@ -902,6 +1025,57 @@ impl ModelPermissions {
             return state.clone();
         }
         self.resolve_provider(provider_name)
+    }
+
+    /// Check if a provider has any enabled permissions (provider-level or model-level)
+    ///
+    /// Returns true if:
+    /// - The provider itself is enabled (Allow/Ask), OR
+    /// - Any model under this provider is explicitly enabled
+    pub fn has_any_enabled_for_provider(&self, provider_name: &str) -> bool {
+        // Check provider-level permission
+        if self.resolve_provider(provider_name).is_enabled() {
+            return true;
+        }
+
+        // Check if any models for this provider are enabled
+        let prefix = format!("{provider_name}__");
+        for (key, state) in &self.models {
+            if key.starts_with(&prefix) && state.is_enabled() {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    /// Check if the client has any model access configured at any level
+    ///
+    /// Returns true if:
+    /// - Global model permission is enabled, OR
+    /// - Any provider has an enabled permission, OR
+    /// - Any model is explicitly enabled
+    pub fn has_any_access(&self) -> bool {
+        // Check global permission
+        if self.global.is_enabled() {
+            return true;
+        }
+
+        // Check provider-level permissions
+        for state in self.providers.values() {
+            if state.is_enabled() {
+                return true;
+            }
+        }
+
+        // Check model-level permissions
+        for state in self.models.values() {
+            if state.is_enabled() {
+                return true;
+            }
+        }
+
+        false
     }
 }
 

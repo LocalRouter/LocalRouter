@@ -206,9 +206,12 @@ impl ConfigManager {
     {
         let updated_config = {
             let mut config = self.config.write();
-            f(&mut config);
-            validation::validate_config(&config)?;
-            config.clone()
+            // Clone before mutating so we can roll back if validation fails
+            let mut new_config = config.clone();
+            f(&mut new_config);
+            validation::validate_config(&new_config)?;
+            *config = new_config.clone();
+            new_config
         };
 
         // Sync clients to ClientManager if callback is registered
@@ -316,12 +319,25 @@ impl ConfigManager {
     /// Delete a client and cascade delete its owned strategies
     pub fn delete_client(&self, client_id: &str) -> AppResult<()> {
         self.update(|cfg| {
+            // Collect strategy IDs owned by this client (will be cascade deleted)
+            let owned_strategy_ids: Vec<String> = cfg
+                .strategies
+                .iter()
+                .filter(|s| s.parent.as_ref() == Some(&client_id.to_string()))
+                .map(|s| s.id.clone())
+                .collect();
+
             // Remove client
             cfg.clients.retain(|c| c.id != client_id);
 
             // Cascade delete owned strategies
             cfg.strategies
                 .retain(|s| s.parent.as_ref() != Some(&client_id.to_string()));
+
+            // Clean up any other clients that reference the deleted strategies
+            // (e.g., test clients created by "Try It Out")
+            cfg.clients
+                .retain(|c| !owned_strategy_ids.contains(&c.strategy_id));
         })?;
 
         Ok(())
