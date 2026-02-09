@@ -60,6 +60,11 @@ function ClientSubmenu({ client }: { client: (typeof mockData.clients)[0] }) {
       {/* Client name header (disabled) */}
       <MenuItem label={client.name} disabled />
 
+      {/* Enable/disable toggle */}
+      <MenuItem
+        label={client.enabled ? '● Enabled' : '○ Disabled'}
+      />
+
       {/* Copy actions */}
       <MenuItem
         icon={<Copy className="w-3 h-3" />}

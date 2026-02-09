@@ -293,10 +293,26 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   'clear_client_mcp_child_permissions': (args) => {
     const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.clientId)
     if (client) {
-      client.mcp_permissions.servers = {}
-      client.mcp_permissions.tools = {}
-      client.mcp_permissions.resources = {}
-      client.mcp_permissions.prompts = {}
+      const serverId = args?.serverId
+      if (serverId) {
+        // Only clear children of the specific server
+        const prefix = `${serverId}__`
+        for (const key of Object.keys(client.mcp_permissions.tools)) {
+          if (key.startsWith(prefix)) delete client.mcp_permissions.tools[key]
+        }
+        for (const key of Object.keys(client.mcp_permissions.resources)) {
+          if (key.startsWith(prefix)) delete client.mcp_permissions.resources[key]
+        }
+        for (const key of Object.keys(client.mcp_permissions.prompts)) {
+          if (key.startsWith(prefix)) delete client.mcp_permissions.prompts[key]
+        }
+      } else {
+        // Clear all children
+        client.mcp_permissions.servers = {}
+        client.mcp_permissions.tools = {}
+        client.mcp_permissions.resources = {}
+        client.mcp_permissions.prompts = {}
+      }
       // Emit clients-changed event to trigger UI refresh
       setTimeout(() => emit('clients-changed', {}), 10)
     }
@@ -305,8 +321,18 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   'clear_client_skills_child_permissions': (args) => {
     const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.clientId)
     if (client) {
-      client.skills_permissions.skills = {}
-      client.skills_permissions.tools = {}
+      const skillName = args?.skillName
+      if (skillName) {
+        // Only clear children of the specific skill
+        const prefix = `${skillName}__`
+        for (const key of Object.keys(client.skills_permissions.tools)) {
+          if (key.startsWith(prefix)) delete client.skills_permissions.tools[key]
+        }
+      } else {
+        // Clear all children
+        client.skills_permissions.skills = {}
+        client.skills_permissions.tools = {}
+      }
       // Emit clients-changed event to trigger UI refresh
       setTimeout(() => emit('clients-changed', {}), 10)
     }
@@ -315,8 +341,18 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   'clear_client_model_child_permissions': (args) => {
     const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.clientId)
     if (client) {
-      client.model_permissions.providers = {}
-      client.model_permissions.models = {}
+      const provider = args?.provider
+      if (provider) {
+        // Only clear children of the specific provider
+        const prefix = `${provider}__`
+        for (const key of Object.keys(client.model_permissions.models)) {
+          if (key.startsWith(prefix)) delete client.model_permissions.models[key]
+        }
+      } else {
+        // Clear all children
+        client.model_permissions.providers = {}
+        client.model_permissions.models = {}
+      }
       // Emit clients-changed event to trigger UI refresh
       setTimeout(() => emit('clients-changed', {}), 10)
     }
@@ -329,7 +365,11 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   'list_provider_instances': () => mockData.providers,
   'list_provider_types': () => mockData.providerTypes,
   'get_provider_instance': (args) => mockData.providers.find(p => p.instance_name === args?.instanceName),
-  'get_provider_config': (args) => mockData.providers.find(p => p.instance_name === args?.instanceName),
+  'get_provider_config': (args) => {
+    const provider = mockData.providers.find(p => p.instance_name === args?.instanceName)
+    if (!provider) return {}
+    return { api_key: 'sk-demo-key-1234567890', base_url: 'https://api.openai.com/v1' }
+  },
   'create_provider_instance': (args) => {
     const newProvider = {
       instance_name: args?.instanceName || `provider-${generateId()}`,
@@ -344,10 +384,20 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   },
   'update_provider_instance': (args) => {
     const provider = mockData.providers.find(p => p.instance_name === args?.instanceName)
-    if (provider && args?.updates) {
-      Object.assign(provider, args.updates)
+    if (provider && args?.config) {
+      Object.assign(provider, { config: args.config })
     }
     return null
+  },
+  'rename_provider_instance': (args) => {
+    const provider = mockData.providers.find(p => p.instance_name === args?.instanceName)
+    if (provider && args?.newName) {
+      provider.instance_name = args.newName
+    }
+    return null
+  },
+  'get_provider_api_key': (_args) => {
+    return 'sk-demo-key-1234567890'
   },
   'remove_provider_instance': (args) => {
     const idx = mockData.providers.findIndex(p => p.instance_name === args?.instanceName)
