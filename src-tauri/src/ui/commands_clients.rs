@@ -5,8 +5,8 @@
 use std::sync::Arc;
 
 use lr_config::{
-    client_strategy_name, ConfigManager, FirewallPolicy, FirewallRules, McpPermissions,
-    ModelPermissions, PermissionState, SkillsPermissions,
+    client_strategy_name, ConfigManager, McpPermissions, ModelPermissions, PermissionState,
+    SkillsPermissions,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, State};
@@ -35,8 +35,6 @@ pub struct ClientInfo {
     pub mcp_deferred_loading: bool,
     pub created_at: String,
     pub last_used: Option<String>,
-    /// Firewall rules for this client
-    pub firewall: FirewallRules,
     /// Unified MCP permissions (hierarchical Allow/Ask/Off)
     pub mcp_permissions: McpPermissions,
     /// Unified Skills permissions (hierarchical Allow/Ask/Off)
@@ -65,7 +63,6 @@ pub async fn list_clients(
             mcp_deferred_loading: c.mcp_deferred_loading,
             created_at: c.created_at.to_rfc3339(),
             last_used: c.last_used.map(|t| t.to_rfc3339()),
-            firewall: c.firewall.clone(),
             mcp_permissions: c.mcp_permissions.clone(),
             skills_permissions: c.skills_permissions.clone(),
             model_permissions: c.model_permissions.clone(),
@@ -121,7 +118,6 @@ pub async fn create_client(
         mcp_deferred_loading: client.mcp_deferred_loading,
         created_at: client.created_at.to_rfc3339(),
         last_used: client.last_used.map(|t| t.to_rfc3339()),
-        firewall: client.firewall.clone(),
         mcp_permissions: client.mcp_permissions.clone(),
         skills_permissions: client.skills_permissions.clone(),
         model_permissions: client.model_permissions.clone(),
@@ -611,129 +607,8 @@ pub async fn assign_client_strategy(
 }
 
 // ============================================================================
-// Firewall Commands
+// Firewall Approval Commands
 // ============================================================================
-
-/// Get firewall rules for a client
-#[tauri::command]
-pub async fn get_client_firewall_rules(
-    client_id: String,
-    config_manager: State<'_, ConfigManager>,
-) -> Result<FirewallRules, String> {
-    let config = config_manager.get();
-    let client = config
-        .clients
-        .iter()
-        .find(|c| c.id == client_id)
-        .ok_or_else(|| format!("Client not found: {}", client_id))?;
-    Ok(client.firewall.clone())
-}
-
-/// Set default firewall policy for a client
-#[tauri::command]
-pub async fn set_client_default_firewall_policy(
-    client_id: String,
-    policy: FirewallPolicy,
-    config_manager: State<'_, ConfigManager>,
-    app: tauri::AppHandle,
-) -> Result<(), String> {
-    tracing::info!(
-        "Setting default firewall policy for client {} to {:?}",
-        client_id,
-        policy
-    );
-
-    let mut found = false;
-    config_manager
-        .update(|cfg| {
-            if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
-                client.firewall.default_policy = policy.clone();
-                found = true;
-            }
-        })
-        .map_err(|e| e.to_string())?;
-
-    if !found {
-        return Err(format!("Client not found: {}", client_id));
-    }
-
-    config_manager.save().await.map_err(|e| e.to_string())?;
-
-    if let Err(e) = app.emit("clients-changed", ()) {
-        tracing::error!("Failed to emit clients-changed event: {}", e);
-    }
-
-    Ok(())
-}
-
-/// Set a firewall rule for a client
-///
-/// # Arguments
-/// * `client_id` - Client ID
-/// * `rule_type` - One of: "server", "tool", "skill", "skill_tool"
-/// * `key` - The rule key (server_id, tool_name, skill_name, or skill_tool_name)
-/// * `policy` - The policy to set, or null to remove the rule
-#[tauri::command]
-pub async fn set_client_firewall_rule(
-    client_id: String,
-    rule_type: String,
-    key: String,
-    policy: Option<FirewallPolicy>,
-    config_manager: State<'_, ConfigManager>,
-    app: tauri::AppHandle,
-) -> Result<(), String> {
-    tracing::info!(
-        "Setting firewall rule for client {}: type={}, key={}, policy={:?}",
-        client_id,
-        rule_type,
-        key,
-        policy
-    );
-
-    // Validate rule_type before updating config
-    if !["server", "tool", "skill", "skill_tool"].contains(&rule_type.as_str()) {
-        return Err(format!(
-            "Invalid rule_type '{}': must be one of server, tool, skill, skill_tool",
-            rule_type
-        ));
-    }
-
-    let mut found = false;
-    config_manager
-        .update(|cfg| {
-            if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
-                let rules_map = match rule_type.as_str() {
-                    "server" => &mut client.firewall.server_rules,
-                    "tool" => &mut client.firewall.tool_rules,
-                    "skill" => &mut client.firewall.skill_rules,
-                    "skill_tool" => &mut client.firewall.skill_tool_rules,
-                    _ => unreachable!(), // validated above
-                };
-                match policy {
-                    Some(p) => {
-                        rules_map.insert(key.clone(), p);
-                    }
-                    None => {
-                        rules_map.remove(&key);
-                    }
-                }
-                found = true;
-            }
-        })
-        .map_err(|e| e.to_string())?;
-
-    if !found {
-        return Err(format!("Client not found: {}", client_id));
-    }
-
-    config_manager.save().await.map_err(|e| e.to_string())?;
-
-    if let Err(e) = app.emit("clients-changed", ()) {
-        tracing::error!("Failed to emit clients-changed event: {}", e);
-    }
-
-    Ok(())
-}
 
 /// Submit a response to a pending firewall approval request
 #[tauri::command]
@@ -753,11 +628,13 @@ pub async fn submit_firewall_approval(
         action
     );
 
-    // If AllowPermanent or Allow1Hour, get the pending session info before submitting
+    // If AllowPermanent, Allow1Hour, or DenyAlways, get the pending session info before submitting
     // so we can update client permissions or add time-based approval
     let pending_info = if matches!(
         action,
-        FirewallApprovalAction::AllowPermanent | FirewallApprovalAction::Allow1Hour
+        FirewallApprovalAction::AllowPermanent
+            | FirewallApprovalAction::Allow1Hour
+            | FirewallApprovalAction::DenyAlways
     ) {
         state
             .mcp_gateway
@@ -820,6 +697,22 @@ pub async fn submit_firewall_approval(
                 );
             }
         }
+        FirewallApprovalAction::DenyAlways => {
+            if let Some(ref info) = pending_info {
+                if info.is_model_request {
+                    // Update model permissions to Off
+                    update_model_permission_for_deny_permanent(&app, &config_manager, info).await?;
+                } else {
+                    // Update MCP/skill tool permissions to Off
+                    update_permission_for_deny_permanent(&app, &config_manager, info).await?;
+                }
+            } else {
+                tracing::warn!(
+                    "DenyAlways requested but couldn't find pending info for request {}",
+                    request_id
+                );
+            }
+        }
         _ => {}
     }
 
@@ -868,6 +761,12 @@ async fn update_model_permission_for_allow_permanent(
         })
         .map_err(|e: lr_types::AppError| e.to_string())?;
 
+    // Save config to disk
+    config_manager
+        .save()
+        .await
+        .map_err(|e: lr_types::AppError| e.to_string())?;
+
     // Emit clients-changed event
     if let Err(e) = app.emit("clients-changed", ()) {
         tracing::error!("Failed to emit clients-changed event: {}", e);
@@ -912,25 +811,18 @@ async fn update_permission_for_allow_permanent(
                         skill_name,
                         info.tool_name
                     );
-                } else if info.tool_name.contains("__") {
-                    // This is an MCP tool - update mcp_permissions.tools
-                    // Tool name format: "server__tool_name"
-                    client
-                        .mcp_permissions
-                        .tools
-                        .insert(info.tool_name.clone(), PermissionState::Allow);
-                    tracing::info!("Set MCP tool permission to Allow: {}", info.tool_name);
                 } else {
-                    // Unknown format, try to set as MCP tool with server prefix
-                    let key = format!("{}__{}", info.server_name, info.tool_name);
+                    // MCP tool — info.server_name is the server UUID,
+                    // info.tool_name is the namespaced name (slug__original_name).
+                    // Permission key must be UUID__original_name to match resolve_tool() and UI.
+                    let original_name =
+                        info.tool_name.split("__").nth(1).unwrap_or(&info.tool_name);
+                    let key = format!("{}__{}", info.server_name, original_name);
                     client
                         .mcp_permissions
                         .tools
                         .insert(key.clone(), PermissionState::Allow);
-                    tracing::info!(
-                        "Set MCP tool permission to Allow (constructed key): {}",
-                        key
-                    );
+                    tracing::info!("Set MCP tool permission to Allow: {}", key);
                 }
             } else {
                 tracing::warn!(
@@ -939,6 +831,122 @@ async fn update_permission_for_allow_permanent(
                 );
             }
         })
+        .map_err(|e: lr_types::AppError| e.to_string())?;
+
+    // Save config to disk
+    config_manager
+        .save()
+        .await
+        .map_err(|e: lr_types::AppError| e.to_string())?;
+
+    // Emit clients-changed event
+    if let Err(e) = app.emit("clients-changed", ()) {
+        tracing::error!("Failed to emit clients-changed event: {}", e);
+    }
+
+    Ok(())
+}
+
+/// Helper to update model permissions when DenyAlways is selected for a model request
+async fn update_model_permission_for_deny_permanent(
+    app: &tauri::AppHandle,
+    config_manager: &ConfigManager,
+    info: &lr_mcp::gateway::firewall::PendingApprovalInfo,
+) -> Result<(), String> {
+    use lr_config::PermissionState;
+
+    tracing::info!(
+        "Updating model permissions for DenyAlways: client={}, provider={}, model={}",
+        info.client_id,
+        info.server_name, // provider
+        info.tool_name    // model_id
+    );
+
+    config_manager
+        .update(|cfg| {
+            if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == info.client_id) {
+                let model_key = format!("{}__{}", info.server_name, info.tool_name);
+                client
+                    .model_permissions
+                    .models
+                    .insert(model_key.clone(), PermissionState::Off);
+                tracing::info!("Set model permission to Off: {}", model_key);
+            } else {
+                tracing::warn!(
+                    "Client {} not found for DenyAlways model update",
+                    info.client_id
+                );
+            }
+        })
+        .map_err(|e: lr_types::AppError| e.to_string())?;
+
+    // Save config to disk
+    config_manager
+        .save()
+        .await
+        .map_err(|e: lr_types::AppError| e.to_string())?;
+
+    // Emit clients-changed event
+    if let Err(e) = app.emit("clients-changed", ()) {
+        tracing::error!("Failed to emit clients-changed event: {}", e);
+    }
+
+    Ok(())
+}
+
+/// Helper to update client permissions when DenyAlways is selected for MCP/skill tools
+async fn update_permission_for_deny_permanent(
+    app: &tauri::AppHandle,
+    config_manager: &ConfigManager,
+    info: &lr_mcp::gateway::firewall::PendingApprovalInfo,
+) -> Result<(), String> {
+    use lr_config::PermissionState;
+
+    tracing::info!(
+        "Updating permissions for DenyAlways: client={}, tool={}, server={}",
+        info.client_id,
+        info.tool_name,
+        info.server_name
+    );
+
+    config_manager
+        .update(|cfg| {
+            if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == info.client_id) {
+                if info.tool_name.starts_with("skill_") {
+                    let skill_name = &info.server_name;
+                    let key = format!("{}__{}", skill_name, info.tool_name);
+                    client
+                        .skills_permissions
+                        .tools
+                        .insert(key, PermissionState::Off);
+                    tracing::info!(
+                        "Set skill tool permission to Off: skill={}, tool={}",
+                        skill_name,
+                        info.tool_name
+                    );
+                } else {
+                    // MCP tool — info.server_name is the server UUID,
+                    // info.tool_name is the namespaced name (slug__original_name).
+                    // Permission key must be UUID__original_name to match resolve_tool() and UI.
+                    let original_name =
+                        info.tool_name.split("__").nth(1).unwrap_or(&info.tool_name);
+                    let key = format!("{}__{}", info.server_name, original_name);
+                    client
+                        .mcp_permissions
+                        .tools
+                        .insert(key.clone(), PermissionState::Off);
+                    tracing::info!("Set MCP tool permission to Off: {}", key);
+                }
+            } else {
+                tracing::warn!("Client {} not found for DenyAlways update", info.client_id);
+            }
+        })
+        .map_err(|e: lr_types::AppError| e.to_string())?;
+
+    // Save config to disk
+    config_manager
+        .save()
+        .await
         .map_err(|e: lr_types::AppError| e.to_string())?;
 
     // Emit clients-changed event
@@ -1240,24 +1248,48 @@ pub async fn set_client_model_permission(
     Ok(())
 }
 
-/// Clear all child MCP permissions for a client (servers, tools, resources, prompts)
-/// Called when global permission changes to cascade the change
+/// Clear child MCP permissions for a client
+/// If server_id is provided, only clears children of that server (tools, resources, prompts)
+/// If server_id is None, clears all children (servers, tools, resources, prompts)
 #[tauri::command]
 pub async fn clear_client_mcp_child_permissions(
     client_id: String,
+    server_id: Option<String>,
     config_manager: State<'_, ConfigManager>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    tracing::info!("Clearing MCP child permissions for client {}", client_id);
+    tracing::info!(
+        "Clearing MCP child permissions for client {}, server_id: {:?}",
+        client_id,
+        server_id
+    );
 
     let mut found = false;
     config_manager
         .update(|cfg| {
             if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
-                client.mcp_permissions.servers.clear();
-                client.mcp_permissions.tools.clear();
-                client.mcp_permissions.resources.clear();
-                client.mcp_permissions.prompts.clear();
+                if let Some(ref sid) = server_id {
+                    // Only clear children of the specific server
+                    let prefix = format!("{sid}__");
+                    client
+                        .mcp_permissions
+                        .tools
+                        .retain(|k, _| !k.starts_with(&prefix));
+                    client
+                        .mcp_permissions
+                        .resources
+                        .retain(|k, _| !k.starts_with(&prefix));
+                    client
+                        .mcp_permissions
+                        .prompts
+                        .retain(|k, _| !k.starts_with(&prefix));
+                } else {
+                    // Clear all children
+                    client.mcp_permissions.servers.clear();
+                    client.mcp_permissions.tools.clear();
+                    client.mcp_permissions.resources.clear();
+                    client.mcp_permissions.prompts.clear();
+                }
                 found = true;
             }
         })
@@ -1276,22 +1308,38 @@ pub async fn clear_client_mcp_child_permissions(
     Ok(())
 }
 
-/// Clear all child Skills permissions for a client (skills, tools)
-/// Called when global permission changes to cascade the change
+/// Clear child Skills permissions for a client
+/// If skill_name is provided, only clears children of that skill (tools)
+/// If skill_name is None, clears all children (skills, tools)
 #[tauri::command]
 pub async fn clear_client_skills_child_permissions(
     client_id: String,
+    skill_name: Option<String>,
     config_manager: State<'_, ConfigManager>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    tracing::info!("Clearing Skills child permissions for client {}", client_id);
+    tracing::info!(
+        "Clearing Skills child permissions for client {}, skill_name: {:?}",
+        client_id,
+        skill_name
+    );
 
     let mut found = false;
     config_manager
         .update(|cfg| {
             if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
-                client.skills_permissions.skills.clear();
-                client.skills_permissions.tools.clear();
+                if let Some(ref sname) = skill_name {
+                    // Only clear children of the specific skill
+                    let prefix = format!("{sname}__");
+                    client
+                        .skills_permissions
+                        .tools
+                        .retain(|k, _| !k.starts_with(&prefix));
+                } else {
+                    // Clear all children
+                    client.skills_permissions.skills.clear();
+                    client.skills_permissions.tools.clear();
+                }
                 found = true;
             }
         })
@@ -1310,22 +1358,38 @@ pub async fn clear_client_skills_child_permissions(
     Ok(())
 }
 
-/// Clear all child Model permissions for a client (providers, models)
-/// Called when global permission changes to cascade the change
+/// Clear child Model permissions for a client
+/// If provider is provided, only clears children of that provider (models)
+/// If provider is None, clears all children (providers, models)
 #[tauri::command]
 pub async fn clear_client_model_child_permissions(
     client_id: String,
+    provider: Option<String>,
     config_manager: State<'_, ConfigManager>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    tracing::info!("Clearing Model child permissions for client {}", client_id);
+    tracing::info!(
+        "Clearing Model child permissions for client {}, provider: {:?}",
+        client_id,
+        provider
+    );
 
     let mut found = false;
     config_manager
         .update(|cfg| {
             if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
-                client.model_permissions.providers.clear();
-                client.model_permissions.models.clear();
+                if let Some(ref prov) = provider {
+                    // Only clear children of the specific provider
+                    let prefix = format!("{prov}__");
+                    client
+                        .model_permissions
+                        .models
+                        .retain(|k, _| !k.starts_with(&prefix));
+                } else {
+                    // Clear all children
+                    client.model_permissions.providers.clear();
+                    client.model_permissions.models.clear();
+                }
                 found = true;
             }
         })

@@ -527,7 +527,150 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                 // Set app handle on AppState for event emission
                 app_state.set_app_handle(app.handle().clone());
 
-                app.manage(Arc::new(app_state));
+                let app_state = Arc::new(app_state);
+                app.manage(app_state.clone());
+
+                // Listen for client permission changes and notify connected MCP clients
+                let app_state_for_clients = app_state.clone();
+                let config_manager_for_notify = config_manager.clone();
+                app.listen("clients-changed", move |_event| {
+                    let config = config_manager_for_notify.get();
+                    let all_enabled_server_ids: Vec<String> = config
+                        .mcp_servers
+                        .iter()
+                        .filter(|s| s.enabled)
+                        .map(|s| s.id.clone())
+                        .collect();
+
+                    let broadcast = app_state_for_clients.client_notification_broadcast.clone();
+                    app_state_for_clients
+                        .mcp_gateway
+                        .check_and_notify_permission_changes(
+                            &config.clients,
+                            &all_enabled_server_ids,
+                            |client_id, tools, resources, prompts| {
+                                use mcp::gateway::streaming_notifications::StreamingNotificationType;
+                                if tools {
+                                    let _ = broadcast.send((
+                                        client_id.to_string(),
+                                        StreamingNotificationType::ToolsListChanged
+                                            .to_notification(),
+                                    ));
+                                }
+                                if resources {
+                                    let _ = broadcast.send((
+                                        client_id.to_string(),
+                                        StreamingNotificationType::ResourcesListChanged
+                                            .to_notification(),
+                                    ));
+                                }
+                                if prompts {
+                                    let _ = broadcast.send((
+                                        client_id.to_string(),
+                                        StreamingNotificationType::PromptsListChanged
+                                            .to_notification(),
+                                    ));
+                                }
+                                info!(
+                                    "Sent permission change notifications to client {}: tools={}, resources={}, prompts={}",
+                                    client_id, tools, resources, prompts
+                                );
+                            },
+                        );
+                });
+                info!("Registered clients-changed listener for permission notifications");
+
+                // Spawn firewall approval popup listener
+                // Subscribes to MCP notification broadcast and opens popup windows
+                // when firewall/approvalRequired notifications arrive
+                let app_handle_for_firewall = app.handle().clone();
+                let firewall_broadcast_rx =
+                    app_state.mcp_notification_broadcast.subscribe();
+                tokio::spawn(async move {
+                    use tauri::WebviewWindowBuilder;
+                    let mut rx = firewall_broadcast_rx;
+                    loop {
+                        match rx.recv().await {
+                            Ok((channel, notification)) => {
+                                if channel != "_firewall" {
+                                    continue;
+                                }
+                                // Extract request_id from notification params
+                                let request_id = notification
+                                    .params
+                                    .as_ref()
+                                    .and_then(|p| p.get("request_id"))
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+
+                                if request_id.is_empty() {
+                                    tracing::warn!(
+                                        "Firewall notification missing request_id, skipping"
+                                    );
+                                    continue;
+                                }
+
+                                tracing::info!(
+                                    "Opening firewall approval popup for request {}",
+                                    request_id
+                                );
+
+                                // Rebuild tray menu to show the pending approval
+                                if let Err(e) =
+                                    crate::ui::tray::rebuild_tray_menu(&app_handle_for_firewall)
+                                {
+                                    tracing::warn!(
+                                        "Failed to rebuild tray menu for firewall: {}",
+                                        e
+                                    );
+                                }
+                                if let Some(tgm) = app_handle_for_firewall
+                                    .try_state::<Arc<crate::ui::tray::TrayGraphManager>>()
+                                {
+                                    tgm.notify_activity();
+                                }
+
+                                // Create popup window
+                                match WebviewWindowBuilder::new(
+                                    &app_handle_for_firewall,
+                                    format!("firewall-approval-{}", request_id),
+                                    tauri::WebviewUrl::App("index.html".into()),
+                                )
+                                .title("Approval Required")
+                                .inner_size(400.0, 320.0)
+                                .center()
+                                .visible(true)
+                                .resizable(false)
+                                .decorations(true)
+                                .always_on_top(true)
+                                .build()
+                                {
+                                    Ok(window) => {
+                                        let _ = window.set_focus();
+                                    }
+                                    Err(e) => {
+                                        tracing::error!(
+                                            "Failed to create firewall popup: {}",
+                                            e
+                                        );
+                                    }
+                                }
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                                tracing::warn!(
+                                    "Firewall listener lagged, missed {} notifications",
+                                    n
+                                );
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                                tracing::info!("Firewall broadcast channel closed, stopping listener");
+                                break;
+                            }
+                        }
+                    }
+                });
+                info!("Spawned firewall approval popup listener");
             } else {
                 error!("Failed to get AppState from server manager");
             }
@@ -929,6 +1072,8 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::create_provider_instance,
             ui::commands::get_provider_config,
             ui::commands::update_provider_instance,
+            ui::commands::rename_provider_instance,
+            ui::commands::get_provider_api_key,
             ui::commands::remove_provider_instance,
             ui::commands::set_provider_enabled,
             ui::commands::get_providers_health,
@@ -1040,10 +1185,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::delete_strategy,
             ui::commands::get_clients_using_strategy,
             ui::commands::assign_client_strategy,
-            // Firewall commands
-            ui::commands::get_client_firewall_rules,
-            ui::commands::set_client_default_firewall_policy,
-            ui::commands::set_client_firewall_rule,
+            // Firewall approval commands
             ui::commands::submit_firewall_approval,
             ui::commands::list_pending_firewall_approvals,
             ui::commands::get_firewall_approval_details,

@@ -7,7 +7,8 @@
 use crate::ui::tray_menu::{
     build_tray_menu, copy_to_clipboard, handle_add_mcp_to_client, handle_copy_mcp_bearer,
     handle_copy_mcp_url, handle_copy_url, handle_create_and_copy_api_key, handle_prioritized_list,
-    handle_set_client_strategy, handle_toggle_mcp_access, handle_toggle_skill_access,
+    handle_set_client_strategy, handle_toggle_client_enabled, handle_toggle_mcp_access,
+    handle_toggle_skill_access,
 };
 use lr_utils::test_mode::is_test_mode;
 use parking_lot::RwLock;
@@ -346,6 +347,19 @@ pub fn setup_tray<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
                                 }
                             });
                         }
+                    }
+                    // Handle toggle client enabled: toggle_client_enabled_<client_id>
+                    else if let Some(client_id) = id.strip_prefix("toggle_client_enabled_") {
+                        info!("Toggle client enabled requested: {}", client_id);
+                        let app_clone = app.clone();
+                        let client_id = client_id.to_string();
+                        tauri::async_runtime::spawn(async move {
+                            if let Err(e) =
+                                handle_toggle_client_enabled(&app_clone, &client_id).await
+                            {
+                                error!("Failed to toggle client enabled: {}", e);
+                            }
+                        });
                     }
                     // Handle copy client ID: copy_client_id_<client_id>
                     else if let Some(client_id) = id.strip_prefix("copy_client_id_") {

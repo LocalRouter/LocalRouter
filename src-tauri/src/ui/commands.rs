@@ -1949,6 +1949,7 @@ pub async fn debug_trigger_firewall_popup(
     .visible(true)
     .resizable(false)
     .decorations(true)
+    .always_on_top(true)
     .build()
     {
         Ok(window) => {

@@ -239,6 +239,15 @@ pub(crate) fn build_tray_menu<R: Runtime, M: Manager<R>>(
                 )?;
                 client_submenu = client_submenu.item(&client_name_header);
 
+                // Enable/disable toggle
+                let toggle_label = if client.enabled {
+                    format!("{ICON_PAD}●{ICON_PAD} Enabled")
+                } else {
+                    format!("{ICON_PAD}○{ICON_PAD} Disabled")
+                };
+                client_submenu = client_submenu
+                    .text(format!("toggle_client_enabled_{}", client.id), toggle_label);
+
                 client_submenu = client_submenu.text(
                     format!("copy_client_id_{}", client.id),
                     format!("{ICON_PAD}⧉{ICON_PAD} Copy Client ID (OAuth)"),
@@ -893,6 +902,59 @@ pub(crate) async fn handle_toggle_mcp_access<R: Runtime>(
             .add_mcp_server(client_id, server_id)
             .map_err(|e| tauri::Error::Anyhow(e.into()))?;
         info!("MCP {} added to client {}", server_id, client_id);
+    }
+
+    // Save to config
+    config_manager
+        .update(|cfg| {
+            cfg.clients = client_manager.get_configs();
+        })
+        .map_err(|e| tauri::Error::Anyhow(e.into()))?;
+
+    config_manager
+        .save()
+        .await
+        .map_err(|e| tauri::Error::Anyhow(e.into()))?;
+
+    // Rebuild tray menu
+    rebuild_tray_menu(app)?;
+
+    // Emit event for UI updates
+    if let Err(e) = app.emit("clients-changed", ()) {
+        error!("Failed to emit clients-changed event: {}", e);
+    }
+
+    Ok(())
+}
+
+/// Handle toggling a client's enabled state
+pub(crate) async fn handle_toggle_client_enabled<R: Runtime>(
+    app: &AppHandle<R>,
+    client_id: &str,
+) -> tauri::Result<()> {
+    info!("Toggling enabled state for client {}", client_id);
+
+    let client_manager = app.state::<Arc<ClientManager>>();
+    let config_manager = app.state::<ConfigManager>();
+
+    // Check current state and toggle
+    let is_enabled = client_manager
+        .list_clients()
+        .iter()
+        .find(|c| c.id == client_id)
+        .map(|c| c.enabled)
+        .unwrap_or(true);
+
+    if is_enabled {
+        client_manager
+            .disable_client(client_id)
+            .map_err(|e| tauri::Error::Anyhow(e.into()))?;
+        info!("Client {} disabled", client_id);
+    } else {
+        client_manager
+            .enable_client(client_id)
+            .map_err(|e| tauri::Error::Anyhow(e.into()))?;
+        info!("Client {} enabled", client_id);
     }
 
     // Save to config

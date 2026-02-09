@@ -252,6 +252,115 @@ pub async fn update_provider_instance(
     Ok(())
 }
 
+/// Rename a provider instance
+///
+/// # Arguments
+/// * `instance_name` - Current name of the provider instance
+/// * `new_name` - New name for the provider instance
+///
+/// # Returns
+/// * `Ok(())` if the provider was renamed successfully
+/// * `Err(String)` with error message if rename failed
+#[tauri::command]
+pub async fn rename_provider_instance(
+    registry: State<'_, Arc<ProviderRegistry>>,
+    config_manager: State<'_, ConfigManager>,
+    app_state: State<'_, Arc<lr_server::state::AppState>>,
+    app: tauri::AppHandle,
+    instance_name: String,
+    new_name: String,
+) -> Result<(), String> {
+    let new_name = new_name.trim().to_string();
+    if instance_name == new_name {
+        return Ok(());
+    }
+    if new_name.is_empty() {
+        return Err("Provider name cannot be empty".to_string());
+    }
+
+    // Check new name doesn't conflict
+    let instances = registry.list_providers();
+    if instances.iter().any(|i| i.instance_name == new_name) {
+        return Err(format!("Provider '{}' already exists", new_name));
+    }
+
+    // Get current state
+    let old_info = instances
+        .iter()
+        .find(|i| i.instance_name == instance_name)
+        .ok_or_else(|| format!("Provider '{}' not found", instance_name))?;
+    let provider_type = old_info.provider_type.clone();
+    let was_enabled = old_info.enabled;
+
+    let config = registry
+        .get_provider_config(&instance_name)
+        .ok_or_else(|| format!("Provider '{}' config not found", instance_name))?;
+
+    // Remove old instance from registry
+    registry
+        .remove_provider(&instance_name)
+        .map_err(|e| e.to_string())?;
+
+    // Create new instance with new name
+    registry
+        .create_provider(new_name.clone(), provider_type, config)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Restore enabled state
+    if !was_enabled {
+        let _ = registry.set_provider_enabled(&new_name, false);
+    }
+
+    // Update config file
+    config_manager
+        .update(|cfg| {
+            if let Some(provider) = cfg.providers.iter_mut().find(|p| p.name == instance_name) {
+                provider.name = new_name.clone();
+            }
+        })
+        .map_err(|e| e.to_string())?;
+
+    // Persist to disk
+    config_manager.save().await.map_err(|e| e.to_string())?;
+
+    // Update health cache
+    app_state.health_cache.remove_provider(&instance_name);
+
+    // Notify frontend that providers and models changed
+    let _ = app.emit("providers-changed", ());
+    let _ = app.emit("models-changed", ());
+
+    Ok(())
+}
+
+/// Retrieve a provider API key from the system keyring
+///
+/// Resolves the correct keyring lookup name from the provider's config
+/// (uses api_key_ref if set, otherwise the provider name).
+///
+/// # Arguments
+/// * `instance_name` - Name of the provider instance
+///
+/// # Returns
+/// * `Ok(Some(key))` if key exists
+/// * `Ok(None)` if no key is stored
+#[tauri::command]
+pub async fn get_provider_api_key(
+    config_manager: State<'_, ConfigManager>,
+    instance_name: String,
+) -> Result<Option<String>, String> {
+    let config = config_manager.get();
+    let key_ref = config
+        .providers
+        .iter()
+        .find(|p| p.name == instance_name)
+        .map(|p| p.api_key_ref.as_deref().unwrap_or(&p.name).to_string())
+        .unwrap_or(instance_name);
+
+    lr_providers::key_storage::get_provider_key(&key_ref).map_err(|e| e.to_string())
+}
+
 /// Helper function to convert provider type string to enum
 fn provider_type_str_to_enum(provider_type: &str) -> lr_config::ProviderType {
     match provider_type {
