@@ -1,0 +1,65 @@
+#!/bin/bash
+
+# Script to build and run LocalRouter in release mode
+# Builds with cargo build --release, then starts frontend + backend
+
+set -e
+
+# Colors for output
+GREEN='\033[0;32m'
+BLUE='\033[0;34m'
+RED='\033[0;31m'
+NC='\033[0m' # No Color
+
+# Store PIDs
+FRONTEND_PID=""
+BACKEND_PID=""
+
+# Cleanup function
+cleanup() {
+    echo -e "\n${RED}Shutting down...${NC}"
+
+    if [ ! -z "$FRONTEND_PID" ]; then
+        echo -e "${BLUE}Stopping frontend (PID: $FRONTEND_PID)${NC}"
+        kill $FRONTEND_PID 2>/dev/null || true
+    fi
+
+    if [ ! -z "$BACKEND_PID" ]; then
+        echo -e "${BLUE}Stopping backend (PID: $BACKEND_PID)${NC}"
+        kill $BACKEND_PID 2>/dev/null || true
+    fi
+
+    echo -e "${GREEN}Cleanup complete${NC}"
+    exit 0
+}
+
+# Set up trap to catch Ctrl+C and other termination signals
+trap cleanup SIGINT SIGTERM
+
+echo -e "${GREEN}Building LocalRouter in release mode...${NC}"
+cargo build --release
+
+echo -e "\n${GREEN}Starting LocalRouter in release mode...${NC}"
+
+# Start frontend dev server
+echo -e "${BLUE}Starting frontend dev server...${NC}"
+npm run dev &
+FRONTEND_PID=$!
+echo -e "${GREEN}Frontend started (PID: $FRONTEND_PID)${NC}"
+
+# Wait a bit for frontend to start
+sleep 3
+
+# Start backend
+echo -e "${BLUE}Starting backend...${NC}"
+./target/release/localrouter &
+BACKEND_PID=$!
+echo -e "${GREEN}Backend started (PID: $BACKEND_PID)${NC}"
+
+echo -e "\n${GREEN}LocalRouter is running! (release)${NC}"
+echo -e "Frontend: http://localhost:1420"
+echo -e "API: http://localhost:3625"
+echo -e "\nPress ${RED}Ctrl+C${NC} to stop both processes\n"
+
+# Wait for both processes
+wait

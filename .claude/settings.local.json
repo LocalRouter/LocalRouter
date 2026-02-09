@@ -46,7 +46,15 @@
       "Bash(/Users/matus/dev/localrouterai/scripts/build-winxp.sh:*)",
       "Bash(./scripts/build-winxp.sh:*)",
       "Bash(RUST_LOG=lr_routellm::candle_router=debug cargo test:*)",
-      "Bash(while read id)"
+      "Bash(while read id)",
+      "mcp__localrouter__everything-mcp-server__echo",
+      "mcp__localrouter__demo__echo",
+      "Bash(LOCALROUTER_KEYCHAIN=file cargo test:*)",
+      "mcp__localrouter-dev__everything-mcp-server__echo"
     ]
-  }
+  },
+  "enableAllProjectMcpServers": true,
+  "enabledMcpjsonServers": [
+    "localrouter"
+  ]
 }
