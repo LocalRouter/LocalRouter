@@ -1315,6 +1315,19 @@ where
     deserializer.deserialize_any(SkillsAccessVisitor)
 }
 
+/// Client mode determines which features are exposed to the client
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ClientMode {
+    /// Full access to both LLM routing and MCP features
+    #[default]
+    Both,
+    /// Only LLM routing (no MCP servers or skills)
+    LlmOnly,
+    /// Only MCP proxy (no LLM model access)
+    McpOnly,
+}
+
 /// Unified client configuration (replaces ApiKeyConfig and OAuthClientConfig)
 ///
 /// A client can access both LLM routing and MCP servers using a single secret.
@@ -1423,6 +1436,14 @@ pub struct Client {
     /// Marketplace permission state (Allow/Ask/Off)
     #[serde(default)]
     pub marketplace_permission: PermissionState,
+
+    /// Client mode: controls which features (LLM, MCP, both) are exposed
+    #[serde(default)]
+    pub client_mode: ClientMode,
+
+    /// Template ID used to create this client (e.g., "claude-code", "cursor")
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template_id: Option<String>,
 }
 
 /// MCP server configuration
@@ -2092,6 +2113,8 @@ impl Client {
             skills_permissions: SkillsPermissions::default(),
             model_permissions: ModelPermissions::default(),
             marketplace_permission: PermissionState::default(),
+            client_mode: ClientMode::default(),
+            template_id: None,
         }
     }
 

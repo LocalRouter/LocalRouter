@@ -306,6 +306,8 @@ impl ConfigManager {
             skills_permissions: SkillsPermissions::default(),
             model_permissions: ModelPermissions::default(),
             marketplace_permission: PermissionState::default(),
+            client_mode: ClientMode::default(),
+            template_id: None,
         };
 
         self.update(|cfg| {
