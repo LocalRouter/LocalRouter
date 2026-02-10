@@ -141,6 +141,9 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 # Shell command parsing
 shell-words = "1.1"
 
+# Binary path lookup
+which = "7"
+
 # ZIP extraction
 zip = { version = "2.2", default-features = false, features = ["deflate"] }
 

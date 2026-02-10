@@ -190,9 +190,32 @@ pub fn setup_tray<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
                         info!("Firewall popup requested from tray for {}", request_id);
                         let app_clone = app.clone();
                         let request_id = request_id.to_string();
-                        // Emit event to open/focus the approval popup
-                        if let Err(e) = app_clone.emit("firewall-open-approval", &request_id) {
-                            error!("Failed to emit firewall-open-approval event: {}", e);
+                        // Try to focus existing popup window, or create a new one
+                        let window_label = format!("firewall-approval-{}", request_id);
+                        if let Some(window) = app_clone.get_webview_window(&window_label) {
+                            let _ = window.set_focus();
+                        } else {
+                            match tauri::WebviewWindowBuilder::new(
+                                &app_clone,
+                                &window_label,
+                                tauri::WebviewUrl::App("index.html".into()),
+                            )
+                            .title("Approval Required")
+                            .inner_size(400.0, 320.0)
+                            .center()
+                            .visible(true)
+                            .resizable(false)
+                            .decorations(true)
+                            .always_on_top(true)
+                            .build()
+                            {
+                                Ok(window) => {
+                                    let _ = window.set_focus();
+                                }
+                                Err(e) => {
+                                    error!("Failed to create firewall popup from tray: {}", e);
+                                }
+                            }
                         }
                     }
                     // Handle copy MCP URL: copy_mcp_url_<client_id>_<server_id>
@@ -491,7 +514,7 @@ fn handle_firewall_action_from_tray<R: Runtime>(
             if let Err(e) = app_state
                 .mcp_gateway
                 .firewall_manager
-                .submit_response(&request_id, action)
+                .submit_response(&request_id, action, None)
             {
                 error!("Failed to submit firewall response from tray: {}", e);
                 return;

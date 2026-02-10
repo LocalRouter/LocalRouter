@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod cli;
+mod launcher;
 mod ui;
 mod updater;
 
@@ -526,6 +527,10 @@ async fn run_gui_mode() -> anyhow::Result<()> {
 
                 // Set app handle on AppState for event emission
                 app_state.set_app_handle(app.handle().clone());
+
+                // Register access loggers for Tauri commands before wrapping in Arc
+                app.manage(app_state.access_logger.clone());
+                app.manage(app_state.mcp_access_logger.clone());
 
                 let app_state = Arc::new(app_state);
                 app.manage(app_state.clone());
@@ -1185,10 +1190,18 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::delete_strategy,
             ui::commands::get_clients_using_strategy,
             ui::commands::assign_client_strategy,
+            // Client template & mode commands
+            ui::commands::set_client_mode,
+            ui::commands::set_client_template,
+            // App launcher commands
+            ui::commands::get_app_capabilities,
+            ui::commands::try_it_out_app,
+            ui::commands::configure_app_permanent,
             // Firewall approval commands
             ui::commands::submit_firewall_approval,
             ui::commands::list_pending_firewall_approvals,
             ui::commands::get_firewall_approval_details,
+            ui::commands::get_firewall_full_arguments,
             // Unified permission commands
             ui::commands::set_client_mcp_permission,
             ui::commands::set_client_skills_permission,
@@ -1216,6 +1229,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::update_tray_graph_settings,
             // System commands
             ui::commands::get_home_dir,
+            ui::commands::get_config_dir,
             // Update checking commands
             ui::commands::get_app_version,
             ui::commands::get_update_config,

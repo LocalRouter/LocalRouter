@@ -1279,6 +1279,17 @@ pub fn get_home_dir() -> Result<String, String> {
         .map(|s| s.to_string())
 }
 
+/// Get user's config directory (platform-specific)
+/// macOS: ~/Library/Application Support, Linux: ~/.config, Windows: %APPDATA%
+#[tauri::command]
+pub fn get_config_dir() -> Result<String, String> {
+    dirs::config_dir()
+        .ok_or_else(|| "Failed to get config directory".to_string())?
+        .to_str()
+        .ok_or_else(|| "Invalid config directory path".to_string())
+        .map(|s| s.to_string())
+}
+
 /// Get current app version
 #[tauri::command]
 pub fn get_app_version() -> String {
@@ -1908,6 +1919,10 @@ pub async fn debug_trigger_firewall_popup(
         ),
     };
 
+    // Build full arguments for edit mode testing
+    let full_arguments: Option<serde_json::Value> =
+        serde_json::from_str(&arguments_preview).ok();
+
     // For debug purposes, we don't need a response channel since there's no
     // real MCP request waiting for the approval. Setting response_sender to None
     // allows the popup to work without errors when submitting a response.
@@ -1918,6 +1933,7 @@ pub async fn debug_trigger_firewall_popup(
         tool_name,
         server_name,
         arguments_preview,
+        full_arguments,
         response_sender: None, // No response channel for debug mode
         created_at: std::time::Instant::now(),
         timeout_seconds: timeout_secs,

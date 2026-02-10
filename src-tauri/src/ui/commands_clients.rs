@@ -5,8 +5,8 @@
 use std::sync::Arc;
 
 use lr_config::{
-    client_strategy_name, ConfigManager, McpPermissions, ModelPermissions, PermissionState,
-    SkillsPermissions,
+    client_strategy_name, ClientMode, ConfigManager, McpPermissions, ModelPermissions,
+    PermissionState, SkillsPermissions,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, State};
@@ -43,6 +43,10 @@ pub struct ClientInfo {
     pub model_permissions: ModelPermissions,
     /// Marketplace permission state
     pub marketplace_permission: PermissionState,
+    /// Client mode (both, llm_only, mcp_only)
+    pub client_mode: ClientMode,
+    /// Template ID used to create this client
+    pub template_id: Option<String>,
 }
 
 /// List all clients
@@ -67,6 +71,8 @@ pub async fn list_clients(
             skills_permissions: c.skills_permissions.clone(),
             model_permissions: c.model_permissions.clone(),
             marketplace_permission: c.marketplace_permission.clone(),
+            client_mode: c.client_mode.clone(),
+            template_id: c.template_id.clone(),
         })
         .collect())
 }
@@ -122,6 +128,8 @@ pub async fn create_client(
         skills_permissions: client.skills_permissions.clone(),
         model_permissions: client.model_permissions.clone(),
         marketplace_permission: client.marketplace_permission.clone(),
+        client_mode: client.client_mode.clone(),
+        template_id: client.template_id.clone(),
     };
 
     Ok((secret, client_info))
@@ -616,6 +624,7 @@ pub async fn submit_firewall_approval(
     app: tauri::AppHandle,
     request_id: String,
     action: lr_mcp::gateway::firewall::FirewallApprovalAction,
+    edited_arguments: Option<String>,
     state: State<'_, Arc<lr_server::state::AppState>>,
     config_manager: State<'_, ConfigManager>,
     tray_graph_manager: State<'_, Arc<crate::ui::tray::TrayGraphManager>>,
@@ -623,10 +632,16 @@ pub async fn submit_firewall_approval(
     use lr_mcp::gateway::firewall::FirewallApprovalAction;
 
     tracing::info!(
-        "Submitting firewall approval for request {}: {:?}",
+        "Submitting firewall approval for request {}: {:?} (has_edits: {})",
         request_id,
-        action
+        action,
+        edited_arguments.is_some()
     );
+
+    // Parse edited_arguments from JSON string to Value
+    let edited_args_value: Option<serde_json::Value> = edited_arguments
+        .as_ref()
+        .and_then(|s| serde_json::from_str(s).ok());
 
     // If AllowPermanent, Allow1Hour, or DenyAlways, get the pending session info before submitting
     // so we can update client permissions or add time-based approval
@@ -650,7 +665,7 @@ pub async fn submit_firewall_approval(
     state
         .mcp_gateway
         .firewall_manager
-        .submit_response(&request_id, action.clone())
+        .submit_response(&request_id, action.clone(), edited_args_value)
         .map_err(|e| e.to_string())?;
 
     // Handle special actions that modify permissions
@@ -973,6 +988,19 @@ pub async fn get_firewall_approval_details(
 ) -> Result<Option<lr_mcp::gateway::firewall::PendingApprovalInfo>, String> {
     let pending = state.mcp_gateway.firewall_manager.list_pending();
     Ok(pending.into_iter().find(|p| p.request_id == request_id))
+}
+
+/// Get full arguments for a pending firewall approval request (for edit mode)
+#[tauri::command]
+pub async fn get_firewall_full_arguments(
+    request_id: String,
+    state: State<'_, Arc<lr_server::state::AppState>>,
+) -> Result<Option<String>, String> {
+    let pending = state.mcp_gateway.firewall_manager.list_pending();
+    Ok(pending
+        .into_iter()
+        .find(|p| p.request_id == request_id)
+        .and_then(|p| p.full_arguments))
 }
 
 // ============================================================================
@@ -1453,4 +1481,190 @@ pub async fn set_client_marketplace_permission(
     }
 
     Ok(())
+}
+
+// ============================================================================
+// Client Template & Mode Commands
+// ============================================================================
+
+/// Set the client mode (both, llm_only, mcp_only)
+#[tauri::command]
+pub async fn set_client_mode(
+    client_id: String,
+    mode: ClientMode,
+    config_manager: State<'_, ConfigManager>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    tracing::info!("Setting client {} mode to: {:?}", client_id, mode);
+
+    let mut found = false;
+    config_manager
+        .update(|cfg| {
+            if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
+                client.client_mode = mode.clone();
+                found = true;
+            }
+        })
+        .map_err(|e| e.to_string())?;
+
+    if !found {
+        return Err(format!("Client not found: {}", client_id));
+    }
+
+    config_manager.save().await.map_err(|e| e.to_string())?;
+
+    if let Err(e) = app.emit("clients-changed", ()) {
+        tracing::error!("Failed to emit clients-changed event: {}", e);
+    }
+
+    Ok(())
+}
+
+/// Set the template ID for a client
+#[tauri::command]
+pub async fn set_client_template(
+    client_id: String,
+    template_id: Option<String>,
+    config_manager: State<'_, ConfigManager>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    tracing::info!(
+        "Setting client {} template_id to: {:?}",
+        client_id,
+        template_id
+    );
+
+    let mut found = false;
+    config_manager
+        .update(|cfg| {
+            if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
+                client.template_id = template_id.clone();
+                found = true;
+            }
+        })
+        .map_err(|e| e.to_string())?;
+
+    if !found {
+        return Err(format!("Client not found: {}", client_id));
+    }
+
+    config_manager.save().await.map_err(|e| e.to_string())?;
+
+    if let Err(e) = app.emit("clients-changed", ()) {
+        tracing::error!("Failed to emit clients-changed event: {}", e);
+    }
+
+    Ok(())
+}
+
+// ============================================================================
+// App Launcher Commands
+// ============================================================================
+
+/// App capabilities: installation status and supported modes
+#[derive(Debug, Serialize)]
+pub struct AppCapabilities {
+    pub installed: bool,
+    pub binary_path: Option<String>,
+    pub version: Option<String>,
+    pub supports_try_it_out: bool,
+    pub supports_permanent_config: bool,
+}
+
+/// Result of a configure or launch operation
+#[derive(Debug, Serialize)]
+pub struct LaunchResult {
+    pub success: bool,
+    pub message: String,
+    pub modified_files: Vec<String>,
+    pub backup_files: Vec<String>,
+    /// For CLI apps: the command the user should run in their terminal.
+    /// When set, the app was NOT spawned — the user needs to run it themselves.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub terminal_command: Option<String>,
+}
+
+/// Get app capabilities for a given template (installation status + supported modes)
+#[tauri::command]
+pub async fn get_app_capabilities(template_id: String) -> Result<AppCapabilities, String> {
+    use crate::launcher;
+
+    match launcher::get_integration(&template_id) {
+        Some(integration) => Ok(integration.check_installed()),
+        None => Ok(AppCapabilities {
+            installed: false,
+            binary_path: None,
+            version: None,
+            supports_try_it_out: false,
+            supports_permanent_config: false,
+        }),
+    }
+}
+
+/// Try it out: one-time terminal command, no permanent file changes
+#[tauri::command]
+pub async fn try_it_out_app(
+    client_id: String,
+    config_manager: State<'_, ConfigManager>,
+    client_manager: State<'_, Arc<lr_clients::ClientManager>>,
+) -> Result<LaunchResult, String> {
+    use crate::launcher;
+
+    let config = config_manager.get();
+    let client = config
+        .clients
+        .iter()
+        .find(|c| c.id == client_id)
+        .ok_or_else(|| format!("Client not found: {}", client_id))?;
+
+    let template_id = client
+        .template_id
+        .as_deref()
+        .ok_or("Client has no template_id set")?;
+
+    let integration = launcher::get_integration(template_id)
+        .ok_or_else(|| format!("No integration found for template: {}", template_id))?;
+
+    let base_url = format!("http://{}:{}", config.server.host, config.server.port);
+
+    let client_secret = client_manager
+        .get_secret(&client_id)
+        .map_err(|e| format!("Failed to get client secret: {}", e))?
+        .ok_or("Client secret not found in keychain")?;
+
+    integration.try_it_out(&base_url, &client_secret, &client_id)
+}
+
+/// Permanently configure the app to route through LocalRouter (modifies config files)
+#[tauri::command]
+pub async fn configure_app_permanent(
+    client_id: String,
+    config_manager: State<'_, ConfigManager>,
+    client_manager: State<'_, Arc<lr_clients::ClientManager>>,
+) -> Result<LaunchResult, String> {
+    use crate::launcher;
+
+    let config = config_manager.get();
+    let client = config
+        .clients
+        .iter()
+        .find(|c| c.id == client_id)
+        .ok_or_else(|| format!("Client not found: {}", client_id))?;
+
+    let template_id = client
+        .template_id
+        .as_deref()
+        .ok_or("Client has no template_id set")?;
+
+    let integration = launcher::get_integration(template_id)
+        .ok_or_else(|| format!("No integration found for template: {}", template_id))?;
+
+    let base_url = format!("http://{}:{}", config.server.host, config.server.port);
+
+    let client_secret = client_manager
+        .get_secret(&client_id)
+        .map_err(|e| format!("Failed to get client secret: {}", e))?
+        .ok_or("Client secret not found in keychain")?;
+
+    integration.configure_permanent(&base_url, &client_secret, &client_id)
 }

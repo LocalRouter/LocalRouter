@@ -166,7 +166,7 @@ pub(crate) fn build_tray_menu<R: Runtime, M: Manager<R>>(
                 approval.tool_name.clone()
             };
             let label = format!(
-                "❓ Approve: \"{}\" for {}",
+                "❓ Approval: \"{}\" for {}",
                 tool_display, approval.client_name
             );
 

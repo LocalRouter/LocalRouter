@@ -55,6 +55,7 @@ image = { workspace = true }
 arboard = { workspace = true }
 if-addrs = { workspace = true }
 dirs = { workspace = true }
+which = { workspace = true }
 dashmap = { workspace = true }
 serde_yaml = { workspace = true }
 keyring = { workspace = true }

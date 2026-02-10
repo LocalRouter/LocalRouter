@@ -5,6 +5,7 @@
 
 // Modules that remain in src-tauri
 pub mod cli;
+pub mod launcher;
 pub mod ui;
 pub mod updater;
 
