@@ -5,7 +5,7 @@ import {
   Settings,
   Server,
   Cpu,
-  Route,
+  // Route, // DEPRECATED: Strategy UI hidden
   RefreshCw,
   Plus,
   Store,
@@ -61,7 +61,7 @@ export function CommandPalette({
   providerTypes = [],
   models = [],
   mcpServers = [],
-  strategies = [],
+  strategies: _strategies = [], // DEPRECATED: Strategy UI hidden
 }: CommandPaletteProps) {
   const runCommand = React.useCallback(
     (command: () => void) => {
@@ -170,12 +170,13 @@ export function CommandPalette({
             <Server className="mr-2 h-4 w-4" />
             <span>Server Configuration</span>
           </CommandItem>
-          <CommandItem
+          {/* DEPRECATED: Strategy UI hidden - 1:1 client-to-strategy relationship */}
+          {/* <CommandItem
             onSelect={() => runCommand(() => onViewChange('settings', 'routing'))}
           >
             <Route className="mr-2 h-4 w-4" />
             <span>Strategies</span>
-          </CommandItem>
+          </CommandItem> */}
           <CommandItem
             onSelect={() => runCommand(() => onViewChange('settings', 'routellm'))}
           >
@@ -303,8 +304,8 @@ export function CommandPalette({
           </>
         )}
 
-        {/* Strategies search */}
-        {strategies.length > 0 && (
+        {/* DEPRECATED: Strategy search hidden - 1:1 client-to-strategy relationship */}
+        {/* {strategies.length > 0 && (
           <>
             <CommandSeparator />
             <CommandGroup heading="Strategies">
@@ -326,7 +327,7 @@ export function CommandPalette({
               ))}
             </CommandGroup>
           </>
-        )}
+        )} */}
 
         {/* Provider Templates (Add Provider) */}
         {providerTypes.length > 0 && onAddProvider && (

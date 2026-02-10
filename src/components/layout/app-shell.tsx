@@ -38,11 +38,12 @@ interface Model {
   provider: string
 }
 
-interface Strategy {
-  id: string
-  name: string
-  parent: string | null
-}
+// DEPRECATED: Strategy UI hidden - 1:1 client-to-strategy relationship
+// interface Strategy {
+//   id: string
+//   name: string
+//   parent: string | null
+// }
 
 interface AppShellProps {
   children: React.ReactNode
@@ -63,7 +64,8 @@ export function AppShell({
   const [providerTypes, setProviderTypes] = useState<ProviderType[]>([])
   const [mcpServers, setMcpServers] = useState<McpServer[]>([])
   const [models, setModels] = useState<Model[]>([])
-  const [strategies, setStrategies] = useState<Strategy[]>([])
+  // DEPRECATED: Strategy UI hidden - 1:1 client-to-strategy relationship
+  // const [strategies, setStrategies] = useState<Strategy[]>([])
 
   // Load data for command palette search
   useEffect(() => {
@@ -75,7 +77,8 @@ export function AppShell({
       listen('providers-changed', loadProviders),
       listen('mcp-servers-changed', loadMcpServers),
       listen('models-changed', loadModels),
-      listen('strategies-changed', loadStrategies),
+      // DEPRECATED: Strategy UI hidden - 1:1 client-to-strategy relationship
+      // listen('strategies-changed', loadStrategies),
     ]
 
     return () => {
@@ -93,7 +96,7 @@ export function AppShell({
       loadProviderTypes(),
       loadMcpServers(),
       loadModels(),
-      loadStrategies(),
+      // DEPRECATED: loadStrategies(),
     ])
   }
 
@@ -142,14 +145,15 @@ export function AppShell({
     }
   }
 
-  const loadStrategies = async () => {
-    try {
-      const strategyList = await invoke<Strategy[]>('list_strategies')
-      setStrategies(strategyList)
-    } catch (err) {
-      console.error('Failed to load strategies:', err)
-    }
-  }
+  // DEPRECATED: Strategy UI hidden - 1:1 client-to-strategy relationship
+  // const loadStrategies = async () => {
+  //   try {
+  //     const strategyList = await invoke<Strategy[]>('list_strategies')
+  //     setStrategies(strategyList)
+  //   } catch (err) {
+  //     console.error('Failed to load strategies:', err)
+  //   }
+  // }
 
   const handleViewChange = (view: View, subTab?: string | null) => {
     onViewChange(view, subTab)
@@ -193,7 +197,7 @@ export function AppShell({
         providerTypes={providerTypes}
         models={models}
         mcpServers={mcpServers}
-        strategies={strategies}
+        strategies={[] /* DEPRECATED: Strategy UI hidden - 1:1 client-to-strategy relationship */}
       />
 
       {/* Toast notifications */}

@@ -3,6 +3,7 @@ import { useState, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
 import { HowToConnect } from "@/components/client/HowToConnect"
+import type { ClientMode } from "@/types/tauri-commands"
 
 interface Client {
   id: string
@@ -10,6 +11,8 @@ interface Client {
   client_id: string
   enabled: boolean
   strategy_id: string
+  client_mode?: ClientMode
+  template_id?: string | null
 }
 
 interface ConfigTabProps {
@@ -56,6 +59,8 @@ export function ClientConfigTab({ client }: ConfigTabProps) {
         clientUuid={client.id}
         secret={secret}
         loadingSecret={loadingSecret}
+        templateId={client.template_id}
+        clientMode={client.client_mode}
       />
     </div>
   )

@@ -35,7 +35,7 @@ export function TryItOutView({ activeSubTab, onTabChange }: TryItOutViewProps) {
 
   // Store init params so they survive the URL cleanup
   const [llmInitial, setLlmInitial] = useState<{
-    mode?: "client" | "strategy" | "direct"
+    mode?: "client" | /* "strategy" | */ "direct"
     provider?: string
     clientId?: string
   }>({})

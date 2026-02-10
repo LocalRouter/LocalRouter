@@ -2,7 +2,7 @@
 import { useState, useEffect, useRef, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
-import { Loader2 } from "lucide-react"
+import { Loader2, Unlink } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Input } from "@/components/ui/Input"
 import { Switch } from "@/components/ui/Toggle"
@@ -17,6 +17,9 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
+import { CLIENT_TEMPLATES } from "@/components/client/ClientTemplates"
+import ServiceIcon from "@/components/ServiceIcon"
+import type { ClientMode, SetClientModeParams, SetClientTemplateParams } from "@/types/tauri-commands"
 
 interface Client {
   id: string
@@ -24,6 +27,8 @@ interface Client {
   client_id: string
   enabled: boolean
   strategy_id: string
+  client_mode?: ClientMode
+  template_id?: string | null
 }
 
 interface SettingsTabProps {
@@ -31,6 +36,12 @@ interface SettingsTabProps {
   onUpdate: () => void
   onDelete: () => void
 }
+
+const MODE_OPTIONS: { value: ClientMode; label: string; description: string }[] = [
+  { value: "both", label: "Both", description: "Full access to LLM routing and MCP servers" },
+  { value: "llm_only", label: "LLM Only", description: "Only LLM routing (hides MCP/Skills tabs)" },
+  { value: "mcp_only", label: "MCP Only", description: "Only MCP proxy (hides Models tab)" },
+]
 
 export function ClientSettingsTab({ client, onUpdate, onDelete }: SettingsTabProps) {
   const [name, setName] = useState(client.name)
@@ -41,6 +52,11 @@ export function ClientSettingsTab({ client, onUpdate, onDelete }: SettingsTabPro
 
   // Debounce ref for name updates
   const nameTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const clientMode = client.client_mode || "both"
+  const template = client.template_id
+    ? CLIENT_TEMPLATES.find(t => t.id === client.template_id) || null
+    : null
 
   // Sync name state when client prop updates
   useEffect(() => {
@@ -100,6 +116,43 @@ export function ClientSettingsTab({ client, onUpdate, onDelete }: SettingsTabPro
     }
   }
 
+  const handleModeChange = async (mode: ClientMode) => {
+    try {
+      await invoke("set_client_mode", {
+        clientId: client.client_id,
+        mode,
+      } satisfies SetClientModeParams)
+      toast.success("Client mode updated")
+      onUpdate()
+    } catch (error) {
+      console.error("Failed to update client mode:", error)
+      toast.error("Failed to update client mode")
+    }
+  }
+
+  const handleDetachTemplate = async () => {
+    try {
+      await invoke("set_client_template", {
+        clientId: client.client_id,
+        templateId: null,
+      } satisfies SetClientTemplateParams)
+      toast.success("Client detached from template — all modes now available")
+      onUpdate()
+    } catch (error) {
+      console.error("Failed to detach template:", error)
+      toast.error("Failed to detach template")
+    }
+  }
+
+  // Check if a mode is allowed by the template (or allow all if no template)
+  const isModeAllowed = (mode: ClientMode): boolean => {
+    if (!template) return true
+    if (mode === "both") return template.supportsLlm && template.supportsMcp
+    if (mode === "llm_only") return template.supportsLlm
+    if (mode === "mcp_only") return template.supportsMcp
+    return true
+  }
+
   const handleRotateConfirm = async () => {
     try {
       setRotating(true)
@@ -150,6 +203,86 @@ export function ClientSettingsTab({ client, onUpdate, onDelete }: SettingsTabPro
             {saving && (
               <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
             )}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Template Info */}
+      {template && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Client Template</CardTitle>
+            <CardDescription>
+              This client was created from a template
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <ServiceIcon service={template.id} size={24} />
+                <div>
+                  <p className="text-sm font-medium">{template.name}</p>
+                  <p className="text-xs text-muted-foreground">{template.description}</p>
+                </div>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleDetachTemplate}
+                title="Detach from template to unlock all mode options"
+              >
+                <Unlink className="h-4 w-4 mr-2" />
+                Detach
+              </Button>
+            </div>
+            {(!template.supportsMcp || !template.supportsLlm) && (
+              <p className="text-xs text-muted-foreground mt-3">
+                {template.name} supports {template.supportsLlm ? "LLM routing" : ""}{template.supportsLlm && template.supportsMcp ? " and " : ""}{template.supportsMcp ? "MCP proxy" : ""}.
+                Detach to unlock all modes.
+              </p>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Client Mode */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Client Mode</CardTitle>
+          <CardDescription>
+            Controls which features are available to this client
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="grid gap-2">
+            {MODE_OPTIONS.map((option) => {
+              const allowed = isModeAllowed(option.value)
+              return (
+                <label
+                  key={option.value}
+                  className={`flex items-start gap-3 p-3 rounded-lg border transition-colors
+                    ${!allowed ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}
+                    ${clientMode === option.value ? "border-primary bg-accent" : allowed ? "border-muted hover:border-primary/50" : "border-muted"}`}
+                >
+                  <input
+                    type="radio"
+                    name="client-mode"
+                    value={option.value}
+                    checked={clientMode === option.value}
+                    disabled={!allowed}
+                    onChange={() => handleModeChange(option.value)}
+                    className="mt-1"
+                  />
+                  <div>
+                    <p className="text-sm font-medium">{option.label}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {option.description}
+                      {!allowed && template && " (not supported by " + template.name + ")"}
+                    </p>
+                  </div>
+                </label>
+              )
+            })}
           </div>
         </CardContent>
       </Card>

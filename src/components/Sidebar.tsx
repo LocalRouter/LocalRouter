@@ -41,11 +41,12 @@ interface McpServer {
   enabled: boolean
 }
 
-interface Strategy {
-  id: string
-  name: string
-  parent: string | null
-}
+// DEPRECATED: Strategy UI hidden - 1:1 client-to-strategy relationship
+// interface Strategy {
+//   id: string
+//   name: string
+//   parent: string | null
+// }
 
 export default function Sidebar({ activeTab, activeSubTab, onTabChange }: SidebarProps) {
   const [providers, setProviders] = useState<ProviderInstance[]>([])
@@ -53,7 +54,8 @@ export default function Sidebar({ activeTab, activeSubTab, onTabChange }: Sideba
   const [models, setModels] = useState<Model[]>([])
   const [oauthClients, setOauthClients] = useState<OAuthClient[]>([])
   const [mcpServers, setMcpServers] = useState<McpServer[]>([])
-  const [strategies, setStrategies] = useState<Strategy[]>([])
+  // DEPRECATED: Strategy UI hidden - 1:1 client-to-strategy relationship
+  // const [strategies, setStrategies] = useState<Strategy[]>([])
   const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set())
 
   useEffect(() => {
@@ -63,7 +65,7 @@ export default function Sidebar({ activeTab, activeSubTab, onTabChange }: Sideba
     loadModels()
     loadOAuthClients()
     loadMcpServers()
-    loadStrategies()
+    // DEPRECATED: loadStrategies()
 
     // Subscribe to data change events (no polling needed)
     const unsubscribeProviders = listen('providers-changed', () => {
@@ -86,9 +88,10 @@ export default function Sidebar({ activeTab, activeSubTab, onTabChange }: Sideba
       loadMcpServers()
     })
 
-    const unsubscribeStrategies = listen('strategies-changed', () => {
-      loadStrategies()
-    })
+    // DEPRECATED: Strategy UI hidden - 1:1 client-to-strategy relationship
+    // const unsubscribeStrategies = listen('strategies-changed', () => {
+    //   loadStrategies()
+    // })
 
     return () => {
       unsubscribeProviders.then((fn: any) => fn())
@@ -96,7 +99,7 @@ export default function Sidebar({ activeTab, activeSubTab, onTabChange }: Sideba
       unsubscribeModels.then((fn: any) => fn())
       unsubscribeOAuthClients.then((fn: any) => fn())
       unsubscribeMcpServers.then((fn: any) => fn())
-      unsubscribeStrategies.then((fn: any) => fn())
+      // DEPRECATED: unsubscribeStrategies.then((fn: any) => fn())
     }
   }, [])
 
@@ -146,14 +149,15 @@ export default function Sidebar({ activeTab, activeSubTab, onTabChange }: Sideba
     }
   }
 
-  const loadStrategies = async () => {
-    try {
-      const strategyList = await invoke<Strategy[]>('list_strategies')
-      setStrategies(strategyList)
-    } catch (err) {
-      console.error('Failed to load strategies:', err)
-    }
-  }
+  // DEPRECATED: Strategy UI hidden - 1:1 client-to-strategy relationship
+  // const loadStrategies = async () => {
+  //   try {
+  //     const strategyList = await invoke<Strategy[]>('list_strategies')
+  //     setStrategies(strategyList)
+  //   } catch (err) {
+  //     console.error('Failed to load strategies:', err)
+  //   }
+  // }
 
   const toggleSection = (section: string) => {
     const newExpanded = new Set(expandedSections)
@@ -171,7 +175,8 @@ export default function Sidebar({ activeTab, activeSubTab, onTabChange }: Sideba
     { id: 'providers' as MainTab, label: 'Providers', hasSubTabs: true },
     { id: 'models' as MainTab, label: 'Models', hasSubTabs: true },
     { id: 'mcp-servers' as MainTab, label: 'MCP Servers', hasSubTabs: true },
-    { id: 'routing' as MainTab, label: 'Strategies', hasSubTabs: true },
+    // DEPRECATED: Strategy UI hidden - 1:1 client-to-strategy relationship
+    // { id: 'routing' as MainTab, label: 'Strategies', hasSubTabs: true },
     { id: 'logs' as MainTab, label: 'Logs' },
     { id: 'settings' as MainTab, label: 'Settings' },
     { id: 'documentation' as MainTab, label: 'Documentation' },
@@ -337,8 +342,8 @@ export default function Sidebar({ activeTab, activeSubTab, onTabChange }: Sideba
             </div>
           )}
 
-          {/* Sub Tabs for Strategies */}
-          {tab.id === 'routing' && expandedSections.has('routing') && (
+          {/* DEPRECATED: Strategy sub-tabs hidden - 1:1 client-to-strategy relationship */}
+          {/* {tab.id === 'routing' && expandedSections.has('routing') && (
             <div className="bg-gray-50 dark:bg-gray-900/50">
               {strategies.map((strategy) => (
                 <div
@@ -360,7 +365,7 @@ export default function Sidebar({ activeTab, activeSubTab, onTabChange }: Sideba
                 </div>
               ))}
             </div>
-          )}
+          )} */}
 
         </div>
       ))}

@@ -12,7 +12,8 @@
 import { useState, useEffect, useCallback, useRef } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
-import { Route, AlertTriangle, Gauge } from "lucide-react"
+// DEPRECATED: Route, AlertTriangle unused - Strategy UI hidden
+import { /* Route, AlertTriangle, */ Gauge } from "lucide-react"
 import {
   Card,
   CardContent,
@@ -20,16 +21,17 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/Card"
-import { Badge } from "@/components/ui/Badge"
-import { Button } from "@/components/ui/Button"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/Select"
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
+// DEPRECATED: Badge, Button, Select, Alert unused - Strategy selector hidden
+// import { Badge } from "@/components/ui/Badge"
+// import { Button } from "@/components/ui/Button"
+// import {
+//   Select,
+//   SelectContent,
+//   SelectItem,
+//   SelectTrigger,
+//   SelectValue,
+// } from "@/components/ui/Select"
+// import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { StrategyModelConfiguration, StrategyConfig } from "@/components/strategy"
 import RateLimitEditor, { StrategyRateLimit } from "@/components/strategies/RateLimitEditor"
 import type { ModelPermissions } from "@/components/permissions"
@@ -54,7 +56,7 @@ export function ClientModelsTab({
   client,
   onUpdate,
   initialMode: _initialMode,
-  onViewChange,
+  onViewChange: _onViewChange, // DEPRECATED: Strategy UI hidden
 }: ModelsTabProps) {
   const [strategies, setStrategies] = useState<StrategyConfig[]>([])
   const [loading, setLoading] = useState(true)
@@ -95,44 +97,40 @@ export function ClientModelsTab({
   // Get the current strategy
   const currentStrategy = strategies.find((s) => s.id === client.strategy_id)
 
-  // Check if using a shared strategy (not owned by this client)
-  const isSharedStrategy =
-    currentStrategy && currentStrategy.parent !== client.id
-
-  // Get owned strategies (this client's personal strategy)
-  const ownedStrategies = strategies.filter((s) => s.parent === client.id)
-
-  // Handle strategy change
-  const handleStrategyChange = async (newStrategyId: string) => {
-    try {
-      await invoke("assign_client_strategy", {
-        clientId: client.id,
-        strategyId: newStrategyId,
-      })
-      toast.success("Strategy assigned")
-      onUpdate()
-      loadStrategies(false)
-    } catch (error) {
-      console.error("Failed to assign strategy:", error)
-      toast.error("Failed to assign strategy")
-    }
-  }
-
-  // Handle create personal strategy
-  const handleCreatePersonalStrategy = async () => {
-    try {
-      const newStrategy = await invoke<StrategyConfig>("create_strategy", {
-        name: `${client.name} Strategy`,
-        parent: client.id,
-      })
-      toast.success("Personal strategy created")
-      await handleStrategyChange(newStrategy.id)
-      loadStrategies(false)
-    } catch (error) {
-      console.error("Failed to create personal strategy:", error)
-      toast.error("Failed to create personal strategy")
-    }
-  }
+  // DEPRECATED: Strategy selector hidden - 1:1 client-to-strategy relationship
+  // const isSharedStrategy =
+  //   currentStrategy && currentStrategy.parent !== client.id
+  // const ownedStrategies = strategies.filter((s) => s.parent === client.id)
+  //
+  // const handleStrategyChange = async (newStrategyId: string) => {
+  //   try {
+  //     await invoke("assign_client_strategy", {
+  //       clientId: client.id,
+  //       strategyId: newStrategyId,
+  //     })
+  //     toast.success("Strategy assigned")
+  //     onUpdate()
+  //     loadStrategies(false)
+  //   } catch (error) {
+  //     console.error("Failed to assign strategy:", error)
+  //     toast.error("Failed to assign strategy")
+  //   }
+  // }
+  //
+  // const handleCreatePersonalStrategy = async () => {
+  //   try {
+  //     const newStrategy = await invoke<StrategyConfig>("create_strategy", {
+  //       name: `${client.name} Strategy`,
+  //       parent: client.id,
+  //     })
+  //     toast.success("Personal strategy created")
+  //     await handleStrategyChange(newStrategy.id)
+  //     loadStrategies(false)
+  //   } catch (error) {
+  //     console.error("Failed to create personal strategy:", error)
+  //     toast.error("Failed to create personal strategy")
+  //   }
+  // }
 
   // Handle rate limits change with debouncing
   const handleRateLimitsChange = useCallback((limits: StrategyRateLimit[]) => {
@@ -190,8 +188,8 @@ export function ClientModelsTab({
 
   return (
     <div>
-      {/* Strategy Section */}
-      <Card>
+      {/* DEPRECATED: Strategy selector hidden - 1:1 client-to-strategy relationship */}
+      {/* <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Route className="h-5 w-5" />
@@ -212,7 +210,6 @@ export function ClientModelsTab({
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          {/* Strategy Selector */}
           <div className="flex items-center gap-4">
             <Select
               value={client.strategy_id}
@@ -248,7 +245,6 @@ export function ClientModelsTab({
             )}
           </div>
 
-          {/* Shared Strategy Warning */}
           {isSharedStrategy && (
             <Alert>
               <AlertTriangle className="h-4 w-4" />
@@ -260,51 +256,47 @@ export function ClientModelsTab({
             </Alert>
           )}
         </CardContent>
-      </Card>
+      </Card> */}
 
-      {/* Nested sections with tree connectors */}
+      {/* Model configuration sections */}
       {client.strategy_id && (
-        <div className="ml-4">
+        <div className="space-y-4">
           {/* Rate Limits */}
-          <div className="pt-4">
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2 text-base">
-                  <Gauge className="h-4 w-4" />
-                  Rate Limits
-                </CardTitle>
-                <CardDescription>
-                  Set usage limits to control costs and prevent abuse
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                {currentStrategy && (
-                  <RateLimitEditor
-                    limits={currentStrategy.rate_limits || []}
-                    onChange={handleRateLimitsChange}
-                    disabled={savingRateLimits}
-                  />
-                )}
-              </CardContent>
-            </Card>
-          </div>
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-base">
+                <Gauge className="h-4 w-4" />
+                Rate Limits
+              </CardTitle>
+              <CardDescription>
+                Set usage limits to control costs and prevent abuse
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {currentStrategy && (
+                <RateLimitEditor
+                  limits={currentStrategy.rate_limits || []}
+                  onChange={handleRateLimitsChange}
+                  disabled={savingRateLimits}
+                />
+              )}
+            </CardContent>
+          </Card>
 
           {/* Model Configuration - with unified permissions when using Allowed Models mode */}
-          <div className="pt-4">
-            <StrategyModelConfiguration
-              strategyId={client.strategy_id}
-              readOnly={false}
-              onSave={() => {
-                onUpdate()
-                loadStrategies(false)
-              }}
-              clientContext={{
-                clientId: client.client_id,
-                modelPermissions: client.model_permissions,
-                onClientUpdate: onUpdate,
-              }}
-            />
-          </div>
+          <StrategyModelConfiguration
+            strategyId={client.strategy_id}
+            readOnly={false}
+            onSave={() => {
+              onUpdate()
+              loadStrategies(false)
+            }}
+            clientContext={{
+              clientId: client.client_id,
+              modelPermissions: client.model_permissions,
+              onClientUpdate: onUpdate,
+            }}
+          />
         </div>
       )}
     </div>

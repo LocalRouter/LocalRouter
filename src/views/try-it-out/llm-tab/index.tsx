@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, useCallback } from "react"
-import { RefreshCw, Users, Route, Zap, Settings2, ChevronDown, MessageSquare, ImageIcon, Hash } from "lucide-react"
+// DEPRECATED: Route unused - Strategy mode hidden
+import { RefreshCw, Users, /* Route, */ Zap, Settings2, ChevronDown, MessageSquare, ImageIcon, Hash } from "lucide-react"
 import { invoke } from "@tauri-apps/api/core"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card"
@@ -39,10 +40,11 @@ interface Client {
   enabled: boolean
 }
 
-interface Strategy {
-  id: string
-  name: string
-}
+// DEPRECATED: Strategy UI hidden - 1:1 client-to-strategy relationship
+// interface Strategy {
+//   id: string
+//   name: string
+// }
 
 interface Provider {
   instance_name: string
@@ -67,7 +69,8 @@ interface ModelParameters {
   topP: number
 }
 
-type TestMode = "client" | "strategy" | "direct"
+// DEPRECATED: "strategy" mode hidden - 1:1 client-to-strategy relationship
+type TestMode = "client" | /* "strategy" | */ "direct"
 
 interface LlmTabProps {
   initialMode?: TestMode
@@ -85,10 +88,10 @@ export function LlmTab({ initialMode, initialProvider, initialClientId }: LlmTab
   const [selectedClientId, setSelectedClientId] = useState<string>("")
   const [clientApiKey, setClientApiKey] = useState<string | null>(null)
 
-  // Strategy mode state
-  const [strategies, setStrategies] = useState<Strategy[]>([])
-  const [selectedStrategy, setSelectedStrategy] = useState<string>("")
-  const [strategyToken, setStrategyToken] = useState<string | null>(null)
+  // DEPRECATED: Strategy mode hidden - 1:1 client-to-strategy relationship
+  // const [strategies, setStrategies] = useState<Strategy[]>([])
+  // const [selectedStrategy, setSelectedStrategy] = useState<string>("")
+  // const [strategyToken, setStrategyToken] = useState<string | null>(null)
 
   // Direct mode state
   const [providers, setProviders] = useState<Provider[]>([])
@@ -118,9 +121,10 @@ export function LlmTab({ initialMode, initialProvider, initialClientId }: LlmTab
         setServerPort(port)
 
         // Load all needed data
-        const [clientsList, strategiesList, providersList, allModels] = await Promise.all([
+        // DEPRECATED: Strategy loading removed - 1:1 client-to-strategy relationship
+        const [clientsList, /* strategiesList, */ providersList, allModels] = await Promise.all([
           invoke<Client[]>("list_clients"),
-          invoke<Strategy[]>("list_strategies"),
+          // invoke<Strategy[]>("list_strategies"),
           invoke<Provider[]>("list_provider_instances"),
           invoke<{ id: string; provider: string }[]>("list_all_models"),
         ])
@@ -132,7 +136,7 @@ export function LlmTab({ initialMode, initialProvider, initialClientId }: LlmTab
         }))
 
         setClients(clientsList.filter(c => c.enabled))
-        setStrategies(strategiesList)
+        // DEPRECATED: setStrategies(strategiesList)
         setProviders(providersList.filter(p => p.enabled))
         setProviderModels(providerModelsList)
 
@@ -140,9 +144,10 @@ export function LlmTab({ initialMode, initialProvider, initialClientId }: LlmTab
         if (clientsList.length > 0) {
           setSelectedClientId(clientsList[0].id)
         }
-        if (strategiesList.length > 0) {
-          setSelectedStrategy(strategiesList[0].name)
-        }
+        // DEPRECATED: Strategy default selection removed
+        // if (strategiesList.length > 0) {
+        //   setSelectedStrategy(strategiesList[0].name)
+        // }
         if (providersList.filter(p => p.enabled).length > 0) {
           setSelectedProvider(providersList.filter(p => p.enabled)[0].instance_name)
         }
@@ -190,23 +195,23 @@ export function LlmTab({ initialMode, initialProvider, initialClientId }: LlmTab
     fetchClientKey()
   }, [mode, selectedClientId])
 
-  // Create test client for strategy when strategy changes
-  useEffect(() => {
-    const createStrategyClient = async () => {
-      if (mode === "strategy" && selectedStrategy) {
-        try {
-          const token = await invoke<string>("create_test_client_for_strategy", {
-            strategyId: selectedStrategy,
-          })
-          setStrategyToken(token)
-        } catch (error) {
-          console.error("Failed to create test client:", error)
-          setStrategyToken(null)
-        }
-      }
-    }
-    createStrategyClient()
-  }, [mode, selectedStrategy])
+  // DEPRECATED: Strategy test client creation hidden - 1:1 client-to-strategy relationship
+  // useEffect(() => {
+  //   const createStrategyClient = async () => {
+  //     if (mode === "strategy" && selectedStrategy) {
+  //       try {
+  //         const token = await invoke<string>("create_test_client_for_strategy", {
+  //           strategyId: selectedStrategy,
+  //         })
+  //         setStrategyToken(token)
+  //       } catch (error) {
+  //         console.error("Failed to create test client:", error)
+  //         setStrategyToken(null)
+  //       }
+  //     }
+  //   }
+  //   createStrategyClient()
+  // }, [mode, selectedStrategy])
 
   // Fetch internal test token for direct mode
   useEffect(() => {
@@ -229,14 +234,15 @@ export function LlmTab({ initialMode, initialProvider, initialClientId }: LlmTab
     switch (mode) {
       case "client":
         return clientApiKey
-      case "strategy":
-        return strategyToken
+      // DEPRECATED: Strategy mode hidden - 1:1 client-to-strategy relationship
+      // case "strategy":
+      //   return strategyToken
       case "direct":
         return internalTestToken
       default:
         return null
     }
-  }, [mode, clientApiKey, strategyToken, internalTestToken])
+  }, [mode, clientApiKey, internalTestToken])
 
   // Create OpenAI client when token/port changes
   const openaiClient = useMemo(() => {
@@ -286,11 +292,12 @@ export function LlmTab({ initialMode, initialProvider, initialClientId }: LlmTab
   const getModeDescription = () => {
     switch (mode) {
       case "client":
-        return "Test requests using a client's credentials through the full strategy pipeline"
-      case "strategy":
-        return "Test requests with a specific strategy applied"
+        return "Test requests using a client's credentials through the full routing pipeline"
+      // DEPRECATED: Strategy mode hidden - 1:1 client-to-strategy relationship
+      // case "strategy":
+      //   return "Test requests with a specific strategy applied"
       case "direct":
-        return "Send requests directly to a provider, bypassing strategy selection"
+        return "Send requests directly to a provider, bypassing routing"
     }
   }
 
@@ -355,13 +362,14 @@ export function LlmTab({ initialMode, initialProvider, initialClientId }: LlmTab
                   Against Client
                 </Label>
               </div>
-              <div className="flex items-center space-x-2">
+              {/* DEPRECATED: Strategy mode hidden - 1:1 client-to-strategy relationship */}
+              {/* <div className="flex items-center space-x-2">
                 <RadioGroupItem value="strategy" id="mode-strategy" />
                 <Label htmlFor="mode-strategy" className="flex items-center gap-2 cursor-pointer">
                   <Route className="h-4 w-4" />
                   Against Strategy
                 </Label>
-              </div>
+              </div> */}
               <div className="flex items-center space-x-2">
                 <RadioGroupItem value="direct" id="mode-direct" />
                 <Label htmlFor="mode-direct" className="flex items-center gap-2 cursor-pointer">
@@ -392,7 +400,8 @@ export function LlmTab({ initialMode, initialProvider, initialClientId }: LlmTab
                 </div>
               )}
 
-              {mode === "strategy" && (
+              {/* DEPRECATED: Strategy mode hidden - 1:1 client-to-strategy relationship */}
+              {/* {mode === "strategy" && (
                 <div className="space-y-1.5">
                   <Label className="text-sm">Strategy</Label>
                   <Select value={selectedStrategy} onValueChange={setSelectedStrategy}>
@@ -408,7 +417,7 @@ export function LlmTab({ initialMode, initialProvider, initialClientId }: LlmTab
                     </SelectContent>
                   </Select>
                 </div>
-              )}
+              )} */}
 
               {mode === "direct" && (
                 <div className="space-y-1.5">

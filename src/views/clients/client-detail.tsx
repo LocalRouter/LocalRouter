@@ -4,12 +4,21 @@ import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import { Button } from "@/components/ui/Button"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
+import { FlaskConical, MessageSquare, Puzzle, ChevronDown } from "lucide-react"
 import { ClientConfigTab } from "./tabs/config-tab"
 import { ClientModelsTab } from "./tabs/models-tab"
 import { ClientMcpTab } from "./tabs/mcp-tab"
 import { ClientSkillsTab } from "./tabs/skills-tab"
 import { ClientSettingsTab } from "./tabs/settings-tab"
 import type { McpPermissions, SkillsPermissions, ModelPermissions, PermissionState } from "@/components/permissions"
+import type { ClientMode } from "@/types/tauri-commands"
 
 interface Client {
   id: string
@@ -22,6 +31,8 @@ interface Client {
   skills_permissions: SkillsPermissions
   model_permissions: ModelPermissions
   marketplace_permission: PermissionState
+  client_mode?: ClientMode
+  template_id?: string | null
   created_at: string
   last_used: string | null
 }
@@ -46,6 +57,11 @@ export function ClientDetail({
   const [client, setClient] = useState<Client | null>(initialClient || null)
   const [loading, setLoading] = useState(!initialClient)
   const [activeTab, setActiveTab] = useState(initialTab || "connect")
+
+  const clientMode = client?.client_mode || "both"
+  const showModelsTab = clientMode !== "mcp_only"
+  const showMcpTab = clientMode !== "llm_only"
+  const showSkillsTab = clientMode !== "llm_only"
 
   useEffect(() => {
     if (!initialClient) {
@@ -75,6 +91,13 @@ export function ClientDetail({
       setActiveTab(initialTab)
     }
   }, [initialTab])
+
+  // If active tab becomes hidden due to mode change, fall back to "connect"
+  useEffect(() => {
+    if (activeTab === "models" && !showModelsTab) setActiveTab("connect")
+    if (activeTab === "mcp" && !showMcpTab) setActiveTab("connect")
+    if (activeTab === "skills" && !showSkillsTab) setActiveTab("connect")
+  }, [clientMode, activeTab, showModelsTab, showMcpTab, showSkillsTab])
 
   const loadClient = async () => {
     try {
@@ -113,17 +136,46 @@ export function ClientDetail({
     <ScrollArea className="h-full">
       <div className="p-6 space-y-6">
         {/* Header */}
-        <div>
+        <div className="flex items-center justify-between">
           <h2 className="text-xl font-bold">{client.name}</h2>
+          {onViewChange && client.enabled && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="sm">
+                  <FlaskConical className="h-4 w-4 mr-1" />
+                  Try It Out
+                  <ChevronDown className="h-3 w-3 ml-1" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                {showModelsTab && (
+                  <DropdownMenuItem
+                    onClick={() => onViewChange("try-it-out", `llm/init/client/${client.client_id}`)}
+                  >
+                    <MessageSquare className="h-4 w-4 mr-2" />
+                    LLM
+                  </DropdownMenuItem>
+                )}
+                {showMcpTab && (
+                  <DropdownMenuItem
+                    onClick={() => onViewChange("try-it-out", `mcp/init/client/${client.client_id}`)}
+                  >
+                    <Puzzle className="h-4 w-4 mr-2" />
+                    MCP & Skills
+                  </DropdownMenuItem>
+                )}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
         </div>
 
         {/* Tabs */}
         <Tabs value={activeTab} onValueChange={setActiveTab}>
           <TabsList>
             <TabsTrigger value="connect">Connect</TabsTrigger>
-            <TabsTrigger value="models">Models</TabsTrigger>
-            <TabsTrigger value="mcp">MCP</TabsTrigger>
-            <TabsTrigger value="skills">Skills</TabsTrigger>
+            {showModelsTab && <TabsTrigger value="models">Models</TabsTrigger>}
+            {showMcpTab && <TabsTrigger value="mcp">MCP</TabsTrigger>}
+            {showSkillsTab && <TabsTrigger value="skills">Skills</TabsTrigger>}
             <TabsTrigger value="settings">Settings</TabsTrigger>
           </TabsList>
 
@@ -131,22 +183,28 @@ export function ClientDetail({
             <ClientConfigTab client={client} onUpdate={loadClient} />
           </TabsContent>
 
-          <TabsContent value="models">
-            <ClientModelsTab
-              client={client}
-              onUpdate={loadClient}
-              initialMode={initialMode}
-              onViewChange={onViewChange}
-            />
-          </TabsContent>
+          {showModelsTab && (
+            <TabsContent value="models">
+              <ClientModelsTab
+                client={client}
+                onUpdate={loadClient}
+                initialMode={initialMode}
+                onViewChange={onViewChange}
+              />
+            </TabsContent>
+          )}
 
-          <TabsContent value="mcp">
-            <ClientMcpTab client={client} onUpdate={loadClient} />
-          </TabsContent>
+          {showMcpTab && (
+            <TabsContent value="mcp">
+              <ClientMcpTab client={client} onUpdate={loadClient} />
+            </TabsContent>
+          )}
 
-          <TabsContent value="skills">
-            <ClientSkillsTab client={client} onUpdate={loadClient} />
-          </TabsContent>
+          {showSkillsTab && (
+            <TabsContent value="skills">
+              <ClientSkillsTab client={client} onUpdate={loadClient} />
+            </TabsContent>
+          )}
 
           <TabsContent value="settings">
             <ClientSettingsTab
