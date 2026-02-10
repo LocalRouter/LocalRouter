@@ -113,6 +113,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   'get_setup_wizard_shown': () => true, // Skip wizard in demo
   'set_setup_wizard_shown': () => null,
   'get_home_dir': () => mockData.homeDir,
+  'get_config_dir': () => mockData.configDir,
 
   // ============================================================================
   // Server Configuration
@@ -144,6 +145,8 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       skills_permissions: { global: 'ask' as const, skills: {}, tools: {} },
       model_permissions: { global: 'allow' as const, providers: {}, models: {} },
       marketplace_permission: 'ask' as const,
+      client_mode: 'both' as const,
+      template_id: null,
     }
     mockData.clients.push(newClient)
     toast.success(`Client "${args?.name}" created (demo)`)
@@ -199,6 +202,54 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     return null
   },
   'get_client_value': () => null,
+
+  // Client mode and template
+  'set_client_mode': (args) => {
+    const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.clientId)
+    if (client && args?.mode) {
+      (client as Record<string, unknown>).client_mode = args.mode
+      setTimeout(() => emit('clients-changed', {}), 10)
+    }
+    return null
+  },
+  'set_client_template': (args) => {
+    const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.clientId)
+    if (client) {
+      (client as Record<string, unknown>).template_id = args?.templateId || null
+      setTimeout(() => emit('clients-changed', {}), 10)
+    }
+    return null
+  },
+  'get_app_capabilities': (args) => {
+    const installed = ['claude-code', 'cursor'].includes(args?.templateId || '')
+    const tryItOutApps = ['claude-code', 'codex', 'aider', 'goose']
+    return {
+      installed,
+      binary_path: installed ? `/usr/local/bin/${args?.templateId}` : null,
+      version: installed ? '1.0.0' : null,
+      supports_try_it_out: tryItOutApps.includes(args?.templateId || ''),
+      supports_permanent_config: true,
+    }
+  },
+  'try_it_out_app': (args) => {
+    toast.success(`Try it out for client ${args?.clientId} (demo)`)
+    return {
+      success: true,
+      message: 'Run the command below in your terminal:',
+      modified_files: [],
+      backup_files: [],
+      terminal_command: 'ANTHROPIC_BASE_URL=http://127.0.0.1:3625 ANTHROPIC_API_KEY=lr_demo_secret claude --mcp-config \'{"mcpServers":{"localrouter":{"type":"http","url":"http://127.0.0.1:3625","headers":{"Authorization":"Bearer lr_demo_secret"}}}}\'',
+    }
+  },
+  'configure_app_permanent': (args) => {
+    toast.success(`App configured permanently for client ${args?.clientId} (demo)`)
+    return {
+      success: true,
+      message: 'MCP configured in ~/.claude.json. For LLM routing, use env vars at launch time.',
+      modified_files: ['~/.claude.json'],
+      backup_files: ['~/.claude.json.20260210_120000.bak'],
+    }
+  },
 
   // Client permissions - find by either client_id (string identifier) or id (uuid)
   'set_client_mcp_permission': (args) => {
@@ -1213,6 +1264,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   // Firewall
   // ============================================================================
   'get_firewall_approval_details': () => null,
+  'get_firewall_full_arguments': () => JSON.stringify({ path: '/tmp/test.txt', content: 'hello world' }),
   'submit_firewall_approval': () => {
     toast.success('Approval submitted (demo)')
     return null

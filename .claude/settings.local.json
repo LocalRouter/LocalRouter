@@ -50,7 +50,22 @@
       "mcp__localrouter__everything-mcp-server__echo",
       "mcp__localrouter__demo__echo",
       "Bash(LOCALROUTER_KEYCHAIN=file cargo test:*)",
-      "mcp__localrouter-dev__everything-mcp-server__echo"
+      "mcp__localrouter-dev__everything-mcp-server__echo",
+      "WebFetch(domain:lobehub.com)",
+      "Bash(md5:*)",
+      "Bash(# Try to get a better droid icon cd /Users/matus/dev/localrouterai/public/icons && \\\\ curl -fsSL -o droid_test.svg \"\"https://www.factory.ai/favicon.svg\"\" && file droid_test.svg)",
+      "Bash(# Try to find opencode icon from GitHub API - list repo root curl -fsSL \"\"https://api.github.com/repos/opencode-ai/opencode/contents/\"\")",
+      "Bash(# Check .github for logos and check README for image URLs curl -fsSL \"\"https://api.github.com/repos/opencode-ai/opencode/contents/.github\"\")",
+      "Bash(gh search code:*)",
+      "WebFetch(domain:developers.openai.com)",
+      "WebFetch(domain:opencode.ai)",
+      "WebFetch(domain:cursor.com)",
+      "WebFetch(domain:docs.cursor.com)",
+      "WebFetch(domain:block.github.io)",
+      "WebFetch(domain:docs.factory.ai)",
+      "WebFetch(domain:claudefa.st)",
+      "WebFetch(domain:deepwiki.com)",
+      "WebFetch(domain:vladimirsiedykh.com)"
     ]
   },
   "enableAllProjectMcpServers": true,

@@ -12,4 +12,4 @@ NC='\033[0m' # No Color
 echo -e "${GREEN}Starting LocalRouter AI in development mode (no hot reload)...${NC}"
 echo -e "Press Ctrl+C to stop\n"
 
-exec cargo tauri dev --no-watch
+VITE_NO_HMR=1 exec cargo tauri dev --no-watch

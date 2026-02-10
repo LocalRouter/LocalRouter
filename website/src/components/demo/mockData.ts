@@ -42,6 +42,8 @@ export const mockData = {
       skills_permissions: { global: "allow", skills: {}, tools: {} },
       model_permissions: { global: "allow", providers: {}, models: {} },
       marketplace_permission: "allow",
+      client_mode: "llm_only",
+      template_id: "cursor",
     },
     {
       id: "client-2",
@@ -56,6 +58,8 @@ export const mockData = {
       skills_permissions: { global: "allow", skills: {}, tools: {} },
       model_permissions: { global: "allow", providers: {}, models: { "gpt-4o": "allow", "claude-3-5-sonnet-20241022": "allow" } },
       marketplace_permission: "ask",
+      client_mode: "both",
+      template_id: "claude-code",
     },
     {
       id: "client-3",
@@ -70,6 +74,8 @@ export const mockData = {
       skills_permissions: { global: "off", skills: {}, tools: {} },
       model_permissions: { global: "allow", providers: {}, models: {} },
       marketplace_permission: "off",
+      client_mode: "llm_only",
+      template_id: "open-webui",
     },
     {
       id: "client-4",
@@ -84,6 +90,8 @@ export const mockData = {
       skills_permissions: { global: "ask", skills: {}, tools: {} },
       model_permissions: { global: "ask", providers: {}, models: {} },
       marketplace_permission: "ask",
+      client_mode: "both",
+      template_id: null,
     },
   ] as Client[],
 
@@ -703,4 +711,5 @@ export const mockData = {
   ],
 
   homeDir: "/Users/demo",
+  configDir: "/Users/demo/Library/Application Support",
 }

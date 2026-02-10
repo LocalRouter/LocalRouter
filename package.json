@@ -50,7 +50,6 @@
     "dagre": "^0.8.5",
     "lucide-react": "^0.562.0",
     "openai": "^6.16.0",
-    "rapidoc": "^9.3.4",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-markdown": "^10.1.0",

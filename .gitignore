@@ -67,3 +67,4 @@ playwright-report/
 test-results/
 
 .mcp.json
+.aider*

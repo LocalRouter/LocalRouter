@@ -19,9 +19,10 @@ export default defineConfig({
     host: '127.0.0.1', // Bind to IPv4 for WebView2 compatibility on Windows
     port: 1420,
     strictPort: false, // Allow automatic port selection if 1420 is in use
-    watch: {
-      ignored: ['**/src-tauri/**'],
-    },
+    hmr: process.env.VITE_NO_HMR ? false : undefined,
+    watch: process.env.VITE_NO_HMR
+      ? { ignored: ['**'] }
+      : { ignored: ['**/src-tauri/**'] },
   },
 
   build: {
@@ -45,11 +46,7 @@ export default defineConfig({
             if (id.includes('/reactflow/') || id.includes('/@reactflow/') || id.includes('/dagre/')) {
               return 'vendor-flow'
             }
-            // OpenAPI documentation
-            if (id.includes('/rapidoc/')) {
-              return 'vendor-rapidoc'
-            }
-            // MCP SDK and AI
+// MCP SDK and AI
             if (id.includes('@modelcontextprotocol/') || id.includes('/openai/') || id.includes('/ai/')) {
               return 'vendor-ai'
             }

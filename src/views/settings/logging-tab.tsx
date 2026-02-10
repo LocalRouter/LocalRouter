@@ -326,7 +326,7 @@ export function LoggingTab() {
             <div>
               <CardTitle className="text-sm">Access Logging</CardTitle>
               <CardDescription>
-                Log all LLM and MCP requests to files for analysis
+                Log all LLM and MCP requests on disk
               </CardDescription>
             </div>
             <Switch
