@@ -92,8 +92,61 @@ pub async fn chat_completions(
 
     // Check model firewall permission (if using client auth and not auto-routing)
     if request.model != "localrouter/auto" {
-        check_model_firewall_permission(&state, client_auth.as_ref().map(|e| &e.0), &request)
-            .await?;
+        let firewall_edits =
+            check_model_firewall_permission(&state, client_auth.as_ref().map(|e| &e.0), &request)
+                .await?;
+
+        // Apply edited model params from firewall edit mode
+        if let Some(edits) = firewall_edits {
+            if let Some(model) = edits.get("model").and_then(|v| v.as_str()) {
+                request.model = model.to_string();
+            }
+            if let Some(v) = edits.get("temperature") {
+                request.temperature = if v.is_null() {
+                    None
+                } else {
+                    v.as_f64().map(|f| f as f32)
+                };
+            }
+            if let Some(v) = edits.get("max_tokens") {
+                request.max_tokens = if v.is_null() {
+                    None
+                } else {
+                    v.as_u64().map(|n| n as u32)
+                };
+            }
+            if let Some(v) = edits.get("max_completion_tokens") {
+                request.max_completion_tokens = if v.is_null() {
+                    None
+                } else {
+                    v.as_u64().map(|n| n as u32)
+                };
+            }
+            if let Some(v) = edits.get("top_p") {
+                request.top_p = if v.is_null() {
+                    None
+                } else {
+                    v.as_f64().map(|f| f as f32)
+                };
+            }
+            if let Some(v) = edits.get("frequency_penalty") {
+                request.frequency_penalty = if v.is_null() {
+                    None
+                } else {
+                    v.as_f64().map(|f| f as f32)
+                };
+            }
+            if let Some(v) = edits.get("presence_penalty") {
+                request.presence_penalty = if v.is_null() {
+                    None
+                } else {
+                    v.as_f64().map(|f| f as f32)
+                };
+            }
+            if let Some(v) = edits.get("seed") {
+                request.seed = if v.is_null() { None } else { v.as_i64() };
+            }
+        }
     }
 
     // Check rate limits
@@ -399,13 +452,13 @@ async fn check_model_firewall_permission(
     state: &AppState,
     client_context: Option<&ClientAuthContext>,
     request: &ChatCompletionRequest,
-) -> ApiResult<()> {
+) -> ApiResult<Option<serde_json::Value>> {
     use lr_mcp::gateway::access_control::{self, AccessDecision};
     use lr_mcp::gateway::firewall::FirewallApprovalAction;
 
     // If no client context, skip firewall (using API key auth without client)
     let Some(client_ctx) = client_context else {
-        return Ok(());
+        return Ok(None);
     };
 
     // Get enabled client
@@ -413,7 +466,7 @@ async fn check_model_firewall_permission(
 
     // Skip firewall for localrouter/auto (handled during routing)
     if request.model == "localrouter/auto" {
-        return Ok(());
+        return Ok(None);
     }
 
     // Extract provider and model from request
@@ -452,7 +505,7 @@ async fn check_model_firewall_permission(
                 request.model,
                 client.id
             );
-            Ok(())
+            Ok(None)
         }
         AccessDecision::Deny => {
             // Model is disabled
@@ -478,7 +531,7 @@ async fn check_model_firewall_permission(
                     request.model,
                     client.id
                 );
-                return Ok(());
+                return Ok(None);
             }
 
             // No valid time-based approval, trigger firewall popup
@@ -487,6 +540,18 @@ async fn check_model_firewall_permission(
                 request.model,
                 client.id
             );
+
+            // Build editable model params for the popup
+            let model_params = serde_json::json!({
+                "model": request.model,
+                "temperature": request.temperature,
+                "max_tokens": request.max_tokens,
+                "max_completion_tokens": request.max_completion_tokens,
+                "top_p": request.top_p,
+                "frequency_penalty": request.frequency_penalty,
+                "presence_penalty": request.presence_penalty,
+                "seed": request.seed,
+            });
 
             // Request approval from the firewall manager
             let response = state
@@ -498,11 +563,14 @@ async fn check_model_firewall_permission(
                     model_id.clone(), // model as "tool_name"
                     provider.clone(), // provider as "server_name"
                     Some(120),        // 2 minute timeout
+                    Some(model_params),
                 )
                 .await
                 .map_err(|e| {
                     ApiErrorResponse::internal_error(format!("Firewall approval failed: {}", e))
                 })?;
+
+            let edited_arguments = response.edited_arguments;
 
             // Handle the approval response
             match response.action {
@@ -512,7 +580,7 @@ async fn check_model_firewall_permission(
                         request.model,
                         client.id
                     );
-                    Ok(())
+                    Ok(edited_arguments)
                 }
                 FirewallApprovalAction::Allow1Hour => {
                     // Time-based approval is already handled in submit_firewall_approval
@@ -523,7 +591,7 @@ async fn check_model_firewall_permission(
                         request.model,
                         client.id
                     );
-                    Ok(())
+                    Ok(edited_arguments)
                 }
                 FirewallApprovalAction::AllowPermanent => {
                     // Permission update is already handled in submit_firewall_approval
@@ -532,7 +600,7 @@ async fn check_model_firewall_permission(
                         request.model,
                         client.id
                     );
-                    Ok(())
+                    Ok(edited_arguments)
                 }
                 FirewallApprovalAction::Deny
                 | FirewallApprovalAction::DenySession
