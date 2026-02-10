@@ -19,6 +19,18 @@ use super::access_control::{self, AccessDecision};
 use super::firewall::{self, FirewallApprovalAction};
 use super::gateway::McpGateway;
 
+/// Result of a firewall access decision check
+pub(crate) enum FirewallDecisionResult {
+    /// Proceed with the original request unchanged
+    Proceed,
+    /// Proceed but apply edits from the user
+    ProceedWithEdits {
+        edited_arguments: Option<serde_json::Value>,
+    },
+    /// Block the request with this error response
+    Blocked(JsonRpcResponse),
+}
+
 impl McpGateway {
     /// Handle tools/list request
     pub(crate) async fn handle_tools_list(
@@ -249,11 +261,27 @@ impl McpGateway {
         // Check if it's a skill tool
         if self.is_skill_tool(&tool_name) {
             // Firewall check for skill tools
-            if let Some(err_response) = self
+            let skill_firewall_result = self
                 .check_firewall_skill_tool(&session, &tool_name, &request)
-                .await?
-            {
-                return Ok(err_response);
+                .await?;
+
+            match skill_firewall_result {
+                FirewallDecisionResult::Blocked(resp) => return Ok(resp),
+                FirewallDecisionResult::ProceedWithEdits {
+                    edited_arguments: Some(new_args),
+                } => {
+                    // Apply edited arguments to the request before handling
+                    let mut edited_request = request.clone();
+                    if let Some(params) = edited_request.params.as_mut() {
+                        if let Some(obj) = params.as_object_mut() {
+                            obj.insert("arguments".to_string(), new_args);
+                        }
+                    }
+                    return self
+                        .handle_skill_tool_call(session, &tool_name, edited_request)
+                        .await;
+                }
+                _ => {}
             }
 
             return self
@@ -279,11 +307,13 @@ impl McpGateway {
 
         // Firewall check for MCP tools
         // Pass both namespaced name (for session tracking/display) and original name (for permission lookup)
-        if let Some(err_response) = self
+        let firewall_result = self
             .check_firewall_mcp_tool(&session, &tool_name, &original_name, &server_id, &request)
-            .await?
-        {
-            return Ok(err_response);
+            .await?;
+
+        match &firewall_result {
+            FirewallDecisionResult::Blocked(resp) => return Ok(resp.clone()),
+            _ => {}
         }
 
         // Transform request: Strip namespace
@@ -291,6 +321,18 @@ impl McpGateway {
         if let Some(params) = transformed_request.params.as_mut() {
             if let Some(obj) = params.as_object_mut() {
                 obj.insert("name".to_string(), json!(original_name));
+            }
+        }
+
+        // Apply edited arguments from firewall edit mode
+        if let FirewallDecisionResult::ProceedWithEdits {
+            edited_arguments: Some(new_args),
+        } = firewall_result
+        {
+            if let Some(params) = transformed_request.params.as_mut() {
+                if let Some(obj) = params.as_object_mut() {
+                    obj.insert("arguments".to_string(), new_args);
+                }
             }
         }
 
@@ -329,7 +371,7 @@ impl McpGateway {
     }
 
     /// Check access control for an MCP tool call.
-    /// Returns `Some(error_response)` if the call should be blocked, `None` to proceed.
+    /// Returns a `FirewallDecisionResult` indicating whether to proceed, apply edits, or block.
     ///
     /// `tool_name` is the namespaced name (e.g. `filesystem__write_file`) used for session tracking.
     /// `original_tool_name` is the raw name (e.g. `write_file`) used for permission lookup.
@@ -341,7 +383,7 @@ impl McpGateway {
         original_tool_name: &str,
         server_id: &str,
         request: &JsonRpcRequest,
-    ) -> AppResult<Option<JsonRpcResponse>> {
+    ) -> AppResult<FirewallDecisionResult> {
         let session_read = session.read().await;
         // Use server UUID + original tool name for permission resolution
         // (key format: "UUID__original_name", matching what the UI stores)
@@ -372,13 +414,13 @@ impl McpGateway {
     }
 
     /// Check access control for a skill tool call.
-    /// Returns `Some(error_response)` if the call should be blocked, `None` to proceed.
+    /// Returns a `FirewallDecisionResult` indicating whether to proceed, apply edits, or block.
     async fn check_firewall_skill_tool(
         &self,
         session: &Arc<RwLock<GatewaySession>>,
         tool_name: &str,
         request: &JsonRpcRequest,
-    ) -> AppResult<Option<JsonRpcResponse>> {
+    ) -> AppResult<FirewallDecisionResult> {
         // Extract skill name from tool name using simple heuristic:
         // skill tools follow pattern `skill_{name}_{action}` where action is
         // get_info, run_{file}, run_async_{file}, read_{file}
@@ -387,7 +429,7 @@ impl McpGateway {
         // Global utility tools (e.g. skill_get_async_status) have no skill name.
         // These don't execute skill code, so skip permission checks.
         if skill_name.is_empty() {
-            return Ok(None);
+            return Ok(FirewallDecisionResult::Proceed);
         }
 
         let session_read = session.read().await;
@@ -416,7 +458,7 @@ impl McpGateway {
         .await
     }
 
-    /// Apply access decision, returning an error response if blocked or None to proceed.
+    /// Apply access decision, returning a FirewallDecisionResult.
     #[allow(clippy::too_many_arguments)]
     async fn apply_access_decision(
         &self,
@@ -428,16 +470,16 @@ impl McpGateway {
         tool_name: &str,
         server_or_skill_name: &str,
         request: &JsonRpcRequest,
-    ) -> AppResult<Option<JsonRpcResponse>> {
+    ) -> AppResult<FirewallDecisionResult> {
         match decision {
-            AccessDecision::Allow => Ok(None),
+            AccessDecision::Allow => Ok(FirewallDecisionResult::Proceed),
             AccessDecision::Deny => {
                 tracing::info!(
                     "Firewall denied tool call: client={}, tool={}",
                     client_id,
                     tool_name
                 );
-                Ok(Some(JsonRpcResponse::error(
+                Ok(FirewallDecisionResult::Blocked(JsonRpcResponse::error(
                     request.id.clone().unwrap_or(Value::Null),
                     JsonRpcError::custom(
                         -32600,
@@ -454,7 +496,7 @@ impl McpGateway {
                         tool_name,
                         client_id
                     );
-                    return Ok(Some(JsonRpcResponse::error(
+                    return Ok(FirewallDecisionResult::Blocked(JsonRpcResponse::error(
                         request.id.clone().unwrap_or(Value::Null),
                         JsonRpcError::custom(
                             -32600,
@@ -471,7 +513,7 @@ impl McpGateway {
                         tool_name,
                         client_id
                     );
-                    return Ok(None);
+                    return Ok(FirewallDecisionResult::Proceed);
                 }
 
                 // Get client name for display
@@ -485,11 +527,15 @@ impl McpGateway {
                     }
                 };
 
-                // Extract arguments preview
-                let arguments_preview = request
+                // Extract arguments preview (truncated) and full arguments
+                let full_arguments = request
                     .params
                     .as_ref()
                     .and_then(|p| p.get("arguments"))
+                    .cloned();
+
+                let arguments_preview = full_arguments
+                    .as_ref()
                     .map(|args| firewall::truncate_arguments_preview(args, 200))
                     .unwrap_or_else(|| "{}".to_string());
 
@@ -510,8 +556,11 @@ impl McpGateway {
                         server_or_skill_name.to_string(),
                         arguments_preview,
                         None,
+                        full_arguments,
                     )
                     .await?;
+
+                let edited_arguments = response.edited_arguments;
 
                 match response.action {
                     FirewallApprovalAction::AllowOnce => {
@@ -520,7 +569,11 @@ impl McpGateway {
                             tool_name,
                             client_id
                         );
-                        Ok(None)
+                        if edited_arguments.is_some() {
+                            Ok(FirewallDecisionResult::ProceedWithEdits { edited_arguments })
+                        } else {
+                            Ok(FirewallDecisionResult::Proceed)
+                        }
                     }
                     FirewallApprovalAction::AllowSession => {
                         tracing::info!(
@@ -533,7 +586,11 @@ impl McpGateway {
                         session_write
                             .firewall_session_approvals
                             .insert(tool_name.to_string());
-                        Ok(None)
+                        if edited_arguments.is_some() {
+                            Ok(FirewallDecisionResult::ProceedWithEdits { edited_arguments })
+                        } else {
+                            Ok(FirewallDecisionResult::Proceed)
+                        }
                     }
                     FirewallApprovalAction::Allow1Hour => {
                         tracing::info!(
@@ -541,8 +598,11 @@ impl McpGateway {
                             tool_name,
                             client_id
                         );
-                        // Time-based approval is tracked by the firewall manager
-                        Ok(None)
+                        if edited_arguments.is_some() {
+                            Ok(FirewallDecisionResult::ProceedWithEdits { edited_arguments })
+                        } else {
+                            Ok(FirewallDecisionResult::Proceed)
+                        }
                     }
                     FirewallApprovalAction::AllowPermanent => {
                         tracing::info!(
@@ -550,8 +610,11 @@ impl McpGateway {
                             tool_name,
                             client_id
                         );
-                        // Permission update is handled by the approval handler
-                        Ok(None)
+                        if edited_arguments.is_some() {
+                            Ok(FirewallDecisionResult::ProceedWithEdits { edited_arguments })
+                        } else {
+                            Ok(FirewallDecisionResult::Proceed)
+                        }
                     }
                     FirewallApprovalAction::Deny => {
                         tracing::info!(
@@ -559,7 +622,7 @@ impl McpGateway {
                             tool_name,
                             client_id
                         );
-                        Ok(Some(JsonRpcResponse::error(
+                        Ok(FirewallDecisionResult::Blocked(JsonRpcResponse::error(
                             request.id.clone().unwrap_or(Value::Null),
                             JsonRpcError::custom(
                                 -32600,
@@ -574,12 +637,11 @@ impl McpGateway {
                             tool_name,
                             client_id
                         );
-                        // Add to session denials so future calls are auto-denied
                         let mut session_write = session.write().await;
                         session_write
                             .firewall_session_denials
                             .insert(tool_name.to_string());
-                        Ok(Some(JsonRpcResponse::error(
+                        Ok(FirewallDecisionResult::Blocked(JsonRpcResponse::error(
                             request.id.clone().unwrap_or(Value::Null),
                             JsonRpcError::custom(
                                 -32600,
@@ -594,8 +656,7 @@ impl McpGateway {
                             tool_name,
                             client_id
                         );
-                        // Permission update is handled by the approval handler
-                        Ok(Some(JsonRpcResponse::error(
+                        Ok(FirewallDecisionResult::Blocked(JsonRpcResponse::error(
                             request.id.clone().unwrap_or(Value::Null),
                             JsonRpcError::custom(
                                 -32600,
@@ -916,7 +977,7 @@ impl McpGateway {
         let client_name = session_read.client_name.clone();
         drop(session_read);
 
-        if let Some(err_response) = self
+        let marketplace_firewall = self
             .apply_access_decision(
                 &session,
                 &decision,
@@ -927,9 +988,10 @@ impl McpGateway {
                 "marketplace",
                 &request,
             )
-            .await?
-        {
-            return Ok(err_response);
+            .await?;
+
+        if let FirewallDecisionResult::Blocked(resp) = marketplace_firewall {
+            return Ok(resp);
         }
 
         // Extract arguments from params

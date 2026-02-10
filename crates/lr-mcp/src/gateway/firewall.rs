@@ -44,6 +44,8 @@ pub enum FirewallApprovalAction {
 #[derive(Debug)]
 pub struct FirewallApprovalResponse {
     pub action: FirewallApprovalAction,
+    /// Edited tool arguments or model params (from edit mode in the popup)
+    pub edited_arguments: Option<serde_json::Value>,
 }
 
 /// Pending firewall approval session
@@ -66,6 +68,9 @@ pub struct FirewallApprovalSession {
 
     /// Preview of tool call arguments (truncated JSON)
     pub arguments_preview: String,
+
+    /// Full arguments for edit mode (complete JSON, not truncated)
+    pub full_arguments: Option<serde_json::Value>,
 
     /// Channel to send response back to waiting request
     pub response_sender: Option<oneshot::Sender<FirewallApprovalResponse>>,
@@ -96,6 +101,8 @@ pub struct PendingApprovalInfo {
     pub tool_name: String,
     pub server_name: String,
     pub arguments_preview: String,
+    /// Full arguments as JSON string (for edit mode, lazy-loaded by UI)
+    pub full_arguments: Option<String>,
     pub created_at_secs_ago: u64,
     pub timeout_seconds: u64,
     /// Whether this is a model approval request (vs MCP/skill tool)
@@ -150,6 +157,7 @@ impl FirewallManager {
         server_name: String,
         arguments_preview: String,
         timeout_secs: Option<u64>,
+        full_arguments: Option<serde_json::Value>,
     ) -> AppResult<FirewallApprovalResponse> {
         self.request_approval_internal(
             client_id,
@@ -159,6 +167,7 @@ impl FirewallManager {
             arguments_preview,
             timeout_secs,
             false, // MCP/skill tool request
+            full_arguments,
         )
         .await
     }
@@ -174,6 +183,7 @@ impl FirewallManager {
         model_name: String,
         provider_name: String,
         timeout_secs: Option<u64>,
+        full_arguments: Option<serde_json::Value>,
     ) -> AppResult<FirewallApprovalResponse> {
         self.request_approval_internal(
             client_id,
@@ -183,6 +193,7 @@ impl FirewallManager {
             String::new(), // no arguments for model requests
             timeout_secs,
             true, // model request
+            full_arguments,
         )
         .await
     }
@@ -197,6 +208,7 @@ impl FirewallManager {
         arguments_preview: String,
         timeout_secs: Option<u64>,
         is_model_request: bool,
+        full_arguments: Option<serde_json::Value>,
     ) -> AppResult<FirewallApprovalResponse> {
         let request_id = Uuid::new_v4().to_string();
         let timeout = timeout_secs.unwrap_or(self.default_timeout_secs);
@@ -222,6 +234,7 @@ impl FirewallManager {
             tool_name: tool_name.clone(),
             server_name: server_name.clone(),
             arguments_preview: arguments_preview.clone(),
+            full_arguments,
             response_sender: Some(tx),
             created_at: Instant::now(),
             timeout_seconds: timeout,
@@ -274,6 +287,7 @@ impl FirewallManager {
                 self.pending.remove(&request_id);
                 Ok(FirewallApprovalResponse {
                     action: FirewallApprovalAction::Deny,
+                    edited_arguments: None,
                 })
             }
             Err(_) => {
@@ -285,6 +299,7 @@ impl FirewallManager {
                 self.pending.remove(&request_id);
                 Ok(FirewallApprovalResponse {
                     action: FirewallApprovalAction::Deny,
+                    edited_arguments: None,
                 })
             }
         }
@@ -295,6 +310,7 @@ impl FirewallManager {
         &self,
         request_id: &str,
         action: FirewallApprovalAction,
+        edited_arguments: Option<serde_json::Value>,
     ) -> AppResult<()> {
         match self.pending.remove(request_id) {
             Some((_, mut session)) => {
@@ -304,7 +320,10 @@ impl FirewallManager {
                 );
 
                 if let Some(sender) = session.response_sender.take() {
-                    let response = FirewallApprovalResponse { action };
+                    let response = FirewallApprovalResponse {
+                        action,
+                        edited_arguments,
+                    };
                     sender.send(response).map_err(|_| {
                         AppError::Internal("Failed to send firewall approval response".to_string())
                     })?;
@@ -350,6 +369,10 @@ impl FirewallManager {
             .iter()
             .map(|entry| {
                 let session = entry.value();
+                let full_arguments = session
+                    .full_arguments
+                    .as_ref()
+                    .and_then(|v| serde_json::to_string(v).ok());
                 PendingApprovalInfo {
                     request_id: session.request_id.clone(),
                     client_id: session.client_id.clone(),
@@ -357,6 +380,7 @@ impl FirewallManager {
                     tool_name: session.tool_name.clone(),
                     server_name: session.server_name.clone(),
                     arguments_preview: session.arguments_preview.clone(),
+                    full_arguments,
                     created_at_secs_ago: session.created_at.elapsed().as_secs(),
                     timeout_seconds: session.timeout_seconds,
                     is_model_request: session.is_model_request,
@@ -456,6 +480,7 @@ mod tests {
             tool_name: "filesystem__write_file".to_string(),
             server_name: "filesystem".to_string(),
             arguments_preview: "{}".to_string(),
+            full_arguments: None,
             response_sender: None,
             created_at: Instant::now() - Duration::from_secs(150),
             timeout_seconds: 120,
@@ -473,6 +498,7 @@ mod tests {
             tool_name: "filesystem__write_file".to_string(),
             server_name: "filesystem".to_string(),
             arguments_preview: "{}".to_string(),
+            full_arguments: None,
             response_sender: None,
             created_at: Instant::now(),
             timeout_seconds: 120,
@@ -496,6 +522,7 @@ mod tests {
                     "filesystem".to_string(),
                     "{}".to_string(),
                     None,
+                    None,
                 )
                 .await
         });
@@ -510,7 +537,7 @@ mod tests {
         let pending = manager.list_pending();
         let request_id = &pending[0].request_id;
         manager
-            .submit_response(request_id, FirewallApprovalAction::AllowOnce)
+            .submit_response(request_id, FirewallApprovalAction::AllowOnce, None)
             .unwrap();
 
         // Should complete successfully
@@ -530,6 +557,7 @@ mod tests {
                 "tool".to_string(),
                 "server".to_string(),
                 "{}".to_string(),
+                None,
                 None,
             )
             .await;
@@ -552,6 +580,7 @@ mod tests {
                     "tool".to_string(),
                     "server".to_string(),
                     "{}".to_string(),
+                    None,
                     None,
                 )
                 .await
