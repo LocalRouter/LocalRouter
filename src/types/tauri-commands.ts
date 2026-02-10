@@ -71,6 +71,12 @@ export interface ModelPermissions {
 // =============================================================================
 
 /**
+ * Client mode determines which features are exposed.
+ * Rust: crates/lr-config/src/types.rs - ClientMode enum
+ */
+export type ClientMode = 'both' | 'llm_only' | 'mcp_only'
+
+/**
  * Client information returned from list_clients and create_client.
  * Rust: src-tauri/src/ui/commands_clients.rs - ClientInfo struct
  */
@@ -87,6 +93,33 @@ export interface ClientInfo {
   skills_permissions: SkillsPermissions
   model_permissions: ModelPermissions
   marketplace_permission: PermissionState
+  client_mode: ClientMode
+  template_id: string | null
+}
+
+/**
+ * App capabilities: installation status and supported modes.
+ * Rust: src-tauri/src/ui/commands_clients.rs - AppCapabilities struct
+ */
+export interface AppCapabilities {
+  installed: boolean
+  binary_path: string | null
+  version: string | null
+  supports_try_it_out: boolean
+  supports_permanent_config: boolean
+}
+
+/**
+ * Result of a configure or launch operation.
+ * Rust: src-tauri/src/ui/commands_clients.rs - LaunchResult struct
+ */
+export interface LaunchResult {
+  success: boolean
+  message: string
+  modified_files: string[]
+  backup_files: string[]
+  /** For CLI apps: the command the user should run in their terminal */
+  terminal_command?: string | null
 }
 
 // =============================================================================
@@ -1103,6 +1136,33 @@ export interface GetClientValueParams {
   id: string
 }
 
+/** Params for set_client_mode */
+export interface SetClientModeParams {
+  clientId: string
+  mode: ClientMode
+}
+
+/** Params for set_client_template */
+export interface SetClientTemplateParams {
+  clientId: string
+  templateId: string | null
+}
+
+/** Params for get_app_capabilities */
+export interface GetAppCapabilitiesParams {
+  templateId: string
+}
+
+/** Params for try_it_out_app */
+export interface TryItOutAppParams {
+  clientId: string
+}
+
+/** Params for configure_app_permanent */
+export interface ConfigureAppPermanentParams {
+  clientId: string
+}
+
 // =============================================================================
 // Strategy Commands
 // Rust: src-tauri/src/ui/commands_clients.rs
@@ -1724,10 +1784,16 @@ export interface GetOAuthClientLinkedServersParams {
 export interface SubmitFirewallApprovalParams {
   requestId: string
   action: FirewallApprovalAction
+  editedArguments?: string | null
 }
 
 /** Params for get_firewall_approval_details */
 export interface GetFirewallApprovalDetailsParams {
+  requestId: string
+}
+
+/** Params for get_firewall_full_arguments */
+export interface GetFirewallFullArgumentsParams {
   requestId: string
 }
 

@@ -71,6 +71,28 @@ const ICON_MAP: Record<string, string> = {
   // Search Services
   brave: 'brave.svg',
   'brave-search': 'brave.svg',
+
+  // Client Templates (coding assistants, IDEs, chat UIs, automation)
+  'claude-code': 'anthropic.png',
+  codex: 'openai.png',
+  aider: 'aider.png',
+  cursor: 'cursor.svg',
+  windsurf: 'windsurf.svg',
+  'vscode-continue': 'continue.png',
+  opencode: 'opencode.png',
+  droid: 'droid.svg',
+  'open-webui': 'open-webui.png',
+  lobechat: 'lobechat.png',
+  goose: 'goose.png',
+  openclaw: 'openclaw.png',
+  cline: 'cline.png',
+  'roo-code': 'roo-code.png',
+  jetbrains: 'jetbrains.svg',
+  marimo: 'marimo.svg',
+  n8n: 'n8n.png',
+  onyx: 'onyx.svg',
+  xcode: 'xcode.png',
+  zed: 'zed.png',
 }
 
 // Emoji fallbacks for services
@@ -122,6 +144,29 @@ const EMOJI_MAP: Record<string, string> = {
   // Search
   brave: '🦁',
   'brave-search': '🦁',
+
+  // Client Templates
+  'claude-code': '🧠',
+  codex: '💻',
+  aider: '🤖',
+  cursor: '🖱️',
+  windsurf: '🏄',
+  'vscode-continue': '🔧',
+  opencode: '📝',
+  droid: '🤖',
+  'open-webui': '🌐',
+  lobechat: '💬',
+  goose: '🪿',
+  openclaw: '🦞',
+  cline: '🤖',
+  'roo-code': '🦘',
+  jetbrains: '🧠',
+  marimo: '📓',
+  n8n: '⚡',
+  onyx: '💎',
+  xcode: '🔨',
+  zed: '⚡',
+  custom: '⚙️',
 
   // Generic MCP categories
   filesystem: '📂',
