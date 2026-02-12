@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { open } from "@tauri-apps/plugin-shell"
-import { ExternalLink, ChevronDown, ChevronRight, Heart, Code, Cpu } from "lucide-react"
+import { ExternalLink, ChevronDown, ChevronRight, Heart, Code, Cpu, Shield } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Badge } from "@/components/ui/Badge"
 import { Button } from "@/components/ui/Button"
@@ -193,6 +193,61 @@ export function AboutTab() {
             </div>
             <p className="text-xs text-muted-foreground">
               Matrix factorization router model trained on GPT-4 preference data. Hosted on Hugging Face.
+            </p>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Guardrails Sources */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-sm flex items-center gap-2">
+            <Shield className="h-4 w-4" />
+            Guardrails Rule Sources
+          </CardTitle>
+          <CardDescription>
+            When guardrails are enabled, regex patterns are downloaded from these open-source projects.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="p-3 bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 rounded-lg">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="font-medium text-sm">Microsoft Presidio</span>
+                <Badge variant="outline" className="text-xs bg-blue-100 dark:bg-blue-900/50">
+                  MIT
+                </Badge>
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => handleOpenUrl("https://github.com/microsoft/presidio")}
+              >
+                <ExternalLink className="h-3 w-3" />
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground mt-1">
+              PII detection recognizers with regex patterns for credit cards, emails, phone numbers, and more.
+            </p>
+          </div>
+          <div className="p-3 bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 rounded-lg">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="font-medium text-sm">LLM Guard (ProtectAI)</span>
+                <Badge variant="outline" className="text-xs bg-blue-100 dark:bg-blue-900/50">
+                  MIT
+                </Badge>
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => handleOpenUrl("https://github.com/protectai/llm-guard")}
+              >
+                <ExternalLink className="h-3 w-3" />
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground mt-1">
+              Input/output scanners with secret detection patterns for API keys, tokens, and credentials.
             </p>
           </div>
         </CardContent>

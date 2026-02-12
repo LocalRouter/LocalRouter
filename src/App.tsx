@@ -130,6 +130,41 @@ function App() {
       setActiveSubTab(serverId)
     })
 
+    // Subscribe to open-client-tab event from tray menu (for "More…" overflow)
+    const unsubscribeClientTab = listen<string>('open-client-tab', (event) => {
+      const payload = event.payload
+      console.log('Opening client tab from tray menu:', payload)
+      setActiveView('clients')
+      setActiveSubTab(payload)
+    })
+
+    // Subscribe to open-mcp-servers-page event from tray menu (for "More…" overflow)
+    const unsubscribeMcpServersPage = listen('open-mcp-servers-page', () => {
+      console.log('Opening MCP servers page from tray menu')
+      setActiveView('mcp-servers')
+      setActiveSubTab(null)
+    })
+
+    // Subscribe to open-skills-page event from tray menu (for "More…" overflow)
+    const unsubscribeSkillsPage = listen('open-skills-page', () => {
+      console.log('Opening Skills page from tray menu')
+      setActiveView('skills')
+      setActiveSubTab(null)
+    })
+
+    // Subscribe to guardrail streaming response notification
+    const unsubscribeGuardrailFlagged = listen<string>('guardrail-response-flagged', (event) => {
+      try {
+        const data = typeof event.payload === 'string' ? JSON.parse(event.payload) : event.payload
+        const matchCount = data?.matches?.length || 0
+        toast.error(`GuardRail: ${matchCount} rule${matchCount !== 1 ? 's' : ''} triggered — stream aborted`, {
+          duration: 8000,
+        })
+      } catch {
+        toast.error('GuardRail: Response flagged — stream aborted', { duration: 8000 })
+      }
+    })
+
     // Subscribe to update-and-restart event from tray menu
     const unsubscribeUpdateAndRestart = listen('update-and-restart', async () => {
       console.log('Update and restart requested from tray menu')
@@ -158,6 +193,10 @@ function App() {
       unsubscribeResourcesTab.then((fn: any) => fn())
       unsubscribeMcpServer.then((fn: any) => fn())
       unsubscribeUpdateAndRestart.then((fn: any) => fn())
+      unsubscribeGuardrailFlagged.then((fn: any) => fn())
+      unsubscribeClientTab.then((fn: any) => fn())
+      unsubscribeMcpServersPage.then((fn: any) => fn())
+      unsubscribeSkillsPage.then((fn: any) => fn())
     }
   }, [])
 

@@ -28,11 +28,6 @@ interface NetworkInterface {
   is_loopback: boolean
 }
 
-interface TrayGraphSettings {
-  enabled: boolean
-  refresh_rate_secs: number
-}
-
 export function ServerTab() {
   const [config, setConfig] = useState<ServerConfig>({
     host: "127.0.0.1",
@@ -44,17 +39,11 @@ export function ServerTab() {
   const [isRestarting, setIsRestarting] = useState(false)
   const [networkInterfaces, setNetworkInterfaces] = useState<NetworkInterface[]>([])
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false)
-  const [trayGraphSettings, setTrayGraphSettings] = useState<TrayGraphSettings>({
-    enabled: false,
-    refresh_rate_secs: 10,
-  })
-  const [isUpdatingTrayGraph, setIsUpdatingTrayGraph] = useState(false)
   const [executablePath, setExecutablePath] = useState<string>("")
 
   useEffect(() => {
     loadConfig()
     loadNetworkInterfaces()
-    loadTrayGraphSettings()
     loadExecutablePath()
   }, [])
 
@@ -80,15 +69,6 @@ export function ServerTab() {
       setNetworkInterfaces(interfaces)
     } catch (error) {
       console.error("Failed to load network interfaces:", error)
-    }
-  }
-
-  const loadTrayGraphSettings = async () => {
-    try {
-      const settings = await invoke<TrayGraphSettings>("get_tray_graph_settings")
-      setTrayGraphSettings(settings)
-    } catch (error) {
-      console.error("Failed to load tray graph settings:", error)
     }
   }
 
@@ -144,33 +124,6 @@ export function ServerTab() {
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text)
     toast.success("Copied to clipboard")
-  }
-
-  const updateTrayGraphSettings = async () => {
-    setIsUpdatingTrayGraph(true)
-
-    try {
-      await invoke("update_tray_graph_settings", {
-        enabled: trayGraphSettings.enabled,
-        refreshRateSecs: trayGraphSettings.refresh_rate_secs,
-      })
-      toast.success("Tray graph settings updated")
-    } catch (error: any) {
-      console.error("Failed to update tray graph settings:", error)
-      toast.error(`Failed to update: ${error.message || error}`)
-    } finally {
-      setIsUpdatingTrayGraph(false)
-    }
-  }
-
-  const calculateTimeWindow = (refreshRateSecs: number): string => {
-    const totalSecs = 30 * refreshRateSecs
-    if (totalSecs < 60) {
-      return `${totalSecs} seconds`
-    }
-    const mins = Math.floor(totalSecs / 60)
-    const secs = totalSecs % 60
-    return secs > 0 ? `${mins}m ${secs}s` : `${mins} minute${mins > 1 ? "s" : ""}`
   }
 
   const serverUrl = `http://${config.host}:${config.actual_port ?? config.port}/v1`
@@ -341,49 +294,6 @@ export function ServerTab() {
         </CardContent>
       </Card>
 
-      {/* UI Preferences */}
-      <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="text-sm">UI Preferences</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="space-y-2">
-            <Label>Tray Icon Graph Refresh Rate</Label>
-            <p className="text-xs text-muted-foreground mb-2">
-              Live token usage sparkline shown in system tray
-            </p>
-            <Select
-              value={trayGraphSettings.refresh_rate_secs.toString()}
-              onValueChange={(value) =>
-                setTrayGraphSettings({
-                  ...trayGraphSettings,
-                  refresh_rate_secs: parseInt(value),
-                })
-              }
-            >
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="1">Fast (1s refresh, 30s window)</SelectItem>
-                <SelectItem value="10">Medium (10s refresh, 5m window)</SelectItem>
-                <SelectItem value="60">Slow (60s refresh, 30m window)</SelectItem>
-              </SelectContent>
-            </Select>
-            <p className="text-xs text-muted-foreground">
-              Window: {calculateTimeWindow(trayGraphSettings.refresh_rate_secs)}
-            </p>
-          </div>
-
-          <Button
-            size="sm"
-            onClick={updateTrayGraphSettings}
-            disabled={isUpdatingTrayGraph}
-          >
-            {isUpdatingTrayGraph ? "Saving..." : "Save Preferences"}
-          </Button>
-        </CardContent>
-      </Card>
     </div>
   )
 }

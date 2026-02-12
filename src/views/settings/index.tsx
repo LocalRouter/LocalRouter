@@ -6,6 +6,8 @@ import { ServerTab } from "./server-tab"
 import { RouteLLMTab } from "./routellm-tab"
 import { LoggingTab } from "./logging-tab"
 import { UpdatesTab } from "./updates-tab"
+import { AppearanceTab } from "./appearance-tab"
+import { GuardrailsTab } from "./guardrails-tab"
 
 interface SettingsViewProps {
   activeSubTab: string | null
@@ -50,8 +52,10 @@ export function SettingsView({ activeSubTab, onTabChange }: SettingsViewProps) {
       >
         <TabsList>
           <TabsTrigger value="server">Server</TabsTrigger>
+          <TabsTrigger value="appearance">Appearance</TabsTrigger>
           {/* DEPRECATED: Strategy UI hidden - 1:1 client-to-strategy relationship */}
           {/* <TabsTrigger value="routing">Strategies</TabsTrigger> */}
+          <TabsTrigger value="guardrails">GuardRails</TabsTrigger>
           <TabsTrigger value="routellm">Strong/Weak</TabsTrigger>
           <TabsTrigger value="logs">Logs</TabsTrigger>
           <TabsTrigger value="updates">Updates</TabsTrigger>
@@ -61,6 +65,10 @@ export function SettingsView({ activeSubTab, onTabChange }: SettingsViewProps) {
           <ServerTab />
         </TabsContent>
 
+        <TabsContent value="appearance">
+          <AppearanceTab />
+        </TabsContent>
+
         {/* DEPRECATED: Strategy UI hidden - 1:1 client-to-strategy relationship */}
         {/* <TabsContent value="routing">
           <RoutingTab
@@ -68,6 +76,10 @@ export function SettingsView({ activeSubTab, onTabChange }: SettingsViewProps) {
             onSelectStrategy={(id) => handleDetailChange("routing", id)}
           />
         </TabsContent> */}
+
+        <TabsContent value="guardrails">
+          <GuardrailsTab />
+        </TabsContent>
 
         <TabsContent value="routellm">
           <RouteLLMTab />

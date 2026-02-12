@@ -2,16 +2,14 @@ import { useState, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow"
 import { LogicalSize } from "@tauri-apps/api/dpi"
-import { ChevronDown, Pencil } from "lucide-react"
 import { Button } from "@/components/ui/Button"
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
-import { ProvidersIcon, McpIcon, SkillsIcon, StoreIcon } from "@/components/icons/category-icons"
-import type { ModelInfo, ClientInfo, ModelPermissions } from "@/types/tauri-commands"
+  FirewallApprovalCard,
+  FirewallApprovalHeader,
+  getRequestType,
+  type ApprovalAction,
+} from "@/components/shared/FirewallApprovalCard"
+import type { ModelInfo, ClientInfo, ModelPermissions, GuardrailMatchInfo, SourceCheckSummary } from "@/types/tauri-commands"
 
 interface ApprovalDetails {
   request_id: string
@@ -23,43 +21,14 @@ interface ApprovalDetails {
   timeout_seconds: number
   created_at_secs_ago: number
   is_model_request?: boolean
-}
-
-type ApprovalAction = "deny" | "deny_session" | "deny_always" | "allow_once" | "allow_session" | "allow_1_hour" | "allow_permanent"
-
-// Parse JSON arguments into key-value pairs for display
-function parseArguments(jsonStr: string): { key: string; value: string }[] {
-  if (!jsonStr || jsonStr === "{}") return []
-  try {
-    const obj = JSON.parse(jsonStr)
-    if (typeof obj !== "object" || obj === null) return []
-    return Object.entries(obj).map(([key, value]) => ({
-      key,
-      value: typeof value === "string" ? value : JSON.stringify(value),
-    }))
-  } catch {
-    return []
+  is_guardrail_request?: boolean
+  guardrail_details?: {
+    matches: GuardrailMatchInfo[]
+    rules_checked: number
+    check_duration_ms: number
+    scan_direction: "request" | "response"
+    sources_checked: SourceCheckSummary[]
   }
-}
-
-// Determine request type from details
-function getRequestType(details: ApprovalDetails): "marketplace" | "skill" | "model" | "tool" {
-  if (
-    details.server_name.toLowerCase().includes("marketplace") ||
-    details.tool_name.toLowerCase().includes("marketplace")
-  ) {
-    return "marketplace"
-  }
-  if (
-    details.tool_name.startsWith("skill_") ||
-    details.server_name.toLowerCase().includes("skill")
-  ) {
-    return "skill"
-  }
-  if (details.is_model_request) {
-    return "model"
-  }
-  return "tool"
 }
 
 // Model param field definitions
@@ -124,6 +93,15 @@ export function FirewallApproval() {
           requestId,
         })
         setDetails(result)
+
+        // Resize window for guardrail popups (more content to display)
+        if (result.is_guardrail_request) {
+          const win = getCurrentWebviewWindow()
+          const matchCount = result.guardrail_details?.matches?.length || 0
+          const height = Math.min(500, 320 + matchCount * 60)
+          await win.setSize(new LogicalSize(440, height))
+          await win.center()
+        }
       } catch (err) {
         console.error("Failed to load approval details:", err)
         setError(typeof err === "string" ? err : "Failed to load approval details")
@@ -318,40 +296,11 @@ export function FirewallApproval() {
     )
   }
 
-  const requestType = getRequestType(details)
-  const parsedArgs = parseArguments(details.arguments_preview)
-  // Get header content based on request type
-  const getHeaderContent = () => {
-    switch (requestType) {
-      case "marketplace":
-        return {
-          icon: <StoreIcon className="h-5 w-5 text-pink-500" />,
-          title: "Marketplace Installation",
-          description: "A skill from the marketplace wants to be installed",
-        }
-      case "skill":
-        return {
-          icon: <SkillsIcon className="h-5 w-5 text-purple-500" />,
-          title: "Skill Execution",
-          description: "A skill is requesting permission to run",
-        }
-      case "model":
-        return {
-          icon: <ProvidersIcon className="h-5 w-5 text-amber-500" />,
-          title: "Model Access",
-          description: "Access to an AI model is being requested",
-        }
-      default:
-        return {
-          icon: <McpIcon className="h-5 w-5 text-blue-500" />,
-          title: "Tool Approval",
-          description: "A tool is requesting permission to execute",
-        }
-    }
-  }
-
-  const header = getHeaderContent()
-  const canEdit = requestType !== "marketplace"
+  const requestType = getRequestType({
+    server_name: details.server_name,
+    tool_name: details.tool_name,
+    is_model_request: details.is_model_request,
+  })
 
   // Render edit mode view for model requests
   const renderModelEditor = () => (
@@ -474,205 +423,77 @@ export function FirewallApproval() {
     </div>
   )
 
+  // Normal mode: use the shared card component
+  if (!editMode) {
+    return (
+      <div className="flex flex-col h-screen bg-background overflow-hidden">
+        <FirewallApprovalCard
+          className="flex flex-col flex-1 p-4 overflow-hidden"
+          clientName={details.client_name}
+          toolName={details.tool_name}
+          serverName={details.server_name}
+          argumentsPreview={details.arguments_preview}
+          isModelRequest={details.is_model_request}
+          isGuardrailRequest={details.is_guardrail_request}
+          guardrailMatches={details.guardrail_details?.matches}
+          guardrailDirection={details.guardrail_details?.scan_direction}
+          guardrailSourcesSummary={details.guardrail_details?.sources_checked}
+          onAction={handleAction}
+          onEdit={enterEditMode}
+          submitting={submitting}
+        />
+      </div>
+    )
+  }
 
+  // Edit mode: custom layout with editors
   return (
     <div className="flex flex-col h-screen bg-background overflow-hidden">
       <div className="flex flex-col flex-1 p-4 overflow-hidden">
         {/* Header */}
-        <div className="mb-3 flex-shrink-0">
-          <div className="flex items-center gap-2 mb-0.5">
-            {header.icon}
-            <h1 className="text-sm font-bold">{header.title}</h1>
+        <FirewallApprovalHeader requestType={requestType} />
+
+        {/* Edit Mode Content */}
+        <div className="flex-1 overflow-hidden flex flex-col">
+          {/* Context info */}
+          <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs mb-3 flex-shrink-0">
+            <span className="text-muted-foreground">Client:</span>
+            <span className="font-medium truncate">{details.client_name}</span>
+            {requestType === "model" ? (
+              <>
+                <span className="text-muted-foreground">Provider:</span>
+                <span className="truncate">{details.server_name}</span>
+              </>
+            ) : (
+              <>
+                <span className="text-muted-foreground">{requestType === "skill" ? "Skill" : "Tool"}:</span>
+                <code className="font-mono bg-muted px-1 py-0.5 rounded truncate">{details.tool_name}</code>
+              </>
+            )}
           </div>
-          <p className="text-xs text-muted-foreground">{header.description}</p>
+
+          {/* Editor */}
+          {requestType === "model" ? renderModelEditor() : renderJsonEditor()}
         </div>
 
-        {editMode ? (
-          /* Edit Mode View */
-          <div className="flex-1 overflow-hidden flex flex-col">
-            {/* Context info */}
-            <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs mb-3 flex-shrink-0">
-              <span className="text-muted-foreground">Client:</span>
-              <span className="font-medium truncate">{details.client_name}</span>
-              {requestType === "model" ? (
-                <>
-                  <span className="text-muted-foreground">Provider:</span>
-                  <span className="truncate">{details.server_name}</span>
-                </>
-              ) : (
-                <>
-                  <span className="text-muted-foreground">{requestType === "skill" ? "Skill" : "Tool"}:</span>
-                  <code className="font-mono bg-muted px-1 py-0.5 rounded truncate">{details.tool_name}</code>
-                </>
-              )}
-            </div>
-
-            {/* Editor */}
-            {requestType === "model" ? renderModelEditor() : renderJsonEditor()}
-          </div>
-        ) : (
-          /* Normal View */
-          <div className="flex-1 overflow-auto">
-            <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5 text-xs">
-              <span className="text-muted-foreground">Client:</span>
-              <span className="font-medium truncate">{details.client_name}</span>
-
-              {requestType === "marketplace" ? (
-                <>
-                  <span className="text-muted-foreground">Skill:</span>
-                  <code className="font-mono bg-muted px-1 py-0.5 rounded truncate">
-                    {details.tool_name}
-                  </code>
-                </>
-              ) : requestType === "skill" ? (
-                <>
-                  <span className="text-muted-foreground">Skill:</span>
-                  <span className="truncate">{details.server_name}</span>
-                  <span className="text-muted-foreground">Action:</span>
-                  <code className="font-mono bg-muted px-1 py-0.5 rounded truncate">
-                    {details.tool_name.replace(/^skill_/, "").replace(/_/g, " ")}
-                  </code>
-                </>
-              ) : requestType === "model" ? (
-                <>
-                  <span className="text-muted-foreground">Model:</span>
-                  <code className="font-mono bg-muted px-1 py-0.5 rounded truncate">
-                    {details.tool_name}
-                  </code>
-                  <span className="text-muted-foreground">Provider:</span>
-                  <span className="truncate">{details.server_name}</span>
-                </>
-              ) : (
-                <>
-                  <span className="text-muted-foreground">Tool:</span>
-                  <code className="font-mono bg-muted px-1 py-0.5 rounded truncate">
-                    {details.tool_name}
-                  </code>
-                  <span className="text-muted-foreground">Server:</span>
-                  <span className="truncate">{details.server_name}</span>
-                </>
-              )}
-
-              {/* Arguments inline */}
-              {parsedArgs.map(({ key, value }) => (
-                <span key={key} className="contents">
-                  <span className="text-muted-foreground">{key}:</span>
-                  <span className="font-mono truncate" title={value}>
-                    {value.length > 60 ? `${value.slice(0, 60)}...` : value}
-                  </span>
-                </span>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Action Buttons */}
+        {/* Edit mode actions */}
         <div className="flex gap-2 pt-3 mt-auto flex-shrink-0">
-          {editMode ? (
-            /* Edit mode actions */
-            <>
-              <Button
-                variant="ghost"
-                className="h-10"
-                onClick={exitEditMode}
-                disabled={submitting}
-              >
-                Back
-              </Button>
-              <div className="flex-1" />
-              <Button
-                className="h-10 bg-emerald-600 hover:bg-emerald-700 text-white font-bold"
-                onClick={() => handleAction("allow_once")}
-                disabled={submitting || (!jsonValid && !details.is_model_request)}
-              >
-                Allow with Edits
-              </Button>
-            </>
-          ) : (
-            /* Normal mode actions */
-            <>
-              {/* Split button: Deny Once (main) + dropdown for other options */}
-              <div className="flex flex-1">
-                <Button
-                  variant="destructive"
-                  className="flex-1 h-10 rounded-r-none font-bold"
-                  onClick={() => handleAction("deny")}
-                  disabled={submitting}
-                >
-                  Deny
-                </Button>
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button
-                      variant="destructive"
-                      className="h-10 px-2 rounded-l-none border-l border-red-700"
-                      disabled={submitting}
-                    >
-                      <ChevronDown className="h-4 w-4" />
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="start">
-                    {!details.is_model_request && (
-                      <DropdownMenuItem onClick={() => handleAction("deny_session")}>
-                        Deny for Session
-                      </DropdownMenuItem>
-                    )}
-                    <DropdownMenuItem onClick={() => handleAction("deny_always")}>
-                      Deny Always
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              </div>
-
-              {/* Edit button - hidden for marketplace */}
-              {canEdit && (
-                <Button
-                  className="h-10 px-3 bg-amber-500 hover:bg-amber-600 text-white font-bold"
-                  onClick={enterEditMode}
-                  disabled={submitting}
-                >
-                  <Pencil className="h-3.5 w-3.5 mr-1" />
-                  Modify
-                </Button>
-              )}
-
-              {/* Split button: Allow Once (main) + dropdown for other options */}
-              <div className="flex flex-1">
-                <Button
-                  className="flex-1 h-10 rounded-r-none bg-emerald-600 hover:bg-emerald-700 text-white font-bold"
-                  onClick={() => handleAction("allow_once")}
-                  disabled={submitting}
-                >
-                  Allow Once
-                </Button>
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button
-                      className="h-10 px-2 rounded-l-none border-l border-emerald-700 bg-emerald-600 hover:bg-emerald-700 text-white"
-                      disabled={submitting}
-                    >
-                      <ChevronDown className="h-4 w-4" />
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end">
-                    {!details.is_model_request && (
-                      <DropdownMenuItem onClick={() => handleAction("allow_session")}>
-                        Allow for Session
-                      </DropdownMenuItem>
-                    )}
-                    {details.is_model_request && (
-                      <DropdownMenuItem onClick={() => handleAction("allow_1_hour")}>
-                        Allow for 1 Hour
-                      </DropdownMenuItem>
-                    )}
-                    <DropdownMenuItem onClick={() => handleAction("allow_permanent")}>
-                      Allow Always
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              </div>
-            </>
-          )}
+          <Button
+            variant="ghost"
+            className="h-10"
+            onClick={exitEditMode}
+            disabled={submitting}
+          >
+            Back
+          </Button>
+          <div className="flex-1" />
+          <Button
+            className="h-10 bg-emerald-600 hover:bg-emerald-700 text-white font-bold"
+            onClick={() => handleAction("allow_once")}
+            disabled={submitting || (!jsonValid && !details.is_model_request)}
+          >
+            Allow with Edits
+          </Button>
         </div>
       </div>
     </div>
