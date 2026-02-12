@@ -95,6 +95,7 @@ export interface ClientInfo {
   marketplace_permission: PermissionState
   client_mode: ClientMode
   template_id: string | null
+  sync_config: boolean
 }
 
 /**
@@ -1148,6 +1149,12 @@ export interface SetClientTemplateParams {
   templateId: string | null
 }
 
+/** Params for set_client_guardrails_enabled */
+export interface SetClientGuardrailsEnabledParams {
+  clientId: string
+  enabled: boolean | null
+}
+
 /** Params for get_app_capabilities */
 export interface GetAppCapabilitiesParams {
   templateId: string
@@ -1160,6 +1167,17 @@ export interface TryItOutAppParams {
 
 /** Params for configure_app_permanent */
 export interface ConfigureAppPermanentParams {
+  clientId: string
+}
+
+/** Params for toggle_client_sync_config */
+export interface ToggleClientSyncConfigParams {
+  clientId: string
+  enabled: boolean
+}
+
+/** Params for sync_client_config */
+export interface SyncClientConfigParams {
   clientId: string
 }
 
@@ -1928,4 +1946,241 @@ export interface OpenPathParams {
 /** Params for create_test_client_for_strategy */
 export interface CreateTestClientForStrategyParams {
   strategyId: string
+}
+
+// =============================================================================
+// GuardRails Types
+// Rust: crates/lr-guardrails/src/types.rs, crates/lr-config/src/types.rs
+// =============================================================================
+
+/** A single guardrail detection match */
+export interface GuardrailMatchInfo {
+  rule_id: string
+  rule_name: string
+  source_id: string
+  source_label: string
+  category: string
+  severity: string
+  direction: "input" | "output" | "both"
+  matched_text: string
+  message_index: number | null
+  description: string
+}
+
+/** Guardrail approval details sent to popup */
+export interface GuardrailApprovalDetails {
+  matches: GuardrailMatchInfo[]
+  rules_checked: number
+  check_duration_ms: number
+  scan_direction: "request" | "response"
+  sources_checked: SourceCheckSummary[]
+}
+
+/** Global guardrails configuration */
+export interface GuardrailsConfig {
+  enabled: boolean
+  scan_requests: boolean
+  scan_responses: boolean
+  sources: GuardrailSourceConfig[]
+  min_popup_severity: string
+  update_interval_hours: number
+  custom_rules: CustomGuardrailRule[]
+}
+
+/** A configurable guardrail source */
+export interface GuardrailSourceConfig {
+  id: string
+  label: string
+  source_type: string
+  enabled: boolean
+  url: string
+  data_paths: string[]
+  branch: string
+  predefined: boolean
+  confidence_threshold: number
+  model_architecture: string | null
+  hf_repo_id: string | null
+  requires_auth: boolean
+}
+
+// =============================================================================
+// ML Model GuardRails Types
+// Rust: crates/lr-guardrails/src/sources/model_source.rs
+// =============================================================================
+
+/**
+ * Model download state.
+ * Rust: crates/lr-guardrails/src/sources/model_source.rs - ModelDownloadState enum
+ */
+export type ModelDownloadState = 'not_downloaded' | 'downloading' | 'ready' | 'error'
+
+/**
+ * Supported model architectures.
+ * Rust: crates/lr-guardrails/src/sources/model_source.rs - ModelArchitecture enum
+ */
+export type ModelArchitecture = 'bert' | 'deberta_v2'
+
+/**
+ * Extended model info for UI display.
+ * Rust: crates/lr-guardrails/src/sources/model_source.rs - GuardrailModelInfo struct
+ */
+export interface GuardrailModelInfo {
+  source_id: string
+  hf_repo_id: string
+  architecture: ModelArchitecture
+  download_state: ModelDownloadState
+  size_bytes: number
+  loaded: boolean
+  error_message: string | null
+}
+
+/**
+ * Progress of a model download.
+ * Rust: crates/lr-guardrails/src/sources/model_source.rs - ModelDownloadProgress struct
+ */
+export interface ModelDownloadProgress {
+  source_id: string
+  current_file: string | null
+  progress: number
+  bytes_downloaded: number
+}
+
+/** Per-path download/parse error */
+export interface PathDownloadError {
+  path: string
+  error: string
+  detail: string
+}
+
+/** Per-source status info */
+export interface GuardrailSourceStatus {
+  id: string
+  rule_count: number
+  last_updated: string | null
+  source_last_modified: string | null
+  download_state: "not_downloaded" | "downloading" | "ready" | "error"
+  error_message: string | null
+  path_errors: PathDownloadError[]
+}
+
+/** Detailed source info for the detail panel */
+export interface GuardrailSourceDetails {
+  id: string
+  label: string
+  source_type: string
+  url: string
+  data_paths: string[]
+  branch: string
+  predefined: boolean
+  enabled: boolean
+  cache_dir: string | null
+  raw_files: string[]
+  compiled_rules_count: number
+  error_message: string | null
+  sample_rules: GuardrailSampleRule[]
+  path_errors: PathDownloadError[]
+}
+
+/** A sample rule from compiled_rules.json */
+export interface GuardrailSampleRule {
+  id: string
+  name: string
+  pattern: string
+  category: string
+  severity: string
+  direction: string
+  description: string
+}
+
+/** Per-source check summary included in guardrail results */
+export interface SourceCheckSummary {
+  source_id: string
+  source_label: string
+  rules_checked: number
+  match_count: number
+}
+
+/** Result from running guardrail checks */
+export interface GuardrailCheckResult {
+  matches: GuardrailMatchInfo[]
+  rules_checked: number
+  check_duration_ms: number
+  sources_checked: SourceCheckSummary[]
+}
+
+/** Custom user-defined guardrail rule */
+export interface CustomGuardrailRule {
+  id: string
+  name: string
+  pattern: string
+  category: string
+  severity: string
+  direction: string
+  enabled: boolean
+}
+
+/** Params for update_guardrails_config */
+export interface UpdateGuardrailsConfigParams {
+  configJson: string
+}
+
+/** Params for get_guardrail_source_details */
+export interface GetGuardrailSourceDetailsParams {
+  sourceId: string
+}
+
+/** Params for update_guardrail_source */
+export interface UpdateGuardrailSourceParams {
+  sourceId: string
+}
+
+/** Params for add_guardrail_source */
+export interface AddGuardrailSourceParams {
+  id: string
+  label: string
+  sourceType: string
+  url: string
+  dataPaths: string[]
+  branch?: string
+}
+
+/** Params for remove_guardrail_source */
+export interface RemoveGuardrailSourceParams {
+  sourceId: string
+}
+
+/** Params for add_custom_guardrail_rule */
+export interface AddCustomGuardrailRuleParams {
+  ruleJson: string
+}
+
+/** Params for update_custom_guardrail_rule */
+export interface UpdateCustomGuardrailRuleParams {
+  ruleJson: string
+}
+
+/** Params for remove_custom_guardrail_rule */
+export interface RemoveCustomGuardrailRuleParams {
+  ruleId: string
+}
+
+/** Params for test_guardrail_input */
+export interface TestGuardrailInputParams {
+  text: string
+}
+
+/** Params for download_guardrail_model */
+export interface DownloadGuardrailModelParams {
+  sourceId: string
+  hfToken?: string | null
+}
+
+/** Params for get_guardrail_model_status */
+export interface GetGuardrailModelStatusParams {
+  sourceId: string
+}
+
+/** Params for unload_guardrail_model */
+export interface UnloadGuardrailModelParams {
+  sourceId: string
 }
