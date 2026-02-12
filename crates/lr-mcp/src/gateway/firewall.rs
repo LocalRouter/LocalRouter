@@ -48,6 +48,17 @@ pub struct FirewallApprovalResponse {
     pub edited_arguments: Option<serde_json::Value>,
 }
 
+/// Guardrail approval details (sent to popup)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GuardrailApprovalDetails {
+    pub matches: Vec<serde_json::Value>,
+    pub rules_checked: usize,
+    pub check_duration_ms: u64,
+    pub scan_direction: String,
+    #[serde(default)]
+    pub sources_checked: Vec<serde_json::Value>,
+}
+
 /// Pending firewall approval session
 #[derive(Debug)]
 pub struct FirewallApprovalSession {
@@ -83,6 +94,12 @@ pub struct FirewallApprovalSession {
 
     /// Whether this is a model approval request (vs MCP/skill tool)
     pub is_model_request: bool,
+
+    /// Whether this is a guardrail request
+    pub is_guardrail_request: bool,
+
+    /// Guardrail-specific details (matches, severity, etc.)
+    pub guardrail_details: Option<GuardrailApprovalDetails>,
 }
 
 impl FirewallApprovalSession {
@@ -108,6 +125,12 @@ pub struct PendingApprovalInfo {
     /// Whether this is a model approval request (vs MCP/skill tool)
     #[serde(default)]
     pub is_model_request: bool,
+    /// Whether this is a guardrail request
+    #[serde(default)]
+    pub is_guardrail_request: bool,
+    /// Guardrail-specific details
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub guardrail_details: Option<GuardrailApprovalDetails>,
 }
 
 /// Manages firewall approval lifecycle for MCP gateway
@@ -167,7 +190,9 @@ impl FirewallManager {
             arguments_preview,
             timeout_secs,
             false, // MCP/skill tool request
+            false, // not guardrail
             full_arguments,
+            None,
         )
         .await
     }
@@ -192,8 +217,38 @@ impl FirewallManager {
             provider_name, // provider as "server_name"
             String::new(), // no arguments for model requests
             timeout_secs,
-            true, // model request
+            true,  // model request
+            false, // not guardrail
             full_arguments,
+            None,
+        )
+        .await
+    }
+
+    /// Request user approval for a guardrail detection
+    ///
+    /// Shows guardrail-specific popup with matched rules, severity badges, etc.
+    /// Waits indefinitely for user response (no timeout).
+    pub async fn request_guardrail_approval(
+        &self,
+        client_id: String,
+        client_name: String,
+        model_name: String,
+        provider_name: String,
+        guardrail_details: GuardrailApprovalDetails,
+        arguments_preview: String,
+    ) -> AppResult<FirewallApprovalResponse> {
+        self.request_approval_internal(
+            client_id,
+            client_name,
+            model_name,
+            provider_name,
+            arguments_preview,
+            None,  // no custom timeout — will use 24h safety
+            false, // not a model request
+            true,  // guardrail request
+            None,
+            Some(guardrail_details),
         )
         .await
     }
@@ -208,10 +263,14 @@ impl FirewallManager {
         arguments_preview: String,
         timeout_secs: Option<u64>,
         is_model_request: bool,
+        is_guardrail_request: bool,
         full_arguments: Option<serde_json::Value>,
+        guardrail_details: Option<GuardrailApprovalDetails>,
     ) -> AppResult<FirewallApprovalResponse> {
         let request_id = Uuid::new_v4().to_string();
-        let timeout = timeout_secs.unwrap_or(self.default_timeout_secs);
+        // Use 24h safety timeout for all requests (effectively indefinite)
+        // The old 120s auto-deny was a bug — users should not have requests silently denied
+        let timeout = timeout_secs.unwrap_or(86400);
 
         debug!(
             "Creating firewall approval request {} for client {} {} {} (timeout: {}s, model: {})",
@@ -239,6 +298,8 @@ impl FirewallManager {
             created_at: Instant::now(),
             timeout_seconds: timeout,
             is_model_request,
+            is_guardrail_request,
+            guardrail_details,
         };
 
         // Store session
@@ -263,6 +324,7 @@ impl FirewallManager {
                     "arguments_preview": arguments_preview,
                     "timeout_seconds": timeout,
                     "is_model_request": is_model_request,
+                    "is_guardrail_request": is_guardrail_request,
                 })),
             };
 
@@ -384,6 +446,8 @@ impl FirewallManager {
                     created_at_secs_ago: session.created_at.elapsed().as_secs(),
                     timeout_seconds: session.timeout_seconds,
                     is_model_request: session.is_model_request,
+                    is_guardrail_request: session.is_guardrail_request,
+                    guardrail_details: session.guardrail_details.clone(),
                 }
             })
             .collect()
@@ -429,7 +493,7 @@ impl Default for FirewallManager {
     fn default() -> Self {
         Self {
             pending: Arc::new(DashMap::new()),
-            default_timeout_secs: 120,
+            default_timeout_secs: 86400, // 24 hours — effectively indefinite
             notification_broadcast: None,
         }
     }
@@ -485,6 +549,8 @@ mod tests {
             created_at: Instant::now() - Duration::from_secs(150),
             timeout_seconds: 120,
             is_model_request: false,
+            is_guardrail_request: false,
+            guardrail_details: None,
         };
         assert!(session.is_expired());
     }
@@ -503,6 +569,8 @@ mod tests {
             created_at: Instant::now(),
             timeout_seconds: 120,
             is_model_request: false,
+            is_guardrail_request: false,
+            guardrail_details: None,
         };
         assert!(!session.is_expired());
     }
