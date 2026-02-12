@@ -3,15 +3,55 @@
 #![allow(dead_code)]
 
 use crate::ui::tray::UpdateNotificationState;
-use crate::ui::tray_graph::{platform_graph_config, DataPoint};
+use crate::ui::tray_graph::{platform_graph_config, DataPoint, StatusDotColors, TrayOverlay};
 use chrono::{DateTime, Duration, Utc};
 use lr_config::{ConfigManager, UiConfig};
 use lr_monitoring::metrics::MetricsCollector;
+use lr_providers::health_cache::AggregateHealthStatus;
 use parking_lot::RwLock;
 use std::sync::Arc;
 use tauri::{AppHandle, Listener, Manager};
 use tokio::sync::mpsc;
 use tracing::{debug, error};
+
+/// Determine the current tray overlay based on system state.
+///
+/// Priority order (highest first):
+/// 1. Firewall approval pending (user action required)
+/// 2. Health warning/error (provider issues)
+/// 3. Update available
+/// 4. None
+pub fn determine_overlay(app_handle: &AppHandle, dark_mode: bool) -> TrayOverlay {
+    // Highest priority: Firewall approvals pending
+    let firewall_pending = app_handle
+        .try_state::<Arc<lr_server::state::AppState>>()
+        .is_some_and(|state| state.mcp_gateway.firewall_manager.has_pending());
+    if firewall_pending {
+        return TrayOverlay::FirewallPending;
+    }
+
+    // Second priority: Health warning/error
+    let health_status = app_handle
+        .try_state::<Arc<lr_server::state::AppState>>()
+        .map(|state| state.health_cache.aggregate_status());
+    if matches!(
+        health_status,
+        Some(AggregateHealthStatus::Yellow) | Some(AggregateHealthStatus::Red)
+    ) {
+        let status = health_status.unwrap();
+        return TrayOverlay::Warning(StatusDotColors::for_status(status, dark_mode));
+    }
+
+    // Third priority: Update available
+    let update_available = app_handle
+        .try_state::<Arc<UpdateNotificationState>>()
+        .is_some_and(|state| state.is_update_available());
+    if update_available {
+        return TrayOverlay::UpdateAvailable;
+    }
+
+    TrayOverlay::None
+}
 
 /// Manager for dynamic tray icon graph updates
 pub struct TrayGraphManager {
@@ -192,7 +232,7 @@ impl TrayGraphManager {
             }
         });
 
-        // Trigger initial update (always enabled now)
+        // Trigger initial update to render tray icon (static or graph mode)
         manager.notify_activity();
 
         manager
@@ -253,11 +293,20 @@ impl TrayGraphManager {
             .try_state::<Arc<MetricsCollector>>()
             .ok_or_else(|| anyhow::anyhow!("MetricsCollector not in app state"))?;
 
-        let refresh_rate_secs = config_manager.get().ui.tray_graph_refresh_rate_secs;
+        let ui_config = config_manager.get().ui.clone();
+        let tray_graph_enabled = ui_config.tray_graph_enabled;
+        let refresh_rate_secs = ui_config.tray_graph_refresh_rate_secs;
 
         // Graph has 26 pixels (32 - 2*border - 2*margin*2)
         const NUM_BUCKETS: i64 = 26;
         let now = Utc::now();
+
+        // Static mode: skip data collection, render empty graph (border + overlay only)
+        let data_points = if !tray_graph_enabled {
+            // Drain accumulated tokens so they don't pile up
+            *accumulated_tokens.write() = 0;
+            vec![]
+        } else {
 
         // Check if enough time has passed for a bucket shift
         let should_shift_buckets = {
@@ -271,7 +320,7 @@ impl TrayGraphManager {
             }
         };
 
-        let data_points = match refresh_rate_secs {
+        match refresh_rate_secs {
             // Fast mode: 1 second per bar, 26 second total
             // NO metrics querying - pure real-time tracking
             // Starts with empty buckets, accumulates only from live requests
@@ -415,6 +464,7 @@ impl TrayGraphManager {
                     })
                     .collect::<Vec<_>>()
             }
+        }
         };
 
         // Detect if system is in dark mode for color adjustments
@@ -444,41 +494,8 @@ impl TrayGraphManager {
             }
         }
 
-        // Determine overlay: Warning/Error health > UpdateAvailable > None
-        let overlay = {
-            use crate::ui::tray_graph::{StatusDotColors, TrayOverlay};
-            use lr_providers::health_cache::AggregateHealthStatus;
-
-            let health_status = app_handle
-                .try_state::<Arc<lr_server::state::AppState>>()
-                .map(|state| state.health_cache.aggregate_status());
-
-            match health_status {
-                Some(AggregateHealthStatus::Yellow) | Some(AggregateHealthStatus::Red) => {
-                    let status = health_status.unwrap();
-                    TrayOverlay::Warning(StatusDotColors::for_status(status, dark_mode))
-                }
-                _ => {
-                    // Check if firewall approvals are pending
-                    let firewall_pending = app_handle
-                        .try_state::<Arc<lr_server::state::AppState>>()
-                        .is_some_and(|state| state.mcp_gateway.firewall_manager.has_pending());
-                    if firewall_pending {
-                        TrayOverlay::FirewallPending
-                    } else {
-                        // Check if an update is available
-                        let update_available = app_handle
-                            .try_state::<Arc<UpdateNotificationState>>()
-                            .is_some_and(|state| state.is_update_available());
-                        if update_available {
-                            TrayOverlay::UpdateAvailable
-                        } else {
-                            TrayOverlay::None
-                        }
-                    }
-                }
-            }
-        };
+        // Determine overlay (Firewall > Health > Update > None)
+        let overlay = determine_overlay(app_handle, dark_mode);
 
         // Generate graph PNG with overlay
         let graph_config = platform_graph_config();
@@ -532,7 +549,7 @@ impl TrayGraphManager {
     pub fn update_config(&self, new_config: UiConfig) {
         *self.config.write() = new_config;
 
-        // Always trigger an immediate update (tray graph is always enabled)
+        // Trigger an immediate update to apply new settings
         self.notify_activity();
     }
 
@@ -543,9 +560,9 @@ impl TrayGraphManager {
         elapsed.num_seconds() > 60
     }
 
-    /// Check if tray graph feature is enabled (always returns true now)
+    /// Check if tray graph feature is enabled
     pub fn is_enabled(&self) -> bool {
-        true // Dynamic tray graph is always enabled
+        self.config.read().tray_graph_enabled
     }
 }
 

@@ -18,7 +18,7 @@
 
 use crate::ui::tray::{rebuild_tray_menu, UpdateNotificationState};
 use lr_clients::ClientManager;
-use lr_config::ConfigManager;
+use lr_config::{ClientMode, ConfigManager};
 use lr_mcp::manager::McpServerManager;
 use lr_providers::health_cache::{AggregateHealthStatus, ItemHealthStatus};
 use std::sync::Arc;
@@ -32,6 +32,10 @@ use tracing::{debug, error, info};
 /// Aligns text with items that have a leading emoji/icon character.
 /// Uses an em-space (\u{2003}) plus two thin spaces (\u{2009}).
 pub(crate) const TRAY_INDENT: &str = "\u{2003}\u{2009}\u{2009}";
+
+/// Maximum number of items to show per section in client tray submenus.
+/// When exceeded, a "More…" item is shown that opens the dashboard.
+const MAX_TRAY_ITEMS: usize = 10;
 
 /// Padding on each side of narrow (text-style) icons like ⌘ and ⧉
 /// so they occupy the same visual width as full-width emoji icons (❕, ＋).
@@ -259,55 +263,105 @@ pub(crate) fn build_tray_menu<R: Runtime, M: Manager<R>>(
 
                 client_submenu = client_submenu.separator();
 
-                // === Model strategy section ===
-                let strategy_header = MenuItem::with_id(
-                    app,
-                    format!("strategy_header_{}", client.id),
-                    "Model strategy",
-                    false,
-                    None::<&str>,
-                )?;
-                client_submenu = client_submenu.item(&strategy_header);
+                let show_llm = !matches!(client.client_mode, ClientMode::McpOnly);
+                let show_mcp = !matches!(client.client_mode, ClientMode::LlmOnly);
 
-                // List all strategies with checkmark on selected
-                for strategy in &all_strategies {
-                    let is_selected = strategy.id == client.strategy_id;
-                    let label = if is_selected {
-                        format!("✓  {}", strategy.name)
-                    } else {
-                        format!("{}{}", TRAY_INDENT, strategy.name)
-                    };
-
-                    // Create menu item - disabled if already selected
-                    let strategy_item = MenuItem::with_id(
+                // === Model strategy section (hidden for McpOnly) ===
+                if show_llm {
+                    let strategy_header = MenuItem::with_id(
                         app,
-                        format!("set_strategy_{}_{}", client.id, strategy.id),
-                        &label,
-                        !is_selected, // enabled only if not selected
+                        format!("strategy_header_{}", client.id),
+                        "Model strategy",
+                        false,
                         None::<&str>,
                     )?;
-                    client_submenu = client_submenu.item(&strategy_item);
+                    client_submenu = client_submenu.item(&strategy_header);
+
+                    // List strategies with checkmark on selected (truncated to MAX_TRAY_ITEMS)
+                    for strategy in all_strategies.iter().take(MAX_TRAY_ITEMS) {
+                        let is_selected = strategy.id == client.strategy_id;
+                        let label = if is_selected {
+                            format!("✓  {}", strategy.name)
+                        } else {
+                            format!("{}{}", TRAY_INDENT, strategy.name)
+                        };
+
+                        let strategy_item = MenuItem::with_id(
+                            app,
+                            format!("set_strategy_{}_{}", client.id, strategy.id),
+                            &label,
+                            !is_selected,
+                            None::<&str>,
+                        )?;
+                        client_submenu = client_submenu.item(&strategy_item);
+                    }
+
+                    // Show "More…" if truncated
+                    if all_strategies.len() > MAX_TRAY_ITEMS {
+                        client_submenu = client_submenu.text(
+                            format!("open_client_models_{}", client.id),
+                            format!("{}More…", TRAY_INDENT),
+                        );
+                    }
+
+                    client_submenu = client_submenu.separator();
                 }
 
-                // Add separator before MCP Allowlist
-                client_submenu = client_submenu.separator();
+                // === MCP Allowlist section (hidden for LlmOnly) ===
+                if show_mcp {
+                    let mcp_header = MenuItem::with_id(
+                        app,
+                        format!("mcp_header_{}", client.id),
+                        "MCP Allowlist",
+                        false,
+                        None::<&str>,
+                    )?;
+                    client_submenu = client_submenu.item(&mcp_header);
 
-                // === MCP Allowlist section ===
-                let mcp_header = MenuItem::with_id(
-                    app,
-                    format!("mcp_header_{}", client.id),
-                    "MCP Allowlist",
-                    false,
-                    None::<&str>,
-                )?;
-                client_submenu = client_submenu.item(&mcp_header);
+                    if let Some(ref mcp_manager) = mcp_server_manager {
+                        let all_mcp_servers = mcp_manager.list_configs();
 
-                // Get all MCP servers
-                if let Some(ref mcp_manager) = mcp_server_manager {
-                    let all_mcp_servers = mcp_manager.list_configs();
+                        if all_mcp_servers.is_empty() {
+                            let no_mcp_label = format!("{}No MCPs configured", TRAY_INDENT);
+                            let no_mcp_item = MenuItem::with_id(
+                                app,
+                                format!("no_mcp_{}", client.id),
+                                &no_mcp_label,
+                                false,
+                                None::<&str>,
+                            )?;
+                            client_submenu = client_submenu.item(&no_mcp_item);
+                        } else {
+                            for server in all_mcp_servers.iter().take(MAX_TRAY_ITEMS) {
+                                let server_name = if server.name.is_empty() {
+                                    format!("MCP {}", &server.id[..server.id.len().min(8)])
+                                } else {
+                                    server.name.clone()
+                                };
 
-                    if all_mcp_servers.is_empty() {
-                        // No MCPs configured - show disabled item
+                                let is_allowed =
+                                    client.mcp_server_access.can_access(&server.id);
+                                let label = if is_allowed {
+                                    format!("✓  {}", server_name)
+                                } else {
+                                    format!("{}{}", TRAY_INDENT, server_name)
+                                };
+
+                                client_submenu = client_submenu.text(
+                                    format!("toggle_mcp_{}_{}", client.id, server.id),
+                                    label,
+                                );
+                            }
+
+                            // Show "More…" if truncated
+                            if all_mcp_servers.len() > MAX_TRAY_ITEMS {
+                                client_submenu = client_submenu.text(
+                                    "open_mcp_servers_page",
+                                    format!("{}More…", TRAY_INDENT),
+                                );
+                            }
+                        }
+                    } else {
                         let no_mcp_label = format!("{}No MCPs configured", TRAY_INDENT);
                         let no_mcp_item = MenuItem::with_id(
                             app,
@@ -317,58 +371,73 @@ pub(crate) fn build_tray_menu<R: Runtime, M: Manager<R>>(
                             None::<&str>,
                         )?;
                         client_submenu = client_submenu.item(&no_mcp_item);
-                    } else {
-                        // List all MCP servers with checkmarks for allowed ones
-                        for server in &all_mcp_servers {
-                            let server_name = if server.name.is_empty() {
-                                format!("MCP {}", &server.id[..server.id.len().min(8)])
-                            } else {
-                                server.name.clone()
-                            };
-
-                            let is_allowed = client.mcp_server_access.can_access(&server.id);
-                            let label = if is_allowed {
-                                format!("✓  {}", server_name)
-                            } else {
-                                format!("{}{}", TRAY_INDENT, server_name)
-                            };
-
-                            // Clicking toggles the allowed state
-                            client_submenu = client_submenu
-                                .text(format!("toggle_mcp_{}_{}", client.id, server.id), label);
-                        }
                     }
-                } else {
-                    // MCP manager not available - show disabled item
-                    let no_mcp_label = format!("{}No MCPs configured", TRAY_INDENT);
-                    let no_mcp_item = MenuItem::with_id(
+
+                    // === Skills Allowlist section (also hidden for LlmOnly) ===
+                    client_submenu = client_submenu.separator();
+
+                    let skills_header = MenuItem::with_id(
                         app,
-                        format!("no_mcp_{}", client.id),
-                        &no_mcp_label,
+                        format!("skills_header_{}", client.id),
+                        "Skills Allowlist",
                         false,
                         None::<&str>,
                     )?;
-                    client_submenu = client_submenu.item(&no_mcp_item);
-                }
+                    client_submenu = client_submenu.item(&skills_header);
 
-                // === Skills Allowlist section ===
-                client_submenu = client_submenu.separator();
+                    if let Some(skill_manager) =
+                        app.try_state::<Arc<lr_skills::SkillManager>>()
+                    {
+                        let all_skills = skill_manager.list();
 
-                let skills_header = MenuItem::with_id(
-                    app,
-                    format!("skills_header_{}", client.id),
-                    "Skills Allowlist",
-                    false,
-                    None::<&str>,
-                )?;
-                client_submenu = client_submenu.item(&skills_header);
+                        if all_skills.is_empty() {
+                            let no_skills_label =
+                                format!("{}No skills discovered", TRAY_INDENT);
+                            let no_skills_item = MenuItem::with_id(
+                                app,
+                                format!("no_skills_{}", client.id),
+                                &no_skills_label,
+                                false,
+                                None::<&str>,
+                            )?;
+                            client_submenu = client_submenu.item(&no_skills_item);
+                        } else {
+                            for skill_info in all_skills.iter().take(MAX_TRAY_ITEMS) {
+                                let is_allowed = skill_info.enabled
+                                    && client
+                                        .skills_access
+                                        .can_access_by_name(&skill_info.name);
+                                let label = if !skill_info.enabled {
+                                    format!(
+                                        "{}{} (disabled)",
+                                        TRAY_INDENT, skill_info.name
+                                    )
+                                } else if is_allowed {
+                                    format!("✓  {}", skill_info.name)
+                                } else {
+                                    format!("{}{}", TRAY_INDENT, skill_info.name)
+                                };
 
-                // Get all discovered skills via skill manager
-                if let Some(skill_manager) = app.try_state::<Arc<lr_skills::SkillManager>>() {
-                    let all_skills = skill_manager.list();
+                                client_submenu = client_submenu.text(
+                                    format!(
+                                        "toggle_skill_{}_{}",
+                                        client.id, skill_info.name
+                                    ),
+                                    label,
+                                );
+                            }
 
-                    if all_skills.is_empty() {
-                        let no_skills_label = format!("{}No skills discovered", TRAY_INDENT);
+                            // Show "More…" if truncated
+                            if all_skills.len() > MAX_TRAY_ITEMS {
+                                client_submenu = client_submenu.text(
+                                    "open_skills_page",
+                                    format!("{}More…", TRAY_INDENT),
+                                );
+                            }
+                        }
+                    } else {
+                        let no_skills_label =
+                            format!("{}No skills discovered", TRAY_INDENT);
                         let no_skills_item = MenuItem::with_id(
                             app,
                             format!("no_skills_{}", client.id),
@@ -377,34 +446,7 @@ pub(crate) fn build_tray_menu<R: Runtime, M: Manager<R>>(
                             None::<&str>,
                         )?;
                         client_submenu = client_submenu.item(&no_skills_item);
-                    } else {
-                        for skill_info in &all_skills {
-                            let is_allowed = skill_info.enabled
-                                && client.skills_access.can_access_by_name(&skill_info.name);
-                            let label = if !skill_info.enabled {
-                                format!("{}{} (disabled)", TRAY_INDENT, skill_info.name)
-                            } else if is_allowed {
-                                format!("✓  {}", skill_info.name)
-                            } else {
-                                format!("{}{}", TRAY_INDENT, skill_info.name)
-                            };
-
-                            client_submenu = client_submenu.text(
-                                format!("toggle_skill_{}_{}", client.id, skill_info.name),
-                                label,
-                            );
-                        }
                     }
-                } else {
-                    let no_skills_label = format!("{}No skills discovered", TRAY_INDENT);
-                    let no_skills_item = MenuItem::with_id(
-                        app,
-                        format!("no_skills_{}", client.id),
-                        &no_skills_label,
-                        false,
-                        None::<&str>,
-                    )?;
-                    client_submenu = client_submenu.item(&no_skills_item);
                 }
 
                 let client_menu = client_submenu.build()?;

@@ -47,6 +47,8 @@ pub struct ClientInfo {
     pub client_mode: ClientMode,
     /// Template ID used to create this client
     pub template_id: Option<String>,
+    /// Whether auto-sync of external app config is enabled
+    pub sync_config: bool,
 }
 
 /// List all clients
@@ -73,6 +75,7 @@ pub async fn list_clients(
             marketplace_permission: c.marketplace_permission.clone(),
             client_mode: c.client_mode.clone(),
             template_id: c.template_id.clone(),
+            sync_config: c.sync_config,
         })
         .collect())
 }
@@ -130,6 +133,7 @@ pub async fn create_client(
         marketplace_permission: client.marketplace_permission.clone(),
         client_mode: client.client_mode.clone(),
         template_id: client.template_id.clone(),
+        sync_config: client.sync_config,
     };
 
     Ok((secret, client_info))
@@ -286,6 +290,7 @@ pub async fn toggle_client_enabled(
 ///
 /// Generates a new secret for the client and stores it in the keychain.
 /// The old secret is immediately invalidated.
+/// If the client has sync_config enabled, the external config is updated.
 ///
 /// # Arguments
 /// * `client_id` - The client ID whose secret should be rotated
@@ -296,12 +301,30 @@ pub async fn toggle_client_enabled(
 pub async fn rotate_client_secret(
     client_id: String,
     client_manager: State<'_, Arc<lr_clients::ClientManager>>,
+    config_manager: State<'_, ConfigManager>,
+    provider_registry: State<'_, Arc<lr_providers::registry::ProviderRegistry>>,
 ) -> Result<String, String> {
     tracing::info!("Rotating secret for client: {}", client_id);
 
     let new_secret = client_manager
         .rotate_secret(&client_id)
         .map_err(|e| e.to_string())?;
+
+    // If sync_config is enabled, update external config with new secret
+    let config = config_manager.get();
+    if let Some(client) = config.clients.iter().find(|c| c.id == client_id) {
+        if client.sync_config && client.template_id.is_some() {
+            let cm = config_manager.inner().clone();
+            let cmgr = client_manager.inner().clone();
+            let pr = provider_registry.inner().clone();
+            let cid = client_id.clone();
+            tokio::spawn(async move {
+                if let Err(e) = sync_client_config_inner(&cid, &cm, &cmgr, &pr).await {
+                    tracing::warn!("Failed to sync config after secret rotation for {}: {}", cid, e);
+                }
+            });
+        }
+    }
 
     Ok(new_secret)
 }
@@ -672,7 +695,23 @@ pub async fn submit_firewall_approval(
     match action {
         FirewallApprovalAction::AllowPermanent => {
             if let Some(ref info) = pending_info {
-                if info.is_model_request {
+                if info.is_guardrail_request {
+                    // Disable guardrails for this client permanently
+                    config_manager
+                        .update(|cfg| {
+                            if let Some(client) =
+                                cfg.clients.iter_mut().find(|c| c.id == info.client_id)
+                            {
+                                client.guardrails_enabled = Some(false);
+                            }
+                        })
+                        .map_err(|e| e.to_string())?;
+                    config_manager.save().await.map_err(|e| e.to_string())?;
+                    tracing::info!(
+                        "Disabled guardrails permanently for client {}",
+                        info.client_id
+                    );
+                } else if info.is_model_request {
                     // Update model permissions to Allow
                     update_model_permission_for_allow_permanent(&app, &config_manager, info)
                         .await?;
@@ -689,7 +728,16 @@ pub async fn submit_firewall_approval(
         }
         FirewallApprovalAction::Allow1Hour => {
             if let Some(ref info) = pending_info {
-                if info.is_model_request {
+                if info.is_guardrail_request {
+                    // Add time-based guardrail bypass (1 hour)
+                    state
+                        .guardrail_approval_tracker
+                        .add_1_hour_bypass(&info.client_id);
+                    tracing::info!(
+                        "Added 1-hour guardrail bypass for client {}",
+                        info.client_id
+                    );
+                } else if info.is_model_request {
                     // Add time-based model approval (1 hour)
                     // server_name contains provider, tool_name contains model_id
                     state.model_approval_tracker.add_1_hour_approval(
@@ -714,7 +762,23 @@ pub async fn submit_firewall_approval(
         }
         FirewallApprovalAction::DenyAlways => {
             if let Some(ref info) = pending_info {
-                if info.is_model_request {
+                if info.is_guardrail_request {
+                    // Disable the client entirely
+                    config_manager
+                        .update(|cfg| {
+                            if let Some(client) =
+                                cfg.clients.iter_mut().find(|c| c.id == info.client_id)
+                            {
+                                client.enabled = false;
+                            }
+                        })
+                        .map_err(|e| e.to_string())?;
+                    config_manager.save().await.map_err(|e| e.to_string())?;
+                    tracing::info!(
+                        "Disabled client {} due to guardrail DenyAlways",
+                        info.client_id
+                    );
+                } else if info.is_model_request {
                     // Update model permissions to Off
                     update_model_permission_for_deny_permanent(&app, &config_manager, info).await?;
                 } else {
@@ -1557,6 +1621,43 @@ pub async fn set_client_template(
     Ok(())
 }
 
+/// Set the guardrails_enabled override for a client
+#[tauri::command]
+pub async fn set_client_guardrails_enabled(
+    client_id: String,
+    enabled: Option<bool>,
+    config_manager: State<'_, ConfigManager>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    tracing::info!(
+        "Setting client {} guardrails_enabled to: {:?}",
+        client_id,
+        enabled
+    );
+
+    let mut found = false;
+    config_manager
+        .update(|cfg| {
+            if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
+                client.guardrails_enabled = enabled;
+                found = true;
+            }
+        })
+        .map_err(|e| e.to_string())?;
+
+    if !found {
+        return Err(format!("Client not found: {}", client_id));
+    }
+
+    config_manager.save().await.map_err(|e| e.to_string())?;
+
+    if let Err(e) = app.emit("clients-changed", ()) {
+        tracing::error!("Failed to emit clients-changed event: {}", e);
+    }
+
+    Ok(())
+}
+
 // ============================================================================
 // App Launcher Commands
 // ============================================================================
@@ -1667,4 +1768,178 @@ pub async fn configure_app_permanent(
         .ok_or("Client secret not found in keychain")?;
 
     integration.configure_permanent(&base_url, &client_secret, &client_id)
+}
+
+// ============================================================================
+// Config Sync Commands
+// ============================================================================
+
+/// Inner helper to sync a single client's external config.
+/// Returns Ok(Some(result)) if sync was performed, Ok(None) if skipped.
+pub async fn sync_client_config_inner(
+    client_id: &str,
+    config_manager: &ConfigManager,
+    client_manager: &Arc<lr_clients::ClientManager>,
+    provider_registry: &Arc<lr_providers::registry::ProviderRegistry>,
+) -> Result<Option<LaunchResult>, String> {
+    use crate::launcher;
+
+    let config = config_manager.get();
+    let client = config
+        .clients
+        .iter()
+        .find(|c| c.id == client_id)
+        .ok_or_else(|| format!("Client not found: {}", client_id))?;
+
+    // Skip if sync is not enabled or no template
+    if !client.sync_config {
+        return Ok(None);
+    }
+    let template_id = match client.template_id.as_deref() {
+        Some(id) => id,
+        None => return Ok(None),
+    };
+
+    let integration = launcher::get_integration(template_id)
+        .ok_or_else(|| format!("No integration found for template: {}", template_id))?;
+
+    let base_url = format!("http://{}:{}", config.server.host, config.server.port);
+
+    let client_secret = client_manager
+        .get_secret(client_id)
+        .map_err(|e| format!("Failed to get client secret: {}", e))?
+        .ok_or("Client secret not found in keychain")?;
+
+    // Build model list if needed
+    let models = if integration.needs_model_list() {
+        // Get strategy for this client
+        let strategy = config
+            .strategies
+            .iter()
+            .find(|s| s.id == client.strategy_id);
+
+        // Get all available models
+        let all_models = provider_registry
+            .list_all_models()
+            .await
+            .map_err(|e| format!("Failed to list models: {}", e))?;
+
+        // Filter by strategy and format as "provider/model_id"
+        all_models
+            .iter()
+            .filter(|m| {
+                strategy
+                    .map(|s| s.is_model_allowed(&m.provider, &m.id))
+                    .unwrap_or(true)
+            })
+            .map(|m| format!("{}/{}", m.provider, m.id))
+            .collect()
+    } else {
+        vec![]
+    };
+
+    let ctx = launcher::ConfigSyncContext {
+        base_url,
+        client_secret,
+        client_id: client_id.to_string(),
+        models,
+    };
+
+    integration.sync_config(&ctx).map(Some)
+}
+
+/// Sync all clients that have sync_config enabled.
+pub async fn sync_all_clients(
+    config_manager: &ConfigManager,
+    client_manager: &Arc<lr_clients::ClientManager>,
+    provider_registry: &Arc<lr_providers::registry::ProviderRegistry>,
+) {
+    let config = config_manager.get();
+    let sync_clients: Vec<String> = config
+        .clients
+        .iter()
+        .filter(|c| c.sync_config && c.template_id.is_some())
+        .map(|c| c.id.clone())
+        .collect();
+
+    for client_id in sync_clients {
+        match sync_client_config_inner(&client_id, config_manager, client_manager, provider_registry)
+            .await
+        {
+            Ok(Some(result)) => {
+                tracing::info!("Synced config for client {}: {}", client_id, result.message);
+            }
+            Ok(None) => {}
+            Err(e) => {
+                tracing::warn!("Failed to sync config for client {}: {}", client_id, e);
+            }
+        }
+    }
+}
+
+/// Toggle auto-sync of external app config for a client
+#[tauri::command]
+pub async fn toggle_client_sync_config(
+    client_id: String,
+    enabled: bool,
+    config_manager: State<'_, ConfigManager>,
+    client_manager: State<'_, Arc<lr_clients::ClientManager>>,
+    provider_registry: State<'_, Arc<lr_providers::registry::ProviderRegistry>>,
+    app: tauri::AppHandle,
+) -> Result<Option<LaunchResult>, String> {
+    tracing::info!(
+        "Setting client {} sync_config: {}",
+        client_id,
+        enabled
+    );
+
+    let mut found = false;
+    config_manager
+        .update(|cfg| {
+            if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
+                client.sync_config = enabled;
+                found = true;
+            }
+        })
+        .map_err(|e| e.to_string())?;
+
+    if !found {
+        return Err(format!("Client not found: {}", client_id));
+    }
+
+    config_manager.save().await.map_err(|e| e.to_string())?;
+
+    if let Err(e) = app.emit("clients-changed", ()) {
+        tracing::error!("Failed to emit clients-changed event: {}", e);
+    }
+
+    // If enabling, immediately sync
+    if enabled {
+        sync_client_config_inner(
+            &client_id,
+            config_manager.inner(),
+            client_manager.inner(),
+            provider_registry.inner(),
+        )
+        .await
+    } else {
+        Ok(None)
+    }
+}
+
+/// Manually trigger a config sync for a client
+#[tauri::command]
+pub async fn sync_client_config(
+    client_id: String,
+    config_manager: State<'_, ConfigManager>,
+    client_manager: State<'_, Arc<lr_clients::ClientManager>>,
+    provider_registry: State<'_, Arc<lr_providers::registry::ProviderRegistry>>,
+) -> Result<Option<LaunchResult>, String> {
+    sync_client_config_inner(
+        &client_id,
+        config_manager.inner(),
+        client_manager.inner(),
+        provider_registry.inner(),
+    )
+    .await
 }

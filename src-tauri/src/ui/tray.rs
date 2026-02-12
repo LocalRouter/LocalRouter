@@ -402,6 +402,37 @@ pub fn setup_tray<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
                             }
                         });
                     }
+                    // Handle "More…" overflow items that open the dashboard
+                    else if let Some(client_id) = id.strip_prefix("open_client_models_") {
+                        info!("Open client models page for: {}", client_id);
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                        if let Err(e) =
+                            app.emit("open-client-tab", format!("{}|models", client_id))
+                        {
+                            error!("Failed to emit open-client-tab event: {}", e);
+                        }
+                    } else if id == "open_mcp_servers_page" {
+                        info!("Open MCP servers page from tray overflow");
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                        if let Err(e) = app.emit("open-mcp-servers-page", ()) {
+                            error!("Failed to emit open-mcp-servers-page event: {}", e);
+                        }
+                    } else if id == "open_skills_page" {
+                        info!("Open skills page from tray overflow");
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                        if let Err(e) = app.emit("open-skills-page", ()) {
+                            error!("Failed to emit open-skills-page event: {}", e);
+                        }
+                    }
                     // Other events are for model routing configuration
                     // (force_model_*, toggle_provider_*, toggle_model_*, etc.)
                     // These will be handled by future implementation

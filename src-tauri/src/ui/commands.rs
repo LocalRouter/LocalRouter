@@ -1236,10 +1236,10 @@ pub fn get_tray_graph_settings(
     })
 }
 
-/// Update tray graph settings (refresh rate only - graph is always enabled)
+/// Update tray graph settings (enabled state and refresh rate)
 #[tauri::command]
 pub async fn update_tray_graph_settings(
-    enabled: bool, // Kept for backwards compatibility, but ignored (always enabled)
+    enabled: bool,
     refresh_rate_secs: u64,
     config_manager: State<'_, ConfigManager>,
     tray_graph_manager: State<'_, Arc<crate::ui::tray::TrayGraphManager>>,
@@ -1249,12 +1249,10 @@ pub async fn update_tray_graph_settings(
         return Err("refresh_rate_secs must be 1 (Fast), 10 (Medium), or 60 (Slow)".to_string());
     }
 
-    let _ = enabled; // Suppress unused warning - kept for API compatibility
-
-    // Update configuration (tray_graph_enabled is always true now)
+    // Update configuration
     config_manager
         .update(|config| {
-            config.ui.tray_graph_enabled = true; // Always enabled
+            config.ui.tray_graph_enabled = enabled;
             config.ui.tray_graph_refresh_rate_secs = refresh_rate_secs;
         })
         .map_err(|e| e.to_string())?;
@@ -1938,6 +1936,8 @@ pub async fn debug_trigger_firewall_popup(
         created_at: std::time::Instant::now(),
         timeout_seconds: timeout_secs,
         is_model_request,
+        is_guardrail_request: false,
+        guardrail_details: None,
     };
 
     firewall_manager.insert_pending(request_id.clone(), session);
@@ -1981,5 +1981,478 @@ pub async fn debug_trigger_firewall_popup(
         }
     }
 
+    Ok(())
+}
+
+// ============================================================================
+// GuardRails Configuration Commands
+// ============================================================================
+
+/// Get the current guardrails configuration
+#[tauri::command]
+pub async fn get_guardrails_config(
+    config_manager: State<'_, ConfigManager>,
+) -> Result<serde_json::Value, String> {
+    let config = config_manager.get();
+    serde_json::to_value(&config.guardrails).map_err(|e| e.to_string())
+}
+
+/// Update guardrails configuration (global settings + source list)
+#[tauri::command]
+pub async fn update_guardrails_config(
+    config_json: String,
+    config_manager: State<'_, ConfigManager>,
+    state: State<'_, Arc<lr_server::state::AppState>>,
+) -> Result<(), String> {
+    let new_config: lr_config::GuardrailsConfig =
+        serde_json::from_str(&config_json).map_err(|e| format!("Invalid config JSON: {}", e))?;
+
+    let was_enabled = config_manager.get().guardrails.enabled;
+    let now_enabled = new_config.enabled;
+
+    config_manager
+        .update(|config| {
+            config.guardrails = new_config;
+        })
+        .map_err(|e| e.to_string())?;
+
+    config_manager.save().await.map_err(|e| e.to_string())?;
+
+    // If guardrails was just enabled and engine doesn't exist, create it
+    if now_enabled && !was_enabled && state.guardrails_engine.is_none() {
+        tracing::info!("Guardrails enabled — engine will be initialized on next server restart");
+    }
+
+    Ok(())
+}
+
+/// Convert lr-config source configs to lr-guardrails source configs
+fn to_guardrail_source_configs(
+    sources: &[lr_config::GuardrailSourceConfig],
+) -> Vec<lr_guardrails::source_manager::GuardrailSourceConfig> {
+    sources
+        .iter()
+        .map(|s| lr_guardrails::source_manager::GuardrailSourceConfig {
+            id: s.id.clone(),
+            label: s.label.clone(),
+            source_type: s.source_type.clone(),
+            enabled: s.enabled,
+            url: s.url.clone(),
+            data_paths: s.data_paths.clone(),
+            branch: s.branch.clone(),
+            predefined: s.predefined,
+            confidence_threshold: s.confidence_threshold,
+            model_architecture: s.model_architecture.clone(),
+            hf_repo_id: s.hf_repo_id.clone(),
+            requires_auth: s.requires_auth,
+        })
+        .collect()
+}
+
+/// Get per-source status information (rule counts, last updated, download state)
+#[tauri::command]
+pub async fn get_guardrail_sources_status(
+    state: State<'_, Arc<lr_server::state::AppState>>,
+) -> Result<serde_json::Value, String> {
+    let Some(ref engine) = state.guardrails_engine else {
+        return Ok(serde_json::json!([]));
+    };
+
+    let config = state.config_manager.get();
+    let source_configs = to_guardrail_source_configs(&config.guardrails.sources);
+    let statuses = engine.source_manager().get_sources_status(&source_configs);
+    serde_json::to_value(&statuses).map_err(|e| e.to_string())
+}
+
+/// Get detailed information about a guardrail source
+#[tauri::command]
+pub async fn get_guardrail_source_details(
+    source_id: String,
+    state: State<'_, Arc<lr_server::state::AppState>>,
+) -> Result<serde_json::Value, String> {
+    let Some(ref engine) = state.guardrails_engine else {
+        return Err("Guardrails engine not initialized".to_string());
+    };
+
+    let config = state.config_manager.get();
+    let source = config
+        .guardrails
+        .sources
+        .iter()
+        .find(|s| s.id == source_id)
+        .ok_or_else(|| format!("Source not found: {}", source_id))?;
+
+    let gs = to_guardrail_source_configs(&[source.clone()])
+        .into_iter()
+        .next()
+        .unwrap();
+
+    let details = engine.source_manager().get_source_details(&gs);
+    serde_json::to_value(&details).map_err(|e| e.to_string())
+}
+
+/// Trigger download/update for a single guardrail source
+#[tauri::command]
+pub async fn update_guardrail_source(
+    source_id: String,
+    state: State<'_, Arc<lr_server::state::AppState>>,
+) -> Result<usize, String> {
+    let Some(ref engine) = state.guardrails_engine else {
+        return Err("Guardrails engine not initialized".to_string());
+    };
+
+    let config = state.config_manager.get();
+    let source = config
+        .guardrails
+        .sources
+        .iter()
+        .find(|s| s.id == source_id)
+        .ok_or_else(|| format!("Source not found: {}", source_id))?;
+
+    let gs = to_guardrail_source_configs(&[source.clone()])
+        .into_iter()
+        .next()
+        .unwrap();
+
+    engine
+        .source_manager()
+        .update_source(&gs)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Trigger download/update for all enabled guardrail sources
+#[tauri::command]
+pub async fn update_all_guardrail_sources(
+    state: State<'_, Arc<lr_server::state::AppState>>,
+) -> Result<serde_json::Value, String> {
+    let Some(ref engine) = state.guardrails_engine else {
+        return Err("Guardrails engine not initialized".to_string());
+    };
+
+    let config = state.config_manager.get();
+    let source_configs = to_guardrail_source_configs(&config.guardrails.sources);
+    let mut results = serde_json::Map::new();
+
+    for source in &source_configs {
+        if !source.enabled || source.id == "builtin" {
+            continue;
+        }
+        match engine.source_manager().update_source(source).await {
+            Ok(count) => {
+                results.insert(source.id.clone(), serde_json::json!({"rule_count": count}));
+            }
+            Err(e) => {
+                results.insert(
+                    source.id.clone(),
+                    serde_json::json!({"error": e.to_string()}),
+                );
+            }
+        }
+    }
+
+    Ok(serde_json::Value::Object(results))
+}
+
+/// Add a custom guardrail source
+#[tauri::command]
+pub async fn add_guardrail_source(
+    id: String,
+    label: String,
+    source_type: String,
+    url: String,
+    data_paths: Vec<String>,
+    branch: Option<String>,
+    config_manager: State<'_, ConfigManager>,
+) -> Result<(), String> {
+    // Validate source type
+    if !["regex", "yara", "model"].contains(&source_type.as_str()) {
+        return Err(format!(
+            "Invalid source_type '{}'. Must be regex, yara, or model.",
+            source_type
+        ));
+    }
+
+    // Validate URL
+    if url.is_empty() {
+        return Err("URL must not be empty".to_string());
+    }
+
+    // Check for duplicate ID
+    let config = config_manager.get();
+    if config.guardrails.sources.iter().any(|s| s.id == id) {
+        return Err(format!("Source with id '{}' already exists", id));
+    }
+
+    let new_source = lr_config::GuardrailSourceConfig {
+        id,
+        label,
+        source_type,
+        enabled: true,
+        url,
+        data_paths,
+        branch: branch.unwrap_or_else(|| "main".to_string()),
+        predefined: false,
+        confidence_threshold: 0.7,
+        model_architecture: None,
+        hf_repo_id: None,
+        requires_auth: false,
+    };
+
+    config_manager
+        .update(|config| {
+            config.guardrails.sources.push(new_source);
+        })
+        .map_err(|e| e.to_string())?;
+
+    config_manager.save().await.map_err(|e| e.to_string())
+}
+
+/// Remove a user-added guardrail source (cannot remove predefined)
+#[tauri::command]
+pub async fn remove_guardrail_source(
+    source_id: String,
+    config_manager: State<'_, ConfigManager>,
+    state: State<'_, Arc<lr_server::state::AppState>>,
+) -> Result<(), String> {
+    let config = config_manager.get();
+    let source = config
+        .guardrails
+        .sources
+        .iter()
+        .find(|s| s.id == source_id)
+        .ok_or_else(|| format!("Source not found: {}", source_id))?;
+
+    if source.predefined {
+        return Err("Cannot remove predefined sources. Disable them instead.".to_string());
+    }
+
+    config_manager
+        .update(|config| {
+            config.guardrails.sources.retain(|s| s.id != source_id);
+        })
+        .map_err(|e| e.to_string())?;
+
+    config_manager.save().await.map_err(|e| e.to_string())?;
+
+    // Clean up cached data if engine exists
+    if let Some(ref engine) = state.guardrails_engine {
+        let _ = engine.source_manager().remove_source(&source_id).await;
+    }
+
+    Ok(())
+}
+
+// ============================================================================
+// Custom GuardRails Rule Commands
+// ============================================================================
+
+/// Helper: convert lr_config custom rules to lr_guardrails custom rules and reload
+fn reload_custom_rules(state: &lr_server::state::AppState) {
+    if let Some(ref engine) = state.guardrails_engine {
+        let config = state.config_manager.get();
+        let custom_rules: Vec<lr_guardrails::source_manager::CustomGuardrailRule> = config
+            .guardrails
+            .custom_rules
+            .iter()
+            .map(|r| lr_guardrails::source_manager::CustomGuardrailRule {
+                id: r.id.clone(),
+                name: r.name.clone(),
+                pattern: r.pattern.clone(),
+                category: r.category.clone(),
+                severity: r.severity.clone(),
+                direction: r.direction.clone(),
+                enabled: r.enabled,
+            })
+            .collect();
+        engine.source_manager().load_custom_rules(&custom_rules);
+    }
+}
+
+/// Add a custom guardrail rule
+#[tauri::command]
+pub async fn add_custom_guardrail_rule(
+    rule_json: String,
+    config_manager: State<'_, ConfigManager>,
+    state: State<'_, Arc<lr_server::state::AppState>>,
+) -> Result<(), String> {
+    let rule: lr_config::CustomGuardrailRule =
+        serde_json::from_str(&rule_json).map_err(|e| format!("Invalid rule JSON: {}", e))?;
+
+    // Validate regex compiles
+    lr_guardrails::validate_regex_pattern(&rule.pattern)
+        .map_err(|e| format!("Invalid regex pattern: {}", e))?;
+
+    // Check for duplicate ID
+    let config = config_manager.get();
+    if config.guardrails.custom_rules.iter().any(|r| r.id == rule.id) {
+        return Err(format!("Custom rule with id '{}' already exists", rule.id));
+    }
+
+    config_manager
+        .update(|config| {
+            config.guardrails.custom_rules.push(rule);
+        })
+        .map_err(|e| e.to_string())?;
+
+    config_manager.save().await.map_err(|e| e.to_string())?;
+
+    reload_custom_rules(&state);
+    Ok(())
+}
+
+/// Update an existing custom guardrail rule
+#[tauri::command]
+pub async fn update_custom_guardrail_rule(
+    rule_json: String,
+    config_manager: State<'_, ConfigManager>,
+    state: State<'_, Arc<lr_server::state::AppState>>,
+) -> Result<(), String> {
+    let rule: lr_config::CustomGuardrailRule =
+        serde_json::from_str(&rule_json).map_err(|e| format!("Invalid rule JSON: {}", e))?;
+
+    // Validate regex compiles
+    lr_guardrails::validate_regex_pattern(&rule.pattern)
+        .map_err(|e| format!("Invalid regex pattern: {}", e))?;
+
+    config_manager
+        .update(|config| {
+            if let Some(existing) = config.guardrails.custom_rules.iter_mut().find(|r| r.id == rule.id) {
+                *existing = rule;
+            }
+        })
+        .map_err(|e| e.to_string())?;
+
+    config_manager.save().await.map_err(|e| e.to_string())?;
+
+    reload_custom_rules(&state);
+    Ok(())
+}
+
+/// Remove a custom guardrail rule
+#[tauri::command]
+pub async fn remove_custom_guardrail_rule(
+    rule_id: String,
+    config_manager: State<'_, ConfigManager>,
+    state: State<'_, Arc<lr_server::state::AppState>>,
+) -> Result<(), String> {
+    config_manager
+        .update(|config| {
+            config.guardrails.custom_rules.retain(|r| r.id != rule_id);
+        })
+        .map_err(|e| e.to_string())?;
+
+    config_manager.save().await.map_err(|e| e.to_string())?;
+
+    reload_custom_rules(&state);
+    Ok(())
+}
+
+/// Test guardrail rules against input text
+#[tauri::command]
+pub async fn test_guardrail_input(
+    text: String,
+    state: State<'_, Arc<lr_server::state::AppState>>,
+) -> Result<serde_json::Value, String> {
+    let Some(ref engine) = state.guardrails_engine else {
+        return Err("Guardrails engine not initialized".to_string());
+    };
+
+    // Wrap text as a chat message body for scanning
+    let body = serde_json::json!({
+        "messages": [
+            {"role": "user", "content": text}
+        ]
+    });
+
+    let result = engine.check_input(&body);
+    serde_json::to_value(&result).map_err(|e| e.to_string())
+}
+
+// ─── ML Model Guardrail Commands ───────────────────────────────────────────
+
+/// Download a guardrail ML model from HuggingFace
+#[tauri::command]
+pub async fn download_guardrail_model(
+    source_id: String,
+    hf_token: Option<String>,
+    state: State<'_, Arc<lr_server::state::AppState>>,
+    config_manager: State<'_, lr_config::ConfigManager>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    let Some(ref model_manager) = state.guardrail_model_manager else {
+        return Err("Model manager not initialized".to_string());
+    };
+
+    // Look up hf_repo_id from config
+    let config = config_manager.get();
+    let source = config
+        .guardrails
+        .sources
+        .iter()
+        .find(|s| s.id == source_id)
+        .ok_or_else(|| format!("Source '{}' not found in config", source_id))?;
+
+    let hf_repo_id = source
+        .hf_repo_id
+        .as_deref()
+        .ok_or_else(|| format!("Source '{}' has no hf_repo_id configured", source_id))?
+        .to_string();
+
+    // Set up progress callback to emit Tauri events
+    let app_handle_clone = app_handle.clone();
+    model_manager.set_progress_callback(move |progress| {
+        use tauri::Emitter;
+        let _ = app_handle_clone.emit("guardrail-model-download-progress", &progress);
+    });
+
+    // Spawn download
+    let manager = model_manager.clone();
+    let src_id = source_id.clone();
+    let token = hf_token.clone();
+    tokio::spawn(async move {
+        use tauri::Emitter;
+        match manager.download_model(&src_id, &hf_repo_id, token.as_deref()).await {
+            Ok(()) => {
+                let _ = app_handle.emit("guardrail-model-download-complete", &src_id);
+            }
+            Err(e) => {
+                tracing::error!("Model download failed: {}", e);
+                let _ = app_handle.emit(
+                    "guardrail-model-download-failed",
+                    serde_json::json!({ "source_id": src_id, "error": e }),
+                );
+            }
+        }
+    });
+
+    Ok(())
+}
+
+/// Get status of a guardrail ML model
+#[tauri::command]
+pub async fn get_guardrail_model_status(
+    source_id: String,
+    state: State<'_, Arc<lr_server::state::AppState>>,
+) -> Result<serde_json::Value, String> {
+    let Some(ref model_manager) = state.guardrail_model_manager else {
+        return Err("Model manager not initialized".to_string());
+    };
+
+    let info = model_manager.get_model_info(&source_id);
+    serde_json::to_value(&info).map_err(|e| e.to_string())
+}
+
+/// Unload a guardrail ML model from memory
+#[tauri::command]
+pub async fn unload_guardrail_model(
+    source_id: String,
+    state: State<'_, Arc<lr_server::state::AppState>>,
+) -> Result<(), String> {
+    let Some(ref model_manager) = state.guardrail_model_manager else {
+        return Err("Model manager not initialized".to_string());
+    };
+
+    model_manager.unload_model(&source_id);
     Ok(())
 }

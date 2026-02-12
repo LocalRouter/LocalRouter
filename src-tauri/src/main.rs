@@ -505,7 +505,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             app.manage(marketplace_service.clone());
 
             // Get AppState from server manager and manage it for Tauri commands
-            if let Some(app_state) = server_manager.get_state() {
+            if let Some(mut app_state) = server_manager.get_state() {
                 info!("Managing AppState for Tauri commands");
 
                 // Wire skill support into MCP gateway (uses OnceLock, so &self is fine)
@@ -523,6 +523,62 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                         .mcp_gateway
                         .set_marketplace_service(service.clone());
                     info!("Marketplace wired to MCP gateway");
+                }
+
+                // Initialize guardrails engine with built-in rules
+                {
+                    let guardrails_config = config_manager.get().guardrails.clone();
+                    if guardrails_config.enabled {
+                        let cache_dir = lr_utils::paths::config_dir()
+                            .unwrap_or_else(|_| std::path::PathBuf::from("."))
+                            .join("guardrails");
+                        let source_manager =
+                            lr_guardrails::SourceManager::new(cache_dir.clone());
+                        let engine = Arc::new(
+                            lr_guardrails::GuardrailsEngine::new(source_manager),
+                        );
+                        // Load custom rules from config
+                        if !guardrails_config.custom_rules.is_empty() {
+                            let custom_rules: Vec<lr_guardrails::source_manager::CustomGuardrailRule> = guardrails_config
+                                .custom_rules
+                                .iter()
+                                .map(|r| lr_guardrails::source_manager::CustomGuardrailRule {
+                                    id: r.id.clone(),
+                                    name: r.name.clone(),
+                                    pattern: r.pattern.clone(),
+                                    category: r.category.clone(),
+                                    severity: r.severity.clone(),
+                                    direction: r.direction.clone(),
+                                    enabled: r.enabled,
+                                })
+                                .collect();
+                            engine.source_manager().load_custom_rules(&custom_rules);
+                        }
+
+                        app_state.guardrails_engine = Some(engine.clone());
+                        info!(
+                            "Guardrails engine initialized ({} built-in rules)",
+                            engine.total_rule_count()
+                        );
+
+                        // Initialize ML model manager for guardrails
+                        let model_manager = Arc::new(
+                            lr_guardrails::model_manager::ModelManager::new(cache_dir),
+                        );
+                        // Register known model sources from config
+                        for source in &guardrails_config.sources {
+                            if source.source_type == "model" {
+                                if let Some(ref hf_repo_id) = source.hf_repo_id {
+                                    model_manager.register_model(&source.id, hf_repo_id);
+                                    model_manager.register_source_label(&source.id, &source.label);
+                                }
+                            }
+                        }
+                        app_state.guardrail_model_manager = Some(model_manager);
+                        info!("Guardrail model manager initialized");
+                    } else {
+                        info!("Guardrails disabled in configuration");
+                    }
                 }
 
                 // Set app handle on AppState for event emission
@@ -1052,6 +1108,47 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                 }
             });
 
+            // Debounced config sync for clients with sync_config enabled
+            {
+                let (sync_tx, mut sync_rx) = tokio::sync::mpsc::channel::<()>(16);
+
+                // Spawn debounced sync task
+                let cm_for_sync = config_manager.clone();
+                let client_mgr_for_sync = client_manager.clone();
+                let pr_for_sync = provider_registry.clone();
+                tokio::spawn(async move {
+                    loop {
+                        // Wait for a signal
+                        if sync_rx.recv().await.is_none() {
+                            break;
+                        }
+                        // Drain any queued signals
+                        while sync_rx.try_recv().is_ok() {}
+                        // Debounce: wait then drain again
+                        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                        while sync_rx.try_recv().is_ok() {}
+                        // Sync all clients
+                        ui::commands_clients::sync_all_clients(
+                            &cm_for_sync,
+                            &client_mgr_for_sync,
+                            &pr_for_sync,
+                        )
+                        .await;
+                    }
+                });
+
+                // Listen for model and strategy changes to trigger sync
+                let sync_tx_models = sync_tx.clone();
+                app.listen("models-changed", move |_event| {
+                    let _ = sync_tx_models.try_send(());
+                });
+
+                let sync_tx_strategies = sync_tx;
+                app.listen("strategies-changed", move |_event| {
+                    let _ = sync_tx_strategies.try_send(());
+                });
+            }
+
             // Start background update checker
             info!("Starting background update checker...");
             let app_handle_for_updater = app.handle().clone();
@@ -1190,13 +1287,17 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::delete_strategy,
             ui::commands::get_clients_using_strategy,
             ui::commands::assign_client_strategy,
-            // Client template & mode commands
+            // Client template, mode & guardrails commands
             ui::commands::set_client_mode,
             ui::commands::set_client_template,
+            ui::commands::set_client_guardrails_enabled,
             // App launcher commands
             ui::commands::get_app_capabilities,
             ui::commands::try_it_out_app,
             ui::commands::configure_app_permanent,
+            // Config sync commands
+            ui::commands::toggle_client_sync_config,
+            ui::commands::sync_client_config,
             // Firewall approval commands
             ui::commands::submit_firewall_approval,
             ui::commands::list_pending_firewall_approvals,
@@ -1241,6 +1342,24 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::get_logging_config,
             ui::commands::update_logging_config,
             ui::commands::open_logs_folder,
+            // GuardRails commands
+            ui::commands::get_guardrails_config,
+            ui::commands::update_guardrails_config,
+            ui::commands::get_guardrail_sources_status,
+            ui::commands::get_guardrail_source_details,
+            ui::commands::update_guardrail_source,
+            ui::commands::update_all_guardrail_sources,
+            ui::commands::add_guardrail_source,
+            ui::commands::remove_guardrail_source,
+            // Custom GuardRails rule commands
+            ui::commands::add_custom_guardrail_rule,
+            ui::commands::update_custom_guardrail_rule,
+            ui::commands::remove_custom_guardrail_rule,
+            ui::commands::test_guardrail_input,
+            // ML model guardrail commands
+            ui::commands::download_guardrail_model,
+            ui::commands::get_guardrail_model_status,
+            ui::commands::unload_guardrail_model,
             // Connection graph commands
             ui::commands::get_active_connections,
             // Setup wizard commands
