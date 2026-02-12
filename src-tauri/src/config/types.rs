@@ -387,7 +387,9 @@ pub struct ModelPricingOverride {
 /// UI configuration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct UiConfig {
-    /// Enable dynamic graph in system tray icon
+    /// Enable dynamic activity graph in system tray icon.
+    /// When false, shows a static icon with notification overlays only.
+    /// When true, shows a live token usage sparkline graph.
     #[serde(default)]
     pub tray_graph_enabled: bool,
 
@@ -1469,7 +1471,7 @@ impl Default for LoggingConfig {
 impl Default for UiConfig {
     fn default() -> Self {
         Self {
-            tray_graph_enabled: true, // Always enabled (dynamic tray icon graph)
+            tray_graph_enabled: false, // Static icon by default; user can enable activity graph
             tray_graph_refresh_rate_secs: default_tray_graph_refresh_rate(),
         }
     }

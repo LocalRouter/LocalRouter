@@ -58,6 +58,26 @@ pub fn migrate_config(mut config: AppConfig) -> AppResult<AppConfig> {
         config = migrate_to_v6(config)?;
     }
 
+    // Migrate to v7: GuardRails configuration
+    if config.version < 7 {
+        config = migrate_to_v7(config)?;
+    }
+
+    // Migrate to v8: Custom guardrail rules
+    if config.version < 8 {
+        config = migrate_to_v8(config)?;
+    }
+
+    // Migrate to v9: ML model guardrail sources
+    if config.version < 9 {
+        config = migrate_to_v9(config)?;
+    }
+
+    // Migrate to v10: DeBERTa-v2 fix + new ML models + requires_auth
+    if config.version < 10 {
+        config = migrate_to_v10(config)?;
+    }
+
     // Update version to current
     config.version = CONFIG_VERSION;
 
@@ -323,6 +343,143 @@ fn migrate_to_v6(mut config: AppConfig) -> AppResult<AppConfig> {
     }
 
     config.version = 6;
+    Ok(config)
+}
+
+/// Migrate to version 7: GuardRails configuration
+///
+/// Adds default guardrails configuration. All new fields have `#[serde(default)]`
+/// so existing configs get defaults automatically. This just bumps the version.
+fn migrate_to_v7(mut config: AppConfig) -> AppResult<AppConfig> {
+    info!("Migrating to version 7: GuardRails configuration");
+
+    // No data transformation needed - serde defaults handle the new fields:
+    // - AppConfig.guardrails defaults to GuardrailsConfig::default()
+    // - Client.guardrails_enabled defaults to None (inherit global)
+    config.version = 7;
+    Ok(config)
+}
+
+/// Migrate to version 8: Custom guardrail rules
+///
+/// Adds custom_rules field to GuardrailsConfig. The field uses `#[serde(default)]`
+/// so existing configs get an empty vec automatically. This just bumps the version.
+fn migrate_to_v8(mut config: AppConfig) -> AppResult<AppConfig> {
+    info!("Migrating to version 8: Custom guardrail rules");
+
+    // No data transformation needed - serde defaults handle the new field:
+    // - GuardrailsConfig.custom_rules defaults to vec![]
+    config.version = 8;
+    Ok(config)
+}
+
+/// Migrate to version 9: ML model guardrail sources
+///
+/// Adds Prompt Guard 2 model source to guardrail defaults and new fields
+/// (confidence_threshold, model_architecture, hf_repo_id) to GuardrailSourceConfig.
+/// All new fields use `#[serde(default)]` so existing configs get defaults automatically.
+fn migrate_to_v9(mut config: AppConfig) -> AppResult<AppConfig> {
+    info!("Migrating to version 9: ML model guardrail sources");
+
+    // Add Prompt Guard 2 if not already present
+    let has_pg2 = config
+        .guardrails
+        .sources
+        .iter()
+        .any(|s| s.id == "prompt_guard_2");
+    if !has_pg2 {
+        use super::GuardrailSourceConfig;
+        config.guardrails.sources.push(GuardrailSourceConfig {
+            id: "prompt_guard_2".to_string(),
+            label: "Prompt Guard 2 (Meta)".to_string(),
+            source_type: "model".to_string(),
+            enabled: false,
+            url: "https://huggingface.co/meta-llama/Prompt-Guard-86M".to_string(),
+            data_paths: vec![],
+            branch: "main".to_string(),
+            predefined: true,
+            confidence_threshold: 0.7,
+            model_architecture: Some("bert".to_string()),
+            hf_repo_id: Some("meta-llama/Prompt-Guard-86M".to_string()),
+            requires_auth: true,
+        });
+        info!("Added Prompt Guard 2 model source to guardrails config");
+    }
+
+    config.version = 9;
+    Ok(config)
+}
+
+/// Migrate to version 10: DeBERTa-v2 architecture fix + new ML models + requires_auth
+///
+/// - Fix prompt_guard_2 architecture from "bert" to "deberta_v2" and set requires_auth=true
+/// - Add protectai_injection_v2 and jailbreak_classifier model sources
+/// - Set requires_auth=false default for all existing non-gated sources
+fn migrate_to_v10(mut config: AppConfig) -> AppResult<AppConfig> {
+    info!("Migrating to version 10: DeBERTa-v2 fix + new ML models");
+
+    // Fix prompt_guard_2: architecture should be deberta_v2, not bert
+    for source in &mut config.guardrails.sources {
+        if source.id == "prompt_guard_2" {
+            source.model_architecture = Some("deberta_v2".to_string());
+            source.requires_auth = true;
+            info!("Fixed prompt_guard_2: architecture -> deberta_v2, requires_auth -> true");
+        }
+    }
+
+    // Add protectai_injection_v2 if not present
+    let has_protectai = config
+        .guardrails
+        .sources
+        .iter()
+        .any(|s| s.id == "protectai_injection_v2");
+    if !has_protectai {
+        use super::GuardrailSourceConfig;
+        config.guardrails.sources.push(GuardrailSourceConfig {
+            id: "protectai_injection_v2".to_string(),
+            label: "ProtectAI Injection v2".to_string(),
+            source_type: "model".to_string(),
+            enabled: false,
+            url: "https://huggingface.co/protectai/deberta-v3-base-prompt-injection-v2".to_string(),
+            data_paths: vec![],
+            branch: "main".to_string(),
+            predefined: true,
+            confidence_threshold: 0.7,
+            model_architecture: Some("deberta_v2".to_string()),
+            hf_repo_id: Some(
+                "protectai/deberta-v3-base-prompt-injection-v2".to_string(),
+            ),
+            requires_auth: false,
+        });
+        info!("Added ProtectAI Injection v2 model source");
+    }
+
+    // Add jailbreak_classifier if not present
+    let has_jailbreak = config
+        .guardrails
+        .sources
+        .iter()
+        .any(|s| s.id == "jailbreak_classifier");
+    if !has_jailbreak {
+        use super::GuardrailSourceConfig;
+        config.guardrails.sources.push(GuardrailSourceConfig {
+            id: "jailbreak_classifier".to_string(),
+            label: "Jailbreak Classifier (jackhhao)".to_string(),
+            source_type: "model".to_string(),
+            enabled: false,
+            url: "https://huggingface.co/jackhhao/jailbreak-classifier".to_string(),
+            data_paths: vec![],
+            branch: "main".to_string(),
+            predefined: true,
+            confidence_threshold: 0.7,
+            model_architecture: Some("bert".to_string()),
+            hf_repo_id: Some("jackhhao/jailbreak-classifier".to_string()),
+            requires_auth: false,
+        });
+        info!("Added Jailbreak Classifier model source");
+    }
+
+    config.version = 10;
     Ok(config)
 }
 

@@ -308,6 +308,8 @@ impl ConfigManager {
             marketplace_permission: PermissionState::default(),
             client_mode: ClientMode::default(),
             template_id: None,
+            sync_config: false,
+            guardrails_enabled: None,
         };
 
         self.update(|cfg| {

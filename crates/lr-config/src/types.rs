@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use uuid::Uuid;
 
-pub(crate) const CONFIG_VERSION: u32 = 6;
+pub(crate) const CONFIG_VERSION: u32 = 10;
 
 /// Suffix for auto-generated client strategy names
 pub const CLIENT_STRATEGY_NAME_SUFFIX: &str = "'s strategy";
@@ -377,6 +377,10 @@ pub struct AppConfig {
     /// Marketplace configuration for MCP server and skill discovery
     #[serde(default)]
     pub marketplace: MarketplaceConfig,
+
+    /// GuardRails configuration for content inspection
+    #[serde(default)]
+    pub guardrails: GuardrailsConfig,
 }
 
 /// Pricing override for a specific model
@@ -391,7 +395,9 @@ pub struct ModelPricingOverride {
 /// UI configuration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct UiConfig {
-    /// Enable dynamic graph in system tray icon
+    /// Enable dynamic activity graph in system tray icon.
+    /// When false, shows a static icon with notification overlays only.
+    /// When true, shows a live token usage sparkline graph.
     #[serde(default)]
     pub tray_graph_enabled: bool,
 
@@ -1264,6 +1270,210 @@ fn default_main_branch() -> String {
     "main".to_string()
 }
 
+/// A custom guardrail rule defined by the user
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CustomGuardrailRule {
+    pub id: String,
+    pub name: String,
+    pub pattern: String,
+    /// Category: "prompt_injection", "pii_leakage", etc.
+    pub category: String,
+    /// Severity: "low", "medium", "high", "critical"
+    pub severity: String,
+    /// Direction: "input", "output", "both"
+    pub direction: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+/// GuardRails configuration for content inspection
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GuardrailsConfig {
+    /// Master toggle (default: false)
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Scan outgoing requests before sending to provider
+    #[serde(default = "default_true")]
+    pub scan_requests: bool,
+
+    /// Scan incoming responses from provider
+    #[serde(default)]
+    pub scan_responses: bool,
+
+    /// Configurable list of guardrail sources
+    #[serde(default = "default_guardrail_sources")]
+    pub sources: Vec<GuardrailSourceConfig>,
+
+    /// Minimum severity to trigger popup: "low", "medium", "high", "critical"
+    #[serde(default = "default_min_popup_severity")]
+    pub min_popup_severity: String,
+
+    /// Auto-update interval in hours (0 = manual only)
+    #[serde(default = "default_guardrail_update_interval")]
+    pub update_interval_hours: u64,
+
+    /// User-defined custom regex rules
+    #[serde(default)]
+    pub custom_rules: Vec<CustomGuardrailRule>,
+}
+
+fn default_min_popup_severity() -> String {
+    "medium".to_string()
+}
+
+fn default_guardrail_update_interval() -> u64 {
+    24
+}
+
+impl Default for GuardrailsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            scan_requests: true,
+            scan_responses: false,
+            sources: default_guardrail_sources(),
+            min_popup_severity: default_min_popup_severity(),
+            update_interval_hours: default_guardrail_update_interval(),
+            custom_rules: vec![],
+        }
+    }
+}
+
+/// A configurable guardrail source (predefined or user-added)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GuardrailSourceConfig {
+    /// Unique identifier (e.g. "presidio", "custom-yara-1")
+    pub id: String,
+    /// Display name
+    pub label: String,
+    /// Source type: "regex", "yara", "model"
+    pub source_type: String,
+    /// Whether this source is enabled
+    #[serde(default)]
+    pub enabled: bool,
+    /// GitHub repository URL or HuggingFace model URL
+    #[serde(default)]
+    pub url: String,
+    /// Paths within repo to fetch
+    #[serde(default)]
+    pub data_paths: Vec<String>,
+    /// Branch to use
+    #[serde(default = "default_main_branch")]
+    pub branch: String,
+    /// Whether this is a predefined source (can't be deleted)
+    #[serde(default)]
+    pub predefined: bool,
+    /// Confidence threshold for ML model sources (0.0-1.0, default 0.7)
+    #[serde(default = "default_confidence_threshold")]
+    pub confidence_threshold: f32,
+    /// Model architecture (for source_type="model")
+    #[serde(default)]
+    pub model_architecture: Option<String>,
+    /// HuggingFace repository ID (for source_type="model")
+    #[serde(default)]
+    pub hf_repo_id: Option<String>,
+    /// Whether this model requires HuggingFace authentication (gated model)
+    #[serde(default)]
+    pub requires_auth: bool,
+}
+
+fn default_confidence_threshold() -> f32 {
+    0.7
+}
+
+/// Predefined guardrail sources.
+///
+/// Note: data_paths may point to directories (not just files). The source
+/// manager detects this at download time and uses the GitHub API to enumerate
+/// and download individual files within the directory.
+fn default_guardrail_sources() -> Vec<GuardrailSourceConfig> {
+    vec![
+        GuardrailSourceConfig {
+            id: "presidio".to_string(),
+            label: "Microsoft Presidio".to_string(),
+            source_type: "regex".to_string(),
+            enabled: true,
+            url: "https://github.com/microsoft/presidio".to_string(),
+            data_paths: vec![
+                "presidio-analyzer/presidio_analyzer/predefined_recognizers".to_string()
+            ],
+            branch: "main".to_string(),
+            predefined: true,
+            confidence_threshold: default_confidence_threshold(),
+            model_architecture: None,
+            hf_repo_id: None,
+            requires_auth: false,
+        },
+        GuardrailSourceConfig {
+            id: "llm_guard".to_string(),
+            label: "LLM Guard (ProtectAI)".to_string(),
+            source_type: "regex".to_string(),
+            enabled: true,
+            url: "https://github.com/protectai/llm-guard".to_string(),
+            data_paths: vec![
+                "llm_guard/input_scanners".to_string(),
+                "llm_guard/output_scanners".to_string(),
+            ],
+            branch: "main".to_string(),
+            predefined: true,
+            confidence_threshold: default_confidence_threshold(),
+            model_architecture: None,
+            hf_repo_id: None,
+            requires_auth: false,
+        },
+        // Removed sources:
+        // - PayloadsAllTheThings: README.md is prose, not a pattern list (produces garbage rules)
+        // - NeMo Guardrails: ML-only detection (GPT-2 perplexity), zero regex patterns
+        // - PurpleLlama: path was 404; only 5 trivial patterns at the corrected path
+        //
+        // ML model sources: DeBERTa-v2 / BERT classifiers for prompt injection and jailbreak detection.
+        // Require separate download via ModelManager. Disabled by default.
+        GuardrailSourceConfig {
+            id: "prompt_guard_2".to_string(),
+            label: "Prompt Guard 2 (Meta)".to_string(),
+            source_type: "model".to_string(),
+            enabled: false,
+            url: "https://huggingface.co/meta-llama/Prompt-Guard-86M".to_string(),
+            data_paths: vec![],
+            branch: "main".to_string(),
+            predefined: true,
+            confidence_threshold: 0.7,
+            model_architecture: Some("deberta_v2".to_string()),
+            hf_repo_id: Some("meta-llama/Prompt-Guard-86M".to_string()),
+            requires_auth: true,
+        },
+        GuardrailSourceConfig {
+            id: "protectai_injection_v2".to_string(),
+            label: "ProtectAI Injection v2".to_string(),
+            source_type: "model".to_string(),
+            enabled: false,
+            url: "https://huggingface.co/protectai/deberta-v3-base-prompt-injection-v2".to_string(),
+            data_paths: vec![],
+            branch: "main".to_string(),
+            predefined: true,
+            confidence_threshold: 0.7,
+            model_architecture: Some("deberta_v2".to_string()),
+            hf_repo_id: Some("protectai/deberta-v3-base-prompt-injection-v2".to_string()),
+            requires_auth: false,
+        },
+        GuardrailSourceConfig {
+            id: "jailbreak_classifier".to_string(),
+            label: "Jailbreak Classifier (jackhhao)".to_string(),
+            source_type: "model".to_string(),
+            enabled: false,
+            url: "https://huggingface.co/jackhhao/jailbreak-classifier".to_string(),
+            data_paths: vec![],
+            branch: "main".to_string(),
+            predefined: true,
+            confidence_threshold: 0.7,
+            model_architecture: Some("bert".to_string()),
+            hf_repo_id: Some("jackhhao/jailbreak-classifier".to_string()),
+            requires_auth: false,
+        },
+    ]
+}
+
 /// Deserializer for SkillsAccess (migration shim)
 pub(crate) fn deserialize_skills_access<'de, D>(deserializer: D) -> Result<SkillsAccess, D::Error>
 where
@@ -1444,6 +1654,16 @@ pub struct Client {
     /// Template ID used to create this client (e.g., "claude-code", "cursor")
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub template_id: Option<String>,
+
+    /// Auto-sync external app config files when models/secrets/config change.
+    /// Only effective when template_id is set.
+    #[serde(default)]
+    pub sync_config: bool,
+
+    /// GuardRails override for this client.
+    /// None = inherit global setting, Some(true) = force enable, Some(false) = force disable
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guardrails_enabled: Option<bool>,
 }
 
 /// MCP server configuration
@@ -1991,6 +2211,7 @@ impl Default for AppConfig {
             health_check: HealthCheckConfig::default(),
             skills: SkillsConfig::default(),
             marketplace: MarketplaceConfig::default(),
+            guardrails: GuardrailsConfig::default(),
         }
     }
 }
@@ -2026,7 +2247,7 @@ impl Default for LoggingConfig {
 impl Default for UiConfig {
     fn default() -> Self {
         Self {
-            tray_graph_enabled: true, // Always enabled (dynamic tray icon graph)
+            tray_graph_enabled: false, // Static icon by default; user can enable activity graph
             tray_graph_refresh_rate_secs: default_tray_graph_refresh_rate(),
         }
     }
@@ -2115,6 +2336,8 @@ impl Client {
             marketplace_permission: PermissionState::default(),
             client_mode: ClientMode::default(),
             template_id: None,
+            sync_config: false,
+            guardrails_enabled: None,
         }
     }
 
