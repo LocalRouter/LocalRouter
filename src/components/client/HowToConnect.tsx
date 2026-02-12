@@ -11,7 +11,7 @@
 import { useState, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
-import { Copy, Check, Eye, RefreshCw, Cpu, Terminal, Globe, Key, FileJson, Loader2, Rocket, Settings2, ExternalLink, CheckCircle2, XCircle } from "lucide-react"
+import { Copy, Check, Eye, RefreshCw, Cpu, Terminal, Globe, Key, FileJson, Loader2, Rocket, Settings2, ExternalLink, CheckCircle2, XCircle, RefreshCcw } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Button } from "@/components/ui/Button"
 import { Label } from "@/components/ui/label"
@@ -27,10 +27,11 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog"
+import { Switch } from "@/components/ui/switch"
 import { CLIENT_TEMPLATES, resolveTemplatePlaceholders } from "./ClientTemplates"
 import type { ClientTemplate } from "./ClientTemplates"
 import ServiceIcon from "@/components/ServiceIcon"
-import type { ClientMode, AppCapabilities, LaunchResult, GetAppCapabilitiesParams, TryItOutAppParams, ConfigureAppPermanentParams } from "@/types/tauri-commands"
+import type { ClientMode, AppCapabilities, LaunchResult, GetAppCapabilitiesParams, TryItOutAppParams, ToggleClientSyncConfigParams, SyncClientConfigParams } from "@/types/tauri-commands"
 
 interface ServerConfig {
   host: string
@@ -50,6 +51,7 @@ interface HowToConnectProps {
   className?: string
   templateId?: string | null
   clientMode?: ClientMode
+  syncConfig?: boolean
 }
 
 // Helper component for copyable code blocks
@@ -155,6 +157,7 @@ function QuickSetupTab({
   homeDir,
   configDir,
   models,
+  syncConfig,
 }: {
   template: ClientTemplate
   clientId: string
@@ -163,12 +166,18 @@ function QuickSetupTab({
   homeDir: string
   configDir: string
   models: Array<{ id: string }>
+  syncConfig: boolean
 }) {
   const [capabilities, setCapabilities] = useState<AppCapabilities | null>(null)
   const [checkingInstall, setCheckingInstall] = useState(true)
   const [tryingOut, setTryingOut] = useState(false)
-  const [configuring, setConfiguring] = useState(false)
+  const [syncing, setSyncing] = useState(false)
+  const [syncEnabled, setSyncEnabled] = useState(syncConfig)
   const [result, setResult] = useState<LaunchResult | null>(null)
+
+  useEffect(() => {
+    setSyncEnabled(syncConfig)
+  }, [syncConfig])
 
   useEffect(() => {
     const fetchCapabilities = async () => {
@@ -207,23 +216,51 @@ function QuickSetupTab({
     }
   }
 
-  const handleConfigurePermanent = async () => {
+  const handleToggleSyncConfig = async (enabled: boolean) => {
     try {
-      setConfiguring(true)
+      setSyncing(true)
       setResult(null)
-      const res = await invoke<LaunchResult>("configure_app_permanent", {
+      const res = await invoke<LaunchResult | null>("toggle_client_sync_config", {
         clientId,
-      } satisfies ConfigureAppPermanentParams)
-      setResult(res)
-      if (res.success) {
-        toast.success("App configured permanently")
-      } else {
-        toast.error(res.message)
+        enabled,
+      } satisfies ToggleClientSyncConfigParams)
+      setSyncEnabled(enabled)
+      if (enabled && res) {
+        setResult(res)
+        if (res.success) {
+          toast.success("Config sync enabled")
+        } else {
+          toast.error(res.message)
+        }
+      } else if (!enabled) {
+        toast.success("Config sync disabled")
       }
     } catch (error) {
-      toast.error(`Failed to configure: ${error}`)
+      toast.error(`Failed to toggle sync: ${error}`)
     } finally {
-      setConfiguring(false)
+      setSyncing(false)
+    }
+  }
+
+  const handleManualSync = async () => {
+    try {
+      setSyncing(true)
+      setResult(null)
+      const res = await invoke<LaunchResult | null>("sync_client_config", {
+        clientId,
+      } satisfies SyncClientConfigParams)
+      if (res) {
+        setResult(res)
+        if (res.success) {
+          toast.success("Config synced")
+        } else {
+          toast.error(res.message)
+        }
+      }
+    } catch (error) {
+      toast.error(`Failed to sync: ${error}`)
+    } finally {
+      setSyncing(false)
     }
   }
 
@@ -278,7 +315,7 @@ function QuickSetupTab({
       {/* Action buttons */}
       <div className="flex gap-2">
         {supportsTryItOut && (
-          <Button onClick={handleTryItOut} disabled={tryingOut || configuring} className="flex-1">
+          <Button onClick={handleTryItOut} disabled={tryingOut || syncing} className="flex-1">
             {tryingOut ? (
               <>
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -292,31 +329,52 @@ function QuickSetupTab({
             )}
           </Button>
         )}
-        {supportsPermanent && (
-          <Button
-            variant={supportsTryItOut ? "outline" : "default"}
-            onClick={handleConfigurePermanent}
-            disabled={tryingOut || configuring}
-            className={supportsTryItOut ? "" : "flex-1"}
-          >
-            {configuring ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <>
-                <Settings2 className="mr-2 h-4 w-4" />
-                Configure Permanently
-              </>
-            )}
-          </Button>
-        )}
       </div>
 
-      {/* Mode descriptions */}
-      {supportsTryItOut && supportsPermanent && (
-        <div className="grid grid-cols-2 gap-2 text-xs text-muted-foreground">
-          <p>One-time — no files modified</p>
-          <p>Modifies config files</p>
+      {/* Config sync toggle */}
+      {supportsPermanent && (
+        <div className="rounded-lg border p-3 space-y-2">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Settings2 className="h-4 w-4 text-muted-foreground" />
+              <Label htmlFor="sync-config" className="text-sm font-medium cursor-pointer">Keep config in sync</Label>
+            </div>
+            <div className="flex items-center gap-2">
+              {syncEnabled && (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7"
+                  onClick={handleManualSync}
+                  disabled={syncing}
+                  title="Sync now"
+                >
+                  {syncing ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <RefreshCcw className="h-3.5 w-3.5" />
+                  )}
+                </Button>
+              )}
+              <Switch
+                id="sync-config"
+                checked={syncEnabled}
+                onCheckedChange={handleToggleSyncConfig}
+                disabled={syncing}
+              />
+            </div>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            {syncEnabled
+              ? "Config files are kept in sync when models, secrets, or settings change."
+              : "Automatically update config files when models or secrets change."}
+          </p>
         </div>
+      )}
+
+      {/* Mode description */}
+      {supportsTryItOut && (
+        <p className="text-xs text-muted-foreground">One-time — no files modified</p>
       )}
 
       {/* Result */}
@@ -478,6 +536,7 @@ export function HowToConnect({
   className,
   templateId,
   clientMode,
+  syncConfig = false,
 }: HowToConnectProps) {
   const [showSecret, setShowSecret] = useState(false)
   const [serverConfig, setServerConfig] = useState<ServerConfig | null>(null)
@@ -689,6 +748,7 @@ export function HowToConnect({
                 homeDir={homeDir}
                 configDir={configDir}
                 models={models}
+                syncConfig={syncConfig}
               />
             </TabsContent>
           )}

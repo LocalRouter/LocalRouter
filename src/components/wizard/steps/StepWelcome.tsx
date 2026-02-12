@@ -4,68 +4,61 @@
  * Introductory step shown only on first app launch to guide users.
  */
 
-import { Sparkles, Shield, Zap, Server } from "lucide-react"
-
 export function StepWelcome() {
   return (
-    <div className="space-y-6">
+    <div className="flex flex-col items-center justify-center py-6 space-y-6">
+      {/* LocalRouter logo */}
+      <div className="relative">
+        <div className="absolute inset-0 blur-2xl opacity-20 bg-primary rounded-full scale-150" />
+        <svg
+          width="80"
+          height="80"
+          viewBox="0 0 100 100"
+          className="relative text-primary"
+          aria-label="LocalRouter logo"
+        >
+          <circle cx="20" cy="20" r="12" fill="none" stroke="currentColor" strokeWidth="8" />
+          <circle cx="80" cy="80" r="12" fill="none" stroke="currentColor" strokeWidth="8" />
+          <path
+            d="M 32 22 C 75 15, 90 40, 50 50 C 10 60, 25 85, 68 78"
+            stroke="currentColor"
+            strokeWidth="8"
+            strokeLinecap="round"
+            fill="none"
+          />
+        </svg>
+      </div>
+
+      {/* Title and tagline */}
       <div className="text-center space-y-2">
-        <div className="flex justify-center">
-          <div className="p-3 rounded-full bg-primary/10">
-            <Sparkles className="h-8 w-8 text-primary" />
-          </div>
+        <h3 className="text-xl font-semibold tracking-tight">Welcome to LocalRouter</h3>
+        <p className="text-sm text-muted-foreground max-w-sm mx-auto leading-relaxed">
+          Your local gateway to AI providers. One API endpoint, many models, fully private.
+        </p>
+      </div>
+
+      {/* Minimal feature highlights */}
+      <div className="flex gap-6 text-center text-xs text-muted-foreground pt-2">
+        <div className="space-y-1">
+          <p className="font-medium text-foreground">Private</p>
+          <p>Runs locally</p>
         </div>
-        <h3 className="text-lg font-semibold">Welcome to LocalRouter</h3>
-        <p className="text-sm text-muted-foreground max-w-md mx-auto">
-          Your local gateway to AI providers. Route requests to multiple LLM providers
-          through a single OpenAI-compatible API endpoint.
-        </p>
+        <div className="w-px bg-border" />
+        <div className="space-y-1">
+          <p className="font-medium text-foreground">Smart</p>
+          <p>Model routing</p>
+        </div>
+        <div className="w-px bg-border" />
+        <div className="space-y-1">
+          <p className="font-medium text-foreground">Extensible</p>
+          <p>MCP & Skills</p>
+        </div>
       </div>
 
-      <div className="grid gap-3">
-        <FeatureItem
-          icon={<Shield className="h-4 w-4" />}
-          title="Secure & Private"
-          description="All credentials stay on your machine. No data leaves your device."
-        />
-        <FeatureItem
-          icon={<Zap className="h-4 w-4" />}
-          title="Smart Selection"
-          description="Automatically select the best model or let clients choose from allowed models."
-        />
-        <FeatureItem
-          icon={<Server className="h-4 w-4" />}
-          title="MCP Support"
-          description="Proxy MCP servers to give your AI applications access to tools and data."
-        />
-      </div>
-
-      <div className="pt-2 border-t">
-        <p className="text-sm text-muted-foreground text-center">
-          Let&apos;s create your first client to get started. A client represents
-          an application that will connect to LocalRouter.
-        </p>
-      </div>
-    </div>
-  )
-}
-
-function FeatureItem({
-  icon,
-  title,
-  description,
-}: {
-  icon: React.ReactNode
-  title: string
-  description: string
-}) {
-  return (
-    <div className="flex gap-3 p-3 rounded-lg bg-muted/50">
-      <div className="flex-shrink-0 mt-0.5 text-primary">{icon}</div>
-      <div>
-        <p className="text-sm font-medium">{title}</p>
-        <p className="text-xs text-muted-foreground">{description}</p>
-      </div>
+      {/* CTA */}
+      <p className="text-sm text-muted-foreground text-center pt-2">
+        Let&apos;s create your first client to get started.
+      </p>
     </div>
   )
 }

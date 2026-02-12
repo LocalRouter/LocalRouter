@@ -1,13 +1,15 @@
 /**
  * StepMode - Client mode selection step for the client creation wizard.
  *
- * Three radio cards: LLM Routing, MCP Proxy, Both.
- * Pre-selects the template's defaultMode and disables unsupported options.
+ * Two checkboxes: LLM Routing, MCP Proxy.
+ * Derives ClientMode from the combination: both checked → "both",
+ * only LLM → "llm_only", only MCP → "mcp_only".
+ * Pre-selects based on the template's defaultMode and disables unsupported options.
  */
 
 import type { ClientMode } from "@/types/tauri-commands"
 import type { ClientTemplate } from "@/components/client/ClientTemplates"
-import { Cpu, Terminal, Layers } from "lucide-react"
+import { Cpu, Terminal, Check } from "lucide-react"
 
 interface StepModeProps {
   mode: ClientMode
@@ -15,46 +17,51 @@ interface StepModeProps {
   template: ClientTemplate | null
 }
 
-const MODE_OPTIONS: {
-  value: ClientMode
+const CHECKBOX_OPTIONS: {
+  key: "llm" | "mcp"
   label: string
   description: string
   icon: React.ReactNode
-  requiresLlm: boolean
-  requiresMcp: boolean
 }[] = [
   {
-    value: "both",
-    label: "Both",
-    description: "Full access to LLM routing and MCP servers.",
-    icon: <Layers className="h-5 w-5" />,
-    requiresLlm: true,
-    requiresMcp: true,
-  },
-  {
-    value: "llm_only",
+    key: "llm",
     label: "LLM Routing",
     description: "Route LLM requests through LocalRouter.",
     icon: <Cpu className="h-5 w-5" />,
-    requiresLlm: true,
-    requiresMcp: false,
   },
   {
-    value: "mcp_only",
+    key: "mcp",
     label: "MCP Proxy",
     description: "Use LocalRouter's MCP servers and skills.",
     icon: <Terminal className="h-5 w-5" />,
-    requiresLlm: false,
-    requiresMcp: true,
   },
 ]
 
+function deriveMode(llm: boolean, mcp: boolean): ClientMode {
+  if (llm && mcp) return "both"
+  if (llm) return "llm_only"
+  return "mcp_only"
+}
+
 export function StepMode({ mode, onChange, template }: StepModeProps) {
-  const isDisabled = (option: typeof MODE_OPTIONS[number]) => {
+  const llmChecked = mode === "both" || mode === "llm_only"
+  const mcpChecked = mode === "both" || mode === "mcp_only"
+
+  const isDisabled = (key: "llm" | "mcp") => {
     if (!template) return false
-    if (option.requiresLlm && !template.supportsLlm) return true
-    if (option.requiresMcp && !template.supportsMcp) return true
+    if (key === "llm" && !template.supportsLlm) return true
+    if (key === "mcp" && !template.supportsMcp) return true
     return false
+  }
+
+  const handleToggle = (key: "llm" | "mcp") => {
+    let newLlm = llmChecked
+    let newMcp = mcpChecked
+    if (key === "llm") newLlm = !newLlm
+    else newMcp = !newMcp
+    // At least one must be checked
+    if (!newLlm && !newMcp) return
+    onChange(deriveMode(newLlm, newMcp))
   }
 
   return (
@@ -63,20 +70,24 @@ export function StepMode({ mode, onChange, template }: StepModeProps) {
         Choose what this client can access through LocalRouter.
       </p>
       <div className="grid gap-3">
-        {MODE_OPTIONS.map((option) => {
-          const disabled = isDisabled(option)
-          const selected = mode === option.value
+        {CHECKBOX_OPTIONS.map((option) => {
+          const checked = option.key === "llm" ? llmChecked : mcpChecked
+          const disabled = isDisabled(option.key)
           return (
             <button
-              key={option.value}
-              onClick={() => !disabled && onChange(option.value)}
+              key={option.key}
+              onClick={() => !disabled && handleToggle(option.key)}
               disabled={disabled}
               className={`flex items-start gap-4 p-4 rounded-lg border-2 text-left transition-colors
-                ${selected ? "border-primary bg-accent" : "border-muted hover:border-primary/50"}
+                ${checked ? "border-primary bg-accent" : "border-muted hover:border-primary/50"}
                 ${disabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}
                 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2`}
             >
-              <div className={`mt-0.5 ${selected ? "text-primary" : "text-muted-foreground"}`}>
+              <div className={`mt-1 flex h-5 w-5 shrink-0 items-center justify-center rounded border-2 transition-colors
+                ${checked ? "border-primary bg-primary text-primary-foreground" : "border-muted-foreground/40"}`}>
+                {checked && <Check className="h-3.5 w-3.5" strokeWidth={3} />}
+              </div>
+              <div className={`mt-0.5 ${checked ? "text-primary" : "text-muted-foreground"}`}>
                 {option.icon}
               </div>
               <div>

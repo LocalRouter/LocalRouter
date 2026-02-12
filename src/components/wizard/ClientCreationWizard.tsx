@@ -156,11 +156,8 @@ export function ClientCreationWizard({
 
     steps.push({ id: "template", title: "Choose Application", description: "Select an app to connect to LocalRouter." })
 
-    // Mode step: only shown for non-custom templates
-    const isCustom = !state.selectedTemplate || state.selectedTemplate.id === "custom"
-    if (!isCustom) {
-      steps.push({ id: "mode", title: "Client Mode", description: "Choose what this client can access." })
-    }
+    // Mode step: always shown so user can choose LLM / MCP / Both
+    steps.push({ id: "mode", title: "Client Mode", description: "Choose what this client can access." })
 
     steps.push({ id: "name", title: "Name Your Client", description: "Choose a descriptive name for your client." })
 

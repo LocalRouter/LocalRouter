@@ -13,6 +13,7 @@ interface Client {
   strategy_id: string
   client_mode?: ClientMode
   template_id?: string | null
+  sync_config?: boolean
 }
 
 interface ConfigTabProps {
@@ -61,6 +62,7 @@ export function ClientConfigTab({ client }: ConfigTabProps) {
         loadingSecret={loadingSecret}
         templateId={client.template_id}
         clientMode={client.client_mode}
+        syncConfig={client.sync_config}
       />
     </div>
   )
