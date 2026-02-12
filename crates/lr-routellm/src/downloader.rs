@@ -208,6 +208,20 @@ pub async fn download_models(
     info!("  Model dir: {:?}", model_path);
     info!("  Tokenizer dir: {:?}", tokenizer_path);
 
+    // Validate paths have usable parent directories (needed for temp dirs)
+    let model_parent = model_path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .ok_or_else(|| {
+            RouteLLMError::DownloadFailed("Model path has no parent directory".to_string())
+        })?;
+    let tokenizer_parent = tokenizer_path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .ok_or_else(|| {
+            RouteLLMError::DownloadFailed("Tokenizer path has no parent directory".to_string())
+        })?;
+
     // Check available disk space before downloading
     let available_bytes = check_disk_space(model_path)?;
     let available_gb = available_bytes as f64 / 1_073_741_824.0; // Convert to GB
@@ -235,18 +249,8 @@ pub async fn download_models(
     }
 
     // Use temporary directories for atomic download
-    let temp_model_path = model_path
-        .parent()
-        .ok_or_else(|| {
-            RouteLLMError::DownloadFailed("Model path has no parent directory".to_string())
-        })?
-        .join("model.tmp");
-    let temp_tokenizer_path = tokenizer_path
-        .parent()
-        .ok_or_else(|| {
-            RouteLLMError::DownloadFailed("Tokenizer path has no parent directory".to_string())
-        })?
-        .join("tokenizer.tmp");
+    let temp_model_path = model_parent.join("model.tmp");
+    let temp_tokenizer_path = tokenizer_parent.join("tokenizer.tmp");
 
     // Remove old temp directories if they exist
     if temp_model_path.exists() {

@@ -16,6 +16,7 @@ members = [
     "crates/lr-router",
     "crates/lr-server",
     "crates/lr-marketplace",
+    "crates/lr-guardrails",
 ]
 resolver = "2"
 
@@ -43,6 +44,7 @@ lr-skills = { path = "crates/lr-skills" }
 lr-router = { path = "crates/lr-router" }
 lr-server = { path = "crates/lr-server" }
 lr-marketplace = { path = "crates/lr-marketplace" }
+lr-guardrails = { path = "crates/lr-guardrails" }
 
 # Async runtime
 tokio = { version = "1.42", features = ["full"] }
@@ -78,6 +80,9 @@ hex = "0.4"
 machine-uid = "0.5"
 sha2 = "0.10"
 rand = "0.8"
+
+# Regex
+regex = "1"
 
 # Testing
 serial_test = "3.2"

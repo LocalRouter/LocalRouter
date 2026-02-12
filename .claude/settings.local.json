@@ -65,7 +65,12 @@
       "WebFetch(domain:docs.factory.ai)",
       "WebFetch(domain:claudefa.st)",
       "WebFetch(domain:deepwiki.com)",
-      "WebFetch(domain:vladimirsiedykh.com)"
+      "WebFetch(domain:vladimirsiedykh.com)",
+      "Bash(gh search:*)",
+      "Bash(du:*)",
+      "WebFetch(domain:api.github.com)",
+      "WebFetch(domain:vigil.deadbits.ai)",
+      "WebFetch(domain:www.aimodels.fyi)"
     ]
   },
   "enableAllProjectMcpServers": true,
