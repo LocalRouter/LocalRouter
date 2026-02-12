@@ -272,6 +272,70 @@ impl Default for SseConnectionManager {
     }
 }
 
+/// Tracks time-based guardrail bypasses per client
+///
+/// When a user clicks "Allow for 1 Hour" on a guardrail popup,
+/// the bypass is stored here and checked before scanning.
+#[derive(Clone, Default)]
+pub struct GuardrailApprovalTracker {
+    /// Map of client_id -> expiry_instant
+    bypasses: Arc<DashMap<String, Instant>>,
+}
+
+impl GuardrailApprovalTracker {
+    pub fn new() -> Self {
+        Self {
+            bypasses: Arc::new(DashMap::new()),
+        }
+    }
+
+    /// Check if a client has a valid time-based guardrail bypass
+    pub fn has_valid_bypass(&self, client_id: &str) -> bool {
+        if let Some(entry) = self.bypasses.get(client_id) {
+            if *entry > Instant::now() {
+                return true;
+            }
+            // Expired, remove it
+            drop(entry);
+            self.bypasses.remove(client_id);
+        }
+        false
+    }
+
+    /// Add a time-based bypass for a client
+    pub fn add_bypass(&self, client_id: &str, duration: Duration) {
+        let expiry = Instant::now() + duration;
+        self.bypasses.insert(client_id.to_string(), expiry);
+        tracing::info!(
+            "Added guardrail bypass: client={}, duration={}s",
+            client_id,
+            duration.as_secs(),
+        );
+    }
+
+    /// Add a 1-hour bypass
+    pub fn add_1_hour_bypass(&self, client_id: &str) {
+        self.add_bypass(client_id, Duration::from_secs(3600));
+    }
+
+    /// Clean up expired bypasses
+    pub fn cleanup_expired(&self) -> usize {
+        let now = Instant::now();
+        let expired: Vec<_> = self
+            .bypasses
+            .iter()
+            .filter(|entry| *entry.value() <= now)
+            .map(|entry| entry.key().clone())
+            .collect();
+
+        let count = expired.len();
+        for key in expired {
+            self.bypasses.remove(&key);
+        }
+        count
+    }
+}
+
 /// Tracks time-based model approvals for the model firewall
 ///
 /// When a user clicks "Allow for 1 Hour" on a model permission popup,
@@ -422,6 +486,16 @@ pub struct AppState {
 
     /// Time-based model approval tracker for model firewall
     pub model_approval_tracker: Arc<ModelApprovalTracker>,
+
+    /// Time-based guardrail bypass tracker
+    pub guardrail_approval_tracker: Arc<GuardrailApprovalTracker>,
+
+    /// GuardRails engine for content inspection
+    pub guardrails_engine: Option<Arc<lr_guardrails::GuardrailsEngine>>,
+
+    /// ML model manager for guardrail classification
+    #[cfg(feature = "ml-models")]
+    pub guardrail_model_manager: Option<Arc<lr_guardrails::model_manager::ModelManager>>,
 }
 
 impl AppState {
@@ -497,7 +571,17 @@ impl AppState {
             mcp_notification_handlers_registered: Arc::new(DashMap::new()),
             health_cache: Arc::new(HealthCacheManager::new()),
             model_approval_tracker: Arc::new(ModelApprovalTracker::new()),
+            guardrail_approval_tracker: Arc::new(GuardrailApprovalTracker::new()),
+            guardrails_engine: None,
+            #[cfg(feature = "ml-models")]
+            guardrail_model_manager: None,
         }
+    }
+
+    /// Set the guardrails engine
+    pub fn with_guardrails(mut self, engine: Arc<lr_guardrails::GuardrailsEngine>) -> Self {
+        self.guardrails_engine = Some(engine);
+        self
     }
 
     /// Add MCP manager to the state

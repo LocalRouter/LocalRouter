@@ -45,3 +45,8 @@ lr-utils = { workspace = true }
 lr-api-keys = { workspace = true }
 lr-oauth = { workspace = true }
 reqwest = { workspace = true }
+lr-guardrails = { workspace = true }
+
+[features]
+default = ["ml-models"]
+ml-models = ["lr-guardrails/ml-models"]
