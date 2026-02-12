@@ -2,6 +2,7 @@ import { Link } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import Logo from '@/components/Logo'
 import { FirewallApprovalDemo } from '@/components/FirewallApprovalDemo'
+import { GuardrailApprovalDemo } from '@/components/GuardrailApprovalDemo'
 import {
   Shield,
   ShieldCheck,
@@ -231,6 +232,7 @@ export default function Home() {
       <section className="border-b">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-8 text-center">
           <h2 className="text-2xl font-bold sm:text-3xl">App Demo</h2>
+          <p className="mt-2 text-sm text-muted-foreground">UI preview only — no live functionality</p>
         </div>
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 pb-8">
           <iframe
@@ -239,6 +241,9 @@ export default function Home() {
             style={{ height: '700px' }}
             title="LocalRouter Windows XP Demo"
           />
+          <p className="mt-2 text-[11px] text-muted-foreground/60 text-right">
+            Desktop powered by <a href="https://github.com/ShizukuIchi/winXP" target="_blank" rel="noopener noreferrer" className="underline hover:text-muted-foreground">WinXP</a>
+          </p>
         </div>
       </section>
 
@@ -995,29 +1000,15 @@ export default function Home() {
                 <li className="flex gap-3">
                   <Check className="h-5 w-5 shrink-0 text-amber-500 mt-0.5" />
                   <div>
-                    <span className="font-medium">Model/provider gating</span>
-                    <p className="text-sm text-muted-foreground">Require approval before a client can access specific models or providers</p>
+                    <span className="font-medium">Request inspection & modification</span>
+                    <p className="text-sm text-muted-foreground">Inspect and modify tool arguments, model parameters, and API payloads in real time before they reach their destination</p>
                   </div>
                 </li>
                 <li className="flex gap-3">
                   <Check className="h-5 w-5 shrink-0 text-amber-500 mt-0.5" />
                   <div>
-                    <span className="font-medium">MCP operation approval</span>
-                    <p className="text-sm text-muted-foreground">Gate tool calls, resource reads, and prompt injections on a per-server basis</p>
-                  </div>
-                </li>
-                <li className="flex gap-3">
-                  <Check className="h-5 w-5 shrink-0 text-amber-500 mt-0.5" />
-                  <div>
-                    <span className="font-medium">Skill execution gates</span>
-                    <p className="text-sm text-muted-foreground">Skills with shell/script actions require explicit user confirmation</p>
-                  </div>
-                </li>
-                <li className="flex gap-3">
-                  <Check className="h-5 w-5 shrink-0 text-amber-500 mt-0.5" />
-                  <div>
-                    <span className="font-medium">Installation approval</span>
-                    <p className="text-sm text-muted-foreground">Marketplace installs triggered by AI require user confirmation before execution</p>
+                    <span className="font-medium">Granular approval policies</span>
+                    <p className="text-sm text-muted-foreground">Gate access to models, MCP tools, skills, and marketplace installations. Allow once, for session, or deny &mdash; configurable per client</p>
                   </div>
                 </li>
               </ul>
@@ -1039,7 +1030,7 @@ export default function Home() {
                 MCP &amp; Skill Marketplace
               </h2>
               <p className="mt-4 text-lg text-muted-foreground">
-                Browse and install MCP servers and skills from multiple registries. Search exposed as MCP tool for AI-assisted discovery. All installs require explicit user approval.
+                Browse and install MCP servers and skills from your registries. Marketplace accessible over MCP tools for AI-assisted discovery. All installs require your approval.
               </p>
               <ul className="mt-8 space-y-4">
                 <li className="flex gap-3">
@@ -1156,6 +1147,55 @@ export default function Home() {
                     </div>
                   </div>
                 </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* Feature 7: GuardRails */}
+      <section className="border-b py-16 sm:py-24">
+        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+          <div className="grid gap-12 lg:grid-cols-2 lg:gap-16 items-center">
+            <div>
+              <div className="flex items-center gap-2 mb-4">
+                <Shield className="h-5 w-5 text-red-500" />
+                <span className="text-sm font-medium text-red-500 uppercase tracking-wide">GuardRails</span>
+              </div>
+              <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">
+                Content Safety Inspection
+              </h2>
+              <p className="mt-4 text-lg text-muted-foreground">
+                Scan LLM requests and responses for prompt injection, jailbreaks, PII leakage, and code injection. When a rule triggers, a popup lets you allow or deny the request.
+              </p>
+              <ul className="mt-8 space-y-4">
+                <li className="flex gap-3">
+                  <Check className="h-5 w-5 shrink-0 text-red-500 mt-0.5" />
+                  <div>
+                    <span className="font-medium">Multi-source detection</span>
+                    <p className="text-sm text-muted-foreground">Built-in rules plus downloadable sources from Microsoft Presidio, LLM Guard, and more</p>
+                  </div>
+                </li>
+                <li className="flex gap-3">
+                  <Check className="h-5 w-5 shrink-0 text-red-500 mt-0.5" />
+                  <div>
+                    <span className="font-medium">Custom regex rules</span>
+                    <p className="text-sm text-muted-foreground">Define your own detection patterns for organization-specific content policies and sensitive data patterns</p>
+                  </div>
+                </li>
+                <li className="flex gap-3">
+                  <Check className="h-5 w-5 shrink-0 text-red-500 mt-0.5" />
+                  <div>
+                    <span className="font-medium">Parallel scanning</span>
+                    <p className="text-sm text-muted-foreground">Guardrail checks run in parallel with provider calls for zero-latency overhead on clean requests</p>
+                  </div>
+                </li>
+              </ul>
+            </div>
+            {/* Visual: GuardRail Approval Demo */}
+            <div className="flex justify-center">
+              <div className="transform scale-[0.95]">
+                <GuardrailApprovalDemo />
               </div>
             </div>
           </div>

@@ -44,6 +44,7 @@ export const mockData = {
       marketplace_permission: "allow",
       client_mode: "llm_only",
       template_id: "cursor",
+      sync_config: false,
     },
     {
       id: "client-2",
@@ -60,22 +61,7 @@ export const mockData = {
       marketplace_permission: "ask",
       client_mode: "both",
       template_id: "claude-code",
-    },
-    {
-      id: "client-3",
-      client_id: "open-webui",
-      name: "Open WebUI",
-      enabled: true,
-      strategy_id: "strategy-fast",
-      mcp_deferred_loading: false,
-      created_at: "2025-01-25T12:00:00Z",
-      last_used: "2025-02-02T09:15:00Z",
-      mcp_permissions: { global: "off", servers: {}, tools: {}, resources: {}, prompts: {} },
-      skills_permissions: { global: "off", skills: {}, tools: {} },
-      model_permissions: { global: "allow", providers: {}, models: {} },
-      marketplace_permission: "off",
-      client_mode: "llm_only",
-      template_id: "open-webui",
+      sync_config: true,
     },
     {
       id: "client-4",
@@ -92,6 +78,7 @@ export const mockData = {
       marketplace_permission: "ask",
       client_mode: "both",
       template_id: null,
+      sync_config: false,
     },
   ] as Client[],
 
@@ -471,7 +458,6 @@ export const mockData = {
     requests_by_client: {
       "cursor-ide": 15234,
       "claude-code": 7891,
-      "open-webui": 1728,
     },
   },
 
@@ -668,7 +654,7 @@ export const mockData = {
 
   // TrayGraphSettings - matches src/types/tauri-commands.ts
   trayGraphSettings: {
-    enabled: true,
+    enabled: false,
     refresh_rate_secs: 10,
   },
 

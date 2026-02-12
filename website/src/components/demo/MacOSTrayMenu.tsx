@@ -54,7 +54,12 @@ function Separator() {
   return <div className="my-1 border-t border-gray-300/50" />
 }
 
+const MAX_TRAY_ITEMS = 10
+
 function ClientSubmenu({ client }: { client: (typeof mockData.clients)[0] }) {
+  const showLlm = client.client_mode !== 'mcp_only'
+  const showMcp = client.client_mode !== 'llm_only'
+
   return (
     <div className="py-1">
       {/* Client name header (disabled) */}
@@ -81,69 +86,87 @@ function ClientSubmenu({ client }: { client: (typeof mockData.clients)[0] }) {
         }}
       />
 
-      <Separator />
+      {/* Model strategy section (hidden for mcp_only) */}
+      {showLlm && (
+        <>
+          <Separator />
 
-      {/* Strategy header (disabled) */}
-      <MenuItem label="Model strategy" disabled />
+          <MenuItem label="Model strategy" disabled />
 
-      {/* Strategies */}
-      {mockData.strategies.map((strategy) => {
-        const isSelected = strategy.id === client.strategy_id
-        return (
-          <MenuItem
-            key={strategy.id}
-            label={isSelected ? `✓  ${strategy.name}` : `${TRAY_INDENT}${strategy.name}`}
-            disabled={isSelected}
-          />
-        )
-      })}
+          {mockData.strategies.slice(0, MAX_TRAY_ITEMS).map((strategy) => {
+            const isSelected = strategy.id === client.strategy_id
+            return (
+              <MenuItem
+                key={strategy.id}
+                label={isSelected ? `✓  ${strategy.name}` : `${TRAY_INDENT}${strategy.name}`}
+                disabled={isSelected}
+              />
+            )
+          })}
 
-      <Separator />
-
-      {/* MCP Allowlist header (disabled) */}
-      <MenuItem label="MCP Allowlist" disabled />
-
-      {/* MCP Servers */}
-      {mockData.mcpServers.length === 0 ? (
-        <MenuItem label={`${TRAY_INDENT}No MCPs configured`} disabled />
-      ) : (
-        mockData.mcpServers.map((server) => {
-          // Check if this server is allowed for this client
-          const serverPerm = client.mcp_permissions.servers[server.id]
-          const isAllowed =
-            serverPerm === 'allow' ||
-            (serverPerm === undefined && client.mcp_permissions.default === 'allow')
-          return (
-            <MenuItem
-              key={server.id}
-              label={isAllowed ? `✓  ${server.name}` : `${TRAY_INDENT}${server.name}`}
-            />
-          )
-        })
+          {mockData.strategies.length > MAX_TRAY_ITEMS && (
+            <MenuItem label={`${TRAY_INDENT}More…`} />
+          )}
+        </>
       )}
 
-      <Separator />
+      {/* MCP Allowlist section (hidden for llm_only) */}
+      {showMcp && (
+        <>
+          <Separator />
 
-      {/* Skills Allowlist header (disabled) */}
-      <MenuItem label="Skills Allowlist" disabled />
+          <MenuItem label="MCP Allowlist" disabled />
 
-      {/* Skills */}
-      {mockData.skills.length === 0 ? (
-        <MenuItem label={`${TRAY_INDENT}No Skills configured`} disabled />
-      ) : (
-        mockData.skills.map((skill) => {
-          // Check if this skill is allowed for this client
-          const skillPerm = client.skills_permissions.skills[skill.id]
-          const isAllowed =
-            skillPerm === 'allow' ||
-            (skillPerm === undefined && client.skills_permissions.default === 'allow')
-          return (
-            <MenuItem
-              key={skill.id}
-              label={isAllowed ? `✓  ${skill.name}` : `${TRAY_INDENT}${skill.name}`}
-            />
-          )
-        })
+          {mockData.mcpServers.length === 0 ? (
+            <MenuItem label={`${TRAY_INDENT}No MCPs configured`} disabled />
+          ) : (
+            <>
+              {mockData.mcpServers.slice(0, MAX_TRAY_ITEMS).map((server) => {
+                const serverPerm = client.mcp_permissions.servers[server.id]
+                const isAllowed =
+                  serverPerm === 'allow' ||
+                  (serverPerm === undefined && client.mcp_permissions.global === 'allow')
+                return (
+                  <MenuItem
+                    key={server.id}
+                    label={isAllowed ? `✓  ${server.name}` : `${TRAY_INDENT}${server.name}`}
+                  />
+                )
+              })}
+
+              {mockData.mcpServers.length > MAX_TRAY_ITEMS && (
+                <MenuItem label={`${TRAY_INDENT}More…`} />
+              )}
+            </>
+          )}
+
+          <Separator />
+
+          <MenuItem label="Skills Allowlist" disabled />
+
+          {mockData.skills.length === 0 ? (
+            <MenuItem label={`${TRAY_INDENT}No Skills configured`} disabled />
+          ) : (
+            <>
+              {mockData.skills.slice(0, MAX_TRAY_ITEMS).map((skill) => {
+                const skillPerm = client.skills_permissions.skills[skill.name]
+                const isAllowed =
+                  skillPerm === 'allow' ||
+                  (skillPerm === undefined && client.skills_permissions.global === 'allow')
+                return (
+                  <MenuItem
+                    key={skill.name}
+                    label={isAllowed ? `✓  ${skill.name}` : `${TRAY_INDENT}${skill.name}`}
+                  />
+                )
+              })}
+
+              {mockData.skills.length > MAX_TRAY_ITEMS && (
+                <MenuItem label={`${TRAY_INDENT}More…`} />
+              )}
+            </>
+          )}
+        </>
       )}
     </div>
   )
