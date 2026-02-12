@@ -60,6 +60,10 @@ fn create_test_config(
         skills_permissions: SkillsPermissions::default(),
         model_permissions: ModelPermissions::default(),
         marketplace_permission: PermissionState::Off,
+        client_mode: lr_config::ClientMode::default(),
+        template_id: None,
+        sync_config: false,
+        guardrails_enabled: None,
     };
 
     AppConfig {
@@ -485,6 +489,10 @@ async fn test_disabled_client_returns_unauthorized() {
         skills_permissions: SkillsPermissions::default(),
         model_permissions: ModelPermissions::default(),
         marketplace_permission: PermissionState::Off,
+        client_mode: lr_config::ClientMode::default(),
+        template_id: None,
+        sync_config: false,
+        guardrails_enabled: None,
     };
 
     let config = AppConfig {
@@ -529,6 +537,10 @@ async fn test_client_with_missing_strategy() {
         skills_permissions: SkillsPermissions::default(),
         model_permissions: ModelPermissions::default(),
         marketplace_permission: PermissionState::Off,
+        client_mode: lr_config::ClientMode::default(),
+        template_id: None,
+        sync_config: false,
+        guardrails_enabled: None,
     };
 
     let config = AppConfig {

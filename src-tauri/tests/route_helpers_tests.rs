@@ -43,6 +43,10 @@ fn create_test_client(id: &str, name: &str, enabled: bool, strategy_id: &str) ->
         skills_permissions: SkillsPermissions::default(),
         model_permissions: ModelPermissions::default(),
         marketplace_permission: PermissionState::Off,
+        client_mode: lr_config::ClientMode::default(),
+        template_id: None,
+        sync_config: false,
+        guardrails_enabled: None,
     }
 }
 

@@ -41,6 +41,10 @@ fn test_config() -> AppConfig {
             skills_permissions: SkillsPermissions::default(),
             model_permissions: ModelPermissions::default(),
             marketplace_permission: PermissionState::Off,
+            client_mode: lr_config::ClientMode::default(),
+            template_id: None,
+            sync_config: false,
+            guardrails_enabled: None,
         },
         Client {
             id: "disabled_client".to_string(),
@@ -64,6 +68,10 @@ fn test_config() -> AppConfig {
             skills_permissions: SkillsPermissions::default(),
             model_permissions: ModelPermissions::default(),
             marketplace_permission: PermissionState::Off,
+            client_mode: lr_config::ClientMode::default(),
+            template_id: None,
+            sync_config: false,
+            guardrails_enabled: None,
         },
         Client {
             id: "no_mcp_client".to_string(),
@@ -87,6 +95,10 @@ fn test_config() -> AppConfig {
             skills_permissions: SkillsPermissions::default(),
             model_permissions: ModelPermissions::default(),
             marketplace_permission: PermissionState::Off,
+            client_mode: lr_config::ClientMode::default(),
+            template_id: None,
+            sync_config: false,
+            guardrails_enabled: None,
         },
     ];
     config
