@@ -522,15 +522,14 @@ impl SourceManager {
             })
             .unwrap_or_default();
 
-        // Read compiled rules count and first 5 as sample
+        // Read all compiled rules
         let compiled_path = source_dir.join("compiled_rules.json");
         let (compiled_rules_count, sample_rules) = std::fs::read_to_string(&compiled_path)
             .ok()
             .and_then(|data| serde_json::from_str::<Vec<RawRule>>(&data).ok())
             .map(|rules| {
                 let count = rules.len();
-                let sample: Vec<RawRule> = rules.into_iter().take(5).collect();
-                (count, sample)
+                (count, rules)
             })
             .unwrap_or((0, vec![]));
 
