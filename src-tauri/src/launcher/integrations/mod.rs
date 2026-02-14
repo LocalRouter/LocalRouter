@@ -15,6 +15,7 @@ mod opencode;
 use super::AppIntegration;
 
 /// All known template IDs that have backend integrations
+#[allow(dead_code)]
 pub const KNOWN_TEMPLATE_IDS: &[&str] = &[
     "claude-code",
     "codex",

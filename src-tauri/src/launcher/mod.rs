@@ -22,6 +22,7 @@ pub struct ConfigSyncContext {
 }
 
 /// Trait for all app integrations
+#[allow(dead_code)]
 pub trait AppIntegration: Send + Sync {
     /// Human-readable name
     fn name(&self) -> &str;
