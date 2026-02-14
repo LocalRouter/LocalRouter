@@ -70,7 +70,8 @@
       "Bash(du:*)",
       "WebFetch(domain:api.github.com)",
       "WebFetch(domain:vigil.deadbits.ai)",
-      "WebFetch(domain:www.aimodels.fyi)"
+      "WebFetch(domain:www.aimodels.fyi)",
+      "WebFetch(domain:docs.rs)"
     ]
   },
   "enableAllProjectMcpServers": true,
