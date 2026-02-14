@@ -16,7 +16,7 @@ use chrono::Utc;
 use futures::stream::StreamExt;
 use uuid::Uuid;
 
-use super::helpers::{get_client_with_strategy, get_enabled_client_from_manager};
+use super::helpers::get_client_with_strategy;
 use crate::middleware::client_auth::ClientAuthContext;
 use crate::middleware::error::{ApiErrorResponse, ApiResult};
 use crate::state::{AppState, AuthContext, GenerationDetails};
@@ -406,8 +406,13 @@ async fn validate_client_provider_access(
         return Ok(());
     };
 
-    // Get enabled client
-    let client = get_enabled_client_from_manager(state, &client_ctx.client_id)?;
+    // Get enabled client (skip validation for clients not in manager, e.g. internal-test)
+    let Some(client) = state.client_manager.get_client(&client_ctx.client_id) else {
+        return Ok(());
+    };
+    if !client.enabled {
+        return Err(ApiErrorResponse::forbidden("Client is disabled"));
+    }
 
     // Special case: localrouter/auto is a virtual model that routes to actual providers
     // The actual provider access will be checked by the router during auto-routing
@@ -488,8 +493,13 @@ async fn check_model_firewall_permission(
         return Ok(None);
     };
 
-    // Get enabled client
-    let client = get_enabled_client_from_manager(state, &client_ctx.client_id)?;
+    // Get enabled client (skip firewall for clients not in manager, e.g. internal-test)
+    let Some(client) = state.client_manager.get_client(&client_ctx.client_id) else {
+        return Ok(None);
+    };
+    if !client.enabled {
+        return Err(ApiErrorResponse::forbidden("Client is disabled"));
+    }
 
     // Skip firewall for localrouter/auto (handled during routing)
     if request.model == "localrouter/auto" {
@@ -667,8 +677,53 @@ async fn run_guardrails_scan(
         return Ok(None);
     };
 
-    let client = get_enabled_client_from_manager(state, &client_ctx.client_id)?;
     let config = state.config_manager.get();
+    let client = match state.client_manager.get_client(&client_ctx.client_id) {
+        Some(c) if c.enabled => c,
+        Some(_) => return Ok(None), // Client disabled
+        None => {
+            // Client not found in manager (e.g. internal-test) — use global config
+            let enabled = config.guardrails.enabled;
+            if !enabled || !config.guardrails.scan_requests {
+                return Ok(None);
+            }
+            // Skip bypass check (no client to track), proceed directly to scan
+            let request_json = serde_json::to_value(request).unwrap_or_default();
+            #[allow(unused_mut)]
+            let mut result = engine.check_input(&request_json);
+
+            #[cfg(feature = "ml-models")]
+            {
+                if let Some(ref model_manager) = state.guardrail_model_manager {
+                    let texts =
+                        lr_guardrails::text_extractor::extract_request_text(&request_json);
+                    let threshold = config
+                        .guardrails
+                        .sources
+                        .iter()
+                        .find(|s| s.source_type == "model" && s.enabled)
+                        .map(|s| s.confidence_threshold)
+                        .unwrap_or(0.7);
+                    let (ml_matches, ml_summaries) =
+                        model_manager.classify_texts(&texts, threshold);
+                    if !ml_matches.is_empty() {
+                        result.matches.extend(ml_matches);
+                    }
+                    result.sources_checked.extend(ml_summaries);
+                }
+            }
+
+            if !result.has_matches() {
+                return Ok(None);
+            }
+            let min_severity =
+                GuardrailSeverity::from_str_lenient(&config.guardrails.min_popup_severity);
+            if !result.has_matches_at_severity(min_severity) {
+                return Ok(None);
+            }
+            return Ok(Some(result));
+        }
+    };
 
     // Resolve effective guardrails_enabled (client override ?? global)
     let enabled = client.guardrails_enabled.unwrap_or(config.guardrails.enabled);
@@ -755,7 +810,15 @@ async fn handle_guardrail_approval(
     let Some(client_ctx) = client_context else {
         return Ok(());
     };
-    let client = get_enabled_client_from_manager(state, &client_ctx.client_id)?;
+    let client = state.client_manager.get_client(&client_ctx.client_id);
+    let client_id = client
+        .as_ref()
+        .map(|c| c.id.as_str())
+        .unwrap_or(&client_ctx.client_id);
+    let client_name = client
+        .as_ref()
+        .map(|c| c.name.clone())
+        .unwrap_or_else(|| client_ctx.client_id.clone());
 
     // Build approval details
     let details = GuardrailApprovalDetails {
@@ -787,8 +850,8 @@ async fn handle_guardrail_approval(
         .mcp_gateway
         .firewall_manager
         .request_guardrail_approval(
-            client.id.clone(),
-            client.name.clone(),
+            client_id.to_string(),
+            client_name,
             request.model.clone(),
             "guardrails".to_string(),
             details,
@@ -801,20 +864,20 @@ async fn handle_guardrail_approval(
 
     match response.action {
         FirewallApprovalAction::AllowOnce | FirewallApprovalAction::AllowSession => {
-            tracing::info!("Guardrail: request approved (once) for client {}", client.id);
+            tracing::info!("Guardrail: request approved (once) for client {}", client_id);
             Ok(())
         }
         FirewallApprovalAction::Allow1Hour => {
             tracing::info!(
                 "Guardrail: request approved (1 hour) for client {}",
-                client.id
+                client_id
             );
             Ok(())
         }
         FirewallApprovalAction::AllowPermanent => {
             tracing::info!(
                 "Guardrail: request approved (permanent) for client {}",
-                client.id
+                client_id
             );
             Ok(())
         }
@@ -823,7 +886,7 @@ async fn handle_guardrail_approval(
         | FirewallApprovalAction::DenyAlways => {
             tracing::warn!(
                 "Guardrail: request denied by user for client {}",
-                client.id
+                client_id
             );
             Err(ApiErrorResponse::forbidden(
                 "Request blocked by guardrail rules",
@@ -851,20 +914,22 @@ async fn check_response_guardrails_body(
         return Ok(());
     };
 
-    let client = get_enabled_client_from_manager(state, &client_ctx.client_id)?;
     let config = state.config_manager.get();
+    let client = state.client_manager.get_client(&client_ctx.client_id);
 
-    let enabled = client.guardrails_enabled.unwrap_or(config.guardrails.enabled);
+    let enabled = client
+        .as_ref()
+        .and_then(|c| c.guardrails_enabled)
+        .unwrap_or(config.guardrails.enabled);
     if !enabled || !config.guardrails.scan_responses {
         return Ok(());
     }
 
-    // Check for time-based guardrail bypass
-    if state
-        .guardrail_approval_tracker
-        .has_valid_bypass(&client.id)
-    {
-        return Ok(());
+    // Check for time-based guardrail bypass (skip if no known client)
+    if let Some(ref c) = client {
+        if state.guardrail_approval_tracker.has_valid_bypass(&c.id) {
+            return Ok(());
+        }
     }
 
     let result = engine.check_output_body(response_body);
@@ -877,10 +942,15 @@ async fn check_response_guardrails_body(
         return Ok(());
     }
 
+    let client_id = client
+        .as_ref()
+        .map(|c| c.id.as_str())
+        .unwrap_or(&client_ctx.client_id);
+
     tracing::info!(
         "Guardrail response scan: {} matches for client {}",
         result.matches.len(),
-        client.id,
+        client_id,
     );
 
     let details = GuardrailApprovalDetails {
@@ -910,8 +980,8 @@ async fn check_response_guardrails_body(
         .mcp_gateway
         .firewall_manager
         .request_guardrail_approval(
-            client.id.clone(),
-            client.name.clone(),
+            client_id.to_string(),
+            client.as_ref().map(|c| c.name.clone()).unwrap_or_else(|| client_id.to_string()),
             "response".to_string(),
             "guardrails".to_string(),
             details,

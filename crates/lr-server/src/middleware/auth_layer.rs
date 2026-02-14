@@ -7,6 +7,7 @@ use std::task::{Context, Poll};
 use tauri::http::{Request, Response, StatusCode};
 use tower::{Layer, Service};
 
+use crate::middleware::client_auth::ClientAuthContext;
 use crate::state::{AppState, AuthContext};
 use crate::types::{ApiError, ErrorResponse};
 
@@ -124,6 +125,9 @@ where
                     model_selection: None,
                 };
                 req.extensions_mut().insert(auth_context);
+                req.extensions_mut().insert(ClientAuthContext {
+                    client_id: "internal-test".to_string(),
+                });
                 return inner.call(req).await;
             }
 
@@ -133,6 +137,11 @@ where
                 match state.client_manager.verify_secret(bearer_token) {
                     Ok(Some(client)) => {
                         tracing::debug!("Authenticated as client: {}", client.id);
+
+                        // Also inject ClientAuthContext for guardrails and other client-aware features
+                        req.extensions_mut().insert(ClientAuthContext {
+                            client_id: client.id.clone(),
+                        });
 
                         // Use the client's ID for routing
                         AuthContext {
