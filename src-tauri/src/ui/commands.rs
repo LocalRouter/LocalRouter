@@ -2348,11 +2348,12 @@ pub async fn remove_custom_guardrail_rule(
     Ok(())
 }
 
-/// Test guardrail rules against input text
+/// Test guardrail rules against input text (regex + ML models)
 #[tauri::command]
 pub async fn test_guardrail_input(
     text: String,
     state: State<'_, Arc<lr_server::state::AppState>>,
+    config_manager: State<'_, lr_config::ConfigManager>,
 ) -> Result<serde_json::Value, String> {
     let Some(ref engine) = state.guardrails_engine else {
         return Err("Guardrails engine not initialized".to_string());
@@ -2365,7 +2366,27 @@ pub async fn test_guardrail_input(
         ]
     });
 
-    let result = engine.check_input(&body);
+    // Run regex-based checks
+    let mut result = engine.check_input(&body);
+
+    // Run ML model classification if model manager is available
+    if let Some(ref model_manager) = state.guardrail_model_manager {
+        let config = config_manager.get();
+        let texts = lr_guardrails::text_extractor::extract_request_text(&body);
+        let threshold = config
+            .guardrails
+            .sources
+            .iter()
+            .find(|s| s.source_type == "model" && s.enabled)
+            .map(|s| s.confidence_threshold)
+            .unwrap_or(0.7);
+        let (ml_matches, ml_summaries) = model_manager.classify_texts(&texts, threshold);
+        if !ml_matches.is_empty() {
+            result.matches.extend(ml_matches);
+        }
+        result.sources_checked.extend(ml_summaries);
+    }
+
     serde_json::to_value(&result).map_err(|e| e.to_string())
 }
 
@@ -2395,9 +2416,20 @@ pub async fn download_guardrail_model(
 
     let hf_repo_id = source
         .hf_repo_id
-        .as_deref()
-        .ok_or_else(|| format!("Source '{}' has no hf_repo_id configured", source_id))?
-        .to_string();
+        .clone()
+        .or_else(|| {
+            // Fallback: extract repo ID from HuggingFace URL
+            let prefix = "https://huggingface.co/";
+            source.url.strip_prefix(prefix).and_then(|path| {
+                let parts: Vec<&str> = path.trim_end_matches('/').splitn(3, '/').collect();
+                if parts.len() >= 2 {
+                    Some(format!("{}/{}", parts[0], parts[1]))
+                } else {
+                    None
+                }
+            })
+        })
+        .ok_or_else(|| format!("Source '{}' has no hf_repo_id configured", source_id))?;
 
     // Set up progress callback to emit Tauri events
     let app_handle_clone = app_handle.clone();

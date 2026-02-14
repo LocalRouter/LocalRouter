@@ -1382,16 +1382,23 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     toast.info(`Downloading model for "${args?.sourceId}" (demo - not actually downloading)`)
     // Simulate progress events
     const sourceId = args?.sourceId || 'prompt_guard_2'
+    const totalBytes = 346000000
     let progress = 0
+    const startTime = Date.now()
     const interval = setInterval(() => {
       progress += 0.1
+      const bytesDownloaded = Math.floor(totalBytes * Math.min(progress, 1.0))
+      const elapsedSecs = Math.max((Date.now() - startTime) / 1000, 0.1)
+      const bytesPerSecond = Math.floor(bytesDownloaded / elapsedSecs)
       if (progress >= 1.0) {
         clearInterval(interval)
         emit('guardrail-model-download-progress', {
           source_id: sourceId,
-          current_file: 'model.safetensors',
+          current_file: null,
           progress: 1.0,
-          bytes_downloaded: 346000000,
+          bytes_downloaded: totalBytes,
+          total_bytes: totalBytes,
+          bytes_per_second: bytesPerSecond,
         })
         toast.success(`Model "${sourceId}" downloaded (demo)`)
         return
@@ -1400,7 +1407,9 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
         source_id: sourceId,
         current_file: progress < 0.5 ? 'tokenizer.json' : 'model.safetensors',
         progress,
-        bytes_downloaded: Math.floor(346000000 * progress),
+        bytes_downloaded: bytesDownloaded,
+        total_bytes: 0,
+        bytes_per_second: bytesPerSecond,
       })
     }, 300)
     return null

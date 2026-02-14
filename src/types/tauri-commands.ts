@@ -2043,6 +2043,8 @@ export interface ModelDownloadProgress {
   current_file: string | null
   progress: number
   bytes_downloaded: number
+  total_bytes: number
+  bytes_per_second: number
 }
 
 /** Per-path download/parse error */

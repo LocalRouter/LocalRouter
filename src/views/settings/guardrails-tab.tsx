@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
 import { toast } from "sonner"
-import { Shield, RefreshCw, Plus, Trash2, Loader2, Pencil, FlaskConical, CheckCircle2, XCircle, ChevronDown, ChevronRight, AlertTriangle, Download, Brain, Unplug } from "lucide-react"
+import { Shield, RefreshCw, Plus, Trash2, Loader2, Pencil, FlaskConical, CheckCircle2, XCircle, ChevronDown, ChevronRight, AlertTriangle, Download, Brain, Unplug, FolderOpen, ExternalLink } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/Toggle"
@@ -44,6 +44,7 @@ import type {
   DownloadGuardrailModelParams,
   GetGuardrailModelStatusParams,
   UnloadGuardrailModelParams,
+  OpenPathParams,
 } from "@/types/tauri-commands"
 
 /** Auto-derive a slug ID from a label */
@@ -88,7 +89,7 @@ export function GuardrailsTab() {
 
   // ML model state
   const [modelStatuses, setModelStatuses] = useState<Record<string, GuardrailModelInfo>>({})
-  const [downloadingModels, setDownloadingModels] = useState<Record<string, number>>({})
+  const [downloadingModels, setDownloadingModels] = useState<Record<string, ModelDownloadProgress>>({})
   const [hfTokens, setHfTokens] = useState<Record<string, string>>({})
   const unlistenRef = useRef<(() => void) | null>(null)
 
@@ -151,7 +152,7 @@ export function GuardrailsTab() {
     listen<ModelDownloadProgress>("guardrail-model-download-progress", (event) => {
       if (cancelled) return
       const progress = event.payload
-      setDownloadingModels(prev => ({ ...prev, [progress.source_id]: progress.progress }))
+      setDownloadingModels(prev => ({ ...prev, [progress.source_id]: progress }))
       if (progress.progress >= 1.0) {
         // Download complete, refresh model status
         setTimeout(() => {
@@ -257,7 +258,7 @@ export function GuardrailsTab() {
 
   const handleDownloadModel = async (sourceId: string) => {
     try {
-      setDownloadingModels(prev => ({ ...prev, [sourceId]: 0 }))
+      setDownloadingModels(prev => ({ ...prev, [sourceId]: { source_id: sourceId, current_file: "Initializing...", progress: 0, bytes_downloaded: 0, total_bytes: 0, bytes_per_second: 0 } }))
       const token = hfTokens[sourceId] || null
       await invoke("download_guardrail_model", {
         sourceId,
@@ -773,7 +774,9 @@ export function GuardrailsTab() {
                                 <div className="flex items-center gap-1.5">
                                   <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
                                   <span className="text-[10px] text-muted-foreground font-mono">
-                                    {Math.round(downloadProgress * 100)}%
+                                    {downloadProgress.bytes_downloaded > 0
+                                      ? `${formatBytes(downloadProgress.bytes_downloaded)}${downloadProgress.bytes_per_second > 0 ? ` · ${formatBytes(downloadProgress.bytes_per_second)}/s` : ""}`
+                                      : `${Math.round(downloadProgress.progress * 100)}%`}
                                   </span>
                                 </div>
                               )}
@@ -844,7 +847,7 @@ export function GuardrailsTab() {
                           <div className="h-1.5 bg-muted rounded-full overflow-hidden">
                             <div
                               className="h-full bg-blue-500 rounded-full transition-all duration-300"
-                              style={{ width: `${Math.round(downloadProgress * 100)}%` }}
+                              style={{ width: `${Math.round(downloadProgress.progress * 100)}%` }}
                             />
                           </div>
                         </div>
@@ -915,32 +918,53 @@ export function GuardrailsTab() {
                             </div>
                           ) : sourceDetails && sourceDetails.id === source.id ? (
                             <>
+                              {/* Combined source URL: repo/tree/branch/path */}
                               {sourceDetails.url && (
-                                <div>
-                                  <span className="text-muted-foreground">Repository: </span>
-                                  <a href={sourceDetails.url} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:underline">
-                                    {sourceDetails.url}
+                                <div className="flex items-center gap-1">
+                                  <span className="text-muted-foreground">Source: </span>
+                                  <a
+                                    href={(() => {
+                                      const base = sourceDetails.url.replace(/\/$/, "")
+                                      const isGitHub = base.includes("github.com")
+                                      if (!isGitHub) return base
+                                      const pathSuffix = sourceDetails.data_paths.length > 0
+                                        ? `/${sourceDetails.data_paths[0]}`
+                                        : ""
+                                      return `${base}/tree/${sourceDetails.branch}${pathSuffix}`
+                                    })()}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-blue-500 hover:underline inline-flex items-center gap-0.5"
+                                  >
+                                    {(() => {
+                                      const base = sourceDetails.url.replace(/\/$/, "").replace(/^https?:\/\//, "")
+                                      const pathSuffix = sourceDetails.data_paths.length > 0
+                                        ? `/tree/${sourceDetails.branch}/${sourceDetails.data_paths.join(", ")}`
+                                        : `/tree/${sourceDetails.branch}`
+                                      return `${base}${pathSuffix}`
+                                    })()}
+                                    <ExternalLink className="h-3 w-3 flex-shrink-0" />
                                   </a>
-                                </div>
-                              )}
-                              <div>
-                                <span className="text-muted-foreground">Branch: </span>
-                                <span className="font-mono">{sourceDetails.branch}</span>
-                              </div>
-                              {sourceDetails.data_paths.length > 0 && (
-                                <div>
-                                  <span className="text-muted-foreground">Data paths: </span>
-                                  <span className="font-mono">{sourceDetails.data_paths.join(", ")}</span>
                                 </div>
                               )}
                               <div>
                                 <span className="text-muted-foreground">Type: </span>
                                 <span>{sourceDetails.source_type}</span>
                               </div>
+                              {/* Cache location with open folder button */}
                               {sourceDetails.cache_dir && (
-                                <div>
+                                <div className="flex items-center gap-1">
                                   <span className="text-muted-foreground">Cache: </span>
                                   <span className="font-mono text-[10px]">{sourceDetails.cache_dir}</span>
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    className="h-5 w-5 p-0"
+                                    onClick={() => invoke("open_path", { path: sourceDetails.cache_dir } satisfies OpenPathParams as Record<string, unknown>)}
+                                    title="Open cache folder"
+                                  >
+                                    <FolderOpen className="h-3 w-3" />
+                                  </Button>
                                 </div>
                               )}
                               {sourceDetails.raw_files.length > 0 && (
@@ -969,17 +993,20 @@ export function GuardrailsTab() {
                                   ))}
                                 </div>
                               )}
+                              {/* All rules in scrollable container */}
                               {sourceDetails.sample_rules.length > 0 && (
                                 <div className="space-y-1">
-                                  <span className="text-muted-foreground">Sample rules:</span>
-                                  {sourceDetails.sample_rules.map((rule, i) => (
-                                    <div key={i} className="ml-2 bg-muted/50 rounded px-2 py-1">
-                                      <span className="font-medium">{rule.name}</span>
-                                      <code className="block font-mono text-[10px] text-muted-foreground truncate mt-0.5">
-                                        {rule.pattern}
-                                      </code>
-                                    </div>
-                                  ))}
+                                  <span className="text-muted-foreground">Rules ({sourceDetails.sample_rules.length}):</span>
+                                  <div className="max-h-48 overflow-y-auto space-y-1 pr-1">
+                                    {sourceDetails.sample_rules.map((rule, i) => (
+                                      <div key={i} className="ml-2 bg-muted/50 rounded px-2 py-1">
+                                        <span className="font-medium">{rule.name}</span>
+                                        <code className="block font-mono text-[10px] text-muted-foreground truncate mt-0.5">
+                                          {rule.pattern}
+                                        </code>
+                                      </div>
+                                    ))}
+                                  </div>
                                 </div>
                               )}
                             </>
