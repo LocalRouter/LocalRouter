@@ -162,7 +162,7 @@ jsonschema = "0.18"
 
 # ML - RouteLLM
 tokenizers = "0.22"
-hf-hub = { version = "0.3", features = ["tokio"] }
+hf-hub = { version = "0.4", features = ["tokio"] }
 safetensors = "0.4"
 
 [profile.release]
