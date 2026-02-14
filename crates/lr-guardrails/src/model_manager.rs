@@ -119,7 +119,12 @@ impl ModelManager {
             current_file: Some("Initializing...".to_string()),
             progress: 0.0,
             bytes_downloaded: 0,
+            total_bytes: 0,
+            bytes_per_second: 0,
         });
+
+        let download_start = Instant::now();
+        let mut cumulative_bytes: u64 = 0;
 
         let model_dir = self.model_dir(source_id);
         let tokenizer_dir = self.tokenizer_dir(source_id);
@@ -171,6 +176,8 @@ impl ModelManager {
             current_file: Some("model.safetensors".to_string()),
             progress: 0.1,
             bytes_downloaded: 0,
+            total_bytes: 0,
+            bytes_per_second: 0,
         });
 
         let (model_filename, model_path) =
@@ -186,6 +193,8 @@ impl ModelManager {
                         current_file: Some("pytorch_model.bin".to_string()),
                         progress: 0.1,
                         bytes_downloaded: 0,
+                        total_bytes: 0,
+                        bytes_per_second: 0,
                     });
                     let path = download_file_with_retry(&repo, "pytorch_model.bin")
                         .await
@@ -204,11 +213,20 @@ impl ModelManager {
             .await
             .map_err(|e| format!("Failed to copy model file: {}", e))?;
 
+        // Track model weights size
+        if let Ok(meta) = tokio::fs::metadata(&dest).await {
+            cumulative_bytes += meta.len();
+        }
+        let elapsed_secs = download_start.elapsed().as_secs_f64().max(0.1);
+        let bytes_per_sec = (cumulative_bytes as f64 / elapsed_secs) as u64;
+
         self.emit_progress(ModelDownloadProgress {
             source_id: source_id.to_string(),
             current_file: Some("tokenizer.json".to_string()),
             progress: 0.7,
-            bytes_downloaded: 0,
+            bytes_downloaded: cumulative_bytes,
+            total_bytes: 0,
+            bytes_per_second: bytes_per_sec,
         });
 
         // Download tokenizer files (config.json is required for architecture config)
@@ -240,21 +258,35 @@ impl ModelManager {
                 }
             }
 
+            // Track tokenizer file size
+            let dest_path = temp_tokenizer_dir.join(file);
+            if let Ok(meta) = tokio::fs::metadata(&dest_path).await {
+                cumulative_bytes += meta.len();
+            }
+            let elapsed_secs = download_start.elapsed().as_secs_f64().max(0.1);
+            let bytes_per_sec = (cumulative_bytes as f64 / elapsed_secs) as u64;
+
             let progress = 0.7 + (0.2 * (idx + 1) as f32 / tokenizer_files.len() as f32);
             self.emit_progress(ModelDownloadProgress {
                 source_id: source_id.to_string(),
                 current_file: Some(file.to_string()),
                 progress,
-                bytes_downloaded: 0,
+                bytes_downloaded: cumulative_bytes,
+                total_bytes: 0,
+                bytes_per_second: bytes_per_sec,
             });
         }
 
         // Verify model loads — detect architecture from config.json
+        let elapsed_secs = download_start.elapsed().as_secs_f64().max(0.1);
+        let bytes_per_sec = (cumulative_bytes as f64 / elapsed_secs) as u64;
         self.emit_progress(ModelDownloadProgress {
             source_id: source_id.to_string(),
             current_file: Some("Verifying...".to_string()),
             progress: 0.95,
-            bytes_downloaded: 0,
+            bytes_downloaded: cumulative_bytes,
+            total_bytes: 0,
+            bytes_per_second: bytes_per_sec,
         });
 
         let temp_model_clone = temp_model_dir.clone();
@@ -300,11 +332,15 @@ impl ModelManager {
             .lock()
             .insert(source_id.to_string(), ModelDownloadState::Ready);
 
+        let elapsed_secs = download_start.elapsed().as_secs_f64().max(0.1);
+        let bytes_per_sec = (cumulative_bytes as f64 / elapsed_secs) as u64;
         self.emit_progress(ModelDownloadProgress {
             source_id: source_id.to_string(),
             current_file: None,
             progress: 1.0,
-            bytes_downloaded: 0,
+            bytes_downloaded: cumulative_bytes,
+            total_bytes: cumulative_bytes,
+            bytes_per_second: bytes_per_sec,
         });
 
         info!("Model download complete: {}", source_id);

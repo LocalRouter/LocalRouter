@@ -61,6 +61,8 @@ pub struct ModelDownloadProgress {
     pub current_file: Option<String>,
     pub progress: f32,
     pub bytes_downloaded: u64,
+    pub total_bytes: u64,
+    pub bytes_per_second: u64,
 }
 
 /// Result of classifying a single text
