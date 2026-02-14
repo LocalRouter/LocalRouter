@@ -78,6 +78,11 @@ pub fn migrate_config(mut config: AppConfig) -> AppResult<AppConfig> {
         config = migrate_to_v10(config)?;
     }
 
+    // Migrate to v11: Fix hf_repo_id for existing model sources + rename deberta_injection
+    if config.version < 11 {
+        config = migrate_to_v11(config)?;
+    }
+
     // Update version to current
     config.version = CONFIG_VERSION;
 
@@ -481,6 +486,71 @@ fn migrate_to_v10(mut config: AppConfig) -> AppResult<AppConfig> {
 
     config.version = 10;
     Ok(config)
+}
+
+/// Migrate to version 11: Fix hf_repo_id for existing model sources
+///
+/// - Extract hf_repo_id from URL for model sources where it's None
+/// - Rename deberta_injection → protectai_injection_v2 (canonical ID)
+/// - Remove defunct sources: purple_llama, payloads_all_the_things, nemo_guardrails
+fn migrate_to_v11(mut config: AppConfig) -> AppResult<AppConfig> {
+    info!("Migrating to version 11: Fix hf_repo_id for existing model sources");
+
+    // Remove defunct sources that produce 0 useful rules
+    let defunct_sources = [
+        "purple_llama",           // Benchmark dataset, not regex patterns; path was 404
+        "payloads_all_the_things", // README prose, not pattern lists (produces garbage rules)
+        "nemo_guardrails",        // ML-only detection (GPT-2 perplexity), zero regex patterns
+        "presidio",               // Python recognizer classes, not regex pattern files
+    ];
+    let before = config.guardrails.sources.len();
+    config
+        .guardrails
+        .sources
+        .retain(|s| !defunct_sources.contains(&s.id.as_str()));
+    let removed = before - config.guardrails.sources.len();
+    if removed > 0 {
+        info!("Removed {} defunct guardrail sources", removed);
+    }
+
+    // Rename deberta_injection → protectai_injection_v2
+    for source in &mut config.guardrails.sources {
+        if source.id == "deberta_injection" {
+            source.id = "protectai_injection_v2".to_string();
+            source.label = "ProtectAI Injection v2".to_string();
+            source.predefined = true;
+            info!("Renamed deberta_injection → protectai_injection_v2");
+        }
+    }
+
+    // Fix hf_repo_id for model sources by extracting from URL
+    for source in &mut config.guardrails.sources {
+        if source.source_type == "model" && source.hf_repo_id.is_none() {
+            if let Some(repo_id) = extract_hf_repo_id_from_url(&source.url) {
+                info!(
+                    "Set hf_repo_id for '{}' from URL: {}",
+                    source.id, repo_id
+                );
+                source.hf_repo_id = Some(repo_id);
+            }
+        }
+    }
+
+    config.version = 11;
+    Ok(config)
+}
+
+/// Extract HuggingFace repo ID (owner/model) from a HuggingFace URL
+fn extract_hf_repo_id_from_url(url: &str) -> Option<String> {
+    // Match https://huggingface.co/owner/model (with optional trailing path/slash)
+    let prefix = "https://huggingface.co/";
+    let path = url.strip_prefix(prefix)?;
+    let parts: Vec<&str> = path.trim_end_matches('/').splitn(3, '/').collect();
+    if parts.len() >= 2 && !parts[0].is_empty() && !parts[1].is_empty() {
+        Some(format!("{}/{}", parts[0], parts[1]))
+    } else {
+        None
+    }
 }
 
 // Future migration functions will follow this pattern:

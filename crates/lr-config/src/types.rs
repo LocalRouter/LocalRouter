@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use uuid::Uuid;
 
-pub(crate) const CONFIG_VERSION: u32 = 10;
+pub(crate) const CONFIG_VERSION: u32 = 11;
 
 /// Suffix for auto-generated client strategy names
 pub const CLIENT_STRATEGY_NAME_SUFFIX: &str = "'s strategy";
@@ -1343,7 +1343,7 @@ impl Default for GuardrailsConfig {
 /// A configurable guardrail source (predefined or user-added)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct GuardrailSourceConfig {
-    /// Unique identifier (e.g. "presidio", "custom-yara-1")
+    /// Unique identifier (e.g. "llm_guard", "custom-yara-1")
     pub id: String,
     /// Display name
     pub label: String,
@@ -1389,22 +1389,11 @@ fn default_confidence_threshold() -> f32 {
 /// and download individual files within the directory.
 fn default_guardrail_sources() -> Vec<GuardrailSourceConfig> {
     vec![
-        GuardrailSourceConfig {
-            id: "presidio".to_string(),
-            label: "Microsoft Presidio".to_string(),
-            source_type: "regex".to_string(),
-            enabled: true,
-            url: "https://github.com/microsoft/presidio".to_string(),
-            data_paths: vec![
-                "presidio-analyzer/presidio_analyzer/predefined_recognizers".to_string()
-            ],
-            branch: "main".to_string(),
-            predefined: true,
-            confidence_threshold: default_confidence_threshold(),
-            model_architecture: None,
-            hf_repo_id: None,
-            requires_auth: false,
-        },
+        // Removed sources:
+        // - Presidio: Python recognizer classes, not regex pattern files (produces garbage rules)
+        // - PayloadsAllTheThings: README prose, not pattern lists
+        // - NeMo Guardrails: ML-only detection, zero regex patterns
+        // - PurpleLlama: Benchmark dataset, not detection patterns; path was 404
         GuardrailSourceConfig {
             id: "llm_guard".to_string(),
             label: "LLM Guard (ProtectAI)".to_string(),
