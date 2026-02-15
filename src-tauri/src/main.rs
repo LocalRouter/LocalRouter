@@ -505,7 +505,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             app.manage(marketplace_service.clone());
 
             // Get AppState from server manager and manage it for Tauri commands
-            if let Some(mut app_state) = server_manager.get_state() {
+            if let Some(app_state) = server_manager.get_state() {
                 info!("Managing AppState for Tauri commands");
 
                 // Wire skill support into MCP gateway (uses OnceLock, so &self is fine)
@@ -596,6 +596,9 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                                     provider_id: m.provider_id.clone(),
                                     model_name: m.model_name.clone(),
                                     enabled_categories: None, // TODO: parse from config
+                                    execution_mode: m.execution_mode.clone(),
+                                    hf_repo_id: m.hf_repo_id.clone(),
+                                    gguf_filename: m.gguf_filename.clone(),
                                 })
                                 .collect();
 
@@ -617,10 +620,10 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                             "Guardrails enabled: {} models loaded",
                             engine.model_count()
                         );
-                        app_state.safety_engine = Some(engine);
+                        *app_state.safety_engine.write() = Some(engine);
                     } else {
                         // Create empty engine so commands still work
-                        app_state.safety_engine =
+                        *app_state.safety_engine.write() =
                             Some(Arc::new(lr_guardrails::SafetyEngine::empty()));
                         if guardrails_config.enabled {
                             info!("Guardrails enabled but no models are active");
@@ -1394,6 +1397,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             // GuardRails commands
             ui::commands::get_guardrails_config,
             ui::commands::update_guardrails_config,
+            ui::commands::rebuild_safety_engine,
             ui::commands::test_safety_check,
             ui::commands::get_safety_model_status,
             ui::commands::test_safety_model,

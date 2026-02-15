@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
-import { Plus, Trash2 } from "lucide-react"
+import { Plus, Trash2, Wrench, Cloud } from "lucide-react"
 import {
   Dialog,
   DialogContent,
@@ -23,12 +23,14 @@ import type {
 } from "@/types/tauri-commands"
 
 const MODEL_TYPES = [
-  { value: "llama_guard_4", label: "Llama Guard" },
+  { value: "llama_guard", label: "Llama Guard" },
   { value: "shield_gemma", label: "ShieldGemma" },
   { value: "nemotron", label: "Nemotron" },
   { value: "granite_guardian", label: "Granite Guardian" },
   { value: "custom", label: "Custom" },
 ]
+
+type ExecutionMode = "custom_download" | "provider"
 
 interface AddSafetyModelDialogProps {
   open: boolean
@@ -43,14 +45,14 @@ export function AddSafetyModelDialog({
 }: AddSafetyModelDialogProps) {
   const [label, setLabel] = useState("")
   const [modelType, setModelType] = useState("custom")
-  const [executionMode, setExecutionMode] = useState<"provider" | "local">("provider")
+  const [executionMode, setExecutionMode] = useState<ExecutionMode>("custom_download")
 
   // Provider mode fields
   const [providerId, setProviderId] = useState("")
   const [modelName, setModelName] = useState("")
   const [providers, setProviders] = useState<ProviderInstanceInfo[]>([])
 
-  // Local (HuggingFace) mode fields
+  // Custom download (HuggingFace) mode fields
   const [hfRepoId, setHfRepoId] = useState("")
   const [ggufFilename, setGgufFilename] = useState("")
   const [requiresAuth, setRequiresAuth] = useState(false)
@@ -88,7 +90,7 @@ export function AddSafetyModelDialog({
   const resetForm = () => {
     setLabel("")
     setModelType("custom")
-    setExecutionMode("provider")
+    setExecutionMode("custom_download")
     setProviderId("")
     setModelName("")
     setHfRepoId("")
@@ -106,6 +108,14 @@ export function AddSafetyModelDialog({
       return
     }
 
+    let resolvedHfRepoId: string | null = null
+    let resolvedGgufFilename: string | null = null
+
+    if (executionMode === "custom_download") {
+      resolvedHfRepoId = hfRepoId || null
+      resolvedGgufFilename = ggufFilename || null
+    }
+
     setSaving(true)
     try {
       const config: SafetyModelConfig = {
@@ -115,8 +125,8 @@ export function AddSafetyModelDialog({
         enabled: false,
         provider_id: executionMode === "provider" ? (providerId || null) : null,
         model_name: executionMode === "provider" ? (modelName || null) : null,
-        hf_repo_id: executionMode === "local" ? (hfRepoId || null) : null,
-        gguf_filename: executionMode === "local" ? (ggufFilename || null) : null,
+        hf_repo_id: resolvedHfRepoId,
+        gguf_filename: resolvedGgufFilename,
         requires_auth: requiresAuth,
         confidence_threshold: null,
         enabled_categories: null,
@@ -147,9 +157,10 @@ export function AddSafetyModelDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>Add Safety Model</DialogTitle>
+          <DialogTitle>Add Custom Safety Model</DialogTitle>
           <DialogDescription>
-            Add a custom safety model from an external provider or HuggingFace.
+            Add a custom safety model via HuggingFace download or external provider.
+            For pre-configured models, use the dropdown picker instead.
           </DialogDescription>
         </DialogHeader>
 
@@ -189,61 +200,29 @@ export function AddSafetyModelDialog({
                 <input
                   type="radio"
                   name="executionMode"
-                  value="provider"
-                  checked={executionMode === "provider"}
-                  onChange={() => setExecutionMode("provider")}
+                  value="custom_download"
+                  checked={executionMode === "custom_download"}
+                  onChange={() => setExecutionMode("custom_download")}
                   className="accent-blue-500"
                 />
-                Provider
+                <Wrench className="h-3 w-3" /> Custom Download
               </label>
               <label className="flex items-center gap-1.5 text-xs cursor-pointer">
                 <input
                   type="radio"
                   name="executionMode"
-                  value="local"
-                  checked={executionMode === "local"}
-                  onChange={() => setExecutionMode("local")}
+                  value="provider"
+                  checked={executionMode === "provider"}
+                  onChange={() => setExecutionMode("provider")}
                   className="accent-blue-500"
                 />
-                Local (HuggingFace)
+                <Cloud className="h-3 w-3" /> Provider
               </label>
             </div>
           </div>
 
-          {/* Provider mode fields */}
-          {executionMode === "provider" && (
-            <div className="space-y-3 border rounded-lg p-3">
-              <div>
-                <Label className="text-xs">Provider</Label>
-                <select
-                  value={providerId}
-                  onChange={(e) => setProviderId(e.target.value)}
-                  className="mt-1 w-full h-8 text-xs rounded-md border border-input bg-background px-3"
-                >
-                  <option value="">Select a provider...</option>
-                  {providers
-                    .filter((p) => p.enabled)
-                    .map((p) => (
-                      <option key={p.instance_name} value={p.instance_name}>
-                        {p.instance_name} ({p.provider_type})
-                      </option>
-                    ))}
-                </select>
-              </div>
-              <div>
-                <Label className="text-xs">Model Name</Label>
-                <Input
-                  placeholder="e.g. llama-guard-4"
-                  value={modelName}
-                  onChange={(e) => setModelName(e.target.value)}
-                  className="mt-1 h-8 text-xs"
-                />
-              </div>
-            </div>
-          )}
-
-          {/* Local/HuggingFace mode fields */}
-          {executionMode === "local" && (
+          {/* Custom Download: manual HF fields */}
+          {executionMode === "custom_download" && (
             <div className="space-y-3 border rounded-lg p-3">
               <div>
                 <Label className="text-xs">HuggingFace Repo ID</Label>
@@ -269,6 +248,38 @@ export function AddSafetyModelDialog({
                   onCheckedChange={setRequiresAuth}
                 />
                 <Label className="text-xs">Requires HuggingFace Auth (gated model)</Label>
+              </div>
+            </div>
+          )}
+
+          {/* Provider mode fields */}
+          {executionMode === "provider" && (
+            <div className="space-y-3 border rounded-lg p-3">
+              <div>
+                <Label className="text-xs">Provider</Label>
+                <select
+                  value={providerId}
+                  onChange={(e) => setProviderId(e.target.value)}
+                  className="mt-1 w-full h-8 text-xs rounded-md border border-input bg-background px-3"
+                >
+                  <option value="">Select a provider...</option>
+                  {providers
+                    .filter((p) => p.enabled)
+                    .map((p) => (
+                      <option key={p.instance_name} value={p.instance_name}>
+                        {p.instance_name} ({p.provider_type})
+                      </option>
+                    ))}
+                </select>
+              </div>
+              <div>
+                <Label className="text-xs">Model Name</Label>
+                <Input
+                  placeholder="e.g. llama-guard3:1b"
+                  value={modelName}
+                  onChange={(e) => setModelName(e.target.value)}
+                  className="mt-1 h-8 text-xs"
+                />
               </div>
             </div>
           )}

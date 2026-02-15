@@ -1305,15 +1305,12 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   // GuardRails - LLM-based Safety Models
   // ============================================================================
   'get_guardrails_config': () => ({
-    enabled: false,
+    enabled: true,
     scan_requests: true,
     scan_responses: false,
     safety_models: [
-      { id: 'granite_guardian_2b', label: 'IBM Granite Guardian 2B', model_type: 'granite_guardian', enabled: false, provider_id: 'ollama', model_name: 'granite3-guardian:2b', hf_repo_id: null, gguf_filename: null, requires_auth: false, confidence_threshold: null, enabled_categories: null, predefined: true, execution_mode: null, prompt_template: null, safe_indicator: null, output_regex: null, category_mapping: null },
-      { id: 'granite_guardian_8b', label: 'IBM Granite Guardian 8B', model_type: 'granite_guardian', enabled: false, provider_id: 'ollama', model_name: 'granite3-guardian:8b', hf_repo_id: null, gguf_filename: null, requires_auth: false, confidence_threshold: null, enabled_categories: null, predefined: true, execution_mode: null, prompt_template: null, safe_indicator: null, output_regex: null, category_mapping: null },
-      { id: 'llama_guard_4', label: 'Llama Guard 4', model_type: 'llama_guard_4', enabled: false, provider_id: 'ollama', model_name: 'llama-guard4', hf_repo_id: 'meta-llama/Llama-Guard-4-12B', gguf_filename: null, requires_auth: true, confidence_threshold: null, enabled_categories: null, predefined: true, execution_mode: null, prompt_template: null, safe_indicator: null, output_regex: null, category_mapping: null },
-      { id: 'shield_gemma_2b', label: 'ShieldGemma 2B', model_type: 'shield_gemma', enabled: false, provider_id: 'ollama', model_name: 'shieldgemma-2b', hf_repo_id: 'google/shieldgemma-2b', gguf_filename: null, requires_auth: true, confidence_threshold: null, enabled_categories: null, predefined: true, execution_mode: null, prompt_template: null, safe_indicator: null, output_regex: null, category_mapping: null },
-      { id: 'nemotron_safety', label: 'Nvidia Nemotron Safety Guard', model_type: 'nemotron', enabled: false, provider_id: 'ollama', model_name: 'llama-3.1-nemotron-safety-guard:8b', hf_repo_id: null, gguf_filename: null, requires_auth: false, confidence_threshold: null, enabled_categories: null, predefined: true, execution_mode: null, prompt_template: null, safe_indicator: null, output_regex: null, category_mapping: null },
+      { id: 'llama_guard', label: 'Llama Guard 3 1B', model_type: 'llama_guard', enabled: true, provider_id: null, model_name: null, hf_repo_id: 'QuantFactory/Llama-Guard-3-1B-GGUF', gguf_filename: 'Llama-Guard-3-1B.Q4_K_M.gguf', requires_auth: false, confidence_threshold: null, enabled_categories: null, predefined: false, execution_mode: 'direct_download', prompt_template: null, safe_indicator: null, output_regex: null, category_mapping: null },
+      { id: 'granite_guardian', label: 'Granite Guardian 3.0 2B', model_type: 'granite_guardian', enabled: true, provider_id: null, model_name: null, hf_repo_id: 'mradermacher/granite-guardian-3.0-2b-GGUF', gguf_filename: 'granite-guardian-3.0-2b.Q4_K_M.gguf', requires_auth: false, confidence_threshold: null, enabled_categories: null, predefined: false, execution_mode: 'direct_download', prompt_template: null, safe_indicator: null, output_regex: null, category_mapping: null },
     ],
     category_actions: [],
     hf_token: null,
@@ -1323,70 +1320,79 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     toast.success('GuardRails configuration saved (demo)')
     return null
   },
+  'rebuild_safety_engine': () => {
+    return null
+  },
   'test_safety_check': (args) => {
     const text = args?.text || ''
     const hasInjection = /ignore.*previous|ignore.*instructions|DAN\s+mode/i.test(text)
     return {
-      verdicts: hasInjection ? [{
-        model_id: 'granite_guardian_2b',
-        is_safe: false,
-        flagged_categories: [{ category: 'Jailbreak', confidence: 0.92, native_label: 'jailbreak' }],
-        confidence: 0.92,
-        raw_output: 'Yes',
-        check_duration_ms: 245,
-      }] : [{
-        model_id: 'granite_guardian_2b',
-        is_safe: true,
-        flagged_categories: [],
-        confidence: null,
-        raw_output: 'No',
-        check_duration_ms: 198,
-      }],
-      actions_required: hasInjection ? [{ category: 'Jailbreak', action: 'ask' as const, model_id: 'granite_guardian_2b', confidence: 0.92 }] : [],
-      total_duration_ms: hasInjection ? 245 : 198,
+      verdicts: [
+        {
+          model_id: 'llama_guard',
+          is_safe: !hasInjection,
+          flagged_categories: hasInjection ? [{ category: 'ViolentCrimes', confidence: null, native_label: 'S1' }] : [],
+          confidence: null,
+          raw_output: hasInjection ? 'unsafe\nS1' : 'safe',
+          check_duration_ms: 142,
+        },
+        {
+          model_id: 'granite_guardian',
+          is_safe: !hasInjection,
+          flagged_categories: hasInjection ? [{ category: 'Jailbreak', confidence: 0.92, native_label: 'jailbreak' }] : [],
+          confidence: hasInjection ? 0.92 : 0.03,
+          raw_output: hasInjection ? 'Yes' : 'No',
+          check_duration_ms: 245,
+        },
+      ],
+      actions_required: hasInjection ? [
+        { category: 'ViolentCrimes', action: 'ask' as const, model_id: 'llama_guard', confidence: null },
+        { category: 'Jailbreak', action: 'ask' as const, model_id: 'granite_guardian', confidence: 0.92 },
+      ] : [],
+      total_duration_ms: hasInjection ? 387 : 340,
       scan_direction: 'request' as const,
     }
   },
   'get_safety_model_status': (args) => ({
-    id: args?.modelId || 'granite_guardian_2b',
-    label: 'IBM Granite Guardian 2B',
+    id: args?.modelId || 'granite_guardian',
+    label: 'Granite Guardian',
     model_type: 'granite_guardian',
     enabled: false,
-    provider_configured: true,
+    provider_configured: false,
     model_available: false,
     downloaded: false,
-    execution_mode: 'provider',
+    execution_mode: 'local',
   }),
   'test_safety_model': (args) => {
     const text = args?.text || ''
     const hasInjection = /ignore.*previous|ignore.*instructions|DAN\s+mode/i.test(text)
     return {
       verdicts: [{
-        model_id: args?.modelId || 'granite_guardian_2b',
+        model_id: args?.modelId || 'granite_guardian',
         is_safe: !hasInjection,
         flagged_categories: hasInjection ? [{ category: 'Jailbreak', confidence: 0.88, native_label: 'jailbreak' }] : [],
         confidence: hasInjection ? 0.88 : null,
         raw_output: hasInjection ? 'Yes' : 'No',
         check_duration_ms: 312,
       }],
-      actions_required: hasInjection ? [{ category: 'Jailbreak', action: 'ask' as const, model_id: args?.modelId || 'granite_guardian_2b', confidence: 0.88 }] : [],
+      actions_required: hasInjection ? [{ category: 'Jailbreak', action: 'ask' as const, model_id: args?.modelId || 'granite_guardian', confidence: 0.88 }] : [],
       total_duration_ms: 312,
       scan_direction: 'request' as const,
     }
   },
   'get_all_safety_categories': () => ([
-    { category: 'ViolentCrimes', display_name: 'Violent Crimes', description: 'Content promoting violent criminal activities', supported_by: ['llama_guard_4', 'nemotron'] },
-    { category: 'ChildExploitation', display_name: 'Child Exploitation', description: 'Content involving child sexual abuse material', supported_by: ['llama_guard_4', 'nemotron'] },
-    { category: 'Hate', display_name: 'Hate Speech', description: 'Content promoting hatred against protected groups', supported_by: ['llama_guard_4', 'nemotron', 'shield_gemma'] },
-    { category: 'SelfHarm', display_name: 'Self-Harm', description: 'Content promoting self-harm or suicide', supported_by: ['llama_guard_4', 'nemotron'] },
-    { category: 'SexualContent', display_name: 'Sexual Content', description: 'Explicit sexual content', supported_by: ['llama_guard_4', 'nemotron', 'shield_gemma'] },
+    { category: 'ViolentCrimes', display_name: 'Violent Crimes', description: 'Content promoting violent criminal activities', supported_by: ['llama_guard', 'nemotron'] },
+    { category: 'ChildExploitation', display_name: 'Child Exploitation', description: 'Content involving child sexual abuse material', supported_by: ['llama_guard', 'nemotron'] },
+    { category: 'Hate', display_name: 'Hate Speech', description: 'Content promoting hatred against protected groups', supported_by: ['llama_guard', 'nemotron', 'shield_gemma'] },
+    { category: 'SelfHarm', display_name: 'Self-Harm', description: 'Content promoting self-harm or suicide', supported_by: ['llama_guard', 'nemotron'] },
+    { category: 'SexualContent', display_name: 'Sexual Content', description: 'Explicit sexual content', supported_by: ['llama_guard', 'nemotron', 'shield_gemma'] },
     { category: 'DangerousContent', display_name: 'Dangerous Content', description: 'Content about creating weapons or dangerous materials', supported_by: ['shield_gemma', 'nemotron'] },
     { category: 'Harassment', display_name: 'Harassment', description: 'Content meant to harass or bully', supported_by: ['shield_gemma'] },
     { category: 'Jailbreak', display_name: 'Jailbreak', description: 'Attempts to bypass AI safety restrictions', supported_by: ['granite_guardian'] },
     { category: 'SocialBias', display_name: 'Social Bias', description: 'Content exhibiting social bias or stereotypes', supported_by: ['granite_guardian'] },
     { category: 'Groundedness', display_name: 'Groundedness', description: 'Responses not grounded in provided context (RAG)', supported_by: ['granite_guardian'] },
   ]),
-  'update_category_actions': () => {
+  'update_category_actions': (_args) => {
     toast.success('Category actions updated (demo)')
     return null
   },
@@ -1394,14 +1400,14 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     toast.info(`Downloading safety model "${args?.modelId}" (demo - not actually downloading)`)
     return null
   },
-  'get_safety_model_download_status': () => ({
-    downloaded: false,
-    file_path: null,
-    file_size: null,
+  'get_safety_model_download_status': (args) => ({
+    downloaded: args?.modelId === 'llama_guard' || args?.modelId === 'granite_guardian',
+    file_path: (args?.modelId === 'llama_guard' || args?.modelId === 'granite_guardian') ? `/models/${args.modelId}.gguf` : null,
+    file_size: args?.modelId === 'llama_guard' ? 955_000_000 : args?.modelId === 'granite_guardian' ? 1_500_000_000 : null,
   }),
   'add_safety_model': () => {
     toast.success('Safety model added (demo)')
-    return null
+    return generateId()
   },
   'remove_safety_model': () => {
     toast.success('Safety model removed (demo)')

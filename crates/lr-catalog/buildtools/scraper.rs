@@ -68,7 +68,6 @@ impl CatalogFetcher {
                 }
             }
         } else {
-            println!("cargo:warning=Using cached model catalog (fresh)");
             self.load_from_cache()
         }
     }
@@ -112,7 +111,6 @@ impl CatalogFetcher {
         // Flatten the nested structure
         let flattened = flatten_models(parsed);
 
-        println!("cargo:warning=Loaded {} models from cache", flattened.len());
         Ok(flattened)
     }
 

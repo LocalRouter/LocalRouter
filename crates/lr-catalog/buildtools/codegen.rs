@@ -39,7 +39,7 @@ impl CatalogCodeGenerator {
         fs::write(&self.output_path, code)?;
 
         println!(
-            "cargo:warning=Generated catalog.rs with {} models ({} bytes)",
+            "cargo:warning=Model catalog: {} models ({} bytes)",
             models.len(),
             fs::metadata(&self.output_path)?.len()
         );

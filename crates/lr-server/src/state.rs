@@ -490,8 +490,8 @@ pub struct AppState {
     /// Time-based guardrail bypass tracker
     pub guardrail_approval_tracker: Arc<GuardrailApprovalTracker>,
 
-    /// Safety engine for LLM-based content inspection
-    pub safety_engine: Option<Arc<lr_guardrails::SafetyEngine>>,
+    /// Safety engine for LLM-based content inspection (swappable at runtime)
+    pub safety_engine: Arc<RwLock<Option<Arc<lr_guardrails::SafetyEngine>>>>,
 }
 
 impl AppState {
@@ -568,14 +568,19 @@ impl AppState {
             health_cache: Arc::new(HealthCacheManager::new()),
             model_approval_tracker: Arc::new(ModelApprovalTracker::new()),
             guardrail_approval_tracker: Arc::new(GuardrailApprovalTracker::new()),
-            safety_engine: None,
+            safety_engine: Arc::new(RwLock::new(None)),
         }
     }
 
     /// Set the safety engine
-    pub fn with_safety_engine(mut self, engine: Arc<lr_guardrails::SafetyEngine>) -> Self {
-        self.safety_engine = Some(engine);
+    pub fn with_safety_engine(self, engine: Arc<lr_guardrails::SafetyEngine>) -> Self {
+        *self.safety_engine.write() = Some(engine);
         self
+    }
+
+    /// Replace the safety engine at runtime (e.g. after downloading models)
+    pub fn replace_safety_engine(&self, engine: Arc<lr_guardrails::SafetyEngine>) {
+        *self.safety_engine.write() = Some(engine);
     }
 
     /// Add MCP manager to the state

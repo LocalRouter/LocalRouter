@@ -2069,7 +2069,7 @@ export interface TestSafetyModelParams {
 
 /** Params for update_category_actions */
 export interface UpdateCategoryActionsParams {
-  actions: CategoryActionEntry[]
+  actionsJson: string
 }
 
 /** Download status for a safety model's GGUF file */

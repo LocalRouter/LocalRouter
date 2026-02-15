@@ -671,7 +671,8 @@ async fn run_guardrails_scan(
     let Some(client_ctx) = client_context else {
         return Ok(None);
     };
-    let Some(ref engine) = state.safety_engine else {
+    let engine = state.safety_engine.read().clone();
+    let Some(engine) = engine else {
         return Ok(None);
     };
 
@@ -836,7 +837,8 @@ async fn check_response_guardrails_body(
     let Some(client_ctx) = client_context else {
         return Ok(());
     };
-    let Some(ref engine) = state.safety_engine else {
+    let engine = state.safety_engine.read().clone();
+    let Some(engine) = engine else {
         return Ok(());
     };
 

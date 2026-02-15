@@ -124,7 +124,7 @@ impl LlamaGuardModel {
 #[async_trait::async_trait]
 impl SafetyModel for LlamaGuardModel {
     fn model_type_id(&self) -> &str {
-        "llama_guard_4"
+        "llama_guard"
     }
 
     fn display_name(&self) -> &str {
