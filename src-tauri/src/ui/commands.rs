@@ -2017,13 +2017,111 @@ pub async fn update_guardrails_config(
     Ok(())
 }
 
+/// Rebuild the safety engine from current config.
+/// Called after config changes (add/remove/enable/disable models, download complete, etc.)
+#[tauri::command]
+pub async fn rebuild_safety_engine(
+    config_manager: State<'_, ConfigManager>,
+    state: State<'_, Arc<lr_server::state::AppState>>,
+) -> Result<(), String> {
+    let config = config_manager.get();
+    let guardrails_config = &config.guardrails;
+
+    let has_enabled = guardrails_config.safety_models.iter().any(|m| m.enabled);
+
+    if has_enabled {
+        // Build provider lookup
+        let mut provider_lookup = HashMap::new();
+        for p in &config.providers {
+            if !p.enabled {
+                continue;
+            }
+            let provider_type_str = match p.provider_type {
+                lr_config::ProviderType::Ollama => "ollama",
+                lr_config::ProviderType::LMStudio => "lmstudio",
+                _ => "openai_compatible",
+            };
+
+            let endpoint = p
+                .provider_config
+                .as_ref()
+                .and_then(|cfg| cfg.get("endpoint"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| match p.provider_type {
+                    lr_config::ProviderType::Ollama => "http://localhost:11434".to_string(),
+                    lr_config::ProviderType::LMStudio => "http://localhost:1234".to_string(),
+                    _ => "http://localhost:8080".to_string(),
+                });
+
+            let api_key = p
+                .provider_config
+                .as_ref()
+                .and_then(|cfg| cfg.get("api_key"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+
+            provider_lookup.insert(
+                p.name.clone(),
+                lr_guardrails::ProviderInfo {
+                    name: p.name.clone(),
+                    base_url: endpoint,
+                    api_key,
+                    provider_type: provider_type_str.to_string(),
+                },
+            );
+        }
+
+        let model_inputs: Vec<lr_guardrails::SafetyModelConfigInput> = guardrails_config
+            .safety_models
+            .iter()
+            .map(|m| lr_guardrails::SafetyModelConfigInput {
+                id: m.id.clone(),
+                model_type: m.model_type.clone(),
+                enabled: m.enabled,
+                provider_id: m.provider_id.clone(),
+                model_name: m.model_name.clone(),
+                enabled_categories: None,
+                execution_mode: m.execution_mode.clone(),
+                hf_repo_id: m.hf_repo_id.clone(),
+                gguf_filename: m.gguf_filename.clone(),
+            })
+            .collect();
+
+        let cat_actions: Vec<(String, String)> = guardrails_config
+            .category_actions
+            .iter()
+            .map(|ca| (ca.category.clone(), ca.action.clone()))
+            .collect();
+
+        let engine = Arc::new(lr_guardrails::SafetyEngine::from_config(
+            &model_inputs,
+            &cat_actions,
+            guardrails_config.default_confidence_threshold,
+            &provider_lookup,
+        ));
+
+        tracing::info!(
+            "Safety engine rebuilt: {} models loaded",
+            engine.model_count()
+        );
+        state.replace_safety_engine(engine);
+    } else {
+        state.replace_safety_engine(Arc::new(lr_guardrails::SafetyEngine::empty()));
+        tracing::info!("Safety engine rebuilt: no enabled models");
+    }
+
+    Ok(())
+}
+
 /// Test safety check against input text (runs all enabled models)
 #[tauri::command]
 pub async fn test_safety_check(
     text: String,
     state: State<'_, Arc<lr_server::state::AppState>>,
 ) -> Result<serde_json::Value, String> {
-    let Some(ref engine) = state.safety_engine else {
+    let engine = state.safety_engine.read().clone();
+    let Some(engine) = engine else {
         return Err("Safety engine not initialized".to_string());
     };
 
@@ -2069,7 +2167,9 @@ pub async fn get_safety_model_status(
 
     // Determine execution mode
     let execution_mode = match model.execution_mode.as_deref() {
-        Some("local") => "local",
+        Some("local") | Some("direct_download") | Some("custom_download") => {
+            "local"
+        }
         Some("provider") => {
             if provider_configured { "provider" } else { "not_configured" }
         }
@@ -2100,7 +2200,8 @@ pub async fn test_safety_model(
     text: String,
     state: State<'_, Arc<lr_server::state::AppState>>,
 ) -> Result<serde_json::Value, String> {
-    let Some(ref engine) = state.safety_engine else {
+    let engine = state.safety_engine.read().clone();
+    let Some(engine) = engine else {
         return Err("Safety engine not initialized".to_string());
     };
 
@@ -2116,7 +2217,7 @@ pub async fn test_safety_model(
 pub async fn get_all_safety_categories(
     state: State<'_, Arc<lr_server::state::AppState>>,
 ) -> Result<serde_json::Value, String> {
-    let Some(ref _engine) = state.safety_engine else {
+    if state.safety_engine.read().is_none() {
         return Ok(serde_json::json!([]));
     };
 
@@ -2124,20 +2225,20 @@ pub async fn get_all_safety_categories(
     // Fields match the TypeScript SafetyCategoryInfo interface:
     //   category, display_name, description, supported_by
     let categories = vec![
-        serde_json::json!({"category": "violent_crimes", "display_name": "Violent Crimes", "description": "Content promoting or depicting violence or violent crimes", "supported_by": ["llama_guard_4", "nemotron", "granite_guardian"]}),
-        serde_json::json!({"category": "non_violent_crimes", "display_name": "Non-Violent Crimes", "description": "Content related to non-violent criminal activities", "supported_by": ["llama_guard_4", "nemotron"]}),
-        serde_json::json!({"category": "sex_crimes", "display_name": "Sex Crimes", "description": "Content related to sex-related crimes", "supported_by": ["llama_guard_4", "nemotron"]}),
-        serde_json::json!({"category": "child_exploitation", "display_name": "Child Exploitation", "description": "Content involving child sexual exploitation", "supported_by": ["llama_guard_4", "nemotron"]}),
-        serde_json::json!({"category": "defamation", "display_name": "Defamation", "description": "Content that defames individuals or groups", "supported_by": ["llama_guard_4", "nemotron"]}),
-        serde_json::json!({"category": "specialized_advice", "display_name": "Specialized Advice", "description": "Unqualified professional advice (medical, legal, financial)", "supported_by": ["llama_guard_4", "nemotron"]}),
-        serde_json::json!({"category": "privacy", "display_name": "Privacy", "description": "Content that violates personal privacy", "supported_by": ["llama_guard_4", "nemotron"]}),
-        serde_json::json!({"category": "intellectual_property", "display_name": "Intellectual Property", "description": "Content that infringes intellectual property rights", "supported_by": ["llama_guard_4", "nemotron"]}),
-        serde_json::json!({"category": "indiscriminate_weapons", "display_name": "Indiscriminate Weapons", "description": "Content related to weapons of mass destruction", "supported_by": ["llama_guard_4", "nemotron"]}),
-        serde_json::json!({"category": "hate", "display_name": "Hate", "description": "Content promoting hatred or discrimination", "supported_by": ["llama_guard_4", "nemotron", "shield_gemma", "granite_guardian"]}),
-        serde_json::json!({"category": "self_harm", "display_name": "Self-Harm", "description": "Content promoting self-harm or suicide", "supported_by": ["llama_guard_4", "nemotron"]}),
-        serde_json::json!({"category": "sexual_content", "display_name": "Sexual Content", "description": "Sexually explicit or inappropriate content", "supported_by": ["llama_guard_4", "nemotron", "shield_gemma", "granite_guardian"]}),
-        serde_json::json!({"category": "elections", "display_name": "Elections", "description": "Content related to election interference", "supported_by": ["llama_guard_4", "nemotron"]}),
-        serde_json::json!({"category": "code_interpreter_abuse", "display_name": "Code Interpreter Abuse", "description": "Attempts to abuse code interpreter capabilities", "supported_by": ["llama_guard_4", "nemotron"]}),
+        serde_json::json!({"category": "violent_crimes", "display_name": "Violent Crimes", "description": "Content promoting or depicting violence or violent crimes", "supported_by": ["llama_guard", "nemotron", "granite_guardian"]}),
+        serde_json::json!({"category": "non_violent_crimes", "display_name": "Non-Violent Crimes", "description": "Content related to non-violent criminal activities", "supported_by": ["llama_guard", "nemotron"]}),
+        serde_json::json!({"category": "sex_crimes", "display_name": "Sex Crimes", "description": "Content related to sex-related crimes", "supported_by": ["llama_guard", "nemotron"]}),
+        serde_json::json!({"category": "child_exploitation", "display_name": "Child Exploitation", "description": "Content involving child sexual exploitation", "supported_by": ["llama_guard", "nemotron"]}),
+        serde_json::json!({"category": "defamation", "display_name": "Defamation", "description": "Content that defames individuals or groups", "supported_by": ["llama_guard", "nemotron"]}),
+        serde_json::json!({"category": "specialized_advice", "display_name": "Specialized Advice", "description": "Unqualified professional advice (medical, legal, financial)", "supported_by": ["llama_guard", "nemotron"]}),
+        serde_json::json!({"category": "privacy", "display_name": "Privacy", "description": "Content that violates personal privacy", "supported_by": ["llama_guard", "nemotron"]}),
+        serde_json::json!({"category": "intellectual_property", "display_name": "Intellectual Property", "description": "Content that infringes intellectual property rights", "supported_by": ["llama_guard", "nemotron"]}),
+        serde_json::json!({"category": "indiscriminate_weapons", "display_name": "Indiscriminate Weapons", "description": "Content related to weapons of mass destruction", "supported_by": ["llama_guard", "nemotron"]}),
+        serde_json::json!({"category": "hate", "display_name": "Hate", "description": "Content promoting hatred or discrimination", "supported_by": ["llama_guard", "nemotron", "shield_gemma", "granite_guardian"]}),
+        serde_json::json!({"category": "self_harm", "display_name": "Self-Harm", "description": "Content promoting self-harm or suicide", "supported_by": ["llama_guard", "nemotron"]}),
+        serde_json::json!({"category": "sexual_content", "display_name": "Sexual Content", "description": "Sexually explicit or inappropriate content", "supported_by": ["llama_guard", "nemotron", "shield_gemma", "granite_guardian"]}),
+        serde_json::json!({"category": "elections", "display_name": "Elections", "description": "Content related to election interference", "supported_by": ["llama_guard", "nemotron"]}),
+        serde_json::json!({"category": "code_interpreter_abuse", "display_name": "Code Interpreter Abuse", "description": "Attempts to abuse code interpreter capabilities", "supported_by": ["llama_guard", "nemotron"]}),
         serde_json::json!({"category": "dangerous_content", "display_name": "Dangerous Content", "description": "Content facilitating harmful activities", "supported_by": ["shield_gemma"]}),
         serde_json::json!({"category": "harassment", "display_name": "Harassment", "description": "Content targeting individuals with harmful intent", "supported_by": ["shield_gemma"]}),
         serde_json::json!({"category": "jailbreak", "display_name": "Jailbreak", "description": "Attempts to bypass AI safety guidelines", "supported_by": ["granite_guardian"]}),
@@ -2216,12 +2317,24 @@ pub async fn download_safety_model(
             &hf_repo_id,
             &gguf_filename,
             hf_token.as_deref(),
-            Some(app_handle),
+            Some(app_handle.clone()),
         )
         .await;
 
-        if let Err(e) = result {
-            tracing::error!("Safety model download failed for '{}': {}", model_id_owned, e);
+        match result {
+            Ok(_gguf_path) => {
+                tracing::info!(
+                    "Safety model '{}' downloaded, rebuilding engine",
+                    model_id_owned
+                );
+            }
+            Err(e) => {
+                tracing::error!(
+                    "Safety model download failed for '{}': {}",
+                    model_id_owned,
+                    e
+                );
+            }
         }
     });
 

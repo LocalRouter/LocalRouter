@@ -2,11 +2,25 @@
 //!
 //! Two backends:
 //! - `ProviderExecutor`: Routes inference through an already-configured LLM provider
-//! - `LocalGgufExecutor`: Loads a GGUF model and runs inference locally via Candle
+//! - `LocalGgufExecutor`: Loads a GGUF model and runs inference locally via llama.cpp
 
-use serde::{Deserialize, Serialize};
+use std::num::NonZeroU32;
 use std::path::PathBuf;
-use tracing::{debug, warn};
+use std::sync::Mutex;
+
+use llama_cpp_2::context::params::LlamaContextParams;
+use llama_cpp_2::llama_backend::LlamaBackend;
+use llama_cpp_2::llama_batch::LlamaBatch;
+use llama_cpp_2::model::params::LlamaModelParams;
+use llama_cpp_2::model::LlamaModel;
+use llama_cpp_2::sampling::LlamaSampler;
+use llama_cpp_2::model::Special;
+use once_cell::sync::OnceCell;
+use serde::{Deserialize, Serialize};
+use tracing::{debug, info, warn};
+
+/// Global llama.cpp backend — initialized once per process
+static LLAMA_BACKEND: OnceCell<LlamaBackend> = OnceCell::new();
 
 /// Completion request sent to a provider
 #[derive(Debug, Clone, Serialize)]
@@ -196,45 +210,234 @@ impl ProviderExecutor {
     }
 }
 
-/// Executor that loads a GGUF model locally via Candle
+/// Initialize the global llama.cpp backend (idempotent)
+fn init_backend() -> Result<&'static LlamaBackend, String> {
+    LLAMA_BACKEND.get_or_try_init(|| {
+        let mut backend = LlamaBackend::init().map_err(|e| format!("Failed to init llama backend: {e}"))?;
+        backend.void_logs();
+        info!("llama.cpp backend initialized");
+        Ok(backend)
+    })
+}
+
+/// Executor that loads a GGUF model locally via llama.cpp
 pub struct LocalGgufExecutor {
     model_path: PathBuf,
-    /// Whether the model files have been verified to exist
-    _verified: bool,
+    /// Pre-loaded model (expensive to load, so cached).
+    /// Wrapped in Mutex because LlamaModel is !Send.
+    model: Mutex<Option<LlamaModel>>,
 }
 
 impl LocalGgufExecutor {
+    /// Create a new executor and eagerly load the model from disk.
     pub fn new(model_path: PathBuf) -> Self {
-        Self {
-            model_path,
-            _verified: false,
-        }
+        let model = if model_path.exists() {
+            match Self::load_model(&model_path) {
+                Ok(m) => {
+                    info!("Loaded GGUF model from {}", model_path.display());
+                    Mutex::new(Some(m))
+                }
+                Err(e) => {
+                    warn!("Failed to pre-load GGUF model {}: {}", model_path.display(), e);
+                    Mutex::new(None)
+                }
+            }
+        } else {
+            debug!("GGUF model path does not exist yet: {}", model_path.display());
+            Mutex::new(None)
+        };
+        Self { model_path, model }
     }
 
-    async fn complete(&self, _request: CompletionRequest) -> Result<CompletionResponse, String> {
-        // Local GGUF inference via Candle
-        // This is a placeholder - full Candle GGUF inference requires loading
-        // the model weights, tokenizer, and running the generation loop.
-        // For now, return an error indicating local execution is not yet supported.
-        if !self.model_path.exists() {
-            return Err(format!(
-                "GGUF model not found at: {}",
-                self.model_path.display()
-            ));
+    fn load_model(path: &PathBuf) -> Result<LlamaModel, String> {
+        let _backend = init_backend()?;
+        let params = LlamaModelParams::default();
+        LlamaModel::load_from_file(_backend, path, &params)
+            .map_err(|e| format!("Failed to load GGUF model: {e}"))
+    }
+
+    async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse, String> {
+        let model_path = self.model_path.clone();
+        let max_tokens = request.max_tokens.unwrap_or(128) as usize;
+        let want_logprobs = request.logprobs.is_some();
+        let prompt = request.prompt.clone();
+
+        // Extract the model from our mutex (take it so we can move into spawn_blocking)
+        let model = {
+            let mut guard = self.model.lock().map_err(|e| format!("Model lock poisoned: {e}"))?;
+            match guard.take() {
+                Some(m) => m,
+                None => Self::load_model(&model_path)?,
+            }
+        };
+
+        let (result, model_back) = tokio::task::spawn_blocking(move || {
+            let result = Self::run_inference(&model, &prompt, max_tokens, want_logprobs);
+            (result, model)
+        })
+        .await
+        .map_err(|e| format!("Inference task panicked: {e}"))?;
+
+        // Put the model back for reuse
+        if let Ok(mut guard) = self.model.lock() {
+            *guard = Some(model_back);
         }
 
-        debug!(
-            "Local GGUF inference requested for model at: {}",
-            self.model_path.display()
-        );
+        result
+    }
 
-        // TODO: Implement Candle GGUF inference
-        // 1. Load tokenizer from model directory
-        // 2. Load GGUF weights via candle_transformers::models::quantized_llama
-        // 3. Tokenize prompt
-        // 4. Run generation loop with temperature sampling
-        // 5. Decode output tokens
-        Err("Local GGUF inference not yet implemented. Use a provider instead.".to_string())
+    fn run_inference(
+        model: &LlamaModel,
+        prompt: &str,
+        max_tokens: usize,
+        want_logprobs: bool,
+    ) -> Result<CompletionResponse, String> {
+        // Create context
+        let ctx_params = LlamaContextParams::default()
+            .with_n_ctx(NonZeroU32::new(2048))
+            .with_n_batch(512);
+
+        let mut ctx = model
+            .new_context(init_backend()?, ctx_params)
+            .map_err(|e| format!("Failed to create context: {e}"))?;
+
+        // Tokenize prompt
+        let tokens = model
+            .str_to_token(&prompt, llama_cpp_2::model::AddBos::Always)
+            .map_err(|e| format!("Tokenization failed: {e}"))?;
+
+        debug!("Tokenized prompt: {} tokens", tokens.len());
+
+        if tokens.is_empty() {
+            return Ok(CompletionResponse {
+                text: String::new(),
+                logprobs: None,
+            });
+        }
+
+        // Feed prompt tokens in batch
+        let mut batch = LlamaBatch::new(512, 1);
+        let last_idx = tokens.len() - 1;
+        for (i, &token) in tokens.iter().enumerate() {
+            let logits = i == last_idx; // only need logits for the last prompt token
+            batch
+                .add(token, i as i32, &[0], logits)
+                .map_err(|e| format!("Failed to add token to batch: {e}"))?;
+        }
+
+        ctx.decode(&mut batch)
+            .map_err(|e| format!("Prompt decode failed: {e}"))?;
+
+        // Set up greedy sampler (temperature 0 for safety classifiers)
+        let mut sampler = LlamaSampler::chain_simple([
+            LlamaSampler::temp(0.0),
+            LlamaSampler::greedy(),
+        ]);
+
+        let mut output_tokens = Vec::new();
+        let mut logprob_entries: Vec<TokenLogprob> = Vec::new();
+        let mut n_cur = tokens.len();
+
+        let eos = model.token_eos();
+
+        for _ in 0..max_tokens {
+            // Sample next token
+            let new_token = sampler.sample(&ctx, (batch.n_tokens() - 1) as i32);
+            sampler.accept(new_token);
+
+            // Check for end of generation
+            if model.is_eog_token(new_token) {
+                break;
+            }
+
+            // Extract logprobs if requested (from the logits before sampling)
+            if want_logprobs {
+                let logits = ctx.get_logits_ith((batch.n_tokens() - 1) as i32);
+                let entry = Self::extract_token_logprobs(model, new_token, logits, eos);
+                logprob_entries.push(entry);
+            }
+
+            output_tokens.push(new_token);
+
+            // Prepare batch for next token
+            batch.clear();
+            batch
+                .add(new_token, n_cur as i32, &[0], true)
+                .map_err(|e| format!("Failed to add generated token: {e}"))?;
+
+            ctx.decode(&mut batch)
+                .map_err(|e| format!("Decode failed: {e}"))?;
+
+            n_cur += 1;
+        }
+
+        // Decode output tokens to text
+        let mut text = String::new();
+        for &token in &output_tokens {
+            let piece = model
+                .token_to_str(token, Special::Tokenize)
+                .map_err(|e| format!("Token decode failed: {e}"))?;
+            text.push_str(&piece);
+        }
+
+        debug!("Generated {} tokens: {:?}", output_tokens.len(), text.trim());
+
+        let logprobs = if want_logprobs && !logprob_entries.is_empty() {
+            Some(LogprobsResult {
+                tokens: logprob_entries,
+            })
+        } else {
+            None
+        };
+
+        Ok(CompletionResponse { text, logprobs })
+    }
+
+    /// Extract logprob info for a sampled token from raw logits
+    fn extract_token_logprobs(
+        model: &LlamaModel,
+        sampled_token: llama_cpp_2::token::LlamaToken,
+        logits: &[f32],
+        _eos: llama_cpp_2::token::LlamaToken,
+    ) -> TokenLogprob {
+        let n_vocab = logits.len();
+
+        // Compute log-softmax for the sampled token
+        let max_logit = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        let sum_exp: f32 = logits.iter().map(|&l| (l - max_logit).exp()).sum();
+        let log_sum_exp = max_logit + sum_exp.ln();
+
+        let sampled_logprob = logits[sampled_token.0 as usize] - log_sum_exp;
+
+        let token_str = model
+            .token_to_str(sampled_token, Special::Tokenize)
+            .unwrap_or_else(|_| format!("<token_{}>", sampled_token.0));
+
+        // Find top-5 tokens by logit value for top_logprobs
+        let mut indexed: Vec<(usize, f32)> = logits.iter().copied().enumerate().collect();
+        indexed.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        let top_logprobs: Vec<TopLogprob> = indexed
+            .iter()
+            .take(5.min(n_vocab))
+            .map(|&(idx, logit)| {
+                let lp = logit - log_sum_exp;
+                let tok = llama_cpp_2::token::LlamaToken(idx as i32);
+                let tok_str = model
+                    .token_to_str(tok, Special::Tokenize)
+                    .unwrap_or_else(|_| format!("<token_{}>", idx));
+                TopLogprob {
+                    token: tok_str,
+                    logprob: lp as f64,
+                }
+            })
+            .collect();
+
+        TokenLogprob {
+            token: token_str,
+            logprob: sampled_logprob as f64,
+            top_logprobs,
+        }
     }
 
     /// Check if the model files exist on disk

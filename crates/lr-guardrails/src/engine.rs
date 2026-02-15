@@ -9,7 +9,7 @@ use std::time::Instant;
 
 use tracing::{debug, info, warn};
 
-use crate::executor::{ModelExecutor, ProviderExecutor};
+use crate::executor::{LocalGgufExecutor, ModelExecutor, ProviderExecutor};
 use crate::models;
 use crate::safety_model::*;
 use crate::text_extractor;
@@ -31,6 +31,9 @@ pub struct SafetyModelConfigInput {
     pub provider_id: Option<String>,
     pub model_name: Option<String>,
     pub enabled_categories: Option<Vec<SafetyCategory>>,
+    pub execution_mode: Option<String>,
+    pub hf_repo_id: Option<String>,
+    pub gguf_filename: Option<String>,
 }
 
 /// Parse a category name string to a SafetyCategory enum value
@@ -123,37 +126,85 @@ impl SafetyEngine {
                 continue;
             }
 
-            // Build executor from provider
-            let executor = if let (Some(provider_id), Some(model_name)) =
-                (&model_cfg.provider_id, &model_cfg.model_name)
-            {
-                if let Some(provider) = provider_lookup.get(provider_id) {
-                    let use_ollama = provider.provider_type == "ollama";
-                    Arc::new(ModelExecutor::Provider(ProviderExecutor::new(
-                        provider.base_url.clone(),
-                        provider.api_key.clone(),
-                        model_name.clone(),
-                        use_ollama,
-                    )))
-                } else {
+            // Build executor based on execution mode
+            let exec_mode = model_cfg
+                .execution_mode
+                .as_deref()
+                .unwrap_or("direct_download");
+
+            let executor = match exec_mode {
+                "direct_download" | "custom_download" => {
+                    // Load GGUF model directly from disk via llama.cpp
+                    let gguf_filename = match &model_cfg.gguf_filename {
+                        Some(f) => f,
+                        None => {
+                            warn!(
+                                "Safety model '{}' uses {} mode but has no gguf_filename, skipping",
+                                model_cfg.id, exec_mode
+                            );
+                            continue;
+                        }
+                    };
+
+                    let gguf_path = match crate::downloader::model_file_path(&model_cfg.id, gguf_filename) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            warn!("Failed to resolve GGUF path for '{}': {}", model_cfg.id, e);
+                            continue;
+                        }
+                    };
+
+                    if !gguf_path.exists() {
+                        debug!(
+                            "GGUF file not downloaded yet for '{}': {}",
+                            model_cfg.id,
+                            gguf_path.display()
+                        );
+                        continue;
+                    }
+
+                    Arc::new(ModelExecutor::Local(LocalGgufExecutor::new(gguf_path)))
+                }
+                "provider" => {
+                    if let (Some(provider_id), Some(model_name)) =
+                        (&model_cfg.provider_id, &model_cfg.model_name)
+                    {
+                        if let Some(provider) = provider_lookup.get(provider_id) {
+                            let use_ollama = provider.provider_type == "ollama";
+                            Arc::new(ModelExecutor::Provider(ProviderExecutor::new(
+                                provider.base_url.clone(),
+                                provider.api_key.clone(),
+                                model_name.clone(),
+                                use_ollama,
+                            )))
+                        } else {
+                            warn!(
+                                "Provider '{}' not found for safety model '{}', skipping",
+                                provider_id, model_cfg.id
+                            );
+                            continue;
+                        }
+                    } else {
+                        warn!(
+                            "Safety model '{}' has no provider_id or model_name, skipping",
+                            model_cfg.id
+                        );
+                        continue;
+                    }
+                }
+                _ => {
                     warn!(
-                        "Provider '{}' not found for safety model '{}', skipping",
-                        provider_id, model_cfg.id
+                        "Unknown execution mode '{}' for safety model '{}', skipping",
+                        exec_mode, model_cfg.id
                     );
                     continue;
                 }
-            } else {
-                warn!(
-                    "Safety model '{}' has no provider_id or model_name, skipping",
-                    model_cfg.id
-                );
-                continue;
             };
 
             let enabled_cats = model_cfg.enabled_categories.clone();
 
             let model: Arc<dyn SafetyModel> = match model_cfg.model_type.as_str() {
-                "llama_guard_4" => Arc::new(models::llama_guard::LlamaGuardModel::new(
+                "llama_guard_4" | "llama_guard" => Arc::new(models::llama_guard::LlamaGuardModel::new(
                     model_cfg.id.clone(),
                     executor,
                     model_cfg.model_name.clone().unwrap_or_default(),
@@ -184,10 +235,10 @@ impl SafetyEngine {
             };
 
             info!(
-                "Loaded safety model: {} (type: {}, provider: {})",
+                "Loaded safety model: {} (type: {}, mode: {})",
                 model_cfg.id,
                 model_cfg.model_type,
-                model_cfg.provider_id.as_deref().unwrap_or("none")
+                exec_mode,
             );
             model_instances.push(model);
         }
