@@ -9,7 +9,7 @@ import {
   getRequestType,
   type ApprovalAction,
 } from "@/components/shared/FirewallApprovalCard"
-import type { ModelInfo, ClientInfo, ModelPermissions, GuardrailMatchInfo, SourceCheckSummary } from "@/types/tauri-commands"
+import type { ModelInfo, ClientInfo, ModelPermissions, SafetyVerdict, CategoryActionRequired } from "@/types/tauri-commands"
 
 interface ApprovalDetails {
   request_id: string
@@ -23,11 +23,10 @@ interface ApprovalDetails {
   is_model_request?: boolean
   is_guardrail_request?: boolean
   guardrail_details?: {
-    matches: GuardrailMatchInfo[]
-    rules_checked: number
-    check_duration_ms: number
+    verdicts: SafetyVerdict[]
+    actions_required: CategoryActionRequired[]
+    total_duration_ms: number
     scan_direction: "request" | "response"
-    sources_checked: SourceCheckSummary[]
   }
 }
 
@@ -97,8 +96,8 @@ export function FirewallApproval() {
         // Resize window for guardrail popups (more content to display)
         if (result.is_guardrail_request) {
           const win = getCurrentWebviewWindow()
-          const matchCount = result.guardrail_details?.matches?.length || 0
-          const height = Math.min(500, 320 + matchCount * 60)
+          const verdictCount = result.guardrail_details?.verdicts?.length || 0
+          const height = Math.min(500, 320 + verdictCount * 60)
           await win.setSize(new LogicalSize(440, height))
           await win.center()
         }
@@ -435,9 +434,9 @@ export function FirewallApproval() {
           argumentsPreview={details.arguments_preview}
           isModelRequest={details.is_model_request}
           isGuardrailRequest={details.is_guardrail_request}
-          guardrailMatches={details.guardrail_details?.matches}
+          guardrailVerdicts={details.guardrail_details?.verdicts}
           guardrailDirection={details.guardrail_details?.scan_direction}
-          guardrailSourcesSummary={details.guardrail_details?.sources_checked}
+          guardrailActions={details.guardrail_details?.actions_required}
           onAction={handleAction}
           onEdit={enterEditMode}
           submitting={submitting}

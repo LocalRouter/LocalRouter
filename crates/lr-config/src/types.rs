@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use uuid::Uuid;
 
-pub(crate) const CONFIG_VERSION: u32 = 11;
+pub(crate) const CONFIG_VERSION: u32 = 12;
 
 /// Suffix for auto-generated client strategy names
 pub const CLIENT_STRATEGY_NAME_SUFFIX: &str = "'s strategy";
@@ -1270,23 +1270,7 @@ fn default_main_branch() -> String {
     "main".to_string()
 }
 
-/// A custom guardrail rule defined by the user
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct CustomGuardrailRule {
-    pub id: String,
-    pub name: String,
-    pub pattern: String,
-    /// Category: "prompt_injection", "pii_leakage", etc.
-    pub category: String,
-    /// Severity: "low", "medium", "high", "critical"
-    pub severity: String,
-    /// Direction: "input", "output", "both"
-    pub direction: String,
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-}
-
-/// GuardRails configuration for content inspection
+/// GuardRails configuration for LLM-based content safety
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct GuardrailsConfig {
     /// Master toggle (default: false)
@@ -1301,29 +1285,25 @@ pub struct GuardrailsConfig {
     #[serde(default)]
     pub scan_responses: bool,
 
-    /// Configurable list of guardrail sources
-    #[serde(default = "default_guardrail_sources")]
-    pub sources: Vec<GuardrailSourceConfig>,
+    /// Configured safety models
+    #[serde(default = "default_safety_models")]
+    pub safety_models: Vec<SafetyModelConfig>,
 
-    /// Minimum severity to trigger popup: "low", "medium", "high", "critical"
-    #[serde(default = "default_min_popup_severity")]
-    pub min_popup_severity: String,
-
-    /// Auto-update interval in hours (0 = manual only)
-    #[serde(default = "default_guardrail_update_interval")]
-    pub update_interval_hours: u64,
-
-    /// User-defined custom regex rules
+    /// Per-category actions (Allow/Notify/Ask)
     #[serde(default)]
-    pub custom_rules: Vec<CustomGuardrailRule>,
+    pub category_actions: Vec<CategoryActionEntry>,
+
+    /// Global HuggingFace token for gated model downloads
+    #[serde(default)]
+    pub hf_token: Option<String>,
+
+    /// Default confidence threshold for flagging (0.0-1.0)
+    #[serde(default = "default_confidence_threshold")]
+    pub default_confidence_threshold: f32,
 }
 
-fn default_min_popup_severity() -> String {
-    "medium".to_string()
-}
-
-fn default_guardrail_update_interval() -> u64 {
-    24
+fn default_confidence_threshold() -> f32 {
+    0.5
 }
 
 impl Default for GuardrailsConfig {
@@ -1332,133 +1312,187 @@ impl Default for GuardrailsConfig {
             enabled: false,
             scan_requests: true,
             scan_responses: false,
-            sources: default_guardrail_sources(),
-            min_popup_severity: default_min_popup_severity(),
-            update_interval_hours: default_guardrail_update_interval(),
-            custom_rules: vec![],
+            safety_models: default_safety_models(),
+            category_actions: vec![],
+            hf_token: None,
+            default_confidence_threshold: default_confidence_threshold(),
         }
     }
 }
 
-/// A configurable guardrail source (predefined or user-added)
+/// Configuration for a single safety model
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct GuardrailSourceConfig {
-    /// Unique identifier (e.g. "llm_guard", "custom-yara-1")
+pub struct SafetyModelConfig {
+    /// Unique identifier (e.g. "granite_guardian_2b")
     pub id: String,
     /// Display name
     pub label: String,
-    /// Source type: "regex", "yara", "model"
-    pub source_type: String,
-    /// Whether this source is enabled
+    /// Model type: "llama_guard_4", "shield_gemma", "nemotron", "granite_guardian"
+    pub model_type: String,
+    /// Whether this model is enabled
     #[serde(default)]
     pub enabled: bool,
-    /// GitHub repository URL or HuggingFace model URL
+    /// Use existing provider (e.g. "ollama", "openrouter")
     #[serde(default)]
-    pub url: String,
-    /// Paths within repo to fetch
+    pub provider_id: Option<String>,
+    /// Model name on the provider (e.g. "granite3-guardian:2b")
     #[serde(default)]
-    pub data_paths: Vec<String>,
-    /// Branch to use
-    #[serde(default = "default_main_branch")]
-    pub branch: String,
-    /// Whether this is a predefined source (can't be deleted)
-    #[serde(default)]
-    pub predefined: bool,
-    /// Confidence threshold for ML model sources (0.0-1.0, default 0.7)
-    #[serde(default = "default_confidence_threshold")]
-    pub confidence_threshold: f32,
-    /// Model architecture (for source_type="model")
-    #[serde(default)]
-    pub model_architecture: Option<String>,
-    /// HuggingFace repository ID (for source_type="model")
+    pub model_name: Option<String>,
+    /// HuggingFace repo ID for direct download
     #[serde(default)]
     pub hf_repo_id: Option<String>,
-    /// Whether this model requires HuggingFace authentication (gated model)
+    /// Specific GGUF filename to download
+    #[serde(default)]
+    pub gguf_filename: Option<String>,
+    /// Whether this model requires HuggingFace authentication (gated)
     #[serde(default)]
     pub requires_auth: bool,
+    /// Override the global confidence threshold for this model
+    #[serde(default)]
+    pub confidence_threshold: Option<f32>,
+    /// Subset of categories to enable (None = all)
+    #[serde(default)]
+    pub enabled_categories: Option<Vec<String>>,
+    /// Whether this is a predefined (built-in) model entry
+    #[serde(default)]
+    pub predefined: bool,
+    /// Execution mode: "provider" or "local" (default: "provider")
+    #[serde(default)]
+    pub execution_mode: Option<String>,
+    /// Custom prompt template with `{content}` placeholder (for custom model_type)
+    #[serde(default)]
+    pub prompt_template: Option<String>,
+    /// Safe indicator string in model output (e.g. "safe")
+    #[serde(default)]
+    pub safe_indicator: Option<String>,
+    /// Regex to extract category from model output
+    #[serde(default)]
+    pub output_regex: Option<String>,
+    /// Custom mapping from native model labels to safety categories
+    #[serde(default)]
+    pub category_mapping: Option<Vec<CategoryMappingEntry>>,
 }
 
-fn default_confidence_threshold() -> f32 {
-    0.7
+/// Mapping from a model's native output label to a normalized safety category
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CategoryMappingEntry {
+    /// The label as output by the model (e.g. "S1", "violence")
+    pub native_label: String,
+    /// The normalized safety category (e.g. "violent_crimes", "hate")
+    pub safety_category: String,
 }
 
-/// Predefined guardrail sources.
-///
-/// Note: data_paths may point to directories (not just files). The source
-/// manager detects this at download time and uses the GitHub API to enumerate
-/// and download individual files within the directory.
-fn default_guardrail_sources() -> Vec<GuardrailSourceConfig> {
+/// Per-category action configuration
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CategoryActionEntry {
+    /// SafetyCategory serialized name (e.g. "violent_crimes", "hate")
+    pub category: String,
+    /// Action: "allow", "notify", "ask"
+    #[serde(default = "default_category_action")]
+    pub action: String,
+}
+
+fn default_category_action() -> String {
+    "ask".to_string()
+}
+
+/// Default safety models (all disabled, predefined)
+fn default_safety_models() -> Vec<SafetyModelConfig> {
     vec![
-        // Removed sources:
-        // - Presidio: Python recognizer classes, not regex pattern files (produces garbage rules)
-        // - PayloadsAllTheThings: README prose, not pattern lists
-        // - NeMo Guardrails: ML-only detection, zero regex patterns
-        // - PurpleLlama: Benchmark dataset, not detection patterns; path was 404
-        GuardrailSourceConfig {
-            id: "llm_guard".to_string(),
-            label: "LLM Guard (ProtectAI)".to_string(),
-            source_type: "regex".to_string(),
-            enabled: true,
-            url: "https://github.com/protectai/llm-guard".to_string(),
-            data_paths: vec![
-                "llm_guard/input_scanners".to_string(),
-                "llm_guard/output_scanners".to_string(),
-            ],
-            branch: "main".to_string(),
-            predefined: true,
-            confidence_threshold: default_confidence_threshold(),
-            model_architecture: None,
+        SafetyModelConfig {
+            id: "granite_guardian_2b".to_string(),
+            label: "IBM Granite Guardian 2B".to_string(),
+            model_type: "granite_guardian".to_string(),
+            enabled: false,
+            provider_id: Some("ollama".to_string()),
+            model_name: Some("granite3-guardian:2b".to_string()),
             hf_repo_id: None,
+            gguf_filename: None,
             requires_auth: false,
-        },
-        // Removed sources:
-        // - PayloadsAllTheThings: README.md is prose, not a pattern list (produces garbage rules)
-        // - NeMo Guardrails: ML-only detection (GPT-2 perplexity), zero regex patterns
-        // - PurpleLlama: path was 404; only 5 trivial patterns at the corrected path
-        //
-        // ML model sources: DeBERTa-v2 / BERT classifiers for prompt injection and jailbreak detection.
-        // Require separate download via ModelManager. Disabled by default.
-        GuardrailSourceConfig {
-            id: "prompt_guard_2".to_string(),
-            label: "Prompt Guard 2 (Meta)".to_string(),
-            source_type: "model".to_string(),
-            enabled: false,
-            url: "https://huggingface.co/meta-llama/Prompt-Guard-86M".to_string(),
-            data_paths: vec![],
-            branch: "main".to_string(),
+            confidence_threshold: None,
+            enabled_categories: None,
             predefined: true,
-            confidence_threshold: 0.7,
-            model_architecture: Some("deberta_v2".to_string()),
-            hf_repo_id: Some("meta-llama/Prompt-Guard-86M".to_string()),
+            execution_mode: None,
+            prompt_template: None,
+            safe_indicator: None,
+            output_regex: None,
+            category_mapping: None,
+        },
+        SafetyModelConfig {
+            id: "granite_guardian_8b".to_string(),
+            label: "IBM Granite Guardian 8B".to_string(),
+            model_type: "granite_guardian".to_string(),
+            enabled: false,
+            provider_id: Some("ollama".to_string()),
+            model_name: Some("granite3-guardian:8b".to_string()),
+            hf_repo_id: None,
+            gguf_filename: None,
+            requires_auth: false,
+            confidence_threshold: None,
+            enabled_categories: None,
+            predefined: true,
+            execution_mode: None,
+            prompt_template: None,
+            safe_indicator: None,
+            output_regex: None,
+            category_mapping: None,
+        },
+        SafetyModelConfig {
+            id: "llama_guard_4".to_string(),
+            label: "Llama Guard 4".to_string(),
+            model_type: "llama_guard_4".to_string(),
+            enabled: false,
+            provider_id: Some("ollama".to_string()),
+            model_name: Some("llama-guard4".to_string()),
+            hf_repo_id: Some("meta-llama/Llama-Guard-4-12B".to_string()),
+            gguf_filename: None,
             requires_auth: true,
-        },
-        GuardrailSourceConfig {
-            id: "protectai_injection_v2".to_string(),
-            label: "ProtectAI Injection v2".to_string(),
-            source_type: "model".to_string(),
-            enabled: false,
-            url: "https://huggingface.co/protectai/deberta-v3-base-prompt-injection-v2".to_string(),
-            data_paths: vec![],
-            branch: "main".to_string(),
+            confidence_threshold: None,
+            enabled_categories: None,
             predefined: true,
-            confidence_threshold: 0.7,
-            model_architecture: Some("deberta_v2".to_string()),
-            hf_repo_id: Some("protectai/deberta-v3-base-prompt-injection-v2".to_string()),
-            requires_auth: false,
+            execution_mode: None,
+            prompt_template: None,
+            safe_indicator: None,
+            output_regex: None,
+            category_mapping: None,
         },
-        GuardrailSourceConfig {
-            id: "jailbreak_classifier".to_string(),
-            label: "Jailbreak Classifier (jackhhao)".to_string(),
-            source_type: "model".to_string(),
+        SafetyModelConfig {
+            id: "shield_gemma_2b".to_string(),
+            label: "ShieldGemma 2B".to_string(),
+            model_type: "shield_gemma".to_string(),
             enabled: false,
-            url: "https://huggingface.co/jackhhao/jailbreak-classifier".to_string(),
-            data_paths: vec![],
-            branch: "main".to_string(),
+            provider_id: Some("ollama".to_string()),
+            model_name: Some("shieldgemma:2b".to_string()),
+            hf_repo_id: Some("google/shieldgemma-2b".to_string()),
+            gguf_filename: None,
+            requires_auth: true,
+            confidence_threshold: None,
+            enabled_categories: None,
             predefined: true,
-            confidence_threshold: 0.7,
-            model_architecture: Some("bert".to_string()),
-            hf_repo_id: Some("jackhhao/jailbreak-classifier".to_string()),
+            execution_mode: None,
+            prompt_template: None,
+            safe_indicator: None,
+            output_regex: None,
+            category_mapping: None,
+        },
+        SafetyModelConfig {
+            id: "nemotron_safety_guard".to_string(),
+            label: "Nvidia Nemotron Safety Guard".to_string(),
+            model_type: "nemotron".to_string(),
+            enabled: false,
+            provider_id: Some("ollama".to_string()),
+            model_name: Some("llama-3.1-nemotron-safety-guard:8b".to_string()),
+            hf_repo_id: Some("nvidia/Llama-3.1-Nemotron-Safety-Guard-8B-v3".to_string()),
+            gguf_filename: None,
             requires_auth: false,
+            confidence_threshold: None,
+            enabled_categories: None,
+            predefined: true,
+            execution_mode: None,
+            prompt_template: None,
+            safe_indicator: None,
+            output_regex: None,
+            category_mapping: None,
         },
     ]
 }

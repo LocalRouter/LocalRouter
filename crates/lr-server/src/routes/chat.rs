@@ -658,67 +658,40 @@ async fn check_model_firewall_permission(
     }
 }
 
-/// Run guardrails scan on request content (pure scan, no popup logic)
+/// Run guardrails scan on request content using safety engine
 ///
-/// Returns Some(GuardrailCheckResult) if violations were found that meet the severity threshold,
-/// or None if no scan is needed or no violations were found.
+/// Returns Some(SafetyCheckResult) if violations were found that need action,
+/// or None if no scan is needed or content is safe.
 async fn run_guardrails_scan(
     state: &AppState,
     client_context: Option<&ClientAuthContext>,
     request: &ChatCompletionRequest,
-) -> ApiResult<Option<lr_guardrails::GuardrailCheckResult>> {
-    use lr_guardrails::types::GuardrailSeverity;
-
-    // Need both client context and guardrails engine
+) -> ApiResult<Option<lr_guardrails::SafetyCheckResult>> {
+    // Need client context and safety engine
     let Some(client_ctx) = client_context else {
         return Ok(None);
     };
-    let Some(ref engine) = state.guardrails_engine else {
+    let Some(ref engine) = state.safety_engine else {
         return Ok(None);
     };
+
+    if !engine.has_models() {
+        return Ok(None);
+    }
 
     let config = state.config_manager.get();
     let client = match state.client_manager.get_client(&client_ctx.client_id) {
         Some(c) if c.enabled => c,
-        Some(_) => return Ok(None), // Client disabled
+        Some(_) => return Ok(None),
         None => {
-            // Client not found in manager (e.g. internal-test) — use global config
+            // Client not found (e.g. internal-test) — use global config
             let enabled = config.guardrails.enabled;
             if !enabled || !config.guardrails.scan_requests {
                 return Ok(None);
             }
-            // Skip bypass check (no client to track), proceed directly to scan
             let request_json = serde_json::to_value(request).unwrap_or_default();
-            #[allow(unused_mut)]
-            let mut result = engine.check_input(&request_json);
-
-            #[cfg(feature = "ml-models")]
-            {
-                if let Some(ref model_manager) = state.guardrail_model_manager {
-                    let texts =
-                        lr_guardrails::text_extractor::extract_request_text(&request_json);
-                    let threshold = config
-                        .guardrails
-                        .sources
-                        .iter()
-                        .find(|s| s.source_type == "model" && s.enabled)
-                        .map(|s| s.confidence_threshold)
-                        .unwrap_or(0.7);
-                    let (ml_matches, ml_summaries) =
-                        model_manager.classify_texts(&texts, threshold);
-                    if !ml_matches.is_empty() {
-                        result.matches.extend(ml_matches);
-                    }
-                    result.sources_checked.extend(ml_summaries);
-                }
-            }
-
-            if !result.has_matches() {
-                return Ok(None);
-            }
-            let min_severity =
-                GuardrailSeverity::from_str_lenient(&config.guardrails.min_popup_severity);
-            if !result.has_matches_at_severity(min_severity) {
+            let result = engine.check_input(&request_json).await;
+            if result.is_safe {
                 return Ok(None);
             }
             return Ok(Some(result));
@@ -743,51 +716,16 @@ async fn run_guardrails_scan(
         return Ok(None);
     }
 
-    // Serialize request to JSON for scanning
     let request_json = serde_json::to_value(request).unwrap_or_default();
-    #[allow(unused_mut)]
-    let mut result = engine.check_input(&request_json);
+    let result = engine.check_input(&request_json).await;
 
-    // Also run ML model classification if available
-    #[cfg(feature = "ml-models")]
-    {
-        if let Some(ref model_manager) = state.guardrail_model_manager {
-            let texts = lr_guardrails::text_extractor::extract_request_text(&request_json);
-            // Find the confidence threshold from config (use the first model source's threshold)
-            let threshold = config
-                .guardrails
-                .sources
-                .iter()
-                .find(|s| s.source_type == "model" && s.enabled)
-                .map(|s| s.confidence_threshold)
-                .unwrap_or(0.7);
-            let (ml_matches, ml_summaries) =
-                model_manager.classify_texts(&texts, threshold);
-            if !ml_matches.is_empty() {
-                result.matches.extend(ml_matches);
-            }
-            result.sources_checked.extend(ml_summaries);
-        }
-    }
-
-    if !result.has_matches() {
-        return Ok(None);
-    }
-
-    // Filter by min severity threshold
-    let min_severity = GuardrailSeverity::from_str_lenient(&config.guardrails.min_popup_severity);
-    if !result.has_matches_at_severity(min_severity) {
-        tracing::debug!(
-            "Guardrail matches below severity threshold ({}) for client {}",
-            config.guardrails.min_popup_severity,
-            client.id,
-        );
+    if result.is_safe {
         return Ok(None);
     }
 
     tracing::info!(
-        "Guardrail request scan: {} matches for client {} (model: {})",
-        result.matches.len(),
+        "Safety check: {} flagged categories for client {} (model: {})",
+        result.actions_required.len(),
         client.id,
         request.model,
     );
@@ -796,16 +734,19 @@ async fn run_guardrails_scan(
 }
 
 /// Handle guardrail approval popup for detected violations
-///
-/// Takes the check result from `run_guardrails_scan` and triggers the approval popup.
 async fn handle_guardrail_approval(
     state: &AppState,
     client_context: Option<&ClientAuthContext>,
     request: &ChatCompletionRequest,
-    result: lr_guardrails::GuardrailCheckResult,
+    result: lr_guardrails::SafetyCheckResult,
     scan_direction: &str,
 ) -> ApiResult<()> {
     use lr_mcp::gateway::firewall::{FirewallApprovalAction, GuardrailApprovalDetails};
+
+    // If only notifications are needed (no Ask actions), don't block
+    if !result.needs_approval() {
+        return Ok(());
+    }
 
     let Some(client_ctx) = client_context else {
         return Ok(());
@@ -820,32 +761,35 @@ async fn handle_guardrail_approval(
         .map(|c| c.name.clone())
         .unwrap_or_else(|| client_ctx.client_id.clone());
 
-    // Build approval details
     let details = GuardrailApprovalDetails {
-        matches: result
-            .matches
+        verdicts: result
+            .verdicts
             .iter()
-            .map(|m| serde_json::to_value(m).unwrap_or_default())
+            .map(|v| serde_json::to_value(v).unwrap_or_default())
             .collect(),
-        rules_checked: result.rules_checked,
-        check_duration_ms: result.check_duration_ms,
+        actions_required: result
+            .actions_required
+            .iter()
+            .map(|a| serde_json::to_value(a).unwrap_or_default())
+            .collect(),
+        total_duration_ms: result.total_duration_ms,
         scan_direction: scan_direction.to_string(),
-        sources_checked: result
-            .sources_checked
-            .iter()
-            .map(|s| serde_json::to_value(s).unwrap_or_default())
-            .collect(),
     };
 
-    // Build arguments preview
     let preview = result
-        .matches
+        .actions_required
         .iter()
-        .map(|m| format!("[{}] {}: {}", m.severity, m.category, m.rule_name))
+        .map(|a| {
+            format!(
+                "[{:?}] {} (confidence: {:.2})",
+                a.action,
+                a.category,
+                a.confidence.unwrap_or(0.0)
+            )
+        })
         .collect::<Vec<_>>()
         .join("\n");
 
-    // Request approval via firewall popup
     let response = state
         .mcp_gateway
         .firewall_manager
@@ -863,56 +807,42 @@ async fn handle_guardrail_approval(
         })?;
 
     match response.action {
-        FirewallApprovalAction::AllowOnce | FirewallApprovalAction::AllowSession => {
-            tracing::info!("Guardrail: request approved (once) for client {}", client_id);
-            Ok(())
-        }
-        FirewallApprovalAction::Allow1Hour => {
-            tracing::info!(
-                "Guardrail: request approved (1 hour) for client {}",
-                client_id
-            );
-            Ok(())
-        }
-        FirewallApprovalAction::AllowPermanent => {
-            tracing::info!(
-                "Guardrail: request approved (permanent) for client {}",
-                client_id
-            );
+        FirewallApprovalAction::AllowOnce
+        | FirewallApprovalAction::AllowSession
+        | FirewallApprovalAction::Allow1Hour
+        | FirewallApprovalAction::AllowPermanent => {
+            tracing::info!("Guardrail: request approved for client {}", client_id);
             Ok(())
         }
         FirewallApprovalAction::Deny
         | FirewallApprovalAction::DenySession
         | FirewallApprovalAction::DenyAlways => {
-            tracing::warn!(
-                "Guardrail: request denied by user for client {}",
-                client_id
-            );
+            tracing::warn!("Guardrail: request denied for client {}", client_id);
             Err(ApiErrorResponse::forbidden(
-                "Request blocked by guardrail rules",
+                "Request blocked by safety check",
             ))
         }
     }
 }
 
-/// Check response body against guardrail rules (post-receive, non-streaming)
-///
-/// Scans the provider response for PII leakage, data leakage, etc.
-/// If violations are found, triggers a firewall approval popup.
+/// Check response body against safety models (post-receive, non-streaming)
 async fn check_response_guardrails_body(
     state: &AppState,
     client_context: Option<&ClientAuthContext>,
     response_body: &serde_json::Value,
 ) -> ApiResult<()> {
-    use lr_guardrails::types::GuardrailSeverity;
     use lr_mcp::gateway::firewall::{FirewallApprovalAction, GuardrailApprovalDetails};
 
     let Some(client_ctx) = client_context else {
         return Ok(());
     };
-    let Some(ref engine) = state.guardrails_engine else {
+    let Some(ref engine) = state.safety_engine else {
         return Ok(());
     };
+
+    if !engine.has_models() {
+        return Ok(());
+    }
 
     let config = state.config_manager.get();
     let client = state.client_manager.get_client(&client_ctx.client_id);
@@ -925,20 +855,18 @@ async fn check_response_guardrails_body(
         return Ok(());
     }
 
-    // Check for time-based guardrail bypass (skip if no known client)
     if let Some(ref c) = client {
         if state.guardrail_approval_tracker.has_valid_bypass(&c.id) {
             return Ok(());
         }
     }
 
-    let result = engine.check_output_body(response_body);
-    if !result.has_matches() {
+    let result = engine.check_output(response_body).await;
+    if result.is_safe {
         return Ok(());
     }
 
-    let min_severity = GuardrailSeverity::from_str_lenient(&config.guardrails.min_popup_severity);
-    if !result.has_matches_at_severity(min_severity) {
+    if !result.needs_approval() {
         return Ok(());
     }
 
@@ -948,31 +876,30 @@ async fn check_response_guardrails_body(
         .unwrap_or(&client_ctx.client_id);
 
     tracing::info!(
-        "Guardrail response scan: {} matches for client {}",
-        result.matches.len(),
+        "Safety response scan: {} flagged categories for client {}",
+        result.actions_required.len(),
         client_id,
     );
 
     let details = GuardrailApprovalDetails {
-        matches: result
-            .matches
+        verdicts: result
+            .verdicts
             .iter()
-            .map(|m| serde_json::to_value(m).unwrap_or_default())
+            .map(|v| serde_json::to_value(v).unwrap_or_default())
             .collect(),
-        rules_checked: result.rules_checked,
-        check_duration_ms: result.check_duration_ms,
+        actions_required: result
+            .actions_required
+            .iter()
+            .map(|a| serde_json::to_value(a).unwrap_or_default())
+            .collect(),
+        total_duration_ms: result.total_duration_ms,
         scan_direction: "response".to_string(),
-        sources_checked: result
-            .sources_checked
-            .iter()
-            .map(|s| serde_json::to_value(s).unwrap_or_default())
-            .collect(),
     };
 
     let preview = result
-        .matches
+        .actions_required
         .iter()
-        .map(|m| format!("[{}] {}: {}", m.severity, m.category, m.rule_name))
+        .map(|a| format!("{}: {:?}", a.category, a.action))
         .collect::<Vec<_>>()
         .join("\n");
 
@@ -981,7 +908,10 @@ async fn check_response_guardrails_body(
         .firewall_manager
         .request_guardrail_approval(
             client_id.to_string(),
-            client.as_ref().map(|c| c.name.clone()).unwrap_or_else(|| client_id.to_string()),
+            client
+                .as_ref()
+                .map(|c| c.name.clone())
+                .unwrap_or_else(|| client_id.to_string()),
             "response".to_string(),
             "guardrails".to_string(),
             details,
@@ -1000,7 +930,7 @@ async fn check_response_guardrails_body(
         FirewallApprovalAction::Deny
         | FirewallApprovalAction::DenySession
         | FirewallApprovalAction::DenyAlways => Err(ApiErrorResponse::forbidden(
-            "Response blocked by guardrail rules",
+            "Response blocked by safety check",
         )),
     }
 }
@@ -1446,7 +1376,7 @@ async fn handle_non_streaming(
 async fn handle_streaming(
     state: AppState,
     auth: AuthContext,
-    client_auth: Option<Extension<ClientAuthContext>>,
+    _client_auth: Option<Extension<ClientAuthContext>>,
     request: ChatCompletionRequest,
     provider_request: ProviderCompletionRequest,
 ) -> ApiResult<Response> {
@@ -1518,28 +1448,10 @@ async fn handle_streaming(
     let finish_reason_map = finish_reason.clone();
     let completion_tx_map = completion_tx.clone();
 
-    // Guardrails: track last scan position for incremental scanning
-    let guardrails_last_scan_len = Arc::new(Mutex::new(0usize));
+    // Guardrails: streaming response scanning disabled for now
+    // (safety models are async LLM calls, not compatible with sync stream.map)
     let guardrails_aborted = Arc::new(Mutex::new(false));
-    let guardrails_engine_stream = state.guardrails_engine.clone();
-    let guardrails_config_stream = {
-        let config = state.config_manager.get();
-        (config.guardrails.enabled, config.guardrails.scan_responses)
-    };
-    let guardrails_client_override = client_auth.as_ref().and_then(|ext| {
-        state
-            .client_manager
-            .get_client(&ext.0.client_id)
-            .and_then(|c| c.guardrails_enabled)
-    });
-    let guardrails_should_scan_stream = {
-        let enabled = guardrails_client_override.unwrap_or(guardrails_config_stream.0);
-        enabled && guardrails_config_stream.1
-    };
-    let guardrails_last_scan_len_map = guardrails_last_scan_len.clone();
     let guardrails_aborted_map = guardrails_aborted.clone();
-    let guardrails_engine_map = guardrails_engine_stream.clone();
-    let state_for_guardrails_event = state.clone();
 
     // Clone for tracking after stream completes
     let state_clone = state.clone();
@@ -1575,49 +1487,6 @@ async fn handle_streaming(
                     } else {
                         false
                     };
-
-                    // Guardrails: incremental response scanning
-                    if guardrails_should_scan_stream {
-                        if let Some(ref engine) = guardrails_engine_map {
-                            let accumulated = content_accumulator_map.lock().clone();
-                            let last_len = *guardrails_last_scan_len_map.lock();
-                            // Scan every 500 chars of new content, or on final chunk
-                            if accumulated.len() - last_len >= 500 || is_done {
-                                let result = engine.check_output(&accumulated);
-                                *guardrails_last_scan_len_map.lock() = accumulated.len();
-
-                                if result.has_matches() {
-                                    *guardrails_aborted_map.lock() = true;
-                                    tracing::warn!(
-                                        "Guardrail response scan flagged {} matches in stream",
-                                        result.matches.len()
-                                    );
-
-                                    // Emit Tauri event for frontend notification
-                                    let event_payload = serde_json::json!({
-                                        "matches": result.matches,
-                                        "rules_checked": result.rules_checked,
-                                        "check_duration_ms": result.check_duration_ms,
-                                    });
-                                    state_for_guardrails_event.emit_event(
-                                        "guardrail-response-flagged",
-                                        &event_payload.to_string(),
-                                    );
-
-                                    // Return error chunk and terminate
-                                    let error_chunk = serde_json::json!({
-                                        "error": {
-                                            "message": "Response blocked by guardrail rules",
-                                            "type": "guardrail_violation",
-                                            "code": "content_policy_violation",
-                                        }
-                                    });
-                                    return Ok(Event::default()
-                                        .data(serde_json::to_string(&error_chunk).unwrap_or_default()));
-                                }
-                            }
-                        }
-                    }
 
                     // Signal completion when stream is done
                     if is_done {

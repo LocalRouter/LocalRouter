@@ -31,7 +31,7 @@ lr-skills = { workspace = true }
 lr-router = { workspace = true }
 lr-server = { workspace = true }
 lr-marketplace = { workspace = true }
-lr-guardrails = { workspace = true, features = ["ml-models"] }
+lr-guardrails = { workspace = true }
 
 # External dependencies still needed by src-tauri (main.rs, ui/, updater/)
 tokio = { workspace = true }

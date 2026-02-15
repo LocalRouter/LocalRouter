@@ -5,51 +5,27 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Content inspection guardrails for LLM requests and responses"
-
-[features]
-ml-models = [
-    "dep:tokenizers",
-    "dep:hf-hub",
-    "dep:safetensors",
-    "dep:once_cell",
-    "dep:candle-core",
-    "dep:candle-nn",
-    "dep:candle-transformers",
-]
+description = "LLM-based content safety guardrails for requests and responses"
 
 [dependencies]
 lr-types = { workspace = true }
+lr-utils = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-chrono = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true }
-parking_lot = { workspace = true }
 reqwest = { workspace = true }
-sha2 = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
 regex = { workspace = true }
-flate2 = "1"
-tar = "0.4"
+hf-hub = { workspace = true }
+once_cell = { workspace = true }
+tauri = { workspace = true, optional = true }
 
-# ML model dependencies (optional, behind ml-models feature)
-tokenizers = { workspace = true, optional = true }
-hf-hub = { workspace = true, optional = true }
-safetensors = { workspace = true, optional = true }
-once_cell = { workspace = true, optional = true }
-
-[target.'cfg(target_os = "macos")'.dependencies]
-candle-core = { version = "0.8", features = ["metal"], optional = true }
-candle-nn = { version = "0.8", features = ["metal"], optional = true }
-candle-transformers = { version = "0.8", features = ["metal"], optional = true }
-
-[target.'cfg(not(target_os = "macos"))'.dependencies]
-candle-core = { version = "0.8", optional = true }
-candle-nn = { version = "0.8", optional = true }
-candle-transformers = { version = "0.8", optional = true }
+[features]
+default = []
+tauri-support = ["tauri"]
 
 [dev-dependencies]
 tempfile = "3.8"
-dirs = { workspace = true }
-test-case = "3"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

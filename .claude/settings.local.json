@@ -71,7 +71,10 @@
       "WebFetch(domain:api.github.com)",
       "WebFetch(domain:vigil.deadbits.ai)",
       "WebFetch(domain:www.aimodels.fyi)",
-      "WebFetch(domain:docs.rs)"
+      "WebFetch(domain:docs.rs)",
+      "WebFetch(domain:www.llama.com)",
+      "WebFetch(domain:docs.nvidia.com)",
+      "WebFetch(domain:ollama.com)"
     ]
   },
   "enableAllProjectMcpServers": true,

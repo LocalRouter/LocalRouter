@@ -1302,162 +1302,110 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   },
 
   // ============================================================================
-  // GuardRails
+  // GuardRails - LLM-based Safety Models
   // ============================================================================
   'get_guardrails_config': () => ({
     enabled: false,
     scan_requests: true,
     scan_responses: false,
-    sources: [
-      { id: 'builtin', label: 'Built-in Rules', source_type: 'builtin', enabled: true, url: '', data_paths: [], branch: 'main', predefined: true, confidence_threshold: 0.7, model_architecture: null, hf_repo_id: null, requires_auth: false },
-      { id: 'presidio', label: 'Microsoft Presidio', source_type: 'regex', enabled: true, url: 'https://github.com/microsoft/presidio', data_paths: ['presidio-analyzer/presidio_analyzer/predefined_recognizers'], branch: 'main', predefined: true, confidence_threshold: 0.7, model_architecture: null, hf_repo_id: null, requires_auth: false },
-      { id: 'llm_guard', label: 'LLM Guard (ProtectAI)', source_type: 'regex', enabled: true, url: 'https://github.com/protectai/llm-guard', data_paths: ['llm_guard/input_scanners', 'llm_guard/output_scanners'], branch: 'main', predefined: true, confidence_threshold: 0.7, model_architecture: null, hf_repo_id: null, requires_auth: false },
-      { id: 'prompt_guard_2', label: 'Prompt Guard 2 (Meta)', source_type: 'model', enabled: false, url: 'https://huggingface.co/meta-llama/Prompt-Guard-86M', data_paths: [], branch: 'main', predefined: true, confidence_threshold: 0.7, model_architecture: 'deberta_v2', hf_repo_id: 'meta-llama/Prompt-Guard-86M', requires_auth: true },
-      { id: 'protectai_injection_v2', label: 'ProtectAI Injection v2', source_type: 'model', enabled: false, url: 'https://huggingface.co/protectai/deberta-v3-base-prompt-injection-v2', data_paths: [], branch: 'main', predefined: true, confidence_threshold: 0.7, model_architecture: 'deberta_v2', hf_repo_id: 'protectai/deberta-v3-base-prompt-injection-v2', requires_auth: false },
-      { id: 'jailbreak_classifier', label: 'Jailbreak Classifier (jackhhao)', source_type: 'model', enabled: false, url: 'https://huggingface.co/jackhhao/jailbreak-classifier', data_paths: [], branch: 'main', predefined: true, confidence_threshold: 0.7, model_architecture: 'bert', hf_repo_id: 'jackhhao/jailbreak-classifier', requires_auth: false },
+    safety_models: [
+      { id: 'granite_guardian_2b', label: 'IBM Granite Guardian 2B', model_type: 'granite_guardian', enabled: false, provider_id: 'ollama', model_name: 'granite3-guardian:2b', hf_repo_id: null, gguf_filename: null, requires_auth: false, confidence_threshold: null, enabled_categories: null, predefined: true, execution_mode: null, prompt_template: null, safe_indicator: null, output_regex: null, category_mapping: null },
+      { id: 'granite_guardian_8b', label: 'IBM Granite Guardian 8B', model_type: 'granite_guardian', enabled: false, provider_id: 'ollama', model_name: 'granite3-guardian:8b', hf_repo_id: null, gguf_filename: null, requires_auth: false, confidence_threshold: null, enabled_categories: null, predefined: true, execution_mode: null, prompt_template: null, safe_indicator: null, output_regex: null, category_mapping: null },
+      { id: 'llama_guard_4', label: 'Llama Guard 4', model_type: 'llama_guard_4', enabled: false, provider_id: 'ollama', model_name: 'llama-guard4', hf_repo_id: 'meta-llama/Llama-Guard-4-12B', gguf_filename: null, requires_auth: true, confidence_threshold: null, enabled_categories: null, predefined: true, execution_mode: null, prompt_template: null, safe_indicator: null, output_regex: null, category_mapping: null },
+      { id: 'shield_gemma_2b', label: 'ShieldGemma 2B', model_type: 'shield_gemma', enabled: false, provider_id: 'ollama', model_name: 'shieldgemma-2b', hf_repo_id: 'google/shieldgemma-2b', gguf_filename: null, requires_auth: true, confidence_threshold: null, enabled_categories: null, predefined: true, execution_mode: null, prompt_template: null, safe_indicator: null, output_regex: null, category_mapping: null },
+      { id: 'nemotron_safety', label: 'Nvidia Nemotron Safety Guard', model_type: 'nemotron', enabled: false, provider_id: 'ollama', model_name: 'llama-3.1-nemotron-safety-guard:8b', hf_repo_id: null, gguf_filename: null, requires_auth: false, confidence_threshold: null, enabled_categories: null, predefined: true, execution_mode: null, prompt_template: null, safe_indicator: null, output_regex: null, category_mapping: null },
     ],
-    min_popup_severity: 'medium',
-    update_interval_hours: 24,
-    custom_rules: [],
+    category_actions: [],
+    hf_token: null,
+    default_confidence_threshold: 0.5,
   }),
   'update_guardrails_config': () => {
     toast.success('GuardRails configuration saved (demo)')
     return null
   },
-  'get_guardrail_sources_status': () => ([
-    { id: 'builtin', rule_count: 38, last_updated: null, source_last_modified: null, download_state: 'ready', error_message: null, path_errors: [] },
-    { id: 'presidio', rule_count: 0, last_updated: null, source_last_modified: null, download_state: 'not_downloaded', error_message: null, path_errors: [] },
-    { id: 'llm_guard', rule_count: 0, last_updated: null, source_last_modified: null, download_state: 'not_downloaded', error_message: null, path_errors: [] },
-    { id: 'prompt_guard_2', rule_count: 0, last_updated: null, source_last_modified: null, download_state: 'not_downloaded', error_message: null, path_errors: [] },
-    { id: 'protectai_injection_v2', rule_count: 0, last_updated: null, source_last_modified: null, download_state: 'not_downloaded', error_message: null, path_errors: [] },
-    { id: 'jailbreak_classifier', rule_count: 0, last_updated: null, source_last_modified: null, download_state: 'not_downloaded', error_message: null, path_errors: [] },
-  ]),
-  'get_guardrail_source_details': (args) => ({
-    id: args?.sourceId || 'builtin',
-    label: 'Built-in Rules',
-    source_type: 'builtin',
-    url: '',
-    data_paths: [],
-    branch: 'main',
-    predefined: true,
-    enabled: true,
-    cache_dir: '/tmp/guardrails/builtin',
-    raw_files: ['builtin_rules.json'],
-    compiled_rules_count: 38,
-    error_message: null,
-    sample_rules: [
-      { id: 'builtin-0', name: 'Ignore Previous Instructions', pattern: '(?i)ignore.*previous.*instructions', category: 'prompt_injection', severity: 'high', direction: 'input', description: 'Detects prompt injection' },
-    ],
-    path_errors: [],
-  }),
-  'update_guardrail_source': (args) => {
-    toast.success(`Source "${args?.sourceId}" updated (demo)`)
-    return 12
-  },
-  'update_all_guardrail_sources': () => {
-    toast.success('All guardrail sources updated (demo)')
-    return { presidio: { rule_count: 24 }, llm_guard: { rule_count: 35 } }
-  },
-  'add_guardrail_source': (args) => {
-    toast.success(`Source "${args?.label}" added (demo)`)
-    return null
-  },
-  'remove_guardrail_source': (args) => {
-    toast.success(`Source "${args?.sourceId}" removed (demo)`)
-    return null
-  },
-  'add_custom_guardrail_rule': (args) => {
-    toast.success(`Custom rule added (demo)`)
-    return null
-  },
-  'update_custom_guardrail_rule': (args) => {
-    toast.success(`Custom rule updated (demo)`)
-    return null
-  },
-  'remove_custom_guardrail_rule': (args) => {
-    toast.success(`Custom rule removed (demo)`)
-    return null
-  },
-  'download_guardrail_model': (args) => {
-    toast.info(`Downloading model for "${args?.sourceId}" (demo - not actually downloading)`)
-    // Simulate progress events
-    const sourceId = args?.sourceId || 'prompt_guard_2'
-    const totalBytes = 346000000
-    let progress = 0
-    const startTime = Date.now()
-    const interval = setInterval(() => {
-      progress += 0.1
-      const bytesDownloaded = Math.floor(totalBytes * Math.min(progress, 1.0))
-      const elapsedSecs = Math.max((Date.now() - startTime) / 1000, 0.1)
-      const bytesPerSecond = Math.floor(bytesDownloaded / elapsedSecs)
-      if (progress >= 1.0) {
-        clearInterval(interval)
-        emit('guardrail-model-download-progress', {
-          source_id: sourceId,
-          current_file: null,
-          progress: 1.0,
-          bytes_downloaded: totalBytes,
-          total_bytes: totalBytes,
-          bytes_per_second: bytesPerSecond,
-        })
-        toast.success(`Model "${sourceId}" downloaded (demo)`)
-        return
-      }
-      emit('guardrail-model-download-progress', {
-        source_id: sourceId,
-        current_file: progress < 0.5 ? 'tokenizer.json' : 'model.safetensors',
-        progress,
-        bytes_downloaded: bytesDownloaded,
-        total_bytes: 0,
-        bytes_per_second: bytesPerSecond,
-      })
-    }, 300)
-    return null
-  },
-  'get_guardrail_model_status': (args) => {
-    const sourceId = args?.sourceId || 'prompt_guard_2'
-    const repoMap: Record<string, [string, string]> = {
-      prompt_guard_2: ['meta-llama/Prompt-Guard-86M', 'deberta_v2'],
-      protectai_injection_v2: ['protectai/deberta-v3-base-prompt-injection-v2', 'deberta_v2'],
-      jailbreak_classifier: ['jackhhao/jailbreak-classifier', 'bert'],
-    }
-    const [repo, arch] = repoMap[sourceId] || ['unknown', 'bert']
-    return {
-      source_id: sourceId,
-      hf_repo_id: repo,
-      architecture: arch,
-      download_state: 'not_downloaded',
-      size_bytes: 0,
-      loaded: false,
-      error_message: null,
-    }
-  },
-  'unload_guardrail_model': (args) => {
-    toast.success(`Model "${args?.sourceId}" unloaded (demo)`)
-    return null
-  },
-  'test_guardrail_input': (args) => {
+  'test_safety_check': (args) => {
     const text = args?.text || ''
     const hasInjection = /ignore.*previous|ignore.*instructions|DAN\s+mode/i.test(text)
     return {
-      matches: hasInjection ? [{
-        rule_id: 'builtin_ignore_previous',
-        rule_name: 'Ignore Previous Instructions',
-        source_id: 'builtin',
-        source_label: 'Built-in Rules',
-        category: 'prompt_injection',
-        severity: 'high',
-        direction: 'input',
-        matched_text: text.slice(0, 50),
-        message_index: 0,
-        description: 'Detected attempt to override system prompt',
-      }] : [],
-      rules_checked: 38,
-      check_duration_ms: Math.floor(Math.random() * 5) + 1,
-      sources_checked: [
-        { source_id: 'builtin', source_label: 'Built-in Rules', rules_checked: 38, match_count: hasInjection ? 1 : 0 },
-      ],
+      verdicts: hasInjection ? [{
+        model_id: 'granite_guardian_2b',
+        is_safe: false,
+        flagged_categories: [{ category: 'Jailbreak', confidence: 0.92, native_label: 'jailbreak' }],
+        confidence: 0.92,
+        raw_output: 'Yes',
+        check_duration_ms: 245,
+      }] : [{
+        model_id: 'granite_guardian_2b',
+        is_safe: true,
+        flagged_categories: [],
+        confidence: null,
+        raw_output: 'No',
+        check_duration_ms: 198,
+      }],
+      actions_required: hasInjection ? [{ category: 'Jailbreak', action: 'ask' as const, model_id: 'granite_guardian_2b', confidence: 0.92 }] : [],
+      total_duration_ms: hasInjection ? 245 : 198,
+      scan_direction: 'request' as const,
     }
+  },
+  'get_safety_model_status': (args) => ({
+    id: args?.modelId || 'granite_guardian_2b',
+    label: 'IBM Granite Guardian 2B',
+    model_type: 'granite_guardian',
+    enabled: false,
+    provider_configured: true,
+    model_available: false,
+    downloaded: false,
+    execution_mode: 'provider',
+  }),
+  'test_safety_model': (args) => {
+    const text = args?.text || ''
+    const hasInjection = /ignore.*previous|ignore.*instructions|DAN\s+mode/i.test(text)
+    return {
+      verdicts: [{
+        model_id: args?.modelId || 'granite_guardian_2b',
+        is_safe: !hasInjection,
+        flagged_categories: hasInjection ? [{ category: 'Jailbreak', confidence: 0.88, native_label: 'jailbreak' }] : [],
+        confidence: hasInjection ? 0.88 : null,
+        raw_output: hasInjection ? 'Yes' : 'No',
+        check_duration_ms: 312,
+      }],
+      actions_required: hasInjection ? [{ category: 'Jailbreak', action: 'ask' as const, model_id: args?.modelId || 'granite_guardian_2b', confidence: 0.88 }] : [],
+      total_duration_ms: 312,
+      scan_direction: 'request' as const,
+    }
+  },
+  'get_all_safety_categories': () => ([
+    { category: 'ViolentCrimes', display_name: 'Violent Crimes', description: 'Content promoting violent criminal activities', supported_by: ['llama_guard_4', 'nemotron'] },
+    { category: 'ChildExploitation', display_name: 'Child Exploitation', description: 'Content involving child sexual abuse material', supported_by: ['llama_guard_4', 'nemotron'] },
+    { category: 'Hate', display_name: 'Hate Speech', description: 'Content promoting hatred against protected groups', supported_by: ['llama_guard_4', 'nemotron', 'shield_gemma'] },
+    { category: 'SelfHarm', display_name: 'Self-Harm', description: 'Content promoting self-harm or suicide', supported_by: ['llama_guard_4', 'nemotron'] },
+    { category: 'SexualContent', display_name: 'Sexual Content', description: 'Explicit sexual content', supported_by: ['llama_guard_4', 'nemotron', 'shield_gemma'] },
+    { category: 'DangerousContent', display_name: 'Dangerous Content', description: 'Content about creating weapons or dangerous materials', supported_by: ['shield_gemma', 'nemotron'] },
+    { category: 'Harassment', display_name: 'Harassment', description: 'Content meant to harass or bully', supported_by: ['shield_gemma'] },
+    { category: 'Jailbreak', display_name: 'Jailbreak', description: 'Attempts to bypass AI safety restrictions', supported_by: ['granite_guardian'] },
+    { category: 'SocialBias', display_name: 'Social Bias', description: 'Content exhibiting social bias or stereotypes', supported_by: ['granite_guardian'] },
+    { category: 'Groundedness', display_name: 'Groundedness', description: 'Responses not grounded in provided context (RAG)', supported_by: ['granite_guardian'] },
+  ]),
+  'update_category_actions': () => {
+    toast.success('Category actions updated (demo)')
+    return null
+  },
+  'download_safety_model': (args) => {
+    toast.info(`Downloading safety model "${args?.modelId}" (demo - not actually downloading)`)
+    return null
+  },
+  'get_safety_model_download_status': () => ({
+    downloaded: false,
+    file_path: null,
+    file_size: null,
+  }),
+  'add_safety_model': () => {
+    toast.success('Safety model added (demo)')
+    return null
+  },
+  'remove_safety_model': () => {
+    toast.success('Safety model removed (demo)')
+    return null
   },
 
   // ============================================================================

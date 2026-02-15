@@ -44,7 +44,7 @@ lr-skills = { path = "crates/lr-skills" }
 lr-router = { path = "crates/lr-router" }
 lr-server = { path = "crates/lr-server" }
 lr-marketplace = { path = "crates/lr-marketplace" }
-lr-guardrails = { path = "crates/lr-guardrails" }
+lr-guardrails = { path = "crates/lr-guardrails", features = ["tauri-support"] }
 
 # Async runtime
 tokio = { version = "1.42", features = ["full"] }

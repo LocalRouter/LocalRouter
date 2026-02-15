@@ -490,12 +490,8 @@ pub struct AppState {
     /// Time-based guardrail bypass tracker
     pub guardrail_approval_tracker: Arc<GuardrailApprovalTracker>,
 
-    /// GuardRails engine for content inspection
-    pub guardrails_engine: Option<Arc<lr_guardrails::GuardrailsEngine>>,
-
-    /// ML model manager for guardrail classification
-    #[cfg(feature = "ml-models")]
-    pub guardrail_model_manager: Option<Arc<lr_guardrails::model_manager::ModelManager>>,
+    /// Safety engine for LLM-based content inspection
+    pub safety_engine: Option<Arc<lr_guardrails::SafetyEngine>>,
 }
 
 impl AppState {
@@ -572,15 +568,13 @@ impl AppState {
             health_cache: Arc::new(HealthCacheManager::new()),
             model_approval_tracker: Arc::new(ModelApprovalTracker::new()),
             guardrail_approval_tracker: Arc::new(GuardrailApprovalTracker::new()),
-            guardrails_engine: None,
-            #[cfg(feature = "ml-models")]
-            guardrail_model_manager: None,
+            safety_engine: None,
         }
     }
 
-    /// Set the guardrails engine
-    pub fn with_guardrails(mut self, engine: Arc<lr_guardrails::GuardrailsEngine>) -> Self {
-        self.guardrails_engine = Some(engine);
+    /// Set the safety engine
+    pub fn with_safety_engine(mut self, engine: Arc<lr_guardrails::SafetyEngine>) -> Self {
+        self.safety_engine = Some(engine);
         self
     }
 

@@ -83,6 +83,11 @@ pub fn migrate_config(mut config: AppConfig) -> AppResult<AppConfig> {
         config = migrate_to_v11(config)?;
     }
 
+    // Migrate to v12: LLM-based safety models (replace regex/YARA/ML classifier sources)
+    if config.version < 12 {
+        config = migrate_to_v12(config)?;
+    }
+
     // Update version to current
     config.version = CONFIG_VERSION;
 
@@ -365,192 +370,79 @@ fn migrate_to_v7(mut config: AppConfig) -> AppResult<AppConfig> {
     Ok(config)
 }
 
-/// Migrate to version 8: Custom guardrail rules
+/// Migrate to version 8: Custom guardrail rules (legacy)
 ///
-/// Adds custom_rules field to GuardrailsConfig. The field uses `#[serde(default)]`
-/// so existing configs get an empty vec automatically. This just bumps the version.
+/// Previously added custom_rules field. Now a no-op since v12 replaces the entire
+/// guardrails config with the new safety model system.
 fn migrate_to_v8(mut config: AppConfig) -> AppResult<AppConfig> {
-    info!("Migrating to version 8: Custom guardrail rules");
-
-    // No data transformation needed - serde defaults handle the new field:
-    // - GuardrailsConfig.custom_rules defaults to vec![]
+    info!("Migrating to version 8: Custom guardrail rules (legacy, no-op)");
     config.version = 8;
     Ok(config)
 }
 
-/// Migrate to version 9: ML model guardrail sources
+/// Migrate to version 9: ML model guardrail sources (legacy)
 ///
-/// Adds Prompt Guard 2 model source to guardrail defaults and new fields
-/// (confidence_threshold, model_architecture, hf_repo_id) to GuardrailSourceConfig.
-/// All new fields use `#[serde(default)]` so existing configs get defaults automatically.
+/// Previously added ML model sources. Now a no-op since v12 replaces the entire
+/// guardrails config with the new safety model system.
 fn migrate_to_v9(mut config: AppConfig) -> AppResult<AppConfig> {
-    info!("Migrating to version 9: ML model guardrail sources");
-
-    // Add Prompt Guard 2 if not already present
-    let has_pg2 = config
-        .guardrails
-        .sources
-        .iter()
-        .any(|s| s.id == "prompt_guard_2");
-    if !has_pg2 {
-        use super::GuardrailSourceConfig;
-        config.guardrails.sources.push(GuardrailSourceConfig {
-            id: "prompt_guard_2".to_string(),
-            label: "Prompt Guard 2 (Meta)".to_string(),
-            source_type: "model".to_string(),
-            enabled: false,
-            url: "https://huggingface.co/meta-llama/Prompt-Guard-86M".to_string(),
-            data_paths: vec![],
-            branch: "main".to_string(),
-            predefined: true,
-            confidence_threshold: 0.7,
-            model_architecture: Some("bert".to_string()),
-            hf_repo_id: Some("meta-llama/Prompt-Guard-86M".to_string()),
-            requires_auth: true,
-        });
-        info!("Added Prompt Guard 2 model source to guardrails config");
-    }
-
+    info!("Migrating to version 9: ML model guardrail sources (legacy, no-op)");
     config.version = 9;
     Ok(config)
 }
 
-/// Migrate to version 10: DeBERTa-v2 architecture fix + new ML models + requires_auth
+/// Migrate to version 10: DeBERTa-v2 architecture fix + new ML models (legacy)
 ///
-/// - Fix prompt_guard_2 architecture from "bert" to "deberta_v2" and set requires_auth=true
-/// - Add protectai_injection_v2 and jailbreak_classifier model sources
-/// - Set requires_auth=false default for all existing non-gated sources
+/// Previously fixed model architectures and added new sources. Now a no-op since v12
+/// replaces the entire guardrails config with the new safety model system.
 fn migrate_to_v10(mut config: AppConfig) -> AppResult<AppConfig> {
-    info!("Migrating to version 10: DeBERTa-v2 fix + new ML models");
-
-    // Fix prompt_guard_2: architecture should be deberta_v2, not bert
-    for source in &mut config.guardrails.sources {
-        if source.id == "prompt_guard_2" {
-            source.model_architecture = Some("deberta_v2".to_string());
-            source.requires_auth = true;
-            info!("Fixed prompt_guard_2: architecture -> deberta_v2, requires_auth -> true");
-        }
-    }
-
-    // Add protectai_injection_v2 if not present
-    let has_protectai = config
-        .guardrails
-        .sources
-        .iter()
-        .any(|s| s.id == "protectai_injection_v2");
-    if !has_protectai {
-        use super::GuardrailSourceConfig;
-        config.guardrails.sources.push(GuardrailSourceConfig {
-            id: "protectai_injection_v2".to_string(),
-            label: "ProtectAI Injection v2".to_string(),
-            source_type: "model".to_string(),
-            enabled: false,
-            url: "https://huggingface.co/protectai/deberta-v3-base-prompt-injection-v2".to_string(),
-            data_paths: vec![],
-            branch: "main".to_string(),
-            predefined: true,
-            confidence_threshold: 0.7,
-            model_architecture: Some("deberta_v2".to_string()),
-            hf_repo_id: Some(
-                "protectai/deberta-v3-base-prompt-injection-v2".to_string(),
-            ),
-            requires_auth: false,
-        });
-        info!("Added ProtectAI Injection v2 model source");
-    }
-
-    // Add jailbreak_classifier if not present
-    let has_jailbreak = config
-        .guardrails
-        .sources
-        .iter()
-        .any(|s| s.id == "jailbreak_classifier");
-    if !has_jailbreak {
-        use super::GuardrailSourceConfig;
-        config.guardrails.sources.push(GuardrailSourceConfig {
-            id: "jailbreak_classifier".to_string(),
-            label: "Jailbreak Classifier (jackhhao)".to_string(),
-            source_type: "model".to_string(),
-            enabled: false,
-            url: "https://huggingface.co/jackhhao/jailbreak-classifier".to_string(),
-            data_paths: vec![],
-            branch: "main".to_string(),
-            predefined: true,
-            confidence_threshold: 0.7,
-            model_architecture: Some("bert".to_string()),
-            hf_repo_id: Some("jackhhao/jailbreak-classifier".to_string()),
-            requires_auth: false,
-        });
-        info!("Added Jailbreak Classifier model source");
-    }
-
+    info!("Migrating to version 10: DeBERTa-v2 fix + new ML models (legacy, no-op)");
     config.version = 10;
     Ok(config)
 }
 
-/// Migrate to version 11: Fix hf_repo_id for existing model sources
+/// Migrate to version 11: Fix hf_repo_id for existing model sources (legacy)
 ///
-/// - Extract hf_repo_id from URL for model sources where it's None
-/// - Rename deberta_injection → protectai_injection_v2 (canonical ID)
-/// - Remove defunct sources: purple_llama, payloads_all_the_things, nemo_guardrails
+/// Previously fixed repo IDs and removed defunct sources. Now a no-op since v12
+/// replaces the entire guardrails config with the new safety model system.
 fn migrate_to_v11(mut config: AppConfig) -> AppResult<AppConfig> {
-    info!("Migrating to version 11: Fix hf_repo_id for existing model sources");
-
-    // Remove defunct sources that produce 0 useful rules
-    let defunct_sources = [
-        "purple_llama",           // Benchmark dataset, not regex patterns; path was 404
-        "payloads_all_the_things", // README prose, not pattern lists (produces garbage rules)
-        "nemo_guardrails",        // ML-only detection (GPT-2 perplexity), zero regex patterns
-        "presidio",               // Python recognizer classes, not regex pattern files
-    ];
-    let before = config.guardrails.sources.len();
-    config
-        .guardrails
-        .sources
-        .retain(|s| !defunct_sources.contains(&s.id.as_str()));
-    let removed = before - config.guardrails.sources.len();
-    if removed > 0 {
-        info!("Removed {} defunct guardrail sources", removed);
-    }
-
-    // Rename deberta_injection → protectai_injection_v2
-    for source in &mut config.guardrails.sources {
-        if source.id == "deberta_injection" {
-            source.id = "protectai_injection_v2".to_string();
-            source.label = "ProtectAI Injection v2".to_string();
-            source.predefined = true;
-            info!("Renamed deberta_injection → protectai_injection_v2");
-        }
-    }
-
-    // Fix hf_repo_id for model sources by extracting from URL
-    for source in &mut config.guardrails.sources {
-        if source.source_type == "model" && source.hf_repo_id.is_none() {
-            if let Some(repo_id) = extract_hf_repo_id_from_url(&source.url) {
-                info!(
-                    "Set hf_repo_id for '{}' from URL: {}",
-                    source.id, repo_id
-                );
-                source.hf_repo_id = Some(repo_id);
-            }
-        }
-    }
-
+    info!("Migrating to version 11: Fix hf_repo_id (legacy, no-op)");
     config.version = 11;
     Ok(config)
 }
 
-/// Extract HuggingFace repo ID (owner/model) from a HuggingFace URL
-fn extract_hf_repo_id_from_url(url: &str) -> Option<String> {
-    // Match https://huggingface.co/owner/model (with optional trailing path/slash)
-    let prefix = "https://huggingface.co/";
-    let path = url.strip_prefix(prefix)?;
-    let parts: Vec<&str> = path.trim_end_matches('/').splitn(3, '/').collect();
-    if parts.len() >= 2 && !parts[0].is_empty() && !parts[1].is_empty() {
-        Some(format!("{}/{}", parts[0], parts[1]))
-    } else {
-        None
-    }
+/// Migrate to version 12: LLM-based safety models
+///
+/// Replaces old regex/YARA/ML classifier sources with new LLM-based safety model config.
+/// - Drops all old `sources` (regex, yara, model entries)
+/// - Drops `custom_rules`, `update_interval_hours`, `min_popup_severity`
+/// - Maps `min_popup_severity` → `default_confidence_threshold`
+/// - Sets `safety_models` to defaults (all disabled)
+/// - Preserves `enabled`, `scan_requests`, `scan_responses`
+fn migrate_to_v12(mut config: AppConfig) -> AppResult<AppConfig> {
+    info!("Migrating to version 12: LLM-based safety models");
+
+    // Note: old fields (min_popup_severity, sources, custom_rules) are already lost
+    // during deserialization since the struct no longer has them. We use a default
+    // confidence threshold of 0.5 (medium).
+
+    // Preserve the fields that carry over
+    let enabled = config.guardrails.enabled;
+    let scan_requests = config.guardrails.scan_requests;
+    let scan_responses = config.guardrails.scan_responses;
+
+    // Replace with new config using defaults
+    config.guardrails = super::GuardrailsConfig {
+        enabled,
+        scan_requests,
+        scan_responses,
+        default_confidence_threshold: 0.5,
+        ..Default::default()
+    };
+
+    info!("Migrated guardrails to LLM-based safety models (confidence threshold: 0.5)");
+
+    config.version = 12;
+    Ok(config)
 }
 
 // Future migration functions will follow this pattern:

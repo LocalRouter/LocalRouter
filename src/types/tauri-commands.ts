@@ -1949,176 +1949,101 @@ export interface CreateTestClientForStrategyParams {
 }
 
 // =============================================================================
-// GuardRails Types
-// Rust: crates/lr-guardrails/src/types.rs, crates/lr-config/src/types.rs
+// GuardRails Types - LLM-based Safety Models
+// Rust: crates/lr-guardrails/src/safety_model.rs, crates/lr-config/src/types.rs
 // =============================================================================
-
-/** A single guardrail detection match */
-export interface GuardrailMatchInfo {
-  rule_id: string
-  rule_name: string
-  source_id: string
-  source_label: string
-  category: string
-  severity: string
-  direction: "input" | "output" | "both"
-  matched_text: string
-  message_index: number | null
-  description: string
-}
-
-/** Guardrail approval details sent to popup */
-export interface GuardrailApprovalDetails {
-  matches: GuardrailMatchInfo[]
-  rules_checked: number
-  check_duration_ms: number
-  scan_direction: "request" | "response"
-  sources_checked: SourceCheckSummary[]
-}
 
 /** Global guardrails configuration */
 export interface GuardrailsConfig {
   enabled: boolean
   scan_requests: boolean
   scan_responses: boolean
-  sources: GuardrailSourceConfig[]
-  min_popup_severity: string
-  update_interval_hours: number
-  custom_rules: CustomGuardrailRule[]
+  safety_models: SafetyModelConfig[]
+  category_actions: CategoryActionEntry[]
+  hf_token: string | null
+  default_confidence_threshold: number
 }
 
-/** A configurable guardrail source */
-export interface GuardrailSourceConfig {
+/** Configuration for a safety model */
+export interface SafetyModelConfig {
   id: string
   label: string
-  source_type: string
+  model_type: string
   enabled: boolean
-  url: string
-  data_paths: string[]
-  branch: string
-  predefined: boolean
-  confidence_threshold: number
-  model_architecture: string | null
+  provider_id: string | null
+  model_name: string | null
   hf_repo_id: string | null
+  gguf_filename: string | null
   requires_auth: boolean
-}
-
-// =============================================================================
-// ML Model GuardRails Types
-// Rust: crates/lr-guardrails/src/sources/model_source.rs
-// =============================================================================
-
-/**
- * Model download state.
- * Rust: crates/lr-guardrails/src/sources/model_source.rs - ModelDownloadState enum
- */
-export type ModelDownloadState = 'not_downloaded' | 'downloading' | 'ready' | 'error'
-
-/**
- * Supported model architectures.
- * Rust: crates/lr-guardrails/src/sources/model_source.rs - ModelArchitecture enum
- */
-export type ModelArchitecture = 'bert' | 'deberta_v2'
-
-/**
- * Extended model info for UI display.
- * Rust: crates/lr-guardrails/src/sources/model_source.rs - GuardrailModelInfo struct
- */
-export interface GuardrailModelInfo {
-  source_id: string
-  hf_repo_id: string
-  architecture: ModelArchitecture
-  download_state: ModelDownloadState
-  size_bytes: number
-  loaded: boolean
-  error_message: string | null
-}
-
-/**
- * Progress of a model download.
- * Rust: crates/lr-guardrails/src/sources/model_source.rs - ModelDownloadProgress struct
- */
-export interface ModelDownloadProgress {
-  source_id: string
-  current_file: string | null
-  progress: number
-  bytes_downloaded: number
-  total_bytes: number
-  bytes_per_second: number
-}
-
-/** Per-path download/parse error */
-export interface PathDownloadError {
-  path: string
-  error: string
-  detail: string
-}
-
-/** Per-source status info */
-export interface GuardrailSourceStatus {
-  id: string
-  rule_count: number
-  last_updated: string | null
-  source_last_modified: string | null
-  download_state: "not_downloaded" | "downloading" | "ready" | "error"
-  error_message: string | null
-  path_errors: PathDownloadError[]
-}
-
-/** Detailed source info for the detail panel */
-export interface GuardrailSourceDetails {
-  id: string
-  label: string
-  source_type: string
-  url: string
-  data_paths: string[]
-  branch: string
+  confidence_threshold: number | null
+  enabled_categories: string[] | null
   predefined: boolean
-  enabled: boolean
-  cache_dir: string | null
-  raw_files: string[]
-  compiled_rules_count: number
-  error_message: string | null
-  sample_rules: GuardrailSampleRule[]
-  path_errors: PathDownloadError[]
+  execution_mode: string | null
+  prompt_template: string | null
+  safe_indicator: string | null
+  output_regex: string | null
+  category_mapping: CategoryMappingEntry[] | null
 }
 
-/** A sample rule from compiled_rules.json */
-export interface GuardrailSampleRule {
-  id: string
-  name: string
-  pattern: string
+/** Mapping from native model label to normalized safety category */
+export interface CategoryMappingEntry {
+  native_label: string
+  safety_category: string
+}
+
+/** Per-category action configuration */
+export interface CategoryActionEntry {
   category: string
-  severity: string
-  direction: string
-  description: string
+  action: "allow" | "notify" | "ask"
 }
 
-/** Per-source check summary included in guardrail results */
-export interface SourceCheckSummary {
-  source_id: string
-  source_label: string
-  rules_checked: number
-  match_count: number
+/** A flagged category from a safety model verdict */
+export interface FlaggedCategory {
+  category: string
+  confidence: number | null
+  native_label: string
 }
 
-/** Result from running guardrail checks */
-export interface GuardrailCheckResult {
-  matches: GuardrailMatchInfo[]
-  rules_checked: number
+/** Verdict from a single safety model check */
+export interface SafetyVerdict {
+  model_id: string
+  is_safe: boolean
+  flagged_categories: FlaggedCategory[]
+  confidence: number | null
+  raw_output: string
   check_duration_ms: number
-  sources_checked: SourceCheckSummary[]
 }
 
-/** Custom user-defined guardrail rule */
-export interface CustomGuardrailRule {
-  id: string
-  name: string
-  pattern: string
+/** Action required for a specific category */
+export interface CategoryActionRequired {
   category: string
-  severity: string
-  direction: string
-  enabled: boolean
+  action: "allow" | "notify" | "ask"
+  model_id: string
+  confidence: number | null
+}
+
+/** Result from running safety checks across all enabled models */
+export interface SafetyCheckResult {
+  verdicts: SafetyVerdict[]
+  actions_required: CategoryActionRequired[]
+  total_duration_ms: number
+  scan_direction: "request" | "response"
+}
+
+/** Guardrail approval details sent to popup */
+export interface GuardrailApprovalDetails {
+  verdicts: SafetyVerdict[]
+  actions_required: CategoryActionRequired[]
+  total_duration_ms: number
+  scan_direction: "request" | "response"
+}
+
+/** Safety category info returned by get_all_safety_categories */
+export interface SafetyCategoryInfo {
+  category: string
+  display_name: string
+  description: string
+  supported_by: string[]
 }
 
 /** Params for update_guardrails_config */
@@ -2126,63 +2051,50 @@ export interface UpdateGuardrailsConfigParams {
   configJson: string
 }
 
-/** Params for get_guardrail_source_details */
-export interface GetGuardrailSourceDetailsParams {
-  sourceId: string
-}
-
-/** Params for update_guardrail_source */
-export interface UpdateGuardrailSourceParams {
-  sourceId: string
-}
-
-/** Params for add_guardrail_source */
-export interface AddGuardrailSourceParams {
-  id: string
-  label: string
-  sourceType: string
-  url: string
-  dataPaths: string[]
-  branch?: string
-}
-
-/** Params for remove_guardrail_source */
-export interface RemoveGuardrailSourceParams {
-  sourceId: string
-}
-
-/** Params for add_custom_guardrail_rule */
-export interface AddCustomGuardrailRuleParams {
-  ruleJson: string
-}
-
-/** Params for update_custom_guardrail_rule */
-export interface UpdateCustomGuardrailRuleParams {
-  ruleJson: string
-}
-
-/** Params for remove_custom_guardrail_rule */
-export interface RemoveCustomGuardrailRuleParams {
-  ruleId: string
-}
-
-/** Params for test_guardrail_input */
-export interface TestGuardrailInputParams {
+/** Params for test_safety_check */
+export interface TestSafetyCheckParams {
   text: string
 }
 
-/** Params for download_guardrail_model */
-export interface DownloadGuardrailModelParams {
-  sourceId: string
-  hfToken?: string | null
+/** Params for get_safety_model_status */
+export interface GetSafetyModelStatusParams {
+  modelId: string
 }
 
-/** Params for get_guardrail_model_status */
-export interface GetGuardrailModelStatusParams {
-  sourceId: string
+/** Params for test_safety_model */
+export interface TestSafetyModelParams {
+  modelId: string
+  text: string
 }
 
-/** Params for unload_guardrail_model */
-export interface UnloadGuardrailModelParams {
-  sourceId: string
+/** Params for update_category_actions */
+export interface UpdateCategoryActionsParams {
+  actions: CategoryActionEntry[]
+}
+
+/** Download status for a safety model's GGUF file */
+export interface SafetyModelDownloadStatus {
+  downloaded: boolean
+  file_path: string | null
+  file_size: number | null
+}
+
+/** Params for download_safety_model */
+export interface DownloadSafetyModelParams {
+  modelId: string
+}
+
+/** Params for get_safety_model_download_status */
+export interface GetSafetyModelDownloadStatusParams {
+  modelId: string
+}
+
+/** Params for add_safety_model */
+export interface AddSafetyModelParams {
+  configJson: string
+}
+
+/** Params for remove_safety_model */
+export interface RemoveSafetyModelParams {
+  modelId: string
 }

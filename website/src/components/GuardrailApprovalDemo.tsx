@@ -6,38 +6,33 @@
 import {
   FirewallApprovalCard,
 } from "@app/components/shared/FirewallApprovalCard"
-import type { GuardrailMatchInfo, SourceCheckSummary } from "@app/types/tauri-commands"
+import type { SafetyVerdict, CategoryActionRequired } from "@app/types/tauri-commands"
 
-const DEMO_MATCHES: GuardrailMatchInfo[] = [
+const DEMO_VERDICTS: SafetyVerdict[] = [
   {
-    rule_id: "builtin_ignore_previous",
-    rule_name: "Ignore Previous Instructions",
-    source_id: "builtin",
-    source_label: "Built-in Rules",
-    category: "prompt_injection",
-    severity: "high",
-    direction: "input",
-    matched_text: "Ignore all previous instructions and...",
-    message_index: 0,
-    description: "Detected attempt to override system prompt",
+    model_id: "llama-guard-3-8b",
+    is_safe: false,
+    flagged_categories: [
+      { category: "prompt_injection", confidence: 0.95, native_label: "S14" },
+      { category: "jailbreak", confidence: 0.88, native_label: "S15" },
+    ],
+    confidence: 0.92,
+    raw_output: "unsafe\nS14,S15",
+    check_duration_ms: 340,
   },
   {
-    rule_id: "builtin_dan_mode",
-    rule_name: "DAN Mode Jailbreak",
-    source_id: "builtin",
-    source_label: "Built-in Rules",
-    category: "jailbreak",
-    severity: "critical",
-    direction: "input",
-    matched_text: "You are now DAN, which stands for...",
-    message_index: 0,
-    description: "Known jailbreak pattern attempting to bypass safety",
+    model_id: "shield-gemma-2b",
+    is_safe: true,
+    flagged_categories: [],
+    confidence: 0.97,
+    raw_output: "No, this is safe.",
+    check_duration_ms: 180,
   },
 ]
 
-const DEMO_SOURCES: SourceCheckSummary[] = [
-  { source_id: "builtin", source_label: "Built-in Rules", rules_checked: 38, match_count: 2 },
-  { source_id: "llm_guard", source_label: "LLM Guard", rules_checked: 24, match_count: 0 },
+const DEMO_ACTIONS: CategoryActionRequired[] = [
+  { category: "prompt_injection", action: "ask", model_id: "llama-guard-3-8b", confidence: 0.95 },
+  { category: "jailbreak", action: "ask", model_id: "llama-guard-3-8b", confidence: 0.88 },
 ]
 
 export function GuardrailApprovalDemo() {
@@ -51,9 +46,9 @@ export function GuardrailApprovalDemo() {
         toolName="claude-3-5-sonnet-20241022"
         serverName="anthropic"
         isGuardrailRequest
-        guardrailMatches={DEMO_MATCHES}
+        guardrailVerdicts={DEMO_VERDICTS}
         guardrailDirection="request"
-        guardrailSourcesSummary={DEMO_SOURCES}
+        guardrailActions={DEMO_ACTIONS}
         onAction={noop}
       />
     </div>

@@ -525,59 +525,108 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                     info!("Marketplace wired to MCP gateway");
                 }
 
-                // Initialize guardrails engine with built-in rules
+                // Initialize safety engine for guardrails
                 {
-                    let guardrails_config = config_manager.get().guardrails.clone();
-                    if guardrails_config.enabled {
-                        let cache_dir = lr_utils::paths::config_dir()
-                            .unwrap_or_else(|_| std::path::PathBuf::from("."))
-                            .join("guardrails");
-                        let source_manager =
-                            lr_guardrails::SourceManager::new(cache_dir.clone());
-                        let engine = Arc::new(
-                            lr_guardrails::GuardrailsEngine::new(source_manager),
-                        );
-                        // Load custom rules from config
-                        if !guardrails_config.custom_rules.is_empty() {
-                            let custom_rules: Vec<lr_guardrails::source_manager::CustomGuardrailRule> = guardrails_config
-                                .custom_rules
+                    let config_snapshot = config_manager.get();
+                    let guardrails_config = &config_snapshot.guardrails;
+
+                    if guardrails_config.enabled
+                        && guardrails_config
+                            .safety_models
+                            .iter()
+                            .any(|m| m.enabled)
+                    {
+                        // Build provider lookup from configured providers
+                        let mut provider_lookup = std::collections::HashMap::new();
+                        for p in &config_snapshot.providers {
+                            if !p.enabled {
+                                continue;
+                            }
+                            let provider_type_str = match p.provider_type {
+                                config::ProviderType::Ollama => "ollama",
+                                config::ProviderType::LMStudio => "lmstudio",
+                                _ => "openai_compatible",
+                            };
+
+                            // Extract endpoint from provider_config JSON
+                            let endpoint = p
+                                .provider_config
+                                .as_ref()
+                                .and_then(|cfg| cfg.get("endpoint"))
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string())
+                                .unwrap_or_else(|| match p.provider_type {
+                                    config::ProviderType::Ollama => {
+                                        "http://localhost:11434".to_string()
+                                    }
+                                    config::ProviderType::LMStudio => {
+                                        "http://localhost:1234".to_string()
+                                    }
+                                    _ => "http://localhost:8080".to_string(),
+                                });
+
+                            // API key from provider_config (not keychain for safety models)
+                            let api_key = p
+                                .provider_config
+                                .as_ref()
+                                .and_then(|cfg| cfg.get("api_key"))
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string());
+
+                            provider_lookup.insert(
+                                p.name.clone(),
+                                lr_guardrails::ProviderInfo {
+                                    name: p.name.clone(),
+                                    base_url: endpoint,
+                                    api_key,
+                                    provider_type: provider_type_str.to_string(),
+                                },
+                            );
+                        }
+
+                        // Convert safety model configs
+                        let model_inputs: Vec<lr_guardrails::SafetyModelConfigInput> =
+                            guardrails_config
+                                .safety_models
                                 .iter()
-                                .map(|r| lr_guardrails::source_manager::CustomGuardrailRule {
-                                    id: r.id.clone(),
-                                    name: r.name.clone(),
-                                    pattern: r.pattern.clone(),
-                                    category: r.category.clone(),
-                                    severity: r.severity.clone(),
-                                    direction: r.direction.clone(),
-                                    enabled: r.enabled,
+                                .map(|m| lr_guardrails::SafetyModelConfigInput {
+                                    id: m.id.clone(),
+                                    model_type: m.model_type.clone(),
+                                    enabled: m.enabled,
+                                    provider_id: m.provider_id.clone(),
+                                    model_name: m.model_name.clone(),
+                                    enabled_categories: None, // TODO: parse from config
                                 })
                                 .collect();
-                            engine.source_manager().load_custom_rules(&custom_rules);
-                        }
 
-                        app_state.guardrails_engine = Some(engine.clone());
+                        // Convert category actions
+                        let cat_actions: Vec<(String, String)> = guardrails_config
+                            .category_actions
+                            .iter()
+                            .map(|ca| (ca.category.clone(), ca.action.clone()))
+                            .collect();
+
+                        let engine = Arc::new(lr_guardrails::SafetyEngine::from_config(
+                            &model_inputs,
+                            &cat_actions,
+                            guardrails_config.default_confidence_threshold,
+                            &provider_lookup,
+                        ));
+
                         info!(
-                            "Guardrails engine initialized ({} built-in rules)",
-                            engine.total_rule_count()
+                            "Guardrails enabled: {} models loaded",
+                            engine.model_count()
                         );
-
-                        // Initialize ML model manager for guardrails
-                        let model_manager = Arc::new(
-                            lr_guardrails::model_manager::ModelManager::new(cache_dir),
-                        );
-                        // Register known model sources from config
-                        for source in &guardrails_config.sources {
-                            if source.source_type == "model" {
-                                if let Some(ref hf_repo_id) = source.hf_repo_id {
-                                    model_manager.register_model(&source.id, hf_repo_id);
-                                    model_manager.register_source_label(&source.id, &source.label);
-                                }
-                            }
-                        }
-                        app_state.guardrail_model_manager = Some(model_manager);
-                        info!("Guardrail model manager initialized");
+                        app_state.safety_engine = Some(engine);
                     } else {
-                        info!("Guardrails disabled in configuration");
+                        // Create empty engine so commands still work
+                        app_state.safety_engine =
+                            Some(Arc::new(lr_guardrails::SafetyEngine::empty()));
+                        if guardrails_config.enabled {
+                            info!("Guardrails enabled but no models are active");
+                        } else {
+                            info!("Guardrails disabled in configuration");
+                        }
                     }
                 }
 
@@ -1345,21 +1394,16 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             // GuardRails commands
             ui::commands::get_guardrails_config,
             ui::commands::update_guardrails_config,
-            ui::commands::get_guardrail_sources_status,
-            ui::commands::get_guardrail_source_details,
-            ui::commands::update_guardrail_source,
-            ui::commands::update_all_guardrail_sources,
-            ui::commands::add_guardrail_source,
-            ui::commands::remove_guardrail_source,
-            // Custom GuardRails rule commands
-            ui::commands::add_custom_guardrail_rule,
-            ui::commands::update_custom_guardrail_rule,
-            ui::commands::remove_custom_guardrail_rule,
-            ui::commands::test_guardrail_input,
-            // ML model guardrail commands
-            ui::commands::download_guardrail_model,
-            ui::commands::get_guardrail_model_status,
-            ui::commands::unload_guardrail_model,
+            ui::commands::test_safety_check,
+            ui::commands::get_safety_model_status,
+            ui::commands::test_safety_model,
+            ui::commands::get_all_safety_categories,
+            ui::commands::update_category_actions,
+            // Safety model download & management commands
+            ui::commands::download_safety_model,
+            ui::commands::get_safety_model_download_status,
+            ui::commands::add_safety_model,
+            ui::commands::remove_safety_model,
             // Connection graph commands
             ui::commands::get_active_connections,
             // Setup wizard commands

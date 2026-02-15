@@ -48,5 +48,4 @@ reqwest = { workspace = true }
 lr-guardrails = { workspace = true }
 
 [features]
-default = ["ml-models"]
-ml-models = ["lr-guardrails/ml-models"]
+default = []

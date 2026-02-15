@@ -51,12 +51,12 @@ pub struct FirewallApprovalResponse {
 /// Guardrail approval details (sent to popup)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GuardrailApprovalDetails {
-    pub matches: Vec<serde_json::Value>,
-    pub rules_checked: usize,
-    pub check_duration_ms: u64,
+    /// Per-model safety verdicts
+    pub verdicts: Vec<serde_json::Value>,
+    /// Actions required per flagged category
+    pub actions_required: Vec<serde_json::Value>,
+    pub total_duration_ms: u64,
     pub scan_direction: String,
-    #[serde(default)]
-    pub sources_checked: Vec<serde_json::Value>,
 }
 
 /// Pending firewall approval session

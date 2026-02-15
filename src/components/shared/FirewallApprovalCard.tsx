@@ -15,7 +15,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { ProvidersIcon, McpIcon, SkillsIcon, StoreIcon } from "@/components/icons/category-icons"
 import { Shield } from "lucide-react"
-import type { GuardrailMatchInfo, SourceCheckSummary } from "@/types/tauri-commands"
+import type { SafetyVerdict, CategoryActionRequired } from "@/types/tauri-commands"
 
 export type ApprovalAction = "deny" | "deny_session" | "deny_always" | "allow_once" | "allow_session" | "allow_1_hour" | "allow_permanent"
 
@@ -121,9 +121,9 @@ export interface FirewallApprovalCardProps {
   argumentsPreview?: string
   isModelRequest?: boolean
   isGuardrailRequest?: boolean
-  guardrailMatches?: GuardrailMatchInfo[]
+  guardrailVerdicts?: SafetyVerdict[]
   guardrailDirection?: "request" | "response"
-  guardrailSourcesSummary?: SourceCheckSummary[]
+  guardrailActions?: CategoryActionRequired[]
   /** If not provided, all buttons are disabled (demo mode) */
   onAction?: (action: ApprovalAction) => void
   onEdit?: () => void
@@ -131,11 +131,10 @@ export interface FirewallApprovalCardProps {
   className?: string
 }
 
-const SEVERITY_COLORS: Record<string, string> = {
-  critical: "bg-red-500 text-white",
-  high: "bg-orange-500 text-white",
-  medium: "bg-yellow-500 text-black",
-  low: "bg-blue-500 text-white",
+/** Format a confidence value (0-1) as a percentage string */
+function formatConfidence(confidence: number | null): string {
+  if (confidence === null) return "N/A"
+  return `${Math.round(confidence * 100)}%`
 }
 
 export function FirewallApprovalCard({
@@ -145,9 +144,9 @@ export function FirewallApprovalCard({
   argumentsPreview,
   isModelRequest,
   isGuardrailRequest,
-  guardrailMatches,
+  guardrailVerdicts,
   guardrailDirection,
-  guardrailSourcesSummary,
+  guardrailActions,
   onAction,
   onEdit,
   submitting = false,
@@ -228,69 +227,55 @@ export function FirewallApprovalCard({
           ))}
         </div>
 
-        {/* Guardrail matches list - grouped by source */}
-        {requestType === "guardrail" && guardrailMatches && guardrailMatches.length > 0 && (
+        {/* Safety verdicts - grouped by model */}
+        {requestType === "guardrail" && guardrailVerdicts && guardrailVerdicts.length > 0 && (
           <div className="mt-2 space-y-2 max-h-48 overflow-auto">
-            {guardrailSourcesSummary && guardrailSourcesSummary.length > 0 ? (
-              // Group matches by source
-              guardrailSourcesSummary.map((src) => {
-                const sourceMatches = guardrailMatches.filter((m) => m.source_id === src.source_id)
-                return (
-                  <div key={src.source_id}>
-                    <div className="flex items-center justify-between text-[10px] mb-1">
-                      <span className="font-semibold text-xs">{src.source_label}</span>
-                      <span className="text-muted-foreground">
-                        {src.match_count > 0 ? `${src.match_count} match${src.match_count !== 1 ? "es" : ""}` : "clean"}
-                      </span>
-                    </div>
-                    {sourceMatches.length > 0 ? (
-                      <div className="space-y-1">
-                        {sourceMatches.map((match, i) => (
-                          <div key={i} className="bg-muted/50 rounded px-2 py-1.5 text-xs space-y-0.5">
-                            <div className="flex items-center gap-1.5">
-                              <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${SEVERITY_COLORS[match.severity] || "bg-gray-500 text-white"}`}>
-                                {match.severity.toUpperCase()}
-                              </span>
-                              <span className="font-medium">{match.rule_name}</span>
-                            </div>
-                            {match.matched_text && (
-                              <code className="block font-mono text-[10px] bg-red-50 dark:bg-red-950/30 text-red-700 dark:text-red-300 px-1.5 py-0.5 rounded truncate">
-                                {match.matched_text}
-                              </code>
-                            )}
-                            {match.description && (
-                              <p className="text-muted-foreground text-[10px]">{match.description}</p>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="text-[10px] text-emerald-500 pl-2">No matches</div>
-                    )}
-                  </div>
-                )
-              })
-            ) : (
-              // Fallback: flat list (no sources_checked available)
-              guardrailMatches.map((match, i) => (
-                <div key={i} className="bg-muted/50 rounded px-2 py-1.5 text-xs space-y-0.5">
+            {guardrailVerdicts.map((verdict) => (
+              <div key={verdict.model_id} className="bg-muted/50 rounded px-2 py-1.5 text-xs space-y-1">
+                <div className="flex items-center justify-between">
+                  <span className="font-semibold">{verdict.model_id}</span>
                   <div className="flex items-center gap-1.5">
-                    <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${SEVERITY_COLORS[match.severity] || "bg-gray-500 text-white"}`}>
-                      {match.severity.toUpperCase()}
+                    <span className="text-muted-foreground text-[10px]">{verdict.check_duration_ms}ms</span>
+                    <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${verdict.is_safe ? "bg-emerald-500 text-white" : "bg-red-500 text-white"}`}>
+                      {verdict.is_safe ? "SAFE" : "UNSAFE"}
                     </span>
-                    <span className="font-medium">{match.rule_name}</span>
-                    <span className="text-muted-foreground ml-auto text-[10px]">{match.source_label}</span>
                   </div>
-                  {match.matched_text && (
-                    <code className="block font-mono text-[10px] bg-red-50 dark:bg-red-950/30 text-red-700 dark:text-red-300 px-1.5 py-0.5 rounded truncate">
-                      {match.matched_text}
-                    </code>
-                  )}
-                  {match.description && (
-                    <p className="text-muted-foreground text-[10px]">{match.description}</p>
-                  )}
                 </div>
-              ))
+                {verdict.flagged_categories.length > 0 && (
+                  <div className="space-y-0.5 pl-1">
+                    {verdict.flagged_categories.map((cat, i) => (
+                      <div key={i} className="flex items-center gap-1.5 text-[10px]">
+                        <span className="text-red-500 font-medium">{cat.category}</span>
+                        <span className="text-muted-foreground">({cat.native_label})</span>
+                        <span className="ml-auto font-mono">{formatConfidence(cat.confidence)}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {verdict.confidence !== null && (
+                  <div className="text-[10px] text-muted-foreground">
+                    Overall confidence: {formatConfidence(verdict.confidence)}
+                  </div>
+                )}
+              </div>
+            ))}
+
+            {/* Actions required summary */}
+            {guardrailActions && guardrailActions.length > 0 && (
+              <div className="border-t border-border pt-1.5">
+                <span className="text-[10px] font-semibold text-muted-foreground">Actions Required</span>
+                <div className="space-y-0.5 mt-0.5">
+                  {guardrailActions.map((act, i) => (
+                    <div key={i} className="flex items-center gap-1.5 text-[10px]">
+                      <span className={`px-1 py-0.5 rounded font-bold ${act.action === "allow" ? "bg-emerald-500/20 text-emerald-600" : act.action === "ask" ? "bg-amber-500/20 text-amber-600" : "bg-blue-500/20 text-blue-600"}`}>
+                        {act.action.toUpperCase()}
+                      </span>
+                      <span className="font-medium">{act.category}</span>
+                      <span className="text-muted-foreground ml-auto">{act.model_id}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
             )}
           </div>
         )}

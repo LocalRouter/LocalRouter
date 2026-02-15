@@ -1997,18 +1997,14 @@ pub async fn get_guardrails_config(
     serde_json::to_value(&config.guardrails).map_err(|e| e.to_string())
 }
 
-/// Update guardrails configuration (global settings + source list)
+/// Update guardrails configuration
 #[tauri::command]
 pub async fn update_guardrails_config(
     config_json: String,
     config_manager: State<'_, ConfigManager>,
-    state: State<'_, Arc<lr_server::state::AppState>>,
 ) -> Result<(), String> {
     let new_config: lr_config::GuardrailsConfig =
         serde_json::from_str(&config_json).map_err(|e| format!("Invalid config JSON: {}", e))?;
-
-    let was_enabled = config_manager.get().guardrails.enabled;
-    let now_enabled = new_config.enabled;
 
     config_manager
         .update(|config| {
@@ -2018,473 +2014,320 @@ pub async fn update_guardrails_config(
 
     config_manager.save().await.map_err(|e| e.to_string())?;
 
-    // If guardrails was just enabled and engine doesn't exist, create it
-    if now_enabled && !was_enabled && state.guardrails_engine.is_none() {
-        tracing::info!("Guardrails enabled — engine will be initialized on next server restart");
-    }
-
     Ok(())
 }
 
-/// Convert lr-config source configs to lr-guardrails source configs
-fn to_guardrail_source_configs(
-    sources: &[lr_config::GuardrailSourceConfig],
-) -> Vec<lr_guardrails::source_manager::GuardrailSourceConfig> {
-    sources
-        .iter()
-        .map(|s| lr_guardrails::source_manager::GuardrailSourceConfig {
-            id: s.id.clone(),
-            label: s.label.clone(),
-            source_type: s.source_type.clone(),
-            enabled: s.enabled,
-            url: s.url.clone(),
-            data_paths: s.data_paths.clone(),
-            branch: s.branch.clone(),
-            predefined: s.predefined,
-            confidence_threshold: s.confidence_threshold,
-            model_architecture: s.model_architecture.clone(),
-            hf_repo_id: s.hf_repo_id.clone(),
-            requires_auth: s.requires_auth,
-        })
-        .collect()
-}
-
-/// Get per-source status information (rule counts, last updated, download state)
+/// Test safety check against input text (runs all enabled models)
 #[tauri::command]
-pub async fn get_guardrail_sources_status(
+pub async fn test_safety_check(
+    text: String,
     state: State<'_, Arc<lr_server::state::AppState>>,
 ) -> Result<serde_json::Value, String> {
-    let Some(ref engine) = state.guardrails_engine else {
+    let Some(ref engine) = state.safety_engine else {
+        return Err("Safety engine not initialized".to_string());
+    };
+
+    let result = engine
+        .check_text(&text, lr_guardrails::ScanDirection::Input)
+        .await;
+    serde_json::to_value(&result).map_err(|e| e.to_string())
+}
+
+/// Get status of a safety model (is provider configured? is model available?)
+#[tauri::command]
+pub async fn get_safety_model_status(
+    model_id: String,
+    config_manager: State<'_, ConfigManager>,
+) -> Result<serde_json::Value, String> {
+    let config = config_manager.get();
+    let model = config
+        .guardrails
+        .safety_models
+        .iter()
+        .find(|m| m.id == model_id)
+        .ok_or_else(|| format!("Safety model '{}' not found", model_id))?;
+
+    // Check if provider is configured
+    let provider_configured = if let Some(ref provider_id) = model.provider_id {
+        config
+            .providers
+            .iter()
+            .any(|p| p.name == *provider_id && p.enabled)
+    } else {
+        false
+    };
+
+    // Check download status for local models
+    let download_status = if let Some(ref gguf_filename) = model.gguf_filename {
+        let status = lr_guardrails::downloader::get_download_status(&model_id, gguf_filename);
+        Some(status)
+    } else {
+        None
+    };
+
+    let downloaded = download_status.as_ref().map_or(false, |s| s.downloaded);
+
+    // Determine execution mode
+    let execution_mode = match model.execution_mode.as_deref() {
+        Some("local") => "local",
+        Some("provider") => {
+            if provider_configured { "provider" } else { "not_configured" }
+        }
+        _ => {
+            // Default: if provider is configured, use provider; else not_configured
+            if provider_configured { "provider" } else { "not_configured" }
+        }
+    };
+
+    Ok(serde_json::json!({
+        "id": model.id,
+        "label": model.label,
+        "model_type": model.model_type,
+        "enabled": model.enabled,
+        "provider_configured": provider_configured,
+        "provider_id": model.provider_id,
+        "model_name": model.model_name,
+        "requires_auth": model.requires_auth,
+        "downloaded": downloaded,
+        "execution_mode": execution_mode,
+    }))
+}
+
+/// Test a single safety model against text
+#[tauri::command]
+pub async fn test_safety_model(
+    model_id: String,
+    text: String,
+    state: State<'_, Arc<lr_server::state::AppState>>,
+) -> Result<serde_json::Value, String> {
+    let Some(ref engine) = state.safety_engine else {
+        return Err("Safety engine not initialized".to_string());
+    };
+
+    let result = engine
+        .check_text_single_model(&text, lr_guardrails::ScanDirection::Input, &model_id)
+        .await;
+
+    serde_json::to_value(&result.verdicts).map_err(|e| e.to_string())
+}
+
+/// Get all safety categories with which models support them
+#[tauri::command]
+pub async fn get_all_safety_categories(
+    state: State<'_, Arc<lr_server::state::AppState>>,
+) -> Result<serde_json::Value, String> {
+    let Some(ref _engine) = state.safety_engine else {
         return Ok(serde_json::json!([]));
     };
 
-    let config = state.config_manager.get();
-    let source_configs = to_guardrail_source_configs(&config.guardrails.sources);
-    let statuses = engine.source_manager().get_sources_status(&source_configs);
-    serde_json::to_value(&statuses).map_err(|e| e.to_string())
+    // Return a static list of all known categories
+    // Fields match the TypeScript SafetyCategoryInfo interface:
+    //   category, display_name, description, supported_by
+    let categories = vec![
+        serde_json::json!({"category": "violent_crimes", "display_name": "Violent Crimes", "description": "Content promoting or depicting violence or violent crimes", "supported_by": ["llama_guard_4", "nemotron", "granite_guardian"]}),
+        serde_json::json!({"category": "non_violent_crimes", "display_name": "Non-Violent Crimes", "description": "Content related to non-violent criminal activities", "supported_by": ["llama_guard_4", "nemotron"]}),
+        serde_json::json!({"category": "sex_crimes", "display_name": "Sex Crimes", "description": "Content related to sex-related crimes", "supported_by": ["llama_guard_4", "nemotron"]}),
+        serde_json::json!({"category": "child_exploitation", "display_name": "Child Exploitation", "description": "Content involving child sexual exploitation", "supported_by": ["llama_guard_4", "nemotron"]}),
+        serde_json::json!({"category": "defamation", "display_name": "Defamation", "description": "Content that defames individuals or groups", "supported_by": ["llama_guard_4", "nemotron"]}),
+        serde_json::json!({"category": "specialized_advice", "display_name": "Specialized Advice", "description": "Unqualified professional advice (medical, legal, financial)", "supported_by": ["llama_guard_4", "nemotron"]}),
+        serde_json::json!({"category": "privacy", "display_name": "Privacy", "description": "Content that violates personal privacy", "supported_by": ["llama_guard_4", "nemotron"]}),
+        serde_json::json!({"category": "intellectual_property", "display_name": "Intellectual Property", "description": "Content that infringes intellectual property rights", "supported_by": ["llama_guard_4", "nemotron"]}),
+        serde_json::json!({"category": "indiscriminate_weapons", "display_name": "Indiscriminate Weapons", "description": "Content related to weapons of mass destruction", "supported_by": ["llama_guard_4", "nemotron"]}),
+        serde_json::json!({"category": "hate", "display_name": "Hate", "description": "Content promoting hatred or discrimination", "supported_by": ["llama_guard_4", "nemotron", "shield_gemma", "granite_guardian"]}),
+        serde_json::json!({"category": "self_harm", "display_name": "Self-Harm", "description": "Content promoting self-harm or suicide", "supported_by": ["llama_guard_4", "nemotron"]}),
+        serde_json::json!({"category": "sexual_content", "display_name": "Sexual Content", "description": "Sexually explicit or inappropriate content", "supported_by": ["llama_guard_4", "nemotron", "shield_gemma", "granite_guardian"]}),
+        serde_json::json!({"category": "elections", "display_name": "Elections", "description": "Content related to election interference", "supported_by": ["llama_guard_4", "nemotron"]}),
+        serde_json::json!({"category": "code_interpreter_abuse", "display_name": "Code Interpreter Abuse", "description": "Attempts to abuse code interpreter capabilities", "supported_by": ["llama_guard_4", "nemotron"]}),
+        serde_json::json!({"category": "dangerous_content", "display_name": "Dangerous Content", "description": "Content facilitating harmful activities", "supported_by": ["shield_gemma"]}),
+        serde_json::json!({"category": "harassment", "display_name": "Harassment", "description": "Content targeting individuals with harmful intent", "supported_by": ["shield_gemma"]}),
+        serde_json::json!({"category": "jailbreak", "display_name": "Jailbreak", "description": "Attempts to bypass AI safety guidelines", "supported_by": ["granite_guardian"]}),
+        serde_json::json!({"category": "social_bias", "display_name": "Social Bias", "description": "Content reinforcing social stereotypes or biases", "supported_by": ["granite_guardian"]}),
+        serde_json::json!({"category": "profanity", "display_name": "Profanity", "description": "Vulgar or offensive language", "supported_by": ["nemotron", "granite_guardian"]}),
+        serde_json::json!({"category": "unethical_behavior", "display_name": "Unethical Behavior", "description": "Actions that violate ethical norms", "supported_by": ["granite_guardian"]}),
+        serde_json::json!({"category": "context_relevance", "display_name": "Context Relevance (RAG)", "description": "Retrieved context is not relevant to the query", "supported_by": ["granite_guardian"]}),
+        serde_json::json!({"category": "groundedness", "display_name": "Groundedness (RAG)", "description": "Response not grounded in provided context", "supported_by": ["granite_guardian"]}),
+        serde_json::json!({"category": "answer_relevance", "display_name": "Answer Relevance (RAG)", "description": "Response does not address the original question", "supported_by": ["granite_guardian"]}),
+    ];
+
+    Ok(serde_json::json!(categories))
 }
 
-/// Get detailed information about a guardrail source
+/// Batch update category actions
 #[tauri::command]
-pub async fn get_guardrail_source_details(
-    source_id: String,
-    state: State<'_, Arc<lr_server::state::AppState>>,
-) -> Result<serde_json::Value, String> {
-    let Some(ref engine) = state.guardrails_engine else {
-        return Err("Guardrails engine not initialized".to_string());
-    };
-
-    let config = state.config_manager.get();
-    let source = config
-        .guardrails
-        .sources
-        .iter()
-        .find(|s| s.id == source_id)
-        .ok_or_else(|| format!("Source not found: {}", source_id))?;
-
-    let gs = to_guardrail_source_configs(&[source.clone()])
-        .into_iter()
-        .next()
-        .unwrap();
-
-    let details = engine.source_manager().get_source_details(&gs);
-    serde_json::to_value(&details).map_err(|e| e.to_string())
-}
-
-/// Trigger download/update for a single guardrail source
-#[tauri::command]
-pub async fn update_guardrail_source(
-    source_id: String,
-    state: State<'_, Arc<lr_server::state::AppState>>,
-) -> Result<usize, String> {
-    let Some(ref engine) = state.guardrails_engine else {
-        return Err("Guardrails engine not initialized".to_string());
-    };
-
-    let config = state.config_manager.get();
-    let source = config
-        .guardrails
-        .sources
-        .iter()
-        .find(|s| s.id == source_id)
-        .ok_or_else(|| format!("Source not found: {}", source_id))?;
-
-    let gs = to_guardrail_source_configs(&[source.clone()])
-        .into_iter()
-        .next()
-        .unwrap();
-
-    engine
-        .source_manager()
-        .update_source(&gs)
-        .await
-        .map_err(|e| e.to_string())
-}
-
-/// Trigger download/update for all enabled guardrail sources
-#[tauri::command]
-pub async fn update_all_guardrail_sources(
-    state: State<'_, Arc<lr_server::state::AppState>>,
-) -> Result<serde_json::Value, String> {
-    let Some(ref engine) = state.guardrails_engine else {
-        return Err("Guardrails engine not initialized".to_string());
-    };
-
-    let config = state.config_manager.get();
-    let source_configs = to_guardrail_source_configs(&config.guardrails.sources);
-    let mut results = serde_json::Map::new();
-
-    for source in &source_configs {
-        if !source.enabled || source.id == "builtin" {
-            continue;
-        }
-        match engine.source_manager().update_source(source).await {
-            Ok(count) => {
-                results.insert(source.id.clone(), serde_json::json!({"rule_count": count}));
-            }
-            Err(e) => {
-                results.insert(
-                    source.id.clone(),
-                    serde_json::json!({"error": e.to_string()}),
-                );
-            }
-        }
-    }
-
-    Ok(serde_json::Value::Object(results))
-}
-
-/// Add a custom guardrail source
-#[tauri::command]
-pub async fn add_guardrail_source(
-    id: String,
-    label: String,
-    source_type: String,
-    url: String,
-    data_paths: Vec<String>,
-    branch: Option<String>,
+pub async fn update_category_actions(
+    actions_json: String,
     config_manager: State<'_, ConfigManager>,
 ) -> Result<(), String> {
-    // Validate source type
-    if !["regex", "yara", "model"].contains(&source_type.as_str()) {
-        return Err(format!(
-            "Invalid source_type '{}'. Must be regex, yara, or model.",
-            source_type
-        ));
-    }
-
-    // Validate URL
-    if url.is_empty() {
-        return Err("URL must not be empty".to_string());
-    }
-
-    // Check for duplicate ID
-    let config = config_manager.get();
-    if config.guardrails.sources.iter().any(|s| s.id == id) {
-        return Err(format!("Source with id '{}' already exists", id));
-    }
-
-    let new_source = lr_config::GuardrailSourceConfig {
-        id,
-        label,
-        source_type,
-        enabled: true,
-        url,
-        data_paths,
-        branch: branch.unwrap_or_else(|| "main".to_string()),
-        predefined: false,
-        confidence_threshold: 0.7,
-        model_architecture: None,
-        hf_repo_id: None,
-        requires_auth: false,
-    };
+    let actions: Vec<lr_config::CategoryActionEntry> =
+        serde_json::from_str(&actions_json).map_err(|e| format!("Invalid JSON: {}", e))?;
 
     config_manager
         .update(|config| {
-            config.guardrails.sources.push(new_source);
+            config.guardrails.category_actions = actions;
         })
         .map_err(|e| e.to_string())?;
 
     config_manager.save().await.map_err(|e| e.to_string())
 }
 
-/// Remove a user-added guardrail source (cannot remove predefined)
+// ============================================================================
+// Safety Model Download & Management Commands
+// ============================================================================
+
+/// Download a safety model's GGUF file from HuggingFace
+///
+/// Starts an async download. Progress is reported via events:
+/// - `safety-model-download-progress`
+/// - `safety-model-download-complete`
+/// - `safety-model-download-failed`
 #[tauri::command]
-pub async fn remove_guardrail_source(
-    source_id: String,
+pub async fn download_safety_model(
+    model_id: String,
     config_manager: State<'_, ConfigManager>,
-    state: State<'_, Arc<lr_server::state::AppState>>,
+    app_handle: AppHandle,
 ) -> Result<(), String> {
     let config = config_manager.get();
-    let source = config
+    let model = config
         .guardrails
-        .sources
+        .safety_models
         .iter()
-        .find(|s| s.id == source_id)
-        .ok_or_else(|| format!("Source not found: {}", source_id))?;
+        .find(|m| m.id == model_id)
+        .ok_or_else(|| format!("Safety model '{}' not found", model_id))?;
 
-    if source.predefined {
-        return Err("Cannot remove predefined sources. Disable them instead.".to_string());
-    }
+    let hf_repo_id = model
+        .hf_repo_id
+        .as_ref()
+        .ok_or_else(|| format!("Model '{}' has no HuggingFace repo ID configured", model_id))?
+        .clone();
 
-    config_manager
-        .update(|config| {
-            config.guardrails.sources.retain(|s| s.id != source_id);
-        })
-        .map_err(|e| e.to_string())?;
+    let gguf_filename = model
+        .gguf_filename
+        .as_ref()
+        .ok_or_else(|| format!("Model '{}' has no GGUF filename configured", model_id))?
+        .clone();
 
-    config_manager.save().await.map_err(|e| e.to_string())?;
+    let hf_token = config.guardrails.hf_token.clone();
+    let model_id_owned = model_id.clone();
 
-    // Clean up cached data if engine exists
-    if let Some(ref engine) = state.guardrails_engine {
-        let _ = engine.source_manager().remove_source(&source_id).await;
-    }
+    // Spawn the download in the background
+    tokio::spawn(async move {
+        let result = lr_guardrails::downloader::download_model(
+            &model_id_owned,
+            &hf_repo_id,
+            &gguf_filename,
+            hf_token.as_deref(),
+            Some(app_handle),
+        )
+        .await;
+
+        if let Err(e) = result {
+            tracing::error!("Safety model download failed for '{}': {}", model_id_owned, e);
+        }
+    });
 
     Ok(())
 }
 
-// ============================================================================
-// Custom GuardRails Rule Commands
-// ============================================================================
+/// Get the download status of a safety model's GGUF file
+#[tauri::command]
+pub async fn get_safety_model_download_status(
+    model_id: String,
+    config_manager: State<'_, ConfigManager>,
+) -> Result<serde_json::Value, String> {
+    let config = config_manager.get();
+    let model = config
+        .guardrails
+        .safety_models
+        .iter()
+        .find(|m| m.id == model_id)
+        .ok_or_else(|| format!("Safety model '{}' not found", model_id))?;
 
-/// Helper: convert lr_config custom rules to lr_guardrails custom rules and reload
-fn reload_custom_rules(state: &lr_server::state::AppState) {
-    if let Some(ref engine) = state.guardrails_engine {
-        let config = state.config_manager.get();
-        let custom_rules: Vec<lr_guardrails::source_manager::CustomGuardrailRule> = config
-            .guardrails
-            .custom_rules
-            .iter()
-            .map(|r| lr_guardrails::source_manager::CustomGuardrailRule {
-                id: r.id.clone(),
-                name: r.name.clone(),
-                pattern: r.pattern.clone(),
-                category: r.category.clone(),
-                severity: r.severity.clone(),
-                direction: r.direction.clone(),
-                enabled: r.enabled,
-            })
-            .collect();
-        engine.source_manager().load_custom_rules(&custom_rules);
-    }
+    let status = if let Some(ref gguf_filename) = model.gguf_filename {
+        lr_guardrails::downloader::get_download_status(&model_id, gguf_filename)
+    } else {
+        lr_guardrails::downloader::SafetyModelDownloadStatus {
+            downloaded: false,
+            file_path: None,
+            file_size: None,
+        }
+    };
+
+    serde_json::to_value(&status).map_err(|e| e.to_string())
 }
 
-/// Add a custom guardrail rule
+/// Add a new custom safety model to the configuration
 #[tauri::command]
-pub async fn add_custom_guardrail_rule(
-    rule_json: String,
+pub async fn add_safety_model(
+    config_json: String,
     config_manager: State<'_, ConfigManager>,
-    state: State<'_, Arc<lr_server::state::AppState>>,
 ) -> Result<(), String> {
-    let rule: lr_config::CustomGuardrailRule =
-        serde_json::from_str(&rule_json).map_err(|e| format!("Invalid rule JSON: {}", e))?;
+    let mut new_model: lr_config::SafetyModelConfig =
+        serde_json::from_str(&config_json).map_err(|e| format!("Invalid model config JSON: {}", e))?;
 
-    // Validate regex compiles
-    lr_guardrails::validate_regex_pattern(&rule.pattern)
-        .map_err(|e| format!("Invalid regex pattern: {}", e))?;
+    // Generate unique ID if not provided
+    if new_model.id.is_empty() {
+        new_model.id = format!(
+            "custom_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis()
+        );
+    }
+
+    // Custom models are never predefined
+    new_model.predefined = false;
 
     // Check for duplicate ID
-    let config = config_manager.get();
-    if config.guardrails.custom_rules.iter().any(|r| r.id == rule.id) {
-        return Err(format!("Custom rule with id '{}' already exists", rule.id));
-    }
-
-    config_manager
-        .update(|config| {
-            config.guardrails.custom_rules.push(rule);
-        })
-        .map_err(|e| e.to_string())?;
-
-    config_manager.save().await.map_err(|e| e.to_string())?;
-
-    reload_custom_rules(&state);
-    Ok(())
-}
-
-/// Update an existing custom guardrail rule
-#[tauri::command]
-pub async fn update_custom_guardrail_rule(
-    rule_json: String,
-    config_manager: State<'_, ConfigManager>,
-    state: State<'_, Arc<lr_server::state::AppState>>,
-) -> Result<(), String> {
-    let rule: lr_config::CustomGuardrailRule =
-        serde_json::from_str(&rule_json).map_err(|e| format!("Invalid rule JSON: {}", e))?;
-
-    // Validate regex compiles
-    lr_guardrails::validate_regex_pattern(&rule.pattern)
-        .map_err(|e| format!("Invalid regex pattern: {}", e))?;
-
-    config_manager
-        .update(|config| {
-            if let Some(existing) = config.guardrails.custom_rules.iter_mut().find(|r| r.id == rule.id) {
-                *existing = rule;
-            }
-        })
-        .map_err(|e| e.to_string())?;
-
-    config_manager.save().await.map_err(|e| e.to_string())?;
-
-    reload_custom_rules(&state);
-    Ok(())
-}
-
-/// Remove a custom guardrail rule
-#[tauri::command]
-pub async fn remove_custom_guardrail_rule(
-    rule_id: String,
-    config_manager: State<'_, ConfigManager>,
-    state: State<'_, Arc<lr_server::state::AppState>>,
-) -> Result<(), String> {
-    config_manager
-        .update(|config| {
-            config.guardrails.custom_rules.retain(|r| r.id != rule_id);
-        })
-        .map_err(|e| e.to_string())?;
-
-    config_manager.save().await.map_err(|e| e.to_string())?;
-
-    reload_custom_rules(&state);
-    Ok(())
-}
-
-/// Test guardrail rules against input text (regex + ML models)
-#[tauri::command]
-pub async fn test_guardrail_input(
-    text: String,
-    state: State<'_, Arc<lr_server::state::AppState>>,
-    config_manager: State<'_, lr_config::ConfigManager>,
-) -> Result<serde_json::Value, String> {
-    let Some(ref engine) = state.guardrails_engine else {
-        return Err("Guardrails engine not initialized".to_string());
-    };
-
-    // Wrap text as a chat message body for scanning
-    let body = serde_json::json!({
-        "messages": [
-            {"role": "user", "content": text}
-        ]
-    });
-
-    // Run regex-based checks
-    let mut result = engine.check_input(&body);
-
-    // Run ML model classification if model manager is available
-    if let Some(ref model_manager) = state.guardrail_model_manager {
+    {
         let config = config_manager.get();
-        let texts = lr_guardrails::text_extractor::extract_request_text(&body);
-        let threshold = config
-            .guardrails
-            .sources
-            .iter()
-            .find(|s| s.source_type == "model" && s.enabled)
-            .map(|s| s.confidence_threshold)
-            .unwrap_or(0.7);
-        let (ml_matches, ml_summaries) = model_manager.classify_texts(&texts, threshold);
-        if !ml_matches.is_empty() {
-            result.matches.extend(ml_matches);
+        if config.guardrails.safety_models.iter().any(|m| m.id == new_model.id) {
+            return Err(format!("A safety model with ID '{}' already exists", new_model.id));
         }
-        result.sources_checked.extend(ml_summaries);
     }
 
-    serde_json::to_value(&result).map_err(|e| e.to_string())
-}
-
-// ─── ML Model Guardrail Commands ───────────────────────────────────────────
-
-/// Download a guardrail ML model from HuggingFace
-#[tauri::command]
-pub async fn download_guardrail_model(
-    source_id: String,
-    hf_token: Option<String>,
-    state: State<'_, Arc<lr_server::state::AppState>>,
-    config_manager: State<'_, lr_config::ConfigManager>,
-    app_handle: tauri::AppHandle,
-) -> Result<(), String> {
-    let Some(ref model_manager) = state.guardrail_model_manager else {
-        return Err("Model manager not initialized".to_string());
-    };
-
-    // Look up hf_repo_id from config
-    let config = config_manager.get();
-    let source = config
-        .guardrails
-        .sources
-        .iter()
-        .find(|s| s.id == source_id)
-        .ok_or_else(|| format!("Source '{}' not found in config", source_id))?;
-
-    let hf_repo_id = source
-        .hf_repo_id
-        .clone()
-        .or_else(|| {
-            // Fallback: extract repo ID from HuggingFace URL
-            let prefix = "https://huggingface.co/";
-            source.url.strip_prefix(prefix).and_then(|path| {
-                let parts: Vec<&str> = path.trim_end_matches('/').splitn(3, '/').collect();
-                if parts.len() >= 2 {
-                    Some(format!("{}/{}", parts[0], parts[1]))
-                } else {
-                    None
-                }
-            })
+    config_manager
+        .update(|config| {
+            config.guardrails.safety_models.push(new_model);
         })
-        .ok_or_else(|| format!("Source '{}' has no hf_repo_id configured", source_id))?;
+        .map_err(|e| e.to_string())?;
 
-    // Set up progress callback to emit Tauri events
-    let app_handle_clone = app_handle.clone();
-    model_manager.set_progress_callback(move |progress| {
-        use tauri::Emitter;
-        let _ = app_handle_clone.emit("guardrail-model-download-progress", &progress);
-    });
-
-    // Spawn download
-    let manager = model_manager.clone();
-    let src_id = source_id.clone();
-    let token = hf_token.clone();
-    tokio::spawn(async move {
-        use tauri::Emitter;
-        match manager.download_model(&src_id, &hf_repo_id, token.as_deref()).await {
-            Ok(()) => {
-                let _ = app_handle.emit("guardrail-model-download-complete", &src_id);
-            }
-            Err(e) => {
-                tracing::error!("Model download failed: {}", e);
-                let _ = app_handle.emit(
-                    "guardrail-model-download-failed",
-                    serde_json::json!({ "source_id": src_id, "error": e }),
-                );
-            }
-        }
-    });
-
+    config_manager.save().await.map_err(|e| e.to_string())?;
     Ok(())
 }
 
-/// Get status of a guardrail ML model
+/// Remove a custom (non-predefined) safety model
 #[tauri::command]
-pub async fn get_guardrail_model_status(
-    source_id: String,
-    state: State<'_, Arc<lr_server::state::AppState>>,
-) -> Result<serde_json::Value, String> {
-    let Some(ref model_manager) = state.guardrail_model_manager else {
-        return Err("Model manager not initialized".to_string());
-    };
-
-    let info = model_manager.get_model_info(&source_id);
-    serde_json::to_value(&info).map_err(|e| e.to_string())
-}
-
-/// Unload a guardrail ML model from memory
-#[tauri::command]
-pub async fn unload_guardrail_model(
-    source_id: String,
-    state: State<'_, Arc<lr_server::state::AppState>>,
+pub async fn remove_safety_model(
+    model_id: String,
+    config_manager: State<'_, ConfigManager>,
 ) -> Result<(), String> {
-    let Some(ref model_manager) = state.guardrail_model_manager else {
-        return Err("Model manager not initialized".to_string());
-    };
+    {
+        let config = config_manager.get();
+        let model = config
+            .guardrails
+            .safety_models
+            .iter()
+            .find(|m| m.id == model_id)
+            .ok_or_else(|| format!("Safety model '{}' not found", model_id))?;
 
-    model_manager.unload_model(&source_id);
+        if model.predefined {
+            return Err("Cannot remove a predefined (built-in) safety model".to_string());
+        }
+    }
+
+    config_manager
+        .update(|config| {
+            config.guardrails.safety_models.retain(|m| m.id != model_id);
+        })
+        .map_err(|e| e.to_string())?;
+
+    config_manager.save().await.map_err(|e| e.to_string())?;
+
+    // Clean up downloaded files (best effort)
+    if let Err(e) = lr_guardrails::downloader::delete_model_files(&model_id).await {
+        tracing::warn!("Failed to delete model files for '{}': {}", model_id, e);
+    }
+
     Ok(())
 }
