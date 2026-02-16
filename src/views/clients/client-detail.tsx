@@ -11,11 +11,12 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import { FlaskConical, MessageSquare, Puzzle, ChevronDown } from "lucide-react"
+import { FlaskConical, MessageSquare, Puzzle, Shield, ChevronDown } from "lucide-react"
 import { ClientConfigTab } from "./tabs/config-tab"
 import { ClientModelsTab } from "./tabs/models-tab"
 import { ClientMcpTab } from "./tabs/mcp-tab"
 import { ClientSkillsTab } from "./tabs/skills-tab"
+import { ClientGuardrailsTab } from "./tabs/guardrails-tab"
 import { ClientSettingsTab } from "./tabs/settings-tab"
 import type { McpPermissions, SkillsPermissions, ModelPermissions, PermissionState } from "@/components/permissions"
 import type { ClientMode } from "@/types/tauri-commands"
@@ -164,6 +165,12 @@ export function ClientDetail({
                     MCP & Skills
                   </DropdownMenuItem>
                 )}
+                <DropdownMenuItem
+                  onClick={() => onViewChange("try-it-out", `guardrails/init/client/${client.client_id}`)}
+                >
+                  <Shield className="h-4 w-4 mr-2" />
+                  GuardRails
+                </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
           )}
@@ -176,6 +183,7 @@ export function ClientDetail({
             {showModelsTab && <TabsTrigger value="models">Models</TabsTrigger>}
             {showMcpTab && <TabsTrigger value="mcp">MCP</TabsTrigger>}
             {showSkillsTab && <TabsTrigger value="skills">Skills</TabsTrigger>}
+            <TabsTrigger value="guardrails">GuardRails</TabsTrigger>
             <TabsTrigger value="settings">Settings</TabsTrigger>
           </TabsList>
 
@@ -205,6 +213,14 @@ export function ClientDetail({
               <ClientSkillsTab client={client} onUpdate={loadClient} />
             </TabsContent>
           )}
+
+          <TabsContent value="guardrails">
+            <ClientGuardrailsTab
+              client={client}
+              onUpdate={loadClient}
+              onViewChange={onViewChange}
+            />
+          </TabsContent>
 
           <TabsContent value="settings">
             <ClientSettingsTab

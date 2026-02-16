@@ -219,8 +219,7 @@ async fn run_guardrails_scan(
     let client = get_enabled_client_from_manager(state, &client_ctx.client_id)?;
     let config = state.config_manager.get();
 
-    let enabled = client.guardrails_enabled.unwrap_or(config.guardrails.enabled);
-    if !enabled || !config.guardrails.scan_requests {
+    if !client.guardrails.enabled || !config.guardrails.scan_requests {
         return Ok(None);
     }
 
@@ -266,6 +265,12 @@ async fn handle_guardrail_approval(
     };
     let client = get_enabled_client_from_manager(state, &client_ctx.client_id)?;
 
+    // Extract the scanned text for display in the approval popup
+    let request_json = serde_json::to_value(request).unwrap_or_default();
+    let flagged_text = build_flagged_text_preview(
+        &lr_guardrails::text_extractor::extract_request_text(&request_json),
+    );
+
     let details = GuardrailApprovalDetails {
         verdicts: result
             .verdicts
@@ -279,6 +284,7 @@ async fn handle_guardrail_approval(
             .collect(),
         total_duration_ms: result.total_duration_ms,
         scan_direction: "request".to_string(),
+        flagged_text,
     };
 
     let preview = result
@@ -311,7 +317,8 @@ async fn handle_guardrail_approval(
         | FirewallApprovalAction::AllowPermanent => Ok(()),
         FirewallApprovalAction::Deny
         | FirewallApprovalAction::DenySession
-        | FirewallApprovalAction::DenyAlways => Err(ApiErrorResponse::forbidden(
+        | FirewallApprovalAction::DenyAlways
+        | FirewallApprovalAction::BlockCategories => Err(ApiErrorResponse::forbidden(
             "Request blocked by safety check",
         )),
     }
@@ -338,10 +345,8 @@ async fn check_response_guardrails_body(
     }
 
     let client = get_enabled_client_from_manager(state, &client_ctx.client_id)?;
-    let config = state.config_manager.get();
 
-    let enabled = client.guardrails_enabled.unwrap_or(config.guardrails.enabled);
-    if !enabled || !config.guardrails.scan_responses {
+    if !client.guardrails.enabled {
         return Ok(());
     }
 
@@ -357,6 +362,10 @@ async fn check_response_guardrails_body(
         return Ok(());
     }
 
+    let flagged_text = build_flagged_text_preview(
+        &lr_guardrails::text_extractor::extract_response_text(response_body),
+    );
+
     let details = GuardrailApprovalDetails {
         verdicts: result
             .verdicts
@@ -370,6 +379,7 @@ async fn check_response_guardrails_body(
             .collect(),
         total_duration_ms: result.total_duration_ms,
         scan_direction: "response".to_string(),
+        flagged_text,
     };
 
     let preview = result
@@ -402,9 +412,35 @@ async fn check_response_guardrails_body(
         | FirewallApprovalAction::AllowPermanent => Ok(()),
         FirewallApprovalAction::Deny
         | FirewallApprovalAction::DenySession
-        | FirewallApprovalAction::DenyAlways => Err(ApiErrorResponse::forbidden(
+        | FirewallApprovalAction::DenyAlways
+        | FirewallApprovalAction::BlockCategories => Err(ApiErrorResponse::forbidden(
             "Response blocked by safety check",
         )),
+    }
+}
+
+/// Build a truncated text preview from extracted texts for the guardrail approval popup.
+fn build_flagged_text_preview(texts: &[lr_guardrails::text_extractor::ExtractedText]) -> String {
+    const MAX_LEN: usize = 500;
+
+    // Prefer the last user message as the most relevant context
+    let best = texts
+        .iter()
+        .rev()
+        .find(|t| t.label.starts_with("user"))
+        .or_else(|| texts.last());
+
+    match best {
+        Some(t) => {
+            let prefix = format!("[{}] ", t.label);
+            let available = MAX_LEN.saturating_sub(prefix.len());
+            if t.text.len() <= available {
+                format!("{}{}", prefix, t.text)
+            } else {
+                format!("{}{}...", prefix, &t.text[..available.saturating_sub(3)])
+            }
+        }
+        None => String::new(),
     }
 }
 
@@ -676,10 +712,10 @@ async fn validate_client_provider_access(
         return Ok(());
     }
 
-    // Extract provider from model string
+    // Extract provider and model_id from model string
     // Format can be "provider/model" or just "model"
-    let provider = if let Some((prov, _model)) = request.model.split_once('/') {
-        prov.to_string()
+    let (provider, model_id) = if let Some((prov, model)) = request.model.split_once('/') {
+        (prov.to_string(), model.to_string())
     } else {
         // No provider specified - need to find which provider has this model
         let all_models = state
@@ -698,30 +734,32 @@ async fn validate_client_provider_access(
                     .with_param("model")
             })?;
 
-        matching_model.provider.clone()
+        (matching_model.provider.clone(), matching_model.id.clone())
     };
 
-    // Check if provider is enabled using model_permissions (hierarchical: model -> provider -> global)
-    let permission_state = client.model_permissions.resolve_provider(&provider);
+    // Check if model is enabled using model_permissions (hierarchical: model -> provider -> global)
+    let permission_state = client.model_permissions.resolve_model(&provider, &model_id);
 
     if !permission_state.is_enabled() {
         tracing::warn!(
-            "Client {} attempted to access unauthorized LLM provider: {}",
+            "Client {} attempted to access unauthorized model: {}/{}",
             client.id,
-            provider
+            provider,
+            model_id
         );
 
         return Err(ApiErrorResponse::forbidden(format!(
-            "Access denied: Client is not authorized to use provider '{}'. Contact administrator to grant access.",
-            provider
+            "Access denied: Client is not authorized to use model '{}/{}'. Contact administrator to grant access.",
+            provider, model_id
         ))
         .with_param("model"));
     }
 
     tracing::debug!(
-        "Client {} authorized for LLM provider: {} (permission: {:?})",
+        "Client {} authorized for model: {}/{} (permission: {:?})",
         client.id,
         provider,
+        model_id,
         permission_state
     );
 

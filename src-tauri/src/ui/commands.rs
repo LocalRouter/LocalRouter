@@ -1918,8 +1918,7 @@ pub async fn debug_trigger_firewall_popup(
     };
 
     // Build full arguments for edit mode testing
-    let full_arguments: Option<serde_json::Value> =
-        serde_json::from_str(&arguments_preview).ok();
+    let full_arguments: Option<serde_json::Value> = serde_json::from_str(&arguments_preview).ok();
 
     // For debug purposes, we don't need a response channel since there's no
     // real MCP request waiting for the approval. Setting response_sender to None
@@ -2021,20 +2020,76 @@ pub async fn update_guardrails_config(
 /// Returns (category_name, list_of_model_types) pairs.
 fn category_model_type_mapping() -> Vec<(&'static str, Vec<&'static str>)> {
     vec![
-        ("violent_crimes", vec!["llama_guard", "llama_guard_4", "nemotron", "granite_guardian"]),
-        ("non_violent_crimes", vec!["llama_guard", "llama_guard_4", "nemotron"]),
-        ("sex_crimes", vec!["llama_guard", "llama_guard_4", "nemotron"]),
-        ("child_exploitation", vec!["llama_guard", "llama_guard_4", "nemotron"]),
-        ("defamation", vec!["llama_guard", "llama_guard_4", "nemotron"]),
-        ("specialized_advice", vec!["llama_guard", "llama_guard_4", "nemotron"]),
+        (
+            "violent_crimes",
+            vec![
+                "llama_guard",
+                "llama_guard_4",
+                "nemotron",
+                "granite_guardian",
+            ],
+        ),
+        (
+            "non_violent_crimes",
+            vec!["llama_guard", "llama_guard_4", "nemotron"],
+        ),
+        (
+            "sex_crimes",
+            vec!["llama_guard", "llama_guard_4", "nemotron"],
+        ),
+        (
+            "child_exploitation",
+            vec!["llama_guard", "llama_guard_4", "nemotron"],
+        ),
+        (
+            "defamation",
+            vec!["llama_guard", "llama_guard_4", "nemotron"],
+        ),
+        (
+            "specialized_advice",
+            vec!["llama_guard", "llama_guard_4", "nemotron"],
+        ),
         ("privacy", vec!["llama_guard", "llama_guard_4", "nemotron"]),
-        ("intellectual_property", vec!["llama_guard", "llama_guard_4", "nemotron"]),
-        ("indiscriminate_weapons", vec!["llama_guard", "llama_guard_4", "nemotron"]),
-        ("hate", vec!["llama_guard", "llama_guard_4", "nemotron", "shield_gemma", "granite_guardian"]),
-        ("self_harm", vec!["llama_guard", "llama_guard_4", "nemotron"]),
-        ("sexual_content", vec!["llama_guard", "llama_guard_4", "nemotron", "shield_gemma", "granite_guardian"]),
-        ("elections", vec!["llama_guard", "llama_guard_4", "nemotron"]),
-        ("code_interpreter_abuse", vec!["llama_guard", "llama_guard_4", "nemotron"]),
+        (
+            "intellectual_property",
+            vec!["llama_guard", "llama_guard_4", "nemotron"],
+        ),
+        (
+            "indiscriminate_weapons",
+            vec!["llama_guard", "llama_guard_4", "nemotron"],
+        ),
+        (
+            "hate",
+            vec![
+                "llama_guard",
+                "llama_guard_4",
+                "nemotron",
+                "shield_gemma",
+                "granite_guardian",
+            ],
+        ),
+        (
+            "self_harm",
+            vec!["llama_guard", "llama_guard_4", "nemotron"],
+        ),
+        (
+            "sexual_content",
+            vec![
+                "llama_guard",
+                "llama_guard_4",
+                "nemotron",
+                "shield_gemma",
+                "granite_guardian",
+            ],
+        ),
+        (
+            "elections",
+            vec!["llama_guard", "llama_guard_4", "nemotron"],
+        ),
+        (
+            "code_interpreter_abuse",
+            vec!["llama_guard", "llama_guard_4", "nemotron"],
+        ),
         ("dangerous_content", vec!["shield_gemma"]),
         ("harassment", vec!["shield_gemma"]),
         ("jailbreak", vec!["granite_guardian"]),
@@ -2050,9 +2105,7 @@ fn category_model_type_mapping() -> Vec<(&'static str, Vec<&'static str>)> {
 /// Resolve three-level category action hierarchy into a flat (category, action) list.
 ///
 /// Hierarchy: individual category > model-type (`__model:X`) > global (`__global`) > "ask"
-fn resolve_category_actions(
-    entries: &[lr_config::CategoryActionEntry],
-) -> Vec<(String, String)> {
+fn resolve_category_actions(entries: &[lr_config::CategoryActionEntry]) -> Vec<(String, String)> {
     use std::collections::HashMap;
 
     // Parse the entries into levels
@@ -2103,7 +2156,10 @@ fn resolve_category_actions(
         if entry.category.starts_with("__") {
             continue;
         }
-        if !mapping.iter().any(|(cat, _)| *cat == entry.category.as_str()) {
+        if !mapping
+            .iter()
+            .any(|(cat, _)| *cat == entry.category.as_str())
+        {
             resolved.push((entry.category.clone(), entry.action.clone()));
         }
     }
@@ -2259,15 +2315,21 @@ pub async fn get_safety_model_status(
 
     // Determine execution mode
     let execution_mode = match model.execution_mode.as_deref() {
-        Some("local") | Some("direct_download") | Some("custom_download") => {
-            "local"
-        }
+        Some("local") | Some("direct_download") | Some("custom_download") => "local",
         Some("provider") => {
-            if provider_configured { "provider" } else { "not_configured" }
+            if provider_configured {
+                "provider"
+            } else {
+                "not_configured"
+            }
         }
         _ => {
             // Default: if provider is configured, use provider; else not_configured
-            if provider_configured { "provider" } else { "not_configured" }
+            if provider_configured {
+                "provider"
+            } else {
+                "not_configured"
+            }
         }
     };
 
@@ -2466,8 +2528,8 @@ pub async fn add_safety_model(
     config_json: String,
     config_manager: State<'_, ConfigManager>,
 ) -> Result<(), String> {
-    let mut new_model: lr_config::SafetyModelConfig =
-        serde_json::from_str(&config_json).map_err(|e| format!("Invalid model config JSON: {}", e))?;
+    let mut new_model: lr_config::SafetyModelConfig = serde_json::from_str(&config_json)
+        .map_err(|e| format!("Invalid model config JSON: {}", e))?;
 
     // Generate unique ID if not provided
     if new_model.id.is_empty() {
@@ -2486,8 +2548,16 @@ pub async fn add_safety_model(
     // Check for duplicate ID
     {
         let config = config_manager.get();
-        if config.guardrails.safety_models.iter().any(|m| m.id == new_model.id) {
-            return Err(format!("A safety model with ID '{}' already exists", new_model.id));
+        if config
+            .guardrails
+            .safety_models
+            .iter()
+            .any(|m| m.id == new_model.id)
+        {
+            return Err(format!(
+                "A safety model with ID '{}' already exists",
+                new_model.id
+            ));
         }
     }
 
@@ -2501,7 +2571,7 @@ pub async fn add_safety_model(
     Ok(())
 }
 
-/// Remove a custom (non-predefined) safety model
+/// Remove a safety model from the configuration (does not delete downloaded files from disk)
 #[tauri::command]
 pub async fn remove_safety_model(
     model_id: String,
@@ -2509,16 +2579,12 @@ pub async fn remove_safety_model(
 ) -> Result<(), String> {
     {
         let config = config_manager.get();
-        let model = config
+        config
             .guardrails
             .safety_models
             .iter()
             .find(|m| m.id == model_id)
             .ok_or_else(|| format!("Safety model '{}' not found", model_id))?;
-
-        if model.predefined {
-            return Err("Cannot remove a predefined (built-in) safety model".to_string());
-        }
     }
 
     config_manager
@@ -2528,11 +2594,6 @@ pub async fn remove_safety_model(
         .map_err(|e| e.to_string())?;
 
     config_manager.save().await.map_err(|e| e.to_string())?;
-
-    // Clean up downloaded files (best effort)
-    if let Err(e) = lr_guardrails::downloader::delete_model_files(&model_id).await {
-        tracing::warn!("Failed to delete model files for '{}': {}", model_id, e);
-    }
 
     Ok(())
 }
@@ -2548,4 +2609,11 @@ pub async fn get_guardrails_loaded_model_count() -> Result<usize, String> {
 pub async fn unload_all_safety_models() -> Result<(), String> {
     lr_guardrails::unload_all_models();
     Ok(())
+}
+
+/// Get the path to the safety models directory
+#[tauri::command]
+pub async fn get_safety_models_dir() -> Result<String, String> {
+    let dir = lr_guardrails::downloader::safety_models_dir()?;
+    Ok(dir.to_string_lossy().to_string())
 }

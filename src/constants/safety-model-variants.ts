@@ -14,6 +14,12 @@ export interface SafetyModelVariant {
   size: string
   /** Whether this is the recommended/default variant for its model type */
   recommended?: boolean
+  /** Estimated memory usage in MB when loaded */
+  memoryMb: number
+  /** Estimated inference latency in ms */
+  latencyMs: number
+  /** On-disk size in MB */
+  diskSizeMb: number
 }
 
 export const SAFETY_MODEL_VARIANTS: SafetyModelVariant[] = [
@@ -26,6 +32,9 @@ export const SAFETY_MODEL_VARIANTS: SafetyModelVariant[] = [
     ggufFilename: "Llama-Guard-3-1B.Q4_K_M.gguf",
     size: "~955 MB",
     recommended: true,
+    memoryMb: 700,
+    latencyMs: 300,
+    diskSizeMb: 955,
   },
   {
     key: "llama_guard_3_8b",
@@ -34,6 +43,9 @@ export const SAFETY_MODEL_VARIANTS: SafetyModelVariant[] = [
     hfRepoId: "QuantFactory/Llama-Guard-3-8B-GGUF",
     ggufFilename: "Llama-Guard-3-8B.Q4_K_M.gguf",
     size: "~4.9 GB",
+    memoryMb: 3500,
+    latencyMs: 600,
+    diskSizeMb: 4900,
   },
   {
     key: "llama_guard_4_12b",
@@ -42,6 +54,9 @@ export const SAFETY_MODEL_VARIANTS: SafetyModelVariant[] = [
     hfRepoId: "DevQuasar/meta-llama.Llama-Guard-4-12B-GGUF",
     ggufFilename: "meta-llama.Llama-Guard-4-12B.f16.gguf",
     size: "~22.3 GB",
+    memoryMb: 12000,
+    latencyMs: 1200,
+    diskSizeMb: 22300,
   },
 
   // Granite Guardian
@@ -53,6 +68,9 @@ export const SAFETY_MODEL_VARIANTS: SafetyModelVariant[] = [
     ggufFilename: "granite-guardian-3.0-2b.Q4_K_M.gguf",
     size: "~1.5 GB",
     recommended: true,
+    memoryMb: 1200,
+    latencyMs: 500,
+    diskSizeMb: 1500,
   },
   {
     key: "granite_guardian_5b",
@@ -61,6 +79,9 @@ export const SAFETY_MODEL_VARIANTS: SafetyModelVariant[] = [
     hfRepoId: "ibm-research/granite-guardian-3.2-5b-GGUF",
     ggufFilename: "granite-guardian-3.2-5b.Q4_K_M.gguf",
     size: "~3.5 GB",
+    memoryMb: 2800,
+    latencyMs: 600,
+    diskSizeMb: 3500,
   },
   {
     key: "granite_guardian_8b",
@@ -69,6 +90,9 @@ export const SAFETY_MODEL_VARIANTS: SafetyModelVariant[] = [
     hfRepoId: "ibm-granite/granite-guardian-3.3-8b-GGUF",
     ggufFilename: "granite-guardian-3.3-8b.Q4_K_M.gguf",
     size: "~4.9 GB",
+    memoryMb: 4500,
+    latencyMs: 700,
+    diskSizeMb: 4900,
   },
 
   // ShieldGemma
@@ -80,6 +104,9 @@ export const SAFETY_MODEL_VARIANTS: SafetyModelVariant[] = [
     ggufFilename: "shieldgemma-2b.Q4_K_M.gguf",
     size: "~1.7 GB",
     recommended: true,
+    memoryMb: 1200,
+    latencyMs: 400,
+    diskSizeMb: 1700,
   },
 
   // Nemotron
@@ -91,6 +118,9 @@ export const SAFETY_MODEL_VARIANTS: SafetyModelVariant[] = [
     ggufFilename: "llama-3.1-nemotron-safety-guard-8b-v3-q8_0.gguf",
     size: "~8.5 GB",
     recommended: true,
+    memoryMb: 5000,
+    latencyMs: 800,
+    diskSizeMb: 8500,
   },
 ]
 
@@ -103,6 +133,22 @@ export const MODEL_FAMILY_GROUPS = [
 
 /** Models that produce logprobs-based confidence scores */
 export const CONFIDENCE_MODEL_TYPES = new Set(["granite_guardian", "shield_gemma"])
+
+/** Provider model name mappings for each model type (for building "via Provider" entries) */
+export const PROVIDER_MODEL_NAMES: Record<string, Record<string, string>> = {
+  llama_guard: {
+    ollama: "llama-guard3:1b",
+  },
+  granite_guardian: {
+    ollama: "granite3-guardian:2b",
+  },
+  shield_gemma: {
+    ollama: "shieldgemma:2b",
+  },
+  nemotron: {
+    ollama: "llama-3.1-nemotron-safety-guard:8b",
+  },
+}
 
 /** Get all variants for a given model type */
 export function getVariantsForModelType(modelType: string): SafetyModelVariant[] {

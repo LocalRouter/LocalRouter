@@ -320,7 +320,11 @@ pub async fn rotate_client_secret(
             let cid = client_id.clone();
             tokio::spawn(async move {
                 if let Err(e) = sync_client_config_inner(&cid, &cm, &cmgr, &pr).await {
-                    tracing::warn!("Failed to sync config after secret rotation for {}: {}", cid, e);
+                    tracing::warn!(
+                        "Failed to sync config after secret rotation for {}: {}",
+                        cid,
+                        e
+                    );
                 }
             });
         }
@@ -673,6 +677,7 @@ pub async fn submit_firewall_approval(
         FirewallApprovalAction::AllowPermanent
             | FirewallApprovalAction::Allow1Hour
             | FirewallApprovalAction::DenyAlways
+            | FirewallApprovalAction::BlockCategories
     ) {
         state
             .mcp_gateway
@@ -685,10 +690,15 @@ pub async fn submit_firewall_approval(
     };
 
     // Submit the response to the firewall manager
+    // BlockCategories is handled locally (updates client config below), so submit as Deny
+    let submit_action = match &action {
+        FirewallApprovalAction::BlockCategories => FirewallApprovalAction::Deny,
+        other => other.clone(),
+    };
     state
         .mcp_gateway
         .firewall_manager
-        .submit_response(&request_id, action.clone(), edited_args_value)
+        .submit_response(&request_id, submit_action, edited_args_value)
         .map_err(|e| e.to_string())?;
 
     // Handle special actions that modify permissions
@@ -702,7 +712,7 @@ pub async fn submit_firewall_approval(
                             if let Some(client) =
                                 cfg.clients.iter_mut().find(|c| c.id == info.client_id)
                             {
-                                client.guardrails_enabled = Some(false);
+                                client.guardrails.enabled = false;
                             }
                         })
                         .map_err(|e| e.to_string())?;
@@ -790,6 +800,56 @@ pub async fn submit_firewall_approval(
                     "DenyAlways requested but couldn't find pending info for request {}",
                     request_id
                 );
+            }
+        }
+        FirewallApprovalAction::BlockCategories => {
+            if let Some(ref info) = pending_info {
+                if info.is_guardrail_request {
+                    // Extract flagged categories from the guardrail details
+                    if let Some(ref details) = info.guardrail_details {
+                        let flagged_categories: Vec<String> = details
+                            .actions_required
+                            .iter()
+                            .filter_map(|a| {
+                                a.get("category")
+                                    .and_then(|c| c.as_str())
+                                    .map(|s| s.to_string())
+                            })
+                            .collect();
+
+                        config_manager
+                            .update(|cfg| {
+                                if let Some(client) =
+                                    cfg.clients.iter_mut().find(|c| c.id == info.client_id)
+                                {
+                                    for category in &flagged_categories {
+                                        // Update or add the category action to "block"
+                                        if let Some(existing) = client
+                                            .guardrails
+                                            .category_actions
+                                            .iter_mut()
+                                            .find(|a| a.category == *category)
+                                        {
+                                            existing.action = "block".to_string();
+                                        } else {
+                                            client.guardrails.category_actions.push(
+                                                lr_config::CategoryActionEntry {
+                                                    category: category.clone(),
+                                                    action: "block".to_string(),
+                                                },
+                                            );
+                                        }
+                                    }
+                                }
+                            })
+                            .map_err(|e| e.to_string())?;
+                        config_manager.save().await.map_err(|e| e.to_string())?;
+                        tracing::info!(
+                            "Set flagged categories to 'block' for client {}",
+                            info.client_id
+                        );
+                    }
+                }
             }
         }
         _ => {}
@@ -1621,7 +1681,7 @@ pub async fn set_client_template(
     Ok(())
 }
 
-/// Set the guardrails_enabled override for a client
+/// Set the guardrails_enabled override for a client (legacy, uses new per-client config)
 #[tauri::command]
 pub async fn set_client_guardrails_enabled(
     client_id: String,
@@ -1630,7 +1690,7 @@ pub async fn set_client_guardrails_enabled(
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     tracing::info!(
-        "Setting client {} guardrails_enabled to: {:?}",
+        "Setting client {} guardrails enabled to: {:?}",
         client_id,
         enabled
     );
@@ -1639,7 +1699,57 @@ pub async fn set_client_guardrails_enabled(
     config_manager
         .update(|cfg| {
             if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
-                client.guardrails_enabled = enabled;
+                client.guardrails.enabled = enabled.unwrap_or(false);
+                found = true;
+            }
+        })
+        .map_err(|e| e.to_string())?;
+
+    if !found {
+        return Err(format!("Client not found: {}", client_id));
+    }
+
+    config_manager.save().await.map_err(|e| e.to_string())?;
+
+    if let Err(e) = app.emit("clients-changed", ()) {
+        tracing::error!("Failed to emit clients-changed event: {}", e);
+    }
+
+    Ok(())
+}
+
+/// Get the guardrails configuration for a specific client
+#[tauri::command]
+pub async fn get_client_guardrails_config(
+    client_id: String,
+    config_manager: State<'_, ConfigManager>,
+) -> Result<serde_json::Value, String> {
+    let config = config_manager.get();
+    let client = config
+        .clients
+        .iter()
+        .find(|c| c.id == client_id)
+        .ok_or_else(|| format!("Client not found: {}", client_id))?;
+
+    serde_json::to_value(&client.guardrails).map_err(|e| e.to_string())
+}
+
+/// Update the guardrails configuration for a specific client
+#[tauri::command]
+pub async fn update_client_guardrails_config(
+    client_id: String,
+    config_json: String,
+    config_manager: State<'_, ConfigManager>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    let new_config: lr_config::ClientGuardrailsConfig =
+        serde_json::from_str(&config_json).map_err(|e| format!("Invalid config JSON: {}", e))?;
+
+    let mut found = false;
+    config_manager
+        .update(|cfg| {
+            if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
+                client.guardrails = new_config.clone();
                 found = true;
             }
         })
@@ -1863,8 +1973,13 @@ pub async fn sync_all_clients(
         .collect();
 
     for client_id in sync_clients {
-        match sync_client_config_inner(&client_id, config_manager, client_manager, provider_registry)
-            .await
+        match sync_client_config_inner(
+            &client_id,
+            config_manager,
+            client_manager,
+            provider_registry,
+        )
+        .await
         {
             Ok(Some(result)) => {
                 tracing::info!("Synced config for client {}: {}", client_id, result.message);
@@ -1887,11 +2002,7 @@ pub async fn toggle_client_sync_config(
     provider_registry: State<'_, Arc<lr_providers::registry::ProviderRegistry>>,
     app: tauri::AppHandle,
 ) -> Result<Option<LaunchResult>, String> {
-    tracing::info!(
-        "Setting client {} sync_config: {}",
-        client_id,
-        enabled
-    );
+    tracing::info!("Setting client {} sync_config: {}", client_id, enabled);
 
     let mut found = false;
     config_manager

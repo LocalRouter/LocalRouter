@@ -310,6 +310,7 @@ impl ConfigManager {
             template_id: None,
             sync_config: false,
             guardrails_enabled: None,
+            guardrails: ClientGuardrailsConfig::default(),
         };
 
         self.update(|cfg| {

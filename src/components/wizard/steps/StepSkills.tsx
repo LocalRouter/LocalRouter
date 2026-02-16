@@ -9,6 +9,7 @@ import { useState, useEffect, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { Loader2, Info } from "lucide-react"
 import { PermissionTreeSelector } from "@/components/permissions/PermissionTreeSelector"
+import { PermissionStateButton } from "@/components/permissions/PermissionStateButton"
 import type { PermissionState, TreeNode, SkillsPermissions } from "@/components/permissions/types"
 
 interface SkillInfo {
@@ -183,6 +184,7 @@ export function StepSkills({ permissions, onChange }: StepSkillsProps) {
         globalPermission={permissions.global}
         onPermissionChange={handlePermissionChange}
         onGlobalChange={handleGlobalChange}
+        renderButton={(props) => <PermissionStateButton {...props} />}
         globalLabel="All Skills"
         emptyMessage="No skills discovered"
       />

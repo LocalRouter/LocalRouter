@@ -347,10 +347,10 @@ async fn validate_client_provider_access(
         return Ok(());
     }
 
-    // Extract provider from model string
+    // Extract provider and model_id from model string
     // Format can be "provider/model" or just "model"
-    let provider = if let Some((prov, _model)) = request.model.split_once('/') {
-        prov.to_string()
+    let (provider, model_id) = if let Some((prov, model)) = request.model.split_once('/') {
+        (prov.to_string(), model.to_string())
     } else {
         // No provider specified - need to find which provider has this model
         let all_models = state
@@ -369,30 +369,32 @@ async fn validate_client_provider_access(
                     .with_param("model")
             })?;
 
-        matching_model.provider.clone()
+        (matching_model.provider.clone(), matching_model.id.clone())
     };
 
-    // Check if provider is enabled using model_permissions (hierarchical: model -> provider -> global)
-    let permission_state = client.model_permissions.resolve_provider(&provider);
+    // Check if model is enabled using model_permissions (hierarchical: model -> provider -> global)
+    let permission_state = client.model_permissions.resolve_model(&provider, &model_id);
 
     if !permission_state.is_enabled() {
         tracing::warn!(
-            "Client {} attempted to access unauthorized LLM provider: {}",
+            "Client {} attempted to access unauthorized model: {}/{}",
             client.id,
-            provider
+            provider,
+            model_id
         );
 
         return Err(ApiErrorResponse::forbidden(format!(
-            "Access denied: Client is not authorized to use provider '{}'. Contact administrator to grant access.",
-            provider
+            "Access denied: Client is not authorized to use model '{}/{}'. Contact administrator to grant access.",
+            provider, model_id
         ))
         .with_param("model"));
     }
 
     tracing::debug!(
-        "Client {} authorized for LLM provider: {} (permission: {:?})",
+        "Client {} authorized for model: {}/{} (permission: {:?})",
         client.id,
         provider,
+        model_id,
         permission_state
     );
 

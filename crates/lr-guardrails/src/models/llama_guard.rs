@@ -16,17 +16,37 @@ const CATEGORIES: &[(SafetyCategory, &str, &str)] = &[
     (SafetyCategory::ViolentCrimes, "S1", "Violent Crimes"),
     (SafetyCategory::NonViolentCrimes, "S2", "Non-Violent Crimes"),
     (SafetyCategory::SexCrimes, "S3", "Sex-Related Crimes"),
-    (SafetyCategory::ChildExploitation, "S4", "Child Sexual Exploitation"),
+    (
+        SafetyCategory::ChildExploitation,
+        "S4",
+        "Child Sexual Exploitation",
+    ),
     (SafetyCategory::Defamation, "S5", "Defamation"),
-    (SafetyCategory::SpecializedAdvice, "S6", "Specialized Advice"),
+    (
+        SafetyCategory::SpecializedAdvice,
+        "S6",
+        "Specialized Advice",
+    ),
     (SafetyCategory::Privacy, "S7", "Privacy"),
-    (SafetyCategory::IntellectualProperty, "S8", "Intellectual Property"),
-    (SafetyCategory::IndiscriminateWeapons, "S9", "Indiscriminate Weapons"),
+    (
+        SafetyCategory::IntellectualProperty,
+        "S8",
+        "Intellectual Property",
+    ),
+    (
+        SafetyCategory::IndiscriminateWeapons,
+        "S9",
+        "Indiscriminate Weapons",
+    ),
     (SafetyCategory::Hate, "S10", "Hate"),
     (SafetyCategory::SelfHarm, "S11", "Suicide & Self-Harm"),
     (SafetyCategory::SexualContent, "S12", "Sexual Content"),
     (SafetyCategory::Elections, "S13", "Elections"),
-    (SafetyCategory::CodeInterpreterAbuse, "S14", "Code Interpreter Abuse"),
+    (
+        SafetyCategory::CodeInterpreterAbuse,
+        "S14",
+        "Code Interpreter Abuse",
+    ),
 ];
 
 pub struct LlamaGuardModel {
@@ -182,9 +202,9 @@ mod tests {
     fn test_parse_safe_output() {
         let model = LlamaGuardModel::new(
             "test".into(),
-            Arc::new(ModelExecutor::Local(crate::executor::LocalGgufExecutor::new(
-                "/tmp/fake".into(), 512,
-            ))),
+            Arc::new(ModelExecutor::Local(
+                crate::executor::LocalGgufExecutor::new("/tmp/fake".into(), 512),
+            )),
             "test".into(),
             None,
         );
@@ -198,9 +218,9 @@ mod tests {
     fn test_parse_unsafe_output() {
         let model = LlamaGuardModel::new(
             "test".into(),
-            Arc::new(ModelExecutor::Local(crate::executor::LocalGgufExecutor::new(
-                "/tmp/fake".into(), 512,
-            ))),
+            Arc::new(ModelExecutor::Local(
+                crate::executor::LocalGgufExecutor::new("/tmp/fake".into(), 512),
+            )),
             "test".into(),
             None,
         );
@@ -217,9 +237,9 @@ mod tests {
     fn test_parse_empty_output() {
         let model = LlamaGuardModel::new(
             "test".into(),
-            Arc::new(ModelExecutor::Local(crate::executor::LocalGgufExecutor::new(
-                "/tmp/fake".into(), 512,
-            ))),
+            Arc::new(ModelExecutor::Local(
+                crate::executor::LocalGgufExecutor::new("/tmp/fake".into(), 512),
+            )),
             "test".into(),
             None,
         );
@@ -234,9 +254,9 @@ mod tests {
     fn test_parse_unsafe_no_codes() {
         let model = LlamaGuardModel::new(
             "test".into(),
-            Arc::new(ModelExecutor::Local(crate::executor::LocalGgufExecutor::new(
-                "/tmp/fake".into(), 512,
-            ))),
+            Arc::new(ModelExecutor::Local(
+                crate::executor::LocalGgufExecutor::new("/tmp/fake".into(), 512),
+            )),
             "test".into(),
             None,
         );
@@ -251,9 +271,9 @@ mod tests {
     fn test_parse_unsafe_invalid_codes() {
         let model = LlamaGuardModel::new(
             "test".into(),
-            Arc::new(ModelExecutor::Local(crate::executor::LocalGgufExecutor::new(
-                "/tmp/fake".into(), 512,
-            ))),
+            Arc::new(ModelExecutor::Local(
+                crate::executor::LocalGgufExecutor::new("/tmp/fake".into(), 512),
+            )),
             "test".into(),
             None,
         );

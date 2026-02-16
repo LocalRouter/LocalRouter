@@ -1368,6 +1368,8 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::set_client_mode,
             ui::commands::set_client_template,
             ui::commands::set_client_guardrails_enabled,
+            ui::commands::get_client_guardrails_config,
+            ui::commands::update_client_guardrails_config,
             // App launcher commands
             ui::commands::get_app_capabilities,
             ui::commands::try_it_out_app,
@@ -1435,6 +1437,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::remove_safety_model,
             ui::commands::get_guardrails_loaded_model_count,
             ui::commands::unload_all_safety_models,
+            ui::commands::get_safety_models_dir,
             // Connection graph commands
             ui::commands::get_active_connections,
             // Setup wizard commands

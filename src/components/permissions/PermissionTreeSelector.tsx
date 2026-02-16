@@ -1,34 +1,62 @@
-import { useState, useMemo } from "react"
+import { useState, useMemo, type ReactNode } from "react"
 import { ChevronRight, ChevronDown } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { PermissionStateButton } from "./PermissionStateButton"
-import type { PermissionState, TreeNode } from "./types"
+import type { TreeNode } from "./types"
 
-interface PermissionTreeSelectorProps {
+export interface TreeButtonProps<S extends string> {
+  value: S
+  onChange: (state: S) => void
+  disabled?: boolean
+  size?: "sm" | "md"
+  inherited?: boolean
+  childRollupStates?: Set<S>
+}
+
+export interface PermissionTreeSelectorProps<S extends string> {
   nodes: TreeNode[]
-  permissions: Record<string, PermissionState>
-  globalPermission: PermissionState
+  permissions: Record<string, S>
+  globalPermission: S
   /** Called when a node's permission changes. parentState is the inherited value from the parent. */
-  onPermissionChange: (key: string, state: PermissionState, parentState: PermissionState) => void
-  onGlobalChange: (state: PermissionState) => void
+  onPermissionChange: (key: string, state: S, parentState: S) => void
+  onGlobalChange: (state: S) => void
+  /** Render the state button for each node */
+  renderButton: (props: TreeButtonProps<S>) => ReactNode
   disabled?: boolean
   globalLabel?: string
   emptyMessage?: string
   loading?: boolean
+  /** Start with all nodes expanded (default: false) */
+  defaultExpanded?: boolean
 }
 
-export function PermissionTreeSelector({
+export function PermissionTreeSelector<S extends string>({
   nodes,
   permissions,
   globalPermission,
   onPermissionChange,
   onGlobalChange,
+  renderButton,
   disabled = false,
   globalLabel = "All",
   emptyMessage = "No items found",
   loading = false,
-}: PermissionTreeSelectorProps) {
-  const [expandedNodes, setExpandedNodes] = useState<Set<string>>(new Set())
+  defaultExpanded = false,
+}: PermissionTreeSelectorProps<S>) {
+  const [expandedNodes, setExpandedNodes] = useState<Set<string>>(() => {
+    if (!defaultExpanded) return new Set<string>()
+    // Collect all node IDs that have children
+    const ids = new Set<string>()
+    const collect = (nodes: TreeNode[]) => {
+      for (const node of nodes) {
+        if (node.children && node.children.length > 0) {
+          ids.add(node.id)
+          collect(node.children)
+        }
+      }
+    }
+    collect(nodes)
+    return ids
+  })
 
   const toggleNode = (nodeId: string) => {
     setExpandedNodes((prev) => {
@@ -42,7 +70,7 @@ export function PermissionTreeSelector({
     })
   }
 
-  const getEffectivePermission = (nodeId: string, parentPermission: PermissionState): PermissionState => {
+  const getEffectivePermission = (nodeId: string, parentPermission: S): S => {
     // Check if there's an explicit override
     if (permissions[nodeId] !== undefined) {
       return permissions[nodeId]
@@ -57,14 +85,14 @@ export function PermissionTreeSelector({
 
   // Compute child rollup states for a node - collect all explicit permissions from descendants
   const getChildRollupStates = useMemo(() => {
-    const cache = new Map<string, Set<PermissionState>>()
+    const cache = new Map<string, Set<S>>()
 
-    const computeForNode = (node: TreeNode): Set<PermissionState> => {
+    const computeForNode = (node: TreeNode): Set<S> => {
       if (cache.has(node.id)) {
         return cache.get(node.id)!
       }
 
-      const states = new Set<PermissionState>()
+      const states = new Set<S>()
 
       // Check this node's explicit permission (only if it has children - we're computing for parent)
       if (node.children) {
@@ -84,7 +112,7 @@ export function PermissionTreeSelector({
     }
 
     // Build the lookup function
-    return (nodeId: string): Set<PermissionState> => {
+    return (nodeId: string): Set<S> => {
       const node = findNode(nodes, nodeId)
       if (!node) return new Set()
       return computeForNode(node)
@@ -105,7 +133,7 @@ export function PermissionTreeSelector({
 
   // Compute global-level child rollup states
   const globalChildRollupStates = useMemo(() => {
-    const states = new Set<PermissionState>()
+    const states = new Set<S>()
 
     // Collect all explicit permissions at any level
     for (const node of nodes) {
@@ -121,7 +149,7 @@ export function PermissionTreeSelector({
     return states
   }, [nodes, permissions, getChildRollupStates])
 
-  const renderNode = (node: TreeNode, parentPermission: PermissionState, depth: number = 0) => {
+  const renderNode = (node: TreeNode, parentPermission: S, depth: number = 0) => {
     const isExpanded = expandedNodes.has(node.id)
     const hasChildren = node.children && node.children.length > 0
     const effectivePermission = getEffectivePermission(node.id, parentPermission)
@@ -183,16 +211,14 @@ export function PermissionTreeSelector({
           </div>
 
           {/* Permission selector - not shown for group nodes (Tools/Resources/Prompts headers) */}
-          {!node.isGroup && (
-            <PermissionStateButton
-              value={effectivePermission}
-              onChange={(state) => onPermissionChange(node.id, state, parentPermission)}
-              disabled={disabled}
-              size="sm"
-              inherited={inherited}
-              childRollupStates={childRollupStates}
-            />
-          )}
+          {!node.isGroup && renderButton({
+            value: effectivePermission,
+            onChange: (state) => onPermissionChange(node.id, state, parentPermission),
+            disabled,
+            size: "sm",
+            inherited,
+            childRollupStates,
+          })}
         </div>
 
         {/* Children */}
@@ -231,13 +257,13 @@ export function PermissionTreeSelector({
           className="flex items-center gap-2 px-3 py-3 border-b bg-background sticky top-0 z-10"
         >
           <span className="font-semibold text-sm flex-1">{globalLabel}</span>
-          <PermissionStateButton
-            value={globalPermission}
-            onChange={onGlobalChange}
-            disabled={disabled}
-            size="sm"
-            childRollupStates={globalChildRollupStates}
-          />
+          {renderButton({
+            value: globalPermission,
+            onChange: onGlobalChange,
+            disabled,
+            size: "sm",
+            childRollupStates: globalChildRollupStates,
+          })}
         </div>
 
         {/* Tree nodes */}

@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use uuid::Uuid;
 
-pub(crate) const CONFIG_VERSION: u32 = 12;
+pub(crate) const CONFIG_VERSION: u32 = 13;
 
 /// Suffix for auto-generated client strategy names
 pub const CLIENT_STRATEGY_NAME_SUFFIX: &str = "'s strategy";
@@ -1273,24 +1273,26 @@ fn default_main_branch() -> String {
 /// GuardRails configuration for LLM-based content safety
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct GuardrailsConfig {
-    /// Master toggle (default: false)
-    #[serde(default)]
+    /// Migration shim: old master toggle (deserialize only, not serialized)
+    /// Use per-client guardrails.enabled instead
+    #[serde(default, skip_serializing)]
     pub enabled: bool,
 
     /// Scan outgoing requests before sending to provider
     #[serde(default = "default_true")]
     pub scan_requests: bool,
 
-    /// Scan incoming responses from provider
-    #[serde(default)]
+    /// Migration shim: old scan_responses (deserialize only, not serialized)
+    #[serde(default, skip_serializing)]
     pub scan_responses: bool,
 
     /// Configured safety models
     #[serde(default = "default_safety_models")]
     pub safety_models: Vec<SafetyModelConfig>,
 
-    /// Per-category actions (Allow/Notify/Ask)
-    #[serde(default)]
+    /// Migration shim: old global category_actions (deserialize only, not serialized)
+    /// Use per-client guardrails.category_actions instead
+    #[serde(default, skip_serializing)]
     pub category_actions: Vec<CategoryActionEntry>,
 
     /// Global HuggingFace token for gated model downloads
@@ -1339,6 +1341,18 @@ impl Default for GuardrailsConfig {
             context_size: default_guardrails_context_size(),
         }
     }
+}
+
+/// Per-client guardrails configuration
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct ClientGuardrailsConfig {
+    /// Whether guardrails are enabled for this client
+    #[serde(default)]
+    pub enabled: bool,
+    /// Per-category actions: allow/notify/ask/block
+    /// Categories are selected here; which models run is derived from which categories are selected
+    #[serde(default)]
+    pub category_actions: Vec<CategoryActionEntry>,
 }
 
 /// Configuration for a single safety model
@@ -1392,6 +1406,15 @@ pub struct SafetyModelConfig {
     /// Custom mapping from native model labels to safety categories
     #[serde(default)]
     pub category_mapping: Option<Vec<CategoryMappingEntry>>,
+    /// Estimated memory usage in MB when loaded
+    #[serde(default)]
+    pub memory_mb: Option<u32>,
+    /// Estimated inference latency in milliseconds
+    #[serde(default)]
+    pub latency_ms: Option<u32>,
+    /// On-disk size in MB
+    #[serde(default)]
+    pub disk_size_mb: Option<u32>,
 }
 
 /// Mapping from a model's native output label to a normalized safety category
@@ -1408,7 +1431,7 @@ pub struct CategoryMappingEntry {
 pub struct CategoryActionEntry {
     /// SafetyCategory serialized name (e.g. "violent_crimes", "hate")
     pub category: String,
-    /// Action: "allow", "notify", "ask"
+    /// Action: "allow", "notify", "ask", "block"
     #[serde(default = "default_category_action")]
     pub action: String,
 }
@@ -1438,6 +1461,9 @@ fn default_safety_models() -> Vec<SafetyModelConfig> {
             safe_indicator: None,
             output_regex: None,
             category_mapping: None,
+            memory_mb: Some(700),
+            latency_ms: Some(300),
+            disk_size_mb: Some(955),
         },
         SafetyModelConfig {
             id: "granite_guardian".to_string(),
@@ -1457,6 +1483,9 @@ fn default_safety_models() -> Vec<SafetyModelConfig> {
             safe_indicator: None,
             output_regex: None,
             category_mapping: None,
+            memory_mb: Some(1200),
+            latency_ms: Some(500),
+            disk_size_mb: Some(1500),
         },
         SafetyModelConfig {
             id: "shield_gemma".to_string(),
@@ -1476,6 +1505,9 @@ fn default_safety_models() -> Vec<SafetyModelConfig> {
             safe_indicator: None,
             output_regex: None,
             category_mapping: None,
+            memory_mb: Some(1200),
+            latency_ms: Some(400),
+            disk_size_mb: Some(1700),
         },
         SafetyModelConfig {
             id: "nemotron_safety_guard".to_string(),
@@ -1498,6 +1530,9 @@ fn default_safety_models() -> Vec<SafetyModelConfig> {
             safe_indicator: None,
             output_regex: None,
             category_mapping: None,
+            memory_mb: Some(5000),
+            latency_ms: Some(800),
+            disk_size_mb: Some(8500),
         },
     ]
 }
@@ -1688,10 +1723,13 @@ pub struct Client {
     #[serde(default)]
     pub sync_config: bool,
 
-    /// GuardRails override for this client.
-    /// None = inherit global setting, Some(true) = force enable, Some(false) = force disable
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Migration shim: old guardrails_enabled (deserialize only, not serialized)
+    #[serde(default, skip_serializing)]
     pub guardrails_enabled: Option<bool>,
+
+    /// Per-client guardrails configuration
+    #[serde(default)]
+    pub guardrails: ClientGuardrailsConfig,
 }
 
 /// MCP server configuration
@@ -2366,6 +2404,7 @@ impl Client {
             template_id: None,
             sync_config: false,
             guardrails_enabled: None,
+            guardrails: ClientGuardrailsConfig::default(),
         }
     }
 

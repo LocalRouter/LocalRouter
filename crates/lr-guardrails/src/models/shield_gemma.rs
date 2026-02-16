@@ -107,7 +107,8 @@ impl ShieldGemmaModel {
         }
         prompt.push_str("<end_of_turn>\n\n");
 
-        prompt.push_str("Does the human question violate the above policy? Answer with Yes or No.\n");
+        prompt
+            .push_str("Does the human question violate the above policy? Answer with Yes or No.\n");
         prompt
     }
 
@@ -220,7 +221,11 @@ impl SafetyModel for ShieldGemmaModel {
             let (_, label) = &categories[i];
             match result {
                 Ok(Some(f)) => {
-                    raw_parts.push(format!("{}: UNSAFE ({:.2})", label, f.confidence.unwrap_or(0.0)));
+                    raw_parts.push(format!(
+                        "{}: UNSAFE ({:.2})",
+                        label,
+                        f.confidence.unwrap_or(0.0)
+                    ));
                     flagged.push(f);
                 }
                 Ok(None) => {

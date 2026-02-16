@@ -208,9 +208,30 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   'set_client_guardrails_enabled': (args) => {
     const client = mockData.clients.find(c => c.id === args?.clientId || c.client_id === args?.clientId)
     if (client) {
-      (client as Record<string, unknown>).guardrails_enabled = args?.enabled ?? null
+      const guardrails = (client as Record<string, unknown>).guardrails as Record<string, unknown> | undefined
+      if (guardrails) {
+        guardrails.enabled = args?.enabled ?? false
+      } else {
+        (client as Record<string, unknown>).guardrails = { enabled: args?.enabled ?? false, category_actions: [] }
+      }
       setTimeout(() => emit('clients-changed', {}), 10)
     }
+    return null
+  },
+  'get_client_guardrails_config': (args) => {
+    const client = mockData.clients.find(c => c.id === args?.clientId || c.client_id === args?.clientId)
+    const guardrails = client ? (client as Record<string, unknown>).guardrails : undefined
+    return guardrails || { enabled: false, category_actions: [] }
+  },
+  'update_client_guardrails_config': (args) => {
+    const client = mockData.clients.find(c => c.id === args?.clientId || c.client_id === args?.clientId)
+    if (client && args?.configJson) {
+      try {
+        (client as Record<string, unknown>).guardrails = JSON.parse(args.configJson)
+      } catch { /* ignore */ }
+      setTimeout(() => emit('clients-changed', {}), 10)
+    }
+    toast.success('Client guardrails config updated (demo)')
     return null
   },
   'set_client_mode': (args) => {
@@ -1305,14 +1326,11 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   // GuardRails - LLM-based Safety Models
   // ============================================================================
   'get_guardrails_config': () => ({
-    enabled: true,
     scan_requests: true,
-    scan_responses: false,
     safety_models: [
-      { id: 'llama_guard', label: 'Llama Guard 3 1B', model_type: 'llama_guard', enabled: true, provider_id: null, model_name: null, hf_repo_id: 'QuantFactory/Llama-Guard-3-1B-GGUF', gguf_filename: 'Llama-Guard-3-1B.Q4_K_M.gguf', requires_auth: false, confidence_threshold: null, enabled_categories: null, predefined: false, execution_mode: 'direct_download', prompt_template: null, safe_indicator: null, output_regex: null, category_mapping: null },
-      { id: 'granite_guardian', label: 'Granite Guardian 3.0 2B', model_type: 'granite_guardian', enabled: true, provider_id: null, model_name: null, hf_repo_id: 'mradermacher/granite-guardian-3.0-2b-GGUF', gguf_filename: 'granite-guardian-3.0-2b.Q4_K_M.gguf', requires_auth: false, confidence_threshold: null, enabled_categories: null, predefined: false, execution_mode: 'direct_download', prompt_template: null, safe_indicator: null, output_regex: null, category_mapping: null },
+      { id: 'llama_guard', label: 'Llama Guard 3 1B', model_type: 'llama_guard', enabled: true, provider_id: null, model_name: null, hf_repo_id: 'QuantFactory/Llama-Guard-3-1B-GGUF', gguf_filename: 'Llama-Guard-3-1B.Q4_K_M.gguf', requires_auth: false, confidence_threshold: null, enabled_categories: null, predefined: false, execution_mode: 'direct_download', prompt_template: null, safe_indicator: null, output_regex: null, category_mapping: null, memory_mb: 700, latency_ms: 300, disk_size_mb: 955 },
+      { id: 'granite_guardian', label: 'Granite Guardian 3.0 2B', model_type: 'granite_guardian', enabled: true, provider_id: null, model_name: null, hf_repo_id: 'mradermacher/granite-guardian-3.0-2b-GGUF', gguf_filename: 'granite-guardian-3.0-2b.Q4_K_M.gguf', requires_auth: false, confidence_threshold: null, enabled_categories: null, predefined: false, execution_mode: 'direct_download', prompt_template: null, safe_indicator: null, output_regex: null, category_mapping: null, memory_mb: 1200, latency_ms: 500, disk_size_mb: 1500 },
     ],
-    category_actions: [],
     hf_token: null,
     default_confidence_threshold: 0.5,
     idle_timeout_secs: 600,
@@ -1354,6 +1372,18 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       total_duration_ms: hasInjection ? 387 : 340,
       scan_direction: 'request' as const,
     }
+  },
+  'test_safety_check_single_model': (args) => {
+    const text = args?.text || ''
+    const hasInjection = /ignore.*previous|ignore.*instructions|DAN\s+mode/i.test(text)
+    return [{
+      model_id: args?.modelId || 'granite_guardian',
+      is_safe: !hasInjection,
+      flagged_categories: hasInjection ? [{ category: 'Jailbreak', confidence: 0.88, native_label: 'jailbreak' }] : [],
+      confidence: hasInjection ? 0.88 : null,
+      raw_output: hasInjection ? 'Yes' : 'No',
+      check_duration_ms: 312,
+    }]
   },
   'get_safety_model_status': (args) => ({
     id: args?.modelId || 'granite_guardian',
@@ -1420,6 +1450,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     toast.success('All safety models unloaded (demo)')
     return null
   },
+  'get_safety_models_dir': () => '/Users/demo/.localrouter/safety_models',
 
   // ============================================================================
   // Firewall

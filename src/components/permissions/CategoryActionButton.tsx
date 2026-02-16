@@ -1,6 +1,6 @@
 import { cn } from "@/lib/utils"
 
-export type CategoryActionState = "allow" | "notify" | "ask"
+export type CategoryActionState = "allow" | "notify" | "ask" | "block"
 
 interface CategoryActionButtonProps {
   value: CategoryActionState
@@ -29,6 +29,11 @@ const stateConfig: Record<CategoryActionState, { label: string; activeClass: str
     activeClass: "bg-amber-500 text-white",
     rollupClass: "bg-amber-500/30 text-amber-600"
   },
+  block: {
+    label: "Block",
+    activeClass: "bg-red-600 text-white",
+    rollupClass: "bg-red-600/30 text-red-600"
+  },
 }
 
 export function CategoryActionButton({
@@ -46,7 +51,7 @@ export function CategoryActionButton({
         disabled && "opacity-50 pointer-events-none"
       )}
     >
-      {(["allow", "notify", "ask"] as CategoryActionState[]).map((state) => {
+      {(["allow", "notify", "ask", "block"] as CategoryActionState[]).map((state) => {
         const config = stateConfig[state]
         const isActive = value === state
         const isChildRollup = childRollupStates?.has(state) && !isActive
@@ -72,7 +77,7 @@ export function CategoryActionButton({
               size === "sm" ? "px-2 py-0.5 text-xs" : "px-3 py-1 text-sm",
               getButtonClass(),
               state === "allow" && "rounded-l-md",
-              state === "ask" && "rounded-r-md"
+              state === "block" && "rounded-r-md"
             )}
           >
             {config.label}

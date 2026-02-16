@@ -1155,6 +1155,17 @@ export interface SetClientGuardrailsEnabledParams {
   enabled: boolean | null
 }
 
+/** Params for get_client_guardrails_config */
+export interface GetClientGuardrailsConfigParams {
+  clientId: string
+}
+
+/** Params for update_client_guardrails_config */
+export interface UpdateClientGuardrailsConfigParams {
+  clientId: string
+  configJson: string
+}
+
 /** Params for get_app_capabilities */
 export interface GetAppCapabilitiesParams {
   templateId: string
@@ -1955,15 +1966,18 @@ export interface CreateTestClientForStrategyParams {
 
 /** Global guardrails configuration */
 export interface GuardrailsConfig {
-  enabled: boolean
   scan_requests: boolean
-  scan_responses: boolean
   safety_models: SafetyModelConfig[]
-  category_actions: CategoryActionEntry[]
   hf_token: string | null
   default_confidence_threshold: number
   idle_timeout_secs: number
   context_size: number
+}
+
+/** Per-client guardrails configuration */
+export interface ClientGuardrailsConfig {
+  enabled: boolean
+  category_actions: CategoryActionEntry[]
 }
 
 /** Configuration for a safety model */
@@ -1985,6 +1999,9 @@ export interface SafetyModelConfig {
   safe_indicator: string | null
   output_regex: string | null
   category_mapping: CategoryMappingEntry[] | null
+  memory_mb: number | null
+  latency_ms: number | null
+  disk_size_mb: number | null
 }
 
 /** Mapping from native model label to normalized safety category */
@@ -2000,7 +2017,7 @@ export type SafetyCategory = string | { custom: string }
 /** Per-category action configuration (always uses string keys in config) */
 export interface CategoryActionEntry {
   category: string
-  action: "allow" | "notify" | "ask"
+  action: "allow" | "notify" | "ask" | "block"
 }
 
 /** A flagged category from a safety model verdict */
@@ -2023,7 +2040,7 @@ export interface SafetyVerdict {
 /** Action required for a specific category */
 export interface CategoryActionRequired {
   category: SafetyCategory
-  action: "allow" | "notify" | "ask"
+  action: "allow" | "notify" | "ask" | "block"
   model_id: string
   confidence: number | null
 }

@@ -38,6 +38,8 @@ pub enum FirewallApprovalAction {
     Allow1Hour,
     /// Allow permanently by updating client permissions to Allow
     AllowPermanent,
+    /// Block flagged categories (guardrail-specific: set categories to "block" action)
+    BlockCategories,
 }
 
 /// Response from the user for a firewall approval request
@@ -57,6 +59,8 @@ pub struct GuardrailApprovalDetails {
     pub actions_required: Vec<serde_json::Value>,
     pub total_duration_ms: u64,
     pub scan_direction: String,
+    /// The text content that was scanned and triggered the guardrail
+    pub flagged_text: String,
 }
 
 /// Pending firewall approval session

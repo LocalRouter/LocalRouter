@@ -119,10 +119,7 @@ pub fn unload_all_models() {
 
 /// Get the number of currently cached (loaded) models.
 pub fn loaded_model_count() -> usize {
-    global_cache()
-        .lock()
-        .map(|c| c.entries.len())
-        .unwrap_or(0)
+    global_cache().lock().map(|c| c.entries.len()).unwrap_or(0)
 }
 
 /// Completion request sent to a provider
@@ -221,7 +218,10 @@ impl ProviderExecutor {
     }
 
     /// Send completion via OpenAI-compatible /v1/completions endpoint
-    async fn complete_openai(&self, request: CompletionRequest) -> Result<CompletionResponse, String> {
+    async fn complete_openai(
+        &self,
+        request: CompletionRequest,
+    ) -> Result<CompletionResponse, String> {
         let url = format!("{}/v1/completions", self.base_url.trim_end_matches('/'));
 
         let mut body = serde_json::json!({
@@ -241,16 +241,22 @@ impl ProviderExecutor {
             req = req.header("Authorization", format!("Bearer {}", key));
         }
 
-        let resp = req.send().await.map_err(|e| format!("Provider request failed: {}", e))?;
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| format!("Provider request failed: {}", e))?;
         let status = resp.status();
-        let resp_text = resp.text().await.map_err(|e| format!("Failed to read response: {}", e))?;
+        let resp_text = resp
+            .text()
+            .await
+            .map_err(|e| format!("Failed to read response: {}", e))?;
 
         if !status.is_success() {
             return Err(format!("Provider returned {}: {}", status, resp_text));
         }
 
-        let resp_json: serde_json::Value =
-            serde_json::from_str(&resp_text).map_err(|e| format!("Invalid JSON response: {}", e))?;
+        let resp_json: serde_json::Value = serde_json::from_str(&resp_text)
+            .map_err(|e| format!("Invalid JSON response: {}", e))?;
 
         // Extract text from choices[0].text
         let text = resp_json["choices"]
@@ -266,12 +272,16 @@ impl ProviderExecutor {
     }
 
     /// Send completion via Ollama's /api/generate endpoint
-    async fn complete_ollama(&self, request: CompletionRequest) -> Result<CompletionResponse, String> {
+    async fn complete_ollama(
+        &self,
+        request: CompletionRequest,
+    ) -> Result<CompletionResponse, String> {
         let url = format!("{}/api/generate", self.base_url.trim_end_matches('/'));
 
         let body = serde_json::json!({
             "model": request.model,
             "prompt": request.prompt,
+            "raw": true,
             "stream": false,
             "options": {
                 "temperature": request.temperature.unwrap_or(0.0),
@@ -300,10 +310,7 @@ impl ProviderExecutor {
         let resp_json: serde_json::Value =
             serde_json::from_str(&resp_text).map_err(|e| format!("Invalid Ollama JSON: {}", e))?;
 
-        let text = resp_json["response"]
-            .as_str()
-            .unwrap_or("")
-            .to_string();
+        let text = resp_json["response"].as_str().unwrap_or("").to_string();
 
         // Ollama doesn't return logprobs in standard /api/generate
         Ok(CompletionResponse {
@@ -316,7 +323,8 @@ impl ProviderExecutor {
 /// Initialize the global llama.cpp backend (idempotent)
 fn init_backend() -> Result<&'static LlamaBackend, String> {
     LLAMA_BACKEND.get_or_try_init(|| {
-        let mut backend = LlamaBackend::init().map_err(|e| format!("Failed to init llama backend: {e}"))?;
+        let mut backend =
+            LlamaBackend::init().map_err(|e| format!("Failed to init llama backend: {e}"))?;
         backend.void_logs();
         info!("llama.cpp backend initialized");
         Ok(backend)
@@ -342,12 +350,22 @@ impl LocalGgufExecutor {
         let context_size = context_size.max(256).min(4096);
         if model_path.exists() {
             if let Err(e) = Self::ensure_cached(&model_path) {
-                warn!("Failed to pre-load GGUF model {}: {}", model_path.display(), e);
+                warn!(
+                    "Failed to pre-load GGUF model {}: {}",
+                    model_path.display(),
+                    e
+                );
             }
         } else {
-            debug!("GGUF model path does not exist yet: {}", model_path.display());
+            debug!(
+                "GGUF model path does not exist yet: {}",
+                model_path.display()
+            );
         }
-        Self { model_path, context_size }
+        Self {
+            model_path,
+            context_size,
+        }
     }
 
     fn load_model(path: &PathBuf) -> Result<Arc<LlamaModel>, String> {
@@ -443,7 +461,11 @@ impl LocalGgufExecutor {
             tokens.truncate(max_prompt_tokens);
         }
 
-        debug!("Tokenized prompt: {} tokens (ctx={})", tokens.len(), context_size);
+        debug!(
+            "Tokenized prompt: {} tokens (ctx={})",
+            tokens.len(),
+            context_size
+        );
 
         if tokens.is_empty() {
             return Ok(CompletionResponse {
@@ -466,10 +488,8 @@ impl LocalGgufExecutor {
             .map_err(|e| format!("Prompt decode failed: {e}"))?;
 
         // Set up greedy sampler (temperature 0 for safety classifiers)
-        let mut sampler = LlamaSampler::chain_simple([
-            LlamaSampler::temp(0.0),
-            LlamaSampler::greedy(),
-        ]);
+        let mut sampler =
+            LlamaSampler::chain_simple([LlamaSampler::temp(0.0), LlamaSampler::greedy()]);
 
         let mut output_tokens = Vec::new();
         let mut logprob_entries: Vec<TokenLogprob> = Vec::new();
@@ -517,7 +537,11 @@ impl LocalGgufExecutor {
             text.push_str(&piece);
         }
 
-        debug!("Generated {} tokens: {:?}", output_tokens.len(), text.trim());
+        debug!(
+            "Generated {} tokens: {:?}",
+            output_tokens.len(),
+            text.trim()
+        );
 
         let logprobs = if want_logprobs && !logprob_entries.is_empty() {
             Some(LogprobsResult {

@@ -30,6 +30,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { PermissionTreeSelector } from "@/components/permissions/PermissionTreeSelector"
+import { PermissionStateButton } from "@/components/permissions/PermissionStateButton"
 import { DragThresholdModelSelector } from "@/components/strategy/DragThresholdModelSelector"
 import { ThresholdSelector } from "@/components/routellm/ThresholdSelector"
 import ProviderForm, { ProviderType } from "@/components/ProviderForm"
@@ -357,6 +358,7 @@ export function StepModels({
             globalPermission={modelPermissions.global}
             onPermissionChange={handlePermissionChange}
             onGlobalChange={handleGlobalChange}
+            renderButton={(props) => <PermissionStateButton {...props} />}
             globalLabel="All Models"
             emptyMessage="No models available"
           />

@@ -22,6 +22,7 @@ import {
 import LegacySelect from "@/components/ui/Select"
 import KeyValueInput from "@/components/ui/KeyValueInput"
 import { PermissionTreeSelector } from "@/components/permissions/PermissionTreeSelector"
+import { PermissionStateButton } from "@/components/permissions/PermissionStateButton"
 import { McpServerTemplates, McpServerTemplate } from "@/components/mcp/McpServerTemplates"
 import { MarketplaceSearchPanel, McpServerListing } from "@/components/add-resource"
 import ServiceIcon from "@/components/ServiceIcon"
@@ -599,6 +600,7 @@ export function StepMcp({ permissions, onChange }: StepMcpProps) {
         globalPermission={permissions.global}
         onPermissionChange={handlePermissionChange}
         onGlobalChange={handleGlobalChange}
+        renderButton={(props) => <PermissionStateButton {...props} />}
         globalLabel="All MCP Servers"
         emptyMessage="No MCP servers configured"
       />

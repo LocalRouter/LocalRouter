@@ -169,9 +169,9 @@ mod tests {
         CustomSafetyModel::new(
             "test".into(),
             "Test Model".into(),
-            Arc::new(ModelExecutor::Local(crate::executor::LocalGgufExecutor::new(
-                "/tmp/fake".into(), 512,
-            ))),
+            Arc::new(ModelExecutor::Local(
+                crate::executor::LocalGgufExecutor::new("/tmp/fake".into(), 512),
+            )),
             "test".into(),
             "Check this: {content}".into(),
             Some(r"category:\s*(\w+)".into()),

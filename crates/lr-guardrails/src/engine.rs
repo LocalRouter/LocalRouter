@@ -147,13 +147,14 @@ impl SafetyEngine {
                         }
                     };
 
-                    let gguf_path = match crate::downloader::model_file_path(&model_cfg.id, gguf_filename) {
-                        Ok(p) => p,
-                        Err(e) => {
-                            warn!("Failed to resolve GGUF path for '{}': {}", model_cfg.id, e);
-                            continue;
-                        }
-                    };
+                    let gguf_path =
+                        match crate::downloader::model_file_path(&model_cfg.id, gguf_filename) {
+                            Ok(p) => p,
+                            Err(e) => {
+                                warn!("Failed to resolve GGUF path for '{}': {}", model_cfg.id, e);
+                                continue;
+                            }
+                        };
 
                     if !gguf_path.exists() {
                         debug!(
@@ -164,7 +165,10 @@ impl SafetyEngine {
                         continue;
                     }
 
-                    Arc::new(ModelExecutor::Local(LocalGgufExecutor::new(gguf_path, context_size)))
+                    Arc::new(ModelExecutor::Local(LocalGgufExecutor::new(
+                        gguf_path,
+                        context_size,
+                    )))
                 }
                 "provider" => {
                     if let (Some(provider_id), Some(model_name)) =
@@ -205,12 +209,14 @@ impl SafetyEngine {
             let enabled_cats = model_cfg.enabled_categories.clone();
 
             let model: Arc<dyn SafetyModel> = match model_cfg.model_type.as_str() {
-                "llama_guard_4" | "llama_guard" => Arc::new(models::llama_guard::LlamaGuardModel::new(
-                    model_cfg.id.clone(),
-                    executor,
-                    model_cfg.model_name.clone().unwrap_or_default(),
-                    enabled_cats,
-                )),
+                "llama_guard_4" | "llama_guard" => {
+                    Arc::new(models::llama_guard::LlamaGuardModel::new(
+                        model_cfg.id.clone(),
+                        executor,
+                        model_cfg.model_name.clone().unwrap_or_default(),
+                        enabled_cats,
+                    ))
+                }
                 "shield_gemma" => Arc::new(models::shield_gemma::ShieldGemmaModel::new(
                     model_cfg.id.clone(),
                     executor,
@@ -223,12 +229,14 @@ impl SafetyEngine {
                     model_cfg.model_name.clone().unwrap_or_default(),
                     enabled_cats,
                 )),
-                "granite_guardian" => Arc::new(models::granite_guardian::GraniteGuardianModel::new(
-                    model_cfg.id.clone(),
-                    executor,
-                    model_cfg.model_name.clone().unwrap_or_default(),
-                    enabled_cats,
-                )),
+                "granite_guardian" => {
+                    Arc::new(models::granite_guardian::GraniteGuardianModel::new(
+                        model_cfg.id.clone(),
+                        executor,
+                        model_cfg.model_name.clone().unwrap_or_default(),
+                        enabled_cats,
+                    ))
+                }
                 other => {
                     warn!("Unknown safety model type '{}', skipping", other);
                     continue;
@@ -237,9 +245,7 @@ impl SafetyEngine {
 
             info!(
                 "Loaded safety model: {} (type: {}, mode: {})",
-                model_cfg.id,
-                model_cfg.model_type,
-                exec_mode,
+                model_cfg.id, model_cfg.model_type, exec_mode,
             );
             model_instances.push(model);
         }
@@ -634,9 +640,7 @@ mod tests {
             0.5,
         );
 
-        let result = engine
-            .check_text("hello world", ScanDirection::Input)
-            .await;
+        let result = engine.check_text("hello world", ScanDirection::Input).await;
         assert!(result.is_safe);
         assert_eq!(result.verdicts.len(), 1);
         assert!(result.actions_required.is_empty());
@@ -678,9 +682,7 @@ mod tests {
             0.5,
         );
 
-        let result = engine
-            .check_text("bad content", ScanDirection::Input)
-            .await;
+        let result = engine.check_text("bad content", ScanDirection::Input).await;
         assert!(!result.is_safe);
         assert_eq!(result.actions_required.len(), 1);
         assert!(matches!(

@@ -2,6 +2,7 @@ import { useState } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
 import { PermissionTreeSelector } from "./PermissionTreeSelector"
+import { PermissionStateButton } from "./PermissionStateButton"
 import type { PermissionState, TreeNode, ModelPermissions, PermissionTreeProps } from "./types"
 
 interface StrategyModel {
@@ -147,6 +148,7 @@ export function ModelsPermissionTree({
       globalPermission={permissions.global}
       onPermissionChange={handlePermissionChange}
       onGlobalChange={handleGlobalChange}
+      renderButton={(props) => <PermissionStateButton {...props} />}
       disabled={saving}
       globalLabel="All Models"
       emptyMessage="No models available"

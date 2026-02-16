@@ -88,6 +88,11 @@ pub fn migrate_config(mut config: AppConfig) -> AppResult<AppConfig> {
         config = migrate_to_v12(config)?;
     }
 
+    // Migrate to v13: Per-client guardrails configuration
+    if config.version < 13 {
+        config = migrate_to_v13(config)?;
+    }
+
     // Update version to current
     config.version = CONFIG_VERSION;
 
@@ -442,6 +447,36 @@ fn migrate_to_v12(mut config: AppConfig) -> AppResult<AppConfig> {
     info!("Migrated guardrails to LLM-based safety models (confidence threshold: 0.5)");
 
     config.version = 12;
+    Ok(config)
+}
+
+/// Migrate to version 13: Per-client guardrails configuration
+///
+/// Moves guardrails from global config to per-client:
+/// - Old `guardrails_enabled: Some(true)` → `guardrails.enabled = true`
+/// - Global `category_actions` are dropped (users reconfigure per-client)
+/// - Global `enabled` and `scan_responses` become migration shims (not serialized)
+fn migrate_to_v13(mut config: AppConfig) -> AppResult<AppConfig> {
+    info!("Migrating to version 13: Per-client guardrails configuration");
+
+    let global_enabled = config.guardrails.enabled;
+
+    for client in &mut config.clients {
+        // Migrate old guardrails_enabled override
+        let was_enabled = client.guardrails_enabled.unwrap_or(global_enabled);
+        if was_enabled {
+            client.guardrails.enabled = true;
+        }
+        // Clear old field
+        client.guardrails_enabled = None;
+    }
+
+    // Clear global fields that are no longer used
+    config.guardrails.enabled = false;
+    config.guardrails.scan_responses = false;
+    config.guardrails.category_actions = vec![];
+
+    config.version = 13;
     Ok(config)
 }
 

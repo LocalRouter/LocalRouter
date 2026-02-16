@@ -27,6 +27,7 @@ interface ApprovalDetails {
     actions_required: CategoryActionRequired[]
     total_duration_ms: number
     scan_direction: "request" | "response"
+    flagged_text: string
   }
 }
 
@@ -97,7 +98,8 @@ export function FirewallApproval() {
         if (result.is_guardrail_request) {
           const win = getCurrentWebviewWindow()
           const verdictCount = result.guardrail_details?.verdicts?.length || 0
-          const height = Math.min(500, 320 + verdictCount * 60)
+          const hasFlaggedText = !!result.guardrail_details?.flagged_text
+          const height = Math.min(580, 320 + verdictCount * 60 + (hasFlaggedText ? 80 : 0))
           await win.setSize(new LogicalSize(440, height))
           await win.center()
         }
@@ -437,6 +439,7 @@ export function FirewallApproval() {
           guardrailVerdicts={details.guardrail_details?.verdicts}
           guardrailDirection={details.guardrail_details?.scan_direction}
           guardrailActions={details.guardrail_details?.actions_required}
+          guardrailFlaggedText={details.guardrail_details?.flagged_text}
           onAction={handleAction}
           onEdit={enterEditMode}
           submitting={submitting}

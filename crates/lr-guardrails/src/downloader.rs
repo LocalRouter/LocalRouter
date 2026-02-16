@@ -3,6 +3,7 @@
 //! Downloads GGUF model files for local inference using streaming HTTP
 //! with real-time progress reporting.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
@@ -13,8 +14,10 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 
-// Global download lock to prevent concurrent downloads
-static DOWNLOAD_LOCK: Lazy<Arc<Mutex<()>>> = Lazy::new(|| Arc::new(Mutex::new(())));
+/// Per-model download locks — allows concurrent downloads of different models
+/// while preventing duplicate downloads of the same model.
+static DOWNLOAD_LOCKS: Lazy<Mutex<HashMap<String, Arc<Mutex<()>>>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 const MAX_RETRIES: usize = 3;
 const RETRY_DELAY_MS: u64 = 2000;
@@ -204,12 +207,17 @@ pub async fn download_model(
     hf_token: Option<&str>,
     #[cfg(feature = "tauri-support")] app_handle: Option<tauri::AppHandle>,
 ) -> Result<PathBuf, String> {
-    // Acquire download lock
-    let lock_result = DOWNLOAD_LOCK.try_lock();
+    // Acquire per-model download lock (prevents duplicate downloads of same model)
+    let model_lock = {
+        let mut locks = DOWNLOAD_LOCKS.lock().await;
+        locks.entry(model_id.to_string()).or_default().clone()
+    };
+    let lock_result = model_lock.try_lock();
     if lock_result.is_err() {
-        return Err(
-            "Another download is already in progress. Please wait for it to complete.".to_string(),
-        );
+        return Err(format!(
+            "Model '{}' is already being downloaded. Please wait for it to complete.",
+            model_id
+        ));
     }
     let _lock = lock_result.unwrap();
 
@@ -358,10 +366,8 @@ pub async fn download_model(
                     if now.duration_since(last_emit).as_millis() >= PROGRESS_EMIT_INTERVAL_MS {
                         last_emit = now;
 
-                        let elapsed_secs =
-                            download_start.elapsed().as_secs_f64().max(0.001);
-                        let speed =
-                            (downloaded_bytes as f64 / elapsed_secs) as u64;
+                        let elapsed_secs = download_start.elapsed().as_secs_f64().max(0.001);
+                        let speed = (downloaded_bytes as f64 / elapsed_secs) as u64;
                         let progress = if total_bytes > 0 {
                             downloaded_bytes as f32 / total_bytes as f32
                         } else {
@@ -524,7 +530,10 @@ mod tests {
 
     #[test]
     fn test_hf_download_url() {
-        let url = hf_download_url("QuantFactory/shieldgemma-2b-GGUF", "shieldgemma-2b.Q4_K_M.gguf");
+        let url = hf_download_url(
+            "QuantFactory/shieldgemma-2b-GGUF",
+            "shieldgemma-2b.Q4_K_M.gguf",
+        );
         assert_eq!(
             url,
             "https://huggingface.co/QuantFactory/shieldgemma-2b-GGUF/resolve/main/shieldgemma-2b.Q4_K_M.gguf"

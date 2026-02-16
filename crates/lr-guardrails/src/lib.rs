@@ -19,5 +19,6 @@ pub mod text_extractor;
 pub mod types;
 
 pub use engine::{ProviderInfo, SafetyEngine, SafetyModelConfigInput};
+pub use executor::{loaded_model_count, unload_all_models, unload_idle_models};
 pub use safety_model::*;
 pub use types::*;

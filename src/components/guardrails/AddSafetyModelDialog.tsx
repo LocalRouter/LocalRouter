@@ -136,6 +136,9 @@ export function AddSafetyModelDialog({
         safe_indicator: modelType === "custom" && safeIndicator ? safeIndicator : null,
         output_regex: modelType === "custom" && outputRegex ? outputRegex : null,
         category_mapping: modelType === "custom" && categoryMapping.length > 0 ? categoryMapping : null,
+        memory_mb: null,
+        latency_ms: null,
+        disk_size_mb: null,
       }
 
       await invoke("add_safety_model", {

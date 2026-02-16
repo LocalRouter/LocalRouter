@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
 import { toast } from "sonner"
 import { PermissionTreeSelector } from "./PermissionTreeSelector"
+import { PermissionStateButton } from "./PermissionStateButton"
 import type { PermissionState, TreeNode, SkillsPermissions, PermissionTreeProps } from "./types"
 
 interface SkillInfo {
@@ -192,6 +193,7 @@ export function SkillsPermissionTree({ clientId, permissions, onUpdate }: Skills
       globalPermission={permissions.global}
       onPermissionChange={handlePermissionChange}
       onGlobalChange={handleGlobalChange}
+      renderButton={(props) => <PermissionStateButton {...props} />}
       disabled={saving}
       loading={loading}
       globalLabel="All Skills"

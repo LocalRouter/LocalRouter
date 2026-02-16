@@ -16,26 +16,58 @@ const CATEGORIES: &[(SafetyCategory, &str, &str)] = &[
     (SafetyCategory::ViolentCrimes, "S1", "Violent Crimes"),
     (SafetyCategory::NonViolentCrimes, "S2", "Non-Violent Crimes"),
     (SafetyCategory::SexCrimes, "S3", "Sex-Related Crimes"),
-    (SafetyCategory::ChildExploitation, "S4", "Child Sexual Exploitation"),
+    (
+        SafetyCategory::ChildExploitation,
+        "S4",
+        "Child Sexual Exploitation",
+    ),
     (SafetyCategory::Defamation, "S5", "Defamation"),
-    (SafetyCategory::SpecializedAdvice, "S6", "Specialized Advice"),
+    (
+        SafetyCategory::SpecializedAdvice,
+        "S6",
+        "Specialized Advice",
+    ),
     (SafetyCategory::Privacy, "S7", "Privacy"),
-    (SafetyCategory::IntellectualProperty, "S8", "Intellectual Property"),
-    (SafetyCategory::IndiscriminateWeapons, "S9", "Indiscriminate Weapons"),
+    (
+        SafetyCategory::IntellectualProperty,
+        "S8",
+        "Intellectual Property",
+    ),
+    (
+        SafetyCategory::IndiscriminateWeapons,
+        "S9",
+        "Indiscriminate Weapons",
+    ),
     (SafetyCategory::Hate, "S10", "Hate"),
     (SafetyCategory::SelfHarm, "S11", "Suicide & Self-Harm"),
     (SafetyCategory::SexualContent, "S12", "Sexual Content"),
     (SafetyCategory::Elections, "S13", "Elections"),
-    (SafetyCategory::CodeInterpreterAbuse, "S14", "Code Interpreter Abuse"),
-    (SafetyCategory::GunsIllegalWeapons, "S15", "Guns & Illegal Weapons"),
-    (SafetyCategory::ControlledSubstances, "S16", "Controlled Substances"),
+    (
+        SafetyCategory::CodeInterpreterAbuse,
+        "S14",
+        "Code Interpreter Abuse",
+    ),
+    (
+        SafetyCategory::GunsIllegalWeapons,
+        "S15",
+        "Guns & Illegal Weapons",
+    ),
+    (
+        SafetyCategory::ControlledSubstances,
+        "S16",
+        "Controlled Substances",
+    ),
     (SafetyCategory::CriminalPlanning, "S17", "Criminal Planning"),
     (SafetyCategory::Profanity, "S18", "Profanity"),
     (SafetyCategory::NeedsCaution, "S19", "Needs Caution"),
     (SafetyCategory::Manipulation, "S20", "Manipulation"),
     (SafetyCategory::FraudDeception, "S21", "Fraud & Deception"),
     (SafetyCategory::Malware, "S22", "Malware"),
-    (SafetyCategory::HighRiskGovDecision, "S23", "High Risk Gov Decision"),
+    (
+        SafetyCategory::HighRiskGovDecision,
+        "S23",
+        "High Risk Gov Decision",
+    ),
 ];
 
 pub struct NemotronModel {
@@ -249,9 +281,9 @@ mod tests {
     fn make_model() -> NemotronModel {
         NemotronModel::new(
             "test".into(),
-            Arc::new(ModelExecutor::Local(crate::executor::LocalGgufExecutor::new(
-                "/tmp/fake".into(), 512,
-            ))),
+            Arc::new(ModelExecutor::Local(
+                crate::executor::LocalGgufExecutor::new("/tmp/fake".into(), 512),
+            )),
             "test".into(),
             None,
         )
@@ -307,8 +339,8 @@ mod tests {
     #[test]
     fn test_parse_json_unsafe_category_names() {
         let model = make_model();
-        let (is_safe, flagged) = model
-            .parse_output(r#"{"User Safety": "unsafe", "Safety Categories": "PII/Privacy"}"#);
+        let (is_safe, flagged) =
+            model.parse_output(r#"{"User Safety": "unsafe", "Safety Categories": "PII/Privacy"}"#);
         assert!(!is_safe);
         assert_eq!(flagged.len(), 1);
         assert_eq!(flagged[0].category, SafetyCategory::Privacy);

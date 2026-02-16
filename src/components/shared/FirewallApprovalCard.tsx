@@ -17,7 +17,7 @@ import { ProvidersIcon, McpIcon, SkillsIcon, StoreIcon } from "@/components/icon
 import { Shield } from "lucide-react"
 import type { SafetyVerdict, CategoryActionRequired } from "@/types/tauri-commands"
 
-export type ApprovalAction = "deny" | "deny_session" | "deny_always" | "allow_once" | "allow_session" | "allow_1_hour" | "allow_permanent"
+export type ApprovalAction = "deny" | "deny_session" | "deny_always" | "block_categories" | "allow_once" | "allow_session" | "allow_1_hour" | "allow_permanent"
 
 export type RequestType = "marketplace" | "skill" | "model" | "tool" | "guardrail"
 
@@ -124,6 +124,7 @@ export interface FirewallApprovalCardProps {
   guardrailVerdicts?: SafetyVerdict[]
   guardrailDirection?: "request" | "response"
   guardrailActions?: CategoryActionRequired[]
+  guardrailFlaggedText?: string
   /** If not provided, all buttons are disabled (demo mode) */
   onAction?: (action: ApprovalAction) => void
   onEdit?: () => void
@@ -132,6 +133,16 @@ export interface FirewallApprovalCardProps {
 }
 
 /** Format a confidence value (0-1) as a percentage string */
+/** Format a SafetyCategory for display (handles both string and Custom object variants) */
+function formatCategory(category: string | Record<string, string>): string {
+  if (typeof category === "string") return category.replace(/_/g, " ")
+  if (typeof category === "object" && category !== null) {
+    const value = Object.values(category)[0]
+    return typeof value === "string" ? value.replace(/_/g, " ") : String(value)
+  }
+  return String(category)
+}
+
 function formatConfidence(confidence: number | null): string {
   if (confidence === null) return "N/A"
   return `${Math.round(confidence * 100)}%`
@@ -147,6 +158,7 @@ export function FirewallApprovalCard({
   guardrailVerdicts,
   guardrailDirection,
   guardrailActions,
+  guardrailFlaggedText,
   onAction,
   onEdit,
   submitting = false,
@@ -227,6 +239,16 @@ export function FirewallApprovalCard({
           ))}
         </div>
 
+        {/* Flagged text context */}
+        {requestType === "guardrail" && guardrailFlaggedText && (
+          <div className="mt-2 bg-muted/50 rounded px-2 py-1.5">
+            <span className="text-[10px] font-semibold text-muted-foreground">Flagged Content</span>
+            <p className="text-xs mt-0.5 whitespace-pre-wrap break-words max-h-24 overflow-auto font-mono leading-relaxed">
+              {guardrailFlaggedText}
+            </p>
+          </div>
+        )}
+
         {/* Safety verdicts - grouped by model */}
         {requestType === "guardrail" && guardrailVerdicts && guardrailVerdicts.length > 0 && (
           <div className="mt-2 space-y-2 max-h-48 overflow-auto">
@@ -245,7 +267,7 @@ export function FirewallApprovalCard({
                   <div className="space-y-0.5 pl-1">
                     {verdict.flagged_categories.map((cat, i) => (
                       <div key={i} className="flex items-center gap-1.5 text-[10px]">
-                        <span className="text-red-500 font-medium">{cat.category}</span>
+                        <span className="text-red-500 font-medium">{formatCategory(cat.category)}</span>
                         <span className="text-muted-foreground">({cat.native_label})</span>
                         <span className="ml-auto font-mono">{formatConfidence(cat.confidence)}</span>
                       </div>
@@ -270,7 +292,7 @@ export function FirewallApprovalCard({
                       <span className={`px-1 py-0.5 rounded font-bold ${act.action === "allow" ? "bg-emerald-500/20 text-emerald-600" : act.action === "ask" ? "bg-amber-500/20 text-amber-600" : "bg-blue-500/20 text-blue-600"}`}>
                         {act.action.toUpperCase()}
                       </span>
-                      <span className="font-medium">{act.category}</span>
+                      <span className="font-medium">{formatCategory(act.category)}</span>
                       <span className="text-muted-foreground ml-auto">{act.model_id}</span>
                     </div>
                   ))}
@@ -312,6 +334,11 @@ export function FirewallApprovalCard({
               <DropdownMenuItem onClick={() => onAction?.("deny_always")}>
                 {isGuardrailRequest ? "Disable Client" : "Deny Always"}
               </DropdownMenuItem>
+              {isGuardrailRequest && (
+                <DropdownMenuItem onClick={() => onAction?.("block_categories")}>
+                  Block Categories
+                </DropdownMenuItem>
+              )}
             </DropdownMenuContent>
           </DropdownMenu>
         </div>

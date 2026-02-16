@@ -78,7 +78,7 @@ export function SettingsView({ activeSubTab, onTabChange }: SettingsViewProps) {
         </TabsContent> */}
 
         <TabsContent value="guardrails">
-          <GuardrailsTab />
+          <GuardrailsTab onTabChange={onTabChange} />
         </TabsContent>
 
         <TabsContent value="routellm">

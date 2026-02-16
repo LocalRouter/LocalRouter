@@ -17,4 +17,6 @@ pub struct GuardrailApprovalDetails {
     pub actions_required: Vec<CategoryActionRequired>,
     pub total_duration_ms: u64,
     pub scan_direction: String,
+    /// The text content that was scanned and triggered the guardrail
+    pub flagged_text: String,
 }
