@@ -74,7 +74,9 @@
       "WebFetch(domain:docs.rs)",
       "WebFetch(domain:www.llama.com)",
       "WebFetch(domain:docs.nvidia.com)",
-      "WebFetch(domain:ollama.com)"
+      "WebFetch(domain:ollama.com)",
+      "WebFetch(domain:crates.io)",
+      "Bash(LOCALROUTER_KEYCHAIN=file RUST_LOG=lr_mcp::gateway::gateway_tools=debug cargo tauri dev:*)"
     ]
   },
   "enableAllProjectMcpServers": true,
