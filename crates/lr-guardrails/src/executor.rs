@@ -3,24 +3,127 @@
 //! Two backends:
 //! - `ProviderExecutor`: Routes inference through an already-configured LLM provider
 //! - `LocalGgufExecutor`: Loads a GGUF model and runs inference locally via llama.cpp
+//!
+//! Models are cached globally in `MODEL_CACHE` so they persist across engine rebuilds
+//! and aren't reloaded on every request. An idle auto-unload task can reclaim memory.
 
+use std::collections::HashMap;
 use std::num::NonZeroU32;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
-use llama_cpp_2::context::params::LlamaContextParams;
+use llama_cpp_2::context::params::{KvCacheType, LlamaContextParams};
 use llama_cpp_2::llama_backend::LlamaBackend;
 use llama_cpp_2::llama_batch::LlamaBatch;
 use llama_cpp_2::model::params::LlamaModelParams;
 use llama_cpp_2::model::LlamaModel;
-use llama_cpp_2::sampling::LlamaSampler;
 use llama_cpp_2::model::Special;
+use llama_cpp_2::sampling::LlamaSampler;
 use once_cell::sync::OnceCell;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
 /// Global llama.cpp backend — initialized once per process
 static LLAMA_BACKEND: OnceCell<LlamaBackend> = OnceCell::new();
+
+// ============================================================================
+// Global Model Cache
+// ============================================================================
+
+/// A cached GGUF model with access tracking.
+/// The model is stored behind `Arc` so multiple concurrent inference calls
+/// (e.g. SingleCategory models checking several categories in parallel) can
+/// each create their own `LlamaContext` from the shared model weights.
+struct CachedModel {
+    model: Arc<LlamaModel>,
+    last_access: Instant,
+}
+
+/// Global cache of loaded GGUF models, keyed by file path.
+///
+/// Models persist across engine rebuilds so they don't need to be reloaded
+/// on every config change. The idle unload task evicts entries that haven't
+/// been used within the configured timeout.
+struct ModelCache {
+    entries: HashMap<PathBuf, CachedModel>,
+}
+
+static MODEL_CACHE: OnceCell<Mutex<ModelCache>> = OnceCell::new();
+
+fn global_cache() -> &'static Mutex<ModelCache> {
+    MODEL_CACHE.get_or_init(|| {
+        Mutex::new(ModelCache {
+            entries: HashMap::new(),
+        })
+    })
+}
+
+/// Get a shared reference to a cached model.
+/// Returns `None` if not in cache (caller must load from disk).
+fn cache_get(path: &PathBuf) -> Option<Arc<LlamaModel>> {
+    let mut cache = global_cache().lock().ok()?;
+    let entry = cache.entries.get_mut(path)?;
+    entry.last_access = Instant::now();
+    Some(entry.model.clone())
+}
+
+/// Insert a model into the cache.
+fn cache_put(path: PathBuf, model: Arc<LlamaModel>) {
+    if let Ok(mut cache) = global_cache().lock() {
+        cache.entries.insert(
+            path,
+            CachedModel {
+                model,
+                last_access: Instant::now(),
+            },
+        );
+    }
+}
+
+/// Unload all cached models that have been idle longer than `timeout_secs`.
+/// Returns the number of models unloaded.
+pub fn unload_idle_models(timeout_secs: u64) -> usize {
+    let Ok(mut cache) = global_cache().lock() else {
+        return 0;
+    };
+    let now = Instant::now();
+    let before = cache.entries.len();
+    cache.entries.retain(|path, entry| {
+        let idle = now.duration_since(entry.last_access).as_secs();
+        if idle > timeout_secs {
+            info!(
+                "Unloading idle safety model: {} (idle {}s > {}s)",
+                path.display(),
+                idle,
+                timeout_secs
+            );
+            false
+        } else {
+            true
+        }
+    });
+    before - cache.entries.len()
+}
+
+/// Unload all cached models immediately.
+pub fn unload_all_models() {
+    if let Ok(mut cache) = global_cache().lock() {
+        let count = cache.entries.len();
+        cache.entries.clear();
+        if count > 0 {
+            info!("Unloaded all {} cached safety models", count);
+        }
+    }
+}
+
+/// Get the number of currently cached (loaded) models.
+pub fn loaded_model_count() -> usize {
+    global_cache()
+        .lock()
+        .map(|c| c.entries.len())
+        .unwrap_or(0)
+}
 
 /// Completion request sent to a provider
 #[derive(Debug, Clone, Serialize)]
@@ -220,70 +323,86 @@ fn init_backend() -> Result<&'static LlamaBackend, String> {
     })
 }
 
-/// Executor that loads a GGUF model locally via llama.cpp
+/// Executor that loads a GGUF model locally via llama.cpp.
+///
+/// Models are cached globally behind `Arc` so they persist across engine rebuilds
+/// and support parallel inference. Multiple concurrent calls (e.g. SingleCategory
+/// models like Granite Guardian checking 7 categories at once) each create their
+/// own `LlamaContext` from the shared model weights — no serialization needed.
 pub struct LocalGgufExecutor {
     model_path: PathBuf,
-    /// Pre-loaded model (expensive to load, so cached).
-    /// Wrapped in Mutex because LlamaModel is !Send.
-    model: Mutex<Option<LlamaModel>>,
+    /// Context window size in tokens (default: 512)
+    context_size: u32,
 }
 
 impl LocalGgufExecutor {
-    /// Create a new executor and eagerly load the model from disk.
-    pub fn new(model_path: PathBuf) -> Self {
-        let model = if model_path.exists() {
-            match Self::load_model(&model_path) {
-                Ok(m) => {
-                    info!("Loaded GGUF model from {}", model_path.display());
-                    Mutex::new(Some(m))
-                }
-                Err(e) => {
-                    warn!("Failed to pre-load GGUF model {}: {}", model_path.display(), e);
-                    Mutex::new(None)
-                }
+    /// Create a new executor. The model is loaded eagerly into the global
+    /// cache if not already present (so engine rebuilds don't reload).
+    pub fn new(model_path: PathBuf, context_size: u32) -> Self {
+        let context_size = context_size.max(256).min(4096);
+        if model_path.exists() {
+            if let Err(e) = Self::ensure_cached(&model_path) {
+                warn!("Failed to pre-load GGUF model {}: {}", model_path.display(), e);
             }
         } else {
             debug!("GGUF model path does not exist yet: {}", model_path.display());
-            Mutex::new(None)
-        };
-        Self { model_path, model }
+        }
+        Self { model_path, context_size }
     }
 
-    fn load_model(path: &PathBuf) -> Result<LlamaModel, String> {
-        let _backend = init_backend()?;
-        let params = LlamaModelParams::default();
-        LlamaModel::load_from_file(_backend, path, &params)
-            .map_err(|e| format!("Failed to load GGUF model: {e}"))
+    fn load_model(path: &PathBuf) -> Result<Arc<LlamaModel>, String> {
+        let backend = init_backend()?;
+        // Offload all layers to GPU (Metal on macOS, CUDA on Linux/Windows)
+        // 999 = "all layers" — llama.cpp caps to the actual layer count
+        let params = LlamaModelParams::default().with_n_gpu_layers(999);
+        info!("Loading GGUF model with GPU offload: {}", path.display());
+        let model = LlamaModel::load_from_file(backend, path, &params)
+            .map_err(|e| format!("Failed to load GGUF model: {e}"))?;
+        Ok(Arc::new(model))
+    }
+
+    /// Warm the model into the global cache if not already loaded.
+    fn ensure_cached(path: &PathBuf) -> Result<(), String> {
+        let in_cache = global_cache()
+            .lock()
+            .map(|c| c.entries.contains_key(path))
+            .unwrap_or(false);
+        if in_cache {
+            return Ok(());
+        }
+        let model = Self::load_model(path)?;
+        cache_put(path.clone(), model);
+        info!("Loaded GGUF model into cache: {}", path.display());
+        Ok(())
+    }
+
+    /// Get a shared reference to the model, loading from cache or disk.
+    fn get_model(&self) -> Result<Arc<LlamaModel>, String> {
+        if let Some(model) = cache_get(&self.model_path) {
+            return Ok(model);
+        }
+        // Not in cache — load from disk and cache it
+        let model = Self::load_model(&self.model_path)?;
+        cache_put(self.model_path.clone(), model.clone());
+        Ok(model)
     }
 
     async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse, String> {
-        let model_path = self.model_path.clone();
         let max_tokens = request.max_tokens.unwrap_or(128) as usize;
         let want_logprobs = request.logprobs.is_some();
         let prompt = request.prompt.clone();
+        let context_size = self.context_size;
 
-        // Extract the model from our mutex (take it so we can move into spawn_blocking)
-        let model = {
-            let mut guard = self.model.lock().map_err(|e| format!("Model lock poisoned: {e}"))?;
-            match guard.take() {
-                Some(m) => m,
-                None => Self::load_model(&model_path)?,
-            }
-        };
+        // Get shared model ref — concurrent callers all get the same Arc
+        let model = self.get_model()?;
 
-        let (result, model_back) = tokio::task::spawn_blocking(move || {
-            let result = Self::run_inference(&model, &prompt, max_tokens, want_logprobs);
-            (result, model)
+        // Each call creates its own LlamaContext from the shared model,
+        // allowing true parallel inference for SingleCategory models.
+        tokio::task::spawn_blocking(move || {
+            Self::run_inference(&model, &prompt, max_tokens, want_logprobs, context_size)
         })
         .await
-        .map_err(|e| format!("Inference task panicked: {e}"))?;
-
-        // Put the model back for reuse
-        if let Ok(mut guard) = self.model.lock() {
-            *guard = Some(model_back);
-        }
-
-        result
+        .map_err(|e| format!("Inference task panicked: {e}"))?
     }
 
     fn run_inference(
@@ -291,22 +410,40 @@ impl LocalGgufExecutor {
         prompt: &str,
         max_tokens: usize,
         want_logprobs: bool,
+        context_size: u32,
     ) -> Result<CompletionResponse, String> {
-        // Create context
+        // Create context optimized for safety classifiers:
+        // - flash_attn=enabled: significant speedup on Metal/CUDA GPU
+        // - Q8_0 KV cache: ~2x less memory vs F16 default, negligible quality impact
         let ctx_params = LlamaContextParams::default()
-            .with_n_ctx(NonZeroU32::new(2048))
-            .with_n_batch(512);
+            .with_n_ctx(NonZeroU32::new(context_size))
+            .with_n_batch(context_size)
+            .with_flash_attention_policy(1) // LLAMA_FLASH_ATTN_TYPE_ENABLED = 1
+            .with_type_k(KvCacheType::Q8_0)
+            .with_type_v(KvCacheType::Q8_0);
 
         let mut ctx = model
             .new_context(init_backend()?, ctx_params)
             .map_err(|e| format!("Failed to create context: {e}"))?;
 
-        // Tokenize prompt
-        let tokens = model
-            .str_to_token(&prompt, llama_cpp_2::model::AddBos::Always)
+        // Tokenize prompt — use AddBos::Never because model prompt templates
+        // (Llama Guard, Nemotron) already include <|begin_of_text|> (the BOS token).
+        // Using AddBos::Always causes a double-BOS warning and wastes a token slot.
+        let mut tokens = model
+            .str_to_token(prompt, llama_cpp_2::model::AddBos::Never)
             .map_err(|e| format!("Tokenization failed: {e}"))?;
 
-        debug!("Tokenized prompt: {} tokens", tokens.len());
+        // Truncate prompt if it exceeds available context (reserve space for generation)
+        let max_prompt_tokens = (context_size as usize).saturating_sub(max_tokens);
+        if tokens.len() > max_prompt_tokens {
+            warn!(
+                "Prompt ({} tokens) exceeds context budget ({} - {} gen = {} max prompt), truncating",
+                tokens.len(), context_size, max_tokens, max_prompt_tokens
+            );
+            tokens.truncate(max_prompt_tokens);
+        }
+
+        debug!("Tokenized prompt: {} tokens (ctx={})", tokens.len(), context_size);
 
         if tokens.is_empty() {
             return Ok(CompletionResponse {
@@ -316,7 +453,7 @@ impl LocalGgufExecutor {
         }
 
         // Feed prompt tokens in batch
-        let mut batch = LlamaBatch::new(512, 1);
+        let mut batch = LlamaBatch::new(context_size as usize, 1);
         let last_idx = tokens.len() - 1;
         for (i, &token) in tokens.iter().enumerate() {
             let logits = i == last_idx; // only need logits for the last prompt token

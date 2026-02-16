@@ -1315,6 +1315,8 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     category_actions: [],
     hf_token: null,
     default_confidence_threshold: 0.5,
+    idle_timeout_secs: 600,
+    context_size: 512,
   }),
   'update_guardrails_config': () => {
     toast.success('GuardRails configuration saved (demo)')
@@ -1411,6 +1413,11 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   },
   'remove_safety_model': () => {
     toast.success('Safety model removed (demo)')
+    return null
+  },
+  'get_guardrails_loaded_model_count': () => 2,
+  'unload_all_safety_models': () => {
+    toast.success('All safety models unloaded (demo)')
     return null
   },
 

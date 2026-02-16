@@ -2017,6 +2017,100 @@ pub async fn update_guardrails_config(
     Ok(())
 }
 
+/// Category-to-model-type mapping for resolving the three-level hierarchy.
+/// Returns (category_name, list_of_model_types) pairs.
+fn category_model_type_mapping() -> Vec<(&'static str, Vec<&'static str>)> {
+    vec![
+        ("violent_crimes", vec!["llama_guard", "llama_guard_4", "nemotron", "granite_guardian"]),
+        ("non_violent_crimes", vec!["llama_guard", "llama_guard_4", "nemotron"]),
+        ("sex_crimes", vec!["llama_guard", "llama_guard_4", "nemotron"]),
+        ("child_exploitation", vec!["llama_guard", "llama_guard_4", "nemotron"]),
+        ("defamation", vec!["llama_guard", "llama_guard_4", "nemotron"]),
+        ("specialized_advice", vec!["llama_guard", "llama_guard_4", "nemotron"]),
+        ("privacy", vec!["llama_guard", "llama_guard_4", "nemotron"]),
+        ("intellectual_property", vec!["llama_guard", "llama_guard_4", "nemotron"]),
+        ("indiscriminate_weapons", vec!["llama_guard", "llama_guard_4", "nemotron"]),
+        ("hate", vec!["llama_guard", "llama_guard_4", "nemotron", "shield_gemma", "granite_guardian"]),
+        ("self_harm", vec!["llama_guard", "llama_guard_4", "nemotron"]),
+        ("sexual_content", vec!["llama_guard", "llama_guard_4", "nemotron", "shield_gemma", "granite_guardian"]),
+        ("elections", vec!["llama_guard", "llama_guard_4", "nemotron"]),
+        ("code_interpreter_abuse", vec!["llama_guard", "llama_guard_4", "nemotron"]),
+        ("dangerous_content", vec!["shield_gemma"]),
+        ("harassment", vec!["shield_gemma"]),
+        ("jailbreak", vec!["granite_guardian"]),
+        ("social_bias", vec!["granite_guardian"]),
+        ("profanity", vec!["nemotron", "granite_guardian"]),
+        ("unethical_behavior", vec!["granite_guardian"]),
+        ("context_relevance", vec!["granite_guardian"]),
+        ("groundedness", vec!["granite_guardian"]),
+        ("answer_relevance", vec!["granite_guardian"]),
+    ]
+}
+
+/// Resolve three-level category action hierarchy into a flat (category, action) list.
+///
+/// Hierarchy: individual category > model-type (`__model:X`) > global (`__global`) > "ask"
+fn resolve_category_actions(
+    entries: &[lr_config::CategoryActionEntry],
+) -> Vec<(String, String)> {
+    use std::collections::HashMap;
+
+    // Parse the entries into levels
+    let mut global_action = "ask".to_string();
+    let mut model_type_actions: HashMap<&str, &str> = HashMap::new();
+    let mut category_actions: HashMap<&str, &str> = HashMap::new();
+
+    for entry in entries {
+        if entry.category == "__global" {
+            global_action = entry.action.clone();
+        } else if let Some(mt) = entry.category.strip_prefix("__model:") {
+            model_type_actions.insert(mt, &entry.action);
+        } else {
+            category_actions.insert(&entry.category, &entry.action);
+        }
+    }
+
+    // Resolve each known category
+    let mapping = category_model_type_mapping();
+    let mut resolved: Vec<(String, String)> = Vec::new();
+
+    for (cat, model_types) in &mapping {
+        // 1. Explicit category override
+        if let Some(action) = category_actions.get(cat) {
+            resolved.push((cat.to_string(), action.to_string()));
+            continue;
+        }
+
+        // 2. Model-type default (use first matching model type that has an override)
+        let mut found_mt = false;
+        for mt in model_types {
+            if let Some(action) = model_type_actions.get(mt) {
+                resolved.push((cat.to_string(), action.to_string()));
+                found_mt = true;
+                break;
+            }
+        }
+        if found_mt {
+            continue;
+        }
+
+        // 3. Global default
+        resolved.push((cat.to_string(), global_action.clone()));
+    }
+
+    // Also include any custom/unknown category entries not in the mapping
+    for entry in entries {
+        if entry.category.starts_with("__") {
+            continue;
+        }
+        if !mapping.iter().any(|(cat, _)| *cat == entry.category.as_str()) {
+            resolved.push((entry.category.clone(), entry.action.clone()));
+        }
+    }
+
+    resolved
+}
+
 /// Rebuild the safety engine from current config.
 /// Called after config changes (add/remove/enable/disable models, download complete, etc.)
 #[tauri::command]
@@ -2088,17 +2182,15 @@ pub async fn rebuild_safety_engine(
             })
             .collect();
 
-        let cat_actions: Vec<(String, String)> = guardrails_config
-            .category_actions
-            .iter()
-            .map(|ca| (ca.category.clone(), ca.action.clone()))
-            .collect();
+        // Resolve three-level category action hierarchy: category > model-type > global
+        let cat_actions = resolve_category_actions(&guardrails_config.category_actions);
 
         let engine = Arc::new(lr_guardrails::SafetyEngine::from_config(
             &model_inputs,
             &cat_actions,
             guardrails_config.default_confidence_threshold,
             &provider_lookup,
+            guardrails_config.context_size,
         ));
 
         tracing::info!(
@@ -2442,5 +2534,18 @@ pub async fn remove_safety_model(
         tracing::warn!("Failed to delete model files for '{}': {}", model_id, e);
     }
 
+    Ok(())
+}
+
+/// Get the number of safety models currently loaded in memory
+#[tauri::command]
+pub async fn get_guardrails_loaded_model_count() -> Result<usize, String> {
+    Ok(lr_guardrails::loaded_model_count())
+}
+
+/// Unload all safety models from memory immediately
+#[tauri::command]
+pub async fn unload_all_safety_models() -> Result<(), String> {
+    lr_guardrails::unload_all_models();
     Ok(())
 }

@@ -143,7 +143,10 @@ impl GraniteGuardianModel {
         // We report the raw probability so the engine can apply its threshold.
         let (is_violation, confidence) = if let Some(ref lp) = response.logprobs {
             if let Some(prob) = executor::extract_yes_probability(lp) {
-                (prob > 0.0, Some(prob))
+                // prob is P(Yes) from softmax — use > 0.5 as the binary decision
+                // (Yes is more likely than No). The engine applies its own
+                // confidence threshold on top of this.
+                (prob > 0.5, Some(prob))
             } else {
                 let is_yes = self.parse_granite_text(&response.text);
                 (is_yes, None)
@@ -180,6 +183,17 @@ impl GraniteGuardianModel {
         executor::parse_yes_no_text(text).unwrap_or(false)
     }
 
+    /// RAG categories that only make sense with retrieval context.
+    /// Skipped by default unless explicitly enabled in `enabled_categories`.
+    fn is_rag_category(cat: &SafetyCategory) -> bool {
+        matches!(
+            cat,
+            SafetyCategory::ContextRelevance
+                | SafetyCategory::Groundedness
+                | SafetyCategory::AnswerRelevance
+        )
+    }
+
     fn active_categories(&self) -> Vec<(SafetyCategory, String, String)> {
         CATEGORIES
             .iter()
@@ -187,7 +201,9 @@ impl GraniteGuardianModel {
                 if let Some(ref enabled) = self.enabled_categories {
                     enabled.contains(cat)
                 } else {
-                    true
+                    // Default: skip RAG categories (they need retrieval context
+                    // and produce noise on standard text input)
+                    !Self::is_rag_category(cat)
                 }
             })
             .map(|(cat, label, desc)| (cat.clone(), label.to_string(), desc.to_string()))
@@ -277,7 +293,7 @@ mod tests {
         let model = GraniteGuardianModel::new(
             "test".into(),
             Arc::new(ModelExecutor::Local(crate::executor::LocalGgufExecutor::new(
-                "/tmp/fake".into(),
+                "/tmp/fake".into(), 512,
             ))),
             "test".into(),
             None,

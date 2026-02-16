@@ -118,6 +118,7 @@ impl SafetyEngine {
         category_actions_config: &[(String, String)],
         confidence_threshold: f32,
         provider_lookup: &HashMap<String, ProviderInfo>,
+        context_size: u32,
     ) -> Self {
         let mut model_instances: Vec<Arc<dyn SafetyModel>> = Vec::new();
 
@@ -163,7 +164,7 @@ impl SafetyEngine {
                         continue;
                     }
 
-                    Arc::new(ModelExecutor::Local(LocalGgufExecutor::new(gguf_path)))
+                    Arc::new(ModelExecutor::Local(LocalGgufExecutor::new(gguf_path, context_size)))
                 }
                 "provider" => {
                     if let (Some(provider_id), Some(model_name)) =

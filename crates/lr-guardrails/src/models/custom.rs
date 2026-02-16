@@ -170,7 +170,7 @@ mod tests {
             "test".into(),
             "Test Model".into(),
             Arc::new(ModelExecutor::Local(crate::executor::LocalGgufExecutor::new(
-                "/tmp/fake".into(),
+                "/tmp/fake".into(), 512,
             ))),
             "test".into(),
             "Check this: {content}".into(),

@@ -1300,10 +1300,29 @@ pub struct GuardrailsConfig {
     /// Default confidence threshold for flagging (0.0-1.0)
     #[serde(default = "default_confidence_threshold")]
     pub default_confidence_threshold: f32,
+
+    /// Idle timeout in seconds before auto-unloading GGUF models from memory.
+    /// Default: 600 (10 minutes). Set to 0 to disable auto-unload.
+    #[serde(default = "default_guardrails_idle_timeout")]
+    pub idle_timeout_secs: u64,
+
+    /// Context window size for local GGUF inference (in tokens).
+    /// Larger values support longer input but use more GPU memory per inference.
+    /// Default: 512. Range: 256-4096.
+    #[serde(default = "default_guardrails_context_size")]
+    pub context_size: u32,
 }
 
 fn default_confidence_threshold() -> f32 {
     0.5
+}
+
+fn default_guardrails_idle_timeout() -> u64 {
+    600 // 10 minutes
+}
+
+fn default_guardrails_context_size() -> u32 {
+    512
 }
 
 impl Default for GuardrailsConfig {
@@ -1316,6 +1335,8 @@ impl Default for GuardrailsConfig {
             category_actions: vec![],
             hf_token: None,
             default_confidence_threshold: default_confidence_threshold(),
+            idle_timeout_secs: default_guardrails_idle_timeout(),
+            context_size: default_guardrails_context_size(),
         }
     }
 }

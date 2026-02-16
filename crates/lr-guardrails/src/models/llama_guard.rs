@@ -155,7 +155,7 @@ impl SafetyModel for LlamaGuardModel {
             .complete(CompletionRequest {
                 model: self.model_name.clone(),
                 prompt,
-                max_tokens: Some(128),
+                max_tokens: Some(32),
                 temperature: Some(0.0),
                 logprobs: None,
             })
@@ -183,7 +183,7 @@ mod tests {
         let model = LlamaGuardModel::new(
             "test".into(),
             Arc::new(ModelExecutor::Local(crate::executor::LocalGgufExecutor::new(
-                "/tmp/fake".into(),
+                "/tmp/fake".into(), 512,
             ))),
             "test".into(),
             None,
@@ -199,7 +199,7 @@ mod tests {
         let model = LlamaGuardModel::new(
             "test".into(),
             Arc::new(ModelExecutor::Local(crate::executor::LocalGgufExecutor::new(
-                "/tmp/fake".into(),
+                "/tmp/fake".into(), 512,
             ))),
             "test".into(),
             None,
@@ -218,7 +218,7 @@ mod tests {
         let model = LlamaGuardModel::new(
             "test".into(),
             Arc::new(ModelExecutor::Local(crate::executor::LocalGgufExecutor::new(
-                "/tmp/fake".into(),
+                "/tmp/fake".into(), 512,
             ))),
             "test".into(),
             None,
@@ -235,7 +235,7 @@ mod tests {
         let model = LlamaGuardModel::new(
             "test".into(),
             Arc::new(ModelExecutor::Local(crate::executor::LocalGgufExecutor::new(
-                "/tmp/fake".into(),
+                "/tmp/fake".into(), 512,
             ))),
             "test".into(),
             None,
@@ -252,7 +252,7 @@ mod tests {
         let model = LlamaGuardModel::new(
             "test".into(),
             Arc::new(ModelExecutor::Local(crate::executor::LocalGgufExecutor::new(
-                "/tmp/fake".into(),
+                "/tmp/fake".into(), 512,
             ))),
             "test".into(),
             None,

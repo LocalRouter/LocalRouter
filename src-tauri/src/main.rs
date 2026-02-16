@@ -614,6 +614,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                             &cat_actions,
                             guardrails_config.default_confidence_threshold,
                             &provider_lookup,
+                            guardrails_config.context_size,
                         ));
 
                         info!(
@@ -631,6 +632,30 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                             info!("Guardrails disabled in configuration");
                         }
                     }
+                }
+
+                // Start guardrails model auto-unload background task
+                {
+                    let config_manager_for_unload = config_manager.clone();
+                    tokio::spawn(async move {
+                        loop {
+                            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                            let idle_timeout = config_manager_for_unload
+                                .get()
+                                .guardrails
+                                .idle_timeout_secs;
+                            if idle_timeout == 0 {
+                                continue;
+                            }
+                            let unloaded = lr_guardrails::unload_idle_models(idle_timeout);
+                            if unloaded > 0 {
+                                info!(
+                                    "Auto-unloaded {} idle safety model(s) (timeout: {}s)",
+                                    unloaded, idle_timeout
+                                );
+                            }
+                        }
+                    });
                 }
 
                 // Set app handle on AppState for event emission
@@ -1408,6 +1433,8 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::get_safety_model_download_status,
             ui::commands::add_safety_model,
             ui::commands::remove_safety_model,
+            ui::commands::get_guardrails_loaded_model_count,
+            ui::commands::unload_all_safety_models,
             // Connection graph commands
             ui::commands::get_active_connections,
             // Setup wizard commands

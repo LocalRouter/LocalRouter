@@ -136,7 +136,10 @@ impl ShieldGemmaModel {
         // We report the raw probability so the engine can apply its threshold.
         let (is_violation, confidence) = if let Some(ref lp) = response.logprobs {
             if let Some(prob) = executor::extract_yes_probability(lp) {
-                (prob > 0.0, Some(prob))
+                // prob is P(Yes) from softmax — use > 0.5 as the binary decision
+                // (Yes is more likely than No). The engine applies its own
+                // confidence threshold on top of this.
+                (prob > 0.5, Some(prob))
             } else {
                 // Logprobs present but no Yes/No tokens found
                 let is_yes = executor::parse_yes_no_text(&response.text).unwrap_or(false);

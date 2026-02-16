@@ -1962,6 +1962,8 @@ export interface GuardrailsConfig {
   category_actions: CategoryActionEntry[]
   hf_token: string | null
   default_confidence_threshold: number
+  idle_timeout_secs: number
+  context_size: number
 }
 
 /** Configuration for a safety model */
@@ -1991,7 +1993,11 @@ export interface CategoryMappingEntry {
   safety_category: string
 }
 
-/** Per-category action configuration */
+/** Rust: SafetyCategory enum - most variants serialize as snake_case strings,
+ * but Custom(String) serializes as { custom: "value" } */
+export type SafetyCategory = string | { custom: string }
+
+/** Per-category action configuration (always uses string keys in config) */
 export interface CategoryActionEntry {
   category: string
   action: "allow" | "notify" | "ask"
@@ -1999,7 +2005,7 @@ export interface CategoryActionEntry {
 
 /** A flagged category from a safety model verdict */
 export interface FlaggedCategory {
-  category: string
+  category: SafetyCategory
   confidence: number | null
   native_label: string
 }
@@ -2016,7 +2022,7 @@ export interface SafetyVerdict {
 
 /** Action required for a specific category */
 export interface CategoryActionRequired {
-  category: string
+  category: SafetyCategory
   action: "allow" | "notify" | "ask"
   model_id: string
   confidence: number | null
@@ -2036,6 +2042,7 @@ export interface GuardrailApprovalDetails {
   actions_required: CategoryActionRequired[]
   total_duration_ms: number
   scan_direction: "request" | "response"
+  flagged_text: string
 }
 
 /** Safety category info returned by get_all_safety_categories */

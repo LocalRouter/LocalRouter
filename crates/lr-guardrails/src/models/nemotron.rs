@@ -162,9 +162,22 @@ impl NemotronModel {
 
     fn parse_codes_from_text(&self, text: &str) -> Vec<FlaggedCategory> {
         let mut flagged = Vec::new();
-        for code in text.split(',') {
-            let code = code.trim();
-            if let Some((cat, label, _)) = CATEGORIES.iter().find(|(_, c, _)| *c == code) {
+        for part in text.split(',') {
+            let part = part.trim();
+            if part.is_empty() {
+                continue;
+            }
+            // Match by S-code (e.g. "S7") or by description name (e.g. "Privacy", "PII/Privacy")
+            let found = CATEGORIES.iter().find(|(_, code, desc)| {
+                *code == part || desc.eq_ignore_ascii_case(part) || {
+                    // Also match partial/alternative names the model may produce
+                    // e.g. "PII/Privacy" should match "Privacy" (S7)
+                    let part_lower = part.to_lowercase();
+                    let desc_lower = desc.to_lowercase();
+                    part_lower.contains(&desc_lower) || desc_lower.contains(&part_lower)
+                }
+            });
+            if let Some((cat, label, _)) = found {
                 flagged.push(FlaggedCategory {
                     category: cat.clone(),
                     confidence: None,
@@ -210,7 +223,7 @@ impl SafetyModel for NemotronModel {
             .complete(CompletionRequest {
                 model: self.model_name.clone(),
                 prompt,
-                max_tokens: Some(256),
+                max_tokens: Some(64),
                 temperature: Some(0.0),
                 logprobs: None,
             })
@@ -237,7 +250,7 @@ mod tests {
         NemotronModel::new(
             "test".into(),
             Arc::new(ModelExecutor::Local(crate::executor::LocalGgufExecutor::new(
-                "/tmp/fake".into(),
+                "/tmp/fake".into(), 512,
             ))),
             "test".into(),
             None,
@@ -288,6 +301,30 @@ mod tests {
             model.parse_output(r#"{"User Safety": "unsafe", "Safety Categories": ""}"#);
         assert!(!is_safe);
         assert!(flagged.is_empty());
+    }
+
+    /// Bug fix test: model returns category names instead of S-codes (e.g. "PII/Privacy")
+    #[test]
+    fn test_parse_json_unsafe_category_names() {
+        let model = make_model();
+        let (is_safe, flagged) = model
+            .parse_output(r#"{"User Safety": "unsafe", "Safety Categories": "PII/Privacy"}"#);
+        assert!(!is_safe);
+        assert_eq!(flagged.len(), 1);
+        assert_eq!(flagged[0].category, SafetyCategory::Privacy);
+    }
+
+    /// Bug fix test: model returns full description names
+    #[test]
+    fn test_parse_json_unsafe_description_names() {
+        let model = make_model();
+        let (is_safe, flagged) = model.parse_output(
+            r#"{"User Safety": "unsafe", "Safety Categories": "Violent Crimes, Hate"}"#,
+        );
+        assert!(!is_safe);
+        assert_eq!(flagged.len(), 2);
+        assert_eq!(flagged[0].category, SafetyCategory::ViolentCrimes);
+        assert_eq!(flagged[1].category, SafetyCategory::Hate);
     }
 
     /// Bug fix test: JSON with "unsafe" and invalid category codes should still be unsafe
