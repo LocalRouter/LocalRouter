@@ -12,9 +12,7 @@ pub struct ClaudeCodeIntegration;
 
 /// Path to Claude's global settings file
 fn mcp_config_path() -> std::path::PathBuf {
-    dirs::home_dir()
-        .unwrap_or_default()
-        .join(".claude.json")
+    dirs::home_dir().unwrap_or_default().join(".claude.json")
 }
 
 impl AppIntegration for ClaudeCodeIntegration {

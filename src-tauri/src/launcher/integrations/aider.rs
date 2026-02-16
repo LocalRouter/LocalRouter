@@ -11,9 +11,7 @@ use crate::ui::commands_clients::{AppCapabilities, LaunchResult};
 pub struct AiderIntegration;
 
 fn config_path() -> std::path::PathBuf {
-    dirs::home_dir()
-        .unwrap_or_default()
-        .join(".aider.conf.yml")
+    dirs::home_dir().unwrap_or_default().join(".aider.conf.yml")
 }
 
 impl AppIntegration for AiderIntegration {
@@ -71,9 +69,8 @@ impl AppIntegration for AiderIntegration {
         let mut config: serde_yaml::Value = if path.exists() {
             let data = std::fs::read_to_string(&path)
                 .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
-            serde_yaml::from_str(&data).unwrap_or(serde_yaml::Value::Mapping(
-                serde_yaml::Mapping::new(),
-            ))
+            serde_yaml::from_str(&data)
+                .unwrap_or(serde_yaml::Value::Mapping(serde_yaml::Mapping::new()))
         } else {
             serde_yaml::Value::Mapping(serde_yaml::Mapping::new())
         };

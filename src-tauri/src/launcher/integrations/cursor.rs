@@ -92,10 +92,7 @@ impl AppIntegration for CursorIntegration {
         };
 
         if let Some(obj) = config.as_object_mut() {
-            obj.insert(
-                "openai.apiBaseUrl".to_string(),
-                serde_json::json!(base_url),
-            );
+            obj.insert("openai.apiBaseUrl".to_string(), serde_json::json!(base_url));
             obj.insert(
                 "openai.apiKey".to_string(),
                 serde_json::json!(client_secret),

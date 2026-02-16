@@ -58,9 +58,7 @@ impl AppIntegration for OpenClawIntegration {
 
         let obj = config.as_object_mut().ok_or("Invalid config format")?;
 
-        let models_section = obj
-            .entry("models")
-            .or_insert_with(|| serde_json::json!({}));
+        let models_section = obj.entry("models").or_insert_with(|| serde_json::json!({}));
         let providers = models_section
             .as_object_mut()
             .ok_or("Invalid models section")?

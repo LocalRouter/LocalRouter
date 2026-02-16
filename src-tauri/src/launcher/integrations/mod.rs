@@ -142,7 +142,8 @@ mod tests {
     fn test_try_it_out_not_supported_returns_error() {
         for id in &["opencode", "droid", "openclaw", "cursor"] {
             let integration = get_integration(id).unwrap();
-            let result = integration.try_it_out("http://localhost:3625", "test-secret", "test-client");
+            let result =
+                integration.try_it_out("http://localhost:3625", "test-secret", "test-client");
             assert!(
                 result.is_err(),
                 "'{}' try_it_out should return an error",
@@ -155,11 +156,22 @@ mod tests {
     fn test_config_file_integrations_configure_permanent() {
         for id in &["claude-code", "opencode", "droid", "openclaw", "cursor"] {
             let integration = get_integration(id).unwrap();
-            let result =
-                integration.configure_permanent("http://localhost:3625", "test-secret", "test-client");
-            assert!(result.is_ok(), "{} configure_permanent should not panic", id);
+            let result = integration.configure_permanent(
+                "http://localhost:3625",
+                "test-secret",
+                "test-client",
+            );
+            assert!(
+                result.is_ok(),
+                "{} configure_permanent should not panic",
+                id
+            );
             if let Ok(ref launch_result) = result {
-                assert!(launch_result.success, "{} configure_permanent should succeed", id);
+                assert!(
+                    launch_result.success,
+                    "{} configure_permanent should succeed",
+                    id
+                );
             }
         }
     }
@@ -169,7 +181,10 @@ mod tests {
         let integration = get_integration("cursor").unwrap();
         let result =
             integration.configure_permanent("http://localhost:3625", "test-secret", "test-client");
-        assert!(result.is_ok(), "cursor configure_permanent should not panic");
+        assert!(
+            result.is_ok(),
+            "cursor configure_permanent should not panic"
+        );
 
         if let Ok(ref launch_result) = result {
             assert!(launch_result.success);

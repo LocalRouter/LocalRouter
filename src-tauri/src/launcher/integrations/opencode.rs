@@ -41,7 +41,10 @@ fn mcp_entry(base_url: &str, client_secret: &str) -> serde_json::Value {
 }
 
 /// Write config JSON to disk with backup
-fn write_config(path: &std::path::Path, config: &serde_json::Value) -> Result<LaunchResult, String> {
+fn write_config(
+    path: &std::path::Path,
+    config: &serde_json::Value,
+) -> Result<LaunchResult, String> {
     let data = serde_json::to_string_pretty(config)
         .map_err(|e| format!("Failed to serialize config: {}", e))?;
 
@@ -113,11 +116,12 @@ impl AppIntegration for OpenCodeIntegration {
             }
 
             // OpenCode uses "mcp" key (not "mcpServers")
-            let mcp = obj
-                .entry("mcp")
-                .or_insert_with(|| serde_json::json!({}));
+            let mcp = obj.entry("mcp").or_insert_with(|| serde_json::json!({}));
             if let Some(mcp_obj) = mcp.as_object_mut() {
-                mcp_obj.insert("localrouter".to_string(), mcp_entry(base_url, client_secret));
+                mcp_obj.insert(
+                    "localrouter".to_string(),
+                    mcp_entry(base_url, client_secret),
+                );
             }
         }
 
@@ -131,10 +135,7 @@ impl AppIntegration for OpenCodeIntegration {
         // Build models map: { "model-id": { "name": "model-id" } }
         let mut models_map = serde_json::Map::new();
         for model_id in &ctx.models {
-            models_map.insert(
-                model_id.clone(),
-                serde_json::json!({ "name": model_id }),
-            );
+            models_map.insert(model_id.clone(), serde_json::json!({ "name": model_id }));
         }
 
         // LLM provider entry with models
@@ -156,9 +157,7 @@ impl AppIntegration for OpenCodeIntegration {
                 prov_obj.insert("localrouter".to_string(), provider_entry);
             }
 
-            let mcp = obj
-                .entry("mcp")
-                .or_insert_with(|| serde_json::json!({}));
+            let mcp = obj.entry("mcp").or_insert_with(|| serde_json::json!({}));
             if let Some(mcp_obj) = mcp.as_object_mut() {
                 mcp_obj.insert(
                     "localrouter".to_string(),

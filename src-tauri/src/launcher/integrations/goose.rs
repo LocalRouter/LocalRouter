@@ -74,9 +74,8 @@ impl AppIntegration for GooseIntegration {
         let mut config: serde_yaml::Value = if path.exists() {
             let data = std::fs::read_to_string(&path)
                 .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
-            serde_yaml::from_str(&data).unwrap_or(serde_yaml::Value::Mapping(
-                serde_yaml::Mapping::new(),
-            ))
+            serde_yaml::from_str(&data)
+                .unwrap_or(serde_yaml::Value::Mapping(serde_yaml::Mapping::new()))
         } else {
             serde_yaml::Value::Mapping(serde_yaml::Mapping::new())
         };
