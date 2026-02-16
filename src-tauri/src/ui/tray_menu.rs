@@ -339,26 +339,21 @@ pub(crate) fn build_tray_menu<R: Runtime, M: Manager<R>>(
                                     server.name.clone()
                                 };
 
-                                let is_allowed =
-                                    client.mcp_server_access.can_access(&server.id);
+                                let is_allowed = client.mcp_server_access.can_access(&server.id);
                                 let label = if is_allowed {
                                     format!("✓  {}", server_name)
                                 } else {
                                     format!("{}{}", TRAY_INDENT, server_name)
                                 };
 
-                                client_submenu = client_submenu.text(
-                                    format!("toggle_mcp_{}_{}", client.id, server.id),
-                                    label,
-                                );
+                                client_submenu = client_submenu
+                                    .text(format!("toggle_mcp_{}_{}", client.id, server.id), label);
                             }
 
                             // Show "More…" if truncated
                             if all_mcp_servers.len() > MAX_TRAY_ITEMS {
-                                client_submenu = client_submenu.text(
-                                    "open_mcp_servers_page",
-                                    format!("{}More…", TRAY_INDENT),
-                                );
+                                client_submenu = client_submenu
+                                    .text("open_mcp_servers_page", format!("{}More…", TRAY_INDENT));
                             }
                         }
                     } else {
@@ -385,14 +380,11 @@ pub(crate) fn build_tray_menu<R: Runtime, M: Manager<R>>(
                     )?;
                     client_submenu = client_submenu.item(&skills_header);
 
-                    if let Some(skill_manager) =
-                        app.try_state::<Arc<lr_skills::SkillManager>>()
-                    {
+                    if let Some(skill_manager) = app.try_state::<Arc<lr_skills::SkillManager>>() {
                         let all_skills = skill_manager.list();
 
                         if all_skills.is_empty() {
-                            let no_skills_label =
-                                format!("{}No skills discovered", TRAY_INDENT);
+                            let no_skills_label = format!("{}No skills discovered", TRAY_INDENT);
                             let no_skills_item = MenuItem::with_id(
                                 app,
                                 format!("no_skills_{}", client.id),
@@ -404,14 +396,9 @@ pub(crate) fn build_tray_menu<R: Runtime, M: Manager<R>>(
                         } else {
                             for skill_info in all_skills.iter().take(MAX_TRAY_ITEMS) {
                                 let is_allowed = skill_info.enabled
-                                    && client
-                                        .skills_access
-                                        .can_access_by_name(&skill_info.name);
+                                    && client.skills_access.can_access_by_name(&skill_info.name);
                                 let label = if !skill_info.enabled {
-                                    format!(
-                                        "{}{} (disabled)",
-                                        TRAY_INDENT, skill_info.name
-                                    )
+                                    format!("{}{} (disabled)", TRAY_INDENT, skill_info.name)
                                 } else if is_allowed {
                                     format!("✓  {}", skill_info.name)
                                 } else {
@@ -419,25 +406,19 @@ pub(crate) fn build_tray_menu<R: Runtime, M: Manager<R>>(
                                 };
 
                                 client_submenu = client_submenu.text(
-                                    format!(
-                                        "toggle_skill_{}_{}",
-                                        client.id, skill_info.name
-                                    ),
+                                    format!("toggle_skill_{}_{}", client.id, skill_info.name),
                                     label,
                                 );
                             }
 
                             // Show "More…" if truncated
                             if all_skills.len() > MAX_TRAY_ITEMS {
-                                client_submenu = client_submenu.text(
-                                    "open_skills_page",
-                                    format!("{}More…", TRAY_INDENT),
-                                );
+                                client_submenu = client_submenu
+                                    .text("open_skills_page", format!("{}More…", TRAY_INDENT));
                             }
                         }
                     } else {
-                        let no_skills_label =
-                            format!("{}No skills discovered", TRAY_INDENT);
+                        let no_skills_label = format!("{}No skills discovered", TRAY_INDENT);
                         let no_skills_item = MenuItem::with_id(
                             app,
                             format!("no_skills_{}", client.id),

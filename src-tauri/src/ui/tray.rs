@@ -409,8 +409,7 @@ pub fn setup_tray<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
                             let _ = window.show();
                             let _ = window.set_focus();
                         }
-                        if let Err(e) =
-                            app.emit("open-client-tab", format!("{}|models", client_id))
+                        if let Err(e) = app.emit("open-client-tab", format!("{}|models", client_id))
                         {
                             error!("Failed to emit open-client-tab event: {}", e);
                         }
@@ -542,10 +541,11 @@ fn handle_firewall_action_from_tray<R: Runtime>(
         // Submit the firewall response
         if let Some(app_state) = app_clone.try_state::<Arc<lr_server::state::AppState>>() {
             let action_debug = format!("{:?}", action);
-            if let Err(e) = app_state
-                .mcp_gateway
-                .firewall_manager
-                .submit_response(&request_id, action, None)
+            if let Err(e) =
+                app_state
+                    .mcp_gateway
+                    .firewall_manager
+                    .submit_response(&request_id, action, None)
             {
                 error!("Failed to submit firewall response from tray: {}", e);
                 return;

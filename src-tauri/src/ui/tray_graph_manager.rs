@@ -307,164 +307,165 @@ impl TrayGraphManager {
             *accumulated_tokens.write() = 0;
             vec![]
         } else {
-
-        // Check if enough time has passed for a bucket shift
-        let should_shift_buckets = {
-            let last_shift = last_bucket_shift.read();
-            match *last_shift {
-                None => true, // First update always shifts
-                Some(last_ts) => {
-                    let elapsed = now.signed_duration_since(last_ts);
-                    elapsed.num_seconds() >= refresh_rate_secs as i64
+            // Check if enough time has passed for a bucket shift
+            let should_shift_buckets = {
+                let last_shift = last_bucket_shift.read();
+                match *last_shift {
+                    None => true, // First update always shifts
+                    Some(last_ts) => {
+                        let elapsed = now.signed_duration_since(last_ts);
+                        elapsed.num_seconds() >= refresh_rate_secs as i64
+                    }
                 }
-            }
-        };
+            };
 
-        match refresh_rate_secs {
-            // Fast mode: 1 second per bar, 26 second total
-            // NO metrics querying - pure real-time tracking
-            // Starts with empty buckets, accumulates only from live requests
-            1 => {
-                let mut bucket_state = buckets.write();
+            match refresh_rate_secs {
+                // Fast mode: 1 second per bar, 26 second total
+                // NO metrics querying - pure real-time tracking
+                // Starts with empty buckets, accumulates only from live requests
+                1 => {
+                    let mut bucket_state = buckets.write();
 
-                if is_first_update {
-                    // Start with empty buckets (no historical data)
-                    bucket_state.fill(0);
-                    *last_bucket_shift.write() = Some(now);
-                } else if should_shift_buckets {
-                    // Shift buckets left (remove first, append 0 at end)
-                    bucket_state.rotate_left(1);
-                    bucket_state[NUM_BUCKETS as usize - 1] = 0;
-                    *last_bucket_shift.write() = Some(now);
+                    if is_first_update {
+                        // Start with empty buckets (no historical data)
+                        bucket_state.fill(0);
+                        *last_bucket_shift.write() = Some(now);
+                    } else if should_shift_buckets {
+                        // Shift buckets left (remove first, append 0 at end)
+                        bucket_state.rotate_left(1);
+                        bucket_state[NUM_BUCKETS as usize - 1] = 0;
+                        *last_bucket_shift.write() = Some(now);
+                    }
+
+                    // Always add accumulated tokens to rightmost bucket (real-time data)
+                    // This happens every visual update, not just on shifts
+                    let tokens = *accumulated_tokens.read();
+                    bucket_state[NUM_BUCKETS as usize - 1] += tokens;
+
+                    // Reset accumulator for next cycle
+                    *accumulated_tokens.write() = 0;
+
+                    // Convert to DataPoints
+                    bucket_state
+                        .iter()
+                        .enumerate()
+                        .map(|(i, &tokens)| DataPoint {
+                            timestamp: now - Duration::seconds(NUM_BUCKETS - i as i64 - 1),
+                            total_tokens: tokens,
+                        })
+                        .collect::<Vec<_>>()
                 }
 
-                // Always add accumulated tokens to rightmost bucket (real-time data)
-                // This happens every visual update, not just on shifts
-                let tokens = *accumulated_tokens.read();
-                bucket_state[NUM_BUCKETS as usize - 1] += tokens;
+                // Medium mode: 10 seconds per bar, 260 seconds total (~4.3 minutes)
+                // Initial load: Interpolate minute data across 6 buckets each
+                // Continuous: Maintain buckets in memory, shift left every 10 seconds
+                // Visual updates happen every 1 second to show new tokens immediately
+                10 => {
+                    let mut bucket_state = buckets.write();
 
-                // Reset accumulator for next cycle
-                *accumulated_tokens.write() = 0;
+                    if is_first_update {
+                        // Initial load: Interpolate from minute-level metrics
+                        let window_secs = NUM_BUCKETS * 10;
+                        let start = now - Duration::seconds(window_secs + 120);
+                        let metrics = metrics_collector.get_global_range(start, now);
 
-                // Convert to DataPoints
-                bucket_state
-                    .iter()
-                    .enumerate()
-                    .map(|(i, &tokens)| DataPoint {
-                        timestamp: now - Duration::seconds(NUM_BUCKETS - i as i64 - 1),
-                        total_tokens: tokens,
-                    })
-                    .collect::<Vec<_>>()
-            }
+                        bucket_state.fill(0);
 
-            // Medium mode: 10 seconds per bar, 260 seconds total (~4.3 minutes)
-            // Initial load: Interpolate minute data across 6 buckets each
-            // Continuous: Maintain buckets in memory, shift left every 10 seconds
-            // Visual updates happen every 1 second to show new tokens immediately
-            10 => {
-                let mut bucket_state = buckets.write();
+                        // Interpolate each minute across 6 buckets (60s / 10s = 6)
+                        for metric in metrics.iter() {
+                            let age_secs =
+                                now.signed_duration_since(metric.timestamp).num_seconds();
+                            if age_secs < 0 || age_secs >= window_secs {
+                                continue;
+                            }
 
-                if is_first_update {
-                    // Initial load: Interpolate from minute-level metrics
-                    let window_secs = NUM_BUCKETS * 10;
+                            // Determine how many buckets we can actually place (some might fall outside window)
+                            // Check both that bucket_age_secs >= 0 (not too recent) and < window_secs (not too old)
+                            let num_buckets_in_window = (0..6)
+                                .filter(|&offset| {
+                                    let bucket_age = age_secs.saturating_sub(offset * 10);
+                                    bucket_age >= 0 && bucket_age < window_secs
+                                })
+                                .count()
+                                as u64;
+
+                            if num_buckets_in_window == 0 {
+                                continue;
+                            }
+
+                            let tokens_per_bucket = metric.total_tokens / num_buckets_in_window;
+
+                            for offset in 0..6 {
+                                // Spread the minute forward in time (subtract offset, not add)
+                                // If metric is 100 seconds ago, spread to: 100, 90, 80, 70, 60, 50 seconds ago
+                                let bucket_age_secs = age_secs.saturating_sub(offset * 10);
+                                if bucket_age_secs < 0 || bucket_age_secs >= window_secs {
+                                    continue;
+                                }
+
+                                let bucket_index = (NUM_BUCKETS - 1) - (bucket_age_secs / 10);
+                                let bucket_index = bucket_index.clamp(0, NUM_BUCKETS - 1) as usize;
+                                bucket_state[bucket_index] += tokens_per_bucket;
+                            }
+                        }
+                        *last_bucket_shift.write() = Some(now);
+                    } else if should_shift_buckets {
+                        // Only shift buckets every 10 seconds
+                        bucket_state.rotate_left(1);
+                        bucket_state[NUM_BUCKETS as usize - 1] = 0;
+                        *last_bucket_shift.write() = Some(now);
+                    }
+
+                    // Always add accumulated tokens to rightmost bucket (real-time data)
+                    // This happens every visual update (1s), so new requests appear immediately
+                    let tokens = *accumulated_tokens.read();
+                    bucket_state[NUM_BUCKETS as usize - 1] += tokens;
+
+                    // Reset accumulator for next cycle
+                    *accumulated_tokens.write() = 0;
+
+                    // Convert to DataPoints
+                    bucket_state
+                        .iter()
+                        .enumerate()
+                        .map(|(i, &tokens)| DataPoint {
+                            timestamp: now - Duration::seconds((NUM_BUCKETS - i as i64 - 1) * 10),
+                            total_tokens: tokens,
+                        })
+                        .collect::<Vec<_>>()
+                }
+
+                // Slow mode: 1 minute per bar, 26 minute total (1560 seconds)
+                // Direct mapping: one minute of metrics → one bar (no bucket management)
+                _ => {
+                    let window_secs = NUM_BUCKETS * 60; // 1560 seconds = 26 minutes
                     let start = now - Duration::seconds(window_secs + 120);
                     let metrics = metrics_collector.get_global_range(start, now);
 
-                    bucket_state.fill(0);
+                    let mut bucket_tokens: Vec<u64> = vec![0; NUM_BUCKETS as usize];
 
-                    // Interpolate each minute across 6 buckets (60s / 10s = 6)
+                    // Direct mapping: each minute metric goes to exactly one bucket
                     for metric in metrics.iter() {
                         let age_secs = now.signed_duration_since(metric.timestamp).num_seconds();
                         if age_secs < 0 || age_secs >= window_secs {
                             continue;
                         }
 
-                        // Determine how many buckets we can actually place (some might fall outside window)
-                        // Check both that bucket_age_secs >= 0 (not too recent) and < window_secs (not too old)
-                        let num_buckets_in_window = (0..6)
-                            .filter(|&offset| {
-                                let bucket_age = age_secs.saturating_sub(offset * 10);
-                                bucket_age >= 0 && bucket_age < window_secs
-                            })
-                            .count() as u64;
-
-                        if num_buckets_in_window == 0 {
-                            continue;
-                        }
-
-                        let tokens_per_bucket = metric.total_tokens / num_buckets_in_window;
-
-                        for offset in 0..6 {
-                            // Spread the minute forward in time (subtract offset, not add)
-                            // If metric is 100 seconds ago, spread to: 100, 90, 80, 70, 60, 50 seconds ago
-                            let bucket_age_secs = age_secs.saturating_sub(offset * 10);
-                            if bucket_age_secs < 0 || bucket_age_secs >= window_secs {
-                                continue;
-                            }
-
-                            let bucket_index = (NUM_BUCKETS - 1) - (bucket_age_secs / 10);
-                            let bucket_index = bucket_index.clamp(0, NUM_BUCKETS - 1) as usize;
-                            bucket_state[bucket_index] += tokens_per_bucket;
-                        }
-                    }
-                    *last_bucket_shift.write() = Some(now);
-                } else if should_shift_buckets {
-                    // Only shift buckets every 10 seconds
-                    bucket_state.rotate_left(1);
-                    bucket_state[NUM_BUCKETS as usize - 1] = 0;
-                    *last_bucket_shift.write() = Some(now);
-                }
-
-                // Always add accumulated tokens to rightmost bucket (real-time data)
-                // This happens every visual update (1s), so new requests appear immediately
-                let tokens = *accumulated_tokens.read();
-                bucket_state[NUM_BUCKETS as usize - 1] += tokens;
-
-                // Reset accumulator for next cycle
-                *accumulated_tokens.write() = 0;
-
-                // Convert to DataPoints
-                bucket_state
-                    .iter()
-                    .enumerate()
-                    .map(|(i, &tokens)| DataPoint {
-                        timestamp: now - Duration::seconds((NUM_BUCKETS - i as i64 - 1) * 10),
-                        total_tokens: tokens,
-                    })
-                    .collect::<Vec<_>>()
-            }
-
-            // Slow mode: 1 minute per bar, 26 minute total (1560 seconds)
-            // Direct mapping: one minute of metrics → one bar (no bucket management)
-            _ => {
-                let window_secs = NUM_BUCKETS * 60; // 1560 seconds = 26 minutes
-                let start = now - Duration::seconds(window_secs + 120);
-                let metrics = metrics_collector.get_global_range(start, now);
-
-                let mut bucket_tokens: Vec<u64> = vec![0; NUM_BUCKETS as usize];
-
-                // Direct mapping: each minute metric goes to exactly one bucket
-                for metric in metrics.iter() {
-                    let age_secs = now.signed_duration_since(metric.timestamp).num_seconds();
-                    if age_secs < 0 || age_secs >= window_secs {
-                        continue;
+                        let bucket_index = (NUM_BUCKETS - 1) - (age_secs / 60);
+                        let bucket_index = bucket_index.clamp(0, NUM_BUCKETS - 1) as usize;
+                        bucket_tokens[bucket_index] += metric.total_tokens;
                     }
 
-                    let bucket_index = (NUM_BUCKETS - 1) - (age_secs / 60);
-                    let bucket_index = bucket_index.clamp(0, NUM_BUCKETS - 1) as usize;
-                    bucket_tokens[bucket_index] += metric.total_tokens;
+                    bucket_tokens
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, tokens)| DataPoint {
+                            timestamp: now - Duration::seconds((NUM_BUCKETS - i as i64) * 60),
+                            total_tokens: tokens,
+                        })
+                        .collect::<Vec<_>>()
                 }
-
-                bucket_tokens
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, tokens)| DataPoint {
-                        timestamp: now - Duration::seconds((NUM_BUCKETS - i as i64) * 60),
-                        total_tokens: tokens,
-                    })
-                    .collect::<Vec<_>>()
             }
-        }
         };
 
         // Detect if system is in dark mode for color adjustments
