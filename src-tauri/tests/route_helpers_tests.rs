@@ -47,6 +47,7 @@ fn create_test_client(id: &str, name: &str, enabled: bool, strategy_id: &str) ->
         template_id: None,
         sync_config: false,
         guardrails_enabled: None,
+        guardrails: lr_config::ClientGuardrailsConfig::default(),
     }
 }
 

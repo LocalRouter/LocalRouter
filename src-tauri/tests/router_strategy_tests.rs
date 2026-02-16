@@ -64,6 +64,7 @@ fn create_test_config(
         template_id: None,
         sync_config: false,
         guardrails_enabled: None,
+        guardrails: lr_config::ClientGuardrailsConfig::default(),
     };
 
     AppConfig {
@@ -493,6 +494,7 @@ async fn test_disabled_client_returns_unauthorized() {
         template_id: None,
         sync_config: false,
         guardrails_enabled: None,
+        guardrails: lr_config::ClientGuardrailsConfig::default(),
     };
 
     let config = AppConfig {
@@ -541,6 +543,7 @@ async fn test_client_with_missing_strategy() {
         template_id: None,
         sync_config: false,
         guardrails_enabled: None,
+        guardrails: lr_config::ClientGuardrailsConfig::default(),
     };
 
     let config = AppConfig {

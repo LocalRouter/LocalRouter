@@ -45,6 +45,7 @@ fn test_config() -> AppConfig {
             template_id: None,
             sync_config: false,
             guardrails_enabled: None,
+            guardrails: lr_config::ClientGuardrailsConfig::default(),
         },
         Client {
             id: "disabled_client".to_string(),
@@ -72,6 +73,7 @@ fn test_config() -> AppConfig {
             template_id: None,
             sync_config: false,
             guardrails_enabled: None,
+            guardrails: lr_config::ClientGuardrailsConfig::default(),
         },
         Client {
             id: "no_mcp_client".to_string(),
@@ -99,6 +101,7 @@ fn test_config() -> AppConfig {
             template_id: None,
             sync_config: false,
             guardrails_enabled: None,
+            guardrails: lr_config::ClientGuardrailsConfig::default(),
         },
     ];
     config
