@@ -18,7 +18,7 @@ import {useCallback, useEffect, useRef, useState} from "react"
 import {invoke} from "@tauri-apps/api/core"
 import {listen} from "@tauri-apps/api/event"
 import {toast} from "sonner"
-import {Bot, Brain, Download, MessageSquareWarning} from "lucide-react"
+import {Bot, Brain, Download, ExternalLink, MessageSquareWarning} from "lucide-react"
 import {Card, CardContent, CardDescription, CardHeader, CardTitle,} from "@/components/ui/Card"
 import {Select, SelectContent, SelectItem, SelectTrigger, SelectValue} from "@/components/ui/Select"
 import {Switch} from "@/components/ui/Toggle"
@@ -87,6 +87,10 @@ interface StrategyModelConfigurationProps {
         modelPermissions: ModelPermissions
         onClientUpdate: () => void
     }
+    /**
+     * Optional callback for navigating to other views (e.g., Try It Out)
+     */
+    onTabChange?: (view: string, subTab?: string | null) => void
 }
 
 export function StrategyModelConfiguration({
@@ -95,6 +99,7 @@ export function StrategyModelConfiguration({
                                                onSave,
                                                className,
                                                clientContext,
+                                               onTabChange,
                                            }: StrategyModelConfigurationProps) {
     const [strategy, setStrategy] = useState<StrategyConfig | null>(null)
     const [models, setModels] = useState<Model[]>([])
@@ -636,12 +641,21 @@ export function StrategyModelConfiguration({
                                                             disabled={readOnly || saving}
                                                         />
 
-                                                        {/* Threshold Selector with Try It Out */}
+                                                        {/* Threshold Selector */}
                                                         <ThresholdSelector
                                                             value={routellmConfig.threshold}
                                                             onChange={handleThresholdChange}
-                                                            showTryItOut
                                                         />
+
+                                                        {/* Try It Out link */}
+                                                        <Button
+                                                            variant="outline"
+                                                            size="sm"
+                                                            onClick={() => onTabChange?.("try-it-out", "routellm")}
+                                                        >
+                                                            <ExternalLink className="h-3 w-3 mr-1" />
+                                                            Try It Out
+                                                        </Button>
                                                     </>
                                                 )}
                                             </CardContent>

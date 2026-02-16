@@ -56,7 +56,7 @@ export function ClientModelsTab({
   client,
   onUpdate,
   initialMode: _initialMode,
-  onViewChange: _onViewChange, // DEPRECATED: Strategy UI hidden
+  onViewChange,
 }: ModelsTabProps) {
   const [strategies, setStrategies] = useState<StrategyConfig[]>([])
   const [loading, setLoading] = useState(true)
@@ -296,6 +296,7 @@ export function ClientModelsTab({
               modelPermissions: client.model_permissions,
               onClientUpdate: onUpdate,
             }}
+            onTabChange={onViewChange}
           />
         </div>
       )}

@@ -3,7 +3,7 @@ import { useState, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
 import { toast } from "sonner"
-import { Download, FolderOpen, Cpu } from "lucide-react"
+import { Download, FolderOpen, Cpu, ExternalLink } from "lucide-react"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Badge } from "@/components/ui/Badge"
@@ -17,15 +17,17 @@ import {
   SelectValue,
 } from "@/components/ui/Select"
 import { ROUTELLM_REQUIREMENTS } from "@/components/routellm/types"
-import { ThresholdSelector } from "@/components/routellm/ThresholdSelector"
 import type { RouteLLMStatus, RouteLLMState } from "@/types/tauri-commands"
 
-export function RouteLLMTab() {
+interface RouteLLMTabProps {
+  onTabChange?: (view: string, subTab?: string | null) => void
+}
+
+export function RouteLLMTab({ onTabChange }: RouteLLMTabProps) {
   const [status, setStatus] = useState<RouteLLMStatus | null>(null)
   const [idleTimeout, setIdleTimeout] = useState(600)
   const [isDownloading, setIsDownloading] = useState(false)
   const [downloadProgress, setDownloadProgress] = useState(0)
-  const [testThreshold, setTestThreshold] = useState(0.3)
 
   useEffect(() => {
     loadStatus()
@@ -283,7 +285,7 @@ export function RouteLLMTab() {
             </CardContent>
           </Card>
 
-          {/* Try it out */}
+          {/* Try it out link */}
           <Card>
             <CardHeader className="pb-3">
               <CardTitle className="text-sm">Try it out</CardTitle>
@@ -292,11 +294,14 @@ export function RouteLLMTab() {
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <ThresholdSelector
-                value={testThreshold}
-                onChange={setTestThreshold}
-                showTryItOut
-              />
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => onTabChange?.("try-it-out", "routellm")}
+              >
+                <ExternalLink className="h-3 w-3 mr-1" />
+                Open in Try It Out
+              </Button>
             </CardContent>
           </Card>
         </>

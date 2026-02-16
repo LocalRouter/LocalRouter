@@ -3,6 +3,8 @@ import { FlaskConical } from "lucide-react"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { LlmTab } from "./llm-tab"
 import { McpTab } from "./mcp-tab"
+import { RouteLLMTryItOutTab } from "./routellm-tab"
+import { GuardrailsTab } from "./guardrails-tab"
 
 interface TryItOutViewProps {
   activeSubTab: string | null
@@ -44,6 +46,9 @@ export function TryItOutView({ activeSubTab, onTabChange }: TryItOutViewProps) {
     directTarget?: string
     clientId?: string
   }>({})
+  const [guardrailsInitial, setGuardrailsInitial] = useState<{
+    clientId?: string
+  }>({})
 
   // Capture init params and clear the URL
   useEffect(() => {
@@ -60,6 +65,10 @@ export function TryItOutView({ activeSubTab, onTabChange }: TryItOutViewProps) {
         setMcpInitial({ mode: "direct", directTarget: initTarget })
       } else if (initMode === "client" && initTarget) {
         setMcpInitial({ mode: "client", clientId: initTarget })
+      }
+    } else if (mainTab === "guardrails") {
+      if (initMode === "client" && initTarget) {
+        setGuardrailsInitial({ clientId: initTarget })
       }
     }
 
@@ -80,7 +89,7 @@ export function TryItOutView({ activeSubTab, onTabChange }: TryItOutViewProps) {
       <div className="flex-shrink-0 pb-4">
         <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2"><FlaskConical className="h-6 w-6" />Try It Out</h1>
         <p className="text-sm text-muted-foreground">
-          Test LLM completions and MCP server capabilities
+          Test LLM completions, MCP server capabilities, and Strong/Weak routing
         </p>
       </div>
 
@@ -92,6 +101,8 @@ export function TryItOutView({ activeSubTab, onTabChange }: TryItOutViewProps) {
         <TabsList className="flex-shrink-0 w-fit">
           <TabsTrigger value="llm">LLM</TabsTrigger>
           <TabsTrigger value="mcp">MCP & Skill</TabsTrigger>
+          <TabsTrigger value="routellm">Strong/Weak</TabsTrigger>
+          <TabsTrigger value="guardrails">GuardRails</TabsTrigger>
         </TabsList>
 
         <TabsContent value="llm" className="flex-1 min-h-0 mt-4">
@@ -110,6 +121,14 @@ export function TryItOutView({ activeSubTab, onTabChange }: TryItOutViewProps) {
             initialDirectTarget={mcpInitial.directTarget}
             initialClientId={mcpInitial.clientId}
           />
+        </TabsContent>
+
+        <TabsContent value="routellm" className="flex-1 min-h-0 mt-4">
+          <RouteLLMTryItOutTab />
+        </TabsContent>
+
+        <TabsContent value="guardrails" className="flex-1 min-h-0 mt-4">
+          <GuardrailsTab initialClientId={guardrailsInitial.clientId} />
         </TabsContent>
       </Tabs>
     </div>

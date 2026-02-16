@@ -120,9 +120,12 @@ export const ThresholdSelector: React.FC<ThresholdSelectorProps> = ({
       {/* Header with label */}
       <div className="flex items-center justify-between">
         <Label className="text-sm font-medium">Weak Model Usage</Label>
-        <Badge variant="outline" className="text-xs">
-          {profile.name}
-        </Badge>
+        <div className="flex items-center gap-2">
+          <span className="font-mono text-xs text-muted-foreground">{value.toFixed(2)}</span>
+          <Badge variant="outline" className="text-xs">
+            {profile.name}
+          </Badge>
+        </div>
       </div>
 
       {/* Slider with labels */}
@@ -275,6 +278,10 @@ export const ThresholdSelector: React.FC<ThresholdSelectorProps> = ({
                           Complexity:{" "}
                           <span className="font-mono text-primary">
                             {(item.score * 100).toFixed(0)}%
+                          </span>
+                          {" "}
+                          <span className="font-mono text-muted-foreground/70">
+                            ({item.score.toFixed(2)})
                           </span>
                         </span>
                         <Badge variant={wouldUseStrong ? "default" : "secondary"}>

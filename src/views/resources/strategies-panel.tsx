@@ -64,12 +64,14 @@ interface StrategiesPanelProps {
   selectedId: string | null
   onSelect: (id: string | null) => void
   onNavigateToClient?: (clientId: string) => void
+  onTabChange?: (view: string, subTab?: string | null) => void
 }
 
 export function StrategiesPanel({
   selectedId,
   onSelect,
   onNavigateToClient,
+  onTabChange,
 }: StrategiesPanelProps) {
   const [strategies, setStrategies] = useState<StrategyConfig[]>([])
   const [clients, setClients] = useState<Client[]>([])
@@ -352,6 +354,7 @@ export function StrategiesPanel({
                   strategyId={selectedStrategy.id}
                   readOnly={false}
                   onSave={() => loadData(false)} // Don't show loading state on refresh to preserve scroll position
+                  onTabChange={onTabChange}
                 />
               </div>
             </ScrollArea>

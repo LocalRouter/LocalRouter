@@ -82,7 +82,7 @@ export function SettingsView({ activeSubTab, onTabChange }: SettingsViewProps) {
         </TabsContent>
 
         <TabsContent value="routellm">
-          <RouteLLMTab />
+          <RouteLLMTab onTabChange={onTabChange} />
         </TabsContent>
 
         <TabsContent value="logs">
