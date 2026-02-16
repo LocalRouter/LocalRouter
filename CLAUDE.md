@@ -129,7 +129,7 @@ export LOCALROUTER_KEYCHAIN=file  # WARNING: plain text secrets!
 
 ## Documentation
 
-Plans in `./plan/` directory (57 documents). Key files:
+Plans in `./plan/` directory (114 documents). Key files:
 - `plan/2026-01-14-ARCHITECTURE.md` - System design
 - `plan/2026-01-14-PROGRESS.md` - Feature tracking
 - `plan/2026-01-17-MCP_AUTH_REDESIGN.md` - Client architecture
@@ -145,6 +145,14 @@ Plans in `./plan/` directory (57 documents). Key files:
 5. Commit with Conventional Commits: `<type>(<scope>): <description>`
 
 **Types**: feat, fix, docs, test, refactor, chore
+
+### Plan Documentation (CRITICAL)
+Every implementation plan **must** be saved to `./plan/` at the **start** of implementation:
+- **Filename**: `plan/YYYY-MM-DD-SHORT_DESCRIPTION.md` (use today's date)
+- **Content**: The full plan including goals, approach, files to modify, and any architectural decisions
+- **When**: Save the plan file **before** writing any code, immediately after the plan is approved
+- This applies to all plans created via Claude Code's plan mode or any multi-step implementation task
+- Update `plan/2026-01-14-PROGRESS.md` if the plan adds or completes a tracked feature
 
 ### OpenAPI Requirements
 When modifying endpoints:
