@@ -41,6 +41,13 @@ impl McpGateway {
         let session_read = session.read().await;
 
         // Check for deferred loading
+        tracing::info!(
+            "handle_tools_list: deferred_loading={:?}, deferred_loading_requested={}, cached_tools_valid={}",
+            session_read.deferred_loading.as_ref().map(|d| d.enabled),
+            session_read.deferred_loading_requested,
+            session_read.cached_tools.as_ref().map_or(false, |c| c.is_valid()),
+        );
+
         if let Some(deferred) = &session_read.deferred_loading {
             if deferred.enabled {
                 // Return only search tool + activated tools + skill tools
@@ -70,6 +77,16 @@ impl McpGateway {
                     true,
                 );
                 self.append_marketplace_tools(&mut tools, &marketplace_permission);
+
+                let tool_names: Vec<String> = tools
+                    .iter()
+                    .filter_map(|t| t.get("name").and_then(|n| n.as_str()).map(String::from))
+                    .collect();
+                tracing::info!(
+                    "handle_tools_list DEFERRED: returning {} tools: {:?}",
+                    tools.len(),
+                    tool_names,
+                );
 
                 return Ok(JsonRpcResponse::success(
                     request.id.unwrap_or(Value::Null),
@@ -102,6 +119,8 @@ impl McpGateway {
                     true,
                 );
                 self.append_marketplace_tools(&mut tools, &marketplace_permission);
+
+                tracing::info!("handle_tools_list CACHED: returning {} tools", tools.len(),);
 
                 return Ok(JsonRpcResponse::success(
                     request.id.unwrap_or(Value::Null),
@@ -650,7 +669,8 @@ impl McpGateway {
                             ),
                         )))
                     }
-                    FirewallApprovalAction::DenyAlways => {
+                    FirewallApprovalAction::DenyAlways
+                    | FirewallApprovalAction::BlockCategories => {
                         tracing::info!(
                             "Firewall: tool {} denied permanently (client={})",
                             tool_name,
