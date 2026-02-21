@@ -137,8 +137,8 @@ mod integration_tests {
 
         for model in all_models {
             // Skip models where context_length is 0 (data not available from upstream)
-            // This includes non-text models (audio, image, video) and models with missing data
-            if model.context_length == 0 {
+            // and non-text models (image generation) which can have very small prompt limits
+            if model.context_length == 0 || model.modality == Modality::Image {
                 continue;
             }
 
