@@ -110,6 +110,10 @@ impl CustomSafetyModel {
 
 #[async_trait::async_trait]
 impl SafetyModel for CustomSafetyModel {
+    fn id(&self) -> &str {
+        &self.model_id
+    }
+
     fn model_type_id(&self) -> &str {
         "custom"
     }
@@ -170,7 +174,7 @@ mod tests {
             "test".into(),
             "Test Model".into(),
             Arc::new(ModelExecutor::Local(
-                crate::executor::LocalGgufExecutor::new("/tmp/fake".into(), 512),
+                crate::executor::LocalGgufExecutor::new("/tmp/fake".into(), 512).unwrap(),
             )),
             "test".into(),
             "Check this: {content}".into(),

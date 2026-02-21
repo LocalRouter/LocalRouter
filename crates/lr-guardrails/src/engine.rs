@@ -27,7 +27,6 @@ pub struct ProviderInfo {
 pub struct SafetyModelConfigInput {
     pub id: String,
     pub model_type: String,
-    pub enabled: bool,
     pub provider_id: Option<String>,
     pub model_name: Option<String>,
     pub enabled_categories: Option<Vec<SafetyCategory>>,
@@ -84,6 +83,8 @@ pub struct SafetyEngine {
     models: Vec<Arc<dyn SafetyModel>>,
     category_actions: HashMap<SafetyCategory, CategoryAction>,
     confidence_threshold: f32,
+    /// Models that failed to load, with (model_id, error_message) pairs.
+    load_errors: Vec<(String, String)>,
 }
 
 impl SafetyEngine {
@@ -97,6 +98,7 @@ impl SafetyEngine {
             models,
             category_actions,
             confidence_threshold,
+            load_errors: Vec::new(),
         }
     }
 
@@ -106,7 +108,13 @@ impl SafetyEngine {
             models: Vec::new(),
             category_actions: HashMap::new(),
             confidence_threshold: 0.5,
+            load_errors: Vec::new(),
         }
+    }
+
+    /// Get models that failed to load: `(model_id, error_message)` pairs.
+    pub fn load_errors(&self) -> &[(String, String)] {
+        &self.load_errors
     }
 
     /// Build an engine from guardrails config
@@ -121,12 +129,9 @@ impl SafetyEngine {
         context_size: u32,
     ) -> Self {
         let mut model_instances: Vec<Arc<dyn SafetyModel>> = Vec::new();
+        let mut load_errors: Vec<(String, String)> = Vec::new();
 
         for model_cfg in safety_models {
-            if !model_cfg.enabled {
-                continue;
-            }
-
             // Build executor based on execution mode
             let exec_mode = model_cfg
                 .execution_mode
@@ -165,10 +170,17 @@ impl SafetyEngine {
                         continue;
                     }
 
-                    Arc::new(ModelExecutor::Local(LocalGgufExecutor::new(
-                        gguf_path,
-                        context_size,
-                    )))
+                    match LocalGgufExecutor::new(gguf_path, context_size) {
+                        Ok(exec) => Arc::new(ModelExecutor::Local(exec)),
+                        Err(e) => {
+                            warn!(
+                                "Failed to load GGUF model '{}': {}",
+                                model_cfg.id, e
+                            );
+                            load_errors.push((model_cfg.id.clone(), e));
+                            continue;
+                        }
+                    }
                 }
                 "provider" => {
                     if let (Some(provider_id), Some(model_name)) =
@@ -263,16 +275,24 @@ impl SafetyEngine {
             }
         }
 
+        if !load_errors.is_empty() {
+            warn!(
+                "Safety engine: {} model(s) failed to load",
+                load_errors.len()
+            );
+        }
         info!(
-            "Safety engine initialized: {} models, {} category actions",
+            "Safety engine initialized: {} models, {} category actions, {} load errors",
             model_instances.len(),
-            category_actions_map.len()
+            category_actions_map.len(),
+            load_errors.len(),
         );
 
         Self {
             models: model_instances,
             category_actions: category_actions_map,
             confidence_threshold,
+            load_errors,
         }
     }
 
@@ -395,7 +415,7 @@ impl SafetyEngine {
             .iter()
             .filter(|m| {
                 if let Some(filter) = model_id_filter {
-                    m.model_type_id() == filter
+                    m.id() == filter
                 } else {
                     true
                 }
@@ -615,6 +635,9 @@ mod tests {
 
     #[async_trait::async_trait]
     impl SafetyModel for MockSafetyModel {
+        fn id(&self) -> &str {
+            &self.id
+        }
         fn model_type_id(&self) -> &str {
             &self.id
         }

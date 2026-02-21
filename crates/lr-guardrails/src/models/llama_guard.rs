@@ -143,6 +143,10 @@ impl LlamaGuardModel {
 
 #[async_trait::async_trait]
 impl SafetyModel for LlamaGuardModel {
+    fn id(&self) -> &str {
+        &self.model_id
+    }
+
     fn model_type_id(&self) -> &str {
         "llama_guard"
     }
@@ -203,7 +207,7 @@ mod tests {
         let model = LlamaGuardModel::new(
             "test".into(),
             Arc::new(ModelExecutor::Local(
-                crate::executor::LocalGgufExecutor::new("/tmp/fake".into(), 512),
+                crate::executor::LocalGgufExecutor::new("/tmp/fake".into(), 512).unwrap(),
             )),
             "test".into(),
             None,
@@ -219,7 +223,7 @@ mod tests {
         let model = LlamaGuardModel::new(
             "test".into(),
             Arc::new(ModelExecutor::Local(
-                crate::executor::LocalGgufExecutor::new("/tmp/fake".into(), 512),
+                crate::executor::LocalGgufExecutor::new("/tmp/fake".into(), 512).unwrap(),
             )),
             "test".into(),
             None,
@@ -238,7 +242,7 @@ mod tests {
         let model = LlamaGuardModel::new(
             "test".into(),
             Arc::new(ModelExecutor::Local(
-                crate::executor::LocalGgufExecutor::new("/tmp/fake".into(), 512),
+                crate::executor::LocalGgufExecutor::new("/tmp/fake".into(), 512).unwrap(),
             )),
             "test".into(),
             None,
@@ -255,7 +259,7 @@ mod tests {
         let model = LlamaGuardModel::new(
             "test".into(),
             Arc::new(ModelExecutor::Local(
-                crate::executor::LocalGgufExecutor::new("/tmp/fake".into(), 512),
+                crate::executor::LocalGgufExecutor::new("/tmp/fake".into(), 512).unwrap(),
             )),
             "test".into(),
             None,
@@ -272,7 +276,7 @@ mod tests {
         let model = LlamaGuardModel::new(
             "test".into(),
             Arc::new(ModelExecutor::Local(
-                crate::executor::LocalGgufExecutor::new("/tmp/fake".into(), 512),
+                crate::executor::LocalGgufExecutor::new("/tmp/fake".into(), 512).unwrap(),
             )),
             "test".into(),
             None,

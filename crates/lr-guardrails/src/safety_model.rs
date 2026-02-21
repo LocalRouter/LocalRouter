@@ -250,11 +250,50 @@ impl SafetyCheckResult {
                 .iter()
                 .all(|a| matches!(a.action, CategoryAction::Block | CategoryAction::Allow))
     }
+
+    /// Re-filter actions using per-client category overrides.
+    ///
+    /// Each entry in `client_overrides` maps a category name (e.g. "violent_crimes") to an action.
+    /// Categories overridden to `Allow` are removed from `actions_required`.
+    /// Other overrides (`Block`, `Ask`, `Notify`) replace the engine's default action.
+    /// Categories not in the override list keep their original action from the engine.
+    pub fn apply_client_category_overrides(
+        mut self,
+        client_overrides: &[(String, CategoryAction)],
+    ) -> Self {
+        if client_overrides.is_empty() {
+            return self;
+        }
+
+        self.actions_required.retain_mut(|action| {
+            let category_name = action.category.to_string();
+            if let Some((_, override_action)) = client_overrides
+                .iter()
+                .find(|(cat, _)| *cat == category_name)
+            {
+                if matches!(override_action, CategoryAction::Allow) {
+                    return false; // Remove: client allows this category
+                }
+                action.action = override_action.clone();
+            }
+            true
+        });
+
+        // Update is_safe if all actions were removed
+        if self.actions_required.is_empty() {
+            self.is_safe = true;
+        }
+
+        self
+    }
 }
 
 /// The SafetyModel trait - implemented by each model (Llama Guard, ShieldGemma, etc.)
 #[async_trait::async_trait]
 pub trait SafetyModel: Send + Sync {
+    /// Instance identifier (e.g. "llamaguard-4-local", "granite_guardian")
+    fn id(&self) -> &str;
+
     /// Unique type identifier (e.g. "llama_guard_4", "shield_gemma")
     fn model_type_id(&self) -> &str;
 

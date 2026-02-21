@@ -223,6 +223,10 @@ impl NemotronModel {
 
 #[async_trait::async_trait]
 impl SafetyModel for NemotronModel {
+    fn id(&self) -> &str {
+        &self.model_id
+    }
+
     fn model_type_id(&self) -> &str {
         "nemotron"
     }
@@ -282,7 +286,7 @@ mod tests {
         NemotronModel::new(
             "test".into(),
             Arc::new(ModelExecutor::Local(
-                crate::executor::LocalGgufExecutor::new("/tmp/fake".into(), 512),
+                crate::executor::LocalGgufExecutor::new("/tmp/fake".into(), 512).unwrap(),
             )),
             "test".into(),
             None,

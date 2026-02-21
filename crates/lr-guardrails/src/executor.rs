@@ -8,8 +8,9 @@
 //! and aren't reloaded on every request. An idle auto-unload task can reclaim memory.
 
 use std::collections::HashMap;
+use std::io::{Read as _, Seek as _, SeekFrom};
 use std::num::NonZeroU32;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -331,6 +332,189 @@ fn init_backend() -> Result<&'static LlamaBackend, String> {
     })
 }
 
+// ============================================================================
+// GGUF Pre-Validation
+// ============================================================================
+
+/// Validate a GGUF file before passing it to llama.cpp.
+///
+/// Checks:
+/// - Magic bytes (`GGUF`)
+/// - Version (must be 2 or 3)
+/// - Metadata: `llama.expert_used_count <= llama.expert_count`
+///
+/// This catches corrupt or incompatible files that would otherwise trigger
+/// a C `abort()` inside llama.cpp (uncatchable by Rust).
+pub fn validate_gguf_file(path: &Path) -> Result<(), String> {
+    let mut file = std::fs::File::open(path)
+        .map_err(|e| format!("Cannot open GGUF file '{}': {}", path.display(), e))?;
+
+    // --- Magic bytes (4 bytes: "GGUF") ---
+    let mut magic = [0u8; 4];
+    file.read_exact(&mut magic)
+        .map_err(|e| format!("Failed to read GGUF magic bytes: {}", e))?;
+    if &magic != b"GGUF" {
+        return Err(format!(
+            "Not a GGUF file (magic: {:?}, expected: GGUF): {}",
+            std::str::from_utf8(&magic).unwrap_or("???"),
+            path.display()
+        ));
+    }
+
+    // --- Version (u32 LE) ---
+    let mut buf4 = [0u8; 4];
+    file.read_exact(&mut buf4)
+        .map_err(|e| format!("Failed to read GGUF version: {}", e))?;
+    let version = u32::from_le_bytes(buf4);
+    if !(2..=3).contains(&version) {
+        return Err(format!(
+            "Unsupported GGUF version {} (expected 2 or 3): {}",
+            version,
+            path.display()
+        ));
+    }
+
+    // --- Tensor count (u64 LE) — skip ---
+    let mut buf8 = [0u8; 8];
+    file.read_exact(&mut buf8)
+        .map_err(|e| format!("Failed to read GGUF tensor count: {}", e))?;
+
+    // --- Metadata KV count (u64 LE) ---
+    file.read_exact(&mut buf8)
+        .map_err(|e| format!("Failed to read GGUF metadata count: {}", e))?;
+    let kv_count = u64::from_le_bytes(buf8);
+
+    // Scan metadata for expert_count / expert_used_count
+    let mut expert_count: Option<u32> = None;
+    let mut expert_used_count: Option<u32> = None;
+
+    for _ in 0..kv_count {
+        // Key: length-prefixed string (u64 LE len + bytes)
+        if file.read_exact(&mut buf8).is_err() {
+            break;
+        }
+        let key_len = u64::from_le_bytes(buf8) as usize;
+        let mut key_buf = vec![0u8; key_len];
+        if file.read_exact(&mut key_buf).is_err() {
+            break;
+        }
+        let key = String::from_utf8_lossy(&key_buf);
+
+        // Value type (u32 LE)
+        if file.read_exact(&mut buf4).is_err() {
+            break;
+        }
+        let value_type = u32::from_le_bytes(buf4);
+
+        // We only care about u32 values (type 4) for the expert fields
+        let is_target_key = key == "llama.expert_count" || key == "llama.expert_used_count";
+
+        if is_target_key && value_type == 4 {
+            // GGUF_TYPE_UINT32 = 4
+            if file.read_exact(&mut buf4).is_err() {
+                break;
+            }
+            let val = u32::from_le_bytes(buf4);
+            if key == "llama.expert_count" {
+                expert_count = Some(val);
+            } else {
+                expert_used_count = Some(val);
+            }
+            // Early exit if we found both
+            if expert_count.is_some() && expert_used_count.is_some() {
+                break;
+            }
+        } else {
+            // Skip value based on type
+            let skip_size = match value_type {
+                0 => 1,  // UINT8
+                1 => 1,  // INT8
+                2 => 2,  // UINT16
+                3 => 2,  // INT16
+                4 => 4,  // UINT32
+                5 => 4,  // INT32
+                6 => 4,  // FLOAT32
+                7 => 1,  // BOOL
+                10 => 8, // UINT64
+                11 => 8, // INT64
+                12 => 8, // FLOAT64
+                8 => {
+                    // STRING: u64 len + bytes
+                    if file.read_exact(&mut buf8).is_err() {
+                        break;
+                    }
+                    let slen = u64::from_le_bytes(buf8) as usize;
+                    if file.seek(SeekFrom::Current(slen as i64)).is_err() {
+                        break;
+                    }
+                    continue;
+                }
+                9 => {
+                    // ARRAY: element_type (u32) + count (u64) + elements
+                    if file.read_exact(&mut buf4).is_err() {
+                        break;
+                    }
+                    let elem_type = u32::from_le_bytes(buf4);
+                    if file.read_exact(&mut buf8).is_err() {
+                        break;
+                    }
+                    let count = u64::from_le_bytes(buf8);
+
+                    // Element size for fixed-width types
+                    let elem_size: Option<u64> = match elem_type {
+                        0 | 1 | 7 => Some(1),  // UINT8/INT8/BOOL
+                        2 | 3 => Some(2),       // UINT16/INT16
+                        4 | 5 | 6 => Some(4),   // UINT32/INT32/FLOAT32
+                        10 | 11 | 12 => Some(8), // UINT64/INT64/FLOAT64
+                        _ => None,               // STRING/ARRAY — nested, skip rest
+                    };
+
+                    if let Some(sz) = elem_size {
+                        if file.seek(SeekFrom::Current((count * sz) as i64)).is_err() {
+                            break;
+                        }
+                    } else {
+                        // Nested arrays or string arrays: skip element-by-element
+                        if elem_type == 8 {
+                            // STRING array
+                            for _ in 0..count {
+                                if file.read_exact(&mut buf8).is_err() {
+                                    break;
+                                }
+                                let slen = u64::from_le_bytes(buf8) as i64;
+                                if file.seek(SeekFrom::Current(slen)).is_err() {
+                                    break;
+                                }
+                            }
+                        } else {
+                            // Nested arrays — too complex, stop scanning
+                            break;
+                        }
+                    }
+                    continue;
+                }
+                _ => break, // Unknown type — stop scanning
+            };
+            if file.seek(SeekFrom::Current(skip_size)).is_err() {
+                break;
+            }
+        }
+    }
+
+    // Validate expert metadata
+    if let (Some(used), Some(total)) = (expert_used_count, expert_count) {
+        if used > total {
+            return Err(format!(
+                "Corrupt GGUF file: expert_used_count ({}) > expert_count ({}). \
+                 This file will crash llama.cpp. Delete and re-download: {}",
+                used, total, path.display()
+            ));
+        }
+    }
+
+    Ok(())
+}
+
 /// Executor that loads a GGUF model locally via llama.cpp.
 ///
 /// Models are cached globally behind `Arc` so they persist across engine rebuilds
@@ -339,33 +523,33 @@ fn init_backend() -> Result<&'static LlamaBackend, String> {
 /// own `LlamaContext` from the shared model weights — no serialization needed.
 pub struct LocalGgufExecutor {
     model_path: PathBuf,
-    /// Context window size in tokens (default: 512)
+    /// Maximum context window size in tokens (default: 512).
+    /// The actual context allocated per request is right-sized to the prompt length.
     context_size: u32,
 }
 
 impl LocalGgufExecutor {
-    /// Create a new executor. The model is loaded eagerly into the global
-    /// cache if not already present (so engine rebuilds don't reload).
-    pub fn new(model_path: PathBuf, context_size: u32) -> Self {
-        let context_size = context_size.max(256).min(4096);
+    /// Create a new executor. Validates the GGUF file and loads it eagerly
+    /// into the global cache if not already present.
+    ///
+    /// Returns `Err` if the file fails pre-validation (corrupt, bad metadata)
+    /// or if llama.cpp fails to load it.
+    pub fn new(model_path: PathBuf, context_size: u32) -> Result<Self, String> {
+        let context_size = context_size.clamp(256, 4096);
         if model_path.exists() {
-            if let Err(e) = Self::ensure_cached(&model_path) {
-                warn!(
-                    "Failed to pre-load GGUF model {}: {}",
-                    model_path.display(),
-                    e
-                );
-            }
+            // Pre-validate before handing to llama.cpp (which can abort on bad files)
+            validate_gguf_file(&model_path)?;
+            Self::ensure_cached(&model_path)?;
         } else {
             debug!(
                 "GGUF model path does not exist yet: {}",
                 model_path.display()
             );
         }
-        Self {
+        Ok(Self {
             model_path,
             context_size,
-        }
+        })
     }
 
     fn load_model(path: &PathBuf) -> Result<Arc<LlamaModel>, String> {
@@ -428,8 +612,45 @@ impl LocalGgufExecutor {
         prompt: &str,
         max_tokens: usize,
         want_logprobs: bool,
-        context_size: u32,
+        max_context_size: u32,
     ) -> Result<CompletionResponse, String> {
+        // Tokenize prompt first so we can right-size the context.
+        // Use AddBos::Never because model prompt templates (Llama Guard, Nemotron)
+        // already include <|begin_of_text|> (the BOS token).
+        let mut tokens = model
+            .str_to_token(prompt, llama_cpp_2::model::AddBos::Never)
+            .map_err(|e| format!("Tokenization failed: {e}"))?;
+
+        // Truncate prompt if it exceeds available context (reserve space for generation).
+        // Uses middle truncation: keeps the first half and last half of tokens so that
+        // both the system prompt/template and the most recent user messages are preserved.
+        let max_prompt_tokens = (max_context_size as usize).saturating_sub(max_tokens);
+        if tokens.len() > max_prompt_tokens {
+            warn!(
+                "Prompt ({} tokens) exceeds context budget ({} - {} gen = {} max prompt), truncating from middle",
+                tokens.len(), max_context_size, max_tokens, max_prompt_tokens
+            );
+            let head = max_prompt_tokens / 2;
+            let tail = max_prompt_tokens - head;
+            let tail_start = tokens.len() - tail;
+            let mut truncated = tokens[..head].to_vec();
+            truncated.extend_from_slice(&tokens[tail_start..]);
+            tokens = truncated;
+        }
+
+        // Right-size the context to actual need: prompt tokens + generation headroom,
+        // rounded up to the next multiple of 256 for allocation alignment.
+        // Capped at the configured maximum to respect the user's memory budget.
+        let needed = (tokens.len() + max_tokens) as u32;
+        let context_size = round_up_to(needed, 256).max(256).min(max_context_size);
+
+        debug!(
+            "Tokenized prompt: {} tokens (ctx={}, max_ctx={})",
+            tokens.len(),
+            context_size,
+            max_context_size
+        );
+
         // Create context optimized for safety classifiers:
         // - flash_attn=enabled: significant speedup on Metal/CUDA GPU
         // - Q8_0 KV cache: ~2x less memory vs F16 default, negligible quality impact
@@ -443,29 +664,6 @@ impl LocalGgufExecutor {
         let mut ctx = model
             .new_context(init_backend()?, ctx_params)
             .map_err(|e| format!("Failed to create context: {e}"))?;
-
-        // Tokenize prompt — use AddBos::Never because model prompt templates
-        // (Llama Guard, Nemotron) already include <|begin_of_text|> (the BOS token).
-        // Using AddBos::Always causes a double-BOS warning and wastes a token slot.
-        let mut tokens = model
-            .str_to_token(prompt, llama_cpp_2::model::AddBos::Never)
-            .map_err(|e| format!("Tokenization failed: {e}"))?;
-
-        // Truncate prompt if it exceeds available context (reserve space for generation)
-        let max_prompt_tokens = (context_size as usize).saturating_sub(max_tokens);
-        if tokens.len() > max_prompt_tokens {
-            warn!(
-                "Prompt ({} tokens) exceeds context budget ({} - {} gen = {} max prompt), truncating",
-                tokens.len(), context_size, max_tokens, max_prompt_tokens
-            );
-            tokens.truncate(max_prompt_tokens);
-        }
-
-        debug!(
-            "Tokenized prompt: {} tokens (ctx={})",
-            tokens.len(),
-            context_size
-        );
 
         if tokens.is_empty() {
             return Ok(CompletionResponse {
@@ -695,6 +893,11 @@ pub fn extract_yes_probability(logprobs: &LogprobsResult) -> Option<f32> {
         (None, Some(_)) => Some(0.0), // Only "No" found
         (None, None) => None,         // Neither found
     }
+}
+
+/// Round `value` up to the next multiple of `multiple`.
+fn round_up_to(value: u32, multiple: u32) -> u32 {
+    ((value + multiple - 1) / multiple) * multiple
 }
 
 /// Fallback: determine Yes/No from generated text when logprobs unavailable

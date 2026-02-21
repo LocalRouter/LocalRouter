@@ -179,6 +179,10 @@ impl ShieldGemmaModel {
 
 #[async_trait::async_trait]
 impl SafetyModel for ShieldGemmaModel {
+    fn id(&self) -> &str {
+        &self.model_id
+    }
+
     fn model_type_id(&self) -> &str {
         "shield_gemma"
     }

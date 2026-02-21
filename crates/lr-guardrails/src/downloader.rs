@@ -279,13 +279,8 @@ pub async fn download_model(
         );
     }
 
-    // Prepare temp directory
+    // Prepare temp directory (preserve existing partial files for resume)
     let temp_dir = model_dir.with_extension("tmp");
-    if temp_dir.exists() {
-        tokio::fs::remove_dir_all(&temp_dir)
-            .await
-            .map_err(|e| format!("Failed to remove old temp directory: {}", e))?;
-    }
     tokio::fs::create_dir_all(&temp_dir)
         .await
         .map_err(|e| format!("Failed to create temp directory: {}", e))?;
@@ -296,16 +291,33 @@ pub async fn download_model(
     // Build HTTP client
     let client = reqwest::Client::new();
 
-    // Download with retry logic
+    // Download with retry logic and resume support
     let mut last_error = None;
     let mut success = false;
+    let mut non_resumable = false;
 
     for attempt in 1..=MAX_RETRIES {
-        info!("Download attempt {}/{} from {}", attempt, MAX_RETRIES, url);
+        // Check for existing partial file to resume from
+        let existing_bytes = tokio::fs::metadata(&temp_file_path)
+            .await
+            .map(|m| m.len())
+            .unwrap_or(0);
+
+        if existing_bytes > 0 {
+            info!(
+                "Download attempt {}/{} from {} (resuming from {} bytes)",
+                attempt, MAX_RETRIES, url, existing_bytes
+            );
+        } else {
+            info!("Download attempt {}/{} from {}", attempt, MAX_RETRIES, url);
+        }
 
         let mut request = client.get(&url);
         if let Some(token) = hf_token {
             request = request.bearer_auth(token);
+        }
+        if existing_bytes > 0 {
+            request = request.header("Range", format!("bytes={}-", existing_bytes));
         }
 
         let response = match request.send().await {
@@ -320,32 +332,81 @@ pub async fn download_model(
             }
         };
 
-        if !response.status().is_success() {
-            let status = response.status();
+        let status_code = response.status();
+
+        // 416 Range Not Satisfiable — partial file is corrupt or larger than remote, restart
+        if status_code == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
+            warn!("Range not satisfiable, deleting partial file and restarting");
+            let _ = tokio::fs::remove_file(&temp_file_path).await;
+            if attempt < MAX_RETRIES {
+                tokio::time::sleep(std::time::Duration::from_millis(RETRY_DELAY_MS)).await;
+            }
+            last_error = Some("Range not satisfiable, restarting download".to_string());
+            continue;
+        }
+
+        if !status_code.is_success() {
             let body = response
                 .text()
                 .await
                 .unwrap_or_else(|_| "unknown".to_string());
-            let error_msg = format!("HTTP {} — {}", status, body);
+            let error_msg = format!("HTTP {} — {}", status_code, body);
             warn!("Download attempt {} failed: {}", attempt, error_msg);
             last_error = Some(error_msg);
+            // 4xx errors (except 416 handled above) are non-resumable
+            if status_code.is_client_error() {
+                non_resumable = true;
+                break;
+            }
             if attempt < MAX_RETRIES {
                 tokio::time::sleep(std::time::Duration::from_millis(RETRY_DELAY_MS)).await;
             }
             continue;
         }
 
-        let total_bytes = response.content_length().unwrap_or(0);
-        let mut downloaded_bytes: u64 = 0;
+        // Determine if server accepted our Range request
+        let is_resuming = status_code == reqwest::StatusCode::PARTIAL_CONTENT && existing_bytes > 0;
+        let resumed_from = if is_resuming { existing_bytes } else { 0 };
+
+        // If server ignored the Range header (returned 200 instead of 206), restart
+        if existing_bytes > 0 && !is_resuming {
+            info!("Server does not support Range requests, restarting from beginning");
+            let _ = tokio::fs::remove_file(&temp_file_path).await;
+        }
+
+        // Total size: for 206 Partial Content, content_length is the remaining bytes
+        let total_bytes = if is_resuming {
+            resumed_from + response.content_length().unwrap_or(0)
+        } else {
+            response.content_length().unwrap_or(0)
+        };
+        let mut downloaded_bytes: u64 = resumed_from;
         let download_start = Instant::now();
         let mut last_emit = Instant::now();
 
-        // Open temp file for writing
-        let mut file = match tokio::fs::File::create(&temp_file_path).await {
-            Ok(f) => f,
-            Err(e) => {
-                last_error = Some(format!("Failed to create temp file: {}", e));
-                break;
+        // Open temp file: append if resuming, create if starting fresh
+        let mut file = if is_resuming {
+            match tokio::fs::OpenOptions::new()
+                .append(true)
+                .open(&temp_file_path)
+                .await
+            {
+                Ok(f) => {
+                    info!("Resuming download from byte {}", resumed_from);
+                    f
+                }
+                Err(e) => {
+                    last_error = Some(format!("Failed to open temp file for append: {}", e));
+                    break;
+                }
+            }
+        } else {
+            match tokio::fs::File::create(&temp_file_path).await {
+                Ok(f) => f,
+                Err(e) => {
+                    last_error = Some(format!("Failed to create temp file: {}", e));
+                    break;
+                }
             }
         };
 
@@ -367,7 +428,8 @@ pub async fn download_model(
                         last_emit = now;
 
                         let elapsed_secs = download_start.elapsed().as_secs_f64().max(0.001);
-                        let speed = (downloaded_bytes as f64 / elapsed_secs) as u64;
+                        let speed = ((downloaded_bytes - resumed_from) as f64 / elapsed_secs)
+                            as u64;
                         let progress = if total_bytes > 0 {
                             downloaded_bytes as f32 / total_bytes as f32
                         } else {
@@ -405,8 +467,7 @@ pub async fn download_model(
         if let Some(err) = stream_error {
             warn!("Download attempt {} stream error: {}", attempt, err);
             last_error = Some(err);
-            // Clean up partial file
-            let _ = tokio::fs::remove_file(&temp_file_path).await;
+            // Keep partial file for resume on next attempt
             if attempt < MAX_RETRIES {
                 tokio::time::sleep(std::time::Duration::from_millis(RETRY_DELAY_MS)).await;
             }
@@ -414,9 +475,10 @@ pub async fn download_model(
         }
 
         info!(
-            "Download succeeded on attempt {} ({} bytes in {:.1}s)",
+            "Download succeeded on attempt {} ({} bytes, resumed from {}, in {:.1}s)",
             attempt,
             downloaded_bytes,
+            resumed_from,
             download_start.elapsed().as_secs_f64()
         );
         success = true;
@@ -430,8 +492,11 @@ pub async fn download_model(
             last_error.unwrap_or_else(|| "Unknown error".to_string())
         );
 
-        // Clean up temp dir
-        let _ = tokio::fs::remove_dir_all(&temp_dir).await;
+        // Only clean up temp dir for non-resumable errors (e.g. 404)
+        // Keep partial files so manual retry can resume
+        if non_resumable {
+            let _ = tokio::fs::remove_dir_all(&temp_dir).await;
+        }
 
         #[cfg(feature = "tauri-support")]
         if let Some(ref handle) = app_handle {

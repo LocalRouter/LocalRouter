@@ -307,6 +307,10 @@ impl GraniteGuardianModel {
 
 #[async_trait::async_trait]
 impl SafetyModel for GraniteGuardianModel {
+    fn id(&self) -> &str {
+        &self.model_id
+    }
+
     fn model_type_id(&self) -> &str {
         "granite_guardian"
     }
@@ -387,7 +391,7 @@ mod tests {
         let model = GraniteGuardianModel::new(
             "test".into(),
             Arc::new(ModelExecutor::Local(
-                crate::executor::LocalGgufExecutor::new("/tmp/fake".into(), 512),
+                crate::executor::LocalGgufExecutor::new("/tmp/fake".into(), 512).unwrap(),
             )),
             "test".into(),
             None,
