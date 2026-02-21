@@ -48,6 +48,7 @@ lr-guardrails = { path = "crates/lr-guardrails", features = ["tauri-support"] }
 
 # Async runtime
 tokio = { version = "1.42", features = ["full"] }
+tokio-stream = "0.1"
 tokio-util = "0.7"
 
 # Web framework

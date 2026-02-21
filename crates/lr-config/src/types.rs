@@ -1308,11 +1308,16 @@ pub struct GuardrailsConfig {
     #[serde(default = "default_guardrails_idle_timeout")]
     pub idle_timeout_secs: u64,
 
-    /// Context window size for local GGUF inference (in tokens).
-    /// Larger values support longer input but use more GPU memory per inference.
-    /// Default: 512. Range: 256-4096.
+    /// Maximum context window size for local GGUF inference (in tokens).
+    /// The actual context is right-sized per request; this sets the upper bound.
+    /// Larger values allow scanning longer prompts. Default: 512. Range: 256-4096.
     #[serde(default = "default_guardrails_context_size")]
     pub context_size: u32,
+
+    /// Run guardrails in parallel with LLM request, buffering response until safe (default: true).
+    /// Falls back to sequential when side effects are detected (e.g. web search tools, Perplexity Sonar).
+    #[serde(default = "default_true")]
+    pub parallel_guardrails: bool,
 }
 
 fn default_confidence_threshold() -> f32 {
@@ -1339,6 +1344,7 @@ impl Default for GuardrailsConfig {
             default_confidence_threshold: default_confidence_threshold(),
             idle_timeout_secs: default_guardrails_idle_timeout(),
             context_size: default_guardrails_context_size(),
+            parallel_guardrails: true,
         }
     }
 }
@@ -1346,8 +1352,9 @@ impl Default for GuardrailsConfig {
 /// Per-client guardrails configuration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct ClientGuardrailsConfig {
-    /// Whether guardrails are enabled for this client
-    #[serde(default)]
+    /// Migration shim: old enabled flag (deserialize only, not serialized).
+    /// Having non-allow category_actions means guardrails are active.
+    #[serde(default, skip_serializing)]
     pub enabled: bool,
     /// Per-category actions: allow/notify/ask/block
     /// Categories are selected here; which models run is derived from which categories are selected
@@ -1364,8 +1371,9 @@ pub struct SafetyModelConfig {
     pub label: String,
     /// Model type: "llama_guard_4", "shield_gemma", "nemotron", "granite_guardian"
     pub model_type: String,
-    /// Whether this model is enabled
-    #[serde(default)]
+    /// Migration shim: old enabled flag (deserialize only, not serialized).
+    /// Presence in the safety_models list means the model is active.
+    #[serde(default, skip_serializing)]
     pub enabled: bool,
     /// Use existing provider (e.g. "ollama", "openrouter")
     #[serde(default)]
@@ -1440,101 +1448,10 @@ fn default_category_action() -> String {
     "ask".to_string()
 }
 
-/// Default safety models (all disabled, predefined, with direct_download GGUF info)
+/// Default safety models: empty list.
+/// Predefined models are catalog entries shown in the picker UI, not active models.
 fn default_safety_models() -> Vec<SafetyModelConfig> {
-    vec![
-        SafetyModelConfig {
-            id: "llama_guard".to_string(),
-            label: "Llama Guard".to_string(),
-            model_type: "llama_guard".to_string(),
-            enabled: false,
-            provider_id: Some("ollama".to_string()),
-            model_name: Some("llama-guard3:1b".to_string()),
-            hf_repo_id: Some("QuantFactory/Llama-Guard-3-1B-GGUF".to_string()),
-            gguf_filename: Some("Llama-Guard-3-1B.Q4_K_M.gguf".to_string()),
-            requires_auth: false,
-            confidence_threshold: None,
-            enabled_categories: None,
-            predefined: true,
-            execution_mode: Some("direct_download".to_string()),
-            prompt_template: None,
-            safe_indicator: None,
-            output_regex: None,
-            category_mapping: None,
-            memory_mb: Some(700),
-            latency_ms: Some(300),
-            disk_size_mb: Some(955),
-        },
-        SafetyModelConfig {
-            id: "granite_guardian".to_string(),
-            label: "Granite Guardian".to_string(),
-            model_type: "granite_guardian".to_string(),
-            enabled: false,
-            provider_id: Some("ollama".to_string()),
-            model_name: Some("granite3-guardian:2b".to_string()),
-            hf_repo_id: Some("mradermacher/granite-guardian-3.0-2b-GGUF".to_string()),
-            gguf_filename: Some("granite-guardian-3.0-2b.Q4_K_M.gguf".to_string()),
-            requires_auth: false,
-            confidence_threshold: None,
-            enabled_categories: None,
-            predefined: true,
-            execution_mode: Some("direct_download".to_string()),
-            prompt_template: None,
-            safe_indicator: None,
-            output_regex: None,
-            category_mapping: None,
-            memory_mb: Some(1200),
-            latency_ms: Some(500),
-            disk_size_mb: Some(1500),
-        },
-        SafetyModelConfig {
-            id: "shield_gemma".to_string(),
-            label: "ShieldGemma".to_string(),
-            model_type: "shield_gemma".to_string(),
-            enabled: false,
-            provider_id: Some("ollama".to_string()),
-            model_name: Some("shieldgemma:2b".to_string()),
-            hf_repo_id: Some("QuantFactory/shieldgemma-2b-GGUF".to_string()),
-            gguf_filename: Some("shieldgemma-2b.Q4_K_M.gguf".to_string()),
-            requires_auth: false,
-            confidence_threshold: None,
-            enabled_categories: None,
-            predefined: true,
-            execution_mode: Some("direct_download".to_string()),
-            prompt_template: None,
-            safe_indicator: None,
-            output_regex: None,
-            category_mapping: None,
-            memory_mb: Some(1200),
-            latency_ms: Some(400),
-            disk_size_mb: Some(1700),
-        },
-        SafetyModelConfig {
-            id: "nemotron_safety_guard".to_string(),
-            label: "Nemotron Safety Guard".to_string(),
-            model_type: "nemotron".to_string(),
-            enabled: false,
-            provider_id: Some("ollama".to_string()),
-            model_name: Some("llama-3.1-nemotron-safety-guard:8b".to_string()),
-            hf_repo_id: Some(
-                "AXONVERTEX-AI-RESEARCH/Llama-3.1-Nemotron-Safety-Guard-8B-v3-Q8_0-GGUF"
-                    .to_string(),
-            ),
-            gguf_filename: Some("llama-3.1-nemotron-safety-guard-8b-v3-q8_0.gguf".to_string()),
-            requires_auth: false,
-            confidence_threshold: None,
-            enabled_categories: None,
-            predefined: true,
-            execution_mode: Some("direct_download".to_string()),
-            prompt_template: None,
-            safe_indicator: None,
-            output_regex: None,
-            category_mapping: None,
-            memory_mb: Some(5000),
-            latency_ms: Some(800),
-            disk_size_mb: Some(8500),
-        },
-    ]
+    vec![]
 }
 
 /// Deserializer for SkillsAccess (migration shim)

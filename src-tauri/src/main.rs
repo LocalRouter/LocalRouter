@@ -530,12 +530,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                     let config_snapshot = config_manager.get();
                     let guardrails_config = &config_snapshot.guardrails;
 
-                    if guardrails_config.enabled
-                        && guardrails_config
-                            .safety_models
-                            .iter()
-                            .any(|m| m.enabled)
-                    {
+                    if !guardrails_config.safety_models.is_empty() {
                         // Build provider lookup from configured providers
                         let mut provider_lookup = std::collections::HashMap::new();
                         for p in &config_snapshot.providers {
@@ -592,7 +587,6 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                                 .map(|m| lr_guardrails::SafetyModelConfigInput {
                                     id: m.id.clone(),
                                     model_type: m.model_type.clone(),
-                                    enabled: m.enabled,
                                     provider_id: m.provider_id.clone(),
                                     model_name: m.model_name.clone(),
                                     enabled_categories: None, // TODO: parse from config
@@ -626,11 +620,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                         // Create empty engine so commands still work
                         *app_state.safety_engine.write() =
                             Some(Arc::new(lr_guardrails::SafetyEngine::empty()));
-                        if guardrails_config.enabled {
-                            info!("Guardrails enabled but no models are active");
-                        } else {
-                            info!("Guardrails disabled in configuration");
-                        }
+                        info!("Guardrails: no safety models configured");
                     }
                 }
 
@@ -1433,8 +1423,10 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             // Safety model download & management commands
             ui::commands::download_safety_model,
             ui::commands::get_safety_model_download_status,
+            ui::commands::check_safety_model_file_exists,
             ui::commands::add_safety_model,
             ui::commands::remove_safety_model,
+            ui::commands::delete_safety_model_files,
             ui::commands::get_guardrails_loaded_model_count,
             ui::commands::unload_all_safety_models,
             ui::commands::get_safety_models_dir,

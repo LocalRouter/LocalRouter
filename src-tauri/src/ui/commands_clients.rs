@@ -706,19 +706,19 @@ pub async fn submit_firewall_approval(
         FirewallApprovalAction::AllowPermanent => {
             if let Some(ref info) = pending_info {
                 if info.is_guardrail_request {
-                    // Disable guardrails for this client permanently
+                    // Clear all category actions for this client permanently (disables guardrails)
                     config_manager
                         .update(|cfg| {
                             if let Some(client) =
                                 cfg.clients.iter_mut().find(|c| c.id == info.client_id)
                             {
-                                client.guardrails.enabled = false;
+                                client.guardrails.category_actions.clear();
                             }
                         })
                         .map_err(|e| e.to_string())?;
                     config_manager.save().await.map_err(|e| e.to_string())?;
                     tracing::info!(
-                        "Disabled guardrails permanently for client {}",
+                        "Cleared guardrails category actions permanently for client {}",
                         info.client_id
                     );
                 } else if info.is_model_request {
@@ -1681,40 +1681,16 @@ pub async fn set_client_template(
     Ok(())
 }
 
-/// Set the guardrails_enabled override for a client (legacy, uses new per-client config)
+/// Legacy no-op: guardrails enabled state is now derived from category_actions.
+/// Kept for backward compatibility with older frontends.
 #[tauri::command]
 pub async fn set_client_guardrails_enabled(
-    client_id: String,
-    enabled: Option<bool>,
-    config_manager: State<'_, ConfigManager>,
-    app: tauri::AppHandle,
+    _client_id: String,
+    _enabled: Option<bool>,
+    _config_manager: State<'_, ConfigManager>,
+    _app: tauri::AppHandle,
 ) -> Result<(), String> {
-    tracing::info!(
-        "Setting client {} guardrails enabled to: {:?}",
-        client_id,
-        enabled
-    );
-
-    let mut found = false;
-    config_manager
-        .update(|cfg| {
-            if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
-                client.guardrails.enabled = enabled.unwrap_or(false);
-                found = true;
-            }
-        })
-        .map_err(|e| e.to_string())?;
-
-    if !found {
-        return Err(format!("Client not found: {}", client_id));
-    }
-
-    config_manager.save().await.map_err(|e| e.to_string())?;
-
-    if let Err(e) = app.emit("clients-changed", ()) {
-        tracing::error!("Failed to emit clients-changed event: {}", e);
-    }
-
+    // No-op: presence of category_actions determines guardrails active state
     Ok(())
 }
 

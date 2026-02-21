@@ -165,29 +165,58 @@ pub async fn chat_completions(
     // Convert to provider format
     let provider_request = convert_to_provider_request(&request)?;
 
-    // Await guardrail result before calling provider
-    let guardrail_result = guardrail_handle.await.map_err(|e| {
-        ApiErrorResponse::internal_error(format!("Guardrail check failed: {}", e))
-    })??;
+    // Determine if we can run guardrails in parallel with the LLM request.
+    // Parallel mode buffers the response until guardrails pass, reducing latency.
+    // Falls back to sequential when request may cause side effects.
+    let config = state.config_manager.get();
+    let use_parallel = config.guardrails.parallel_guardrails && !has_side_effects(&request);
 
-    // If guardrails detected violations, handle approval
-    if let Some(check_result) = guardrail_result {
-        handle_guardrail_approval(
-            &state,
-            client_auth.as_ref().map(|e| &e.0),
-            &request,
-            check_result,
-            "request",
-        )
-        .await?;
-    }
-
-    if request.stream {
-        // Handle streaming response
-        handle_streaming(state, auth, client_auth, request, provider_request).await
+    if use_parallel {
+        // Parallel mode: pass guardrail handle to response handlers
+        // They will start the LLM request immediately and await guardrails concurrently
+        if request.stream {
+            handle_streaming_parallel(
+                state,
+                auth,
+                client_auth,
+                request,
+                provider_request,
+                guardrail_handle,
+            )
+            .await
+        } else {
+            handle_non_streaming_parallel(
+                state,
+                auth,
+                client_auth,
+                request,
+                provider_request,
+                guardrail_handle,
+            )
+            .await
+        }
     } else {
-        // Handle non-streaming response
-        handle_non_streaming(state, auth, client_auth, request, provider_request).await
+        // Sequential mode: await guardrail result before calling provider
+        let guardrail_result = guardrail_handle.await.map_err(|e| {
+            ApiErrorResponse::internal_error(format!("Guardrail check failed: {}", e))
+        })??;
+
+        if let Some(check_result) = guardrail_result {
+            handle_guardrail_approval(
+                &state,
+                client_auth.as_ref().map(|e| &e.0),
+                &request,
+                check_result,
+                "request",
+            )
+            .await?;
+        }
+
+        if request.stream {
+            handle_streaming(state, auth, client_auth, request, provider_request).await
+        } else {
+            handle_non_streaming(state, auth, client_auth, request, provider_request).await
+        }
     }
 }
 
@@ -661,6 +690,22 @@ async fn check_model_firewall_permission(
     }
 }
 
+/// Check whether a request may cause side effects that require sequential guardrails.
+///
+/// Side effects include non-function tools (e.g. web_search_preview, code_interpreter)
+/// and models that inherently perform web searches (e.g. Perplexity Sonar).
+fn has_side_effects(request: &ChatCompletionRequest) -> bool {
+    // Non-function tools can trigger real-world actions
+    if let Some(tools) = &request.tools {
+        if tools.iter().any(|t| t.tool_type != "function") {
+            return true;
+        }
+    }
+    // Perplexity Sonar models perform web searches inherently
+    let model = request.model.to_lowercase();
+    model.contains("sonar")
+}
+
 /// Run guardrails scan on request content using safety engine
 ///
 /// Returns Some(SafetyCheckResult) if violations were found that need action,
@@ -694,7 +739,7 @@ async fn run_guardrails_scan(
     };
 
     // Per-client guardrails check
-    if !client.guardrails.enabled || !config.guardrails.scan_requests {
+    if client.guardrails.category_actions.is_empty() || !config.guardrails.scan_requests {
         return Ok(None);
     }
 
@@ -716,6 +761,28 @@ async fn run_guardrails_scan(
     if result.is_safe {
         return Ok(None);
     }
+
+    // Apply per-client category overrides (if configured)
+    let result = if !client.guardrails.category_actions.is_empty() {
+        let overrides: Vec<(String, lr_guardrails::CategoryAction)> = client
+            .guardrails
+            .category_actions
+            .iter()
+            .filter_map(|entry| {
+                let action: lr_guardrails::CategoryAction =
+                    serde_json::from_value(serde_json::Value::String(entry.action.clone()))
+                        .ok()?;
+                Some((entry.category.clone(), action))
+            })
+            .collect();
+        let result = result.apply_client_category_overrides(&overrides);
+        if result.is_safe {
+            return Ok(None);
+        }
+        result
+    } else {
+        result
+    };
 
     tracing::info!(
         "Safety check: {} flagged categories for client {} (model: {})",
@@ -834,122 +901,6 @@ async fn handle_guardrail_approval(
                 "Request blocked by safety check",
             ))
         }
-    }
-}
-
-/// Check response body against safety models (post-receive, non-streaming)
-async fn check_response_guardrails_body(
-    state: &AppState,
-    client_context: Option<&ClientAuthContext>,
-    response_body: &serde_json::Value,
-) -> ApiResult<()> {
-    use lr_mcp::gateway::firewall::{FirewallApprovalAction, GuardrailApprovalDetails};
-
-    let Some(client_ctx) = client_context else {
-        return Ok(());
-    };
-    let engine = state.safety_engine.read().clone();
-    let Some(engine) = engine else {
-        return Ok(());
-    };
-
-    if !engine.has_models() {
-        return Ok(());
-    }
-
-    let client = state.client_manager.get_client(&client_ctx.client_id);
-
-    let enabled = client
-        .as_ref()
-        .map(|c| c.guardrails.enabled)
-        .unwrap_or(false);
-    if !enabled {
-        return Ok(());
-    }
-
-    if let Some(ref c) = client {
-        if state.guardrail_approval_tracker.has_valid_bypass(&c.id) {
-            return Ok(());
-        }
-    }
-
-    let result = engine.check_output(response_body).await;
-    if result.is_safe {
-        return Ok(());
-    }
-
-    if !result.needs_approval() {
-        return Ok(());
-    }
-
-    let client_id = client
-        .as_ref()
-        .map(|c| c.id.as_str())
-        .unwrap_or(&client_ctx.client_id);
-
-    tracing::info!(
-        "Safety response scan: {} flagged categories for client {}",
-        result.actions_required.len(),
-        client_id,
-    );
-
-    let flagged_text = build_flagged_text_preview(
-        &lr_guardrails::text_extractor::extract_response_text(response_body),
-    );
-
-    let details = GuardrailApprovalDetails {
-        verdicts: result
-            .verdicts
-            .iter()
-            .map(|v| serde_json::to_value(v).unwrap_or_default())
-            .collect(),
-        actions_required: result
-            .actions_required
-            .iter()
-            .map(|a| serde_json::to_value(a).unwrap_or_default())
-            .collect(),
-        total_duration_ms: result.total_duration_ms,
-        scan_direction: "response".to_string(),
-        flagged_text,
-    };
-
-    let preview = result
-        .actions_required
-        .iter()
-        .map(|a| format!("{}: {:?}", a.category, a.action))
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    let response = state
-        .mcp_gateway
-        .firewall_manager
-        .request_guardrail_approval(
-            client_id.to_string(),
-            client
-                .as_ref()
-                .map(|c| c.name.clone())
-                .unwrap_or_else(|| client_id.to_string()),
-            "response".to_string(),
-            "guardrails".to_string(),
-            details,
-            preview,
-        )
-        .await
-        .map_err(|e| {
-            ApiErrorResponse::internal_error(format!("Guardrail approval failed: {}", e))
-        })?;
-
-    match response.action {
-        FirewallApprovalAction::AllowOnce
-        | FirewallApprovalAction::AllowSession
-        | FirewallApprovalAction::Allow1Hour
-        | FirewallApprovalAction::AllowPermanent => Ok(()),
-        FirewallApprovalAction::Deny
-        | FirewallApprovalAction::DenySession
-        | FirewallApprovalAction::DenyAlways
-        | FirewallApprovalAction::BlockCategories => Err(ApiErrorResponse::forbidden(
-            "Response blocked by safety check",
-        )),
     }
 }
 
@@ -1140,7 +1091,87 @@ fn convert_to_provider_request(
     })
 }
 
-/// Handle non-streaming chat completion
+/// Type alias for a spawned guardrail scan task
+type GuardrailHandle =
+    tokio::task::JoinHandle<ApiResult<Option<lr_guardrails::SafetyCheckResult>>>;
+
+/// Handle non-streaming chat completion with parallel guardrails.
+/// Starts LLM request immediately and awaits guardrails concurrently.
+async fn handle_non_streaming_parallel(
+    state: AppState,
+    auth: AuthContext,
+    client_auth: Option<Extension<ClientAuthContext>>,
+    request: ChatCompletionRequest,
+    provider_request: ProviderCompletionRequest,
+    guardrail_handle: GuardrailHandle,
+) -> ApiResult<Response> {
+    let generation_id = format!("gen-{}", Uuid::new_v4());
+    let started_at = Instant::now();
+    let created_at = Utc::now();
+
+    // Start LLM request immediately (don't wait for guardrails)
+    let llm_handle = {
+        let router = state.router.clone();
+        let api_key_id = auth.api_key_id.clone();
+        tokio::spawn(async move { router.complete(&api_key_id, provider_request).await })
+    };
+
+    // Wait for both guardrail scan and LLM response concurrently
+    let (guardrail_result, llm_result) = tokio::join!(guardrail_handle, llm_handle);
+
+    // Process guardrail result first — if denied, discard LLM response
+    let guardrail_result = guardrail_result.map_err(|e| {
+        ApiErrorResponse::internal_error(format!("Guardrail check failed: {}", e))
+    })??;
+
+    if let Some(check_result) = guardrail_result {
+        handle_guardrail_approval(
+            &state,
+            client_auth.as_ref().map(|e| &e.0),
+            &request,
+            check_result,
+            "request",
+        )
+        .await?;
+    }
+
+    // Guardrails passed — unwrap LLM response
+    let response = llm_result
+        .map_err(|e| ApiErrorResponse::internal_error(format!("LLM request failed: {}", e)))?
+        .map_err(|e| {
+            // Record failure metrics
+            let latency = Instant::now().duration_since(started_at).as_millis() as u64;
+            let strategy_id = state
+                .client_manager
+                .get_client(&auth.api_key_id)
+                .map(|c| c.strategy_id.clone())
+                .unwrap_or_else(|| "default".to_string());
+            state.metrics_collector.record_failure(
+                &auth.api_key_id,
+                "unknown",
+                "unknown",
+                &strategy_id,
+                latency,
+            );
+            if let Err(log_err) = state.access_logger.log_failure(
+                &auth.api_key_id,
+                "unknown",
+                "unknown",
+                latency,
+                &generation_id,
+                502,
+            ) {
+                tracing::warn!("Failed to write access log: {}", log_err);
+            }
+            ApiErrorResponse::bad_gateway(format!("Provider error: {}", e))
+        })?;
+
+    // Reuse shared response-building logic
+    build_non_streaming_response(state, auth, client_auth, request, response, generation_id, started_at, created_at)
+        .await
+}
+
+/// Handle non-streaming chat completion (sequential guardrails — already resolved)
 async fn handle_non_streaming(
     state: AppState,
     auth: AuthContext,
@@ -1194,6 +1225,23 @@ async fn handle_non_streaming(
         }
     };
 
+    build_non_streaming_response(state, auth, client_auth, request, response, generation_id, started_at, created_at)
+        .await
+}
+
+/// Build the non-streaming response from a completed provider response.
+/// Shared by both sequential and parallel handlers.
+#[allow(clippy::too_many_arguments)]
+async fn build_non_streaming_response(
+    state: AppState,
+    auth: AuthContext,
+    _client_auth: Option<Extension<ClientAuthContext>>,
+    request: ChatCompletionRequest,
+    response: lr_providers::CompletionResponse,
+    generation_id: String,
+    started_at: Instant,
+    created_at: chrono::DateTime<Utc>,
+) -> ApiResult<Response> {
     let completed_at = Instant::now();
 
     // Calculate cost from router (get pricing info)
@@ -1270,14 +1318,6 @@ async fn handle_non_streaming(
     );
 
     // Note: Router already records usage for rate limiting, so we don't need to do it here
-
-    // Check response guardrails (post-receive content inspection)
-    check_response_guardrails_body(
-        &state,
-        client_auth.as_ref().map(|e| &e.0),
-        &serde_json::to_value(&response).unwrap_or_default(),
-    )
-    .await?;
 
     // Convert provider response to API response
     let api_response = ChatCompletionResponse {
@@ -1492,11 +1532,6 @@ async fn handle_streaming(
     let finish_reason_map = finish_reason.clone();
     let completion_tx_map = completion_tx.clone();
 
-    // Guardrails: streaming response scanning disabled for now
-    // (safety models are async LLM calls, not compatible with sync stream.map)
-    let guardrails_aborted = Arc::new(Mutex::new(false));
-    let guardrails_aborted_map = guardrails_aborted.clone();
-
     // Clone for tracking after stream completes
     let state_clone = state.clone();
     let auth_clone = auth.clone();
@@ -1510,11 +1545,6 @@ async fn handle_streaming(
         move |chunk_result| -> Result<Event, std::convert::Infallible> {
             match chunk_result {
                 Ok(provider_chunk) => {
-                    // If guardrails already aborted this stream, send done
-                    if *guardrails_aborted_map.lock() {
-                        return Ok(Event::default().data("[DONE]"));
-                    }
-
                     // Track content for token estimation
                     let is_done = if let Some(choice) = provider_chunk.choices.first() {
                         if let Some(content) = &choice.delta.content {
@@ -1733,6 +1763,442 @@ async fn handle_streaming(
     });
 
     Ok(Sse::new(sse_stream)
+        .keep_alive(KeepAlive::default())
+        .into_response())
+}
+
+/// Handle streaming chat completion with parallel guardrails.
+/// Buffers SSE events until guardrails resolve, then flushes or aborts.
+#[allow(clippy::too_many_arguments)]
+async fn handle_streaming_parallel(
+    state: AppState,
+    auth: AuthContext,
+    client_auth: Option<Extension<ClientAuthContext>>,
+    request: ChatCompletionRequest,
+    provider_request: ProviderCompletionRequest,
+    guardrail_handle: GuardrailHandle,
+) -> ApiResult<Response> {
+    use tokio::sync::{mpsc, watch};
+    use tokio_stream::wrappers::ReceiverStream;
+
+    let generation_id = format!("gen-{}", Uuid::new_v4());
+    let created_at = Utc::now();
+    let started_at = Instant::now();
+    let model = provider_request.model.clone();
+
+    // Start LLM streaming request immediately
+    let stream = match state
+        .router
+        .stream_complete(&auth.api_key_id, provider_request)
+        .await
+    {
+        Ok(s) => s,
+        Err(e) => {
+            let latency = Instant::now().duration_since(started_at).as_millis() as u64;
+            let strategy_id = state
+                .client_manager
+                .get_client(&auth.api_key_id)
+                .map(|c| c.strategy_id.clone())
+                .unwrap_or_else(|| "default".to_string());
+            state.metrics_collector.record_failure(
+                &auth.api_key_id,
+                "unknown",
+                &model,
+                &strategy_id,
+                latency,
+            );
+            if let Err(log_err) = state.access_logger.log_failure(
+                &auth.api_key_id,
+                "unknown",
+                &model,
+                latency,
+                &generation_id,
+                502,
+            ) {
+                tracing::warn!("Failed to write access log: {}", log_err);
+            }
+            return Err(ApiErrorResponse::bad_gateway(format!(
+                "Provider error: {}",
+                e
+            )));
+        }
+    };
+
+    // Guardrail gate: signals whether the response should be flushed or denied
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum GuardrailGate {
+        Pending,
+        Passed,
+        Denied,
+    }
+
+    let (gate_tx, gate_rx) = watch::channel(GuardrailGate::Pending);
+
+    // Output channel: SSE events sent to the client
+    let (event_tx, event_rx) = mpsc::channel::<Result<Event, std::convert::Infallible>>(256);
+
+    // Spawn guardrail resolver
+    {
+        let state = state.clone();
+        let client_auth = client_auth.clone();
+        let request = request.clone();
+        tokio::spawn(async move {
+            let result = guardrail_handle.await;
+            match result {
+                Ok(Ok(None)) => {
+                    // Safe — no violations
+                    let _ = gate_tx.send(GuardrailGate::Passed);
+                }
+                Ok(Ok(Some(check_result))) => {
+                    // Violations found — request approval
+                    match handle_guardrail_approval(
+                        &state,
+                        client_auth.as_ref().map(|e| &e.0),
+                        &request,
+                        check_result,
+                        "request",
+                    )
+                    .await
+                    {
+                        Ok(()) => {
+                            let _ = gate_tx.send(GuardrailGate::Passed);
+                        }
+                        Err(_) => {
+                            let _ = gate_tx.send(GuardrailGate::Denied);
+                        }
+                    }
+                }
+                Ok(Err(_)) | Err(_) => {
+                    // Error in guardrails — fail open
+                    tracing::warn!("Guardrail check failed, failing open");
+                    let _ = gate_tx.send(GuardrailGate::Passed);
+                }
+            }
+        });
+    }
+
+    // Spawn buffer/flush worker
+    {
+        let created_timestamp = created_at.timestamp();
+        let gen_id = generation_id.clone();
+        let gen_id_clone = generation_id.clone();
+        let model_clone = model.clone();
+        let state_clone = state.clone();
+        let auth_clone = auth.clone();
+        let request_user = request.user.clone();
+        let request_messages = request.messages.clone();
+        let mut gate_rx = gate_rx;
+        let mut stream = stream;
+
+        tokio::spawn(async move {
+            let mut buffer: Vec<Result<Event, std::convert::Infallible>> = Vec::new();
+            let mut gate_resolved = false;
+            let mut gate_state = GuardrailGate::Pending;
+            let mut content_accumulator = String::new();
+            let mut finish_reason_val = String::from("stop");
+            let mut stream_done = false;
+
+            // Helper to convert a provider chunk to an SSE event
+            let convert_chunk =
+                |provider_chunk: lr_providers::CompletionChunk,
+                 gen_id: &str,
+                 created_ts: i64,
+                 content_acc: &mut String,
+                 finish_reason: &mut String|
+                 -> (Result<Event, std::convert::Infallible>, bool) {
+                    let is_done = if let Some(choice) = provider_chunk.choices.first() {
+                        if let Some(content) = &choice.delta.content {
+                            content_acc.push_str(content);
+                        }
+                        if let Some(reason) = &choice.finish_reason {
+                            *finish_reason = reason.clone();
+                            true
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    };
+
+                    let api_chunk = ChatCompletionChunk {
+                        id: gen_id.to_string(),
+                        object: "chat.completion.chunk".to_string(),
+                        created: created_ts,
+                        model: provider_chunk.model.clone(),
+                        choices: provider_chunk
+                            .choices
+                            .into_iter()
+                            .map(|choice| {
+                                let tool_calls =
+                                    choice.delta.tool_calls.map(|provider_deltas| {
+                                        provider_deltas
+                                            .into_iter()
+                                            .map(|delta| crate::types::ToolCallDelta {
+                                                index: delta.index,
+                                                id: delta.id,
+                                                tool_type: delta.tool_type,
+                                                function: delta.function.map(|f| {
+                                                    crate::types::FunctionCallDelta {
+                                                        name: f.name,
+                                                        arguments: f.arguments,
+                                                    }
+                                                }),
+                                            })
+                                            .collect()
+                                    });
+                                ChatCompletionChunkChoice {
+                                    index: choice.index,
+                                    delta: ChunkDelta {
+                                        role: choice.delta.role,
+                                        content: choice.delta.content,
+                                        tool_calls,
+                                    },
+                                    finish_reason: choice.finish_reason,
+                                }
+                            })
+                            .collect(),
+                        usage: None,
+                    };
+
+                    let json = serde_json::to_string(&api_chunk).unwrap_or_default();
+                    (Ok(Event::default().data(json)), is_done)
+                };
+
+            loop {
+                tokio::select! {
+                    chunk = stream.next() => {
+                        match chunk {
+                            Some(Ok(provider_chunk)) => {
+                                let (event, is_done) = convert_chunk(
+                                    provider_chunk,
+                                    &gen_id,
+                                    created_timestamp,
+                                    &mut content_accumulator,
+                                    &mut finish_reason_val,
+                                );
+                                if is_done {
+                                    stream_done = true;
+                                }
+                                if gate_resolved && gate_state == GuardrailGate::Passed {
+                                    if event_tx.send(event).await.is_err() {
+                                        break;
+                                    }
+                                } else if !gate_resolved {
+                                    buffer.push(event);
+                                }
+                                // If gate_state == Denied, silently drop chunks
+                                if stream_done {
+                                    break;
+                                }
+                            }
+                            Some(Err(e)) => {
+                                tracing::error!("Error in streaming: {}", e);
+                                let error_response = serde_json::json!({
+                                    "error": {
+                                        "message": format!("Streaming error: {}", e),
+                                        "type": "server_error",
+                                        "code": "streaming_error"
+                                    }
+                                });
+                                let event = Ok(Event::default().data(
+                                    serde_json::to_string(&error_response)
+                                        .unwrap_or_else(|_| "[ERROR]".to_string()),
+                                ));
+                                if gate_resolved && gate_state == GuardrailGate::Passed {
+                                    let _ = event_tx.send(event).await;
+                                } else if !gate_resolved {
+                                    buffer.push(event);
+                                }
+                                break;
+                            }
+                            None => {
+                                break;
+                            }
+                        }
+                    }
+                    result = gate_rx.changed(), if !gate_resolved => {
+                        if result.is_ok() {
+                            gate_resolved = true;
+                            gate_state = *gate_rx.borrow();
+                            match gate_state {
+                                GuardrailGate::Passed => {
+                                    // Flush buffered events
+                                    for event in buffer.drain(..) {
+                                        if event_tx.send(event).await.is_err() {
+                                            break;
+                                        }
+                                    }
+                                }
+                                GuardrailGate::Denied => {
+                                    // Send error event and close
+                                    let error_response = serde_json::json!({
+                                        "error": {
+                                            "message": "Request blocked by safety guardrails",
+                                            "type": "permission_error",
+                                            "code": "guardrails_denied"
+                                        }
+                                    });
+                                    let _ = event_tx.send(Ok(Event::default().data(
+                                        serde_json::to_string(&error_response)
+                                            .unwrap_or_else(|_| "[ERROR]".to_string()),
+                                    ))).await;
+                                    // Don't break yet — let the stream drain
+                                }
+                                GuardrailGate::Pending => unreachable!(),
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Stream is done but gate may still be pending (very fast stream, slow guardrails)
+            if !gate_resolved {
+                let _ = gate_rx.changed().await;
+                gate_state = *gate_rx.borrow();
+                match gate_state {
+                    GuardrailGate::Passed => {
+                        for event in buffer.drain(..) {
+                            if event_tx.send(event).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    GuardrailGate::Denied => {
+                        let error_response = serde_json::json!({
+                            "error": {
+                                "message": "Request blocked by safety guardrails",
+                                "type": "permission_error",
+                                "code": "guardrails_denied"
+                            }
+                        });
+                        let _ = event_tx.send(Ok(Event::default().data(
+                            serde_json::to_string(&error_response)
+                                .unwrap_or_else(|_| "[ERROR]".to_string()),
+                        )))
+                        .await;
+                    }
+                    GuardrailGate::Pending => {
+                        // Should not happen, but fail open
+                        for event in buffer.drain(..) {
+                            if event_tx.send(event).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Record metrics (same as handle_streaming)
+            let completed_at = Instant::now();
+            let last_user_message_tokens = if let Some(last_msg) = request_messages.last() {
+                estimate_token_count(std::slice::from_ref(last_msg))
+            } else {
+                0
+            };
+            let prompt_tokens = last_user_message_tokens as u32;
+            let completion_tokens = (content_accumulator.len() / 4).max(1) as u32;
+            let total_tokens = prompt_tokens + completion_tokens;
+
+            let provider = if let Some((p, _)) = model_clone.split_once('/') {
+                p.to_string()
+            } else {
+                "router".to_string()
+            };
+
+            let pricing = match state_clone.provider_registry.get_provider(&provider) {
+                Some(p) => p.get_pricing(&model_clone).await.ok(),
+                None => None,
+            }
+            .unwrap_or_else(lr_providers::PricingInfo::free);
+
+            let cost = {
+                let input_cost = (prompt_tokens as f64 / 1000.0) * pricing.input_cost_per_1k;
+                let output_cost =
+                    (completion_tokens as f64 / 1000.0) * pricing.output_cost_per_1k;
+                input_cost + output_cost
+            };
+
+            let strategy_id = state_clone
+                .client_manager
+                .get_client(&auth_clone.api_key_id)
+                .map(|c| c.strategy_id.clone())
+                .unwrap_or_else(|| "default".to_string());
+
+            let latency_ms = completed_at.duration_since(started_at).as_millis() as u64;
+            state_clone
+                .metrics_collector
+                .record_success(&lr_monitoring::metrics::RequestMetrics {
+                    api_key_name: &auth_clone.api_key_id,
+                    provider: &provider,
+                    model: &model_clone,
+                    strategy_id: &strategy_id,
+                    input_tokens: prompt_tokens as u64,
+                    output_tokens: completion_tokens as u64,
+                    cost_usd: cost,
+                    latency_ms,
+                });
+
+            if let Some(ref tray_graph) = *state_clone.tray_graph_manager.read() {
+                tray_graph.record_tokens((prompt_tokens + completion_tokens) as u64);
+            }
+
+            if let Err(e) = state_clone.access_logger.log_success(
+                &auth_clone.api_key_id,
+                &provider,
+                &model_clone,
+                prompt_tokens as u64,
+                completion_tokens as u64,
+                cost,
+                latency_ms,
+                &gen_id_clone,
+            ) {
+                tracing::warn!("Failed to write access log: {}", e);
+            }
+
+            state_clone.emit_event(
+                "metrics-updated",
+                &serde_json::json!({
+                    "timestamp": created_at.to_rfc3339(),
+                })
+                .to_string(),
+            );
+
+            let generation_details = GenerationDetails {
+                id: gen_id_clone,
+                model: model_clone,
+                provider: provider.clone(),
+                created_at,
+                finish_reason: finish_reason_val,
+                tokens: TokenUsage {
+                    prompt_tokens,
+                    completion_tokens,
+                    total_tokens,
+                    prompt_tokens_details: None,
+                    completion_tokens_details: None,
+                },
+                cost: Some(crate::types::CostDetails {
+                    prompt_cost: (prompt_tokens as f64 / 1000.0) * pricing.input_cost_per_1k,
+                    completion_cost: (completion_tokens as f64 / 1000.0)
+                        * pricing.output_cost_per_1k,
+                    total_cost: cost,
+                    currency: "USD".to_string(),
+                }),
+                started_at,
+                completed_at,
+                provider_health: None,
+                api_key_id: auth_clone.api_key_id,
+                user: request_user,
+                stream: true,
+            };
+
+            state_clone
+                .generation_tracker
+                .record(generation_details.id.clone(), generation_details);
+        });
+    }
+
+    // Return SSE response immediately (backed by event_rx channel)
+    Ok(Sse::new(ReceiverStream::new(event_rx))
         .keep_alive(KeepAlive::default())
         .into_response())
 }

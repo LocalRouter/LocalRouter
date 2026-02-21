@@ -2171,15 +2171,14 @@ fn resolve_category_actions(entries: &[lr_config::CategoryActionEntry]) -> Vec<(
 /// Called after config changes (add/remove/enable/disable models, download complete, etc.)
 #[tauri::command]
 pub async fn rebuild_safety_engine(
+    app_handle: tauri::AppHandle,
     config_manager: State<'_, ConfigManager>,
     state: State<'_, Arc<lr_server::state::AppState>>,
 ) -> Result<(), String> {
     let config = config_manager.get();
     let guardrails_config = &config.guardrails;
 
-    let has_enabled = guardrails_config.safety_models.iter().any(|m| m.enabled);
-
-    if has_enabled {
+    if !guardrails_config.safety_models.is_empty() {
         // Build provider lookup
         let mut provider_lookup = HashMap::new();
         for p in &config.providers {
@@ -2228,7 +2227,6 @@ pub async fn rebuild_safety_engine(
             .map(|m| lr_guardrails::SafetyModelConfigInput {
                 id: m.id.clone(),
                 model_type: m.model_type.clone(),
-                enabled: m.enabled,
                 provider_id: m.provider_id.clone(),
                 model_name: m.model_name.clone(),
                 enabled_categories: None,
@@ -2249,17 +2247,37 @@ pub async fn rebuild_safety_engine(
             guardrails_config.context_size,
         ));
 
+        // Emit load-failed events for models that couldn't be loaded
+        for (model_id, error) in engine.load_errors() {
+            let _ = app_handle.emit(
+                "safety-model-load-failed",
+                serde_json::json!({ "model_id": model_id, "error": error }),
+            );
+            tracing::warn!(
+                "Safety model '{}' failed to load: {}",
+                model_id,
+                error
+            );
+        }
+
         tracing::info!(
-            "Safety engine rebuilt: {} models loaded",
-            engine.model_count()
+            "Safety engine rebuilt: {} models loaded, {} failed",
+            engine.model_count(),
+            engine.load_errors().len(),
         );
         state.replace_safety_engine(engine);
     } else {
         state.replace_safety_engine(Arc::new(lr_guardrails::SafetyEngine::empty()));
-        tracing::info!("Safety engine rebuilt: no enabled models");
+        tracing::info!("Safety engine rebuilt: no models configured");
     }
 
     Ok(())
+}
+
+/// Delete downloaded model files for a safety model (e.g. to retry after corruption)
+#[tauri::command]
+pub async fn delete_safety_model_files(model_id: String) -> Result<(), String> {
+    lr_guardrails::downloader::delete_model_files(&model_id).await
 }
 
 /// Test safety check against input text (runs all enabled models)
@@ -2337,7 +2355,6 @@ pub async fn get_safety_model_status(
         "id": model.id,
         "label": model.label,
         "model_type": model.model_type,
-        "enabled": model.enabled,
         "provider_configured": provider_configured,
         "provider_id": model.provider_id,
         "model_name": model.model_name,
@@ -2519,6 +2536,16 @@ pub async fn get_safety_model_download_status(
         }
     };
 
+    serde_json::to_value(&status).map_err(|e| e.to_string())
+}
+
+/// Check if a safety model GGUF file exists on disk (without requiring it to be in config)
+#[tauri::command]
+pub async fn check_safety_model_file_exists(
+    model_id: String,
+    gguf_filename: String,
+) -> Result<serde_json::Value, String> {
+    let status = lr_guardrails::downloader::get_download_status(&model_id, &gguf_filename);
     serde_json::to_value(&status).map_err(|e| e.to_string())
 }
 
