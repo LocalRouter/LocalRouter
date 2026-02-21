@@ -7,12 +7,12 @@ import {
   Eye,
   EyeOff,
 } from "lucide-react"
+import { Switch } from "@/components/ui/switch"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/Badge"
 import { Button } from "@/components/ui/Button"
 import { Input } from "@/components/ui/Input"
-import { AddSafetyModelDialog } from "@/components/guardrails/AddSafetyModelDialog"
 import { SafetyModelList } from "@/components/guardrails/SafetyModelList"
 import { SafetyModelPicker, type PickerSelection } from "@/components/guardrails/SafetyModelPicker"
 import {
@@ -31,6 +31,8 @@ import type {
   DownloadSafetyModelParams,
   AddSafetyModelParams,
   RemoveSafetyModelParams,
+  CheckSafetyModelFileExistsParams,
+  DeleteSafetyModelFilesParams,
 } from "@/types/tauri-commands"
 
 interface GuardrailsTabProps {
@@ -45,18 +47,19 @@ export function GuardrailsTab({ onTabChange }: GuardrailsTabProps) {
     default_confidence_threshold: 0.5,
     idle_timeout_secs: 600,
     context_size: 512,
+    parallel_guardrails: true,
   })
   const [isLoading, setIsLoading] = useState(true)
 
   // HF token visibility
   const [showHfToken, setShowHfToken] = useState(false)
 
-  // Custom model dialog
-  const [customDialogOpen, setCustomDialogOpen] = useState(false)
-
   // Download state
   const [downloadStatuses, setDownloadStatuses] = useState<Record<string, SafetyModelDownloadStatus>>({})
   const [downloadProgress, setDownloadProgress] = useState<Record<string, number>>({})
+
+  // Load errors (model_id → error message)
+  const [loadErrors, setLoadErrors] = useState<Record<string, string>>({})
 
   // Model cache state
   const [loadedModelCount, setLoadedModelCount] = useState(0)
@@ -132,6 +135,12 @@ export function GuardrailsTab({ onTabChange }: GuardrailsTabProps) {
       toast.error(`Download failed: ${event.payload.error}`)
     }).then(unlisten => unlisteners.push(unlisten))
 
+    listen<{ model_id: string; error: string }>("safety-model-load-failed", (event) => {
+      const { model_id, error } = event.payload
+      setLoadErrors(prev => ({ ...prev, [model_id]: error }))
+      toast.error(`Safety model "${model_id}" failed to load: ${error}`)
+    }).then(unlisten => unlisteners.push(unlisten))
+
     return () => { unlisteners.forEach(fn => fn()) }
   }, [])
 
@@ -169,6 +178,19 @@ export function GuardrailsTab({ onTabChange }: GuardrailsTabProps) {
     }
   }
 
+  const handleRetryCorruptModel = async (modelId: string) => {
+    try {
+      await invoke("delete_safety_model_files", {
+        modelId,
+      } satisfies DeleteSafetyModelFilesParams as Record<string, unknown>)
+      setLoadErrors(prev => { const next = { ...prev }; delete next[modelId]; return next })
+      setDownloadStatuses(prev => { const next = { ...prev }; delete next[modelId]; return next })
+      await handleDownloadModel(modelId)
+    } catch (err) {
+      toast.error(`Failed to delete corrupt model files: ${err}`)
+    }
+  }
+
   const handleRemoveModel = async (modelId: string) => {
     try {
       await invoke("remove_safety_model", {
@@ -183,18 +205,12 @@ export function GuardrailsTab({ onTabChange }: GuardrailsTabProps) {
   }
 
   const handlePickerSelect = async (selection: PickerSelection) => {
-    if (selection.type === "custom") {
-      setCustomDialogOpen(true)
-      return
-    }
-
     if (selection.type === "provider") {
       // Add a provider-based model
       const modelConfig: SafetyModelConfig = {
         id: "",
         label: selection.label,
         model_type: selection.modelType,
-        enabled: true,
         execution_mode: "provider",
         hf_repo_id: null,
         gguf_filename: null,
@@ -242,7 +258,6 @@ export function GuardrailsTab({ onTabChange }: GuardrailsTabProps) {
       id: variant.key,
       label: variant.label,
       model_type: variant.modelType,
-      enabled: true,
       execution_mode: "direct_download",
       hf_repo_id: variant.hfRepoId,
       gguf_filename: variant.ggufFilename,
@@ -269,6 +284,23 @@ export function GuardrailsTab({ onTabChange }: GuardrailsTabProps) {
       await loadConfig()
 
       const modelId = newId || variant.key
+
+      // Check if the file is already downloaded on disk before starting a download
+      try {
+        const status = await invoke<SafetyModelDownloadStatus>("check_safety_model_file_exists", {
+          modelId,
+          ggufFilename: variant.ggufFilename,
+        } satisfies CheckSafetyModelFileExistsParams as Record<string, unknown>)
+        if (status.downloaded) {
+          setDownloadStatuses(prev => ({ ...prev, [modelId]: status }))
+          toast.success("Model already downloaded, added to configuration")
+          rebuildEngine()
+          return
+        }
+      } catch {
+        // Fall through to download
+      }
+
       handleDownloadModel(modelId)
     } catch (err) {
       toast.error(`Failed to add model: ${err}`)
@@ -345,6 +377,20 @@ export function GuardrailsTab({ onTabChange }: GuardrailsTabProps) {
                 {showHfToken ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
               </Button>
             </div>
+          </div>
+
+          {/* Parallel Scanning */}
+          <div className="flex items-center justify-between">
+            <div>
+              <Label>Parallel Scanning</Label>
+              <p className="text-xs text-muted-foreground">
+                Run safety checks alongside the LLM request for lower latency. Automatically falls back to sequential scanning for models with side effects (e.g. Perplexity Sonar).
+              </p>
+            </div>
+            <Switch
+              checked={config.parallel_guardrails}
+              onCheckedChange={(checked) => saveConfig({ ...config, parallel_guardrails: checked })}
+            />
           </div>
 
           {/* Memory Management — only when GGUF models downloaded */}
@@ -440,17 +486,14 @@ export function GuardrailsTab({ onTabChange }: GuardrailsTabProps) {
             models={config.safety_models}
             downloadStatuses={downloadStatuses}
             downloadProgress={downloadProgress}
+            loadErrors={loadErrors}
             onRemove={handleRemoveModel}
+            onRetryDownload={handleDownloadModel}
+            onRetryCorruptModel={handleRetryCorruptModel}
           />
         </CardContent>
       </Card>
 
-      {/* Add Custom Model Dialog */}
-      <AddSafetyModelDialog
-        open={customDialogOpen}
-        onOpenChange={setCustomDialogOpen}
-        onModelAdded={() => { loadConfig(); rebuildEngine() }}
-      />
     </div>
   )
 }

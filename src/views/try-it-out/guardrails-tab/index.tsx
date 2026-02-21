@@ -117,7 +117,7 @@ export function GuardrailsTab({ initialClientId }: GuardrailsTabProps) {
     }
   }
 
-  const enabledModels = models.filter((m) => m.enabled)
+  const enabledModels = models
 
   const getModeDescription = () => {
     switch (mode) {

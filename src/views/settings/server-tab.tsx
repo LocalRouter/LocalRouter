@@ -126,7 +126,7 @@ export function ServerTab() {
     toast.success("Copied to clipboard")
   }
 
-  const serverUrl = `http://${config.host}:${config.actual_port ?? config.port}/v1`
+  const serverUrl = `http://${config.host}:${config.actual_port ?? config.port}`
 
   return (
     <div className="space-y-6">
@@ -141,7 +141,7 @@ export function ServerTab() {
         <CardContent className="space-y-4">
           <div className="flex items-center justify-between">
             <div className="space-y-1">
-              <p className="text-xs text-muted-foreground">Server URL</p>
+              <p className="text-xs text-muted-foreground">OpenAI & MCP Endpoint</p>
               <div className="flex items-center gap-2">
                 <code className="text-sm font-mono bg-muted px-2 py-1 rounded">
                   {serverUrl}
@@ -190,7 +190,7 @@ export function ServerTab() {
           <div className="p-3 bg-muted rounded-lg space-y-2">
             <p className="text-xs font-medium">HTTP/SSE Endpoint</p>
             <code className="text-xs font-mono block">
-              http://{config.host}:{config.actual_port ?? config.port}/mcp
+              http://{config.host}:{config.actual_port ?? config.port}
             </code>
             <p className="text-xs text-muted-foreground">
               Include <code className="bg-background px-1 rounded">Authorization: Bearer &lt;client_secret&gt;</code> header

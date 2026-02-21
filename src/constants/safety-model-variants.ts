@@ -47,17 +47,6 @@ export const SAFETY_MODEL_VARIANTS: SafetyModelVariant[] = [
     latencyMs: 600,
     diskSizeMb: 4900,
   },
-  {
-    key: "llama_guard_4_12b",
-    label: "Llama Guard 4 12B (f16)",
-    modelType: "llama_guard",
-    hfRepoId: "DevQuasar/meta-llama.Llama-Guard-4-12B-GGUF",
-    ggufFilename: "meta-llama.Llama-Guard-4-12B.f16.gguf",
-    size: "~22.3 GB",
-    memoryMb: 12000,
-    latencyMs: 1200,
-    diskSizeMb: 22300,
-  },
 
   // Granite Guardian
   {
@@ -77,7 +66,7 @@ export const SAFETY_MODEL_VARIANTS: SafetyModelVariant[] = [
     label: "Granite Guardian 3.2 5B",
     modelType: "granite_guardian",
     hfRepoId: "ibm-research/granite-guardian-3.2-5b-GGUF",
-    ggufFilename: "granite-guardian-3.2-5b.Q4_K_M.gguf",
+    ggufFilename: "granite-guardian-3.2-5b-Q4_K_M.gguf",
     size: "~3.5 GB",
     memoryMb: 2800,
     latencyMs: 600,
@@ -88,7 +77,7 @@ export const SAFETY_MODEL_VARIANTS: SafetyModelVariant[] = [
     label: "Granite Guardian 3.3 8B",
     modelType: "granite_guardian",
     hfRepoId: "ibm-granite/granite-guardian-3.3-8b-GGUF",
-    ggufFilename: "granite-guardian-3.3-8b.Q4_K_M.gguf",
+    ggufFilename: "granite-guardian-3.3-8b-Q4_K_M.gguf",
     size: "~4.9 GB",
     memoryMb: 4500,
     latencyMs: 700,

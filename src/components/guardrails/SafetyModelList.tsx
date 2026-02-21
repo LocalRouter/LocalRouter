@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
-import { Trash2, Download, Cloud, FolderOpen } from "lucide-react"
+import { Trash2, Download, Cloud, FolderOpen, RotateCcw, AlertTriangle } from "lucide-react"
 import { Button } from "@/components/ui/Button"
 import { Badge } from "@/components/ui/Badge"
 import { Progress } from "@/components/ui/progress"
@@ -10,7 +10,10 @@ interface SafetyModelListProps {
   models: SafetyModelConfig[]
   downloadStatuses: Record<string, SafetyModelDownloadStatus>
   downloadProgress: Record<string, number>
+  loadErrors?: Record<string, string>
   onRemove?: (modelId: string) => void
+  onRetryDownload?: (modelId: string) => void
+  onRetryCorruptModel?: (modelId: string) => void
   readOnly?: boolean
 }
 
@@ -24,7 +27,10 @@ export function SafetyModelList({
   models,
   downloadStatuses,
   downloadProgress,
+  loadErrors = {},
   onRemove,
+  onRetryDownload,
+  onRetryCorruptModel,
   readOnly = false,
 }: SafetyModelListProps) {
   const [modelsDir, setModelsDir] = useState<string | null>(null)
@@ -57,6 +63,7 @@ export function SafetyModelList({
         const isDownloaded = status?.downloaded
         const isDownloading = progress !== undefined && progress < 100
         const isDirectDownload = model.execution_mode === "direct_download" || model.execution_mode === "custom_download"
+        const loadError = loadErrors[model.id]
 
         // Model identifier: HF repo/filename for direct, provider/model for provider
         const modelIdentifier = isDirectDownload
@@ -82,9 +89,13 @@ export function SafetyModelList({
                     <><Cloud className="h-3 w-3 mr-1" />Provider</>
                   )}
                 </Badge>
-                {isDownloaded && (
+                {loadError ? (
+                  <Badge variant="destructive" className="text-xs shrink-0" title={loadError}>
+                    <AlertTriangle className="h-3 w-3 mr-1" />Load failed
+                  </Badge>
+                ) : isDownloaded ? (
                   <Badge variant="secondary" className="text-xs shrink-0">Ready</Badge>
-                )}
+                ) : null}
               </div>
 
               <div className="flex items-center gap-2">
@@ -93,6 +104,26 @@ export function SafetyModelList({
                     <Progress value={progress} className="h-1.5" />
                     <span className="text-xs text-muted-foreground">{Math.round(progress)}%</span>
                   </div>
+                )}
+                {!readOnly && isDirectDownload && loadError && onRetryCorruptModel && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => onRetryCorruptModel(model.id)}
+                    title="Delete corrupt file and re-download"
+                  >
+                    <RotateCcw className="h-4 w-4 text-destructive" />
+                  </Button>
+                )}
+                {!readOnly && isDirectDownload && !isDownloaded && !isDownloading && !loadError && onRetryDownload && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => onRetryDownload(model.id)}
+                    title="Retry download"
+                  >
+                    <RotateCcw className="h-4 w-4 text-muted-foreground" />
+                  </Button>
                 )}
                 {!readOnly && onRemove && (
                   <Button

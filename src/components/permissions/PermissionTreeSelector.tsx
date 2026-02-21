@@ -202,7 +202,7 @@ export function PermissionTreeSelector<S extends string>({
 
           {/* Label */}
           <div className="flex-1 min-w-0">
-            <span className={cn("font-medium", inherited && "text-muted-foreground")}>
+            <span className={cn("font-medium truncate block", inherited && "text-muted-foreground")}>
               {node.label}
             </span>
             {node.description && (
@@ -211,14 +211,14 @@ export function PermissionTreeSelector<S extends string>({
           </div>
 
           {/* Permission selector - not shown for group nodes (Tools/Resources/Prompts headers) */}
-          {!node.isGroup && renderButton({
+          {!node.isGroup && <div className="shrink-0">{renderButton({
             value: effectivePermission,
             onChange: (state) => onPermissionChange(node.id, state, parentPermission),
             disabled,
             size: "sm",
             inherited,
             childRollupStates,
-          })}
+          })}</div>}
         </div>
 
         {/* Children */}
@@ -250,20 +250,20 @@ export function PermissionTreeSelector<S extends string>({
   }
 
   return (
-    <div className="border rounded-lg">
-      <div className="max-h-[500px] overflow-y-auto">
+    <div className="border rounded-lg overflow-x-auto">
+      <div className="max-h-[500px] overflow-y-auto min-w-0">
         {/* Global row - sticky header */}
         <div
           className="flex items-center gap-2 px-3 py-3 border-b bg-background sticky top-0 z-10"
         >
-          <span className="font-semibold text-sm flex-1">{globalLabel}</span>
-          {renderButton({
+          <span className="font-semibold text-sm flex-1 min-w-0 truncate">{globalLabel}</span>
+          <div className="shrink-0">{renderButton({
             value: globalPermission,
             onChange: onGlobalChange,
             disabled,
             size: "sm",
             childRollupStates: globalChildRollupStates,
-          })}
+          })}</div>
         </div>
 
         {/* Tree nodes */}

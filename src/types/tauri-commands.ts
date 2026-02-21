@@ -1972,11 +1972,11 @@ export interface GuardrailsConfig {
   default_confidence_threshold: number
   idle_timeout_secs: number
   context_size: number
+  parallel_guardrails: boolean
 }
 
 /** Per-client guardrails configuration */
 export interface ClientGuardrailsConfig {
-  enabled: boolean
   category_actions: CategoryActionEntry[]
 }
 
@@ -1985,7 +1985,6 @@ export interface SafetyModelConfig {
   id: string
   label: string
   model_type: string
-  enabled: boolean
   provider_id: string | null
   model_name: string | null
   hf_repo_id: string | null
@@ -2113,6 +2112,12 @@ export interface GetSafetyModelDownloadStatusParams {
   modelId: string
 }
 
+/** Params for check_safety_model_file_exists */
+export interface CheckSafetyModelFileExistsParams {
+  modelId: string
+  ggufFilename: string
+}
+
 /** Params for add_safety_model */
 export interface AddSafetyModelParams {
   configJson: string
@@ -2120,5 +2125,10 @@ export interface AddSafetyModelParams {
 
 /** Params for remove_safety_model */
 export interface RemoveSafetyModelParams {
+  modelId: string
+}
+
+/** Params for delete_safety_model_files */
+export interface DeleteSafetyModelFilesParams {
   modelId: string
 }

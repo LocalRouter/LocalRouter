@@ -122,7 +122,6 @@ export function AddSafetyModelDialog({
         id: "",
         label: label.trim(),
         model_type: modelType,
-        enabled: false,
         provider_id: executionMode === "provider" ? (providerId || null) : null,
         model_name: executionMode === "provider" ? (modelName || null) : null,
         hf_repo_id: resolvedHfRepoId,

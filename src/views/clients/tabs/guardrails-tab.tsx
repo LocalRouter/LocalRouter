@@ -3,7 +3,6 @@ import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
 import { Shield, Info } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
-import { Switch } from "@/components/ui/Toggle"
 import { Badge } from "@/components/ui/Badge"
 import { CategoryActionButton, type CategoryActionState } from "@/components/permissions/CategoryActionButton"
 import { PermissionTreeSelector } from "@/components/permissions/PermissionTreeSelector"
@@ -34,7 +33,6 @@ interface ClientGuardrailsTabProps {
 
 export function ClientGuardrailsTab({ client, onUpdate, onViewChange }: ClientGuardrailsTabProps) {
   const [guardrailsConfig, setGuardrailsConfig] = useState<ClientGuardrailsConfig>({
-    enabled: false,
     category_actions: [],
   })
   const [globalConfig, setGlobalConfig] = useState<GuardrailsConfig | null>(null)
@@ -97,9 +95,6 @@ export function ClientGuardrailsTab({ client, onUpdate, onViewChange }: ClientGu
     }
   }
 
-  const toggleEnabled = (enabled: boolean) => {
-    saveConfig({ ...guardrailsConfig, enabled })
-  }
 
   // Build category tree nodes (grouped by model type)
   const categoryTreeNodes = useMemo((): TreeNode[] => {
@@ -197,13 +192,10 @@ export function ClientGuardrailsTab({ client, onUpdate, onViewChange }: ClientGu
       {/* Header Card */}
       <Card>
         <CardHeader>
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Shield className="h-5 w-5 text-red-500" />
-              <CardTitle>GuardRails</CardTitle>
-              <Badge variant="outline" className="bg-purple-500/10 text-purple-900 dark:text-purple-400">EXPERIMENTAL</Badge>
-            </div>
-            <Switch checked={guardrailsConfig.enabled} onCheckedChange={toggleEnabled} />
+          <div className="flex items-center gap-2">
+            <Shield className="h-5 w-5 text-red-500" />
+            <CardTitle>GuardRails</CardTitle>
+            <Badge variant="outline" className="bg-purple-500/10 text-purple-900 dark:text-purple-400">EXPERIMENTAL</Badge>
           </div>
           <CardDescription>
             Safety scanning for this client's requests. Flagged content is handled based on
@@ -220,9 +212,7 @@ export function ClientGuardrailsTab({ client, onUpdate, onViewChange }: ClientGu
         </CardHeader>
       </Card>
 
-      {guardrailsConfig.enabled && (
-        <>
-          {/* Available Models */}
+      {/* Available Models */}
           <Card>
             <CardHeader>
               <CardTitle className="text-base">Available Models</CardTitle>
@@ -276,8 +266,6 @@ export function ClientGuardrailsTab({ client, onUpdate, onViewChange }: ClientGu
               </CardContent>
             </Card>
           )}
-        </>
-      )}
     </div>
   )
 }

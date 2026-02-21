@@ -9,22 +9,21 @@ import {
   SelectGroup,
   SelectItem,
   SelectLabel,
-  SelectSeparator,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/Select"
 import {
   MODEL_FAMILY_GROUPS,
   PROVIDER_MODEL_NAMES,
+  SAFETY_MODEL_VARIANTS,
   getVariantsForModelType,
 } from "@/constants/safety-model-variants"
-import type { ProviderInstanceInfo, SafetyModelDownloadStatus } from "@/types/tauri-commands"
+import type { ProviderInstanceInfo, SafetyModelDownloadStatus, CheckSafetyModelFileExistsParams } from "@/types/tauri-commands"
 
 /** Selection result from the picker */
 export type PickerSelection =
   | { type: "direct_download"; variantKey: string }
   | { type: "provider"; modelType: string; providerId: string; providerType: string; modelName: string; label: string }
-  | { type: "custom" }
 
 interface SafetyModelPickerProps {
   existingModelIds: string[]
@@ -42,11 +41,35 @@ export function SafetyModelPicker({ existingModelIds, downloadStatuses, onSelect
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
   const [providers, setProviders] = useState<ProviderInstanceInfo[]>([])
   const [providerModelMatches, setProviderModelMatches] = useState<ProviderModelMatch[]>([])
+  const [fileStatuses, setFileStatuses] = useState<Record<string, SafetyModelDownloadStatus>>({})
+
+  // Merge parent-provided download statuses with locally scanned file statuses
+  const mergedStatuses: Record<string, SafetyModelDownloadStatus> = { ...fileStatuses, ...downloadStatuses }
 
   useEffect(() => {
     invoke<ProviderInstanceInfo[]>("list_provider_instances")
       .then(setProviders)
       .catch(() => {})
+  }, [])
+
+  // Scan disk for already-downloaded variant files
+  useEffect(() => {
+    const scanVariants = async () => {
+      const statuses: Record<string, SafetyModelDownloadStatus> = {}
+      for (const variant of SAFETY_MODEL_VARIANTS) {
+        try {
+          const status = await invoke<SafetyModelDownloadStatus>("check_safety_model_file_exists", {
+            modelId: variant.key,
+            ggufFilename: variant.ggufFilename,
+          } satisfies CheckSafetyModelFileExistsParams as Record<string, unknown>)
+          statuses[variant.key] = status
+        } catch {
+          // ignore
+        }
+      }
+      setFileStatuses(statuses)
+    }
+    scanVariants()
   }, [])
 
   // Check which provider models actually exist
@@ -89,11 +112,6 @@ export function SafetyModelPicker({ existingModelIds, downloadStatuses, onSelect
   }, [providers])
 
   const handleChange = (value: string) => {
-    if (value === "custom") {
-      setSelectedKey(null)
-      onSelect({ type: "custom" })
-      return
-    }
     setSelectedKey(value)
   }
 
@@ -125,6 +143,7 @@ export function SafetyModelPicker({ existingModelIds, downloadStatuses, onSelect
   }
 
   const isProvider = selectedKey?.startsWith("provider:")
+  const selectedIsDownloaded = selectedKey && !isProvider && mergedStatuses[selectedKey]?.downloaded
 
   return (
     <div className="flex items-end gap-3">
@@ -151,7 +170,7 @@ export function SafetyModelPicker({ existingModelIds, downloadStatuses, onSelect
                   <SelectLabel className="text-xs font-semibold pl-2">{group.family}</SelectLabel>
                   {variants.map((v) => {
                     const isAdded = existingModelIds.includes(v.key)
-                    const isDownloaded = downloadStatuses[v.key]?.downloaded
+                    const isDownloaded = mergedStatuses[v.key]?.downloaded
                     return (
                       <SelectItem
                         key={v.key}
@@ -180,10 +199,6 @@ export function SafetyModelPicker({ existingModelIds, downloadStatuses, onSelect
                 </SelectGroup>
               )
             })}
-            <SelectSeparator />
-            <SelectItem value="custom" className="text-xs">
-              Custom...
-            </SelectItem>
           </SelectContent>
         </Select>
       </div>
@@ -193,7 +208,7 @@ export function SafetyModelPicker({ existingModelIds, downloadStatuses, onSelect
         disabled={!selectedKey}
         onClick={handleAction}
       >
-        {isProvider ? (
+        {isProvider || selectedIsDownloaded ? (
           <><Cloud className="h-3.5 w-3.5 mr-1.5" />Use</>
         ) : (
           <><Download className="h-3.5 w-3.5 mr-1.5" />Download</>

@@ -1,8 +1,7 @@
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
 import { Monitor } from "lucide-react"
-import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Label } from "@/components/ui/label"
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
@@ -20,34 +19,38 @@ export function AppearanceTab() {
     enabled: false,
     refresh_rate_secs: 10,
   })
-  const [isSaving, setIsSaving] = useState(false)
+  const loaded = useRef(false)
 
   useEffect(() => {
     loadSettings()
   }, [])
 
+  // Auto-save whenever settings change (skip initial load)
+  useEffect(() => {
+    if (!loaded.current) return
+    saveSettings(settings)
+  }, [settings.enabled, settings.refresh_rate_secs])
+
   const loadSettings = async () => {
     try {
       const result = await invoke<TrayGraphSettings>("get_tray_graph_settings")
       setSettings(result)
+      // Mark as loaded after state is set so the effect doesn't fire for initial load
+      setTimeout(() => { loaded.current = true }, 0)
     } catch (error) {
       console.error("Failed to load tray graph settings:", error)
     }
   }
 
-  const saveSettings = async () => {
-    setIsSaving(true)
+  const saveSettings = async (s: TrayGraphSettings) => {
     try {
       await invoke("update_tray_graph_settings", {
-        enabled: settings.enabled,
-        refreshRateSecs: settings.refresh_rate_secs,
+        enabled: s.enabled,
+        refreshRateSecs: s.refresh_rate_secs,
       })
-      toast.success("Appearance settings saved")
     } catch (error: any) {
       console.error("Failed to save appearance settings:", error)
       toast.error(`Failed to save: ${error.message || error}`)
-    } finally {
-      setIsSaving(false)
     }
   }
 
@@ -126,14 +129,6 @@ export function AppearanceTab() {
               </p>
             </div>
           )}
-
-          <Button
-            size="sm"
-            onClick={saveSettings}
-            disabled={isSaving}
-          >
-            {isSaving ? "Saving..." : "Save"}
-          </Button>
         </CardContent>
       </Card>
     </div>
