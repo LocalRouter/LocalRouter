@@ -2077,6 +2077,7 @@ export interface UpdateGuardrailsConfigParams {
 /** Params for test_safety_check */
 export interface TestSafetyCheckParams {
   text: string
+  clientId?: string | null
 }
 
 /** Params for get_safety_model_status */
@@ -2088,11 +2089,6 @@ export interface GetSafetyModelStatusParams {
 export interface TestSafetyModelParams {
   modelId: string
   text: string
-}
-
-/** Params for update_category_actions */
-export interface UpdateCategoryActionsParams {
-  actionsJson: string
 }
 
 /** Download status for a safety model's GGUF file */

@@ -35,53 +35,9 @@ pub struct SafetyModelConfigInput {
     pub gguf_filename: Option<String>,
 }
 
-/// Parse a category name string to a SafetyCategory enum value
-fn parse_category_name(name: &str) -> Option<SafetyCategory> {
-    match name {
-        "violent_crimes" => Some(SafetyCategory::ViolentCrimes),
-        "non_violent_crimes" => Some(SafetyCategory::NonViolentCrimes),
-        "sex_crimes" => Some(SafetyCategory::SexCrimes),
-        "child_exploitation" => Some(SafetyCategory::ChildExploitation),
-        "defamation" => Some(SafetyCategory::Defamation),
-        "specialized_advice" => Some(SafetyCategory::SpecializedAdvice),
-        "privacy" => Some(SafetyCategory::Privacy),
-        "intellectual_property" => Some(SafetyCategory::IntellectualProperty),
-        "indiscriminate_weapons" => Some(SafetyCategory::IndiscriminateWeapons),
-        "hate" => Some(SafetyCategory::Hate),
-        "self_harm" => Some(SafetyCategory::SelfHarm),
-        "sexual_content" => Some(SafetyCategory::SexualContent),
-        "elections" => Some(SafetyCategory::Elections),
-        "code_interpreter_abuse" => Some(SafetyCategory::CodeInterpreterAbuse),
-        "dangerous_content" => Some(SafetyCategory::DangerousContent),
-        "harassment" => Some(SafetyCategory::Harassment),
-        "criminal_planning" => Some(SafetyCategory::CriminalPlanning),
-        "guns_illegal_weapons" => Some(SafetyCategory::GunsIllegalWeapons),
-        "controlled_substances" => Some(SafetyCategory::ControlledSubstances),
-        "profanity" => Some(SafetyCategory::Profanity),
-        "needs_caution" => Some(SafetyCategory::NeedsCaution),
-        "manipulation" => Some(SafetyCategory::Manipulation),
-        "fraud_deception" => Some(SafetyCategory::FraudDeception),
-        "malware" => Some(SafetyCategory::Malware),
-        "high_risk_gov_decision" => Some(SafetyCategory::HighRiskGovDecision),
-        "political_misinformation" => Some(SafetyCategory::PoliticalMisinformation),
-        "copyright_plagiarism" => Some(SafetyCategory::CopyrightPlagiarism),
-        "unauthorized_advice" => Some(SafetyCategory::UnauthorizedAdvice),
-        "illegal_activity" => Some(SafetyCategory::IllegalActivity),
-        "immoral_unethical" => Some(SafetyCategory::ImmoralUnethical),
-        "social_bias" => Some(SafetyCategory::SocialBias),
-        "jailbreak" => Some(SafetyCategory::Jailbreak),
-        "unethical_behavior" => Some(SafetyCategory::UnethicalBehavior),
-        "context_relevance" => Some(SafetyCategory::ContextRelevance),
-        "groundedness" => Some(SafetyCategory::Groundedness),
-        "answer_relevance" => Some(SafetyCategory::AnswerRelevance),
-        other => Some(SafetyCategory::Custom(other.to_string())),
-    }
-}
-
 /// The main safety engine that coordinates all safety model checks
 pub struct SafetyEngine {
     models: Vec<Arc<dyn SafetyModel>>,
-    category_actions: HashMap<SafetyCategory, CategoryAction>,
     confidence_threshold: f32,
     /// Models that failed to load, with (model_id, error_message) pairs.
     load_errors: Vec<(String, String)>,
@@ -91,12 +47,10 @@ impl SafetyEngine {
     /// Create a new safety engine
     pub fn new(
         models: Vec<Arc<dyn SafetyModel>>,
-        category_actions: HashMap<SafetyCategory, CategoryAction>,
         confidence_threshold: f32,
     ) -> Self {
         Self {
             models,
-            category_actions,
             confidence_threshold,
             load_errors: Vec::new(),
         }
@@ -106,7 +60,6 @@ impl SafetyEngine {
     pub fn empty() -> Self {
         Self {
             models: Vec::new(),
-            category_actions: HashMap::new(),
             confidence_threshold: 0.5,
             load_errors: Vec::new(),
         }
@@ -123,7 +76,6 @@ impl SafetyEngine {
     /// This allows the engine to be built without depending on the provider registry.
     pub fn from_config(
         safety_models: &[SafetyModelConfigInput],
-        category_actions_config: &[(String, String)],
         confidence_threshold: f32,
         provider_lookup: &HashMap<String, ProviderInfo>,
         context_size: u32,
@@ -262,19 +214,6 @@ impl SafetyEngine {
             model_instances.push(model);
         }
 
-        // Parse category actions
-        let mut category_actions_map = HashMap::new();
-        for (cat_str, action_str) in category_actions_config {
-            if let Some(cat) = parse_category_name(cat_str) {
-                let action = match action_str.as_str() {
-                    "allow" => CategoryAction::Allow,
-                    "notify" => CategoryAction::Notify,
-                    _ => CategoryAction::Ask,
-                };
-                category_actions_map.insert(cat, action);
-            }
-        }
-
         if !load_errors.is_empty() {
             warn!(
                 "Safety engine: {} model(s) failed to load",
@@ -282,15 +221,13 @@ impl SafetyEngine {
             );
         }
         info!(
-            "Safety engine initialized: {} models, {} category actions, {} load errors",
+            "Safety engine initialized: {} models, {} load errors",
             model_instances.len(),
-            category_actions_map.len(),
             load_errors.len(),
         );
 
         Self {
             models: model_instances,
-            category_actions: category_actions_map,
             confidence_threshold,
             load_errors,
         }
@@ -460,7 +397,7 @@ impl SafetyEngine {
                         });
                     }
 
-                    // Determine actions for flagged categories
+                    // Collect flagged categories as actions (default: Ask)
                     for flagged in &verdict.flagged_categories {
                         // Skip if below confidence threshold
                         if let Some(conf) = flagged.confidence {
@@ -469,15 +406,9 @@ impl SafetyEngine {
                             }
                         }
 
-                        let action = self
-                            .category_actions
-                            .get(&flagged.category)
-                            .cloned()
-                            .unwrap_or(CategoryAction::Ask);
-
                         all_actions.push(CategoryActionRequired {
                             category: flagged.category.clone(),
-                            action,
+                            action: CategoryAction::Ask,
                             model_id: verdict.model_id.clone(),
                             confidence: flagged.confidence,
                         });
@@ -490,10 +421,7 @@ impl SafetyEngine {
             }
         }
 
-        let is_safe = verdicts.iter().all(|v| v.is_safe)
-            && all_actions
-                .iter()
-                .all(|a| matches!(a.action, CategoryAction::Allow));
+        let is_safe = verdicts.iter().all(|v| v.is_safe);
 
         let total_duration_ms = start.elapsed().as_millis() as u64;
 
@@ -659,7 +587,6 @@ mod tests {
     async fn test_engine_safe_model() {
         let engine = SafetyEngine::new(
             vec![Arc::new(MockSafetyModel::safe("mock"))],
-            HashMap::new(),
             0.5,
         );
 
@@ -680,7 +607,6 @@ mod tests {
                     native_label: "S10".to_string(),
                 }],
             ))],
-            HashMap::new(),
             0.5,
         );
 
@@ -690,6 +616,7 @@ mod tests {
         assert!(!result.is_safe);
         assert_eq!(result.verdicts.len(), 1);
         assert_eq!(result.actions_required.len(), 1);
+        // All flagged categories default to Ask
         assert!(matches!(
             result.actions_required[0].action,
             CategoryAction::Ask
@@ -701,7 +628,6 @@ mod tests {
     async fn test_engine_unsafe_no_categories_generates_action() {
         let engine = SafetyEngine::new(
             vec![Arc::new(MockSafetyModel::unsafe_no_categories("mock"))],
-            HashMap::new(),
             0.5,
         );
 
@@ -726,7 +652,6 @@ mod tests {
                     native_label: "S10".to_string(),
                 }],
             ))],
-            HashMap::new(),
             0.5, // threshold
         );
 
@@ -736,48 +661,6 @@ mod tests {
         // Verdict is still unsafe, but the action is filtered out by threshold
         assert!(!result.is_safe); // is_safe comes from verdict, not actions
         assert!(result.actions_required.is_empty()); // filtered by threshold
-    }
-
-    /// Test category action mapping
-    #[tokio::test]
-    async fn test_engine_category_action_mapping() {
-        let mut actions = HashMap::new();
-        actions.insert(SafetyCategory::Profanity, CategoryAction::Allow);
-        actions.insert(SafetyCategory::Hate, CategoryAction::Notify);
-
-        let engine = SafetyEngine::new(
-            vec![Arc::new(MockSafetyModel::unsafe_with_categories(
-                "mock",
-                vec![
-                    FlaggedCategory {
-                        category: SafetyCategory::Profanity,
-                        confidence: Some(0.9),
-                        native_label: "profanity".to_string(),
-                    },
-                    FlaggedCategory {
-                        category: SafetyCategory::Hate,
-                        confidence: Some(0.9),
-                        native_label: "hate".to_string(),
-                    },
-                ],
-            ))],
-            actions,
-            0.5,
-        );
-
-        let result = engine.check_text("bad content", ScanDirection::Input).await;
-        assert!(!result.is_safe);
-        assert_eq!(result.actions_required.len(), 2);
-        // Profanity mapped to Allow
-        assert!(matches!(
-            result.actions_required[0].action,
-            CategoryAction::Allow
-        ));
-        // Hate mapped to Notify
-        assert!(matches!(
-            result.actions_required[1].action,
-            CategoryAction::Notify
-        ));
     }
 
     /// Test multiple models running in parallel
@@ -795,7 +678,6 @@ mod tests {
                     }],
                 )),
             ],
-            HashMap::new(),
             0.5,
         );
 
@@ -822,7 +704,6 @@ mod tests {
                     }],
                 )),
             ],
-            HashMap::new(),
             0.5,
         );
 

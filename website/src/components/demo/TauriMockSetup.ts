@@ -1415,10 +1415,6 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     { category: 'SocialBias', display_name: 'Social Bias', description: 'Content exhibiting social bias or stereotypes', supported_by: ['granite_guardian'] },
     { category: 'Groundedness', display_name: 'Groundedness', description: 'Responses not grounded in provided context (RAG)', supported_by: ['granite_guardian'] },
   ]),
-  'update_category_actions': (_args) => {
-    toast.success('Category actions updated (demo)')
-    return null
-  },
   'download_safety_model': (args) => {
     toast.info(`Downloading safety model "${args?.modelId}" (demo - not actually downloading)`)
     return null

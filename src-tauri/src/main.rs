@@ -596,16 +596,8 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                                 })
                                 .collect();
 
-                        // Convert category actions
-                        let cat_actions: Vec<(String, String)> = guardrails_config
-                            .category_actions
-                            .iter()
-                            .map(|ca| (ca.category.clone(), ca.action.clone()))
-                            .collect();
-
                         let engine = Arc::new(lr_guardrails::SafetyEngine::from_config(
                             &model_inputs,
-                            &cat_actions,
                             guardrails_config.default_confidence_threshold,
                             &provider_lookup,
                             guardrails_config.context_size,
@@ -1419,7 +1411,6 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::get_safety_model_status,
             ui::commands::test_safety_model,
             ui::commands::get_all_safety_categories,
-            ui::commands::update_category_actions,
             // Safety model download & management commands
             ui::commands::download_safety_model,
             ui::commands::get_safety_model_download_status,
