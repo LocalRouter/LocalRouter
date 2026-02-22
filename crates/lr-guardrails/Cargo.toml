@@ -22,21 +22,13 @@ hf-hub = { workspace = true }
 once_cell = { workspace = true }
 tauri = { workspace = true, optional = true }
 
-# llama.cpp: CPU-only base dependency (GPU features activated per-platform below)
-[target.'cfg(not(any(target_os = "macos", target_os = "linux")))'.dependencies]
 llama-cpp-2 = "0.1"
-
-# macOS: Metal GPU acceleration
-[target.'cfg(target_os = "macos")'.dependencies]
-llama-cpp-2 = { version = "0.1", features = ["metal"] }
-
-# Linux: Vulkan GPU acceleration
-[target.'cfg(target_os = "linux")'.dependencies]
-llama-cpp-2 = { version = "0.1", features = ["vulkan"] }
 
 [features]
 default = []
 tauri-support = ["tauri"]
+metal = ["llama-cpp-2/metal"]
+vulkan = ["llama-cpp-2/vulkan"]
 
 [dev-dependencies]
 tempfile = "3.8"

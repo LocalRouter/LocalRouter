@@ -129,7 +129,9 @@ jobs:
             libappindicator3-dev \
             librsvg2-dev \
             patchelf \
-            libssl-dev
+            libssl-dev \
+            libvulkan-dev \
+            glslc
 
       - name: Install frontend dependencies
         run: npm ci

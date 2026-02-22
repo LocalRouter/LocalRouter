@@ -72,6 +72,13 @@ futures-util = { workspace = true }
 tokio-tungstenite = { workspace = true }
 keyring = { workspace = true }
 
+# GPU acceleration: Metal on macOS, Vulkan on Linux
+[target.'cfg(target_os = "macos")'.dependencies]
+lr-guardrails = { workspace = true, features = ["metal"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+lr-guardrails = { workspace = true, features = ["vulkan"] }
+
 [features]
 # This feature is used for production builds or when a dev server is not specified, DO NOT REMOVE!!
 custom-protocol = ["tauri/custom-protocol"]
