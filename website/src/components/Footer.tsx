@@ -42,14 +42,9 @@ export default function Footer() {
               <h3 className="text-sm font-semibold">Resources</h3>
               <ul className="mt-4 space-y-2">
                 <li>
-                  <a
-                    href="https://github.com/LocalRouter/LocalRouter/blob/master/README.md"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-sm text-muted-foreground hover:text-foreground transition-colors"
-                  >
+                  <Link to="/docs" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
                     Documentation
-                  </a>
+                  </Link>
                 </li>
                 <li>
                   <a
