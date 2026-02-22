@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -338,11 +338,13 @@ function Sidebar({
   activeSubsection,
   mobileOpen,
   onMobileClose,
+  sidebarRef,
 }: {
   activeSection: string
   activeSubsection: string
   mobileOpen: boolean
   onMobileClose: () => void
+  sidebarRef: React.RefObject<HTMLElement | null>
 }) {
   return (
     <>
@@ -355,6 +357,7 @@ function Sidebar({
       )}
 
       <aside
+        ref={sidebarRef}
         className={`
           fixed top-16 bottom-0 z-50 w-72 border-r bg-background overflow-y-auto
           transition-transform duration-200
@@ -402,6 +405,7 @@ function Sidebar({
                               key={sub.id}
                               href={`#${sub.id}`}
                               onClick={onMobileClose}
+                              data-subsection-id={sub.id}
                               className={`block py-1 text-xs transition-colors truncate ${
                                 activeSubsection === sub.id
                                   ? 'text-foreground font-medium'
@@ -582,6 +586,7 @@ export default function Docs() {
   const navigate = useNavigate()
   const [mobileOpen, setMobileOpen] = useState(false)
   const [activeSubsection, setActiveSubsection] = useState('')
+  const sidebarRef = useRef<HTMLElement>(null)
 
   const currentSectionId = sectionId || 'introduction'
   const currentSection = sectionMap.get(currentSectionId)
@@ -608,6 +613,17 @@ export default function Docs() {
   }, [currentSectionId])
 
   // Track active subsection on scroll
+  const handleSubsectionChange = useCallback((id: string) => {
+    setActiveSubsection(id)
+    // Auto-scroll sidebar to keep active item visible
+    if (sidebarRef.current) {
+      const el = sidebarRef.current.querySelector(`[data-subsection-id="${id}"]`)
+      if (el) {
+        el.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+      }
+    }
+  }, [])
+
   useEffect(() => {
     if (!currentSection) return
     const subIds = currentSection.subsections.map((s) => s.id)
@@ -615,7 +631,7 @@ export default function Docs() {
       (entries) => {
         for (const entry of entries) {
           if (entry.isIntersecting) {
-            setActiveSubsection(entry.target.id)
+            handleSubsectionChange(entry.target.id)
           }
         }
       },
@@ -626,7 +642,7 @@ export default function Docs() {
       if (el) observer.observe(el)
     })
     return () => observer.disconnect()
-  }, [currentSection])
+  }, [currentSection, handleSubsectionChange])
 
   if (!currentSection) return null
 
@@ -637,6 +653,7 @@ export default function Docs() {
         activeSubsection={activeSubsection}
         mobileOpen={mobileOpen}
         onMobileClose={() => setMobileOpen(false)}
+        sidebarRef={sidebarRef}
       />
 
       {/* Mobile menu toggle */}
