@@ -42,6 +42,30 @@ pub fn validate_config(config: &AppConfig) -> AppResult<()> {
     // Validate client strategy references
     validate_client_strategy_refs(config)?;
 
+    // Validate guardrails bounds
+    validate_guardrails_config(config)?;
+
+    Ok(())
+}
+
+/// Validate guardrails configuration bounds
+fn validate_guardrails_config(config: &AppConfig) -> AppResult<()> {
+    let g = &config.guardrails;
+
+    if !(0.0..=1.0).contains(&g.default_confidence_threshold) {
+        return Err(AppError::Config(format!(
+            "Guardrails default_confidence_threshold must be between 0.0 and 1.0, got {}",
+            g.default_confidence_threshold
+        )));
+    }
+
+    if !(256..=4096).contains(&g.context_size) {
+        return Err(AppError::Config(format!(
+            "Guardrails context_size must be between 256 and 4096, got {}",
+            g.context_size
+        )));
+    }
+
     Ok(())
 }
 
@@ -69,21 +93,21 @@ fn validate_providers(providers: &[ProviderConfig]) -> AppResult<()> {
     // Empty providers list is allowed - user may want to start fresh
     // and add providers later through the UI
 
-    // Check for duplicate provider names
     let mut names = HashSet::new();
     for provider in providers {
+        // Validate name is not empty or whitespace-only (check before duplicate check)
+        if provider.name.trim().is_empty() {
+            return Err(AppError::Config(
+                "Provider name cannot be empty".to_string(),
+            ));
+        }
+
+        // Check for duplicate provider names
         if !names.insert(&provider.name) {
             return Err(AppError::Config(format!(
                 "Duplicate provider name: {}",
                 provider.name
             )));
-        }
-
-        // Validate name is not empty
-        if provider.name.is_empty() {
-            return Err(AppError::Config(
-                "Provider name cannot be empty".to_string(),
-            ));
         }
 
         // Validate provider_config format if present
@@ -176,13 +200,13 @@ fn validate_strategies(config: &AppConfig) -> AppResult<()> {
             )));
         }
 
-        // Validate ID is not empty
-        if strategy.id.is_empty() {
+        // Validate ID is not empty or whitespace-only
+        if strategy.id.trim().is_empty() {
             return Err(AppError::Config("Strategy ID cannot be empty".to_string()));
         }
 
-        // Validate name is not empty
-        if strategy.name.is_empty() {
+        // Validate name is not empty or whitespace-only
+        if strategy.name.trim().is_empty() {
             return Err(AppError::Config(
                 "Strategy name cannot be empty".to_string(),
             ));
@@ -202,7 +226,7 @@ fn validate_strategies(config: &AppConfig) -> AppResult<()> {
 
         // Validate rate limits
         for limit in &strategy.rate_limits {
-            if limit.value <= 0.0 {
+            if limit.value <= 0.0 || !limit.value.is_finite() {
                 return Err(AppError::Config(format!(
                     "Strategy '{}' has invalid rate limit value: {}",
                     strategy.name, limit.value
@@ -271,134 +295,279 @@ fn validate_cross_references(config: &AppConfig) -> AppResult<()> {
     Ok(())
 }
 
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
-//
-//     #[test]
-//     fn test_validate_default_config() {
-//         let config = AppConfig::default();
-//         assert!(validate_config(&config).is_ok());
-//     }
-//
-//     #[test]
-//     fn test_validate_empty_server_host() {
-//         let mut config = AppConfig::default();
-//         config.server.host = String::new();
-//         assert!(validate_config(&config).is_err());
-//     }
-//
-//     #[test]
-//     fn test_validate_invalid_port() {
-//         let mut config = AppConfig::default();
-//         config.server.port = 0;
-//         assert!(validate_config(&config).is_err());
-//     }
-//
-//     #[test]
-//     fn test_validate_duplicate_api_key_ids() {
-//         let mut config = AppConfig::default();
-//         let key1 = ApiKeyConfig::with_model(
-//             "key1".to_string(),
-//             ModelSelection::Router {
-//                 router_name: "Minimum Cost".to_string(),
-//             },
-//         );
-//         let mut key2 = key1.clone();
-//         key2.name = "key2".to_string();
-//
-//         config.api_keys = vec![key1, key2];
-//         assert!(validate_config(&config).is_err());
-//     }
-//
-//     #[test]
-//     fn test_validate_empty_api_key_name() {
-//         let mut config = AppConfig::default();
-//         let key = ApiKeyConfig::with_model(
-//             String::new(),
-//             ModelSelection::Router {
-//                 router_name: "Minimum Cost".to_string(),
-//             },
-//         );
-//         config.api_keys = vec![key];
-//         assert!(validate_config(&config).is_err());
-//     }
-//
-//     #[test]
-//     fn test_validate_no_routers() {
-//         let mut config = AppConfig::default();
-//         config.routers.clear();
-//         assert!(validate_config(&config).is_err());
-//     }
-//
-//     #[test]
-//     fn test_validate_duplicate_router_names() {
-//         let mut config = AppConfig::default();
-//         let router1 = RouterConfig::default_minimum_cost();
-//         let router2 = RouterConfig::default_minimum_cost();
-//         config.routers = vec![router1, router2];
-//         assert!(validate_config(&config).is_err());
-//     }
-//
-//     #[test]
-//     fn test_validate_router_no_strategies() {
-//         let mut config = AppConfig::default();
-//         config.routers[0].strategies.clear();
-//         assert!(validate_config(&config).is_err());
-//     }
-//
-//     #[test]
-//     fn test_validate_no_providers() {
-//         let mut config = AppConfig::default();
-//         config.providers.clear();
-//         assert!(validate_config(&config).is_err());
-//     }
-//
-//     #[test]
-//     fn test_validate_duplicate_provider_names() {
-//         let mut config = AppConfig::default();
-//         let provider1 = ProviderConfig::default_ollama();
-//         let provider2 = ProviderConfig::default_ollama();
-//         config.providers = vec![provider1, provider2];
-//         assert!(validate_config(&config).is_err());
-//     }
-//
-//     #[test]
-//     fn test_validate_invalid_provider_config() {
-//         use serde_json::json;
-//         let mut config = AppConfig::default();
-//         // Provider config must be an object, not a primitive
-//         config.providers[0].provider_config = Some(json!("not an object"));
-//         assert!(validate_config(&config).is_err());
-//     }
-//
-//     #[test]
-//     fn test_validate_api_key_references_nonexistent_router() {
-//         let mut config = AppConfig::default();
-//         let key = ApiKeyConfig::with_model(
-//             "test".to_string(),
-//             ModelSelection::Router {
-//                 router_name: "NonExistent".to_string(),
-//             },
-//         );
-//         config.api_keys = vec![key];
-//         assert!(validate_config(&config).is_err());
-//     }
-//
-//     #[test]
-//     fn test_validate_api_key_references_nonexistent_provider() {
-//         let mut config = AppConfig::default();
-//         let key = ApiKeyConfig::with_model(
-//             "test".to_string(),
-//             ModelSelection::DirectModel {
-//                 provider: "NonExistent".to_string(),
-//                 model: "model".to_string(),
-//             },
-//         );
-//         config.api_keys = vec![key];
-//         assert!(validate_config(&config).is_err());
-//     }
-// }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        AvailableModelsSelection, ProviderType, RateLimitTimeWindow, RateLimitType, Strategy,
+        StrategyRateLimit,
+    };
+
+    #[test]
+    fn test_validate_default_config() {
+        let config = AppConfig::default();
+        assert!(validate_config(&config).is_ok());
+    }
+
+    #[test]
+    fn test_validate_empty_server_host() {
+        let mut config = AppConfig::default();
+        config.server.host = String::new();
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn test_validate_zero_port() {
+        let mut config = AppConfig::default();
+        config.server.port = 0;
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn test_validate_duplicate_provider_names() {
+        let provider = ProviderConfig {
+            name: "Ollama".to_string(),
+            provider_type: ProviderType::Ollama,
+            enabled: true,
+            provider_config: None,
+            api_key_ref: None,
+        };
+        let mut config = AppConfig::default();
+        config.providers = vec![provider.clone(), provider];
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn test_validate_empty_provider_name() {
+        let mut config = AppConfig::default();
+        config.providers = vec![ProviderConfig {
+            name: "".to_string(),
+            provider_type: ProviderType::Ollama,
+            enabled: true,
+            provider_config: None,
+            api_key_ref: None,
+        }];
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn test_validate_whitespace_provider_name() {
+        let mut config = AppConfig::default();
+        config.providers = vec![ProviderConfig {
+            name: "   ".to_string(),
+            provider_type: ProviderType::Ollama,
+            enabled: true,
+            provider_config: None,
+            api_key_ref: None,
+        }];
+        assert!(validate_config(&config).is_err());
+    }
+
+    fn make_strategy(name: &str) -> Strategy {
+        Strategy {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: name.to_string(),
+            parent: None,
+            allowed_models: AvailableModelsSelection::all(),
+            auto_config: None,
+            rate_limits: vec![],
+        }
+    }
+
+    #[test]
+    fn test_validate_duplicate_strategy_ids() {
+        let s1 = make_strategy("Strategy A");
+        let mut s2 = make_strategy("Strategy B");
+        s2.id = s1.id.clone(); // same ID
+        let mut config = AppConfig::default();
+        config.strategies = vec![s1, s2];
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn test_validate_empty_strategy_name() {
+        let mut s = make_strategy("");
+        s.name = "".to_string();
+        let mut config = AppConfig::default();
+        config.strategies = vec![s];
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn test_validate_whitespace_strategy_name() {
+        let mut s = make_strategy("  ");
+        s.name = "  ".to_string();
+        let mut config = AppConfig::default();
+        config.strategies = vec![s];
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn test_validate_rate_limit_nan() {
+        let mut s = make_strategy("Test");
+        s.rate_limits = vec![StrategyRateLimit {
+            limit_type: RateLimitType::Requests,
+            value: f64::NAN,
+            time_window: RateLimitTimeWindow::Minute,
+        }];
+        let mut config = AppConfig::default();
+        config.strategies = vec![s];
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn test_validate_rate_limit_infinity() {
+        let mut s = make_strategy("Test");
+        s.rate_limits = vec![StrategyRateLimit {
+            limit_type: RateLimitType::Requests,
+            value: f64::INFINITY,
+            time_window: RateLimitTimeWindow::Minute,
+        }];
+        let mut config = AppConfig::default();
+        config.strategies = vec![s];
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn test_validate_rate_limit_negative() {
+        let mut s = make_strategy("Test");
+        s.rate_limits = vec![StrategyRateLimit {
+            limit_type: RateLimitType::Requests,
+            value: -1.0,
+            time_window: RateLimitTimeWindow::Minute,
+        }];
+        let mut config = AppConfig::default();
+        config.strategies = vec![s];
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn test_validate_rate_limit_zero() {
+        let mut s = make_strategy("Test");
+        s.rate_limits = vec![StrategyRateLimit {
+            limit_type: RateLimitType::Requests,
+            value: 0.0,
+            time_window: RateLimitTimeWindow::Minute,
+        }];
+        let mut config = AppConfig::default();
+        config.strategies = vec![s];
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn test_validate_rate_limit_valid() {
+        let mut s = make_strategy("Test");
+        s.rate_limits = vec![StrategyRateLimit {
+            limit_type: RateLimitType::Requests,
+            value: 100.0,
+            time_window: RateLimitTimeWindow::Minute,
+        }];
+        let mut config = AppConfig::default();
+        config.strategies = vec![s];
+        assert!(validate_config(&config).is_ok());
+    }
+
+    #[test]
+    fn test_validate_provider_config_not_object() {
+        let mut config = AppConfig::default();
+        config.providers = vec![ProviderConfig {
+            name: "Test".to_string(),
+            provider_type: ProviderType::Ollama,
+            enabled: true,
+            provider_config: Some(serde_json::json!("not an object")),
+            api_key_ref: None,
+        }];
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn test_validate_client_strategy_ref() {
+        let mut config = AppConfig::default();
+        let mut client =
+            crate::Client::new_with_strategy("Test".to_string(), "nonexistent".to_string());
+        client.strategy_id = "nonexistent".to_string();
+        config.clients = vec![client];
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn test_validate_empty_name_before_duplicate_check() {
+        // BUG 8: Two empty-name providers should both report "empty name", not "duplicate"
+        let mut config = AppConfig::default();
+        config.providers = vec![
+            ProviderConfig {
+                name: "".to_string(),
+                provider_type: ProviderType::Ollama,
+                enabled: true,
+                provider_config: None,
+                api_key_ref: None,
+            },
+            ProviderConfig {
+                name: "".to_string(),
+                provider_type: ProviderType::Ollama,
+                enabled: true,
+                provider_config: None,
+                api_key_ref: None,
+            },
+        ];
+        let err = validate_config(&config).unwrap_err();
+        let msg = err.to_string();
+        // The first empty name should be caught as "empty", not "duplicate"
+        assert!(
+            msg.contains("cannot be empty"),
+            "Expected 'cannot be empty' error, got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_validate_guardrails_confidence_threshold_too_low() {
+        let mut config = AppConfig::default();
+        config.guardrails.default_confidence_threshold = -0.1;
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn test_validate_guardrails_confidence_threshold_too_high() {
+        let mut config = AppConfig::default();
+        config.guardrails.default_confidence_threshold = 1.1;
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn test_validate_guardrails_confidence_threshold_valid_bounds() {
+        let mut config = AppConfig::default();
+        config.guardrails.default_confidence_threshold = 0.0;
+        assert!(validate_config(&config).is_ok());
+
+        config.guardrails.default_confidence_threshold = 1.0;
+        assert!(validate_config(&config).is_ok());
+    }
+
+    #[test]
+    fn test_validate_guardrails_context_size_too_small() {
+        let mut config = AppConfig::default();
+        config.guardrails.context_size = 0;
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn test_validate_guardrails_context_size_too_large() {
+        let mut config = AppConfig::default();
+        config.guardrails.context_size = 8192;
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn test_validate_guardrails_context_size_valid_bounds() {
+        let mut config = AppConfig::default();
+        config.guardrails.context_size = 256;
+        assert!(validate_config(&config).is_ok());
+
+        config.guardrails.context_size = 4096;
+        assert!(validate_config(&config).is_ok());
+    }
+}
 
 #[cfg(test)]
 mod self_referential_tests {

@@ -24,6 +24,7 @@ pub struct CustomSafetyModel {
 }
 
 impl CustomSafetyModel {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         model_id: String,
         display_name: String,

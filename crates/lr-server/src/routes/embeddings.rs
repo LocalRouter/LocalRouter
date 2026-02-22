@@ -320,6 +320,85 @@ async fn check_rate_limits(
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_request(model: &str) -> EmbeddingRequest {
+        EmbeddingRequest {
+            model: model.to_string(),
+            input: EmbeddingInput::Single("test input".to_string()),
+            encoding_format: None,
+            dimensions: None,
+            user: None,
+        }
+    }
+
+    #[test]
+    fn test_validate_embedding_request_valid() {
+        let request = make_request("text-embedding-ada-002");
+        assert!(validate_request(&request).is_ok());
+    }
+
+    #[test]
+    fn test_validate_embedding_request_empty_model() {
+        let request = make_request("");
+        assert!(validate_request(&request).is_err());
+    }
+
+    #[test]
+    fn test_validate_embedding_request_empty_single_input() {
+        let mut request = make_request("text-embedding-ada-002");
+        request.input = EmbeddingInput::Single("".to_string());
+        assert!(validate_request(&request).is_err());
+    }
+
+    #[test]
+    fn test_validate_embedding_request_empty_array() {
+        let mut request = make_request("text-embedding-ada-002");
+        request.input = EmbeddingInput::Multiple(vec![]);
+        assert!(validate_request(&request).is_err());
+    }
+
+    #[test]
+    fn test_validate_embedding_request_array_with_empty_string() {
+        let mut request = make_request("text-embedding-ada-002");
+        request.input = EmbeddingInput::Multiple(vec!["hello".to_string(), "".to_string()]);
+        assert!(validate_request(&request).is_err());
+    }
+
+    #[test]
+    fn test_validate_embedding_request_invalid_encoding_format() {
+        let mut request = make_request("text-embedding-ada-002");
+        request.encoding_format = Some("invalid".to_string());
+        assert!(validate_request(&request).is_err());
+    }
+
+    #[test]
+    fn test_validate_embedding_request_valid_encoding_formats() {
+        let mut request = make_request("text-embedding-ada-002");
+        request.encoding_format = Some("float".to_string());
+        assert!(validate_request(&request).is_ok());
+
+        request.encoding_format = Some("base64".to_string());
+        assert!(validate_request(&request).is_ok());
+    }
+
+    #[test]
+    fn test_validate_embedding_request_zero_dimensions() {
+        let mut request = make_request("text-embedding-ada-002");
+        request.dimensions = Some(0);
+        assert!(validate_request(&request).is_err());
+    }
+
+    #[test]
+    fn test_validate_embedding_request_valid_dimensions() {
+        let mut request = make_request("text-embedding-ada-002");
+        request.dimensions = Some(256);
+        assert!(validate_request(&request).is_ok());
+    }
+}
+
 /// Validate that the client has access to the requested LLM provider
 ///
 /// This enforces the model_permissions access control for clients.

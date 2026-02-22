@@ -2495,4 +2495,60 @@ mod tests {
         assert_eq!(deserialized.mcp_sampling_max_tokens, Some(2000));
         assert_eq!(deserialized.mcp_sampling_rate_limit, Some(100));
     }
+
+    // === AvailableModelsSelection tests ===
+
+    #[test]
+    fn test_available_models_all() {
+        let selection = AvailableModelsSelection::all();
+        assert!(selection.is_model_allowed("OpenAI", "gpt-4"));
+        assert!(selection.is_model_allowed("Anthropic", "claude-3"));
+        assert!(selection.is_model_allowed("Unknown", "any-model"));
+    }
+
+    #[test]
+    fn test_available_models_none() {
+        let selection = AvailableModelsSelection::none();
+        assert!(!selection.is_model_allowed("OpenAI", "gpt-4"));
+        assert!(!selection.is_model_allowed("Anthropic", "claude-3"));
+    }
+
+    #[test]
+    fn test_available_models_by_provider() {
+        let selection = AvailableModelsSelection {
+            selected_all: false,
+            selected_providers: vec!["OpenAI".to_string()],
+            selected_models: vec![],
+        };
+        assert!(selection.is_model_allowed("OpenAI", "gpt-4"));
+        assert!(selection.is_model_allowed("OpenAI", "gpt-3.5-turbo"));
+        assert!(!selection.is_model_allowed("Anthropic", "claude-3"));
+    }
+
+    #[test]
+    fn test_available_models_by_model() {
+        let selection = AvailableModelsSelection {
+            selected_all: false,
+            selected_providers: vec![],
+            selected_models: vec![("OpenAI".to_string(), "gpt-4".to_string())],
+        };
+        assert!(selection.is_model_allowed("OpenAI", "gpt-4"));
+        assert!(!selection.is_model_allowed("OpenAI", "gpt-3.5-turbo"));
+        assert!(!selection.is_model_allowed("Anthropic", "claude-3"));
+    }
+
+    #[test]
+    fn test_available_models_case_insensitive() {
+        let selection = AvailableModelsSelection {
+            selected_all: false,
+            selected_providers: vec!["OpenAI".to_string()],
+            selected_models: vec![("Anthropic".to_string(), "Claude-3".to_string())],
+        };
+        // Provider match is case-insensitive
+        assert!(selection.is_model_allowed("openai", "gpt-4"));
+        assert!(selection.is_model_allowed("OPENAI", "gpt-4"));
+        // Model match is case-insensitive
+        assert!(selection.is_model_allowed("anthropic", "claude-3"));
+        assert!(selection.is_model_allowed("ANTHROPIC", "CLAUDE-3"));
+    }
 }

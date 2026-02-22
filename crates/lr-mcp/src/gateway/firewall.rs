@@ -182,6 +182,7 @@ impl FirewallManager {
     ///
     /// This is an async operation that waits for the user response.
     /// Returns the user's action, or auto-denies on timeout.
+    #[allow(clippy::too_many_arguments)]
     pub async fn request_approval(
         &self,
         client_id: String,
@@ -264,6 +265,7 @@ impl FirewallManager {
     }
 
     /// Internal approval request handler
+    #[allow(clippy::too_many_arguments)]
     async fn request_approval_internal(
         &self,
         client_id: String,

@@ -313,6 +313,7 @@ impl McpGateway {
     }
 
     /// Handle an MCP gateway request with skill access
+    #[allow(clippy::too_many_arguments)]
     pub async fn handle_request_with_skills(
         &self,
         client_id: &str,

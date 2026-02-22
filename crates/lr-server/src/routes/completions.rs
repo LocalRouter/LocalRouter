@@ -400,7 +400,12 @@ fn build_flagged_text_preview(texts: &[lr_guardrails::text_extractor::ExtractedT
             if t.text.len() <= available {
                 format!("{}{}", prefix, t.text)
             } else {
-                format!("{}{}...", prefix, &t.text[..available.saturating_sub(3)])
+                // Find a safe char boundary to avoid panicking on multi-byte UTF-8
+                let mut safe_end = available.saturating_sub(3).min(t.text.len());
+                while safe_end > 0 && !t.text.is_char_boundary(safe_end) {
+                    safe_end -= 1;
+                }
+                format!("{}{}...", prefix, &t.text[..safe_end])
             }
         }
         None => String::new(),
@@ -1495,4 +1500,211 @@ fn estimate_prompt_tokens(prompt: &PromptInput) -> u64 {
     };
 
     (text.len() / 4).max(1) as u64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lr_guardrails::text_extractor::ExtractedText;
+
+    // === build_flagged_text_preview tests ===
+
+    #[test]
+    fn test_build_flagged_text_preview_ascii() {
+        let texts = vec![ExtractedText {
+            text: "a".repeat(600),
+            message_index: Some(0),
+            label: "user".to_string(),
+        }];
+        let result = build_flagged_text_preview(&texts);
+        assert!(result.len() <= 500);
+        assert!(result.ends_with("..."));
+        assert!(result.starts_with("[user] "));
+    }
+
+    #[test]
+    fn test_build_flagged_text_preview_empty() {
+        let result = build_flagged_text_preview(&[]);
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_build_flagged_text_preview_multibyte_utf8() {
+        // Each Chinese character is 3 bytes. Fill with enough to exceed MAX_LEN.
+        let text = "你好世界".repeat(200); // 4 chars * 200 = 800 chars, 2400 bytes
+        let texts = vec![ExtractedText {
+            text,
+            message_index: Some(0),
+            label: "user".to_string(),
+        }];
+        let result = build_flagged_text_preview(&texts);
+        // Must not panic and must be valid UTF-8
+        assert!(result.ends_with("..."));
+        assert!(result.starts_with("[user] "));
+    }
+
+    #[test]
+    fn test_build_flagged_text_preview_emoji() {
+        // Emoji are 4 bytes each
+        let text = "😀".repeat(200);
+        let texts = vec![ExtractedText {
+            text,
+            message_index: Some(0),
+            label: "user".to_string(),
+        }];
+        let result = build_flagged_text_preview(&texts);
+        assert!(result.ends_with("..."));
+    }
+
+    #[test]
+    fn test_build_flagged_text_preview_short_text() {
+        let texts = vec![ExtractedText {
+            text: "Hello".to_string(),
+            message_index: Some(0),
+            label: "user".to_string(),
+        }];
+        let result = build_flagged_text_preview(&texts);
+        assert_eq!(result, "[user] Hello");
+        assert!(!result.ends_with("..."));
+    }
+
+    #[test]
+    fn test_build_flagged_text_preview_prefers_user() {
+        let texts = vec![
+            ExtractedText {
+                text: "system prompt".to_string(),
+                message_index: Some(0),
+                label: "system".to_string(),
+            },
+            ExtractedText {
+                text: "user message".to_string(),
+                message_index: Some(1),
+                label: "user".to_string(),
+            },
+        ];
+        let result = build_flagged_text_preview(&texts);
+        assert_eq!(result, "[user] user message");
+    }
+
+    // === validate_request tests ===
+
+    fn make_request(model: &str) -> CompletionRequest {
+        CompletionRequest {
+            model: model.to_string(),
+            prompt: PromptInput::Single("test".to_string()),
+            max_tokens: None,
+            temperature: None,
+            top_p: None,
+            n: None,
+            stream: false,
+            stop: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+            logprobs: None,
+            user: None,
+        }
+    }
+
+    #[test]
+    fn test_validate_request_valid() {
+        let request = make_request("gpt-4");
+        assert!(validate_request(&request).is_ok());
+    }
+
+    #[test]
+    fn test_validate_request_empty_model() {
+        let request = make_request("");
+        assert!(validate_request(&request).is_err());
+    }
+
+    #[test]
+    fn test_validate_request_temperature_out_of_range() {
+        let mut request = make_request("gpt-4");
+        request.temperature = Some(2.5);
+        assert!(validate_request(&request).is_err());
+    }
+
+    #[test]
+    fn test_validate_request_nan_temperature() {
+        let mut request = make_request("gpt-4");
+        request.temperature = Some(f32::NAN);
+        assert!(validate_request(&request).is_err());
+    }
+
+    #[test]
+    fn test_validate_request_n_zero() {
+        let mut request = make_request("gpt-4");
+        request.n = Some(0);
+        assert!(validate_request(&request).is_err());
+    }
+
+    #[test]
+    fn test_validate_request_n_streaming() {
+        let mut request = make_request("gpt-4");
+        request.n = Some(2);
+        request.stream = true;
+        assert!(validate_request(&request).is_err());
+    }
+
+    #[test]
+    fn test_validate_request_nan_frequency_penalty() {
+        let mut request = make_request("gpt-4");
+        request.frequency_penalty = Some(f32::NAN);
+        assert!(validate_request(&request).is_err());
+    }
+
+    #[test]
+    fn test_validate_request_nan_presence_penalty() {
+        let mut request = make_request("gpt-4");
+        request.presence_penalty = Some(f32::NAN);
+        assert!(validate_request(&request).is_err());
+    }
+
+    // === estimate_prompt_tokens tests ===
+
+    #[test]
+    fn test_estimate_prompt_tokens_single() {
+        let prompt = PromptInput::Single("Hello, world!".to_string()); // 13 chars
+        let tokens = estimate_prompt_tokens(&prompt);
+        assert_eq!(tokens, 3); // 13/4 = 3
+    }
+
+    #[test]
+    fn test_estimate_prompt_tokens_single_short() {
+        let prompt = PromptInput::Single("Hi".to_string()); // 2 chars
+        let tokens = estimate_prompt_tokens(&prompt);
+        assert_eq!(tokens, 1); // max(2/4, 1) = 1
+    }
+
+    #[test]
+    fn test_estimate_prompt_tokens_multiple() {
+        let prompt = PromptInput::Multiple(vec![
+            "Hello, world!".to_string(), // 13 chars -> 3 tokens
+            "Test".to_string(),          // 4 chars -> 1 token
+        ]);
+        let tokens = estimate_prompt_tokens(&prompt);
+        assert_eq!(tokens, 4); // 3 + 1
+    }
+
+    // === convert_prompt_to_messages tests ===
+
+    #[test]
+    fn test_convert_prompt_to_messages_single() {
+        let prompt = PromptInput::Single("Hello".to_string());
+        let messages = convert_prompt_to_messages(&prompt).unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].role, "user");
+        assert_eq!(messages[0].content.as_text(), "Hello");
+    }
+
+    #[test]
+    fn test_convert_prompt_to_messages_multiple() {
+        let prompt = PromptInput::Multiple(vec!["Hello".to_string(), "World".to_string()]);
+        let messages = convert_prompt_to_messages(&prompt).unwrap();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].role, "user");
+        assert_eq!(messages[1].role, "user");
+        assert_eq!(messages[0].content.as_text(), "Hello");
+        assert_eq!(messages[1].content.as_text(), "World");
+    }
 }

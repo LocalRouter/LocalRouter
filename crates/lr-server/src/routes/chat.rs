@@ -948,7 +948,12 @@ fn build_flagged_text_preview(texts: &[lr_guardrails::text_extractor::ExtractedT
             if t.text.len() <= available {
                 format!("{}{}", prefix, t.text)
             } else {
-                format!("{}{}...", prefix, &t.text[..available.saturating_sub(3)])
+                // Find a safe char boundary to avoid panicking on multi-byte UTF-8
+                let mut safe_end = available.saturating_sub(3).min(t.text.len());
+                while safe_end > 0 && !t.text.is_char_boundary(safe_end) {
+                    safe_end -= 1;
+                }
+                format!("{}{}...", prefix, &t.text[..safe_end])
             }
         }
         None => String::new(),
