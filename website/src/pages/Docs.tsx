@@ -615,12 +615,15 @@ export default function Docs() {
   // Track active subsection on scroll
   const handleSubsectionChange = useCallback((id: string) => {
     setActiveSubsection(id)
-    // Auto-scroll sidebar to keep active item visible
-    if (sidebarRef.current) {
-      const el = sidebarRef.current.querySelector(`[data-subsection-id="${id}"]`)
-      if (el) {
-        el.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
-      }
+    // Auto-scroll sidebar only (not the page) to keep active item visible
+    const sidebar = sidebarRef.current
+    if (!sidebar) return
+    const el = sidebar.querySelector(`[data-subsection-id="${id}"]`) as HTMLElement | null
+    if (!el) return
+    const sidebarRect = sidebar.getBoundingClientRect()
+    const elRect = el.getBoundingClientRect()
+    if (elRect.top < sidebarRect.top || elRect.bottom > sidebarRect.bottom) {
+      sidebar.scrollTop += elRect.top - sidebarRect.top - sidebarRect.height / 2
     }
   }, [])
 
