@@ -475,7 +475,7 @@ pub async fn mcp_gateway_handler(
         let is_all_mode = mcp_access_header.eq_ignore_ascii_case("all")
             && skills_access_header
                 .as_ref()
-                .map_or(false, |s| s.eq_ignore_ascii_case("all"));
+                .is_some_and(|s| s.eq_ignore_ascii_case("all"));
 
         // Marketplace:
         // - "All" mode: enable only if globally enabled

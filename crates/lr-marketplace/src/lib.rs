@@ -19,7 +19,7 @@ use crate::skill_sources::SkillSourcesClient;
 use lr_config::MarketplaceConfig;
 use parking_lot::RwLock;
 use serde_json::Value;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tracing::{debug, info, warn};
 
@@ -101,7 +101,7 @@ impl MarketplaceService {
     }
 
     /// Load cache from disk
-    fn load_cache(data_dir: &PathBuf) -> MarketplaceCache {
+    fn load_cache(data_dir: &Path) -> MarketplaceCache {
         let cache_path = data_dir.join("marketplace_cache.json");
         if cache_path.exists() {
             match std::fs::read_to_string(&cache_path) {

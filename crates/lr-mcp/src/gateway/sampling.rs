@@ -124,7 +124,6 @@ pub fn convert_chat_to_sampling_response(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::{ModelHint, ModelPreferences};
     use serde_json::json;
 
     #[test]

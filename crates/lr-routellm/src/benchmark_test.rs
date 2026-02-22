@@ -39,7 +39,7 @@ where
 
 /// Record from MMLU/GSM8K benchmark CSV files
 #[derive(Debug, Deserialize)]
-struct BenchmarkRecord {
+pub struct BenchmarkRecord {
     prompt: String,
     #[serde(
         rename = "mistralai/Mixtral-8x7B-Instruct-v0.1",
@@ -59,7 +59,7 @@ pub struct BenchmarkResults {
     /// Total number of prompts evaluated
     pub total_prompts: usize,
     /// Number of correct routing decisions
-    pub correct_routings: usize,
+    pub _correct_routings: usize,
     /// Routing accuracy (correct_routings / total_prompts)
     pub routing_accuracy: f64,
     /// Number of prompts routed to strong model
@@ -178,7 +178,7 @@ pub fn evaluate_benchmark(
 
     BenchmarkResults {
         total_prompts: total,
-        correct_routings,
+        _correct_routings: correct_routings,
         routing_accuracy: correct_routings as f64 / total as f64,
         strong_model_count,
         weak_model_count,
@@ -409,7 +409,7 @@ mod tests {
             let entry = entry.expect("Failed to read directory entry");
             let path = entry.path();
 
-            if path.extension().map_or(false, |e| e == "csv") {
+            if path.extension().is_some_and(|e| e == "csv") {
                 println!("Loading {:?}...", path.file_name().unwrap());
                 match load_benchmark_csv(&path) {
                     Ok(records) => all_records.extend(records),
@@ -459,8 +459,8 @@ mod tests {
 
         println!("\n=== Win Rate Distribution Analysis ===\n");
         println!(
-            "{:60} | {:10} | {}",
-            "Prompt (truncated)", "Win Rate", "Expectation"
+            "{:60} | {:10} | Expectation",
+            "Prompt (truncated)", "Win Rate"
         );
         println!("{}", "-".repeat(100));
 
@@ -496,7 +496,7 @@ mod tests {
 
         // These prompts are from the MMLU benchmark
         // We can compare our win_rates with what Python produces
-        let prompts = vec![
+        let prompts = [
             "Find the degree for the given field extension Q(sqrt(2), sqrt(3), sqrt(18)) over Q.\nA. 0\nB. 4\nC. 2\nD. 6\nAnswer:",
             "Let p = (1, 2, 5, 4)(2, 3) in S_5 . Find the index of <p> in S_5.\nA. 8\nB. 2\nC. 24\nD. 120\nAnswer:",
             "Janet's ducks lay 16 eggs per day. She eats three for breakfast every morning and bakes muffins for her friends every day with four. She sells the remainder at the farmers' market daily for $2 per fresh duck egg. How much in dollars does she make every day at the farmers' market?",

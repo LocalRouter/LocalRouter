@@ -567,7 +567,7 @@ struct OpenRouterPricing {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ChatMessageContent, FunctionCall, ToolCall};
+    use crate::ChatMessageContent;
 
     #[test]
     fn test_provider_name() {

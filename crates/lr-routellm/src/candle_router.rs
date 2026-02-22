@@ -493,7 +493,7 @@ mod tests {
         let win_rate = router.calculate_strong_win_rate("What is 2+2?").unwrap();
 
         assert!(
-            win_rate >= 0.0 && win_rate <= 1.0,
+            (0.0..=1.0).contains(&win_rate),
             "Win rate out of bounds: {}",
             win_rate
         );

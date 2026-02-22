@@ -502,8 +502,10 @@ mod tests {
         assert_eq!(client.id, "test_client");
 
         // Empty config should error
-        let mut empty_config = AppConfig::default();
-        empty_config.clients = vec![];
+        let empty_config = AppConfig {
+            clients: vec![],
+            ..AppConfig::default()
+        };
         let result = find_first_enabled_client(&empty_config);
         assert!(result.is_err());
     }

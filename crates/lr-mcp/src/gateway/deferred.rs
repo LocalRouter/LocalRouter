@@ -17,7 +17,7 @@ pub enum SearchMode {
 }
 
 impl SearchMode {
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse_str(s: &str) -> Self {
         match s {
             "bm25" => Self::Bm25,
             _ => Self::Regex,

@@ -14,12 +14,15 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
 
+/// Type alias for the in-memory skill listings cache
+type SkillMemoryCache = HashMap<String, (Instant, Vec<SkillListing>)>;
+
 /// Skill sources client
 pub struct SkillSourcesClient {
     http_client: reqwest::Client,
     sources: Arc<RwLock<Vec<MarketplaceSkillSource>>>,
     /// In-memory cache for current session: source_url -> (timestamp, listings)
-    memory_cache: Arc<RwLock<HashMap<String, (Instant, Vec<SkillListing>)>>>,
+    memory_cache: Arc<RwLock<SkillMemoryCache>>,
 }
 
 impl SkillSourcesClient {

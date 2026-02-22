@@ -267,6 +267,17 @@ impl Default for ElicitationManager {
     }
 }
 
+// Implement Clone for ElicitationManager to support test scenarios
+impl Clone for ElicitationManager {
+    fn clone(&self) -> Self {
+        Self {
+            pending: self.pending.clone(),
+            default_timeout_secs: self.default_timeout_secs,
+            notification_broadcast: self.notification_broadcast.clone(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -439,13 +450,3 @@ mod tests {
     }
 }
 
-// Implement Clone for ElicitationManager to support test scenarios
-impl Clone for ElicitationManager {
-    fn clone(&self) -> Self {
-        Self {
-            pending: self.pending.clone(),
-            default_timeout_secs: self.default_timeout_secs,
-            notification_broadcast: self.notification_broadcast.clone(),
-        }
-    }
-}

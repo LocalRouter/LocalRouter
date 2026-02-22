@@ -45,7 +45,7 @@ impl McpGateway {
             "handle_tools_list: deferred_loading={:?}, deferred_loading_requested={}, cached_tools_valid={}",
             session_read.deferred_loading.as_ref().map(|d| d.enabled),
             session_read.deferred_loading_requested,
-            session_read.cached_tools.as_ref().map_or(false, |c| c.is_valid()),
+            session_read.cached_tools.as_ref().is_some_and(|c| c.is_valid()),
         );
 
         if let Some(deferred) = &session_read.deferred_loading {
@@ -330,9 +330,8 @@ impl McpGateway {
             .check_firewall_mcp_tool(&session, &tool_name, &original_name, &server_id, &request)
             .await?;
 
-        match &firewall_result {
-            FirewallDecisionResult::Blocked(resp) => return Ok(resp.clone()),
-            _ => {}
+        if let FirewallDecisionResult::Blocked(resp) = &firewall_result {
+            return Ok(resp.clone());
         }
 
         // Transform request: Strip namespace
@@ -750,7 +749,7 @@ impl McpGateway {
             .and_then(|l| l.as_u64())
             .unwrap_or(10) as usize;
 
-        let mode = SearchMode::from_str(
+        let mode = SearchMode::parse_str(
             arguments
                 .get("mode")
                 .and_then(|m| m.as_str())

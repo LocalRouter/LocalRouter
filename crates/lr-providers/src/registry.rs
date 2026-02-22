@@ -911,11 +911,11 @@ mod tests {
     async fn test_cache_config_update() {
         let registry = ProviderRegistry::new();
 
-        let mut new_config = ModelCacheConfig::default();
-        new_config.default_ttl_seconds = 7200;
-        new_config
-            .provider_ttl_overrides
-            .insert("ollama".to_string(), 300);
+        let new_config = ModelCacheConfig {
+            default_ttl_seconds: 7200,
+            provider_ttl_overrides: std::collections::HashMap::from([("ollama".to_string(), 300)]),
+            ..Default::default()
+        };
 
         registry.update_cache_config(new_config.clone());
 

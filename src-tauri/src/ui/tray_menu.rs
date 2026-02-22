@@ -79,11 +79,11 @@ pub(crate) fn build_tray_menu<R: Runtime, M: Manager<R>>(
     // 2. Open dashboard (immediately after header)
     menu_builder = menu_builder.text(
         "open_dashboard",
-        &format!("{ICON_PAD}⌘{ICON_PAD} Settings..."),
+        format!("{ICON_PAD}⌘{ICON_PAD} Settings..."),
     );
 
     // 3. Copy URL (LLM and MCP)
-    menu_builder = menu_builder.text("copy_url", &format!("{ICON_PAD}⧉{ICON_PAD} Copy URL"));
+    menu_builder = menu_builder.text("copy_url", format!("{ICON_PAD}⧉{ICON_PAD} Copy URL"));
 
     // 4. Health issues section (only shown when there are issues)
     if let Some(app_state) = app.try_state::<Arc<lr_server::state::AppState>>() {
@@ -154,7 +154,7 @@ pub(crate) fn build_tray_menu<R: Runtime, M: Manager<R>>(
         if update_state.is_update_available() {
             menu_builder = menu_builder.text(
                 "update_and_restart",
-                &format!("{ICON_PAD}↓{ICON_PAD} Update and restart"),
+                format!("{ICON_PAD}↓{ICON_PAD} Update and restart"),
             );
         }
     }
@@ -444,7 +444,7 @@ pub(crate) fn build_tray_menu<R: Runtime, M: Manager<R>>(
     menu_builder = menu_builder.separator();
 
     // Add quit option
-    menu_builder = menu_builder.text("quit", &format!("{ICON_PAD}⏻{ICON_PAD} Quit"));
+    menu_builder = menu_builder.text("quit", format!("{ICON_PAD}⏻{ICON_PAD} Quit"));
 
     menu_builder.build()
 }

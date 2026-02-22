@@ -469,7 +469,7 @@ impl TrayGraphManager {
         };
 
         // Detect if system is in dark mode for color adjustments
-        let dark_mode = detect_dark_mode(&app_handle);
+        let dark_mode = detect_dark_mode(app_handle);
 
         // Clean up expired firewall approval requests and close their popups
         if let Some(app_state) = app_handle.try_state::<Arc<lr_server::state::AppState>>() {
@@ -489,7 +489,7 @@ impl TrayGraphManager {
                     }
                 }
                 // Rebuild tray menu to remove expired items
-                if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app_handle) {
+                if let Err(e) = crate::ui::tray::rebuild_tray_menu(app_handle) {
                     error!("Failed to rebuild tray menu after firewall cleanup: {}", e);
                 }
             }
@@ -643,7 +643,7 @@ mod tests {
             }
 
             let bucket_index = (NUM_BUCKETS - 1) - (age_secs / interval_secs);
-            let bucket_index = bucket_index.max(0).min(NUM_BUCKETS - 1) as usize;
+            let bucket_index = bucket_index.clamp(0, NUM_BUCKETS - 1) as usize;
             bucket_tokens[bucket_index] += metric.total_tokens;
         }
 
@@ -923,7 +923,7 @@ mod tests {
     /// Simulates Fast mode bucketing (1 second per bar, 26 bars)
     /// Fast mode does NOT use metrics - it only tracks real-time tokens
     fn simulate_fast_mode_buckets(
-        buckets: &mut Vec<u64>,
+        buckets: &mut [u64],
         accumulated_tokens: u64, // Real-time tokens since last update
         is_first_update: bool,
     ) {
@@ -1026,7 +1026,7 @@ mod tests {
     /// Simulates Medium mode bucketing (10 seconds per bar, 26 bars)
     /// Medium mode uses metrics ONLY for initial load, then real-time tokens
     fn simulate_medium_mode_buckets(
-        buckets: &mut Vec<u64>,
+        buckets: &mut [u64],
         metrics: Vec<MetricDataPoint>,
         virtual_now: DateTime<Utc>,
         accumulated_tokens: u64, // Real-time tokens since last update (used in runtime)
@@ -1100,17 +1100,17 @@ mod tests {
         simulate_medium_mode_buckets(&mut buckets, metrics.clone(), base_time, 0, true);
 
         // Each of the last 6 buckets (representing 0-59 seconds) should have 100 tokens
-        for i in 20..26 {
+        for (i, &bucket) in buckets.iter().enumerate().skip(20).take(6) {
             assert_eq!(
-                buckets[i], 100,
+                bucket, 100,
                 "Bucket {} should have 100 tokens from interpolation",
                 i
             );
         }
 
         // Older buckets should be empty
-        for i in 0..20 {
-            assert_eq!(buckets[i], 0, "Bucket {} should be empty", i);
+        for (i, &bucket) in buckets.iter().enumerate().take(20) {
+            assert_eq!(bucket, 0, "Bucket {} should be empty", i);
         }
 
         assert_eq!(buckets.iter().sum::<u64>(), 600, "Total should be 600");
@@ -1167,18 +1167,18 @@ mod tests {
         assert_eq!(total, 3600, "Total should be 600 + 1200 + 1800 = 3600");
 
         // Most recent minute (buckets 20-25) should have 1800/6 = 300 per bucket
-        for i in 20..26 {
-            assert_eq!(buckets[i], 300, "Bucket {} should have 300 tokens", i);
+        for (i, &bucket) in buckets.iter().enumerate().skip(20).take(6) {
+            assert_eq!(bucket, 300, "Bucket {} should have 300 tokens", i);
         }
 
         // Middle minute (buckets 14-19) should have 1200/6 = 200 per bucket
-        for i in 14..20 {
-            assert_eq!(buckets[i], 200, "Bucket {} should have 200 tokens", i);
+        for (i, &bucket) in buckets.iter().enumerate().skip(14).take(6) {
+            assert_eq!(bucket, 200, "Bucket {} should have 200 tokens", i);
         }
 
         // Oldest minute (buckets 8-13) should have 600/6 = 100 per bucket
-        for i in 8..14 {
-            assert_eq!(buckets[i], 100, "Bucket {} should have 100 tokens", i);
+        for (i, &bucket) in buckets.iter().enumerate().skip(8).take(6) {
+            assert_eq!(bucket, 100, "Bucket {} should have 100 tokens", i);
         }
     }
 
@@ -1416,7 +1416,7 @@ mod tests {
         // Medium and slow should both capture all 5 minutes of data
         // Note: Medium mode may lose a few tokens to integer division rounding during interpolation
         assert!(
-            medium_sum >= 4980 && medium_sum <= 5000,
+            (4980..=5000).contains(&medium_sum),
             "Medium mode should capture ~5000 tokens (got {}), small rounding loss OK",
             medium_sum
         );

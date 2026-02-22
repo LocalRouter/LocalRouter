@@ -76,7 +76,7 @@ async fn test_simple_prompt_prediction() {
     assert!(!is_strong, "Simple prompt should not route to strong model");
     assert!(win_rate < 0.5, "Win rate should be < 0.5 for simple prompt");
     assert!(
-        win_rate >= 0.0 && win_rate <= 1.0,
+        (0.0..=1.0).contains(&win_rate),
         "Win rate should be between 0 and 1"
     );
 }
@@ -97,7 +97,7 @@ async fn test_complex_prompt_prediction() {
     // Complex philosophical/scientific query should have higher win rate
     // Note: This is probabilistic, so we just check the win rate is valid
     assert!(
-        win_rate >= 0.0 && win_rate <= 1.0,
+        (0.0..=1.0).contains(&win_rate),
         "Win rate should be between 0 and 1"
     );
 }
@@ -223,7 +223,7 @@ async fn test_empty_prompt() {
     assert!(result.is_ok(), "Empty prompt should not fail");
 
     let (_, win_rate) = result.unwrap();
-    assert!(win_rate >= 0.0 && win_rate <= 1.0);
+    assert!((0.0..=1.0).contains(&win_rate));
 }
 
 #[tokio::test]
@@ -331,7 +331,7 @@ async fn test_special_characters_prompt() {
     assert!(result.is_ok(), "Special characters should not fail");
 
     let (_, win_rate) = result.unwrap();
-    assert!(win_rate >= 0.0 && win_rate <= 1.0);
+    assert!((0.0..=1.0).contains(&win_rate));
 }
 
 #[tokio::test]
@@ -512,7 +512,7 @@ mod downloader_tests {
             .expect("Prediction failed");
         println!("  ✓ Prediction score: {:.3}", score);
         assert!(
-            score >= 0.0 && score <= 1.0,
+            (0.0..=1.0).contains(&score),
             "Score should be between 0 and 1"
         );
 
