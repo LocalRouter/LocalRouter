@@ -335,10 +335,12 @@ const sectionMap = new Map(sections.map((s) => [s.id, s]))
 
 function Sidebar({
   activeSection,
+  activeSubsection,
   mobileOpen,
   onMobileClose,
 }: {
   activeSection: string
+  activeSubsection: string
   mobileOpen: boolean
   onMobileClose: () => void
 }) {
@@ -400,7 +402,11 @@ function Sidebar({
                               key={sub.id}
                               href={`#${sub.id}`}
                               onClick={onMobileClose}
-                              className="block py-1 text-xs text-muted-foreground hover:text-foreground transition-colors truncate"
+                              className={`block py-1 text-xs transition-colors truncate ${
+                                activeSubsection === sub.id
+                                  ? 'text-foreground font-medium'
+                                  : 'text-muted-foreground hover:text-foreground'
+                              }`}
                             >
                               {sub.title}
                             </a>
@@ -575,6 +581,7 @@ export default function Docs() {
   const { sectionId } = useParams<{ sectionId: string }>()
   const navigate = useNavigate()
   const [mobileOpen, setMobileOpen] = useState(false)
+  const [activeSubsection, setActiveSubsection] = useState('')
 
   const currentSectionId = sectionId || 'introduction'
   const currentSection = sectionMap.get(currentSectionId)
@@ -600,12 +607,34 @@ export default function Docs() {
     }
   }, [currentSectionId])
 
+  // Track active subsection on scroll
+  useEffect(() => {
+    if (!currentSection) return
+    const subIds = currentSection.subsections.map((s) => s.id)
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            setActiveSubsection(entry.target.id)
+          }
+        }
+      },
+      { rootMargin: '-80px 0px -70% 0px' }
+    )
+    subIds.forEach((id) => {
+      const el = document.getElementById(id)
+      if (el) observer.observe(el)
+    })
+    return () => observer.disconnect()
+  }, [currentSection])
+
   if (!currentSection) return null
 
   return (
     <div className="flex min-h-[calc(100vh-4rem)]">
       <Sidebar
         activeSection={currentSectionId}
+        activeSubsection={activeSubsection}
         mobileOpen={mobileOpen}
         onMobileClose={() => setMobileOpen(false)}
       />
