@@ -29,7 +29,7 @@ impl CatalogMetadata {
 }
 
 /// Model capabilities from models.dev
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CatalogCapabilities {
     /// Whether the model supports extended reasoning/thinking
     pub reasoning: bool,
@@ -41,16 +41,6 @@ pub struct CatalogCapabilities {
     pub vision: bool,
 }
 
-impl Default for CatalogCapabilities {
-    fn default() -> Self {
-        Self {
-            reasoning: false,
-            tool_call: false,
-            structured_output: false,
-            vision: false,
-        }
-    }
-}
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]

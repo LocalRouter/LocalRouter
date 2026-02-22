@@ -15,7 +15,7 @@ pub struct ModelsDevResponse {
 }
 
 /// A provider in the models.dev catalog
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ModelsDevProvider {
     /// Provider identifier
     #[serde(default)]
@@ -319,16 +319,3 @@ impl Default for ModelsDevModel {
     }
 }
 
-impl Default for ModelsDevProvider {
-    fn default() -> Self {
-        Self {
-            id: String::new(),
-            env: Vec::new(),
-            npm: None,
-            api: None,
-            name: String::new(),
-            doc: None,
-            models: HashMap::new(),
-        }
-    }
-}
