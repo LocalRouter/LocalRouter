@@ -946,7 +946,7 @@ export interface PendingApprovalInfo {
  * Firewall approval action.
  * Rust: crates/lr-mcp/src/gateway/firewall.rs - FirewallApprovalAction enum
  */
-export type FirewallApprovalAction = 'deny' | 'deny_session' | 'deny_always' | 'allow_once' | 'allow_session' | 'allow_1_hour' | 'allow_permanent'
+export type FirewallApprovalAction = 'deny' | 'deny_session' | 'deny_always' | 'block_categories' | 'allow_once' | 'allow_session' | 'allow_1_hour' | 'allow_permanent' | 'allow_categories' | 'deny_1_hour'
 
 // =============================================================================
 // Active Connections Types

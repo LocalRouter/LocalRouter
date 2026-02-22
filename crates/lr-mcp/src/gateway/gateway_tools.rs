@@ -669,7 +669,8 @@ impl McpGateway {
                         )))
                     }
                     FirewallApprovalAction::DenyAlways
-                    | FirewallApprovalAction::BlockCategories => {
+                    | FirewallApprovalAction::BlockCategories
+                    | FirewallApprovalAction::Deny1Hour => {
                         tracing::info!(
                             "Firewall: tool {} denied permanently (client={})",
                             tool_name,
@@ -683,6 +684,18 @@ impl McpGateway {
                                 None,
                             ),
                         )))
+                    }
+                    FirewallApprovalAction::AllowCategories => {
+                        tracing::info!(
+                            "Firewall: tool {} allowed (categories allowed, client={})",
+                            tool_name,
+                            client_id
+                        );
+                        if edited_arguments.is_some() {
+                            Ok(FirewallDecisionResult::ProceedWithEdits { edited_arguments })
+                        } else {
+                            Ok(FirewallDecisionResult::Proceed)
+                        }
                     }
                 }
             }

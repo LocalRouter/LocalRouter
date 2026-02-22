@@ -304,6 +304,21 @@ async fn handle_guardrail_approval(
     let Some(client_ctx) = client_context else {
         return Ok(());
     };
+
+    // Check for time-based guardrail denial (Deny All for 1 Hour)
+    if state
+        .guardrail_denial_tracker
+        .has_valid_denial(&client_ctx.client_id)
+    {
+        tracing::info!(
+            "Guardrail: auto-denying request for client {} (active denial bypass)",
+            client_ctx.client_id
+        );
+        return Err(ApiErrorResponse::forbidden(
+            "Request blocked by safety guardrails (auto-denied)",
+        ));
+    }
+
     let client = get_enabled_client_from_manager(state, &client_ctx.client_id)?;
 
     // Extract the scanned text for display in the approval popup
@@ -355,11 +370,13 @@ async fn handle_guardrail_approval(
         FirewallApprovalAction::AllowOnce
         | FirewallApprovalAction::AllowSession
         | FirewallApprovalAction::Allow1Hour
-        | FirewallApprovalAction::AllowPermanent => Ok(()),
+        | FirewallApprovalAction::AllowPermanent
+        | FirewallApprovalAction::AllowCategories => Ok(()),
         FirewallApprovalAction::Deny
         | FirewallApprovalAction::DenySession
         | FirewallApprovalAction::DenyAlways
-        | FirewallApprovalAction::BlockCategories => Err(ApiErrorResponse::forbidden(
+        | FirewallApprovalAction::BlockCategories
+        | FirewallApprovalAction::Deny1Hour => Err(ApiErrorResponse::forbidden(
             "Request blocked by safety check",
         )),
     }

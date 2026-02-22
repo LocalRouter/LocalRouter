@@ -670,14 +670,16 @@ pub async fn submit_firewall_approval(
         .as_ref()
         .and_then(|s| serde_json::from_str(s).ok());
 
-    // If AllowPermanent, Allow1Hour, or DenyAlways, get the pending session info before submitting
-    // so we can update client permissions or add time-based approval
+    // If a persistent action, get the pending session info before submitting
+    // so we can update client permissions or add time-based approval/denial
     let pending_info = if matches!(
         action,
         FirewallApprovalAction::AllowPermanent
             | FirewallApprovalAction::Allow1Hour
             | FirewallApprovalAction::DenyAlways
             | FirewallApprovalAction::BlockCategories
+            | FirewallApprovalAction::AllowCategories
+            | FirewallApprovalAction::Deny1Hour
     ) {
         state
             .mcp_gateway
@@ -690,9 +692,12 @@ pub async fn submit_firewall_approval(
     };
 
     // Submit the response to the firewall manager
-    // BlockCategories is handled locally (updates client config below), so submit as Deny
+    // BlockCategories and Deny1Hour are handled locally → submit as Deny
+    // AllowCategories is handled locally → submit as AllowOnce
     let submit_action = match &action {
         FirewallApprovalAction::BlockCategories => FirewallApprovalAction::Deny,
+        FirewallApprovalAction::Deny1Hour => FirewallApprovalAction::Deny,
+        FirewallApprovalAction::AllowCategories => FirewallApprovalAction::AllowOnce,
         other => other.clone(),
     };
     state
@@ -773,19 +778,19 @@ pub async fn submit_firewall_approval(
         FirewallApprovalAction::DenyAlways => {
             if let Some(ref info) = pending_info {
                 if info.is_guardrail_request {
-                    // Disable the client entirely
+                    // Disable guardrails for this client (clear category actions)
                     config_manager
                         .update(|cfg| {
                             if let Some(client) =
                                 cfg.clients.iter_mut().find(|c| c.id == info.client_id)
                             {
-                                client.enabled = false;
+                                client.guardrails.category_actions.clear();
                             }
                         })
                         .map_err(|e| e.to_string())?;
                     config_manager.save().await.map_err(|e| e.to_string())?;
                     tracing::info!(
-                        "Disabled client {} due to guardrail DenyAlways",
+                        "Cleared guardrails category actions for client {} (DenyAlways → disable guardrails for client)",
                         info.client_id
                     );
                 } else if info.is_model_request {
@@ -849,6 +854,70 @@ pub async fn submit_firewall_approval(
                             info.client_id
                         );
                     }
+                }
+            }
+        }
+        FirewallApprovalAction::AllowCategories => {
+            if let Some(ref info) = pending_info {
+                if info.is_guardrail_request {
+                    // Extract flagged categories and set them to "allow"
+                    if let Some(ref details) = info.guardrail_details {
+                        let flagged_categories: Vec<String> = details
+                            .actions_required
+                            .iter()
+                            .filter_map(|a| {
+                                a.get("category")
+                                    .and_then(|c| c.as_str())
+                                    .map(|s| s.to_string())
+                            })
+                            .collect();
+
+                        config_manager
+                            .update(|cfg| {
+                                if let Some(client) =
+                                    cfg.clients.iter_mut().find(|c| c.id == info.client_id)
+                                {
+                                    for category in &flagged_categories {
+                                        // Update or add the category action to "allow"
+                                        if let Some(existing) = client
+                                            .guardrails
+                                            .category_actions
+                                            .iter_mut()
+                                            .find(|a| a.category == *category)
+                                        {
+                                            existing.action = "allow".to_string();
+                                        } else {
+                                            client.guardrails.category_actions.push(
+                                                lr_config::CategoryActionEntry {
+                                                    category: category.clone(),
+                                                    action: "allow".to_string(),
+                                                },
+                                            );
+                                        }
+                                    }
+                                }
+                            })
+                            .map_err(|e| e.to_string())?;
+                        config_manager.save().await.map_err(|e| e.to_string())?;
+                        tracing::info!(
+                            "Set flagged categories to 'allow' for client {}",
+                            info.client_id
+                        );
+                    }
+                }
+            }
+        }
+        FirewallApprovalAction::Deny1Hour => {
+            if let Some(ref info) = pending_info {
+                if info.is_guardrail_request {
+                    // Add time-based guardrail denial (1 hour auto-deny)
+                    state
+                        .guardrail_denial_tracker
+                        .add_1_hour_denial(&info.client_id);
+                    tracing::info!(
+                        "Added 1-hour guardrail denial for client {}",
+                        info.client_id
+                    );
                 }
             }
         }

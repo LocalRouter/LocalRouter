@@ -336,6 +336,71 @@ impl GuardrailApprovalTracker {
     }
 }
 
+/// Tracks time-based guardrail denial bypasses per client
+///
+/// When a user clicks "Deny All for 1 Hour" on a guardrail popup,
+/// the denial is stored here and checked before scanning.
+/// While active, flagged content is auto-denied without a popup.
+#[derive(Clone, Default)]
+pub struct GuardrailDenialTracker {
+    /// Map of client_id -> expiry_instant
+    denials: Arc<DashMap<String, Instant>>,
+}
+
+impl GuardrailDenialTracker {
+    pub fn new() -> Self {
+        Self {
+            denials: Arc::new(DashMap::new()),
+        }
+    }
+
+    /// Check if a client has a valid time-based guardrail denial
+    pub fn has_valid_denial(&self, client_id: &str) -> bool {
+        if let Some(entry) = self.denials.get(client_id) {
+            if *entry > Instant::now() {
+                return true;
+            }
+            // Expired, remove it
+            drop(entry);
+            self.denials.remove(client_id);
+        }
+        false
+    }
+
+    /// Add a time-based denial for a client
+    pub fn add_denial(&self, client_id: &str, duration: Duration) {
+        let expiry = Instant::now() + duration;
+        self.denials.insert(client_id.to_string(), expiry);
+        tracing::info!(
+            "Added guardrail denial: client={}, duration={}s",
+            client_id,
+            duration.as_secs(),
+        );
+    }
+
+    /// Add a 1-hour denial
+    pub fn add_1_hour_denial(&self, client_id: &str) {
+        self.add_denial(client_id, Duration::from_secs(3600));
+    }
+
+    /// Clean up expired denials
+    pub fn cleanup_expired(&self) -> usize {
+        let now = Instant::now();
+        let expired: Vec<_> = self
+            .denials
+            .iter()
+            .filter(|entry| *entry.value() <= now)
+            .map(|entry| entry.key().clone())
+            .collect();
+
+        let count = expired.len();
+        for key in expired {
+            self.denials.remove(&key);
+        }
+        count
+    }
+}
+
 /// Tracks time-based model approvals for the model firewall
 ///
 /// When a user clicks "Allow for 1 Hour" on a model permission popup,
@@ -487,8 +552,11 @@ pub struct AppState {
     /// Time-based model approval tracker for model firewall
     pub model_approval_tracker: Arc<ModelApprovalTracker>,
 
-    /// Time-based guardrail bypass tracker
+    /// Time-based guardrail bypass tracker (allow for 1 hour)
     pub guardrail_approval_tracker: Arc<GuardrailApprovalTracker>,
+
+    /// Time-based guardrail denial tracker (deny for 1 hour)
+    pub guardrail_denial_tracker: Arc<GuardrailDenialTracker>,
 
     /// Safety engine for LLM-based content inspection (swappable at runtime)
     pub safety_engine: Arc<RwLock<Option<Arc<lr_guardrails::SafetyEngine>>>>,
@@ -568,6 +636,7 @@ impl AppState {
             health_cache: Arc::new(HealthCacheManager::new()),
             model_approval_tracker: Arc::new(ModelApprovalTracker::new()),
             guardrail_approval_tracker: Arc::new(GuardrailApprovalTracker::new()),
+            guardrail_denial_tracker: Arc::new(GuardrailDenialTracker::new()),
             safety_engine: Arc::new(RwLock::new(None)),
         }
     }
@@ -924,5 +993,162 @@ mod tests {
         assert_eq!(response.id, "gen-123");
         assert_eq!(response.model, "gpt-4");
         assert_eq!(response.api_key_id, "lr-***123");
+    }
+
+    #[test]
+    fn test_guardrail_approval_tracker_new() {
+        let tracker = GuardrailApprovalTracker::new();
+        assert!(!tracker.has_valid_bypass("client-1"));
+    }
+
+    #[test]
+    fn test_guardrail_approval_tracker_1_hour_bypass() {
+        let tracker = GuardrailApprovalTracker::new();
+
+        tracker.add_1_hour_bypass("client-1");
+        assert!(tracker.has_valid_bypass("client-1"));
+        assert!(!tracker.has_valid_bypass("client-2"));
+    }
+
+    #[test]
+    fn test_guardrail_approval_tracker_custom_duration() {
+        let tracker = GuardrailApprovalTracker::new();
+
+        tracker.add_bypass("client-1", Duration::from_secs(60));
+        assert!(tracker.has_valid_bypass("client-1"));
+    }
+
+    #[test]
+    fn test_guardrail_approval_tracker_expired_bypass() {
+        let tracker = GuardrailApprovalTracker::new();
+
+        // Add a bypass that expires immediately
+        tracker.add_bypass("client-1", Duration::from_secs(0));
+        std::thread::sleep(Duration::from_millis(10));
+        assert!(!tracker.has_valid_bypass("client-1"));
+    }
+
+    #[test]
+    fn test_guardrail_approval_tracker_cleanup() {
+        let tracker = GuardrailApprovalTracker::new();
+
+        tracker.add_bypass("client-1", Duration::from_secs(0));
+        tracker.add_1_hour_bypass("client-2");
+        std::thread::sleep(Duration::from_millis(10));
+
+        let cleaned = tracker.cleanup_expired();
+        assert_eq!(cleaned, 1); // client-1 expired
+
+        assert!(!tracker.has_valid_bypass("client-1"));
+        assert!(tracker.has_valid_bypass("client-2"));
+    }
+
+    #[test]
+    fn test_guardrail_denial_tracker_new() {
+        let tracker = GuardrailDenialTracker::new();
+        assert!(!tracker.has_valid_denial("client-1"));
+    }
+
+    #[test]
+    fn test_guardrail_denial_tracker_1_hour_denial() {
+        let tracker = GuardrailDenialTracker::new();
+
+        tracker.add_1_hour_denial("client-1");
+        assert!(tracker.has_valid_denial("client-1"));
+        assert!(!tracker.has_valid_denial("client-2"));
+    }
+
+    #[test]
+    fn test_guardrail_denial_tracker_custom_duration() {
+        let tracker = GuardrailDenialTracker::new();
+
+        tracker.add_denial("client-1", Duration::from_secs(120));
+        assert!(tracker.has_valid_denial("client-1"));
+    }
+
+    #[test]
+    fn test_guardrail_denial_tracker_expired_denial() {
+        let tracker = GuardrailDenialTracker::new();
+
+        // Add a denial that expires immediately
+        tracker.add_denial("client-1", Duration::from_secs(0));
+        std::thread::sleep(Duration::from_millis(10));
+        assert!(!tracker.has_valid_denial("client-1"));
+    }
+
+    #[test]
+    fn test_guardrail_denial_tracker_cleanup() {
+        let tracker = GuardrailDenialTracker::new();
+
+        tracker.add_denial("client-1", Duration::from_secs(0));
+        tracker.add_1_hour_denial("client-2");
+        std::thread::sleep(Duration::from_millis(10));
+
+        let cleaned = tracker.cleanup_expired();
+        assert_eq!(cleaned, 1); // client-1 expired
+
+        assert!(!tracker.has_valid_denial("client-1"));
+        assert!(tracker.has_valid_denial("client-2"));
+    }
+
+    #[test]
+    fn test_guardrail_denial_tracker_multiple_clients() {
+        let tracker = GuardrailDenialTracker::new();
+
+        tracker.add_1_hour_denial("client-1");
+        tracker.add_1_hour_denial("client-2");
+        tracker.add_1_hour_denial("client-3");
+
+        assert!(tracker.has_valid_denial("client-1"));
+        assert!(tracker.has_valid_denial("client-2"));
+        assert!(tracker.has_valid_denial("client-3"));
+        assert!(!tracker.has_valid_denial("client-4"));
+    }
+
+    #[test]
+    fn test_guardrail_denial_tracker_overwrite() {
+        let tracker = GuardrailDenialTracker::new();
+
+        // Add a short denial, then overwrite with a longer one
+        tracker.add_denial("client-1", Duration::from_secs(0));
+        std::thread::sleep(Duration::from_millis(10));
+
+        // Should be expired now
+        assert!(!tracker.has_valid_denial("client-1"));
+
+        // Overwrite with a longer one
+        tracker.add_1_hour_denial("client-1");
+        assert!(tracker.has_valid_denial("client-1"));
+    }
+
+    #[test]
+    fn test_guardrail_trackers_independent() {
+        // Approval and denial trackers should be independent
+        let approval_tracker = GuardrailApprovalTracker::new();
+        let denial_tracker = GuardrailDenialTracker::new();
+
+        approval_tracker.add_1_hour_bypass("client-1");
+        denial_tracker.add_1_hour_denial("client-2");
+
+        // Approval tracker only knows about client-1
+        assert!(approval_tracker.has_valid_bypass("client-1"));
+        assert!(!approval_tracker.has_valid_bypass("client-2"));
+
+        // Denial tracker only knows about client-2
+        assert!(!denial_tracker.has_valid_denial("client-1"));
+        assert!(denial_tracker.has_valid_denial("client-2"));
+    }
+
+    #[test]
+    fn test_model_approval_tracker() {
+        let tracker = ModelApprovalTracker::new();
+
+        assert!(!tracker.has_valid_approval("client-1", "openai", "gpt-4"));
+
+        tracker.add_1_hour_approval("client-1", "openai", "gpt-4");
+
+        assert!(tracker.has_valid_approval("client-1", "openai", "gpt-4"));
+        assert!(!tracker.has_valid_approval("client-1", "openai", "gpt-3.5"));
+        assert!(!tracker.has_valid_approval("client-2", "openai", "gpt-4"));
     }
 }

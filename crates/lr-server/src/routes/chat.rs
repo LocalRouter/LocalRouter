@@ -670,10 +670,19 @@ async fn check_model_firewall_permission(
                     );
                     Ok(edited_arguments)
                 }
+                FirewallApprovalAction::AllowCategories => {
+                    tracing::info!(
+                        "Model firewall: {} approved (categories allowed) for client {}",
+                        request.model,
+                        client.id
+                    );
+                    Ok(edited_arguments)
+                }
                 FirewallApprovalAction::Deny
                 | FirewallApprovalAction::DenySession
                 | FirewallApprovalAction::DenyAlways
-                | FirewallApprovalAction::BlockCategories => {
+                | FirewallApprovalAction::BlockCategories
+                | FirewallApprovalAction::Deny1Hour => {
                     tracing::warn!(
                         "Model firewall: {} denied by user for client {}",
                         request.model,
@@ -822,6 +831,20 @@ async fn handle_guardrail_approval(
     let Some(client_ctx) = client_context else {
         return Ok(());
     };
+
+    // Check for time-based guardrail denial (Deny All for 1 Hour)
+    if state
+        .guardrail_denial_tracker
+        .has_valid_denial(&client_ctx.client_id)
+    {
+        tracing::info!(
+            "Guardrail: auto-denying request for client {} (active denial bypass)",
+            client_ctx.client_id
+        );
+        return Err(ApiErrorResponse::forbidden(
+            "Request blocked by safety guardrails (auto-denied)",
+        ));
+    }
     let client = state.client_manager.get_client(&client_ctx.client_id);
     let client_id = client
         .as_ref()
@@ -888,14 +911,16 @@ async fn handle_guardrail_approval(
         FirewallApprovalAction::AllowOnce
         | FirewallApprovalAction::AllowSession
         | FirewallApprovalAction::Allow1Hour
-        | FirewallApprovalAction::AllowPermanent => {
+        | FirewallApprovalAction::AllowPermanent
+        | FirewallApprovalAction::AllowCategories => {
             tracing::info!("Guardrail: request approved for client {}", client_id);
             Ok(())
         }
         FirewallApprovalAction::Deny
         | FirewallApprovalAction::DenySession
         | FirewallApprovalAction::DenyAlways
-        | FirewallApprovalAction::BlockCategories => {
+        | FirewallApprovalAction::BlockCategories
+        | FirewallApprovalAction::Deny1Hour => {
             tracing::warn!("Guardrail: request denied for client {}", client_id);
             Err(ApiErrorResponse::forbidden(
                 "Request blocked by safety check",

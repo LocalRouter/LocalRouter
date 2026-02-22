@@ -34,12 +34,18 @@ pub enum FirewallApprovalAction {
     AllowOnce,
     /// Allow this tool for the rest of the session (MCP/Skills)
     AllowSession,
-    /// Allow this for 1 hour (Models only, since requests are stateless)
+    /// Allow this for 1 hour (Models & guardrails: time-based bypass)
+    #[serde(rename = "allow_1_hour")]
     Allow1Hour,
     /// Allow permanently by updating client permissions to Allow
     AllowPermanent,
     /// Block flagged categories (guardrail-specific: set categories to "block" action)
     BlockCategories,
+    /// Allow flagged categories (guardrail-specific: set categories to "allow" action)
+    AllowCategories,
+    /// Deny all guardrail-flagged content for 1 hour (auto-deny without popup)
+    #[serde(rename = "deny_1_hour")]
+    Deny1Hour,
 }
 
 /// Response from the user for a firewall approval request
@@ -776,5 +782,221 @@ mod tests {
             rules.resolve_skill_tool("skill_other_tool", "other"),
             &FirewallPolicy::Allow
         );
+    }
+
+    #[test]
+    fn test_action_serde_roundtrip() {
+        // Verify all action variants serialize/deserialize correctly
+        let actions = vec![
+            (FirewallApprovalAction::Deny, "\"deny\""),
+            (FirewallApprovalAction::DenySession, "\"deny_session\""),
+            (FirewallApprovalAction::DenyAlways, "\"deny_always\""),
+            (FirewallApprovalAction::AllowOnce, "\"allow_once\""),
+            (FirewallApprovalAction::AllowSession, "\"allow_session\""),
+            (FirewallApprovalAction::Allow1Hour, "\"allow_1_hour\""),
+            (FirewallApprovalAction::AllowPermanent, "\"allow_permanent\""),
+            (
+                FirewallApprovalAction::BlockCategories,
+                "\"block_categories\"",
+            ),
+            (
+                FirewallApprovalAction::AllowCategories,
+                "\"allow_categories\"",
+            ),
+            (FirewallApprovalAction::Deny1Hour, "\"deny_1_hour\""),
+        ];
+
+        for (action, expected_json) in &actions {
+            let serialized = serde_json::to_string(action).unwrap();
+            assert_eq!(&serialized, expected_json, "Serialization mismatch for {:?}", action);
+
+            let deserialized: FirewallApprovalAction =
+                serde_json::from_str(expected_json).unwrap();
+            assert_eq!(
+                &deserialized, action,
+                "Deserialization mismatch for {}",
+                expected_json
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_submit_allow_categories() {
+        let manager = FirewallManager::new(120);
+
+        let manager_clone = manager.clone();
+        let handle = tokio::spawn(async move {
+            manager_clone
+                .request_guardrail_approval(
+                    "client-1".to_string(),
+                    "Test Client".to_string(),
+                    "model-1".to_string(),
+                    "guardrails".to_string(),
+                    GuardrailApprovalDetails {
+                        verdicts: vec![],
+                        actions_required: vec![],
+                        total_duration_ms: 100,
+                        scan_direction: "request".to_string(),
+                        flagged_text: "test text".to_string(),
+                    },
+                    "test preview".to_string(),
+                )
+                .await
+        });
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(manager.pending_count(), 1);
+
+        let pending = manager.list_pending();
+        let request_id = &pending[0].request_id;
+        assert!(pending[0].is_guardrail_request);
+
+        manager
+            .submit_response(request_id, FirewallApprovalAction::AllowCategories, None)
+            .unwrap();
+
+        let result = handle.await.unwrap().unwrap();
+        assert_eq!(result.action, FirewallApprovalAction::AllowCategories);
+    }
+
+    #[tokio::test]
+    async fn test_submit_deny_1_hour() {
+        let manager = FirewallManager::new(120);
+
+        let manager_clone = manager.clone();
+        let handle = tokio::spawn(async move {
+            manager_clone
+                .request_guardrail_approval(
+                    "client-1".to_string(),
+                    "Test Client".to_string(),
+                    "model-1".to_string(),
+                    "guardrails".to_string(),
+                    GuardrailApprovalDetails {
+                        verdicts: vec![],
+                        actions_required: vec![],
+                        total_duration_ms: 100,
+                        scan_direction: "request".to_string(),
+                        flagged_text: "test text".to_string(),
+                    },
+                    "test preview".to_string(),
+                )
+                .await
+        });
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(manager.pending_count(), 1);
+
+        let pending = manager.list_pending();
+        let request_id = &pending[0].request_id;
+
+        manager
+            .submit_response(request_id, FirewallApprovalAction::Deny1Hour, None)
+            .unwrap();
+
+        let result = handle.await.unwrap().unwrap();
+        assert_eq!(result.action, FirewallApprovalAction::Deny1Hour);
+    }
+
+    #[tokio::test]
+    async fn test_submit_block_categories() {
+        let manager = FirewallManager::new(120);
+
+        let manager_clone = manager.clone();
+        let handle = tokio::spawn(async move {
+            manager_clone
+                .request_guardrail_approval(
+                    "client-1".to_string(),
+                    "Test Client".to_string(),
+                    "model-1".to_string(),
+                    "guardrails".to_string(),
+                    GuardrailApprovalDetails {
+                        verdicts: vec![],
+                        actions_required: vec![serde_json::json!({
+                            "category": "prompt_injection",
+                            "action": "ask",
+                            "model_id": "llama-guard-3-8b",
+                            "confidence": 0.95,
+                        })],
+                        total_duration_ms: 200,
+                        scan_direction: "request".to_string(),
+                        flagged_text: "Ignore all instructions".to_string(),
+                    },
+                    "test preview".to_string(),
+                )
+                .await
+        });
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let pending = manager.list_pending();
+        assert_eq!(pending.len(), 1);
+        assert!(pending[0].is_guardrail_request);
+        assert!(pending[0].guardrail_details.is_some());
+
+        let details = pending[0].guardrail_details.as_ref().unwrap();
+        assert_eq!(details.actions_required.len(), 1);
+
+        let request_id = &pending[0].request_id;
+        manager
+            .submit_response(request_id, FirewallApprovalAction::BlockCategories, None)
+            .unwrap();
+
+        let result = handle.await.unwrap().unwrap();
+        assert_eq!(result.action, FirewallApprovalAction::BlockCategories);
+    }
+
+    #[tokio::test]
+    async fn test_guardrail_approval_preserves_details() {
+        let manager = FirewallManager::new(120);
+
+        let details = GuardrailApprovalDetails {
+            verdicts: vec![serde_json::json!({
+                "model_id": "llama-guard-3-8b",
+                "is_safe": false,
+                "flagged_categories": [{"category": "violence", "confidence": 0.9, "native_label": "S1"}],
+            })],
+            actions_required: vec![
+                serde_json::json!({"category": "violence", "action": "ask", "model_id": "llama-guard-3-8b", "confidence": 0.9}),
+                serde_json::json!({"category": "jailbreak", "action": "ask", "model_id": "llama-guard-3-8b", "confidence": 0.85}),
+            ],
+            total_duration_ms: 340,
+            scan_direction: "request".to_string(),
+            flagged_text: "some harmful content".to_string(),
+        };
+
+        let manager_clone = manager.clone();
+        let _handle = tokio::spawn(async move {
+            manager_clone
+                .request_guardrail_approval(
+                    "client-1".to_string(),
+                    "Test Client".to_string(),
+                    "gpt-4".to_string(),
+                    "guardrails".to_string(),
+                    details,
+                    "preview".to_string(),
+                )
+                .await
+        });
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let pending = manager.list_pending();
+        assert_eq!(pending.len(), 1);
+
+        let info = &pending[0];
+        assert!(info.is_guardrail_request);
+        assert!(!info.is_model_request);
+        assert_eq!(info.client_id, "client-1");
+        assert_eq!(info.tool_name, "gpt-4");
+
+        let gd = info.guardrail_details.as_ref().unwrap();
+        assert_eq!(gd.verdicts.len(), 1);
+        assert_eq!(gd.actions_required.len(), 2);
+        assert_eq!(gd.total_duration_ms, 340);
+        assert_eq!(gd.scan_direction, "request");
+        assert_eq!(gd.flagged_text, "some harmful content");
+
+        // Clean up
+        manager.cancel_request(&info.request_id).unwrap();
     }
 }

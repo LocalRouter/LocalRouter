@@ -17,7 +17,7 @@ import { ProvidersIcon, McpIcon, SkillsIcon, StoreIcon } from "@/components/icon
 import { Shield } from "lucide-react"
 import type { SafetyVerdict, CategoryActionRequired } from "@/types/tauri-commands"
 
-export type ApprovalAction = "deny" | "deny_session" | "deny_always" | "block_categories" | "allow_once" | "allow_session" | "allow_1_hour" | "allow_permanent"
+export type ApprovalAction = "deny" | "deny_session" | "deny_always" | "block_categories" | "allow_once" | "allow_session" | "allow_1_hour" | "allow_permanent" | "allow_categories" | "deny_1_hour"
 
 export type RequestType = "marketplace" | "skill" | "model" | "tool" | "guardrail"
 
@@ -331,12 +331,19 @@ export function FirewallApprovalCard({
                   Deny for Session
                 </DropdownMenuItem>
               )}
-              <DropdownMenuItem onClick={() => onAction?.("deny_always")}>
-                {isGuardrailRequest ? "Disable Client" : "Deny Always"}
-              </DropdownMenuItem>
+              {isGuardrailRequest && (
+                <DropdownMenuItem onClick={() => onAction?.("deny_1_hour")}>
+                  Deny for 1 Hour
+                </DropdownMenuItem>
+              )}
               {isGuardrailRequest && (
                 <DropdownMenuItem onClick={() => onAction?.("block_categories")}>
-                  Block Categories
+                  Deny Categories Always
+                </DropdownMenuItem>
+              )}
+              {!isGuardrailRequest && (
+                <DropdownMenuItem onClick={() => onAction?.("deny_always")}>
+                  Deny Always
                 </DropdownMenuItem>
               )}
             </DropdownMenuContent>
@@ -384,8 +391,13 @@ export function FirewallApprovalCard({
                   Allow for 1 Hour
                 </DropdownMenuItem>
               )}
+              {isGuardrailRequest && (
+                <DropdownMenuItem onClick={() => onAction?.("allow_categories")}>
+                  Allow Always for Categories
+                </DropdownMenuItem>
+              )}
               <DropdownMenuItem onClick={() => onAction?.("allow_permanent")}>
-                {isGuardrailRequest ? "Disable GuardRails" : "Allow Always"}
+                {isGuardrailRequest ? "Allow All Always for Client" : "Allow Always"}
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
