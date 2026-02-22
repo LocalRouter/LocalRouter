@@ -68,3 +68,5 @@ test-results/
 
 .mcp.json
 .aider*
+.claude/settings.local.json
+.claude/worktrees/
