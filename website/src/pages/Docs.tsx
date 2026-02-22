@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { useLocation } from 'react-router-dom'
+import { useParams, useNavigate, Link } from 'react-router-dom'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import docsContent from './docs-content'
@@ -20,9 +20,11 @@ import {
   Lock,
   Code,
   Network,
-  ChevronRight,
+  Hash,
   Menu,
   X,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react'
 
 // --- Section data ---
@@ -311,16 +313,32 @@ const sections: DocSection[] = [
   },
 ]
 
+// --- Sidebar groups ---
+
+interface SidebarGroup {
+  label: string
+  sectionIds: string[]
+}
+
+const sidebarGroups: SidebarGroup[] = [
+  { label: 'Getting Started', sectionIds: ['introduction', 'getting-started'] },
+  { label: 'Core Features', sectionIds: ['clients', 'providers', 'model-selection-routing', 'rate-limiting'] },
+  { label: 'MCP & Extensions', sectionIds: ['unified-mcp-gateway', 'skills', 'marketplace'] },
+  { label: 'Security', sectionIds: ['firewall', 'guardrails', 'privacy-security'] },
+  { label: 'Operations', sectionIds: ['monitoring', 'configuration'] },
+  { label: 'API Reference', sectionIds: ['api-openai-gateway', 'api-mcp-gateway'] },
+]
+
+const sectionMap = new Map(sections.map((s) => [s.id, s]))
+
 // --- Sidebar ---
 
 function Sidebar({
   activeSection,
-  onSectionClick,
   mobileOpen,
   onMobileClose,
 }: {
   activeSection: string
-  onSectionClick: (id: string) => void
   mobileOpen: boolean
   onMobileClose: () => void
 }) {
@@ -348,25 +366,52 @@ function Sidebar({
             <X className="h-5 w-5" />
           </button>
         </div>
-        <nav className="p-4 space-y-1">
-          {sections.map((section) => (
-            <button
-              key={section.id}
-              onClick={() => {
-                onSectionClick(section.id)
-                onMobileClose()
-              }}
-              className={`
-                w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm text-left transition-colors
-                ${activeSection === section.id
-                  ? 'bg-accent text-foreground font-medium'
-                  : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'
-                }
-              `}
-            >
-              {section.icon}
-              {section.title}
-            </button>
+        <nav className="p-4 space-y-4">
+          {sidebarGroups.map((group) => (
+            <div key={group.label}>
+              <div className="px-3 mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/60">
+                {group.label}
+              </div>
+              <div className="space-y-0.5">
+                {group.sectionIds.map((sectionId) => {
+                  const section = sectionMap.get(sectionId)
+                  if (!section) return null
+                  const isActive = activeSection === sectionId
+                  return (
+                    <div key={sectionId}>
+                      <Link
+                        to={`/docs/${sectionId}`}
+                        onClick={onMobileClose}
+                        className={`
+                          w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm text-left transition-colors
+                          ${isActive
+                            ? 'bg-accent text-foreground font-medium'
+                            : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'
+                          }
+                        `}
+                      >
+                        {section.icon}
+                        {section.title}
+                      </Link>
+                      {isActive && section.subsections.length > 0 && (
+                        <div className="ml-5 mt-0.5 mb-1 space-y-0.5 border-l border-border pl-3">
+                          {section.subsections.map((sub) => (
+                            <a
+                              key={sub.id}
+                              href={`#${sub.id}`}
+                              onClick={onMobileClose}
+                              className="block py-1 text-xs text-muted-foreground hover:text-foreground transition-colors truncate"
+                            >
+                              {sub.title}
+                            </a>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
           ))}
         </nav>
       </aside>
@@ -439,7 +484,7 @@ function SectionContent({ section }: { section: DocSection }) {
   )
 
   return (
-    <section id={section.id} className="scroll-mt-20 mb-16">
+    <div>
       <div className="flex items-center gap-3 mb-6">
         <div className="flex items-center justify-center h-10 w-10 rounded-lg bg-primary/10 text-primary">
           {section.icon}
@@ -453,7 +498,7 @@ function SectionContent({ section }: { section: DocSection }) {
         {section.subsections.map((sub) => (
           <div key={sub.id} id={sub.id} className="scroll-mt-20">
             <h3 className="text-lg font-semibold flex items-center gap-2 mb-2">
-              <ChevronRight className="h-4 w-4 text-muted-foreground" />
+              <Hash className="h-4 w-4 text-muted-foreground/50" />
               {sub.title}
             </h3>
 
@@ -483,70 +528,84 @@ function SectionContent({ section }: { section: DocSection }) {
           </div>
         )}
       </div>
+    </div>
+  )
+}
 
-      <div className="mt-8 border-b" />
-    </section>
+// --- Prev / Next navigation ---
+
+function PrevNextNav({ sectionId }: { sectionId: string }) {
+  const currentIndex = sections.findIndex((s) => s.id === sectionId)
+  const prev = currentIndex > 0 ? sections[currentIndex - 1] : null
+  const next = currentIndex < sections.length - 1 ? sections[currentIndex + 1] : null
+
+  return (
+    <div className="mt-12 pt-6 border-t flex items-center justify-between gap-4">
+      {prev ? (
+        <Link
+          to={`/docs/${prev.id}`}
+          className="group flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition-colors"
+        >
+          <ChevronLeft className="h-4 w-4 transition-transform group-hover:-translate-x-0.5" />
+          <div className="text-right">
+            <div className="text-[11px] uppercase tracking-wider text-muted-foreground/60 mb-0.5">Previous</div>
+            <div className="font-medium">{prev.title}</div>
+          </div>
+        </Link>
+      ) : <div />}
+      {next ? (
+        <Link
+          to={`/docs/${next.id}`}
+          className="group flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition-colors text-right"
+        >
+          <div>
+            <div className="text-[11px] uppercase tracking-wider text-muted-foreground/60 mb-0.5">Next</div>
+            <div className="font-medium">{next.title}</div>
+          </div>
+          <ChevronRight className="h-4 w-4 transition-transform group-hover:translate-x-0.5" />
+        </Link>
+      ) : <div />}
+    </div>
   )
 }
 
 // --- Main Docs Page ---
 
 export default function Docs() {
-  const [activeSection, setActiveSection] = useState('introduction')
+  const { sectionId } = useParams<{ sectionId: string }>()
+  const navigate = useNavigate()
   const [mobileOpen, setMobileOpen] = useState(false)
-  const location = useLocation()
 
-  // Handle hash navigation on load
+  const currentSectionId = sectionId || 'introduction'
+  const currentSection = sectionMap.get(currentSectionId)
+
+  // Redirect to introduction if section not found
   useEffect(() => {
-    const hash = location.hash.replace('#', '')
+    if (!currentSection) {
+      navigate('/docs/introduction', { replace: true })
+    }
+  }, [currentSection, navigate])
+
+  // Scroll to hash anchor on load or section change
+  useEffect(() => {
+    const hash = window.location.hash.replace('#', '')
     if (hash) {
-      setActiveSection(hash)
-      const el = document.getElementById(hash)
-      if (el) {
-        setTimeout(() => el.scrollIntoView({ behavior: 'smooth' }), 100)
-      }
+      // Wait for content to render
+      setTimeout(() => {
+        const el = document.getElementById(hash)
+        if (el) el.scrollIntoView({ behavior: 'smooth' })
+      }, 100)
+    } else {
+      window.scrollTo(0, 0)
     }
-  }, [location.hash])
+  }, [currentSectionId])
 
-  // Track active section on scroll
-  useEffect(() => {
-    const observer = new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries) {
-          if (entry.isIntersecting) {
-            const sectionId = entry.target.id
-            const matchedSection = sections.find((s) => s.id === sectionId)
-            if (matchedSection) {
-              setActiveSection(sectionId)
-            }
-          }
-        }
-      },
-      { rootMargin: '-80px 0px -70% 0px' }
-    )
-
-    sections.forEach((section) => {
-      const el = document.getElementById(section.id)
-      if (el) observer.observe(el)
-    })
-
-    return () => observer.disconnect()
-  }, [])
-
-  const handleSectionClick = (id: string) => {
-    setActiveSection(id)
-    const el = document.getElementById(id)
-    if (el) {
-      el.scrollIntoView({ behavior: 'smooth' })
-    }
-    window.history.replaceState(null, '', `#${id}`)
-  }
+  if (!currentSection) return null
 
   return (
     <div className="flex min-h-[calc(100vh-4rem)]">
       <Sidebar
-        activeSection={activeSection}
-        onSectionClick={handleSectionClick}
+        activeSection={currentSectionId}
         mobileOpen={mobileOpen}
         onMobileClose={() => setMobileOpen(false)}
       />
@@ -562,16 +621,8 @@ export default function Docs() {
 
       {/* Content */}
       <main className="flex-1 min-w-0 px-6 py-10 lg:px-12 lg:py-12 max-w-4xl">
-        <div className="mb-12">
-          <h1 className="text-4xl font-bold tracking-tight">Documentation</h1>
-          <p className="mt-3 text-lg text-muted-foreground">
-            Learn how to configure and use LocalRouter — the local API gateway for LLMs, MCPs, and Skills.
-          </p>
-        </div>
-
-        {sections.map((section) => (
-          <SectionContent key={section.id} section={section} />
-        ))}
+        <SectionContent section={currentSection} />
+        <PrevNextNav sectionId={currentSectionId} />
       </main>
     </div>
   )

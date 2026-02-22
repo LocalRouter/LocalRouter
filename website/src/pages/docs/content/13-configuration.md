@@ -1,6 +1,8 @@
 <!-- @entry yaml-config -->
 
-LocalRouter uses a YAML configuration file as its primary configuration store. The config file defines providers (type and enabled status — keys are stored separately in the keychain), clients (name, strategy reference, permissions), strategies (model selection, rate limits), and MCP server configurations (transport, auth, tools). The config is loaded on startup and watched for changes. Modifications through the UI are written back to the YAML file automatically. The schema is versioned with a `config_version` field to support migrations.
+LocalRouter uses a YAML configuration file as its primary configuration store. The config file defines providers (type and enabled status — keys are stored separately in the keychain), clients (name, strategy reference, permissions), strategies (model selection, rate limits), and MCP server configurations (transport, auth, tools).
+
+The config is loaded on startup and watched for changes. Modifications through the UI are written back to the YAML file automatically. The schema is versioned with a `config_version` field to support migrations.
 
 <!-- @entry config-file-location -->
 
@@ -29,7 +31,9 @@ The `%APPDATA%` directory typically resolves to `C:\Users\<username>\AppData\Roa
 
 <!-- @entry config-migration -->
 
-When the config schema changes between versions, LocalRouter runs automatic migrations on startup. Each migration is a versioned function that transforms the config from version N to version N+1. Migrations run sequentially until the config reaches the current version. A backup of the pre-migration config is saved before any changes are applied. If migration fails, LocalRouter falls back to the backup and reports the error. The `config_version` field in the YAML file tracks the current schema version.
+When the config schema changes between versions, LocalRouter runs automatic migrations on startup. Each migration is a versioned function that transforms the config from version N to version N+1. Migrations run sequentially until the config reaches the current version.
+
+A backup of the pre-migration config is saved before any changes are applied. If migration fails, LocalRouter falls back to the backup and reports the error. The `config_version` field in the YAML file tracks the current schema version.
 
 <!-- @entry environment-variables -->
 
