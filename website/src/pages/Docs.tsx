@@ -1,5 +1,8 @@
 import { useState, useEffect } from 'react'
 import { useLocation } from 'react-router-dom'
+import Markdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
+import docsContent from './docs-content'
 import {
   BookOpen,
   Rocket,
@@ -373,7 +376,68 @@ function Sidebar({
 
 // --- Section Renderer ---
 
+const mdComponents = {
+  p: ({ children, ...props }: React.HTMLAttributes<HTMLParagraphElement>) => (
+    <p className="text-sm text-muted-foreground leading-relaxed mb-3" {...props}>{children}</p>
+  ),
+  ul: ({ children, ...props }: React.HTMLAttributes<HTMLUListElement>) => (
+    <ul className="text-sm text-muted-foreground list-disc ml-5 mb-3 space-y-1" {...props}>{children}</ul>
+  ),
+  ol: ({ children, ...props }: React.HTMLAttributes<HTMLOListElement>) => (
+    <ol className="text-sm text-muted-foreground list-decimal ml-5 mb-3 space-y-1" {...props}>{children}</ol>
+  ),
+  li: ({ children, ...props }: React.HTMLAttributes<HTMLLIElement>) => (
+    <li className="leading-relaxed" {...props}>{children}</li>
+  ),
+  code: ({ children, className, ...props }: React.HTMLAttributes<HTMLElement>) => {
+    const isBlock = className?.includes('language-')
+    if (isBlock) {
+      return (
+        <code className="block bg-muted rounded-lg p-4 text-xs font-mono overflow-x-auto mb-3 whitespace-pre" {...props}>
+          {children}
+        </code>
+      )
+    }
+    return (
+      <code className="bg-muted px-1.5 py-0.5 rounded text-xs font-mono" {...props}>{children}</code>
+    )
+  },
+  pre: ({ children, ...props }: React.HTMLAttributes<HTMLPreElement>) => (
+    <pre className="mb-3" {...props}>{children}</pre>
+  ),
+  strong: ({ children, ...props }: React.HTMLAttributes<HTMLElement>) => (
+    <strong className="text-foreground font-medium" {...props}>{children}</strong>
+  ),
+  table: ({ children, ...props }: React.HTMLAttributes<HTMLTableElement>) => (
+    <div className="overflow-x-auto mb-3">
+      <table className="text-sm w-full border-collapse" {...props}>{children}</table>
+    </div>
+  ),
+  th: ({ children, ...props }: React.HTMLAttributes<HTMLTableCellElement>) => (
+    <th className="text-left text-xs font-medium text-muted-foreground border-b px-3 py-2" {...props}>{children}</th>
+  ),
+  td: ({ children, ...props }: React.HTMLAttributes<HTMLTableCellElement>) => (
+    <td className="border-b px-3 py-2 text-muted-foreground" {...props}>{children}</td>
+  ),
+}
+
+function DocContent({ id }: { id: string }) {
+  const content = docsContent[id]
+  if (!content) return null
+  return (
+    <div className="mt-2 mb-4">
+      <Markdown remarkPlugins={[remarkGfm]} components={mdComponents}>
+        {content}
+      </Markdown>
+    </div>
+  )
+}
+
 function SectionContent({ section }: { section: DocSection }) {
+  const hasAnyContent = section.subsections.some(
+    (sub) => docsContent[sub.id] || sub.children?.some((c) => docsContent[c.id])
+  )
+
   return (
     <section id={section.id} className="scroll-mt-20 mb-16">
       <div className="flex items-center gap-3 mb-6">
@@ -383,6 +447,8 @@ function SectionContent({ section }: { section: DocSection }) {
         <h2 className="text-2xl font-bold tracking-tight">{section.title}</h2>
       </div>
 
+      <DocContent id={section.id} />
+
       <div className="space-y-6">
         {section.subsections.map((sub) => (
           <div key={sub.id} id={sub.id} className="scroll-mt-20">
@@ -390,6 +456,8 @@ function SectionContent({ section }: { section: DocSection }) {
               <ChevronRight className="h-4 w-4 text-muted-foreground" />
               {sub.title}
             </h3>
+
+            <DocContent id={sub.id} />
 
             {sub.children && (
               <div className="ml-6 space-y-3">
@@ -399,6 +467,7 @@ function SectionContent({ section }: { section: DocSection }) {
                       <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground/50" />
                       {child.title}
                     </h4>
+                    <DocContent id={child.id} />
                   </div>
                 ))}
               </div>
@@ -406,11 +475,13 @@ function SectionContent({ section }: { section: DocSection }) {
           </div>
         ))}
 
-        <div className="rounded-lg border border-dashed border-muted-foreground/25 p-6 text-center">
-          <p className="text-sm text-muted-foreground">
-            Content coming soon.
-          </p>
-        </div>
+        {!hasAnyContent && (
+          <div className="rounded-lg border border-dashed border-muted-foreground/25 p-6 text-center">
+            <p className="text-sm text-muted-foreground">
+              Content coming soon.
+            </p>
+          </div>
+        )}
       </div>
 
       <div className="mt-8 border-b" />
