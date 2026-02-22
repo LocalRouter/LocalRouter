@@ -2416,19 +2416,21 @@ mod tests {
 
     #[test]
     fn test_app_config_with_roots() {
-        let mut config = AppConfig::default();
-        config.roots = vec![
-            RootConfig {
-                uri: "file:///Users/test/projects".to_string(),
-                name: Some("Projects".to_string()),
-                enabled: true,
-            },
-            RootConfig {
-                uri: "file:///var/data".to_string(),
-                name: None,
-                enabled: true,
-            },
-        ];
+        let config = AppConfig {
+            roots: vec![
+                RootConfig {
+                    uri: "file:///Users/test/projects".to_string(),
+                    name: Some("Projects".to_string()),
+                    enabled: true,
+                },
+                RootConfig {
+                    uri: "file:///var/data".to_string(),
+                    name: None,
+                    enabled: true,
+                },
+            ],
+            ..Default::default()
+        };
 
         let yaml = serde_yaml::to_string(&config).unwrap();
         let deserialized: AppConfig = serde_yaml::from_str(&yaml).unwrap();

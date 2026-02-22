@@ -452,16 +452,18 @@ mod self_referential_tests {
     #[test]
     fn test_external_provider_allowed() {
         // External provider keys (non lr- prefix) should always pass without keychain check
-        let mut config = AppConfig::default();
-        config.providers = vec![ProviderConfig {
-            name: "OpenAI".to_string(),
-            provider_type: ProviderType::OpenAI,
-            enabled: true,
-            provider_config: Some(serde_json::json!({
-                "api_key": "sk-proj-abcdefghijklmnopqrstuvwxyz123456"
-            })),
-            api_key_ref: None,
-        }];
+        let config = AppConfig {
+            providers: vec![ProviderConfig {
+                name: "OpenAI".to_string(),
+                provider_type: ProviderType::OpenAI,
+                enabled: true,
+                provider_config: Some(serde_json::json!({
+                    "api_key": "sk-proj-abcdefghijklmnopqrstuvwxyz123456"
+                })),
+                api_key_ref: None,
+            }],
+            ..Default::default()
+        };
 
         assert!(validate_providers_not_self_referential(&config).is_ok());
     }
@@ -469,16 +471,18 @@ mod self_referential_tests {
     #[test]
     fn test_provider_without_api_key_allowed() {
         // Provider without api_key (e.g., Ollama) should pass
-        let mut config = AppConfig::default();
-        config.providers = vec![ProviderConfig {
-            name: "Ollama".to_string(),
-            provider_type: ProviderType::Ollama,
-            enabled: true,
-            provider_config: Some(serde_json::json!({
-                "base_url": "http://localhost:11434"
-            })),
-            api_key_ref: None,
-        }];
+        let config = AppConfig {
+            providers: vec![ProviderConfig {
+                name: "Ollama".to_string(),
+                provider_type: ProviderType::Ollama,
+                enabled: true,
+                provider_config: Some(serde_json::json!({
+                    "base_url": "http://localhost:11434"
+                })),
+                api_key_ref: None,
+            }],
+            ..Default::default()
+        };
 
         assert!(validate_providers_not_self_referential(&config).is_ok());
     }
@@ -486,14 +490,16 @@ mod self_referential_tests {
     #[test]
     fn test_provider_without_config_allowed() {
         // Provider without provider_config should pass
-        let mut config = AppConfig::default();
-        config.providers = vec![ProviderConfig {
-            name: "Default".to_string(),
-            provider_type: ProviderType::Ollama,
-            enabled: true,
-            provider_config: None,
-            api_key_ref: None,
-        }];
+        let config = AppConfig {
+            providers: vec![ProviderConfig {
+                name: "Default".to_string(),
+                provider_type: ProviderType::Ollama,
+                enabled: true,
+                provider_config: None,
+                api_key_ref: None,
+            }],
+            ..Default::default()
+        };
 
         assert!(validate_providers_not_self_referential(&config).is_ok());
     }
@@ -502,17 +508,19 @@ mod self_referential_tests {
     fn test_lr_key_passes_when_no_clients() {
         // An lr- prefixed key should pass if there are no clients configured
         // (can't be self-referential if no clients exist)
-        let mut config = AppConfig::default();
-        config.clients = vec![]; // No clients
-        config.providers = vec![ProviderConfig {
-            name: "Some Provider".to_string(),
-            provider_type: ProviderType::Custom,
-            enabled: true,
-            provider_config: Some(serde_json::json!({
-                "api_key": "lr-8xIF-tmewuD4eOm1dxHKRjiCAD57nLAGRLEJISS1K6E"
-            })),
-            api_key_ref: None,
-        }];
+        let config = AppConfig {
+            clients: vec![], // No clients
+            providers: vec![ProviderConfig {
+                name: "Some Provider".to_string(),
+                provider_type: ProviderType::Custom,
+                enabled: true,
+                provider_config: Some(serde_json::json!({
+                    "api_key": "lr-8xIF-tmewuD4eOm1dxHKRjiCAD57nLAGRLEJISS1K6E"
+                })),
+                api_key_ref: None,
+            }],
+            ..Default::default()
+        };
 
         // Should pass because no clients exist to match against
         assert!(validate_providers_not_self_referential(&config).is_ok());
