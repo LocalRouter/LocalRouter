@@ -143,6 +143,7 @@ Plans in `./plan/` directory (114 documents). Key files:
 3. Implement with tests
 4. Run `cargo test && cargo clippy && cargo fmt`
 5. Commit with Conventional Commits: `<type>(<scope>): <description>`
+6. **Always commit your own changes at the end of a task** — only stage files you modified, never unrelated changes (do not push unless the user explicitly asks)
 
 **Types**: feat, fix, docs, test, refactor, chore
 
