@@ -3,6 +3,7 @@ import { useParams, useNavigate, Link } from 'react-router-dom'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import docsContent from './docs-content'
+import { DocEmbed } from '../components/docs/DocEmbeds'
 import {
   BookOpen,
   Rocket,
@@ -484,6 +485,7 @@ function DocContent({ id }: { id: string }) {
       <Markdown remarkPlugins={[remarkGfm]} components={mdComponents}>
         {content}
       </Markdown>
+      <DocEmbed id={id} />
     </div>
   )
 }
