@@ -28,6 +28,9 @@ export default function Navigation() {
               <Link to="/" className="text-sm font-medium text-muted-foreground hover:text-foreground transition-colors">
                 Home
               </Link>
+              <Link to="/docs" className="text-sm font-medium text-muted-foreground hover:text-foreground transition-colors">
+                Docs
+              </Link>
               <Link to="/download" className="text-sm font-medium text-muted-foreground hover:text-foreground transition-colors">
                 Download
               </Link>
@@ -103,6 +106,13 @@ export default function Navigation() {
               onClick={() => setMobileMenuOpen(false)}
             >
               Home
+            </Link>
+            <Link
+              to="/docs"
+              className="block rounded-md px-3 py-2 text-base font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
+              onClick={() => setMobileMenuOpen(false)}
+            >
+              Docs
             </Link>
             <Link
               to="/download"
