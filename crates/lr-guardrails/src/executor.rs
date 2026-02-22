@@ -339,13 +339,29 @@ fn init_backend() -> Result<&'static LlamaBackend, String> {
 /// Validate a GGUF file before passing it to llama.cpp.
 ///
 /// Checks:
+/// - File size (minimum viable GGUF)
 /// - Magic bytes (`GGUF`)
 /// - Version (must be 2 or 3)
-/// - Metadata: `llama.expert_used_count <= llama.expert_count`
+/// - Sane tensor and metadata counts
+/// - Metadata: `expert_used_count <= expert_count` (any arch prefix)
+/// - Metadata: `embedding_length % head_count == 0` (any arch prefix)
 ///
 /// This catches corrupt or incompatible files that would otherwise trigger
 /// a C `abort()` inside llama.cpp (uncatchable by Rust).
 pub fn validate_gguf_file(path: &Path) -> Result<(), String> {
+    let file_size = std::fs::metadata(path)
+        .map_err(|e| format!("Cannot stat GGUF file '{}': {}", path.display(), e))?
+        .len();
+
+    // Minimum: magic(4) + version(4) + tensor_count(8) + kv_count(8) = 24 bytes
+    if file_size < 24 {
+        return Err(format!(
+            "GGUF file too small ({} bytes, minimum 24). Likely a truncated download: {}",
+            file_size,
+            path.display()
+        ));
+    }
+
     let mut file = std::fs::File::open(path)
         .map_err(|e| format!("Cannot open GGUF file '{}': {}", path.display(), e))?;
 
@@ -374,19 +390,39 @@ pub fn validate_gguf_file(path: &Path) -> Result<(), String> {
         ));
     }
 
-    // --- Tensor count (u64 LE) — skip ---
+    // --- Tensor count (u64 LE) ---
     let mut buf8 = [0u8; 8];
     file.read_exact(&mut buf8)
         .map_err(|e| format!("Failed to read GGUF tensor count: {}", e))?;
+    let tensor_count = u64::from_le_bytes(buf8);
+    if tensor_count > 100_000 {
+        return Err(format!(
+            "GGUF tensor count {} is unreasonably large. File is likely corrupt: {}",
+            tensor_count,
+            path.display()
+        ));
+    }
 
     // --- Metadata KV count (u64 LE) ---
     file.read_exact(&mut buf8)
         .map_err(|e| format!("Failed to read GGUF metadata count: {}", e))?;
     let kv_count = u64::from_le_bytes(buf8);
+    if kv_count > 100_000 {
+        return Err(format!(
+            "GGUF metadata count {} is unreasonably large. File is likely corrupt: {}",
+            kv_count,
+            path.display()
+        ));
+    }
 
-    // Scan metadata for expert_count / expert_used_count
+    // Scan metadata for fields that trigger llama.cpp assertions.
+    // Key prefixes vary by architecture (llama, granite, gemma, etc.)
+    // so we match on suffixes.
     let mut expert_count: Option<u32> = None;
     let mut expert_used_count: Option<u32> = None;
+    let mut embedding_length: Option<u32> = None;
+    let mut head_count: Option<u32> = None;
+    let mut head_count_kv: Option<u32> = None;
 
     for _ in 0..kv_count {
         // Key: length-prefixed string (u64 LE len + bytes)
@@ -394,6 +430,13 @@ pub fn validate_gguf_file(path: &Path) -> Result<(), String> {
             break;
         }
         let key_len = u64::from_le_bytes(buf8) as usize;
+        if key_len > 1_000_000 {
+            return Err(format!(
+                "GGUF metadata key length {} is unreasonably large. File is likely corrupt: {}",
+                key_len,
+                path.display()
+            ));
+        }
         let mut key_buf = vec![0u8; key_len];
         if file.read_exact(&mut key_buf).is_err() {
             break;
@@ -406,8 +449,20 @@ pub fn validate_gguf_file(path: &Path) -> Result<(), String> {
         }
         let value_type = u32::from_le_bytes(buf4);
 
-        // We only care about u32 values (type 4) for the expert fields
-        let is_target_key = key == "llama.expert_count" || key == "llama.expert_used_count";
+        // Match target keys by suffix (architecture-agnostic).
+        // All target fields are u32 (GGUF type 4).
+        let is_expert_count =
+            key.ends_with(".expert_count") && !key.ends_with(".expert_used_count");
+        let is_expert_used = key.ends_with(".expert_used_count");
+        let is_embedding_length = key.ends_with(".embedding_length");
+        let is_head_count =
+            key.ends_with(".attention.head_count") && !key.ends_with(".head_count_kv");
+        let is_head_count_kv = key.ends_with(".attention.head_count_kv");
+        let is_target_key = is_expert_count
+            || is_expert_used
+            || is_embedding_length
+            || is_head_count
+            || is_head_count_kv;
 
         if is_target_key && value_type == 4 {
             // GGUF_TYPE_UINT32 = 4
@@ -415,14 +470,16 @@ pub fn validate_gguf_file(path: &Path) -> Result<(), String> {
                 break;
             }
             let val = u32::from_le_bytes(buf4);
-            if key == "llama.expert_count" {
+            if is_expert_count {
                 expert_count = Some(val);
-            } else {
+            } else if is_expert_used {
                 expert_used_count = Some(val);
-            }
-            // Early exit if we found both
-            if expert_count.is_some() && expert_used_count.is_some() {
-                break;
+            } else if is_embedding_length {
+                embedding_length = Some(val);
+            } else if is_head_count {
+                head_count = Some(val);
+            } else if is_head_count_kv {
+                head_count_kv = Some(val);
             }
         } else {
             // Skip value based on type
@@ -464,8 +521,8 @@ pub fn validate_gguf_file(path: &Path) -> Result<(), String> {
                     let elem_size: Option<u64> = match elem_type {
                         0 | 1 | 7 => Some(1),  // UINT8/INT8/BOOL
                         2 | 3 => Some(2),       // UINT16/INT16
-                        4 | 5 | 6 => Some(4),   // UINT32/INT32/FLOAT32
-                        10 | 11 | 12 => Some(8), // UINT64/INT64/FLOAT64
+                        4..=6 => Some(4),   // UINT32/INT32/FLOAT32
+                        10..=12 => Some(8), // UINT64/INT64/FLOAT64
                         _ => None,               // STRING/ARRAY — nested, skip rest
                     };
 
@@ -501,13 +558,44 @@ pub fn validate_gguf_file(path: &Path) -> Result<(), String> {
         }
     }
 
-    // Validate expert metadata
+    // --- Validate metadata invariants (mirrors llama.cpp GGML_ASSERTs) ---
+
+    // expert_used_count <= expert_count
     if let (Some(used), Some(total)) = (expert_used_count, expert_count) {
         if used > total {
             return Err(format!(
                 "Corrupt GGUF file: expert_used_count ({}) > expert_count ({}). \
                  This file will crash llama.cpp. Delete and re-download: {}",
                 used, total, path.display()
+            ));
+        }
+    }
+
+    // embedding_length must be divisible by head_count
+    if let (Some(embd), Some(heads)) = (embedding_length, head_count) {
+        if heads == 0 {
+            return Err(format!(
+                "Corrupt GGUF file: head_count is 0. \
+                 Delete and re-download: {}",
+                path.display()
+            ));
+        }
+        if embd % heads != 0 {
+            return Err(format!(
+                "Corrupt GGUF file: embedding_length ({}) not divisible by head_count ({}). \
+                 Delete and re-download: {}",
+                embd, heads, path.display()
+            ));
+        }
+    }
+
+    // head_count_kv must be divisible by expert_count (for MoE models)
+    if let (Some(hkv), Some(experts)) = (head_count_kv, expert_count) {
+        if experts > 0 && hkv % experts != 0 {
+            return Err(format!(
+                "Corrupt GGUF file: head_count_kv ({}) not divisible by expert_count ({}). \
+                 Delete and re-download: {}",
+                hkv, experts, path.display()
             ));
         }
     }
@@ -583,7 +671,9 @@ impl LocalGgufExecutor {
         if let Some(model) = cache_get(&self.model_path) {
             return Ok(model);
         }
-        // Not in cache — load from disk and cache it
+        // Not in cache — validate before reloading (catches corrupt files
+        // that would abort() inside llama.cpp)
+        validate_gguf_file(&self.model_path)?;
         let model = Self::load_model(&self.model_path)?;
         cache_put(self.model_path.clone(), model.clone());
         Ok(model)
@@ -828,7 +918,7 @@ fn parse_openai_logprobs(resp: &serde_json::Value) -> Option<LogprobsResult> {
         let lp = logprob.as_f64().unwrap_or(f64::NEG_INFINITY);
 
         let mut top = Vec::new();
-        if let Some(ref arr) = top_logprobs_arr {
+        if let Some(arr) = &top_logprobs_arr {
             if let Some(top_map) = arr.get(i).and_then(|v| v.as_object()) {
                 for (t, l) in top_map {
                     top.push(TopLogprob {
@@ -897,7 +987,7 @@ pub fn extract_yes_probability(logprobs: &LogprobsResult) -> Option<f32> {
 
 /// Round `value` up to the next multiple of `multiple`.
 fn round_up_to(value: u32, multiple: u32) -> u32 {
-    ((value + multiple - 1) / multiple) * multiple
+    value.div_ceil(multiple) * multiple
 }
 
 /// Fallback: determine Yes/No from generated text when logprobs unavailable
