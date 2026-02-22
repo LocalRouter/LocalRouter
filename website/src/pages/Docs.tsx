@@ -281,10 +281,10 @@ const sections: DocSection[] = [
     icon: <Code className="h-4 w-4" />,
     subsections: [
       { id: 'openai-authentication', title: 'Authentication' },
-      { id: 'openai-models', title: 'GET /v1/models' },
-      { id: 'openai-chat-completions', title: 'POST /v1/chat/completions' },
-      { id: 'openai-completions', title: 'POST /v1/completions' },
-      { id: 'openai-embeddings', title: 'POST /v1/embeddings' },
+      { id: 'openai-models', title: 'GET /models' },
+      { id: 'openai-chat-completions', title: 'POST /chat/completions' },
+      { id: 'openai-completions', title: 'POST /completions' },
+      { id: 'openai-embeddings', title: 'POST /embeddings' },
       { id: 'openai-health', title: 'GET /health' },
       { id: 'openai-spec', title: 'GET /openapi.json' },
       { id: 'openai-streaming', title: 'Streaming (SSE)' },
@@ -296,7 +296,7 @@ const sections: DocSection[] = [
     title: 'API Reference: MCP Gateway',
     icon: <Network className="h-4 w-4" />,
     subsections: [
-      { id: 'mcp-endpoint', title: 'POST /mcp' },
+      { id: 'mcp-endpoint', title: 'POST /' },
       { id: 'mcp-tool-namespacing', title: 'Tool Namespacing Convention' },
       { id: 'mcp-session-lifecycle', title: 'Session Lifecycle' },
       { id: 'mcp-authentication', title: 'Authentication' },

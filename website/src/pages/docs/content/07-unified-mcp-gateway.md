@@ -1,6 +1,6 @@
 <!-- @entry mcp-overview -->
 
-The Unified MCP Gateway aggregates multiple upstream MCP (Model Context Protocol) servers behind a single HTTP endpoint at `POST /mcp`. Clients connect once to LocalRouter and gain access to tools, resources, and prompts from all configured MCP servers without managing individual connections.
+The Unified MCP Gateway aggregates multiple upstream MCP (Model Context Protocol) servers behind a single HTTP endpoint. Clients connect once to LocalRouter and gain access to tools, resources, and prompts from all configured MCP servers without managing individual connections.
 
 The gateway handles connection lifecycle, transport differences, authentication, and error isolation — if one upstream server fails, others continue working. Internally, the `McpBridge` manages per-server connections while the `McpGateway` orchestrates request routing and response aggregation.
 

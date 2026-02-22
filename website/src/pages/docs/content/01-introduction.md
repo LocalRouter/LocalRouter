@@ -10,13 +10,13 @@ All data stays on your machine — zero telemetry, zero external assets, and sec
 
 **Providers** are upstream LLM services (cloud or local) that LocalRouter routes requests to.
 
-**MCP Servers** are tool providers connected via STDIO, SSE, or Streamable HTTP transports — LocalRouter merges them behind a single `/mcp` endpoint with automatic tool namespacing (`server__tool`).
+**MCP Servers** are tool providers connected via STDIO, SSE, or Streamable HTTP transports — LocalRouter merges them behind a single endpoint with automatic tool namespacing (`server__tool`).
 
 **Skills** are curated multi-step workflows exposed as MCP tools that compose multiple tool calls into a single action.
 
 <!-- @entry architecture-overview -->
 
-LocalRouter is built with a Rust/Tauri 2.x backend and a React/TypeScript frontend. The backend runs an Axum HTTP server on port 3625 that exposes OpenAI-compatible endpoints (`/v1/chat/completions`, `/v1/models`, etc.) and MCP proxy endpoints (`/mcp`).
+LocalRouter is built with a Rust/Tauri 2.x backend and a React/TypeScript frontend. The backend runs an Axum HTTP server on port 3625 that exposes OpenAI-compatible endpoints (`/chat/completions`, `/models`, etc.) and MCP proxy endpoints. Both gateways are served at the root — their endpoints do not conflict, so no path prefix is required.
 
 **Routing engine.** The routing engine receives incoming requests, authenticates the client, checks rate limits, selects a model (via auto-routing or explicit model ID), and dispatches to the appropriate provider.
 

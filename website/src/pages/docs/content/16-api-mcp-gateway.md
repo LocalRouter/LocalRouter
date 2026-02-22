@@ -1,6 +1,8 @@
 <!-- @entry mcp-endpoint -->
 
-`POST /mcp` is the single entry point for all MCP operations. It accepts JSON-RPC 2.0 requests following the Model Context Protocol specification. The endpoint supports both direct JSON responses and SSE streaming (based on the `Accept` header).
+`POST /` is the single entry point for all MCP operations. It accepts JSON-RPC 2.0 requests following the Model Context Protocol specification. The endpoint supports both direct JSON responses and SSE streaming (based on the `Accept` header).
+
+The `/mcp` path is also accepted as an alias (e.g., `POST /mcp`). Both the MCP gateway and OpenAI gateway share the same root — their endpoints do not conflict because MCP uses JSON-RPC while the OpenAI gateway uses REST paths.
 
 Session state is tracked via the `Mcp-Session-Id` header — if omitted on the first request, a new session is created and the ID is returned in the response header.
 

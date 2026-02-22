@@ -34,6 +34,6 @@ Once saved, LocalRouter fetches the provider's available models and adds them to
 
 <!-- @entry pointing-apps -->
 
-Point any OpenAI-compatible application to `http://localhost:3625/v1` as the base URL, and use your LocalRouter client secret (`lr-*`) as the API key. For example, in a Python OpenAI client: `client = OpenAI(base_url="http://localhost:3625/v1", api_key="lr-your_key")`.
+Point any OpenAI-compatible application to `http://localhost:3625` as the base URL, and use your LocalRouter client secret (`lr-*`) as the API key. For example, in a Python OpenAI client: `client = OpenAI(base_url="http://localhost:3625", api_key="lr-your_key")`.
 
-For Claude Code, Cursor, or other AI tools, update their API base URL setting to `http://localhost:3625/v1`. LocalRouter accepts the standard `Authorization: Bearer <token>` header format that all OpenAI-compatible clients use.
+For Claude Code, Cursor, or other AI tools, update their API base URL setting to `http://localhost:3625`. LocalRouter accepts the standard `Authorization: Bearer <token>` header format that all OpenAI-compatible clients use. The `/v1` prefix is also accepted for compatibility, so `http://localhost:3625/v1` works as well.
