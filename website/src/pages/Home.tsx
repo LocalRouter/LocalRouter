@@ -285,6 +285,9 @@ export default function Home() {
                   </div>
                 </li>
               </ul>
+              <Link to="/docs/clients" className="mt-6 inline-flex items-center gap-1 text-sm font-medium text-blue-500 hover:text-blue-400 transition-colors">
+                Learn more <span aria-hidden="true">&rarr;</span>
+              </Link>
             </div>
             {/* Visual: Auth Flow Diagram */}
             <div className="relative overflow-x-auto">
@@ -608,6 +611,9 @@ export default function Home() {
                   </div>
                 </li>
               </ul>
+              <Link to="/docs/model-selection-routing" className="mt-6 inline-flex items-center gap-1 text-sm font-medium text-violet-500 hover:text-violet-400 transition-colors">
+                Learn more <span aria-hidden="true">&rarr;</span>
+              </Link>
             </div>
           </div>
         </div>
@@ -651,6 +657,9 @@ export default function Home() {
                   </div>
                 </li>
               </ul>
+              <Link to="/docs/unified-mcp-gateway" className="mt-6 inline-flex items-center gap-1 text-sm font-medium text-emerald-500 hover:text-emerald-400 transition-colors">
+                Learn more <span aria-hidden="true">&rarr;</span>
+              </Link>
             </div>
             {/* Visual: MCP Architecture */}
             <div className="relative overflow-x-auto">
@@ -864,6 +873,9 @@ export default function Home() {
                   </div>
                 </li>
               </ul>
+              <Link to="/docs/skills" className="mt-6 inline-flex items-center gap-1 text-sm font-medium text-violet-500 hover:text-violet-400 transition-colors">
+                Learn more <span aria-hidden="true">&rarr;</span>
+              </Link>
             </div>
           </div>
         </div>
@@ -1012,6 +1024,9 @@ export default function Home() {
                   </div>
                 </li>
               </ul>
+              <Link to="/docs/firewall" className="mt-6 inline-flex items-center gap-1 text-sm font-medium text-amber-500 hover:text-amber-400 transition-colors">
+                Learn more <span aria-hidden="true">&rarr;</span>
+              </Link>
             </div>
           </div>
         </div>
@@ -1055,6 +1070,9 @@ export default function Home() {
                   </div>
                 </li>
               </ul>
+              <Link to="/docs/marketplace" className="mt-6 inline-flex items-center gap-1 text-sm font-medium text-cyan-500 hover:text-cyan-400 transition-colors">
+                Learn more <span aria-hidden="true">&rarr;</span>
+              </Link>
             </div>
             {/* Visual: Marketplace Browser */}
             <div className="relative overflow-x-auto order-2 lg:order-1">
@@ -1191,6 +1209,9 @@ export default function Home() {
                   </div>
                 </li>
               </ul>
+              <Link to="/docs/guardrails" className="mt-6 inline-flex items-center gap-1 text-sm font-medium text-red-500 hover:text-red-400 transition-colors">
+                Learn more <span aria-hidden="true">&rarr;</span>
+              </Link>
             </div>
             {/* Visual: GuardRail Approval Demo */}
             <div className="flex justify-center">
@@ -1264,6 +1285,9 @@ export default function Home() {
                 Runs offline
               </div>
             </div>
+            <Link to="/docs/privacy-security" className="mt-6 inline-flex items-center gap-1 text-sm font-medium text-primary hover:text-primary/80 transition-colors">
+              Learn more <span aria-hidden="true">&rarr;</span>
+            </Link>
           </div>
         </div>
       </section>
