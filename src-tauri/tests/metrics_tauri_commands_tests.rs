@@ -2,6 +2,8 @@
 //!
 //! Simulates calling Tauri commands directly (without Tauri runtime).
 
+#![allow(deprecated)]
+
 use localrouter::monitoring::graphs::{GraphData, GraphGenerator, MetricType, TimeRange};
 use localrouter::monitoring::metrics::{MetricsCollector, RequestMetrics};
 use std::sync::Arc;

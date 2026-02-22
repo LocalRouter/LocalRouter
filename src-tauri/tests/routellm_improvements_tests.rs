@@ -6,9 +6,6 @@
 //! 3. Disk space check
 //! 4. Auto-unload timeout update
 
-use std::path::PathBuf;
-use std::time::Duration;
-
 #[tokio::test]
 async fn test_disk_space_check() {
     // Test that disk space check works and doesn't panic
@@ -117,8 +114,6 @@ async fn test_download_retry_simulation() {
 #[tokio::test]
 async fn test_timeout_values() {
     // Test that timeout constants are reasonable
-    use localrouter::routellm::downloader;
-
     // Can't access constants directly, but we can verify behavior through documentation
     // The constants are:
     // DOWNLOAD_TIMEOUT_SECS = 600 (10 minutes)

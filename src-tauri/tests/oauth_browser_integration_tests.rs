@@ -245,7 +245,6 @@ fn test_provider_oauth_port_uniqueness() {
 
 #[cfg(test)]
 mod provider_oauth_integration {
-    use super::*;
     use localrouter::providers::oauth::{
         anthropic_claude::AnthropicClaudeOAuthProvider, openai_codex::OpenAICodexOAuthProvider,
         OAuthProvider,
@@ -287,8 +286,7 @@ mod keychain_integration {
 
 #[cfg(test)]
 mod mcp_oauth_integration {
-    use super::*;
-    use localrouter::mcp::oauth_browser::{McpOAuthBrowserManager, OAuthBrowserFlowStatus};
+    use localrouter::mcp::oauth_browser::OAuthBrowserFlowStatus;
 
     #[test]
     fn test_mcp_oauth_status_serialization() {

@@ -23,7 +23,7 @@ use localrouter::providers::{
 
 #[tokio::test]
 async fn test_openai_health_check() {
-    let mock = OpenAICompatibleMockBuilder::new()
+    let _mock = OpenAICompatibleMockBuilder::new()
         .await
         .mock_list_models()
         .await;

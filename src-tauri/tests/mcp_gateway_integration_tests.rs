@@ -4,7 +4,7 @@
 
 use localrouter::config::{AppConfig, ConfigManager};
 use localrouter::mcp::gateway::{GatewayConfig, McpGateway};
-use localrouter::mcp::protocol::{JsonRpcRequest, JsonRpcResponse};
+use localrouter::mcp::protocol::JsonRpcRequest;
 use localrouter::mcp::McpServerManager;
 use localrouter::monitoring::metrics::MetricsCollector;
 use localrouter::monitoring::storage::MetricsDatabase;

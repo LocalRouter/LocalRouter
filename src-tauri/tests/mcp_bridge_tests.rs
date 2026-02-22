@@ -8,7 +8,6 @@ use localrouter::config::{
     AppConfig, Client, FirewallRules, McpPermissions, McpServerAccess, ModelPermissions,
     PermissionState, SkillsAccess, SkillsPermissions,
 };
-use localrouter::mcp::bridge::StdioBridge;
 use localrouter::mcp::protocol::{JsonRpcRequest, JsonRpcResponse};
 use serde_json::{json, Value};
 

@@ -2,8 +2,6 @@
 //!
 //! Run with: cargo test --test routellm_fixes_verification
 
-use std::path::PathBuf;
-
 #[tokio::test]
 async fn test_fix_1_path_handling_no_panic() {
     // Bug #1: Path with no parent should not panic

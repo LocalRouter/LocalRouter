@@ -3,8 +3,6 @@
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-    use tokio::sync::RwLock;
 
     // Test: Create streaming session
     #[tokio::test]

@@ -3,6 +3,8 @@
 //! This module provides reusable components for testing MCP functionality:
 //! - Mock server builders for different transport types (STDIO, SSE, WebSocket)
 //! - Mock OAuth server builders
+
+#![allow(dead_code)]
 //! - Standard test request builders
 
 // Re-export MockKeychain from the main crate

@@ -330,9 +330,9 @@ fn test_multiple_clients() -> AppResult<()> {
     // Create multiple clients
     let (client_id1, secret1, client1) =
         manager.create_client("Client 1".to_string(), "default".to_string())?;
-    let (client_id2, secret2, client2) =
+    let (_client_id2, secret2, client2) =
         manager.create_client("Client 2".to_string(), "default".to_string())?;
-    let (client_id3, secret3, client3) =
+    let (_client_id3, secret3, client3) =
         manager.create_client("Client 3".to_string(), "default".to_string())?;
 
     // Verify all clients exist

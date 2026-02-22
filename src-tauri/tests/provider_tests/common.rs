@@ -6,7 +6,7 @@
 //! - Assertion helpers
 
 use localrouter::providers::{
-    ChatMessage, ChatMessageContent, CompletionRequest, CompletionResponse, TokenUsage,
+    ChatMessage, ChatMessageContent, CompletionRequest, CompletionResponse,
 };
 use serde_json::json;
 use wiremock::{

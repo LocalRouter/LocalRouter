@@ -1,7 +1,6 @@
 //! Standalone test for RouteLLM GPU performance
 //! Run with: cargo run --example test_routellm_gpu --release
 
-use std::path::PathBuf;
 use std::time::Instant;
 
 fn main() {

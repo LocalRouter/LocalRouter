@@ -3,6 +3,8 @@
 //! Provides assertion functions for validating JSON-RPC 2.0 messages
 //! in MCP tests.
 
+#![allow(dead_code)]
+
 use localrouter::mcp::protocol::{JsonRpcError, JsonRpcRequest, JsonRpcResponse};
 use serde_json::Value;
 

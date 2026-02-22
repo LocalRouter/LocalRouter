@@ -209,7 +209,7 @@ async fn test_gateway_forwards_notifications() {
     let state = create_test_app_state();
 
     // Subscribe to broadcast (like a WebSocket client would)
-    let mut rx = state.mcp_notification_broadcast.subscribe();
+    let _rx = state.mcp_notification_broadcast.subscribe();
 
     // Create MCP manager and gateway with broadcast
     let mcp_manager = Arc::new(McpServerManager::new());

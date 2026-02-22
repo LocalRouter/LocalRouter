@@ -1,12 +1,13 @@
 //! Integration tests for metrics storage and aggregation
 
-use chrono::{DateTime, DurationRound, Utc};
+use chrono::{DurationRound, Utc};
 use localrouter::monitoring::metrics::{MetricsCollector, RequestMetrics};
 use localrouter::monitoring::storage::{Granularity, MetricRow, MetricsDatabase};
 use std::sync::Arc;
 use tempfile::tempdir;
 
 /// Create a test database
+#[allow(dead_code)]
 fn create_test_db() -> Arc<MetricsDatabase> {
     let dir = tempdir().unwrap();
     let db_path = dir.path().join("test.db");
@@ -14,6 +15,7 @@ fn create_test_db() -> Arc<MetricsDatabase> {
 }
 
 /// Create a test metrics collector
+#[allow(dead_code)]
 fn create_test_collector() -> MetricsCollector {
     let db = create_test_db();
     MetricsCollector::new(db)
