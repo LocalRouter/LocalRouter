@@ -4,6 +4,7 @@ import Footer from './components/Footer'
 import Home from './pages/Home'
 import Download from './pages/Download'
 import Demo from './pages/Demo'
+import Docs from './pages/Docs'
 
 function App() {
   return (
@@ -19,6 +20,7 @@ function App() {
             <main className="flex-grow">
               <Routes>
                 <Route path="/" element={<Home />} />
+                <Route path="/docs" element={<Docs />} />
                 <Route path="/download" element={<Download />} />
               </Routes>
             </main>
