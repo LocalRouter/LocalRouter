@@ -457,9 +457,6 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
     []
   )
 
-  // Retry state for exponential backoff
-  const retryCountRef = useRef(0)
-  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const isConnectingRef = useRef(false)
   // Counter to force reconnect from UI
   const [reconnectCounter, setReconnectCounter] = useState(0)
@@ -467,12 +464,6 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
   const [manuallyDisconnected, setManuallyDisconnected] = useState(false)
 
   const doDisconnect = useCallback(async () => {
-    // Cancel any pending retry
-    if (retryTimerRef.current) {
-      clearTimeout(retryTimerRef.current)
-      retryTimerRef.current = null
-    }
-
     // Reject any pending requests before disconnecting (use functional update to get current values)
     setPendingSamplingRequests((prev) => {
       prev.forEach((r) => r.reject(new Error("Disconnected")))
@@ -566,12 +557,9 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
     if (!connectionConfig || manuallyDisconnected) {
       // Settings not ready or user manually disconnected - disconnect if connected
       doDisconnect()
-      retryCountRef.current = 0
       return
     }
 
-    // Reset retry count when settings change (user-initiated)
-    retryCountRef.current = 0
     // Abort flag to cancel stale connection attempts
     let aborted = false
 
@@ -598,20 +586,10 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
         mcpClientRef.current = client
 
         await client.connect()
-        if (!aborted) {
-          retryCountRef.current = 0
-        }
       } catch (error) {
         if (aborted) return
         console.error("Failed to connect:", error)
-        // Schedule retry with exponential backoff
-        const delay = Math.min(1000 * Math.pow(2, retryCountRef.current), 30000)
-        retryCountRef.current++
-        console.log(`[MCP] Retrying in ${delay}ms (attempt ${retryCountRef.current})`)
-        retryTimerRef.current = setTimeout(() => {
-          retryTimerRef.current = null
-          doConnect()
-        }, delay)
+        // Don't auto-retry — let the user click Connect to retry manually
       } finally {
         if (!aborted) {
           isConnectingRef.current = false
@@ -624,10 +602,6 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
     return () => {
       aborted = true
       isConnectingRef.current = false
-      if (retryTimerRef.current) {
-        clearTimeout(retryTimerRef.current)
-        retryTimerRef.current = null
-      }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connectionConfigKey, reconnectCounter, manuallyDisconnected])
@@ -802,11 +776,6 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
                   disabled={!canConnect}
                   onClick={() => {
                     isConnectingRef.current = false
-                    retryCountRef.current = 0
-                    if (retryTimerRef.current) {
-                      clearTimeout(retryTimerRef.current)
-                      retryTimerRef.current = null
-                    }
                     setManuallyDisconnected(false)
                     setReconnectCounter(c => c + 1)
                   }}
