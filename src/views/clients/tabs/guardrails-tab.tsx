@@ -113,7 +113,7 @@ export function ClientGuardrailsTab({ client, onUpdate, onViewChange }: ClientGu
   const categoryPermissionsMap = useMemo((): Record<string, CategoryActionState> => {
     const map: Record<string, CategoryActionState> = {}
     for (const entry of guardrailsConfig.category_actions) {
-      if (entry.category !== "__global" && entry.action !== "ask") {
+      if (entry.category !== "__global" && entry.action !== "allow") {
         map[entry.category] = entry.action as CategoryActionState
       }
     }
@@ -122,7 +122,7 @@ export function ClientGuardrailsTab({ client, onUpdate, onViewChange }: ClientGu
 
   const globalCategoryAction = useMemo((): CategoryActionState => {
     const global = guardrailsConfig.category_actions.find(e => e.category === "__global")
-    return (global?.action as CategoryActionState) || "ask"
+    return (global?.action as CategoryActionState) || "allow"
   }, [guardrailsConfig.category_actions])
 
   const handleCategoryActionChange = (id: string, action: CategoryActionState) => {

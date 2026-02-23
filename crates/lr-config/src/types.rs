@@ -1401,7 +1401,7 @@ pub struct CategoryActionEntry {
 }
 
 fn default_category_action() -> String {
-    "ask".to_string()
+    "allow".to_string()
 }
 
 /// Default safety models: empty list.
