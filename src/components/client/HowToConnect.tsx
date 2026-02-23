@@ -11,7 +11,7 @@
 import { useState, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
-import { Copy, Check, Eye, RefreshCw, Cpu, Terminal, Globe, Key, FileJson, Loader2, Rocket, Settings2, ExternalLink, CheckCircle2, XCircle, RefreshCcw, BookOpen } from "lucide-react"
+import { Copy, Check, Eye, RefreshCw, Cpu, Terminal, Globe, Key, FileJson, Loader2, Rocket, Settings2, ExternalLink, CheckCircle2, XCircle, RefreshCcw, BookOpen, AlertTriangle } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Badge } from "@/components/ui/Badge"
 import { Button } from "@/components/ui/Button"
@@ -496,6 +496,26 @@ function QuickSetupTab({
         {/* Auto tab */}
         {supportsPermanent && (
           <TabsContent value="auto" className="space-y-4">
+            {/* Warning: what sync will do */}
+            <div className="rounded-lg border border-yellow-200 bg-yellow-50 dark:border-yellow-900 dark:bg-yellow-950 p-3 space-y-1.5">
+              <div className="flex items-start gap-2">
+                <AlertTriangle className="h-4 w-4 text-yellow-600 dark:text-yellow-400 mt-0.5 shrink-0" />
+                <div className="space-y-1 min-w-0">
+                  <p className="text-xs font-medium text-yellow-800 dark:text-yellow-300">
+                    This will modify {template.name}'s configuration files
+                  </p>
+                  <p className="text-xs text-yellow-700 dark:text-yellow-400">
+                    LocalRouter will automatically write and update config files when models, secrets, or settings change. Manual edits to these files may be overwritten.
+                  </p>
+                  {template.configFile && (
+                    <code className="text-xs text-yellow-700 dark:text-yellow-400 block break-all">
+                      {resolveTemplatePlaceholders(template.configFile.path, baseUrl, resolvedSecret, clientId, homeDir, configDir)}
+                    </code>
+                  )}
+                </div>
+              </div>
+            </div>
+
             <div className="rounded-lg border p-3 space-y-2">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
@@ -682,11 +702,10 @@ export function HowToConnect({
     }
   }, null, 2)
 
-  // Determine available tabs
-  const tabCount = (hasQuickSetup ? 1 : 0) + (showModelsTab ? 1 : 0) + (showMcpTab ? 1 : 0)
-  // Use static Tailwind classes (dynamic interpolation doesn't work with purging)
-  const gridColsClass = tabCount === 1 ? "grid-cols-1" : tabCount === 2 ? "grid-cols-2" : "grid-cols-3"
-  const defaultTab = hasQuickSetup ? "quick-setup" : showModelsTab ? "models" : "mcp"
+  // For custom/generic clients (no quick setup), determine tab layout
+  const manualTabCount = (showModelsTab ? 1 : 0) + (showMcpTab ? 1 : 0)
+  const manualGridCols = manualTabCount === 1 ? "grid-cols-1" : "grid-cols-2"
+  const defaultManualTab = showModelsTab ? "models" : "mcp"
 
   return (
     <Card className={className}>
@@ -732,14 +751,22 @@ export function HowToConnect({
         </div>
       </CardHeader>
       <CardContent>
-        <Tabs defaultValue={defaultTab}>
-          <TabsList className={`mb-4 grid w-full ${gridColsClass}`}>
-            {hasQuickSetup && (
-              <TabsTrigger value="quick-setup" className="gap-2">
-                <Rocket className="h-4 w-4" />
-                Quick Setup
-              </TabsTrigger>
-            )}
+        {/* Template-based clients: show Quick Setup directly (no outer tabs) */}
+        {hasQuickSetup && template ? (
+          <QuickSetupTab
+            template={template}
+            clientId={clientId}
+            baseUrl={baseUrl}
+            secret={secret}
+            homeDir={homeDir}
+            configDir={configDir}
+            models={models}
+            syncConfig={syncConfig}
+          />
+        ) : (
+        /* Custom/generic clients: show Models and MCP tabs */
+        <Tabs defaultValue={defaultManualTab}>
+          <TabsList className={`mb-4 grid w-full ${manualGridCols}`}>
             {showModelsTab && (
               <TabsTrigger value="models" className="gap-2">
                 <Cpu className="h-4 w-4" />
@@ -753,22 +780,6 @@ export function HowToConnect({
               </TabsTrigger>
             )}
           </TabsList>
-
-          {/* Quick Setup Tab */}
-          {hasQuickSetup && template && (
-            <TabsContent value="quick-setup">
-              <QuickSetupTab
-                template={template}
-                clientId={clientId}
-                baseUrl={baseUrl}
-                secret={secret}
-                homeDir={homeDir}
-                configDir={configDir}
-                models={models}
-                syncConfig={syncConfig}
-              />
-            </TabsContent>
-          )}
 
           {/* Models Tab - OpenAI-compatible API */}
           {showModelsTab && (
@@ -1069,6 +1080,7 @@ export function HowToConnect({
             </TabsContent>
           )}
         </Tabs>
+        )}
       </CardContent>
     </Card>
   )
