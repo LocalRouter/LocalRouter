@@ -17,6 +17,7 @@ import type {
   UpdateGuardrailsConfigParams,
   AddSafetyModelParams,
   RemoveSafetyModelParams,
+  PullProviderModelParams,
   ProviderModelPullProgress,
 } from "@/types/tauri-commands"
 
@@ -144,7 +145,19 @@ export function GuardrailsTab({ onTabChange }: GuardrailsTabProps) {
       } satisfies AddSafetyModelParams as Record<string, unknown>)
       await loadConfig()
       rebuildEngine()
-      toast.success("Provider model added")
+
+      if (selection.needsPull) {
+        // Trigger pull in background — progress is tracked via events
+        toast.info(`Pulling "${selection.modelName}" from ${selection.providerId}...`)
+        invoke("pull_provider_model", {
+          providerId: selection.providerId,
+          modelName: selection.modelName,
+        } satisfies PullProviderModelParams as Record<string, unknown>).catch((err) => {
+          toast.error(`Failed to start pull: ${err}`)
+        })
+      } else {
+        toast.success("Provider model added")
+      }
     } catch (err) {
       toast.error(`Failed to add model: ${err}`)
     }

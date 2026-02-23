@@ -1,6 +1,6 @@
-import { useState, useEffect } from "react"
+import { useState, useEffect, useMemo } from "react"
 import { invoke } from "@tauri-apps/api/core"
-import { Cloud } from "lucide-react"
+import { Cloud, Download, CircleAlert } from "lucide-react"
 import { Button } from "@/components/ui/Button"
 import { Label } from "@/components/ui/label"
 import {
@@ -9,6 +9,7 @@ import {
   SelectGroup,
   SelectItem,
   SelectLabel,
+  SelectSeparator,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/Select"
@@ -18,6 +19,9 @@ import {
 } from "@/constants/safety-model-variants"
 import type { ProviderInstanceInfo } from "@/types/tauri-commands"
 
+/** Provider types that support pulling models on-demand */
+const PULLABLE_PROVIDER_TYPES = new Set(["ollama"])
+
 /** Selection result from the picker */
 export type PickerSelection = {
   type: "provider"
@@ -26,6 +30,7 @@ export type PickerSelection = {
   providerType: string
   modelName: string
   label: string
+  needsPull: boolean
 }
 
 interface SafetyModelPickerProps {
@@ -33,16 +38,18 @@ interface SafetyModelPickerProps {
   onSelect: (selection: PickerSelection) => void
 }
 
-interface ProviderModelMatch {
+interface ProviderModelEntry {
   provider: ProviderInstanceInfo
   modelName: string
   modelType: string
+  available: boolean
 }
 
 export function SafetyModelPicker({ onSelect }: SafetyModelPickerProps) {
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
   const [providers, setProviders] = useState<ProviderInstanceInfo[]>([])
-  const [providerModelMatches, setProviderModelMatches] = useState<ProviderModelMatch[]>([])
+  const [providerEntries, setProviderEntries] = useState<ProviderModelEntry[]>([])
+  const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     invoke<ProviderInstanceInfo[]>("list_provider_instances")
@@ -50,70 +57,83 @@ export function SafetyModelPicker({ onSelect }: SafetyModelPickerProps) {
       .catch(() => {})
   }, [])
 
-  // Check which provider models actually exist
+  // Build entries for all model family / provider combinations
   useEffect(() => {
     const enabledProviders = providers.filter(p => p.enabled)
-    if (enabledProviders.length === 0) {
-      setProviderModelMatches([])
-      return
-    }
 
-    const checkProviders = async () => {
-      const matches: ProviderModelMatch[] = []
-
-      for (const provider of enabledProviders) {
-        try {
-          const models = await invoke<{ id: string }[]>("list_provider_models", {
-            instanceName: provider.instance_name,
-          })
-          const modelIds = new Set(models.map(m => m.id))
-
-          for (const [modelType, providerMap] of Object.entries(PROVIDER_MODEL_NAMES)) {
-            const expectedModelName = providerMap[provider.provider_type]
-            if (expectedModelName && modelIds.has(expectedModelName)) {
-              matches.push({
-                provider,
-                modelName: expectedModelName,
-                modelType,
-              })
-            }
+    const buildEntries = async () => {
+      // Fetch available model lists from all providers in parallel
+      const providerModels = new Map<string, Set<string>>()
+      await Promise.all(
+        enabledProviders.map(async (provider) => {
+          try {
+            const models = await invoke<{ id: string }[]>("list_provider_models", {
+              instanceName: provider.instance_name,
+            })
+            providerModels.set(provider.instance_name, new Set(models.map(m => m.id)))
+          } catch {
+            providerModels.set(provider.instance_name, new Set())
           }
-        } catch {
-          // Provider model listing failed, skip
+        })
+      )
+
+      // Build entries for every model type × matching provider combination
+      const entries: ProviderModelEntry[] = []
+      for (const [modelType, providerMap] of Object.entries(PROVIDER_MODEL_NAMES)) {
+        for (const provider of enabledProviders) {
+          const expectedModelName = providerMap[provider.provider_type]
+          if (!expectedModelName) continue
+
+          const availableModels = providerModels.get(provider.instance_name)
+          entries.push({
+            provider,
+            modelName: expectedModelName,
+            modelType,
+            available: availableModels?.has(expectedModelName) ?? false,
+          })
         }
       }
 
-      setProviderModelMatches(matches)
+      setProviderEntries(entries)
+      setLoading(false)
     }
 
-    checkProviders()
+    buildEntries()
   }, [providers])
 
-  const handleChange = (value: string) => {
-    setSelectedKey(value)
-  }
+  // Build the selected entry's metadata for the action handler
+  const selectedEntry = useMemo(() => {
+    if (!selectedKey) return null
 
-  const handleAction = () => {
-    if (!selectedKey) return
-
+    // Parse key format: "provider:<modelType>:<providerInstanceName>"
     const parts = selectedKey.split(":")
     const modelType = parts[1]
     const providerId = parts.slice(2).join(":")
-    const match = providerModelMatches.find(
-      m => m.modelType === modelType && m.provider.instance_name === providerId
-    )
-    const familyGroup = MODEL_FAMILY_GROUPS.find(g => g.modelType === modelType)
+
+    return providerEntries.find(
+      e => e.modelType === modelType && e.provider.instance_name === providerId
+    ) ?? null
+  }, [selectedKey, providerEntries])
+
+  const handleAction = () => {
+    if (!selectedEntry) return
+
+    const familyGroup = MODEL_FAMILY_GROUPS.find(g => g.modelType === selectedEntry.modelType)
 
     onSelect({
       type: "provider",
-      modelType,
-      providerId,
-      providerType: match?.provider.provider_type ?? "",
-      modelName: match?.modelName ?? "",
-      label: `${familyGroup?.family ?? modelType} via ${providerId}`,
+      modelType: selectedEntry.modelType,
+      providerId: selectedEntry.provider.instance_name,
+      providerType: selectedEntry.provider.provider_type,
+      modelName: selectedEntry.modelName,
+      label: `${familyGroup?.family ?? selectedEntry.modelType} via ${selectedEntry.provider.instance_name}`,
+      needsPull: !selectedEntry.available,
     })
     setSelectedKey(null)
   }
+
+  const needsPull = selectedEntry && !selectedEntry.available
+  const isPullable = selectedEntry && PULLABLE_PROVIDER_TYPES.has(selectedEntry.provider.provider_type)
 
   return (
     <div className="flex items-end gap-3">
@@ -121,47 +141,75 @@ export function SafetyModelPicker({ onSelect }: SafetyModelPickerProps) {
         <Label className="text-xs mb-1.5 block">Add Model</Label>
         <Select
           value={selectedKey ?? undefined}
-          onValueChange={handleChange}
+          onValueChange={setSelectedKey}
         >
           <SelectTrigger className="h-9 text-xs">
             <SelectValue placeholder="Select a safety model..." />
           </SelectTrigger>
           <SelectContent>
-            {MODEL_FAMILY_GROUPS.map((group) => {
-              const matchingProviders = providerModelMatches.filter(
-                m => m.modelType === group.modelType
-              )
-
-              if (matchingProviders.length === 0) return null
+            {MODEL_FAMILY_GROUPS.map((group, groupIdx) => {
+              const entries = providerEntries.filter(e => e.modelType === group.modelType)
 
               return (
                 <SelectGroup key={group.modelType}>
+                  {groupIdx > 0 && <SelectSeparator />}
                   <SelectLabel className="text-xs font-semibold pl-2">{group.family}</SelectLabel>
-                  {matchingProviders.map((m) => {
-                    const key = `provider:${group.modelType}:${m.provider.instance_name}`
-                    return (
-                      <SelectItem
-                        key={key}
-                        value={key}
-                        className="text-xs pl-10"
-                      >
-                        {m.modelName} — via {m.provider.instance_name}
-                      </SelectItem>
-                    )
-                  })}
+                  {entries.length > 0 ? (
+                    entries.map((entry) => {
+                      const key = `provider:${group.modelType}:${entry.provider.instance_name}`
+
+                      if (entry.available) {
+                        return (
+                          <SelectItem key={key} value={key} className="text-xs pl-6">
+                            <span>{entry.modelName}</span>
+                            <span className="text-muted-foreground"> — Ready on {entry.provider.instance_name}</span>
+                          </SelectItem>
+                        )
+                      }
+
+                      const canPull = PULLABLE_PROVIDER_TYPES.has(entry.provider.provider_type)
+                      return (
+                        <SelectItem key={key} value={key} className="text-xs pl-6">
+                          <span>{entry.modelName}</span>
+                          <span className="text-muted-foreground">
+                            {canPull
+                              ? ` — Pull via ${entry.provider.instance_name}`
+                              : ` — Not found on ${entry.provider.instance_name}`}
+                          </span>
+                        </SelectItem>
+                      )
+                    })
+                  ) : (
+                    <SelectItem value={`__none:${group.modelType}`} disabled className="text-xs pl-6 text-muted-foreground italic">
+                      No compatible provider configured
+                    </SelectItem>
+                  )}
                 </SelectGroup>
               )
             })}
+            {!loading && providers.filter(p => p.enabled).length === 0 && (
+              <>
+                <SelectSeparator />
+                <div className="flex items-center gap-1.5 px-3 py-2 text-xs text-muted-foreground">
+                  <CircleAlert className="h-3 w-3 shrink-0" />
+                  No providers configured. Add one in Settings &rarr; Providers.
+                </div>
+              </>
+            )}
           </SelectContent>
         </Select>
       </div>
       <Button
         size="sm"
         className="h-9"
-        disabled={!selectedKey}
+        disabled={!selectedEntry}
         onClick={handleAction}
       >
-        <Cloud className="h-3.5 w-3.5 mr-1.5" />Use
+        {needsPull && isPullable ? (
+          <><Download className="h-3.5 w-3.5 mr-1.5" />Pull &amp; Add</>
+        ) : (
+          <><Cloud className="h-3.5 w-3.5 mr-1.5" />Add</>
+        )}
       </Button>
     </div>
   )
