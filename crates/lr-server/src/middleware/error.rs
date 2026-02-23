@@ -14,6 +14,8 @@ use lr_types::errors::AppError;
 pub struct ApiErrorResponse {
     pub status: StatusCode,
     pub error: ErrorResponse,
+    /// Optional retry-after header value (seconds)
+    pub retry_after_secs: Option<u64>,
 }
 
 impl ApiErrorResponse {
@@ -25,6 +27,7 @@ impl ApiErrorResponse {
         Self {
             status,
             error: ErrorResponse::new(error_type, message),
+            retry_after_secs: None,
         }
     }
 
@@ -42,6 +45,12 @@ impl ApiErrorResponse {
 
     pub fn rate_limited(message: impl Into<String>) -> Self {
         Self::new(StatusCode::TOO_MANY_REQUESTS, "rate_limit_error", message)
+    }
+
+    pub fn rate_limited_with_retry(message: impl Into<String>, retry_after_secs: u64) -> Self {
+        let mut resp = Self::new(StatusCode::TOO_MANY_REQUESTS, "rate_limit_error", message);
+        resp.retry_after_secs = Some(retry_after_secs);
+        resp
     }
 
     pub fn internal_error(message: impl Into<String>) -> Self {
@@ -80,7 +89,17 @@ impl ApiErrorResponse {
 
 impl IntoResponse for ApiErrorResponse {
     fn into_response(self) -> Response {
-        (self.status, Json(self.error)).into_response()
+        if let Some(retry_after) = self.retry_after_secs {
+            let mut response = (self.status, Json(self.error)).into_response();
+            response.headers_mut().insert(
+                "retry-after",
+                axum::http::HeaderValue::from_str(&retry_after.to_string())
+                    .unwrap_or_else(|_| axum::http::HeaderValue::from_static("60")),
+            );
+            response
+        } else {
+            (self.status, Json(self.error)).into_response()
+        }
     }
 }
 
@@ -95,6 +114,12 @@ impl From<AppError> for ApiErrorResponse {
                 ApiErrorResponse::bad_gateway(format!("Provider error: {}", msg))
             }
             AppError::RateLimitExceeded => ApiErrorResponse::rate_limited("Rate limit exceeded"),
+            AppError::FreeTierExhausted { retry_after_secs } => {
+                ApiErrorResponse::rate_limited_with_retry(
+                    "Free tier exhausted. All free-tier providers are at capacity.",
+                    retry_after_secs,
+                )
+            }
             AppError::Unauthorized => ApiErrorResponse::unauthorized("Unauthorized"),
             AppError::ApiKey(msg) => {
                 ApiErrorResponse::unauthorized(format!("API key error: {}", msg))

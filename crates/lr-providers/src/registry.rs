@@ -156,6 +156,22 @@ impl ProviderRegistry {
         self.factories.read().get(provider_type).cloned()
     }
 
+    /// Get the default free tier config for a provider type from its factory
+    pub fn get_factory_default_free_tier(
+        &self,
+        provider_type: &lr_config::ProviderType,
+    ) -> lr_config::FreeTierKind {
+        let type_str = serde_json::to_string(provider_type)
+            .unwrap_or_default()
+            .trim_matches('"')
+            .to_string();
+        self.factories
+            .read()
+            .get(&type_str)
+            .map(|f| f.default_free_tier())
+            .unwrap_or(lr_config::FreeTierKind::None)
+    }
+
     /// List all available provider types with setup parameters
     ///
     /// Used by: UI for showing available provider types

@@ -36,6 +36,7 @@ fn create_test_config(
         allowed_models,
         auto_config,
         rate_limits,
+        free_tier_only: false,
     };
 
     let client = Client {
@@ -125,6 +126,7 @@ fn create_test_router(config: AppConfig) -> Router {
         provider_registry,
         rate_limiter,
         metrics_collector,
+        Arc::new(lr_router::FreeTierManager::new(None)),
     )
 }
 
@@ -466,6 +468,7 @@ async fn test_disabled_client_returns_unauthorized() {
         },
         auto_config: None,
         rate_limits: vec![],
+        free_tier_only: false,
     };
 
     let client = Client {

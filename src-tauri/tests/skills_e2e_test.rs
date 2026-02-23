@@ -52,6 +52,7 @@ fn create_test_router() -> Arc<Router> {
         provider_registry,
         rate_limiter,
         metrics_collector,
+        Arc::new(lr_router::FreeTierManager::new(None)),
     ))
 }
 

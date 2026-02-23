@@ -34,6 +34,9 @@ pub enum AppError {
     #[error("Rate limit exceeded")]
     RateLimitExceeded,
 
+    #[error("Free tier exhausted (retry after {retry_after_secs}s)")]
+    FreeTierExhausted { retry_after_secs: u64 },
+
     #[error("Internal server error: {0}")]
     Internal(String),
 

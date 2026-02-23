@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use uuid::Uuid;
 
-pub(crate) const CONFIG_VERSION: u32 = 13;
+pub(crate) const CONFIG_VERSION: u32 = 14;
 
 /// Suffix for auto-generated client strategy names
 pub const CLIENT_STRATEGY_NAME_SUFFIX: &str = "'s strategy";
@@ -264,6 +264,10 @@ pub struct Strategy {
     /// Rate limits for this strategy
     #[serde(default)]
     pub rate_limits: Vec<StrategyRateLimit>,
+    /// When true, the router only uses free-tier models/providers.
+    /// When all free providers are exhausted, returns 429 with retry-after.
+    #[serde(default)]
+    pub free_tier_only: bool,
 }
 
 impl Strategy {
@@ -276,6 +280,7 @@ impl Strategy {
             allowed_models: AvailableModelsSelection::default(),
             auto_config: None,
             rate_limits: vec![],
+            free_tier_only: false,
         }
     }
 
@@ -288,6 +293,7 @@ impl Strategy {
             allowed_models: AvailableModelsSelection::all(),
             auto_config: None,
             rate_limits: vec![],
+            free_tier_only: false,
         }
     }
 
@@ -1900,8 +1906,104 @@ pub enum RateLimitType {
     Cost,
 }
 
+/// Free tier type for a provider
+///
+/// Providers have fundamentally different free tier models. This enum captures
+/// all the variants with a common abstraction.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum FreeTierKind {
+    /// No known free tier. Always treated as paid.
+    #[default]
+    None,
+    /// Local / self-hosted. Always free, no limits from provider.
+    AlwaysFreeLocal,
+    /// Subscription-based. Free within existing subscription.
+    Subscription,
+    /// Rate-limited free access (RPM/RPD/TPM) but no dollar credits.
+    /// Used by: Gemini, Groq, Cerebras, Mistral, Cohere
+    RateLimitedFree {
+        /// Max requests per minute (0 = not tracked)
+        #[serde(default)]
+        max_rpm: u32,
+        /// Max requests per day (0 = not tracked)
+        #[serde(default)]
+        max_rpd: u32,
+        /// Max tokens per minute (0 = not tracked)
+        #[serde(default)]
+        max_tpm: u64,
+        /// Max tokens per day (0 = not tracked)
+        #[serde(default)]
+        max_tpd: u64,
+        /// Monthly call limit (0 = not tracked, Cohere: 1000)
+        #[serde(default)]
+        max_monthly_calls: u32,
+        /// Monthly token limit (0 = not tracked, Mistral: 1B)
+        #[serde(default)]
+        max_monthly_tokens: u64,
+    },
+    /// Credit-based free tier (e.g. OpenRouter, xAI, DeepInfra, Perplexity)
+    CreditBased {
+        /// Budget in USD
+        budget_usd: f64,
+        /// Reset period
+        reset_period: FreeTierResetPeriod,
+        /// How credits are tracked
+        detection: CreditDetection,
+    },
+    /// Specific free models only (e.g. Together AI free model, OpenRouter :free models)
+    FreeModelsOnly {
+        /// Model ID patterns that are free
+        free_model_patterns: Vec<String>,
+        /// Rate limits on free models (0 = not tracked)
+        #[serde(default)]
+        max_rpm: u32,
+    },
+}
+
+/// Reset period for credit-based free tiers
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FreeTierResetPeriod {
+    /// Resets daily
+    Daily,
+    /// Resets monthly
+    Monthly,
+    /// One-time credits, never resets
+    Never,
+}
+
+/// How credit-based free tier usage is detected
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum CreditDetection {
+    /// All accounting is local (Together, DeepInfra, Perplexity, startup grants)
+    LocalOnly,
+    /// Use provider's built-in API (OpenRouter `/api/v1/key`)
+    ProviderApi,
+    /// Custom HTTP endpoint for checking credits
+    CustomEndpoint {
+        /// URL to check credits
+        url: String,
+        /// HTTP method (GET or POST)
+        method: String,
+        /// Headers with {{API_KEY}} template support
+        #[serde(default)]
+        headers: Vec<(String, String)>,
+        /// JSONPath-like dotted path to extract remaining credits
+        #[serde(skip_serializing_if = "Option::is_none")]
+        remaining_credits_path: Option<String>,
+        /// JSONPath-like dotted path to extract total credits
+        #[serde(skip_serializing_if = "Option::is_none")]
+        total_credits_path: Option<String>,
+        /// JSONPath-like dotted path to extract is_free_tier flag
+        #[serde(skip_serializing_if = "Option::is_none")]
+        is_free_tier_path: Option<String>,
+    },
+}
+
 /// Provider configuration
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProviderConfig {
     /// Provider name
     pub name: String,
@@ -1972,6 +2074,11 @@ pub struct ProviderConfig {
     /// Use `providers::key_storage` module to manage provider API keys.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub api_key_ref: Option<String>,
+
+    /// Free tier configuration for this provider instance.
+    /// If None, uses the provider type's default free tier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub free_tier: Option<FreeTierKind>,
 }
 
 /// Provider type
@@ -2208,6 +2315,7 @@ impl ProviderConfig {
                 "base_url": "http://localhost:11434"
             })),
             api_key_ref: None,
+            free_tier: None,
         }
     }
 
@@ -2221,6 +2329,7 @@ impl ProviderConfig {
                 "base_url": "http://localhost:1234/v1"
             })),
             api_key_ref: None,
+            free_tier: None,
         }
     }
 }

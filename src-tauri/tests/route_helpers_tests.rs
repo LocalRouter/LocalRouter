@@ -97,6 +97,7 @@ fn create_test_state(config: AppConfig, client_manager: Arc<ClientManager>) -> A
         provider_registry.clone(),
         rate_limiter.clone(),
         metrics_collector.clone(),
+        Arc::new(lr_router::FreeTierManager::new(None)),
     ));
 
     AppState::new(

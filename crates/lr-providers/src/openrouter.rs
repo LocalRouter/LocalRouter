@@ -15,7 +15,7 @@ use lr_types::{AppError, AppResult};
 use super::{
     Capability, ChatMessage, ChunkChoice, ChunkDelta, CompletionChoice, CompletionChunk,
     CompletionRequest, CompletionResponse, HealthStatus, ModelInfo, ModelProvider, PricingInfo,
-    ProviderHealth, TokenUsage,
+    ProviderCreditsInfo, ProviderHealth, TokenUsage,
 };
 
 const OPENROUTER_API_BASE: &str = "https://openrouter.ai/api/v1";
@@ -489,6 +489,31 @@ impl ModelProvider for OpenRouterProvider {
                 prompt_tokens: usage["prompt_tokens"].as_u64().unwrap_or(0) as u32,
                 total_tokens: usage["total_tokens"].as_u64().unwrap_or(0) as u32,
             },
+        })
+    }
+
+    async fn check_credits(&self) -> Option<ProviderCreditsInfo> {
+        let url = format!("{}/auth/key", self.base_url);
+        let response = self.build_request(&url).send().await.ok()?;
+        if !response.status().is_success() {
+            return None;
+        }
+        let body: serde_json::Value = response.json().await.ok()?;
+        let data = body.get("data")?;
+
+        let usage = data.get("usage")?.as_f64();
+        let limit = data.get("limit")?.as_f64();
+        let is_free_tier = data.get("is_free_tier").and_then(|v| v.as_bool());
+        let limit_remaining = data.get("limit_remaining").and_then(|v| v.as_f64());
+
+        Some(ProviderCreditsInfo {
+            total_credits_usd: limit,
+            used_credits_usd: usage,
+            remaining_credits_usd: limit_remaining.or(match (limit, usage) {
+                (Some(l), Some(u)) => Some(l - u),
+                _ => None,
+            }),
+            is_free_tier,
         })
     }
 }

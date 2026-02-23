@@ -15,9 +15,11 @@ use lr_providers::{
 };
 use lr_types::{AppError, AppResult};
 
+pub mod free_tier;
 pub mod rate_limit;
 
 // Re-export commonly used types
+pub use free_tier::FreeTierManager;
 pub use rate_limit::{RateLimiterManager, UsageInfo};
 
 /// Router error classification for auto-routing fallback decisions
@@ -266,11 +268,13 @@ pub struct Router {
     rate_limiter: Arc<RateLimiterManager>,
     metrics_collector: Arc<lr_monitoring::metrics::MetricsCollector>,
     routellm_service: Option<Arc<lr_routellm::RouteLLMService>>,
+    free_tier_manager: Arc<FreeTierManager>,
 }
 
 impl Router {
-    /// Create a new router
-    pub fn new(
+    /// Create a new router without free tier manager (for tests)
+    #[cfg(test)]
+    pub fn new_without_free_tier(
         config_manager: Arc<ConfigManager>,
         provider_registry: Arc<ProviderRegistry>,
         rate_limiter: Arc<RateLimiterManager>,
@@ -282,7 +286,52 @@ impl Router {
             rate_limiter,
             metrics_collector,
             routellm_service: None,
+            free_tier_manager: Arc::new(FreeTierManager::new(None)),
         }
+    }
+
+    /// Create a new router
+    pub fn new(
+        config_manager: Arc<ConfigManager>,
+        provider_registry: Arc<ProviderRegistry>,
+        rate_limiter: Arc<RateLimiterManager>,
+        metrics_collector: Arc<lr_monitoring::metrics::MetricsCollector>,
+        free_tier_manager: Arc<FreeTierManager>,
+    ) -> Self {
+        Self {
+            config_manager,
+            provider_registry,
+            rate_limiter,
+            metrics_collector,
+            routellm_service: None,
+            free_tier_manager,
+        }
+    }
+
+    /// Get the free tier manager
+    pub fn free_tier_manager(&self) -> &Arc<FreeTierManager> {
+        &self.free_tier_manager
+    }
+
+    /// Get the effective free tier config for a provider instance.
+    /// User override on provider config takes priority, then factory default.
+    fn get_effective_free_tier(&self, provider_instance: &str) -> lr_config::FreeTierKind {
+        let config = self.config_manager.get();
+        // User override on provider config takes priority
+        if let Some(provider_config) = config
+            .providers
+            .iter()
+            .find(|p| p.name == provider_instance)
+        {
+            if let Some(ref free_tier) = provider_config.free_tier {
+                return free_tier.clone();
+            }
+            // Fall back to factory default based on provider type
+            return self
+                .provider_registry
+                .get_factory_default_free_tier(&provider_config.provider_type);
+        }
+        lr_config::FreeTierKind::None
     }
 
     /// Set the RouteLLM service
@@ -765,6 +814,7 @@ impl Router {
         );
 
         let mut last_error = None;
+        let mut min_retry_after: u64 = u64::MAX;
 
         for (idx, (provider, model)) in selected_models.iter().enumerate() {
             debug!(
@@ -774,6 +824,35 @@ impl Router {
                 provider,
                 model
             );
+
+            // Check backoff state (skip providers with recent 429/402)
+            if let Some(backoff) = self.free_tier_manager.is_in_backoff(provider, model) {
+                debug!("Skipping {}/{}: {}", provider, model, backoff.reason);
+                min_retry_after = min_retry_after.min(backoff.retry_after_secs);
+                last_error = Some(RouterError::RateLimited {
+                    provider: provider.clone(),
+                    model: model.clone(),
+                    retry_after_secs: backoff.retry_after_secs,
+                });
+                continue;
+            }
+
+            // Check free tier constraints (when free_tier_only is enabled)
+            if strategy.free_tier_only {
+                let free_tier = self.get_effective_free_tier(provider);
+                let status = self
+                    .free_tier_manager
+                    .classify_model(provider, model, &free_tier);
+                match status {
+                    free_tier::ModelFreeStatus::AlwaysFree
+                    | free_tier::ModelFreeStatus::FreeWithinLimits
+                    | free_tier::ModelFreeStatus::FreeModel => { /* allow */ }
+                    free_tier::ModelFreeStatus::NotFree => {
+                        debug!("Skipping {}/{} in free-tier-only mode", provider, model);
+                        continue;
+                    }
+                }
+            }
 
             // Check strategy rate limits before trying this model
             if let Err(e) = self.check_strategy_rate_limits(strategy, provider, model) {
@@ -789,18 +868,13 @@ impl Router {
                 continue;
             }
 
-            // PERFORMANCE NOTE: request.clone() is called here for each model attempt,
-            // and execute_request clones it again internally. This double-cloning could
-            // be optimized by restructuring to use Arc<CompletionRequest> or by passing
-            // a mutable reference. However, this requires careful ownership management.
-            // With large message histories and multiple fallback models, this could
-            // become a bottleneck.
             match self
                 .execute_request(client_id, provider, model, request.clone())
                 .await
             {
                 Ok(mut response) => {
                     info!("Auto-routing succeeded with {}/{}", provider, model);
+                    self.free_tier_manager.clear_backoff(provider, model);
                     // Attach RouteLLM win rate to response for logging
                     if let Some(win_rate) = routellm_win_rate {
                         response.routellm_win_rate = Some(win_rate);
@@ -813,6 +887,23 @@ impl Router {
                         "Auto-routing attempt failed: {}",
                         router_error.to_log_string()
                     );
+
+                    // Record backoff for rate-limited errors
+                    if router_error.should_retry() {
+                        if let RouterError::RateLimited {
+                            retry_after_secs, ..
+                        } = &router_error
+                        {
+                            self.free_tier_manager.record_rate_limit_error(
+                                provider,
+                                model,
+                                429,
+                                Some(*retry_after_secs),
+                                None,
+                                false,
+                            );
+                        }
+                    }
 
                     last_error = Some(router_error.clone());
 
@@ -829,6 +920,16 @@ impl Router {
         }
 
         // All models failed
+        if strategy.free_tier_only {
+            let retry_after = self
+                .free_tier_manager
+                .get_min_retry_after(&selected_models)
+                .unwrap_or(60);
+            return Err(AppError::FreeTierExhausted {
+                retry_after_secs: retry_after,
+            });
+        }
+
         Err(AppError::Router(format!(
             "All auto-routing models failed. Last error: {}",
             last_error
@@ -889,6 +990,34 @@ impl Router {
                 model
             );
 
+            // Check backoff state (skip providers with recent 429/402)
+            if let Some(backoff) = self.free_tier_manager.is_in_backoff(provider, model) {
+                debug!("Skipping {}/{}: {}", provider, model, backoff.reason);
+                last_error = Some(RouterError::RateLimited {
+                    provider: provider.clone(),
+                    model: model.clone(),
+                    retry_after_secs: backoff.retry_after_secs,
+                });
+                continue;
+            }
+
+            // Check free tier constraints (when free_tier_only is enabled)
+            if strategy.free_tier_only {
+                let free_tier = self.get_effective_free_tier(provider);
+                let status = self
+                    .free_tier_manager
+                    .classify_model(provider, model, &free_tier);
+                match status {
+                    free_tier::ModelFreeStatus::AlwaysFree
+                    | free_tier::ModelFreeStatus::FreeWithinLimits
+                    | free_tier::ModelFreeStatus::FreeModel => { /* allow */ }
+                    free_tier::ModelFreeStatus::NotFree => {
+                        debug!("Skipping {}/{} in free-tier-only mode", provider, model);
+                        continue;
+                    }
+                }
+            }
+
             // Check strategy rate limits before trying this model
             if let Err(e) = self.check_strategy_rate_limits(strategy, provider, model) {
                 warn!(
@@ -926,6 +1055,7 @@ impl Router {
                         "Auto-routing streaming succeeded with {}/{}",
                         provider, model
                     );
+                    self.free_tier_manager.clear_backoff(provider, model);
                     let resolved_model = format!("{}/{}", provider, model);
                     return Ok(wrap_stream_with_usage_tracking(
                         stream,
@@ -942,6 +1072,23 @@ impl Router {
                         router_error.to_log_string()
                     );
 
+                    // Record backoff for rate-limited errors
+                    if router_error.should_retry() {
+                        if let RouterError::RateLimited {
+                            retry_after_secs, ..
+                        } = &router_error
+                        {
+                            self.free_tier_manager.record_rate_limit_error(
+                                provider,
+                                model,
+                                429,
+                                Some(*retry_after_secs),
+                                None,
+                                false,
+                            );
+                        }
+                    }
+
                     last_error = Some(router_error.clone());
 
                     // Continue to next model on retryable errors
@@ -957,6 +1104,16 @@ impl Router {
         }
 
         // All models failed
+        if strategy.free_tier_only {
+            let retry_after = self
+                .free_tier_manager
+                .get_min_retry_after(&selected_models)
+                .unwrap_or(60);
+            return Err(AppError::FreeTierExhausted {
+                retry_after_secs: retry_after,
+            });
+        }
+
         Err(AppError::Router(format!(
             "All auto-routing streaming models failed. Last error: {}",
             last_error
@@ -1530,7 +1687,7 @@ mod tests {
             Arc::new(lr_monitoring::storage::MetricsDatabase::new(metrics_db_path).unwrap());
         let metrics_collector = Arc::new(lr_monitoring::metrics::MetricsCollector::new(metrics_db));
 
-        let router = Router::new(
+        let router = Router::new_without_free_tier(
             config_manager,
             provider_registry,
             rate_limiter,
@@ -1558,7 +1715,7 @@ mod tests {
             Arc::new(lr_monitoring::storage::MetricsDatabase::new(metrics_db_path).unwrap());
         let metrics_collector = Arc::new(lr_monitoring::metrics::MetricsCollector::new(metrics_db));
 
-        let router = Router::new(
+        let router = Router::new_without_free_tier(
             config_manager,
             provider_registry,
             rate_limiter,

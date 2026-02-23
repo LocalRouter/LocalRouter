@@ -171,6 +171,7 @@ pub async fn create_provider_instance(
                 enabled: true,
                 provider_config,
                 api_key_ref: None,
+                free_tier: None,
             });
         })
         .map_err(|e| e.to_string())?;

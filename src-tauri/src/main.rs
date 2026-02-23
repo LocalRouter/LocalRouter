@@ -373,6 +373,17 @@ async fn run_gui_mode() -> anyhow::Result<()> {
         }
     };
 
+    // Initialize free tier manager
+    info!("Initializing free tier manager...");
+    let free_tier_persist_path: Option<std::path::PathBuf> = lr_utils::paths::config_dir()
+        .ok()
+        .map(|d| d.join("free_tier_state.json"));
+    let free_tier_manager = Arc::new(if let Some(ref path) = free_tier_persist_path {
+        lr_router::FreeTierManager::load(path)
+    } else {
+        lr_router::FreeTierManager::new(free_tier_persist_path.clone())
+    });
+
     // Initialize router
     info!("Initializing router...");
     let config_manager_arc = Arc::new(config_manager.clone());
@@ -381,6 +392,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
         provider_registry.clone(),
         rate_limiter.clone(),
         metrics_collector.clone(),
+        free_tier_manager.clone(),
     );
 
     // Add RouteLLM service to router
@@ -451,6 +463,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             app.manage(server_manager.clone());
             app.manage(app_router.clone());
             app.manage(rate_limiter.clone());
+            app.manage(free_tier_manager.clone());
             app.manage(oauth_manager.clone());
             app.manage(metrics_collector.clone());
 
@@ -1180,6 +1193,18 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                 });
             }
 
+            // Start background free tier persistence (every 60 seconds)
+            let free_tier_manager_persist = free_tier_manager.clone();
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+                loop {
+                    interval.tick().await;
+                    if let Err(e) = free_tier_manager_persist.persist() {
+                        tracing::error!("Failed to persist free tier state: {}", e);
+                    }
+                }
+            });
+
             // Start background update checker
             info!("Starting background update checker...");
             let app_handle_for_updater = app.handle().clone();
@@ -1437,6 +1462,11 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands_marketplace::marketplace_install_respond,
             ui::commands_marketplace::set_client_marketplace_enabled,
             ui::commands_marketplace::get_client_marketplace_enabled,
+            // Free tier commands
+            ui::commands_free_tier::get_free_tier_status,
+            ui::commands_free_tier::set_provider_free_tier,
+            ui::commands_free_tier::reset_provider_free_tier_usage,
+            ui::commands_free_tier::get_default_free_tier,
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {

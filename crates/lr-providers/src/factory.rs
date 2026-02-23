@@ -17,6 +17,7 @@ use super::{
     openrouter::OpenRouterProvider, perplexity::PerplexityProvider, togetherai::TogetherAIProvider,
     xai::XAIProvider, ModelProvider,
 };
+use lr_config::FreeTierKind;
 use lr_types::{AppError, AppResult};
 
 /// Provider category for UI grouping
@@ -99,6 +100,14 @@ pub trait ProviderFactory: Send + Sync {
     /// Default: Use provider's API, fall back to catalog if API fails/empty
     fn model_list_source(&self) -> ModelListSource {
         ModelListSource::ApiWithCatalogFallback
+    }
+
+    /// Default free tier configuration for this provider type.
+    ///
+    /// Each provider declares its default free tier here. Users can override
+    /// per provider instance via ProviderConfig.free_tier.
+    fn default_free_tier(&self) -> FreeTierKind {
+        FreeTierKind::None
     }
 }
 
@@ -225,6 +234,10 @@ impl ProviderFactory for OllamaProviderFactory {
 
     fn description(&self) -> &str {
         "Local Ollama instance for running open-source models"
+    }
+
+    fn default_free_tier(&self) -> FreeTierKind {
+        FreeTierKind::AlwaysFreeLocal
     }
 
     fn setup_parameters(&self) -> Vec<SetupParameter> {
@@ -426,6 +439,17 @@ impl ProviderFactory for GeminiProviderFactory {
         "Google Gemini API for multimodal AI models"
     }
 
+    fn default_free_tier(&self) -> FreeTierKind {
+        FreeTierKind::RateLimitedFree {
+            max_rpm: 10,
+            max_rpd: 250,
+            max_tpm: 250_000,
+            max_tpd: 0,
+            max_monthly_calls: 0,
+            max_monthly_tokens: 0,
+        }
+    }
+
     fn setup_parameters(&self) -> Vec<SetupParameter> {
         vec![SetupParameter::required(
             "api_key",
@@ -480,6 +504,14 @@ impl ProviderFactory for OpenRouterProviderFactory {
 
     fn description(&self) -> &str {
         "OpenRouter multi-provider gateway for accessing multiple LLM providers"
+    }
+
+    fn default_free_tier(&self) -> FreeTierKind {
+        FreeTierKind::CreditBased {
+            budget_usd: 0.0,
+            reset_period: lr_config::FreeTierResetPeriod::Never,
+            detection: lr_config::CreditDetection::ProviderApi,
+        }
     }
 
     fn setup_parameters(&self) -> Vec<SetupParameter> {
@@ -557,6 +589,10 @@ impl ProviderFactory for OpenAICompatibleProviderFactory {
 
     fn description(&self) -> &str {
         "Generic OpenAI-compatible API (LocalAI, LM Studio, vLLM, etc.)"
+    }
+
+    fn default_free_tier(&self) -> FreeTierKind {
+        FreeTierKind::AlwaysFreeLocal
     }
 
     fn setup_parameters(&self) -> Vec<SetupParameter> {
@@ -644,6 +680,17 @@ impl ProviderFactory for GroqProviderFactory {
         "Groq fast inference for open-source models"
     }
 
+    fn default_free_tier(&self) -> FreeTierKind {
+        FreeTierKind::RateLimitedFree {
+            max_rpm: 30,
+            max_rpd: 14_400,
+            max_tpm: 6_000,
+            max_tpd: 500_000,
+            max_monthly_calls: 0,
+            max_monthly_tokens: 0,
+        }
+    }
+
     fn setup_parameters(&self) -> Vec<SetupParameter> {
         vec![SetupParameter::required(
             "api_key",
@@ -694,6 +741,17 @@ impl ProviderFactory for MistralProviderFactory {
 
     fn description(&self) -> &str {
         "Mistral AI models including Mistral Large and Codestral"
+    }
+
+    fn default_free_tier(&self) -> FreeTierKind {
+        FreeTierKind::RateLimitedFree {
+            max_rpm: 60,
+            max_rpd: 0,
+            max_tpm: 500_000,
+            max_tpd: 0,
+            max_monthly_calls: 0,
+            max_monthly_tokens: 1_000_000_000,
+        }
     }
 
     fn setup_parameters(&self) -> Vec<SetupParameter> {
@@ -748,6 +806,17 @@ impl ProviderFactory for CohereProviderFactory {
         "Cohere AI including Command R+ and specialized models"
     }
 
+    fn default_free_tier(&self) -> FreeTierKind {
+        FreeTierKind::RateLimitedFree {
+            max_rpm: 20,
+            max_rpd: 0,
+            max_tpm: 100_000,
+            max_tpd: 0,
+            max_monthly_calls: 1_000,
+            max_monthly_tokens: 0,
+        }
+    }
+
     fn setup_parameters(&self) -> Vec<SetupParameter> {
         vec![SetupParameter::required(
             "api_key",
@@ -798,6 +867,13 @@ impl ProviderFactory for TogetherAIProviderFactory {
 
     fn description(&self) -> &str {
         "Together AI platform for open-source models"
+    }
+
+    fn default_free_tier(&self) -> FreeTierKind {
+        FreeTierKind::FreeModelsOnly {
+            free_model_patterns: vec!["meta-llama/Llama-3.3-70B-Instruct-Turbo-Free".to_string()],
+            max_rpm: 3,
+        }
     }
 
     fn setup_parameters(&self) -> Vec<SetupParameter> {
@@ -912,6 +988,14 @@ impl ProviderFactory for DeepInfraProviderFactory {
         "DeepInfra cost-effective hosting for open-source models"
     }
 
+    fn default_free_tier(&self) -> FreeTierKind {
+        FreeTierKind::CreditBased {
+            budget_usd: 5.0,
+            reset_period: lr_config::FreeTierResetPeriod::Monthly,
+            detection: lr_config::CreditDetection::LocalOnly,
+        }
+    }
+
     fn setup_parameters(&self) -> Vec<SetupParameter> {
         vec![SetupParameter::required(
             "api_key",
@@ -962,6 +1046,17 @@ impl ProviderFactory for CerebrasProviderFactory {
 
     fn description(&self) -> &str {
         "Cerebras ultra-fast inference platform"
+    }
+
+    fn default_free_tier(&self) -> FreeTierKind {
+        FreeTierKind::RateLimitedFree {
+            max_rpm: 30,
+            max_rpd: 14_400,
+            max_tpm: 60_000,
+            max_tpd: 1_000_000,
+            max_monthly_calls: 0,
+            max_monthly_tokens: 0,
+        }
     }
 
     fn setup_parameters(&self) -> Vec<SetupParameter> {
@@ -1016,6 +1111,14 @@ impl ProviderFactory for XAIProviderFactory {
         "xAI Grok models with real-time knowledge access"
     }
 
+    fn default_free_tier(&self) -> FreeTierKind {
+        FreeTierKind::CreditBased {
+            budget_usd: 25.0,
+            reset_period: lr_config::FreeTierResetPeriod::Never,
+            detection: lr_config::CreditDetection::LocalOnly,
+        }
+    }
+
     fn setup_parameters(&self) -> Vec<SetupParameter> {
         vec![SetupParameter::required(
             "api_key",
@@ -1066,6 +1169,10 @@ impl ProviderFactory for LMStudioProviderFactory {
 
     fn description(&self) -> &str {
         "LM Studio local inference with OpenAI-compatible API"
+    }
+
+    fn default_free_tier(&self) -> FreeTierKind {
+        FreeTierKind::AlwaysFreeLocal
     }
 
     fn setup_parameters(&self) -> Vec<SetupParameter> {
@@ -1170,6 +1277,10 @@ impl ProviderFactory for GitHubCopilotProviderFactory {
         "Use your GitHub Copilot subscription for AI completions"
     }
 
+    fn default_free_tier(&self) -> FreeTierKind {
+        FreeTierKind::Subscription
+    }
+
     fn setup_parameters(&self) -> Vec<SetupParameter> {
         vec![SetupParameter {
             key: "oauth".to_string(),
@@ -1232,6 +1343,10 @@ impl ProviderFactory for OpenAICodexProviderFactory {
 
     fn description(&self) -> &str {
         "Use your ChatGPT Plus subscription for OpenAI models"
+    }
+
+    fn default_free_tier(&self) -> FreeTierKind {
+        FreeTierKind::Subscription
     }
 
     fn setup_parameters(&self) -> Vec<SetupParameter> {

@@ -39,6 +39,7 @@ async fn start_test_server() -> (String, tokio::task::JoinHandle<()>) {
         provider_registry.clone(),
         rate_limiter.clone(),
         metrics_collector.clone(),
+        Arc::new(lr_router::FreeTierManager::new(None)),
     ));
     let client_manager = Arc::new(ClientManager::new(vec![]));
     let token_store = Arc::new(TokenStore::new());

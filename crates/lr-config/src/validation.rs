@@ -324,6 +324,7 @@ mod tests {
             enabled: true,
             provider_config: None,
             api_key_ref: None,
+            free_tier: None,
         };
         let mut config = AppConfig::default();
         config.providers = vec![provider.clone(), provider];
@@ -339,6 +340,7 @@ mod tests {
             enabled: true,
             provider_config: None,
             api_key_ref: None,
+            free_tier: None,
         }];
         assert!(validate_config(&config).is_err());
     }
@@ -352,6 +354,7 @@ mod tests {
             enabled: true,
             provider_config: None,
             api_key_ref: None,
+            free_tier: None,
         }];
         assert!(validate_config(&config).is_err());
     }
@@ -364,6 +367,7 @@ mod tests {
             allowed_models: AvailableModelsSelection::all(),
             auto_config: None,
             rate_limits: vec![],
+            free_tier_only: false,
         }
     }
 
@@ -469,6 +473,7 @@ mod tests {
             enabled: true,
             provider_config: Some(serde_json::json!("not an object")),
             api_key_ref: None,
+            free_tier: None,
         }];
         assert!(validate_config(&config).is_err());
     }
@@ -494,6 +499,7 @@ mod tests {
                 enabled: true,
                 provider_config: None,
                 api_key_ref: None,
+                free_tier: None,
             },
             ProviderConfig {
                 name: "".to_string(),
@@ -501,6 +507,7 @@ mod tests {
                 enabled: true,
                 provider_config: None,
                 api_key_ref: None,
+                free_tier: None,
             },
         ];
         let err = validate_config(&config).unwrap_err();
@@ -599,6 +606,7 @@ mod self_referential_tests {
                     "api_key": "sk-proj-abcdefghijklmnopqrstuvwxyz123456"
                 })),
                 api_key_ref: None,
+                free_tier: None,
             }],
             ..Default::default()
         };
@@ -618,6 +626,7 @@ mod self_referential_tests {
                     "base_url": "http://localhost:11434"
                 })),
                 api_key_ref: None,
+                free_tier: None,
             }],
             ..Default::default()
         };
@@ -635,6 +644,7 @@ mod self_referential_tests {
                 enabled: true,
                 provider_config: None,
                 api_key_ref: None,
+                free_tier: None,
             }],
             ..Default::default()
         };
@@ -656,6 +666,7 @@ mod self_referential_tests {
                     "api_key": "lr-8xIF-tmewuD4eOm1dxHKRjiCAD57nLAGRLEJISS1K6E"
                 })),
                 api_key_ref: None,
+                free_tier: None,
             }],
             ..Default::default()
         };

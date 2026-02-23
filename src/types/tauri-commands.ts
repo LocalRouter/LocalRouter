@@ -168,6 +168,68 @@ export interface Strategy {
   allowed_models: AvailableModelsSelection
   auto_config?: AutoModelConfig | null
   rate_limits: StrategyRateLimit[]
+  free_tier_only?: boolean
+}
+
+// =============================================================================
+// Free Tier Types
+// Rust: crates/lr-config/src/types.rs, src-tauri/src/ui/commands_free_tier.rs
+// =============================================================================
+
+/**
+ * Free tier reset period.
+ * Rust: crates/lr-config/src/types.rs - FreeTierResetPeriod enum
+ */
+export type FreeTierResetPeriod = 'daily' | 'monthly' | 'never'
+
+/**
+ * Credit detection method.
+ * Rust: crates/lr-config/src/types.ts - CreditDetection enum
+ */
+export type CreditDetection =
+  | { type: 'local_only' }
+  | { type: 'provider_api' }
+  | { type: 'custom_endpoint'; url: string; method: string; headers: [string, string][]; remaining_credits_path: string | null; total_credits_path: string | null; is_free_tier_path: string | null }
+
+/**
+ * Free tier kind discriminated union.
+ * Rust: crates/lr-config/src/types.rs - FreeTierKind enum
+ */
+export type FreeTierKind =
+  | { kind: 'none' }
+  | { kind: 'always_free_local' }
+  | { kind: 'subscription' }
+  | { kind: 'rate_limited_free'; max_rpm: number; max_rpd: number; max_tpm: number; max_tpd: number; max_monthly_calls: number; max_monthly_tokens: number }
+  | { kind: 'credit_based'; budget_usd: number; reset_period: FreeTierResetPeriod; detection: CreditDetection }
+  | { kind: 'free_models_only'; free_model_patterns: string[]; max_rpm: number }
+
+/**
+ * Provider free tier status for UI display.
+ * Rust: src-tauri/src/ui/commands_free_tier.rs - ProviderFreeTierStatus struct
+ */
+export interface ProviderFreeTierStatus {
+  provider_instance: string
+  provider_type: string
+  display_name: string
+  free_tier: FreeTierKind
+  is_user_override: boolean
+  supports_credit_check: boolean
+  rate_rpm_used: number | null
+  rate_rpm_limit: number | null
+  rate_rpd_used: number | null
+  rate_rpd_limit: number | null
+  rate_tpm_used: number | null
+  rate_tpm_limit: number | null
+  rate_monthly_calls_used: number | null
+  rate_monthly_calls_limit: number | null
+  credit_used_usd: number | null
+  credit_budget_usd: number | null
+  credit_remaining_usd: number | null
+  is_backed_off: boolean
+  backoff_retry_after_secs: number | null
+  backoff_reason: string | null
+  has_capacity: boolean
+  status_message: string
 }
 
 // =============================================================================
@@ -1215,6 +1277,7 @@ export interface UpdateStrategyParams {
   allowedModels?: AvailableModelsSelection | null
   autoConfig?: AutoModelConfig | null
   rateLimits?: StrategyRateLimit[] | null
+  freeTierOnly?: boolean | null
 }
 
 /** Params for delete_strategy */
@@ -2094,6 +2157,27 @@ export interface RemoveSafetyModelParams {
 export interface PullProviderModelParams {
   providerId: string
   modelName: string
+}
+
+// =============================================================================
+// Free Tier Commands
+// Rust: src-tauri/src/ui/commands_free_tier.rs
+// =============================================================================
+
+/** Params for set_provider_free_tier */
+export interface SetProviderFreeTierParams {
+  providerInstance: string
+  freeTier: FreeTierKind | null
+}
+
+/** Params for reset_provider_free_tier_usage */
+export interface ResetProviderFreeTierUsageParams {
+  providerInstance: string
+}
+
+/** Params for get_default_free_tier */
+export interface GetDefaultFreeTierParams {
+  providerType: string
 }
 
 /** Progress event from provider model pull */

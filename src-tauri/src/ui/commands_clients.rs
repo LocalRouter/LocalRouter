@@ -487,6 +487,7 @@ pub async fn create_strategy(
 }
 
 /// Update a routing strategy
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn update_strategy(
     strategy_id: String,
@@ -494,6 +495,7 @@ pub async fn update_strategy(
     allowed_models: Option<lr_config::AvailableModelsSelection>,
     auto_config: Option<lr_config::AutoModelConfig>,
     rate_limits: Option<Vec<lr_config::StrategyRateLimit>>,
+    free_tier_only: Option<bool>,
     config_manager: State<'_, ConfigManager>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
@@ -514,6 +516,9 @@ pub async fn update_strategy(
                 }
                 if let Some(limits) = rate_limits {
                     strategy.rate_limits = limits;
+                }
+                if let Some(free_tier) = free_tier_only {
+                    strategy.free_tier_only = free_tier;
                 }
                 found = true;
             }

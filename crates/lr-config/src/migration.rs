@@ -93,6 +93,11 @@ pub fn migrate_config(mut config: AppConfig) -> AppResult<AppConfig> {
         config = migrate_to_v13(config)?;
     }
 
+    // Migrate to v14: Free tier mode (new fields have defaults, no-op migration)
+    if config.version < 14 {
+        config = migrate_to_v14(config)?;
+    }
+
     // Update version to current
     config.version = CONFIG_VERSION;
 
@@ -477,6 +482,16 @@ fn migrate_to_v13(mut config: AppConfig) -> AppResult<AppConfig> {
     config.guardrails.category_actions = vec![];
 
     config.version = 13;
+    Ok(config)
+}
+
+/// Migrate to version 14: Free tier mode
+///
+/// New fields (Strategy.free_tier_only, ProviderConfig.free_tier) have serde defaults,
+/// so this is a no-op version bump.
+fn migrate_to_v14(mut config: AppConfig) -> AppResult<AppConfig> {
+    info!("Migrating to version 14: Free tier mode support");
+    config.version = 14;
     Ok(config)
 }
 

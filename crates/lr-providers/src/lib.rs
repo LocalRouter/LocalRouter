@@ -114,6 +114,27 @@ pub trait ModelProvider: Send + Sync {
     ) -> Option<Box<dyn crate::features::FeatureAdapter>> {
         None
     }
+
+    /// Check remaining credits/balance with this provider's API (if supported).
+    ///
+    /// Only providers with credit-check APIs implement this (e.g., OpenRouter).
+    /// Default implementation returns None, meaning no API-based credit checking.
+    async fn check_credits(&self) -> Option<ProviderCreditsInfo> {
+        None
+    }
+}
+
+/// Credit/balance information returned by a provider's API
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderCreditsInfo {
+    /// Total credits in USD (if known)
+    pub total_credits_usd: Option<f64>,
+    /// Credits used in USD (if known)
+    pub used_credits_usd: Option<f64>,
+    /// Credits remaining in USD (if known)
+    pub remaining_credits_usd: Option<f64>,
+    /// Whether the key is on the provider's free tier
+    pub is_free_tier: Option<bool>,
 }
 
 /// Information about a model

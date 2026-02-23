@@ -692,6 +692,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       if (args?.allowedModels !== undefined && args.allowedModels !== null) strategy.allowed_models = args.allowedModels
       if (args?.autoConfig !== undefined) strategy.auto_config = args.autoConfig
       if (args?.rateLimits !== undefined && args.rateLimits !== null) strategy.rate_limits = args.rateLimits
+      if (args?.freeTierOnly !== undefined && args.freeTierOnly !== null) (strategy as Record<string, unknown>).free_tier_only = args.freeTierOnly
     }
     return null
   },
@@ -1421,6 +1422,79 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   'pull_provider_model': (args) => {
     toast.info(`Pulling model "${args?.modelName}" from ${args?.providerId} (demo)`)
     return null
+  },
+
+  // ============================================================================
+  // Free Tier
+  // ============================================================================
+  'get_free_tier_status': () => {
+    return [
+      {
+        provider_instance: 'ollama',
+        provider_type: 'ollama',
+        display_name: 'ollama',
+        free_tier: { kind: 'always_free_local' },
+        is_user_override: false,
+        supports_credit_check: false,
+        rate_rpm_used: null, rate_rpm_limit: null,
+        rate_rpd_used: null, rate_rpd_limit: null,
+        rate_tpm_used: null, rate_tpm_limit: null,
+        rate_monthly_calls_used: null, rate_monthly_calls_limit: null,
+        credit_used_usd: null, credit_budget_usd: null, credit_remaining_usd: null,
+        is_backed_off: false, backoff_retry_after_secs: null, backoff_reason: null,
+        has_capacity: true, status_message: 'Always free',
+      },
+      {
+        provider_instance: 'groq-fast',
+        provider_type: 'groq',
+        display_name: 'groq-fast',
+        free_tier: { kind: 'rate_limited_free', max_rpm: 30, max_rpd: 14400, max_tpm: 6000, max_tpd: 500000, max_monthly_calls: 0, max_monthly_tokens: 0 },
+        is_user_override: false,
+        supports_credit_check: false,
+        rate_rpm_used: 12, rate_rpm_limit: 30,
+        rate_rpd_used: 245, rate_rpd_limit: 14400,
+        rate_tpm_used: 2100, rate_tpm_limit: 6000,
+        rate_monthly_calls_used: null, rate_monthly_calls_limit: null,
+        credit_used_usd: null, credit_budget_usd: null, credit_remaining_usd: null,
+        is_backed_off: false, backoff_retry_after_secs: null, backoff_reason: null,
+        has_capacity: true, status_message: 'Available',
+      },
+      {
+        provider_instance: 'openai-primary',
+        provider_type: 'openai',
+        display_name: 'openai-primary',
+        free_tier: { kind: 'none' },
+        is_user_override: false,
+        supports_credit_check: false,
+        rate_rpm_used: null, rate_rpm_limit: null,
+        rate_rpd_used: null, rate_rpd_limit: null,
+        rate_tpm_used: null, rate_tpm_limit: null,
+        rate_monthly_calls_used: null, rate_monthly_calls_limit: null,
+        credit_used_usd: null, credit_budget_usd: null, credit_remaining_usd: null,
+        is_backed_off: false, backoff_retry_after_secs: null, backoff_reason: null,
+        has_capacity: false, status_message: 'No free tier',
+      },
+    ]
+  },
+  'set_provider_free_tier': () => {
+    toast.success('Free tier config updated (demo)')
+    return null
+  },
+  'reset_provider_free_tier_usage': () => {
+    toast.success('Free tier usage reset (demo)')
+    return null
+  },
+  'get_default_free_tier': (args) => {
+    const defaults: Record<string, unknown> = {
+      ollama: { kind: 'always_free_local' },
+      lmstudio: { kind: 'always_free_local' },
+      groq: { kind: 'rate_limited_free', max_rpm: 30, max_rpd: 14400, max_tpm: 6000, max_tpd: 500000, max_monthly_calls: 0, max_monthly_tokens: 0 },
+      gemini: { kind: 'rate_limited_free', max_rpm: 10, max_rpd: 250, max_tpm: 250000, max_tpd: 0, max_monthly_calls: 0, max_monthly_tokens: 0 },
+      openrouter: { kind: 'credit_based', budget_usd: 0.0, reset_period: 'never', detection: { type: 'provider_api' } },
+      openai: { kind: 'none' },
+      anthropic: { kind: 'none' },
+    }
+    return defaults[args?.providerType || ''] || { kind: 'none' }
   },
 
   // ============================================================================
