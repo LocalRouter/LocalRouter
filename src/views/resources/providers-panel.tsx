@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
 import { toast } from "sonner"
-import { CheckCircle, XCircle, AlertCircle, Plus, Loader2, RefreshCw, FlaskConical, Grid, Settings, ArrowLeft, Eye, EyeOff } from "lucide-react"
+import { CheckCircle, XCircle, AlertCircle, Plus, Loader2, RefreshCw, FlaskConical, Grid, Settings, ArrowLeft, Eye, EyeOff, Coins } from "lucide-react"
 import { ProvidersIcon } from "@/components/icons/category-icons"
 import { Badge } from "@/components/ui/Badge"
 import { Button } from "@/components/ui/Button"
@@ -101,6 +101,9 @@ export function ProvidersPanel({
   // Detail tab state
   const [detailTab, setDetailTab] = useState("info")
 
+  // Free tier state
+  const [freeTierStatus, setFreeTierStatus] = useState<Record<string, any>>({})
+
   // Create form state
   const [dialogPage, setDialogPage] = useState<"select" | "configure">("select")
   const [createTab, setCreateTab] = useState<"templates" | "custom">("templates")
@@ -177,6 +180,19 @@ export function ProvidersPanel({
       console.error("Failed to load provider types:", error)
     }
   }
+
+  // Load free tier status for a provider
+  const loadFreeTierStatus = useCallback(async (instanceName: string) => {
+    try {
+      const statuses = await invoke<any[]>("get_free_tier_status")
+      const status = statuses.find((s: any) => s.provider_instance === instanceName)
+      if (status) {
+        setFreeTierStatus(prev => ({ ...prev, [instanceName]: status }))
+      }
+    } catch (error) {
+      console.error("Failed to load free tier status:", error)
+    }
+  }, [])
 
   const loadModels = useCallback(async (instanceName: string) => {
     setModelsLoading(true)
@@ -489,6 +505,7 @@ export function ProvidersPanel({
                   <TabsList>
                     <TabsTrigger value="info">Info</TabsTrigger>
                     <TabsTrigger value="settings">Settings</TabsTrigger>
+                    <TabsTrigger value="free-tier" onClick={() => loadFreeTierStatus(selectedProvider.instance_name)}>Free Tier</TabsTrigger>
                   </TabsList>
 
                   <TabsContent value="info">
@@ -727,37 +744,28 @@ export function ProvidersPanel({
                         </Card>
                       )}
 
-                      {/* Enable/Disable */}
-                      <Card>
-                        <CardHeader>
-                          <CardTitle>Enable Provider</CardTitle>
-                          <CardDescription>
-                            When disabled, this provider will not be used for routing requests
-                          </CardDescription>
-                        </CardHeader>
-                        <CardContent>
-                          <div className="flex items-center gap-3">
-                            <Switch
-                              checked={selectedProvider.enabled}
-                              onCheckedChange={() => handleToggle(selectedProvider)}
-                            />
-                            <span className="text-sm">
-                              {selectedProvider.enabled ? "Enabled" : "Disabled"}
-                            </span>
-                          </div>
-                        </CardContent>
-                      </Card>
-
                       {/* Danger Zone */}
                       <Card className="border-red-200 dark:border-red-900">
                         <CardHeader>
                           <CardTitle className="text-red-600 dark:text-red-400">Danger Zone</CardTitle>
                           <CardDescription>
-                            Irreversible actions for this provider
+                            Irreversible and destructive actions for this provider
                           </CardDescription>
                         </CardHeader>
-                        <CardContent>
+                        <CardContent className="space-y-4">
                           <div className="flex items-center justify-between">
+                            <div>
+                              <p className="text-sm font-medium">Enable provider</p>
+                              <p className="text-sm text-muted-foreground">
+                                When disabled, this provider will not be used for routing requests
+                              </p>
+                            </div>
+                            <Switch
+                              checked={selectedProvider.enabled}
+                              onCheckedChange={() => handleToggle(selectedProvider)}
+                            />
+                          </div>
+                          <div className="flex items-center justify-between pt-4 border-t">
                             <div>
                               <p className="text-sm font-medium">Delete this provider</p>
                               <p className="text-sm text-muted-foreground">
@@ -774,6 +782,216 @@ export function ProvidersPanel({
                               Delete Provider
                             </Button>
                           </div>
+                        </CardContent>
+                      </Card>
+                    </div>
+                  </TabsContent>
+
+                  <TabsContent value="free-tier">
+                    <div className="space-y-6">
+                      <Card>
+                        <CardHeader>
+                          <CardTitle className="flex items-center gap-2">
+                            <Coins className="h-4 w-4" />
+                            Free Tier
+                          </CardTitle>
+                          <CardDescription>
+                            Free tier configuration and usage for this provider
+                          </CardDescription>
+                        </CardHeader>
+                        <CardContent>
+                          {(() => {
+                            const status = freeTierStatus[selectedProvider.instance_name]
+                            if (!status) {
+                              return (
+                                <div className="flex items-center gap-2 text-muted-foreground">
+                                  <Loader2 className="h-4 w-4 animate-spin" />
+                                  <span>Loading free tier status...</span>
+                                </div>
+                              )
+                            }
+
+                            const kind = status.free_tier?.kind
+                            return (
+                              <div className="space-y-4">
+                                {/* Free Tier Type Badge */}
+                                <div className="flex items-center justify-between">
+                                  <span className="text-sm font-medium">Type</span>
+                                  <Badge variant={
+                                    kind === 'always_free_local' ? 'default' :
+                                    kind === 'subscription' ? 'default' :
+                                    kind === 'none' ? 'secondary' :
+                                    'outline'
+                                  }>
+                                    {kind === 'always_free_local' ? 'Always Free (Local)' :
+                                     kind === 'subscription' ? 'Subscription' :
+                                     kind === 'rate_limited_free' ? 'Rate Limited' :
+                                     kind === 'credit_based' ? 'Credit Based' :
+                                     kind === 'free_models_only' ? 'Free Models Only' :
+                                     'No Free Tier'}
+                                  </Badge>
+                                </div>
+
+                                {/* Status */}
+                                <div className="flex items-center justify-between">
+                                  <span className="text-sm font-medium">Status</span>
+                                  <span className={`text-sm ${status.has_capacity ? 'text-green-600' : 'text-red-600'}`}>
+                                    {status.has_capacity ? 'Available' : 'Exhausted'}
+                                  </span>
+                                </div>
+
+                                {status.status_message && (
+                                  <p className="text-sm text-muted-foreground">{status.status_message}</p>
+                                )}
+
+                                {/* Rate limit details */}
+                                {kind === 'rate_limited_free' && (
+                                  <div className="space-y-3 pt-2 border-t">
+                                    <span className="text-sm font-medium">Usage</span>
+                                    {status.rate_rpm_limit != null && (
+                                      <div>
+                                        <div className="flex justify-between text-xs mb-1">
+                                          <span className="text-muted-foreground">Requests/min</span>
+                                          <span>{status.rate_rpm_used ?? 0} / {status.rate_rpm_limit}</span>
+                                        </div>
+                                        <div className="h-1.5 rounded-full bg-muted overflow-hidden">
+                                          <div
+                                            className={`h-full rounded-full ${
+                                              (status.rate_rpm_used ?? 0) / status.rate_rpm_limit > 0.9 ? 'bg-red-500' :
+                                              (status.rate_rpm_used ?? 0) / status.rate_rpm_limit > 0.7 ? 'bg-amber-500' :
+                                              'bg-green-500'
+                                            }`}
+                                            style={{ width: `${Math.min(100, ((status.rate_rpm_used ?? 0) / status.rate_rpm_limit) * 100)}%` }}
+                                          />
+                                        </div>
+                                      </div>
+                                    )}
+                                    {status.rate_rpd_limit != null && (
+                                      <div>
+                                        <div className="flex justify-between text-xs mb-1">
+                                          <span className="text-muted-foreground">Requests/day</span>
+                                          <span>{status.rate_rpd_used ?? 0} / {status.rate_rpd_limit}</span>
+                                        </div>
+                                        <div className="h-1.5 rounded-full bg-muted overflow-hidden">
+                                          <div
+                                            className={`h-full rounded-full ${
+                                              (status.rate_rpd_used ?? 0) / status.rate_rpd_limit > 0.9 ? 'bg-red-500' :
+                                              (status.rate_rpd_used ?? 0) / status.rate_rpd_limit > 0.7 ? 'bg-amber-500' :
+                                              'bg-green-500'
+                                            }`}
+                                            style={{ width: `${Math.min(100, ((status.rate_rpd_used ?? 0) / status.rate_rpd_limit) * 100)}%` }}
+                                          />
+                                        </div>
+                                      </div>
+                                    )}
+                                    {status.rate_tpm_limit != null && (
+                                      <div>
+                                        <div className="flex justify-between text-xs mb-1">
+                                          <span className="text-muted-foreground">Tokens/min</span>
+                                          <span>{(status.rate_tpm_used ?? 0).toLocaleString()} / {status.rate_tpm_limit.toLocaleString()}</span>
+                                        </div>
+                                        <div className="h-1.5 rounded-full bg-muted overflow-hidden">
+                                          <div
+                                            className={`h-full rounded-full ${
+                                              (status.rate_tpm_used ?? 0) / status.rate_tpm_limit > 0.9 ? 'bg-red-500' :
+                                              (status.rate_tpm_used ?? 0) / status.rate_tpm_limit > 0.7 ? 'bg-amber-500' :
+                                              'bg-green-500'
+                                            }`}
+                                            style={{ width: `${Math.min(100, ((status.rate_tpm_used ?? 0) / status.rate_tpm_limit) * 100)}%` }}
+                                          />
+                                        </div>
+                                      </div>
+                                    )}
+                                    {status.rate_monthly_calls_limit != null && (
+                                      <div>
+                                        <div className="flex justify-between text-xs mb-1">
+                                          <span className="text-muted-foreground">Monthly calls</span>
+                                          <span>{status.rate_monthly_calls_used ?? 0} / {status.rate_monthly_calls_limit}</span>
+                                        </div>
+                                        <div className="h-1.5 rounded-full bg-muted overflow-hidden">
+                                          <div
+                                            className={`h-full rounded-full ${
+                                              (status.rate_monthly_calls_used ?? 0) / status.rate_monthly_calls_limit > 0.9 ? 'bg-red-500' :
+                                              (status.rate_monthly_calls_used ?? 0) / status.rate_monthly_calls_limit > 0.7 ? 'bg-amber-500' :
+                                              'bg-green-500'
+                                            }`}
+                                            style={{ width: `${Math.min(100, ((status.rate_monthly_calls_used ?? 0) / status.rate_monthly_calls_limit) * 100)}%` }}
+                                          />
+                                        </div>
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+
+                                {/* Credit details */}
+                                {kind === 'credit_based' && (
+                                  <div className="space-y-3 pt-2 border-t">
+                                    <span className="text-sm font-medium">Credits</span>
+                                    <div>
+                                      <div className="flex justify-between text-xs mb-1">
+                                        <span className="text-muted-foreground">Used</span>
+                                        <span>${(status.credit_used_usd ?? 0).toFixed(4)} / ${(status.credit_budget_usd ?? 0).toFixed(2)}</span>
+                                      </div>
+                                      <div className="h-1.5 rounded-full bg-muted overflow-hidden">
+                                        <div
+                                          className={`h-full rounded-full ${
+                                            status.credit_remaining_usd != null && status.credit_budget_usd != null && status.credit_budget_usd > 0
+                                              ? (status.credit_remaining_usd / status.credit_budget_usd < 0.1 ? 'bg-red-500' :
+                                                 status.credit_remaining_usd / status.credit_budget_usd < 0.3 ? 'bg-amber-500' :
+                                                 'bg-green-500')
+                                              : 'bg-muted'
+                                          }`}
+                                          style={{
+                                            width: `${status.credit_budget_usd && status.credit_budget_usd > 0
+                                              ? Math.min(100, ((status.credit_used_usd ?? 0) / status.credit_budget_usd) * 100)
+                                              : 0}%`
+                                          }}
+                                        />
+                                      </div>
+                                    </div>
+                                    {status.credit_remaining_usd != null && (
+                                      <p className="text-xs text-muted-foreground">
+                                        ${status.credit_remaining_usd.toFixed(4)} remaining
+                                      </p>
+                                    )}
+                                  </div>
+                                )}
+
+                                {/* Backoff status */}
+                                {status.is_backed_off && (
+                                  <div className="flex items-center gap-2 pt-2 border-t text-amber-600">
+                                    <AlertCircle className="h-4 w-4" />
+                                    <span className="text-sm">
+                                      {status.backoff_reason ?? 'Rate limited'}
+                                      {status.backoff_retry_after_secs != null && ` (available in ${status.backoff_retry_after_secs}s)`}
+                                    </span>
+                                  </div>
+                                )}
+
+                                {/* Reset button */}
+                                <div className="pt-2 border-t">
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={async () => {
+                                      try {
+                                        await invoke("reset_provider_free_tier_usage", {
+                                          providerInstance: selectedProvider.instance_name,
+                                        })
+                                        toast.success("Free tier usage reset")
+                                        loadFreeTierStatus(selectedProvider.instance_name)
+                                      } catch (error) {
+                                        console.error("Failed to reset free tier usage:", error)
+                                        toast.error("Failed to reset free tier usage")
+                                      }
+                                    }}
+                                  >
+                                    Reset Usage
+                                  </Button>
+                                </div>
+                              </div>
+                            )
+                          })()}
                         </CardContent>
                       </Card>
                     </div>

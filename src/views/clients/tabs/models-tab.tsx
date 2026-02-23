@@ -13,7 +13,7 @@ import { useState, useEffect, useCallback, useRef } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
 // DEPRECATED: Route, AlertTriangle unused - Strategy UI hidden
-import { /* Route, AlertTriangle, */ Gauge } from "lucide-react"
+import { /* Route, AlertTriangle, */ Gauge, Coins } from "lucide-react"
 import {
   Card,
   CardContent,
@@ -34,6 +34,7 @@ import {
 // import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { StrategyModelConfiguration, StrategyConfig } from "@/components/strategy"
 import RateLimitEditor, { StrategyRateLimit } from "@/components/strategies/RateLimitEditor"
+import { Switch } from "@/components/ui/Toggle"
 import type { ModelPermissions } from "@/components/permissions"
 
 
@@ -132,6 +133,35 @@ export function ClientModelsTab({
   //   }
   // }
 
+  // Handle free tier toggle
+  const handleFreeTierToggle = useCallback(async (enabled: boolean) => {
+    if (!currentStrategy) return
+
+    // Update local state immediately
+    setStrategies(prev => prev.map(s =>
+      s.id === currentStrategy.id
+        ? { ...s, free_tier_only: enabled }
+        : s
+    ))
+
+    try {
+      await invoke("update_strategy", {
+        strategyId: currentStrategy.id,
+        name: null,
+        allowedModels: null,
+        autoConfig: null,
+        rateLimits: null,
+        freeTierOnly: enabled,
+      })
+      toast.success(enabled ? "Free-tier mode enabled" : "Free-tier mode disabled")
+      onUpdate()
+    } catch (error) {
+      console.error("Failed to update free tier mode:", error)
+      toast.error("Failed to update free tier mode")
+      loadStrategies(false)
+    }
+  }, [currentStrategy, onUpdate])
+
   // Handle rate limits change with debouncing
   const handleRateLimitsChange = useCallback((limits: StrategyRateLimit[]) => {
     if (!currentStrategy) return
@@ -158,6 +188,7 @@ export function ClientModelsTab({
           allowedModels: null,
           autoConfig: null,
           rateLimits: limits,
+          freeTierOnly: null,
         })
         toast.success("Rate limits updated")
         onUpdate()
@@ -279,6 +310,35 @@ export function ClientModelsTab({
                   onChange={handleRateLimitsChange}
                   disabled={savingRateLimits}
                 />
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Free-Tier Mode */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-base">
+                <Coins className="h-4 w-4" />
+                Free-Tier Mode
+              </CardTitle>
+              <CardDescription>
+                Restrict routing to free-tier providers only
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {currentStrategy && (
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm font-medium">Free-tier only</p>
+                    <p className="text-sm text-muted-foreground">
+                      Only route to providers with available free-tier capacity. Returns 429 when all free resources are exhausted.
+                    </p>
+                  </div>
+                  <Switch
+                    checked={currentStrategy.free_tier_only ?? false}
+                    onCheckedChange={handleFreeTierToggle}
+                  />
+                </div>
               )}
             </CardContent>
           </Card>

@@ -59,6 +59,7 @@ export interface StrategyConfig {
     allowed_models: AllowedModelsSelection
     auto_config: AutoModelConfig | null
     rate_limits: any[]
+    free_tier_only?: boolean
 }
 
 interface StrategyModelConfigurationProps {
