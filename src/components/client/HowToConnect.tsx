@@ -11,8 +11,9 @@
 import { useState, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
-import { Copy, Check, Eye, RefreshCw, Cpu, Terminal, Globe, Key, FileJson, Loader2, Rocket, Settings2, ExternalLink, CheckCircle2, XCircle, RefreshCcw } from "lucide-react"
+import { Copy, Check, Eye, RefreshCw, Cpu, Terminal, Globe, Key, FileJson, Loader2, Rocket, Settings2, ExternalLink, CheckCircle2, XCircle, RefreshCcw, BookOpen } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
+import { Badge } from "@/components/ui/Badge"
 import { Button } from "@/components/ui/Button"
 import { Label } from "@/components/ui/label"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -148,6 +149,37 @@ function CopyableCodeBlock({ value, copyValue, className = "" }: { value: string
   )
 }
 
+// Helper component to display a LaunchResult (shared between Temporary and Auto tabs)
+function LaunchResultDisplay({ result }: { result: LaunchResult }) {
+  return (
+    <div className={`rounded-lg border p-3 text-sm ${result.success ? "border-green-200 bg-green-50 dark:border-green-900 dark:bg-green-950" : "border-red-200 bg-red-50 dark:border-red-900 dark:bg-red-950"}`}>
+      <p>{result.message}</p>
+      {result.terminal_command && (
+        <div className="mt-2">
+          <Label className="text-xs text-muted-foreground">Run in your terminal:</Label>
+          <CopyableCodeBlock value={result.terminal_command} className="mt-1" />
+        </div>
+      )}
+      {result.modified_files.length > 0 && (
+        <div className="mt-2">
+          <p className="text-xs text-muted-foreground">Modified files:</p>
+          {result.modified_files.map((f) => (
+            <code key={f} className="text-xs block">{f}</code>
+          ))}
+        </div>
+      )}
+      {result.backup_files.length > 0 && (
+        <div className="mt-1">
+          <p className="text-xs text-muted-foreground">Backups:</p>
+          {result.backup_files.map((f) => (
+            <code key={f} className="text-xs block">{f}</code>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // Quick Setup tab content for template-based clients
 function QuickSetupTab({
   template,
@@ -173,7 +205,8 @@ function QuickSetupTab({
   const [tryingOut, setTryingOut] = useState(false)
   const [syncing, setSyncing] = useState(false)
   const [syncEnabled, setSyncEnabled] = useState(syncConfig)
-  const [result, setResult] = useState<LaunchResult | null>(null)
+  const [temporaryResult, setTemporaryResult] = useState<LaunchResult | null>(null)
+  const [autoResult, setAutoResult] = useState<LaunchResult | null>(null)
 
   useEffect(() => {
     setSyncEnabled(syncConfig)
@@ -199,11 +232,11 @@ function QuickSetupTab({
   const handleTryItOut = async () => {
     try {
       setTryingOut(true)
-      setResult(null)
+      setTemporaryResult(null)
       const res = await invoke<LaunchResult>("try_it_out_app", {
         clientId,
       } satisfies TryItOutAppParams)
-      setResult(res)
+      setTemporaryResult(res)
       if (res.success) {
         toast.success("Run the command below in your terminal")
       } else {
@@ -219,14 +252,14 @@ function QuickSetupTab({
   const handleToggleSyncConfig = async (enabled: boolean) => {
     try {
       setSyncing(true)
-      setResult(null)
+      setAutoResult(null)
       const res = await invoke<LaunchResult | null>("toggle_client_sync_config", {
         clientId,
         enabled,
       } satisfies ToggleClientSyncConfigParams)
       setSyncEnabled(enabled)
       if (enabled && res) {
-        setResult(res)
+        setAutoResult(res)
         if (res.success) {
           toast.success("Config sync enabled")
         } else {
@@ -245,12 +278,12 @@ function QuickSetupTab({
   const handleManualSync = async () => {
     try {
       setSyncing(true)
-      setResult(null)
+      setAutoResult(null)
       const res = await invoke<LaunchResult | null>("sync_client_config", {
         clientId,
       } satisfies SyncClientConfigParams)
       if (res) {
-        setResult(res)
+        setAutoResult(res)
         if (res.success) {
           toast.success("Config synced")
         } else {
@@ -267,6 +300,9 @@ function QuickSetupTab({
   const resolvedSecret = secret || "<your_client_secret>"
   const supportsTryItOut = capabilities?.supports_try_it_out ?? false
   const supportsPermanent = capabilities?.supports_permanent_config ?? false
+
+  const innerTabCount = 1 + (supportsTryItOut ? 1 : 0) + (supportsPermanent ? 1 : 0)
+  const innerGridCols = innerTabCount === 1 ? "grid-cols-1" : innerTabCount === 2 ? "grid-cols-2" : "grid-cols-3"
 
   return (
     <div className="space-y-4">
@@ -312,136 +348,32 @@ function QuickSetupTab({
         )}
       </div>
 
-      {/* Action buttons */}
-      <div className="flex gap-2">
-        {supportsTryItOut && (
-          <Button onClick={handleTryItOut} disabled={tryingOut || syncing} className="flex-1">
-            {tryingOut ? (
-              <>
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                Preparing...
-              </>
-            ) : (
-              <>
-                <Rocket className="mr-2 h-4 w-4" />
-                Try It Out
-              </>
-            )}
-          </Button>
-        )}
-      </div>
-
-      {/* Config sync toggle */}
-      {supportsPermanent && (
-        <div className="rounded-lg border p-3 space-y-2">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Settings2 className="h-4 w-4 text-muted-foreground" />
-              <Label htmlFor="sync-config" className="text-sm font-medium cursor-pointer">Keep config in sync</Label>
-            </div>
-            <div className="flex items-center gap-2">
-              {syncEnabled && (
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-7 w-7"
-                  onClick={handleManualSync}
-                  disabled={syncing}
-                  title="Sync now"
-                >
-                  {syncing ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  ) : (
-                    <RefreshCcw className="h-3.5 w-3.5" />
-                  )}
-                </Button>
-              )}
-              <Switch
-                id="sync-config"
-                checked={syncEnabled}
-                onCheckedChange={handleToggleSyncConfig}
-                disabled={syncing}
-              />
-            </div>
-          </div>
-          <p className="text-xs text-muted-foreground">
-            {syncEnabled
-              ? "Config files are kept in sync when models, secrets, or settings change."
-              : "Automatically update config files when models or secrets change."}
-          </p>
-        </div>
-      )}
-
-      {/* Mode description */}
-      {supportsTryItOut && (
-        <p className="text-xs text-muted-foreground">One-time — no files modified</p>
-      )}
-
-      {/* Result */}
-      {result && (
-        <div className={`rounded-lg border p-3 text-sm ${result.success ? "border-green-200 bg-green-50 dark:border-green-900 dark:bg-green-950" : "border-red-200 bg-red-50 dark:border-red-900 dark:bg-red-950"}`}>
-          <p>{result.message}</p>
-          {result.terminal_command && (
-            <div className="mt-2">
-              <Label className="text-xs text-muted-foreground">Run in your terminal:</Label>
-              <CopyableCodeBlock value={result.terminal_command} className="mt-1" />
-            </div>
+      {/* Inner tabs: Manual / Temporary / Auto */}
+      <Tabs defaultValue="manual">
+        <TabsList className={`mb-4 grid w-full ${innerGridCols}`}>
+          <TabsTrigger value="manual" className="text-xs gap-1">
+            <BookOpen className="h-3 w-3" />
+            Manual
+          </TabsTrigger>
+          {supportsTryItOut && (
+            <TabsTrigger value="temporary" className="text-xs gap-1">
+              <Rocket className="h-3 w-3" />
+              Temporary
+            </TabsTrigger>
           )}
-          {result.modified_files.length > 0 && (
-            <div className="mt-2">
-              <p className="text-xs text-muted-foreground">Modified files:</p>
-              {result.modified_files.map((f) => (
-                <code key={f} className="text-xs block">{f}</code>
-              ))}
-            </div>
+          {supportsPermanent && (
+            <TabsTrigger value="auto" className="text-xs gap-1">
+              <RefreshCcw className="h-3 w-3" />
+              Auto
+              <Badge variant="outline" className="bg-purple-500/10 text-purple-900 dark:text-purple-400 ml-1 text-[10px] px-1.5 py-0">
+                EXPERIMENTAL
+              </Badge>
+            </TabsTrigger>
           )}
-          {result.backup_files.length > 0 && (
-            <div className="mt-1">
-              <p className="text-xs text-muted-foreground">Backups:</p>
-              {result.backup_files.map((f) => (
-                <code key={f} className="text-xs block">{f}</code>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
+        </TabsList>
 
-      {/* MCP Setup (for apps that support MCP) */}
-      {template.supportsMcp && (
-        <div className="rounded-lg border p-3 space-y-2">
-          <div className="flex items-center gap-2">
-            <Terminal className="h-4 w-4 text-muted-foreground" />
-            <span className="text-sm font-medium">MCP Proxy</span>
-          </div>
-          <p className="text-xs text-muted-foreground">
-            {template.name} will also connect to LocalRouter's MCP servers and skills.
-            {template.setupType !== "generic" ? " This is configured automatically." : ""}
-          </p>
-          <details className="mt-1">
-            <summary className="cursor-pointer text-xs text-muted-foreground hover:text-foreground">View MCP server config</summary>
-            <div className="mt-2">
-              <CopyableCodeBlock
-                value={JSON.stringify({
-                  mcpServers: {
-                    localrouter: {
-                      type: "http",
-                      url: baseUrl,
-                      headers: {
-                        Authorization: `Bearer ${resolvedSecret}`
-                      }
-                    }
-                  }
-                }, null, 2)}
-              />
-            </div>
-          </details>
-        </div>
-      )}
-
-      {/* Manual setup instructions */}
-      <details className="rounded-lg border">
-        <summary className="cursor-pointer p-3 text-sm font-medium">Manual Setup Instructions</summary>
-        <div className="px-3 pb-3 space-y-3">
+        {/* Manual tab */}
+        <TabsContent value="manual" className="space-y-3">
           {template.setupType === "env_vars" && template.envVars && (
             <div className="space-y-2">
               <p className="text-xs font-medium">LLM Routing</p>
@@ -519,8 +451,90 @@ function QuickSetupTab({
               Documentation <ExternalLink className="h-3 w-3" />
             </a>
           )}
-        </div>
-      </details>
+        </TabsContent>
+
+        {/* Temporary tab */}
+        {supportsTryItOut && (
+          <TabsContent value="temporary" className="space-y-4">
+            <p className="text-xs text-muted-foreground">One-time — no files modified</p>
+
+            <Button onClick={handleTryItOut} disabled={tryingOut || syncing} className="w-full">
+              {tryingOut ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Preparing...
+                </>
+              ) : (
+                <>
+                  <Rocket className="mr-2 h-4 w-4" />
+                  Try It Out
+                </>
+              )}
+            </Button>
+
+            {temporaryResult && <LaunchResultDisplay result={temporaryResult} />}
+
+            {/* MCP info (for apps that support MCP) */}
+            {template.supportsMcp && (
+              <div className="rounded-lg border p-3 space-y-2">
+                <div className="flex items-center gap-2">
+                  <Terminal className="h-4 w-4 text-muted-foreground" />
+                  <span className="text-sm font-medium">MCP Proxy</span>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  {template.name} will also connect to LocalRouter's MCP servers and skills.
+                  {template.setupType !== "generic" ? " This is configured automatically." : ""}
+                </p>
+              </div>
+            )}
+          </TabsContent>
+        )}
+
+        {/* Auto tab */}
+        {supportsPermanent && (
+          <TabsContent value="auto" className="space-y-4">
+            <div className="rounded-lg border p-3 space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Settings2 className="h-4 w-4 text-muted-foreground" />
+                  <Label htmlFor="sync-config" className="text-sm font-medium cursor-pointer">Keep config in sync</Label>
+                </div>
+                <div className="flex items-center gap-2">
+                  {syncEnabled && (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7"
+                      onClick={handleManualSync}
+                      disabled={syncing}
+                      title="Sync now"
+                    >
+                      {syncing ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <RefreshCcw className="h-3.5 w-3.5" />
+                      )}
+                    </Button>
+                  )}
+                  <Switch
+                    id="sync-config"
+                    checked={syncEnabled}
+                    onCheckedChange={handleToggleSyncConfig}
+                    disabled={syncing}
+                  />
+                </div>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                {syncEnabled
+                  ? "Config files are kept in sync when models, secrets, or settings change."
+                  : "Automatically update config files when models or secrets change."}
+              </p>
+            </div>
+
+            {autoResult && <LaunchResultDisplay result={autoResult} />}
+          </TabsContent>
+        )}
+      </Tabs>
     </div>
   )
 }
