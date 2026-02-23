@@ -206,8 +206,13 @@ mod tests {
     fn test_parse_safe_output() {
         let model = LlamaGuardModel::new(
             "test".into(),
-            Arc::new(ModelExecutor::Local(
-                crate::executor::LocalGgufExecutor::new("/tmp/fake".into(), 512).unwrap(),
+            Arc::new(ModelExecutor::Provider(
+                crate::executor::ProviderExecutor::new(
+                    "http://localhost:11434".into(),
+                    None,
+                    "test".into(),
+                    true,
+                ),
             )),
             "test".into(),
             None,
@@ -222,8 +227,13 @@ mod tests {
     fn test_parse_unsafe_output() {
         let model = LlamaGuardModel::new(
             "test".into(),
-            Arc::new(ModelExecutor::Local(
-                crate::executor::LocalGgufExecutor::new("/tmp/fake".into(), 512).unwrap(),
+            Arc::new(ModelExecutor::Provider(
+                crate::executor::ProviderExecutor::new(
+                    "http://localhost:11434".into(),
+                    None,
+                    "test".into(),
+                    true,
+                ),
             )),
             "test".into(),
             None,
@@ -241,8 +251,13 @@ mod tests {
     fn test_parse_empty_output() {
         let model = LlamaGuardModel::new(
             "test".into(),
-            Arc::new(ModelExecutor::Local(
-                crate::executor::LocalGgufExecutor::new("/tmp/fake".into(), 512).unwrap(),
+            Arc::new(ModelExecutor::Provider(
+                crate::executor::ProviderExecutor::new(
+                    "http://localhost:11434".into(),
+                    None,
+                    "test".into(),
+                    true,
+                ),
             )),
             "test".into(),
             None,
@@ -258,8 +273,13 @@ mod tests {
     fn test_parse_unsafe_no_codes() {
         let model = LlamaGuardModel::new(
             "test".into(),
-            Arc::new(ModelExecutor::Local(
-                crate::executor::LocalGgufExecutor::new("/tmp/fake".into(), 512).unwrap(),
+            Arc::new(ModelExecutor::Provider(
+                crate::executor::ProviderExecutor::new(
+                    "http://localhost:11434".into(),
+                    None,
+                    "test".into(),
+                    true,
+                ),
             )),
             "test".into(),
             None,
@@ -275,8 +295,13 @@ mod tests {
     fn test_parse_unsafe_invalid_codes() {
         let model = LlamaGuardModel::new(
             "test".into(),
-            Arc::new(ModelExecutor::Local(
-                crate::executor::LocalGgufExecutor::new("/tmp/fake".into(), 512).unwrap(),
+            Arc::new(ModelExecutor::Provider(
+                crate::executor::ProviderExecutor::new(
+                    "http://localhost:11434".into(),
+                    None,
+                    "test".into(),
+                    true,
+                ),
             )),
             "test".into(),
             None,

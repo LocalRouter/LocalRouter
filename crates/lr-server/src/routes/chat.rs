@@ -779,8 +779,7 @@ async fn run_guardrails_scan(
             .iter()
             .filter_map(|entry| {
                 let action: lr_guardrails::CategoryAction =
-                    serde_json::from_value(serde_json::Value::String(entry.action.clone()))
-                        .ok()?;
+                    serde_json::from_value(serde_json::Value::String(entry.action.clone())).ok()?;
                 Some((entry.category.clone(), action))
             })
             .collect();
@@ -1122,8 +1121,7 @@ fn convert_to_provider_request(
 }
 
 /// Type alias for a spawned guardrail scan task
-type GuardrailHandle =
-    tokio::task::JoinHandle<ApiResult<Option<lr_guardrails::SafetyCheckResult>>>;
+type GuardrailHandle = tokio::task::JoinHandle<ApiResult<Option<lr_guardrails::SafetyCheckResult>>>;
 
 /// Handle non-streaming chat completion with parallel guardrails.
 /// Starts LLM request immediately and awaits guardrails concurrently.
@@ -1197,8 +1195,17 @@ async fn handle_non_streaming_parallel(
         })?;
 
     // Reuse shared response-building logic
-    build_non_streaming_response(state, auth, client_auth, request, response, generation_id, started_at, created_at)
-        .await
+    build_non_streaming_response(
+        state,
+        auth,
+        client_auth,
+        request,
+        response,
+        generation_id,
+        started_at,
+        created_at,
+    )
+    .await
 }
 
 /// Handle non-streaming chat completion (sequential guardrails — already resolved)
@@ -1255,8 +1262,17 @@ async fn handle_non_streaming(
         }
     };
 
-    build_non_streaming_response(state, auth, client_auth, request, response, generation_id, started_at, created_at)
-        .await
+    build_non_streaming_response(
+        state,
+        auth,
+        client_auth,
+        request,
+        response,
+        generation_id,
+        started_at,
+        created_at,
+    )
+    .await
 }
 
 /// Build the non-streaming response from a completed provider response.
@@ -1929,70 +1945,68 @@ async fn handle_streaming_parallel(
             let mut stream_done = false;
 
             // Helper to convert a provider chunk to an SSE event
-            let convert_chunk =
-                |provider_chunk: lr_providers::CompletionChunk,
-                 gen_id: &str,
-                 created_ts: i64,
-                 content_acc: &mut String,
-                 finish_reason: &mut String|
-                 -> (Result<Event, std::convert::Infallible>, bool) {
-                    let is_done = if let Some(choice) = provider_chunk.choices.first() {
-                        if let Some(content) = &choice.delta.content {
-                            content_acc.push_str(content);
-                        }
-                        if let Some(reason) = &choice.finish_reason {
-                            *finish_reason = reason.clone();
-                            true
-                        } else {
-                            false
-                        }
+            let convert_chunk = |provider_chunk: lr_providers::CompletionChunk,
+                                 gen_id: &str,
+                                 created_ts: i64,
+                                 content_acc: &mut String,
+                                 finish_reason: &mut String|
+             -> (Result<Event, std::convert::Infallible>, bool) {
+                let is_done = if let Some(choice) = provider_chunk.choices.first() {
+                    if let Some(content) = &choice.delta.content {
+                        content_acc.push_str(content);
+                    }
+                    if let Some(reason) = &choice.finish_reason {
+                        *finish_reason = reason.clone();
+                        true
                     } else {
                         false
-                    };
-
-                    let api_chunk = ChatCompletionChunk {
-                        id: gen_id.to_string(),
-                        object: "chat.completion.chunk".to_string(),
-                        created: created_ts,
-                        model: provider_chunk.model.clone(),
-                        choices: provider_chunk
-                            .choices
-                            .into_iter()
-                            .map(|choice| {
-                                let tool_calls =
-                                    choice.delta.tool_calls.map(|provider_deltas| {
-                                        provider_deltas
-                                            .into_iter()
-                                            .map(|delta| crate::types::ToolCallDelta {
-                                                index: delta.index,
-                                                id: delta.id,
-                                                tool_type: delta.tool_type,
-                                                function: delta.function.map(|f| {
-                                                    crate::types::FunctionCallDelta {
-                                                        name: f.name,
-                                                        arguments: f.arguments,
-                                                    }
-                                                }),
-                                            })
-                                            .collect()
-                                    });
-                                ChatCompletionChunkChoice {
-                                    index: choice.index,
-                                    delta: ChunkDelta {
-                                        role: choice.delta.role,
-                                        content: choice.delta.content,
-                                        tool_calls,
-                                    },
-                                    finish_reason: choice.finish_reason,
-                                }
-                            })
-                            .collect(),
-                        usage: None,
-                    };
-
-                    let json = serde_json::to_string(&api_chunk).unwrap_or_default();
-                    (Ok(Event::default().data(json)), is_done)
+                    }
+                } else {
+                    false
                 };
+
+                let api_chunk = ChatCompletionChunk {
+                    id: gen_id.to_string(),
+                    object: "chat.completion.chunk".to_string(),
+                    created: created_ts,
+                    model: provider_chunk.model.clone(),
+                    choices: provider_chunk
+                        .choices
+                        .into_iter()
+                        .map(|choice| {
+                            let tool_calls = choice.delta.tool_calls.map(|provider_deltas| {
+                                provider_deltas
+                                    .into_iter()
+                                    .map(|delta| crate::types::ToolCallDelta {
+                                        index: delta.index,
+                                        id: delta.id,
+                                        tool_type: delta.tool_type,
+                                        function: delta.function.map(|f| {
+                                            crate::types::FunctionCallDelta {
+                                                name: f.name,
+                                                arguments: f.arguments,
+                                            }
+                                        }),
+                                    })
+                                    .collect()
+                            });
+                            ChatCompletionChunkChoice {
+                                index: choice.index,
+                                delta: ChunkDelta {
+                                    role: choice.delta.role,
+                                    content: choice.delta.content,
+                                    tool_calls,
+                                },
+                                finish_reason: choice.finish_reason,
+                            }
+                        })
+                        .collect(),
+                    usage: None,
+                };
+
+                let json = serde_json::to_string(&api_chunk).unwrap_or_default();
+                (Ok(Event::default().data(json)), is_done)
+            };
 
             loop {
                 tokio::select! {
@@ -2101,11 +2115,12 @@ async fn handle_streaming_parallel(
                                 "code": "guardrails_denied"
                             }
                         });
-                        let _ = event_tx.send(Ok(Event::default().data(
-                            serde_json::to_string(&error_response)
-                                .unwrap_or_else(|_| "[ERROR]".to_string()),
-                        )))
-                        .await;
+                        let _ = event_tx
+                            .send(Ok(Event::default().data(
+                                serde_json::to_string(&error_response)
+                                    .unwrap_or_else(|_| "[ERROR]".to_string()),
+                            )))
+                            .await;
                     }
                     GuardrailGate::Pending => {
                         // Should not happen, but fail open
@@ -2143,8 +2158,7 @@ async fn handle_streaming_parallel(
 
             let cost = {
                 let input_cost = (prompt_tokens as f64 / 1000.0) * pricing.input_cost_per_1k;
-                let output_cost =
-                    (completion_tokens as f64 / 1000.0) * pricing.output_cost_per_1k;
+                let output_cost = (completion_tokens as f64 / 1000.0) * pricing.output_cost_per_1k;
                 input_cost + output_cost
             };
 

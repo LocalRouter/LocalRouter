@@ -41,7 +41,6 @@ pub struct CatalogCapabilities {
     pub vision: bool,
 }
 
-
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct CatalogModel {

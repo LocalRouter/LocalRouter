@@ -390,8 +390,13 @@ mod tests {
     fn test_parse_granite_score_tag() {
         let model = GraniteGuardianModel::new(
             "test".into(),
-            Arc::new(ModelExecutor::Local(
-                crate::executor::LocalGgufExecutor::new("/tmp/fake".into(), 512).unwrap(),
+            Arc::new(ModelExecutor::Provider(
+                crate::executor::ProviderExecutor::new(
+                    "http://localhost:11434".into(),
+                    None,
+                    "test".into(),
+                    true,
+                ),
             )),
             "test".into(),
             None,

@@ -589,10 +589,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                                     model_type: m.model_type.clone(),
                                     provider_id: m.provider_id.clone(),
                                     model_name: m.model_name.clone(),
-                                    enabled_categories: None, // TODO: parse from config
-                                    execution_mode: m.execution_mode.clone(),
-                                    hf_repo_id: m.hf_repo_id.clone(),
-                                    gguf_filename: m.gguf_filename.clone(),
+                                    enabled_categories: None,
                                 })
                                 .collect();
 
@@ -600,7 +597,6 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                             &model_inputs,
                             guardrails_config.default_confidence_threshold,
                             &provider_lookup,
-                            guardrails_config.context_size,
                         ));
 
                         info!(
@@ -614,30 +610,6 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                             Some(Arc::new(lr_guardrails::SafetyEngine::empty()));
                         info!("Guardrails: no safety models configured");
                     }
-                }
-
-                // Start guardrails model auto-unload background task
-                {
-                    let config_manager_for_unload = config_manager.clone();
-                    tokio::spawn(async move {
-                        loop {
-                            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
-                            let idle_timeout = config_manager_for_unload
-                                .get()
-                                .guardrails
-                                .idle_timeout_secs;
-                            if idle_timeout == 0 {
-                                continue;
-                            }
-                            let unloaded = lr_guardrails::unload_idle_models(idle_timeout);
-                            if unloaded > 0 {
-                                info!(
-                                    "Auto-unloaded {} idle safety model(s) (timeout: {}s)",
-                                    unloaded, idle_timeout
-                                );
-                            }
-                        }
-                    });
                 }
 
                 // Set app handle on AppState for event emission
@@ -1411,16 +1383,11 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::get_safety_model_status,
             ui::commands::test_safety_model,
             ui::commands::get_all_safety_categories,
-            // Safety model download & management commands
-            ui::commands::download_safety_model,
-            ui::commands::get_safety_model_download_status,
-            ui::commands::check_safety_model_file_exists,
+            // Safety model management commands
             ui::commands::add_safety_model,
             ui::commands::remove_safety_model,
-            ui::commands::delete_safety_model_files,
-            ui::commands::get_guardrails_loaded_model_count,
-            ui::commands::unload_all_safety_models,
-            ui::commands::get_safety_models_dir,
+            // Provider model pull commands
+            ui::commands::pull_provider_model,
             // Connection graph commands
             ui::commands::get_active_connections,
             // Setup wizard commands

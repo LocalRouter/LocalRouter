@@ -18,17 +18,11 @@ reqwest = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
 regex = { workspace = true }
-hf-hub = { workspace = true }
-once_cell = { workspace = true }
 tauri = { workspace = true, optional = true }
-
-llama-cpp-2 = "0.1"
 
 [features]
 default = []
 tauri-support = ["tauri"]
-metal = ["llama-cpp-2/metal"]
-vulkan = ["llama-cpp-2/vulkan"]
 
 [dev-dependencies]
 tempfile = "3.8"

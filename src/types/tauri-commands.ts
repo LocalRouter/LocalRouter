@@ -1968,10 +1968,7 @@ export interface CreateTestClientForStrategyParams {
 export interface GuardrailsConfig {
   scan_requests: boolean
   safety_models: SafetyModelConfig[]
-  hf_token: string | null
   default_confidence_threshold: number
-  idle_timeout_secs: number
-  context_size: number
   parallel_guardrails: boolean
 }
 
@@ -1987,20 +1984,12 @@ export interface SafetyModelConfig {
   model_type: string
   provider_id: string | null
   model_name: string | null
-  hf_repo_id: string | null
-  gguf_filename: string | null
-  requires_auth: boolean
   confidence_threshold: number | null
   enabled_categories: string[] | null
-  predefined: boolean
-  execution_mode: string | null
   prompt_template: string | null
   safe_indicator: string | null
   output_regex: string | null
   category_mapping: CategoryMappingEntry[] | null
-  memory_mb: number | null
-  latency_ms: number | null
-  disk_size_mb: number | null
 }
 
 /** Mapping from native model label to normalized safety category */
@@ -2091,29 +2080,6 @@ export interface TestSafetyModelParams {
   text: string
 }
 
-/** Download status for a safety model's GGUF file */
-export interface SafetyModelDownloadStatus {
-  downloaded: boolean
-  file_path: string | null
-  file_size: number | null
-}
-
-/** Params for download_safety_model */
-export interface DownloadSafetyModelParams {
-  modelId: string
-}
-
-/** Params for get_safety_model_download_status */
-export interface GetSafetyModelDownloadStatusParams {
-  modelId: string
-}
-
-/** Params for check_safety_model_file_exists */
-export interface CheckSafetyModelFileExistsParams {
-  modelId: string
-  ggufFilename: string
-}
-
 /** Params for add_safety_model */
 export interface AddSafetyModelParams {
   configJson: string
@@ -2124,7 +2090,15 @@ export interface RemoveSafetyModelParams {
   modelId: string
 }
 
-/** Params for delete_safety_model_files */
-export interface DeleteSafetyModelFilesParams {
-  modelId: string
+/** Params for pull_provider_model */
+export interface PullProviderModelParams {
+  providerId: string
+  modelName: string
+}
+
+/** Progress event from provider model pull */
+export interface ProviderModelPullProgress {
+  status: string
+  total: number | null
+  completed: number | null
 }

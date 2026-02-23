@@ -118,9 +118,25 @@ pub async fn completions(
 
     if use_parallel {
         if request.stream {
-            handle_streaming_parallel(state, auth, client_auth, request, provider_request, guardrail_handle).await
+            handle_streaming_parallel(
+                state,
+                auth,
+                client_auth,
+                request,
+                provider_request,
+                guardrail_handle,
+            )
+            .await
         } else {
-            handle_non_streaming_parallel(state, auth, client_auth, request, provider_request, guardrail_handle).await
+            handle_non_streaming_parallel(
+                state,
+                auth,
+                client_auth,
+                request,
+                provider_request,
+                guardrail_handle,
+            )
+            .await
         }
     } else {
         // Sequential mode: await guardrail result before calling provider
@@ -264,8 +280,7 @@ async fn run_guardrails_scan(
             .iter()
             .filter_map(|entry| {
                 let action: lr_guardrails::CategoryAction =
-                    serde_json::from_value(serde_json::Value::String(entry.action.clone()))
-                        .ok()?;
+                    serde_json::from_value(serde_json::Value::String(entry.action.clone())).ok()?;
                 Some((entry.category.clone(), action))
             })
             .collect();
@@ -475,8 +490,7 @@ fn convert_prompt_to_messages(prompt: &PromptInput) -> ApiResult<Vec<ProviderCha
 
 /// Handle non-streaming completion
 /// Type alias for a spawned guardrail scan task
-type GuardrailHandle =
-    tokio::task::JoinHandle<ApiResult<Option<lr_guardrails::SafetyCheckResult>>>;
+type GuardrailHandle = tokio::task::JoinHandle<ApiResult<Option<lr_guardrails::SafetyCheckResult>>>;
 
 /// Handle non-streaming completion with parallel guardrails.
 #[allow(clippy::too_many_arguments)]
@@ -547,7 +561,16 @@ async fn handle_non_streaming_parallel(
             ApiErrorResponse::bad_gateway(format!("Provider error: {}", e))
         })?;
 
-    build_non_streaming_response(state, auth, request, response, generation_id, started_at, created_at).await
+    build_non_streaming_response(
+        state,
+        auth,
+        request,
+        response,
+        generation_id,
+        started_at,
+        created_at,
+    )
+    .await
 }
 
 async fn handle_non_streaming(
@@ -603,7 +626,16 @@ async fn handle_non_streaming(
         }
     };
 
-    build_non_streaming_response(state, auth, request, response, generation_id, started_at, created_at).await
+    build_non_streaming_response(
+        state,
+        auth,
+        request,
+        response,
+        generation_id,
+        started_at,
+        created_at,
+    )
+    .await
 }
 
 /// Build the non-streaming completion response. Shared by both sequential and parallel handlers.
@@ -674,7 +706,6 @@ async fn build_non_streaming_response(
     ) {
         tracing::warn!("Failed to write access log: {}", e);
     }
-
 
     // Convert chat completion response to legacy completion response
     let api_response = CompletionResponse {
@@ -905,7 +936,6 @@ async fn handle_streaming(
         move |chunk_result| -> Result<Event, std::convert::Infallible> {
             match chunk_result {
                 Ok(provider_chunk) => {
-
                     // Track content for token estimation
                     let is_done = if let Some(choice) = provider_chunk.choices.first() {
                         if let Some(content) = &choice.delta.content {
@@ -1221,45 +1251,44 @@ async fn handle_streaming_parallel(
             let mut finish_reason_val = String::from("stop");
             let mut stream_done = false;
 
-            let convert_chunk =
-                |provider_chunk: lr_providers::CompletionChunk,
-                 gen_id: &str,
-                 created_ts: i64,
-                 content_acc: &mut String,
-                 finish_reason: &mut String|
-                 -> (Result<Event, std::convert::Infallible>, bool) {
-                    let is_done = if let Some(choice) = provider_chunk.choices.first() {
-                        if let Some(content) = &choice.delta.content {
-                            content_acc.push_str(content);
-                        }
-                        if let Some(reason) = &choice.finish_reason {
-                            *finish_reason = reason.clone();
-                            true
-                        } else {
-                            false
-                        }
+            let convert_chunk = |provider_chunk: lr_providers::CompletionChunk,
+                                 gen_id: &str,
+                                 created_ts: i64,
+                                 content_acc: &mut String,
+                                 finish_reason: &mut String|
+             -> (Result<Event, std::convert::Infallible>, bool) {
+                let is_done = if let Some(choice) = provider_chunk.choices.first() {
+                    if let Some(content) = &choice.delta.content {
+                        content_acc.push_str(content);
+                    }
+                    if let Some(reason) = &choice.finish_reason {
+                        *finish_reason = reason.clone();
+                        true
                     } else {
                         false
-                    };
-
-                    let api_chunk = CompletionChunk {
-                        id: gen_id.to_string(),
-                        object: "text_completion".to_string(),
-                        created: created_ts,
-                        choices: provider_chunk
-                            .choices
-                            .into_iter()
-                            .map(|choice| CompletionChunkChoice {
-                                text: choice.delta.content.unwrap_or_default(),
-                                index: choice.index,
-                                finish_reason: choice.finish_reason,
-                            })
-                            .collect(),
-                    };
-
-                    let json = serde_json::to_string(&api_chunk).unwrap_or_default();
-                    (Ok(Event::default().data(json)), is_done)
+                    }
+                } else {
+                    false
                 };
+
+                let api_chunk = CompletionChunk {
+                    id: gen_id.to_string(),
+                    object: "text_completion".to_string(),
+                    created: created_ts,
+                    choices: provider_chunk
+                        .choices
+                        .into_iter()
+                        .map(|choice| CompletionChunkChoice {
+                            text: choice.delta.content.unwrap_or_default(),
+                            index: choice.index,
+                            finish_reason: choice.finish_reason,
+                        })
+                        .collect(),
+                };
+
+                let json = serde_json::to_string(&api_chunk).unwrap_or_default();
+                (Ok(Event::default().data(json)), is_done)
+            };
 
             loop {
                 tokio::select! {
@@ -1364,11 +1393,12 @@ async fn handle_streaming_parallel(
                                 "code": "guardrails_denied"
                             }
                         });
-                        let _ = event_tx.send(Ok(Event::default().data(
-                            serde_json::to_string(&error_response)
-                                .unwrap_or_else(|_| "[ERROR]".to_string()),
-                        )))
-                        .await;
+                        let _ = event_tx
+                            .send(Ok(Event::default().data(
+                                serde_json::to_string(&error_response)
+                                    .unwrap_or_else(|_| "[ERROR]".to_string()),
+                            )))
+                            .await;
                     }
                     GuardrailGate::Pending => {
                         for event in buffer.drain(..) {
@@ -1400,8 +1430,7 @@ async fn handle_streaming_parallel(
 
             let cost = {
                 let input_cost = (prompt_tokens as f64 / 1000.0) * pricing.input_cost_per_1k;
-                let output_cost =
-                    (completion_tokens as f64 / 1000.0) * pricing.output_cost_per_1k;
+                let output_cost = (completion_tokens as f64 / 1000.0) * pricing.output_cost_per_1k;
                 input_cost + output_cost
             };
 

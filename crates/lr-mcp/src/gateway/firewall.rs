@@ -796,7 +796,10 @@ mod tests {
             (FirewallApprovalAction::AllowOnce, "\"allow_once\""),
             (FirewallApprovalAction::AllowSession, "\"allow_session\""),
             (FirewallApprovalAction::Allow1Hour, "\"allow_1_hour\""),
-            (FirewallApprovalAction::AllowPermanent, "\"allow_permanent\""),
+            (
+                FirewallApprovalAction::AllowPermanent,
+                "\"allow_permanent\"",
+            ),
             (
                 FirewallApprovalAction::BlockCategories,
                 "\"block_categories\"",
@@ -810,10 +813,13 @@ mod tests {
 
         for (action, expected_json) in &actions {
             let serialized = serde_json::to_string(action).unwrap();
-            assert_eq!(&serialized, expected_json, "Serialization mismatch for {:?}", action);
+            assert_eq!(
+                &serialized, expected_json,
+                "Serialization mismatch for {:?}",
+                action
+            );
 
-            let deserialized: FirewallApprovalAction =
-                serde_json::from_str(expected_json).unwrap();
+            let deserialized: FirewallApprovalAction = serde_json::from_str(expected_json).unwrap();
             assert_eq!(
                 &deserialized, action,
                 "Deserialization mismatch for {}",

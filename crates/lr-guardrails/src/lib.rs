@@ -6,11 +6,10 @@
 //! # Architecture
 //!
 //! - **SafetyModel trait**: Abstracts over all model implementations
-//! - **ModelExecutor**: Routes inference through providers or local GGUF
+//! - **ModelExecutor**: Routes inference through LLM providers
 //! - **SafetyEngine**: Orchestrates checks across multiple models
 //! - **text_extractor**: Extracts text from OpenAI-format request/response JSON
 
-pub mod downloader;
 pub mod engine;
 pub mod executor;
 pub mod models;
@@ -19,6 +18,5 @@ pub mod text_extractor;
 pub mod types;
 
 pub use engine::{ProviderInfo, SafetyEngine, SafetyModelConfigInput};
-pub use executor::{loaded_model_count, unload_all_models, unload_idle_models};
 pub use safety_model::*;
 pub use types::*;

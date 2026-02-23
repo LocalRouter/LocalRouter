@@ -111,6 +111,87 @@ impl Default for OllamaProvider {
     }
 }
 
+// ============================================================================
+// Model Pull Support
+// ============================================================================
+
+/// Progress event from Ollama's POST /api/pull endpoint
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PullProgress {
+    pub status: String,
+    #[serde(default)]
+    pub total: Option<u64>,
+    #[serde(default)]
+    pub completed: Option<u64>,
+}
+
+impl OllamaProvider {
+    /// Pull (download) a model from Ollama's registry.
+    ///
+    /// Streams progress as NDJSON lines with `status`, `total`, `completed` fields.
+    /// Returns a stream of `PullProgress` items.
+    pub async fn pull_model(
+        &self,
+        model_name: &str,
+    ) -> AppResult<Pin<Box<dyn Stream<Item = AppResult<PullProgress>> + Send>>> {
+        let url = format!("{}/api/pull", self.base_url.trim_end_matches('/'));
+
+        let body = serde_json::json!({
+            "name": model_name,
+            "stream": true,
+        });
+
+        let response = self
+            .http_client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| AppError::Provider(format!("Ollama pull request failed: {}", e)))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(AppError::Provider(format!(
+                "Ollama pull failed ({}): {}",
+                status, body
+            )));
+        }
+
+        let stream = response.bytes_stream().map(|result| {
+            result
+                .map_err(|e| AppError::Provider(format!("Stream error: {}", e)))
+                .and_then(|bytes| {
+                    // Ollama streams NDJSON — each line is a JSON object
+                    let text = String::from_utf8_lossy(&bytes);
+                    // May contain multiple lines in one chunk
+                    let mut last_progress = None;
+                    for line in text.lines() {
+                        let line = line.trim();
+                        if line.is_empty() {
+                            continue;
+                        }
+                        match serde_json::from_str::<PullProgress>(line) {
+                            Ok(progress) => last_progress = Some(progress),
+                            Err(e) => {
+                                debug!("Failed to parse pull progress line: {} — {}", line, e);
+                            }
+                        }
+                    }
+                    last_progress
+                        .ok_or_else(|| AppError::Provider("Empty pull progress chunk".to_string()))
+                })
+        });
+
+        Ok(Box::pin(stream))
+    }
+
+    /// Get the base URL for this Ollama instance
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+}
+
 // Ollama API types for HTTP requests
 #[derive(Debug, Serialize, Deserialize)]
 struct OllamaChatRequest {

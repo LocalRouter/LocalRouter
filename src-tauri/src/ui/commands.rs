@@ -2074,9 +2074,6 @@ pub async fn rebuild_safety_engine(
                 provider_id: m.provider_id.clone(),
                 model_name: m.model_name.clone(),
                 enabled_categories: None,
-                execution_mode: m.execution_mode.clone(),
-                hf_repo_id: m.hf_repo_id.clone(),
-                gguf_filename: m.gguf_filename.clone(),
             })
             .collect();
 
@@ -2084,7 +2081,6 @@ pub async fn rebuild_safety_engine(
             &model_inputs,
             guardrails_config.default_confidence_threshold,
             &provider_lookup,
-            guardrails_config.context_size,
         ));
 
         // Emit load-failed events for models that couldn't be loaded
@@ -2093,11 +2089,7 @@ pub async fn rebuild_safety_engine(
                 "safety-model-load-failed",
                 serde_json::json!({ "model_id": model_id, "error": error }),
             );
-            tracing::warn!(
-                "Safety model '{}' failed to load: {}",
-                model_id,
-                error
-            );
+            tracing::warn!("Safety model '{}' failed to load: {}", model_id, error);
         }
 
         tracing::info!(
@@ -2112,12 +2104,6 @@ pub async fn rebuild_safety_engine(
     }
 
     Ok(())
-}
-
-/// Delete downloaded model files for a safety model (e.g. to retry after corruption)
-#[tauri::command]
-pub async fn delete_safety_model_files(model_id: String) -> Result<(), String> {
-    lr_guardrails::downloader::delete_model_files(&model_id).await
 }
 
 /// Test safety check against input text (runs all enabled models).
@@ -2178,7 +2164,7 @@ pub async fn get_safety_model_status(
         .find(|m| m.id == model_id)
         .ok_or_else(|| format!("Safety model '{}' not found", model_id))?;
 
-    // Check if provider is configured
+    // Check if provider is configured and enabled
     let provider_configured = if let Some(ref provider_id) = model.provider_id {
         config
             .providers
@@ -2188,36 +2174,6 @@ pub async fn get_safety_model_status(
         false
     };
 
-    // Check download status for local models
-    let download_status = if let Some(ref gguf_filename) = model.gguf_filename {
-        let status = lr_guardrails::downloader::get_download_status(&model_id, gguf_filename);
-        Some(status)
-    } else {
-        None
-    };
-
-    let downloaded = download_status.as_ref().is_some_and(|s| s.downloaded);
-
-    // Determine execution mode
-    let execution_mode = match model.execution_mode.as_deref() {
-        Some("local") | Some("direct_download") | Some("custom_download") => "local",
-        Some("provider") => {
-            if provider_configured {
-                "provider"
-            } else {
-                "not_configured"
-            }
-        }
-        _ => {
-            // Default: if provider is configured, use provider; else not_configured
-            if provider_configured {
-                "provider"
-            } else {
-                "not_configured"
-            }
-        }
-    };
-
     Ok(serde_json::json!({
         "id": model.id,
         "label": model.label,
@@ -2225,9 +2181,7 @@ pub async fn get_safety_model_status(
         "provider_configured": provider_configured,
         "provider_id": model.provider_id,
         "model_name": model.model_name,
-        "requires_auth": model.requires_auth,
-        "downloaded": downloaded,
-        "execution_mode": execution_mode,
+        "available": provider_configured,
     }))
 }
 
@@ -2292,113 +2246,10 @@ pub async fn get_all_safety_categories(
 }
 
 // ============================================================================
-// Safety Model Download & Management Commands
+// Safety Model Management Commands
 // ============================================================================
 
-/// Download a safety model's GGUF file from HuggingFace
-///
-/// Starts an async download. Progress is reported via events:
-/// - `safety-model-download-progress`
-/// - `safety-model-download-complete`
-/// - `safety-model-download-failed`
-#[tauri::command]
-pub async fn download_safety_model(
-    model_id: String,
-    config_manager: State<'_, ConfigManager>,
-    app_handle: AppHandle,
-) -> Result<(), String> {
-    let config = config_manager.get();
-    let model = config
-        .guardrails
-        .safety_models
-        .iter()
-        .find(|m| m.id == model_id)
-        .ok_or_else(|| format!("Safety model '{}' not found", model_id))?;
-
-    let hf_repo_id = model
-        .hf_repo_id
-        .as_ref()
-        .ok_or_else(|| format!("Model '{}' has no HuggingFace repo ID configured", model_id))?
-        .clone();
-
-    let gguf_filename = model
-        .gguf_filename
-        .as_ref()
-        .ok_or_else(|| format!("Model '{}' has no GGUF filename configured", model_id))?
-        .clone();
-
-    let hf_token = config.guardrails.hf_token.clone();
-    let model_id_owned = model_id.clone();
-
-    // Spawn the download in the background
-    tokio::spawn(async move {
-        let result = lr_guardrails::downloader::download_model(
-            &model_id_owned,
-            &hf_repo_id,
-            &gguf_filename,
-            hf_token.as_deref(),
-            Some(app_handle.clone()),
-        )
-        .await;
-
-        match result {
-            Ok(_gguf_path) => {
-                tracing::info!(
-                    "Safety model '{}' downloaded, rebuilding engine",
-                    model_id_owned
-                );
-            }
-            Err(e) => {
-                tracing::error!(
-                    "Safety model download failed for '{}': {}",
-                    model_id_owned,
-                    e
-                );
-            }
-        }
-    });
-
-    Ok(())
-}
-
-/// Get the download status of a safety model's GGUF file
-#[tauri::command]
-pub async fn get_safety_model_download_status(
-    model_id: String,
-    config_manager: State<'_, ConfigManager>,
-) -> Result<serde_json::Value, String> {
-    let config = config_manager.get();
-    let model = config
-        .guardrails
-        .safety_models
-        .iter()
-        .find(|m| m.id == model_id)
-        .ok_or_else(|| format!("Safety model '{}' not found", model_id))?;
-
-    let status = if let Some(ref gguf_filename) = model.gguf_filename {
-        lr_guardrails::downloader::get_download_status(&model_id, gguf_filename)
-    } else {
-        lr_guardrails::downloader::SafetyModelDownloadStatus {
-            downloaded: false,
-            file_path: None,
-            file_size: None,
-        }
-    };
-
-    serde_json::to_value(&status).map_err(|e| e.to_string())
-}
-
-/// Check if a safety model GGUF file exists on disk (without requiring it to be in config)
-#[tauri::command]
-pub async fn check_safety_model_file_exists(
-    model_id: String,
-    gguf_filename: String,
-) -> Result<serde_json::Value, String> {
-    let status = lr_guardrails::downloader::get_download_status(&model_id, &gguf_filename);
-    serde_json::to_value(&status).map_err(|e| e.to_string())
-}
-
-/// Add a new custom safety model to the configuration
+/// Add a new safety model to the configuration
 #[tauri::command]
 pub async fn add_safety_model(
     config_json: String,
@@ -2417,9 +2268,6 @@ pub async fn add_safety_model(
                 .as_millis()
         );
     }
-
-    // Custom models are never predefined
-    new_model.predefined = false;
 
     // Check for duplicate ID
     {
@@ -2447,7 +2295,7 @@ pub async fn add_safety_model(
     Ok(())
 }
 
-/// Remove a safety model from the configuration (does not delete downloaded files from disk)
+/// Remove a safety model from the configuration
 #[tauri::command]
 pub async fn remove_safety_model(
     model_id: String,
@@ -2474,22 +2322,107 @@ pub async fn remove_safety_model(
     Ok(())
 }
 
-/// Get the number of safety models currently loaded in memory
-#[tauri::command]
-pub async fn get_guardrails_loaded_model_count() -> Result<usize, String> {
-    Ok(lr_guardrails::loaded_model_count())
-}
+// ============================================================================
+// Provider Model Pull Commands
+// ============================================================================
 
-/// Unload all safety models from memory immediately
+/// Pull (download) a model through a provider that supports it (currently Ollama only).
+///
+/// Streams progress via `provider-model-pull-progress` Tauri events.
+/// Emits `provider-model-pull-complete` or `provider-model-pull-failed` on finish.
 #[tauri::command]
-pub async fn unload_all_safety_models() -> Result<(), String> {
-    lr_guardrails::unload_all_models();
+pub async fn pull_provider_model(
+    provider_id: String,
+    model_name: String,
+    app_handle: AppHandle,
+    config_manager: State<'_, ConfigManager>,
+) -> Result<(), String> {
+    use futures::StreamExt;
+
+    let config = config_manager.get();
+    let provider_cfg = config
+        .providers
+        .iter()
+        .find(|p| p.name == provider_id)
+        .ok_or_else(|| format!("Provider '{}' not found", provider_id))?;
+
+    // Only Ollama supports pulling
+    if provider_cfg.provider_type != lr_config::ProviderType::Ollama {
+        return Err(format!(
+            "Provider '{}' does not support model pulling (only Ollama is supported)",
+            provider_id
+        ));
+    }
+
+    let endpoint = provider_cfg
+        .provider_config
+        .as_ref()
+        .and_then(|cfg| cfg.get("endpoint"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("http://localhost:11434")
+        .to_string();
+
+    let ollama = lr_providers::ollama::OllamaProvider::with_base_url(endpoint);
+    let model_name_clone = model_name.clone();
+    let provider_id_clone = provider_id.clone();
+
+    // Spawn in background so the command returns immediately
+    tokio::spawn(async move {
+        match ollama.pull_model(&model_name_clone).await {
+            Ok(mut stream) => {
+                while let Some(result) = stream.next().await {
+                    match result {
+                        Ok(progress) => {
+                            let _ = app_handle.emit(
+                                "provider-model-pull-progress",
+                                serde_json::json!({
+                                    "provider_id": provider_id_clone,
+                                    "model_name": model_name_clone,
+                                    "status": progress.status,
+                                    "total": progress.total,
+                                    "completed": progress.completed,
+                                }),
+                            );
+
+                            // "success" status means the pull is complete
+                            if progress.status == "success" {
+                                let _ = app_handle.emit(
+                                    "provider-model-pull-complete",
+                                    serde_json::json!({
+                                        "provider_id": provider_id_clone,
+                                        "model_name": model_name_clone,
+                                    }),
+                                );
+                                return;
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("Pull progress error for '{}': {}", model_name_clone, e);
+                        }
+                    }
+                }
+
+                // Stream ended without explicit "success" — treat as complete
+                let _ = app_handle.emit(
+                    "provider-model-pull-complete",
+                    serde_json::json!({
+                        "provider_id": provider_id_clone,
+                        "model_name": model_name_clone,
+                    }),
+                );
+            }
+            Err(e) => {
+                let _ = app_handle.emit(
+                    "provider-model-pull-failed",
+                    serde_json::json!({
+                        "provider_id": provider_id_clone,
+                        "model_name": model_name_clone,
+                        "error": e.to_string(),
+                    }),
+                );
+            }
+        }
+    });
+
     Ok(())
-}
-
-/// Get the path to the safety models directory
-#[tauri::command]
-pub async fn get_safety_models_dir() -> Result<String, String> {
-    let dir = lr_guardrails::downloader::safety_models_dir()?;
-    Ok(dir.to_string_lossy().to_string())
 }

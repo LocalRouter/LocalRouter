@@ -174,8 +174,13 @@ mod tests {
         CustomSafetyModel::new(
             "test".into(),
             "Test Model".into(),
-            Arc::new(ModelExecutor::Local(
-                crate::executor::LocalGgufExecutor::new("/tmp/fake".into(), 512).unwrap(),
+            Arc::new(ModelExecutor::Provider(
+                crate::executor::ProviderExecutor::new(
+                    "http://localhost:11434".into(),
+                    None,
+                    "test".into(),
+                    true,
+                ),
             )),
             "test".into(),
             "Check this: {content}".into(),

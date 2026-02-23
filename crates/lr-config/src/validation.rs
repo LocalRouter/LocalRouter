@@ -59,13 +59,6 @@ fn validate_guardrails_config(config: &AppConfig) -> AppResult<()> {
         )));
     }
 
-    if !(256..=4096).contains(&g.context_size) {
-        return Err(AppError::Config(format!(
-            "Guardrails context_size must be between 256 and 4096, got {}",
-            g.context_size
-        )));
-    }
-
     Ok(())
 }
 
@@ -541,30 +534,6 @@ mod tests {
         assert!(validate_config(&config).is_ok());
 
         config.guardrails.default_confidence_threshold = 1.0;
-        assert!(validate_config(&config).is_ok());
-    }
-
-    #[test]
-    fn test_validate_guardrails_context_size_too_small() {
-        let mut config = AppConfig::default();
-        config.guardrails.context_size = 0;
-        assert!(validate_config(&config).is_err());
-    }
-
-    #[test]
-    fn test_validate_guardrails_context_size_too_large() {
-        let mut config = AppConfig::default();
-        config.guardrails.context_size = 8192;
-        assert!(validate_config(&config).is_err());
-    }
-
-    #[test]
-    fn test_validate_guardrails_context_size_valid_bounds() {
-        let mut config = AppConfig::default();
-        config.guardrails.context_size = 256;
-        assert!(validate_config(&config).is_ok());
-
-        config.guardrails.context_size = 4096;
         assert!(validate_config(&config).is_ok());
     }
 }

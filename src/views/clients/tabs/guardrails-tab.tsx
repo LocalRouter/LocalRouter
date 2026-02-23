@@ -8,13 +8,10 @@ import { CategoryActionButton, type CategoryActionState } from "@/components/per
 import { PermissionTreeSelector } from "@/components/permissions/PermissionTreeSelector"
 import type { TreeNode } from "@/components/permissions/types"
 import { SafetyModelList } from "@/components/guardrails/SafetyModelList"
-import { ResourceRequirements } from "@/components/guardrails/ResourceRequirements"
 import type {
   ClientGuardrailsConfig,
   GuardrailsConfig,
-  SafetyModelConfig,
   SafetyCategoryInfo,
-  SafetyModelDownloadStatus,
   GetClientGuardrailsConfigParams,
   UpdateClientGuardrailsConfigParams,
 } from "@/types/tauri-commands"
@@ -37,7 +34,6 @@ export function ClientGuardrailsTab({ client, onUpdate, onViewChange }: ClientGu
   })
   const [globalConfig, setGlobalConfig] = useState<GuardrailsConfig | null>(null)
   const [categories, setCategories] = useState<SafetyCategoryInfo[]>([])
-  const [downloadStatuses, setDownloadStatuses] = useState<Record<string, SafetyModelDownloadStatus>>({})
   const [loading, setLoading] = useState(true)
 
   const loadConfig = useCallback(async () => {
@@ -52,23 +48,6 @@ export function ClientGuardrailsTab({ client, onUpdate, onViewChange }: ClientGu
       setGuardrailsConfig(clientConfig)
       setGlobalConfig(global)
       setCategories(cats)
-
-      // Load download statuses for models
-      const statuses: Record<string, SafetyModelDownloadStatus> = {}
-      for (const model of global.safety_models) {
-        if (model.gguf_filename) {
-          try {
-            const status = await invoke<SafetyModelDownloadStatus>(
-              "get_safety_model_download_status",
-              { modelId: model.id } as Record<string, unknown>
-            )
-            statuses[model.id] = status
-          } catch {
-            // ignore
-          }
-        }
-      }
-      setDownloadStatuses(statuses)
     } catch (err) {
       console.error("Failed to load guardrails config:", err)
       toast.error("Failed to load guardrails configuration")
@@ -158,27 +137,6 @@ export function ClientGuardrailsTab({ client, onUpdate, onViewChange }: ClientGu
     saveConfig({ ...guardrailsConfig, category_actions: actions })
   }
 
-  // Determine which models will run based on selected categories
-  const activeModels = useMemo((): SafetyModelConfig[] => {
-    if (!globalConfig) return []
-
-    // Find which model types have categories configured (not all set to "allow")
-    const activeModelTypes = new Set<string>()
-    for (const node of categoryTreeNodes) {
-      const modelType = node.id.replace("__model:", "")
-      // A model type is "active" if any of its children have a non-allow action
-      const hasNonAllowChild = node.children?.some(child => {
-        const action = categoryPermissionsMap[child.id] || globalCategoryAction
-        return action !== "allow"
-      })
-      if (hasNonAllowChild) {
-        activeModelTypes.add(modelType)
-      }
-    }
-
-    return globalConfig.safety_models.filter(m => activeModelTypes.has(m.model_type))
-  }, [globalConfig, categoryTreeNodes, categoryPermissionsMap, globalCategoryAction])
-
   if (loading) {
     return (
       <div className="flex items-center justify-center py-8">
@@ -224,8 +182,6 @@ export function ClientGuardrailsTab({ client, onUpdate, onViewChange }: ClientGu
             <CardContent>
               <SafetyModelList
                 models={globalConfig?.safety_models || []}
-                downloadStatuses={downloadStatuses}
-                downloadProgress={{}}
                 readOnly
               />
             </CardContent>
@@ -255,17 +211,6 @@ export function ClientGuardrailsTab({ client, onUpdate, onViewChange }: ClientGu
             </CardContent>
           </Card>
 
-          {/* Resource Requirements */}
-          {activeModels.length > 0 && (
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-base">Resource Requirements</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <ResourceRequirements models={activeModels} />
-              </CardContent>
-            </Card>
-          )}
     </div>
   )
 }

@@ -1295,24 +1295,9 @@ pub struct GuardrailsConfig {
     #[serde(default, skip_serializing)]
     pub category_actions: Vec<CategoryActionEntry>,
 
-    /// Global HuggingFace token for gated model downloads
-    #[serde(default)]
-    pub hf_token: Option<String>,
-
     /// Default confidence threshold for flagging (0.0-1.0)
     #[serde(default = "default_confidence_threshold")]
     pub default_confidence_threshold: f32,
-
-    /// Idle timeout in seconds before auto-unloading GGUF models from memory.
-    /// Default: 600 (10 minutes). Set to 0 to disable auto-unload.
-    #[serde(default = "default_guardrails_idle_timeout")]
-    pub idle_timeout_secs: u64,
-
-    /// Maximum context window size for local GGUF inference (in tokens).
-    /// The actual context is right-sized per request; this sets the upper bound.
-    /// Larger values allow scanning longer prompts. Default: 512. Range: 256-4096.
-    #[serde(default = "default_guardrails_context_size")]
-    pub context_size: u32,
 
     /// Run guardrails in parallel with LLM request, buffering response until safe (default: true).
     /// Falls back to sequential when side effects are detected (e.g. web search tools, Perplexity Sonar).
@@ -1324,14 +1309,6 @@ fn default_confidence_threshold() -> f32 {
     0.5
 }
 
-fn default_guardrails_idle_timeout() -> u64 {
-    600 // 10 minutes
-}
-
-fn default_guardrails_context_size() -> u32 {
-    512
-}
-
 impl Default for GuardrailsConfig {
     fn default() -> Self {
         Self {
@@ -1340,10 +1317,7 @@ impl Default for GuardrailsConfig {
             scan_responses: false,
             safety_models: default_safety_models(),
             category_actions: vec![],
-            hf_token: None,
             default_confidence_threshold: default_confidence_threshold(),
-            idle_timeout_secs: default_guardrails_idle_timeout(),
-            context_size: default_guardrails_context_size(),
             parallel_guardrails: true,
         }
     }
@@ -1381,27 +1355,12 @@ pub struct SafetyModelConfig {
     /// Model name on the provider (e.g. "granite3-guardian:2b")
     #[serde(default)]
     pub model_name: Option<String>,
-    /// HuggingFace repo ID for direct download
-    #[serde(default)]
-    pub hf_repo_id: Option<String>,
-    /// Specific GGUF filename to download
-    #[serde(default)]
-    pub gguf_filename: Option<String>,
-    /// Whether this model requires HuggingFace authentication (gated)
-    #[serde(default)]
-    pub requires_auth: bool,
     /// Override the global confidence threshold for this model
     #[serde(default)]
     pub confidence_threshold: Option<f32>,
     /// Subset of categories to enable (None = all)
     #[serde(default)]
     pub enabled_categories: Option<Vec<String>>,
-    /// Whether this is a predefined (built-in) model entry
-    #[serde(default)]
-    pub predefined: bool,
-    /// Execution mode: "provider" or "local" (default: "provider")
-    #[serde(default)]
-    pub execution_mode: Option<String>,
     /// Custom prompt template with `{content}` placeholder (for custom model_type)
     #[serde(default)]
     pub prompt_template: Option<String>,
@@ -1414,15 +1373,6 @@ pub struct SafetyModelConfig {
     /// Custom mapping from native model labels to safety categories
     #[serde(default)]
     pub category_mapping: Option<Vec<CategoryMappingEntry>>,
-    /// Estimated memory usage in MB when loaded
-    #[serde(default)]
-    pub memory_mb: Option<u32>,
-    /// Estimated inference latency in milliseconds
-    #[serde(default)]
-    pub latency_ms: Option<u32>,
-    /// On-disk size in MB
-    #[serde(default)]
-    pub disk_size_mb: Option<u32>,
 }
 
 /// Mapping from a model's native output label to a normalized safety category
