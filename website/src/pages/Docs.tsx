@@ -126,6 +126,10 @@ const sections: DocSection[] = [
         { id: 'strategy-local-first', title: 'Local First' },
         { id: 'strategy-remote-first', title: 'Remote First' },
       ]},
+      { id: 'free-tier-mode', title: 'Free-Tier Mode', children: [
+        { id: 'free-tier-tracking', title: 'Usage Tracking' },
+        { id: 'free-tier-backoff', title: 'Backoff & Exhaustion' },
+      ]},
       { id: 'error-classification', title: 'Error Classification', children: [
         { id: 'error-rate-limited', title: 'Rate Limited' },
         { id: 'error-policy-violation', title: 'Policy Violation' },

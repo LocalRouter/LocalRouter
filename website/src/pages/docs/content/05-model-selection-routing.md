@@ -58,6 +58,35 @@ Place local providers (Ollama, LM Studio) at the top of `prioritized_models` wit
 
 Place cloud providers (OpenAI, Anthropic, etc.) at the top of `prioritized_models` with local models as fallbacks. This prioritizes the quality and speed of remote API models while maintaining resilience — if the remote provider is rate-limited or unreachable, requests automatically fail over to local models.
 
+<!-- @entry free-tier-mode -->
+
+**Free-Tier Mode** restricts the router to only use providers with available free-tier capacity. Enable it by toggling `free_tier_only` on a strategy. When active, each candidate model is classified before the request is attempted — models from providers without free-tier availability are skipped entirely.
+
+The router understands that providers have fundamentally different free-tier models. Each provider declares a `FreeTierKind`:
+
+- **AlwaysFreeLocal** — Ollama, LM Studio, OpenAI Compatible (local). Always allowed.
+- **Subscription** — GitHub Copilot. Included in existing subscription.
+- **RateLimitedFree** — Gemini, Groq, Cerebras, Mistral, Cohere. Free within RPM/RPD/TPM limits.
+- **CreditBased** — OpenRouter, xAI, DeepInfra. Dollar-budget credits with reset periods.
+- **FreeModelsOnly** — Together AI. Only specific models (e.g., `Llama-3.3-70B-Instruct-Turbo-Free`) are free.
+- **None** — OpenAI, Anthropic. No free tier; always skipped in free-tier mode.
+
+<!-- @entry free-tier-tracking -->
+
+The `FreeTierManager` tracks usage per provider using two systems. **Rate limit tracking** maintains client-side counters (RPM, RPD, TPM, TPD, monthly calls, monthly tokens) with automatic window resets. When a provider returns rate limit response headers, header-reported values take precedence over client-side counters. **Credit tracking** estimates cost from token usage and compares against the configured budget, with support for daily, monthly, and one-time reset periods.
+
+A **universal rate limit header parser** handles all known naming conventions without per-provider code: `x-ratelimit-remaining-requests` (OpenAI/Groq/xAI), `x-ratelimit-remaining-requests-day` (Cerebras), `x-ratelimit-remaining`/`x-tokenlimit-remaining` (Together AI), and `anthropic-ratelimit-requests-remaining` (Anthropic). Custom OpenAI-compatible providers automatically benefit from header parsing if their backend returns standard headers.
+
+For OpenRouter, the router can also query the `GET /api/v1/key` endpoint to sync credit balance and free-tier status directly from the provider.
+
+<!-- @entry free-tier-backoff -->
+
+When a provider returns 429 (rate limited) or 402 (credits exhausted), the `FreeTierManager` records a backoff for that provider-model pair. Subsequent requests skip backed-off providers instantly — no wasted round-trips to providers already known to be unavailable.
+
+Backoff duration is resolved from (in priority order): the `retry-after` response header, the `x-ratelimit-reset-*` header, credit replenishment schedule, or exponential backoff (1s → 2s → 4s → ... → 60s max). A successful request clears the backoff immediately.
+
+When all free-tier providers are exhausted, the router returns HTTP 429 with a `retry-after` header set to the minimum remaining backoff across all providers, telling the client exactly when to retry.
+
 <!-- @entry error-classification -->
 
 The `RouterError` enum classifies provider errors into five categories: `RateLimited`, `PolicyViolation`, `ContextLengthExceeded`, `Unreachable`, and `Other`.
