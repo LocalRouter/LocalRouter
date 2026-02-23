@@ -46,7 +46,7 @@ export function ResourcesView({ activeSubTab, onTabChange }: LlmProvidersViewPro
     await invoke("check_single_provider_health", { instanceName })
   }, [])
 
-  // Listen for health check events
+  // Listen for health check events (individual provider checks)
   useEffect(() => {
     const unsubHealth = listen<HealthCheckEvent>("provider-health-check", (event) => {
       const { provider_name, status, latency_ms, error_message } = event.payload
@@ -60,8 +60,35 @@ export function ResourcesView({ activeSubTab, onTabChange }: LlmProvidersViewPro
       }))
     })
 
+    // Listen for global health cache updates (e.g. from sidebar refresh button)
+    interface ItemHealth {
+      name: string
+      status: string
+      latency_ms?: number
+      error?: string
+    }
+    interface HealthCacheState {
+      providers: Record<string, ItemHealth>
+    }
+    const unsubCacheChanged = listen<HealthCacheState>("health-status-changed", (event) => {
+      const { providers } = event.payload
+      if (!providers) return
+      setHealthStatus((prev) => {
+        const updated = { ...prev }
+        for (const [name, health] of Object.entries(providers)) {
+          updated[name] = {
+            status: health.status as HealthStatus["status"],
+            latency_ms: health.latency_ms,
+            error: health.error,
+          }
+        }
+        return updated
+      })
+    })
+
     return () => {
       unsubHealth.then((fn) => fn())
+      unsubCacheChanged.then((fn) => fn())
     }
   }, [])
 

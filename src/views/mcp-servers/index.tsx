@@ -61,7 +61,7 @@ export function McpServersView({ activeSubTab, onTabChange }: McpServersViewProp
     await invoke("check_single_mcp_health", { serverId })
   }, [])
 
-  // Listen for health check events
+  // Listen for health check events (individual MCP checks)
   useEffect(() => {
     const unsubHealth = listen<McpHealthCheckEvent>("mcp-health-check", (event) => {
       const { server_id, status, latency_ms, error } = event.payload
@@ -75,8 +75,35 @@ export function McpServersView({ activeSubTab, onTabChange }: McpServersViewProp
       }))
     })
 
+    // Listen for global health cache updates (e.g. from sidebar refresh button)
+    interface ItemHealth {
+      name: string
+      status: string
+      latency_ms?: number
+      error?: string
+    }
+    interface HealthCacheState {
+      mcp_servers: Record<string, ItemHealth>
+    }
+    const unsubCacheChanged = listen<HealthCacheState>("health-status-changed", (event) => {
+      const { mcp_servers } = event.payload
+      if (!mcp_servers) return
+      setHealthStatus((prev) => {
+        const updated = { ...prev }
+        for (const [id, health] of Object.entries(mcp_servers)) {
+          updated[id] = {
+            status: health.status as McpHealthStatus["status"],
+            latency_ms: health.latency_ms,
+            error: health.error,
+          }
+        }
+        return updated
+      })
+    })
+
     return () => {
       unsubHealth.then((fn) => fn())
+      unsubCacheChanged.then((fn) => fn())
     }
   }, [])
 
