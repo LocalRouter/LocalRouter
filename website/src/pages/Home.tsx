@@ -17,6 +17,7 @@ import {
   Search,
   Download,
   Terminal,
+  Coins,
 } from 'lucide-react'
 
 export default function Home() {
@@ -244,6 +245,163 @@ export default function Home() {
           <p className="mt-2 text-[11px] text-muted-foreground/60 text-right">
             Desktop powered by <a href="https://github.com/ShizukuIchi/winXP" target="_blank" rel="noopener noreferrer" className="underline hover:text-muted-foreground">WinXP</a>
           </p>
+        </div>
+      </section>
+
+      {/* Feature: Free-Tier Mode */}
+      <section className="border-b py-16 sm:py-24 bg-muted/30">
+        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+          <div className="grid gap-12 lg:grid-cols-2 lg:gap-16 items-center">
+            {/* Visual: Provider Free Tier Status */}
+            <div className="relative order-2 lg:order-1 overflow-x-auto">
+              <div className="rounded-xl border-2 border-slate-700 bg-gradient-to-br from-teal-950 to-slate-900 p-6 shadow-2xl min-w-[420px]">
+                {/* Header */}
+                <div className="flex items-center gap-2 mb-4">
+                  <div className="h-2 w-2 rounded-full bg-teal-500 animate-pulse" />
+                  <span className="text-teal-400 text-xs font-medium uppercase tracking-wide">Free-Tier Only</span>
+                  <div className="ml-auto px-2 py-0.5 rounded bg-teal-500/20 border border-teal-500/30">
+                    <span className="text-teal-400 text-[10px] font-mono">enabled</span>
+                  </div>
+                </div>
+
+                {/* Provider list */}
+                <div className="space-y-2.5">
+                  {/* Ollama - always free */}
+                  <div className="flex items-center gap-3 px-3 py-2 rounded-lg bg-white/5 border border-slate-700">
+                    <div className="h-6 w-6 rounded bg-slate-700 flex items-center justify-center">
+                      <span className="text-white text-[9px] font-bold">O</span>
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between">
+                        <span className="text-white text-xs font-medium">Ollama</span>
+                        <span className="text-emerald-400 text-[10px]">Always Free</span>
+                      </div>
+                      <div className="mt-1 h-1.5 rounded-full bg-slate-700 overflow-hidden">
+                        <div className="h-full rounded-full bg-emerald-500" style={{ width: '100%' }} />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Gemini - rate limited */}
+                  <div className="flex items-center gap-3 px-3 py-2 rounded-lg bg-white/5 border border-slate-700">
+                    <div className="h-6 w-6 rounded bg-blue-900/50 flex items-center justify-center">
+                      <span className="text-blue-400 text-[9px] font-bold">G</span>
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between">
+                        <span className="text-white text-xs font-medium">Gemini</span>
+                        <span className="text-teal-400 text-[10px]">RPD: 82/250</span>
+                      </div>
+                      <div className="mt-1 h-1.5 rounded-full bg-slate-700 overflow-hidden">
+                        <div className="h-full rounded-full bg-teal-500" style={{ width: '67%' }} />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Groq - rate limited, low */}
+                  <div className="flex items-center gap-3 px-3 py-2 rounded-lg bg-white/5 border border-slate-700">
+                    <div className="h-6 w-6 rounded bg-orange-900/50 flex items-center justify-center">
+                      <span className="text-orange-400 text-[9px] font-bold">G</span>
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between">
+                        <span className="text-white text-xs font-medium">Groq</span>
+                        <span className="text-amber-400 text-[10px]">RPM: 2/30</span>
+                      </div>
+                      <div className="mt-1 h-1.5 rounded-full bg-slate-700 overflow-hidden">
+                        <div className="h-full rounded-full bg-amber-500" style={{ width: '7%' }} />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* OpenRouter - credit based, exhausted */}
+                  <div className="flex items-center gap-3 px-3 py-2 rounded-lg bg-white/5 border border-red-900/50">
+                    <div className="h-6 w-6 rounded bg-violet-900/50 flex items-center justify-center">
+                      <span className="text-violet-400 text-[9px] font-bold">OR</span>
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between">
+                        <span className="text-white text-xs font-medium">OpenRouter</span>
+                        <span className="text-red-400 text-[10px]">$0.00 remaining</span>
+                      </div>
+                      <div className="mt-1 h-1.5 rounded-full bg-slate-700 overflow-hidden">
+                        <div className="h-full rounded-full bg-red-500" style={{ width: '0%' }} />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* OpenAI - no free tier */}
+                  <div className="flex items-center gap-3 px-3 py-2 rounded-lg bg-white/5 border border-slate-800 opacity-40">
+                    <div className="h-6 w-6 rounded bg-slate-800 flex items-center justify-center">
+                      <span className="text-slate-500 text-[9px] font-bold">OA</span>
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between">
+                        <span className="text-slate-400 text-xs font-medium">OpenAI</span>
+                        <span className="text-slate-500 text-[10px]">No Free Tier</span>
+                      </div>
+                      <div className="mt-1 h-1.5 rounded-full bg-slate-800" />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Footer legend */}
+                <div className="flex justify-center gap-4 mt-4 pt-3 border-t border-slate-700">
+                  <div className="flex items-center gap-1.5">
+                    <div className="h-2 w-2 rounded-full bg-emerald-500" />
+                    <span className="text-slate-500 text-[10px]">Available</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <div className="h-2 w-2 rounded-full bg-amber-500" />
+                    <span className="text-slate-500 text-[10px]">Low</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <div className="h-2 w-2 rounded-full bg-red-500" />
+                    <span className="text-slate-500 text-[10px]">Exhausted</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <div className="h-2 w-2 rounded-full bg-slate-600" />
+                    <span className="text-slate-500 text-[10px]">Skipped</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div className="order-1 lg:order-2">
+              <div className="flex items-center gap-2 mb-4">
+                <Coins className="h-5 w-5 text-teal-500" />
+                <span className="text-sm font-medium text-teal-500 uppercase tracking-wide">Cost Control</span>
+              </div>
+              <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">
+                Free-Tier Mode
+              </h2>
+              <p className="mt-4 text-lg text-muted-foreground">
+                Add all your providers and let LocalRouter use only free-tier resources until they're exhausted. No surprise bills — the router automatically tracks each provider's free tier and skips exhausted ones.
+              </p>
+              <ul className="mt-8 space-y-4">
+                <li className="flex gap-3">
+                  <Check className="h-5 w-5 shrink-0 text-teal-500 mt-0.5" />
+                  <div>
+                    <span className="font-medium">Provider-aware tracking</span>
+                    <p className="text-sm text-muted-foreground">Handles rate-limited (Gemini, Groq), credit-based (OpenRouter, xAI), and always-free (Ollama) providers with a single toggle</p>
+                  </div>
+                </li>
+                <li className="flex gap-3">
+                  <Check className="h-5 w-5 shrink-0 text-teal-500 mt-0.5" />
+                  <div>
+                    <span className="font-medium">Smart backoff</span>
+                    <p className="text-sm text-muted-foreground">Reads rate limit headers from every provider. When one hits 429, it's skipped instantly — no wasted round-trips</p>
+                  </div>
+                </li>
+                <li className="flex gap-3">
+                  <Check className="h-5 w-5 shrink-0 text-teal-500 mt-0.5" />
+                  <div>
+                    <span className="font-medium">Graceful exhaustion</span>
+                    <p className="text-sm text-muted-foreground">When all free providers are at capacity, returns 429 with a <code className="text-xs bg-muted px-1 py-0.5 rounded">retry-after</code> header so clients know when to try again</p>
+                  </div>
+                </li>
+              </ul>
+            </div>
+          </div>
         </div>
       </section>
 
