@@ -23,9 +23,9 @@ impl AppIntegration for OpenClawIntegration {
     }
 
     fn check_installed(&self) -> AppCapabilities {
-        let binary = which::which("openclaw")
-            .or_else(|_| which::which("clawdbot"))
-            .ok();
+        // Audit: only 'openclaw' is documented in public docs.
+    // See: https://docs.openclaw.ai/cli/models
+    let binary = which::which("openclaw").ok();
 
         AppCapabilities {
             installed: binary.is_some(),
@@ -65,10 +65,12 @@ impl AppIntegration for OpenClawIntegration {
             .entry("providers")
             .or_insert_with(|| serde_json::json!({}));
 
+        // Audit: "openai-responses" is the correct api type for OpenAI-compatible endpoints.
+        // See: https://docs.openclaw.ai/concepts/model-providers
         let provider_entry = serde_json::json!({
             "baseUrl": base_url,
             "apiKey": client_secret,
-            "api": "openai-completions"
+            "api": "openai-responses"
         });
 
         if let Some(prov_obj) = providers.as_object_mut() {

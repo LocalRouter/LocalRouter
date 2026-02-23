@@ -118,8 +118,10 @@ impl AppIntegration for CursorIntegration {
             serde_json::json!({})
         };
 
+        // Audit: Cursor uses "transport": "streamableHttp" for remote HTTP MCP servers.
+        // See: https://cursor.fan/tutorial/HowTo/how-to-config-mcp-server-with-an-env-parameter-in-cursor/
         let mcp_entry = serde_json::json!({
-            "type": "http",
+            "transport": "streamableHttp",
             "url": base_url,
             "headers": {
                 "Authorization": format!("Bearer {}", client_secret)

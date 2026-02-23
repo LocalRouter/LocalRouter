@@ -73,14 +73,16 @@ export const CLIENT_TEMPLATES: ClientTemplate[] = [
     description: 'OpenAI\'s CLI coding assistant.',
     category: 'coding_assistants',
     icon: 'openai',
-    defaultMode: 'both',
+    // Codex is LLM-only — no MCP client layer documented.
+    // See: https://developers.openai.com/codex/config-reference/
+    defaultMode: 'llm_only',
     setupType: 'env_vars',
     envVars: [
       { name: 'OPENAI_BASE_URL', value: '{{BASE_URL}}', description: 'LocalRouter API endpoint' },
       { name: 'OPENAI_API_KEY', value: '{{CLIENT_SECRET}}', description: 'Client secret' },
     ],
     docsUrl: 'https://github.com/openai/codex',
-    supportsMcp: true,
+    supportsMcp: false,
     supportsLlm: true,
     binaryNames: ['codex'],
   },
@@ -202,7 +204,9 @@ export const CLIENT_TEMPLATES: ClientTemplate[] = [
             localrouter: {
               baseUrl: '{{BASE_URL}}',
               apiKey: '{{CLIENT_SECRET}}',
-              api: 'openai-completions',
+              // Audit: "openai-responses" is the correct api type for OpenAI-compatible endpoints.
+              // See: https://docs.openclaw.ai/concepts/model-providers
+              api: 'openai-responses',
             },
           },
         },
@@ -212,7 +216,9 @@ export const CLIENT_TEMPLATES: ClientTemplate[] = [
     docsUrl: 'https://docs.openclaw.ai',
     supportsMcp: false,
     supportsLlm: true,
-    binaryNames: ['openclaw', 'clawdbot'],
+    // Audit: only 'openclaw' is documented; 'clawdbot' not found in public docs.
+    // See: https://docs.openclaw.ai/cli/models
+    binaryNames: ['openclaw'],
   },
 
   // === IDE Extensions (VS Code) ===
@@ -257,6 +263,8 @@ export const CLIENT_TEMPLATES: ClientTemplate[] = [
   },
 
   // === IDEs & Editors ===
+  // NOTE: Windsurf removed — does not support custom OpenAI-compatible base URLs,
+  // only BYOK for specific models. See: https://docs.windsurf.com/windsurf/models
   {
     id: 'cursor',
     name: 'Cursor',
@@ -277,20 +285,6 @@ export const CLIENT_TEMPLATES: ClientTemplate[] = [
     supportsMcp: true,
     supportsLlm: true,
     binaryNames: ['cursor'],
-  },
-  {
-    id: 'windsurf',
-    name: 'Windsurf',
-    description: 'AI-powered code editor by Codeium.',
-    category: 'ides',
-    icon: 'windsurf',
-    defaultMode: 'llm_only',
-    setupType: 'generic',
-    manualInstructions: 'Configure Windsurf to use an OpenAI-compatible API endpoint. Set the base URL to {{BASE_URL}} and use your client secret as the API key.',
-    docsUrl: 'https://codeium.com/windsurf',
-    supportsMcp: false,
-    supportsLlm: true,
-    binaryNames: ['windsurf'],
   },
   {
     id: 'zed',
@@ -355,7 +349,9 @@ export const CLIENT_TEMPLATES: ClientTemplate[] = [
     icon: 'lobechat',
     defaultMode: 'llm_only',
     setupType: 'generic',
-    manualInstructions: 'In LobeChat provider settings, add an OpenAI-compatible provider with endpoint {{BASE_URL}} and your client secret as the API key.',
+    // Audit: LobeChat uses env vars for OpenAI-compatible proxies, not an in-UI provider flow.
+    // See: https://lobehub.com/docs/self-hosting/environment-variables/model-provider
+    manualInstructions: 'In your LobeChat deployment, set the environment variable OPENAI_API_KEY to your client secret and OPENAI_PROXY_URL to {{BASE_URL}} to route OpenAI requests through LocalRouter.',
     docsUrl: 'https://lobechat.com',
     supportsMcp: false,
     supportsLlm: true,
@@ -397,7 +393,8 @@ export const CLIENT_TEMPLATES: ClientTemplate[] = [
     icon: 'n8n',
     defaultMode: 'llm_only',
     setupType: 'generic',
-    manualInstructions: 'In n8n: Create Credential > select OpenAI-compatible > set Base URL to {{BASE_URL}} and API key to your client secret.',
+    // Audit: n8n uses an "OpenAI" credential type, not "OpenAI-compatible".
+    manualInstructions: 'In n8n: Create Credential > select OpenAI > set API Key to your client secret, and set Base URL to {{BASE_URL}}.',
     docsUrl: 'https://docs.n8n.io',
     supportsMcp: false,
     supportsLlm: true,
