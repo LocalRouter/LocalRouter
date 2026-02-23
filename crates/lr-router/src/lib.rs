@@ -1322,7 +1322,35 @@ impl Router {
             (provider, model)
         };
 
-        // 6. Execute the request
+        // 6. Check free tier constraints for specific model requests
+        if strategy.free_tier_only {
+            // Check backoff first
+            if let Some(backoff) = self.free_tier_manager.is_in_backoff(&final_provider, &final_model) {
+                debug!(
+                    "Specific model {}/{} is in backoff: {}",
+                    final_provider, final_model, backoff.reason
+                );
+                return Err(AppError::FreeTierExhausted {
+                    retry_after_secs: backoff.retry_after_secs,
+                });
+            }
+
+            let free_tier = self.get_effective_free_tier(&final_provider);
+            let status = self
+                .free_tier_manager
+                .classify_model(&final_provider, &final_model, &free_tier);
+            if matches!(status, free_tier::ModelFreeStatus::NotFree) {
+                debug!(
+                    "Model {}/{} is not free, rejecting in free-tier-only mode",
+                    final_provider, final_model
+                );
+                return Err(AppError::FreeTierExhausted {
+                    retry_after_secs: 0,
+                });
+            }
+        }
+
+        // 7. Execute the request
         debug!(
             "Executing request for client '{}' on {}/{}",
             client_id, final_provider, final_model
@@ -1410,7 +1438,34 @@ impl Router {
         // 5. Check strategy rate limits
         self.check_strategy_rate_limits(&strategy, &final_provider, &final_model)?;
 
-        // 6. Execute streaming request
+        // 6. Check free tier constraints for specific model requests
+        if strategy.free_tier_only {
+            if let Some(backoff) = self.free_tier_manager.is_in_backoff(&final_provider, &final_model) {
+                debug!(
+                    "Specific model {}/{} is in backoff: {}",
+                    final_provider, final_model, backoff.reason
+                );
+                return Err(AppError::FreeTierExhausted {
+                    retry_after_secs: backoff.retry_after_secs,
+                });
+            }
+
+            let free_tier = self.get_effective_free_tier(&final_provider);
+            let status = self
+                .free_tier_manager
+                .classify_model(&final_provider, &final_model, &free_tier);
+            if matches!(status, free_tier::ModelFreeStatus::NotFree) {
+                debug!(
+                    "Model {}/{} is not free, rejecting in free-tier-only mode (streaming)",
+                    final_provider, final_model
+                );
+                return Err(AppError::FreeTierExhausted {
+                    retry_after_secs: 0,
+                });
+            }
+        }
+
+        // 7. Execute streaming request
         let provider_instance = self
             .provider_registry
             .get_provider(&final_provider)
