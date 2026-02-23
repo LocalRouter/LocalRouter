@@ -122,6 +122,13 @@ jobs:
           cache-all-crates: "true"
           save-if: "true"
 
+      - name: Cache model catalog
+        uses: actions/cache@v4
+        with:
+          path: crates/lr-catalog/catalog/
+          key: catalog-${{ github.run_id }}
+          restore-keys: catalog-
+
       - name: Install Linux dependencies
         if: matrix.settings.platform == 'ubuntu-22.04'
         run: |

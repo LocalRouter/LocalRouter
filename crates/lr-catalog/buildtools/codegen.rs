@@ -6,16 +6,14 @@ use crate::buildtools::models::FlattenedModel;
 use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const OUTPUT_FILE: &str = "catalog/catalog.rs";
-
 pub struct CatalogCodeGenerator {
     output_path: String,
 }
 
 impl CatalogCodeGenerator {
-    pub fn new() -> Self {
+    pub fn new(out_dir: &str) -> Self {
         Self {
-            output_path: OUTPUT_FILE.to_string(),
+            output_path: format!("{}/catalog.rs", out_dir),
         }
     }
 
@@ -250,7 +248,10 @@ impl CatalogCodeGenerator {
 }
 
 /// Main entry point for build.rs
-pub fn generate_catalog_code(models: &[FlattenedModel]) -> Result<(), Box<dyn std::error::Error>> {
-    let generator = CatalogCodeGenerator::new();
+pub fn generate_catalog_code(
+    out_dir: &str,
+    models: &[FlattenedModel],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let generator = CatalogCodeGenerator::new(out_dir);
     generator.generate(models)
 }

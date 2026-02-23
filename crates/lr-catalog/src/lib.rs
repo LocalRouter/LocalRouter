@@ -9,7 +9,7 @@ pub mod types;
 pub use types::{CatalogCapabilities, CatalogMetadata, CatalogModel, CatalogPricing, Modality};
 
 // Include the generated catalog data
-include!(concat!(env!("CARGO_MANIFEST_DIR"), "/catalog/catalog.rs"));
+include!(concat!(env!("OUT_DIR"), "/catalog.rs"));
 
 // Lazy-initialized matcher
 use matcher::ModelMatcher;

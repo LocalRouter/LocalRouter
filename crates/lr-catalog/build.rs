@@ -23,14 +23,18 @@ fn main() {
 
 fn generate_model_catalog() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=catalog/.last_fetch");
+    println!("cargo:rerun-if-changed=catalog/modelsdev_raw.json");
+    println!("cargo:rerun-if-changed=buildtools/");
     println!("cargo:rerun-if-env-changed=LOCALROUTER_REBUILD_CATALOG");
     println!("cargo:rerun-if-env-changed=LOCALROUTER_SKIP_CATALOG_FETCH");
+
+    let out_dir = std::env::var("OUT_DIR")?;
 
     // Fetch catalog (uses cache if fresh)
     let models = buildtools::fetch_modelsdev_catalog()?;
 
-    // Generate Rust code
-    buildtools::generate_catalog_code(&models)?;
+    // Generate Rust code into OUT_DIR
+    buildtools::generate_catalog_code(&out_dir, &models)?;
 
     Ok(())
 }
