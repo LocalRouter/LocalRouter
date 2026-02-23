@@ -62,14 +62,72 @@ Place cloud providers (OpenAI, Anthropic, etc.) at the top of `prioritized_model
 
 **Free-Tier Mode** restricts the router to only use providers with available free-tier capacity. Enable it by toggling `free_tier_only` on a strategy. When active, each candidate model is classified before the request is attempted — models from providers without free-tier availability are skipped entirely.
 
-The router understands that providers have fundamentally different free-tier models. Each provider declares a `FreeTierKind`:
+The router understands that providers have fundamentally different free-tier models. Each provider declares a `FreeTierKind` that determines how free-tier availability is tracked and enforced.
 
-- **AlwaysFreeLocal** — Ollama, LM Studio, OpenAI Compatible (local). Always allowed.
-- **Subscription** — GitHub Copilot. Included in existing subscription.
-- **RateLimitedFree** — Gemini, Groq, Cerebras, Mistral, Cohere. Free within RPM/RPD/TPM limits.
-- **CreditBased** — OpenRouter, xAI, DeepInfra. Dollar-budget credits with reset periods.
-- **FreeModelsOnly** — Together AI. Only specific models (e.g., `Llama-3.3-70B-Instruct-Turbo-Free`) are free.
-- **None** — OpenAI, Anthropic. No free tier; always skipped in free-tier mode.
+<!-- @entry free-tier-types -->
+
+Each provider is assigned one of six free-tier types. The type determines how the router tracks usage and decides whether the provider still has free capacity.
+
+**No Free Tier** (`None`) — The provider has no free API access. All requests are treated as paid. When free-tier mode is enabled on a strategy, this provider is always skipped. Default for: OpenAI, Anthropic.
+
+**Always Free (Local)** (`AlwaysFreeLocal`) — A local or self-hosted provider with no external billing. Always treated as free with no usage limits tracked by the router. Default for: Ollama, LM Studio, OpenAI Compatible.
+
+**Subscription** (`Subscription`) — Access is included in an existing subscription plan. Always treated as free with no usage counters tracked. Default for: GitHub Copilot.
+
+**Rate Limited** (`RateLimitedFree`) — Free access within rate limits imposed by the provider. The router tracks usage against six configurable limits:
+
+- **Requests per Minute (RPM)** — Maximum API calls allowed per 60-second window. Resets automatically every minute.
+- **Requests per Day (RPD)** — Maximum API calls per calendar day. Resets at midnight (UTC for most providers; PT for Gemini).
+- **Tokens per Minute (TPM)** — Maximum input + output tokens per 60-second window.
+- **Tokens per Day (TPD)** — Maximum tokens per calendar day.
+- **Monthly Call Limit** — Total API calls allowed per calendar month. Resets on the 1st. Used by Cohere (1,000 calls/month).
+- **Monthly Token Limit** — Total tokens allowed per calendar month. Resets on the 1st. Used by Mistral (1B tokens/month).
+
+Set any limit to 0 to disable tracking for that dimension. When any tracked limit is reached, the provider is skipped in the routing chain. Default for: Gemini, Groq, Cerebras, Mistral, Cohere.
+
+**Credit Based** (`CreditBased`) — Dollar-budget credits that are consumed per request. The router estimates cost from token usage and model pricing from the catalog, then compares accumulated spend against the configured budget. Configuration fields:
+
+- **Credit Budget (USD)** — The total free credit allowance. When estimated spend reaches this amount, the provider is treated as exhausted.
+- **Reset Period** — When the budget resets: **Daily** (resets every 24 hours), **Monthly** (resets on the 1st of each month), or **One-time** (never resets — for promotional credits that expire).
+
+Cost estimation is local by default. For providers that expose a balance API (currently OpenRouter via `GET /api/v1/key`), the router can sync the actual remaining balance directly. Default for: OpenRouter, xAI, DeepInfra, Perplexity.
+
+**Free Models Only** (`FreeModelsOnly`) — Only specific models from this provider are free. The router checks each model ID against a list of patterns. Models that don't match are treated as paid and skipped in free-tier mode. Configuration fields:
+
+- **Free Model Patterns** — A list of model IDs (one per line) that are free. Only requests targeting these exact model IDs are allowed in free-tier mode.
+- **Requests per Minute (RPM)** — Rate limit applied to the free models. Set to 0 to disable.
+
+Default for: Together AI (free model: `meta-llama/Llama-3.3-70B-Instruct-Turbo-Free`).
+
+<!-- @entry free-tier-override -->
+
+Every provider has a default free-tier type assigned automatically based on the provider type (e.g., Groq defaults to Rate Limited, OpenAI defaults to No Free Tier). You can **override** this default on any provider instance from the provider's Free Tier tab.
+
+Common override scenarios:
+
+- **Reclassify a provider** — Change an OpenAI-compatible provider from "Always Free (Local)" to "Rate Limited" if your self-hosted endpoint has rate limits, or to "Credit Based" if it bills per-token.
+- **Adjust limits** — A provider changed their free tier limits and the defaults are outdated. Override with the correct values.
+- **Add a free tier** — Your organization has a custom agreement with a provider that normally has no free tier. Override "No Free Tier" to "Credit Based" with your budget.
+- **Remove a free tier** — You don't want a provider used in free-tier mode even though it technically has one. Override to "No Free Tier".
+
+Use **Reset to Default** to remove the override and revert to the provider type's built-in default.
+
+<!-- @entry free-tier-set-usage -->
+
+The router tracks usage locally based on token counts from API responses. Since this is an estimate, it can drift from your actual usage — especially for credit-based providers where the provider's internal accounting may differ.
+
+**Set Usage** lets you manually adjust the tracked counters to match reality. Open it from the Usage & Status section of a provider's Free Tier tab.
+
+For **credit-based** providers:
+- **Credits Used (USD)** — Sets how much of the budget has been consumed this period. The router uses `budget - used` to calculate remaining capacity.
+- **Credits Remaining (USD)** — Sets the actual remaining balance directly (e.g., from your provider dashboard). This overrides the calculated estimate and is the most accurate way to sync.
+
+For **rate-limited** providers:
+- **Daily Requests Used** — Number of requests counted toward the daily limit (RPD).
+- **Monthly Requests Used** — Number of requests counted toward the monthly call cap.
+- **Monthly Tokens Used** — Total tokens counted toward the monthly token cap.
+
+**Reset Usage** clears all counters to zero, as if the provider were freshly added. It also clears any active backoff state.
 
 <!-- @entry free-tier-tracking -->
 

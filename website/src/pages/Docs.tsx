@@ -127,6 +127,9 @@ const sections: DocSection[] = [
         { id: 'strategy-remote-first', title: 'Remote First' },
       ]},
       { id: 'free-tier-mode', title: 'Free-Tier Mode', children: [
+        { id: 'free-tier-types', title: 'Free-Tier Types' },
+        { id: 'free-tier-override', title: 'Provider Override' },
+        { id: 'free-tier-set-usage', title: 'Set Usage' },
         { id: 'free-tier-tracking', title: 'Usage Tracking' },
         { id: 'free-tier-backoff', title: 'Backoff & Exhaustion' },
       ]},

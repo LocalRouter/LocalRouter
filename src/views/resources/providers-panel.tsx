@@ -3,6 +3,12 @@ import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
 import { toast } from "sonner"
 import { CheckCircle, XCircle, AlertCircle, Plus, Loader2, RefreshCw, FlaskConical, Grid, Settings, ArrowLeft, Eye, EyeOff, Coins, Pencil, RotateCcw } from "lucide-react"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 import { ProvidersIcon } from "@/components/icons/category-icons"
 import { Badge } from "@/components/ui/Badge"
 import { Button } from "@/components/ui/Button"
@@ -43,6 +49,24 @@ import ProviderForm, { ProviderType } from "@/components/ProviderForm"
 import ProviderIcon from "@/components/ProviderIcon"
 import { cn } from "@/lib/utils"
 import type { FreeTierKind, ProviderFreeTierStatus } from "@/types/tauri-commands"
+
+const FREE_TIER_LABELS: Record<string, string> = {
+  none: 'No Free Tier',
+  always_free_local: 'Always Free (Local)',
+  subscription: 'Subscription',
+  rate_limited_free: 'Rate Limited',
+  credit_based: 'Credit Based',
+  free_models_only: 'Free Models Only',
+}
+
+const FREE_TIER_DESCRIPTIONS: Record<string, string> = {
+  none: 'This provider has no free tier. All requests are treated as paid. The provider is always skipped when a strategy has free-tier mode enabled.',
+  always_free_local: 'Local or self-hosted provider with no external billing. Always treated as free with no usage limits tracked. Use for Ollama, LM Studio, or other locally-running models.',
+  subscription: 'Included in an existing subscription (e.g. GitHub Copilot). Always treated as free. No usage counters are tracked.',
+  rate_limited_free: 'Free access within rate limits (requests per minute/day, tokens per minute/day, monthly caps). The router tracks usage against these limits and skips the provider when any limit is reached. Used by Gemini, Groq, Cerebras, Mistral, and Cohere.',
+  credit_based: 'Dollar-budget credits that are consumed per request. The router estimates cost from token usage and compares against the budget. When credits run out, the provider is skipped. Used by OpenRouter, xAI, DeepInfra, and Perplexity.',
+  free_models_only: 'Only specific models from this provider are free. The router checks each model ID against the configured patterns. Models that don\'t match are treated as paid and skipped in free-tier mode. Used by Together AI.',
+}
 
 interface Provider {
   instance_name: string
@@ -883,19 +907,25 @@ export function ProvidersPanel({
                                 <div className="flex items-center justify-between">
                                   <div className="flex items-center gap-2">
                                     <span className="text-sm font-medium">Type</span>
-                                    <Badge variant={
-                                      kind === 'always_free_local' ? 'default' :
-                                      kind === 'subscription' ? 'default' :
-                                      kind === 'none' ? 'secondary' :
-                                      'outline'
-                                    }>
-                                      {kind === 'always_free_local' ? 'Always Free (Local)' :
-                                       kind === 'subscription' ? 'Subscription' :
-                                       kind === 'rate_limited_free' ? 'Rate Limited' :
-                                       kind === 'credit_based' ? 'Credit Based' :
-                                       kind === 'free_models_only' ? 'Free Models Only' :
-                                       'No Free Tier'}
-                                    </Badge>
+                                    <TooltipProvider delayDuration={300}>
+                                      <Tooltip>
+                                        <TooltipTrigger asChild>
+                                          <span>
+                                            <Badge variant={
+                                              kind === 'always_free_local' ? 'default' :
+                                              kind === 'subscription' ? 'default' :
+                                              kind === 'none' ? 'secondary' :
+                                              'outline'
+                                            } className="cursor-help">
+                                              {FREE_TIER_LABELS[kind ?? 'none'] ?? 'No Free Tier'}
+                                            </Badge>
+                                          </span>
+                                        </TooltipTrigger>
+                                        <TooltipContent side="bottom" className="max-w-xs text-xs">
+                                          {FREE_TIER_DESCRIPTIONS[kind ?? 'none']}
+                                        </TooltipContent>
+                                      </Tooltip>
+                                    </TooltipProvider>
                                     {status.is_user_override && (
                                       <Badge variant="outline" className="text-xs">Override</Badge>
                                     )}
@@ -949,39 +979,47 @@ export function ProvidersPanel({
                                       </Select>
                                     </div>
 
+                                    {/* Type description */}
+                                    <p className="text-xs text-muted-foreground">
+                                      {FREE_TIER_DESCRIPTIONS[freeTierOverrideKind.kind]}
+                                    </p>
+
                                     {/* Rate Limited fields */}
                                     {freeTierOverrideKind.kind === 'rate_limited_free' && (
-                                      <div className="grid grid-cols-2 gap-2">
-                                        <div className="space-y-1">
-                                          <label className="text-xs text-muted-foreground">Max RPM</label>
-                                          <Input type="number" className="h-7 text-xs" value={freeTierOverrideKind.max_rpm}
-                                            onChange={(e) => setFreeTierOverrideKind({ ...freeTierOverrideKind, max_rpm: parseInt(e.target.value) || 0 })} />
+                                      <div className="space-y-3">
+                                        <div className="grid grid-cols-2 gap-2">
+                                          <div className="space-y-1">
+                                            <label className="text-xs text-muted-foreground">Requests per Minute (RPM)</label>
+                                            <Input type="number" className="h-7 text-xs" value={freeTierOverrideKind.max_rpm}
+                                              onChange={(e) => setFreeTierOverrideKind({ ...freeTierOverrideKind, max_rpm: parseInt(e.target.value) || 0 })} />
+                                          </div>
+                                          <div className="space-y-1">
+                                            <label className="text-xs text-muted-foreground">Requests per Day (RPD)</label>
+                                            <Input type="number" className="h-7 text-xs" value={freeTierOverrideKind.max_rpd}
+                                              onChange={(e) => setFreeTierOverrideKind({ ...freeTierOverrideKind, max_rpd: parseInt(e.target.value) || 0 })} />
+                                          </div>
+                                          <div className="space-y-1">
+                                            <label className="text-xs text-muted-foreground">Tokens per Minute (TPM)</label>
+                                            <Input type="number" className="h-7 text-xs" value={freeTierOverrideKind.max_tpm}
+                                              onChange={(e) => setFreeTierOverrideKind({ ...freeTierOverrideKind, max_tpm: parseInt(e.target.value) || 0 })} />
+                                          </div>
+                                          <div className="space-y-1">
+                                            <label className="text-xs text-muted-foreground">Tokens per Day (TPD)</label>
+                                            <Input type="number" className="h-7 text-xs" value={freeTierOverrideKind.max_tpd}
+                                              onChange={(e) => setFreeTierOverrideKind({ ...freeTierOverrideKind, max_tpd: parseInt(e.target.value) || 0 })} />
+                                          </div>
+                                          <div className="space-y-1">
+                                            <label className="text-xs text-muted-foreground">Monthly Call Limit</label>
+                                            <Input type="number" className="h-7 text-xs" value={freeTierOverrideKind.max_monthly_calls}
+                                              onChange={(e) => setFreeTierOverrideKind({ ...freeTierOverrideKind, max_monthly_calls: parseInt(e.target.value) || 0 })} />
+                                          </div>
+                                          <div className="space-y-1">
+                                            <label className="text-xs text-muted-foreground">Monthly Token Limit</label>
+                                            <Input type="number" className="h-7 text-xs" value={freeTierOverrideKind.max_monthly_tokens}
+                                              onChange={(e) => setFreeTierOverrideKind({ ...freeTierOverrideKind, max_monthly_tokens: parseInt(e.target.value) || 0 })} />
+                                          </div>
                                         </div>
-                                        <div className="space-y-1">
-                                          <label className="text-xs text-muted-foreground">Max RPD</label>
-                                          <Input type="number" className="h-7 text-xs" value={freeTierOverrideKind.max_rpd}
-                                            onChange={(e) => setFreeTierOverrideKind({ ...freeTierOverrideKind, max_rpd: parseInt(e.target.value) || 0 })} />
-                                        </div>
-                                        <div className="space-y-1">
-                                          <label className="text-xs text-muted-foreground">Max TPM</label>
-                                          <Input type="number" className="h-7 text-xs" value={freeTierOverrideKind.max_tpm}
-                                            onChange={(e) => setFreeTierOverrideKind({ ...freeTierOverrideKind, max_tpm: parseInt(e.target.value) || 0 })} />
-                                        </div>
-                                        <div className="space-y-1">
-                                          <label className="text-xs text-muted-foreground">Max TPD</label>
-                                          <Input type="number" className="h-7 text-xs" value={freeTierOverrideKind.max_tpd}
-                                            onChange={(e) => setFreeTierOverrideKind({ ...freeTierOverrideKind, max_tpd: parseInt(e.target.value) || 0 })} />
-                                        </div>
-                                        <div className="space-y-1">
-                                          <label className="text-xs text-muted-foreground">Monthly Calls</label>
-                                          <Input type="number" className="h-7 text-xs" value={freeTierOverrideKind.max_monthly_calls}
-                                            onChange={(e) => setFreeTierOverrideKind({ ...freeTierOverrideKind, max_monthly_calls: parseInt(e.target.value) || 0 })} />
-                                        </div>
-                                        <div className="space-y-1">
-                                          <label className="text-xs text-muted-foreground">Monthly Tokens</label>
-                                          <Input type="number" className="h-7 text-xs" value={freeTierOverrideKind.max_monthly_tokens}
-                                            onChange={(e) => setFreeTierOverrideKind({ ...freeTierOverrideKind, max_monthly_tokens: parseInt(e.target.value) || 0 })} />
-                                        </div>
+                                        <p className="text-xs text-muted-foreground">Set to 0 to disable tracking for that limit. The router also reads rate limit headers from provider responses when available, which take precedence over these configured limits.</p>
                                       </div>
                                     )}
 
@@ -990,7 +1028,7 @@ export function ProvidersPanel({
                                       <div className="space-y-2">
                                         <div className="grid grid-cols-2 gap-2">
                                           <div className="space-y-1">
-                                            <label className="text-xs text-muted-foreground">Budget (USD)</label>
+                                            <label className="text-xs text-muted-foreground">Credit Budget (USD)</label>
                                             <Input type="number" step="0.01" className="h-7 text-xs" value={freeTierOverrideKind.budget_usd}
                                               onChange={(e) => setFreeTierOverrideKind({ ...freeTierOverrideKind, budget_usd: parseFloat(e.target.value) || 0 })} />
                                           </div>
@@ -1006,11 +1044,12 @@ export function ProvidersPanel({
                                               <SelectContent>
                                                 <SelectItem value="daily" className="text-xs">Daily</SelectItem>
                                                 <SelectItem value="monthly" className="text-xs">Monthly</SelectItem>
-                                                <SelectItem value="never" className="text-xs">One-time</SelectItem>
+                                                <SelectItem value="never" className="text-xs">One-time (no reset)</SelectItem>
                                               </SelectContent>
                                             </Select>
                                           </div>
                                         </div>
+                                        <p className="text-xs text-muted-foreground">The router estimates cost from token usage and model pricing. When estimated spend reaches the budget, the provider is skipped. Use "Set Usage" below to sync with your actual balance from the provider dashboard.</p>
                                       </div>
                                     )}
 
@@ -1018,7 +1057,7 @@ export function ProvidersPanel({
                                     {freeTierOverrideKind.kind === 'free_models_only' && (
                                       <div className="space-y-2">
                                         <div className="space-y-1">
-                                          <label className="text-xs text-muted-foreground">Free Model Patterns (one per line)</label>
+                                          <label className="text-xs text-muted-foreground">Free Model Patterns</label>
                                           <textarea
                                             className="w-full h-16 px-2 py-1 text-xs rounded-md border bg-background resize-none"
                                             value={freeTierOverrideKind.free_model_patterns.join('\n')}
@@ -1028,11 +1067,13 @@ export function ProvidersPanel({
                                             })}
                                             placeholder="e.g. meta-llama/Llama-3.3-70B-Instruct-Turbo-Free"
                                           />
+                                          <p className="text-xs text-muted-foreground">One model ID per line. Only these models are treated as free. All other models from this provider are skipped in free-tier mode.</p>
                                         </div>
                                         <div className="space-y-1">
-                                          <label className="text-xs text-muted-foreground">Max RPM</label>
+                                          <label className="text-xs text-muted-foreground">Requests per Minute (RPM)</label>
                                           <Input type="number" className="h-7 text-xs" value={freeTierOverrideKind.max_rpm}
                                             onChange={(e) => setFreeTierOverrideKind({ ...freeTierOverrideKind, max_rpm: parseInt(e.target.value) || 0 })} />
+                                          <p className="text-xs text-muted-foreground">Rate limit applied to the free models. Set to 0 to disable.</p>
                                         </div>
                                       </div>
                                     )}
@@ -1522,6 +1563,9 @@ export function ProvidersPanel({
           <DialogHeader>
             <DialogTitle>Set Usage</DialogTitle>
           </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            Manually adjust the tracked usage counters for this provider. This is useful when the router's local tracking has drifted from your actual usage, or to sync with the balance shown on your provider dashboard. Leave fields empty to keep them unchanged.
+          </p>
           {(() => {
             const provider = providers.find(p => p.instance_name === selectedId)
             const status = provider ? freeTierStatus[provider.instance_name] : null
@@ -1536,13 +1580,14 @@ export function ProvidersPanel({
                       <Input type="number" step="0.01" placeholder="0.00"
                         value={setUsageValues.creditUsedUsd}
                         onChange={(e) => setSetUsageValues(prev => ({ ...prev, creditUsedUsd: e.target.value }))} />
+                      <p className="text-xs text-muted-foreground">How much of the credit budget has been consumed so far in the current period. The router uses this to calculate remaining capacity.</p>
                     </div>
                     <div className="space-y-1.5">
                       <label className="text-sm font-medium">Credits Remaining (USD)</label>
                       <Input type="number" step="0.01" placeholder="e.g. 4.50"
                         value={setUsageValues.creditRemainingUsd}
                         onChange={(e) => setSetUsageValues(prev => ({ ...prev, creditRemainingUsd: e.target.value }))} />
-                      <p className="text-xs text-muted-foreground">Set the actual remaining credit balance from your provider dashboard</p>
+                      <p className="text-xs text-muted-foreground">The actual remaining balance from your provider dashboard. This overrides the router's calculated estimate and is the most accurate way to sync usage.</p>
                     </div>
                   </>
                 )}
@@ -1553,18 +1598,21 @@ export function ProvidersPanel({
                       <Input type="number" placeholder="0"
                         value={setUsageValues.dailyRequests}
                         onChange={(e) => setSetUsageValues(prev => ({ ...prev, dailyRequests: e.target.value }))} />
+                      <p className="text-xs text-muted-foreground">Number of requests made today. Resets automatically at the start of each day (midnight UTC, or midnight PT for Gemini).</p>
                     </div>
                     <div className="space-y-1.5">
                       <label className="text-sm font-medium">Monthly Requests Used</label>
                       <Input type="number" placeholder="0"
                         value={setUsageValues.monthlyRequests}
                         onChange={(e) => setSetUsageValues(prev => ({ ...prev, monthlyRequests: e.target.value }))} />
+                      <p className="text-xs text-muted-foreground">Number of requests made this month. Only relevant for providers with monthly call caps (e.g. Cohere: 1,000/month). Resets on the 1st of each month.</p>
                     </div>
                     <div className="space-y-1.5">
                       <label className="text-sm font-medium">Monthly Tokens Used</label>
                       <Input type="number" placeholder="0"
                         value={setUsageValues.monthlyTokens}
                         onChange={(e) => setSetUsageValues(prev => ({ ...prev, monthlyTokens: e.target.value }))} />
+                      <p className="text-xs text-muted-foreground">Total tokens used this month. Only relevant for providers with monthly token caps (e.g. Mistral: 1B tokens/month). Resets on the 1st of each month.</p>
                     </div>
                   </>
                 )}
