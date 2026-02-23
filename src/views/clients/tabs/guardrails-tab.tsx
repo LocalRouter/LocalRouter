@@ -176,7 +176,19 @@ export function ClientGuardrailsTab({ client, onUpdate, onViewChange }: ClientGu
               <CardTitle className="text-base">Available Models</CardTitle>
               <CardDescription className="flex items-start gap-1.5">
                 <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
-                Models are managed in Settings. Categories you select below determine which models run.
+                <span>
+                  Models are managed in{" "}
+                  {onViewChange ? (
+                    <button
+                      className="text-blue-500 hover:underline"
+                      onClick={() => onViewChange("settings", "guardrails")}
+                    >
+                      Settings &rarr; GuardRails
+                    </button>
+                  ) : (
+                    "Settings"
+                  )}.
+                </span>
               </CardDescription>
             </CardHeader>
             <CardContent>
