@@ -84,8 +84,8 @@ function CopyableCode({
   }
 
   return (
-    <div className="flex items-center gap-2">
-      <code className="flex-1 p-3 text-sm bg-muted rounded-md font-mono break-all">
+    <div className="flex items-center gap-2 min-w-0">
+      <code className="flex-1 min-w-0 p-3 text-sm bg-muted rounded-md font-mono break-all">
         {loading ? (
           <span className="flex items-center gap-2 text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" />
@@ -97,6 +97,7 @@ function CopyableCode({
         <Button
           variant="outline"
           size="icon"
+          className="shrink-0"
           onClick={onToggleShow}
           title="Show"
           disabled={loading || !value}
@@ -107,6 +108,7 @@ function CopyableCode({
       <Button
         variant="outline"
         size="icon"
+        className="shrink-0"
         onClick={handleCopy}
         title="Copy to clipboard"
         disabled={loading || !value}
@@ -133,15 +135,16 @@ function CopyableCodeBlock({ value, copyValue, className = "" }: { value: string
   }
 
   return (
-    <div className={`relative group ${className}`}>
-      <pre className="text-xs font-mono bg-muted p-3 rounded-lg overflow-x-auto whitespace-pre">
+    <div className={`relative min-w-0 ${className}`}>
+      <pre className="text-xs font-mono bg-muted p-3 pr-10 rounded-lg whitespace-pre-wrap break-words overflow-hidden">
         {value}
       </pre>
       <Button
-        variant="ghost"
-        size="sm"
-        className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity h-7 px-2"
+        variant="outline"
+        size="icon"
+        className="absolute top-2 right-2 h-7 w-7 shrink-0"
         onClick={handleCopy}
+        title="Copy to clipboard"
       >
         {copied ? <Check className="h-3 w-3 text-green-500" /> : <Copy className="h-3 w-3" />}
       </Button>
@@ -164,7 +167,7 @@ function LaunchResultDisplay({ result }: { result: LaunchResult }) {
         <div className="mt-2">
           <p className="text-xs text-muted-foreground">Modified files:</p>
           {result.modified_files.map((f) => (
-            <code key={f} className="text-xs block">{f}</code>
+            <code key={f} className="text-xs block break-all">{f}</code>
           ))}
         </div>
       )}
@@ -172,7 +175,7 @@ function LaunchResultDisplay({ result }: { result: LaunchResult }) {
         <div className="mt-1">
           <p className="text-xs text-muted-foreground">Backups:</p>
           {result.backup_files.map((f) => (
-            <code key={f} className="text-xs block">{f}</code>
+            <code key={f} className="text-xs block break-all">{f}</code>
           ))}
         </div>
       )}
@@ -1029,11 +1032,7 @@ export function HowToConnect({
 
                           <div className="space-y-1.5">
                             <Label className="text-xs text-muted-foreground">Environment Variable</Label>
-                            <div className="flex items-center gap-2">
-                              <code className="flex-1 p-3 text-sm bg-muted rounded-md font-mono">
-                                LOCALROUTER_CLIENT_SECRET
-                              </code>
-                            </div>
+                            <CopyableCode value="LOCALROUTER_CLIENT_SECRET" />
                             <CopyableCode
                               value={secret || "Error loading secret"}
                               masked
