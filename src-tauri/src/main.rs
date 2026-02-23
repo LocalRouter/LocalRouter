@@ -1466,6 +1466,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands_free_tier::get_free_tier_status,
             ui::commands_free_tier::set_provider_free_tier,
             ui::commands_free_tier::reset_provider_free_tier_usage,
+            ui::commands_free_tier::set_provider_free_tier_usage,
             ui::commands_free_tier::get_default_free_tier,
         ])
         .on_window_event(|window, event| {

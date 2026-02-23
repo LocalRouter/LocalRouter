@@ -954,6 +954,50 @@ impl FreeTierManager {
         self.backoffs.retain(|k, _| !k.starts_with(&prefix));
     }
 
+    /// Manually set credit usage for a provider (from UI)
+    pub fn set_credit_usage(
+        &self,
+        provider_instance: &str,
+        used_usd: Option<f64>,
+        remaining_usd: Option<f64>,
+    ) {
+        let entry = self
+            .credit_trackers
+            .entry(provider_instance.to_string())
+            .or_insert_with(|| RwLock::new(CreditTracker::default()));
+        let mut tracker = entry.write();
+        if let Some(used) = used_usd {
+            tracker.current_cost_usd = used;
+        }
+        if let Some(remaining) = remaining_usd {
+            tracker.api_remaining_usd = Some(remaining);
+        }
+    }
+
+    /// Manually set rate limit usage for a provider (from UI)
+    pub fn set_rate_limit_usage(
+        &self,
+        provider_instance: &str,
+        daily_requests: Option<u32>,
+        monthly_requests: Option<u32>,
+        monthly_tokens: Option<u64>,
+    ) {
+        let entry = self
+            .rate_trackers
+            .entry(provider_instance.to_string())
+            .or_insert_with(|| RwLock::new(RateLimitTracker::default()));
+        let mut tracker = entry.write();
+        if let Some(v) = daily_requests {
+            tracker.daily_requests = v;
+        }
+        if let Some(v) = monthly_requests {
+            tracker.monthly_requests = v;
+        }
+        if let Some(v) = monthly_tokens {
+            tracker.monthly_tokens = v;
+        }
+    }
+
     /// Get rate limit tracker for a provider (for UI status)
     pub fn get_rate_tracker(&self, provider_instance: &str) -> Option<RateLimitTracker> {
         self.rate_trackers

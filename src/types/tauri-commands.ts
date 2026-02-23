@@ -2175,6 +2175,16 @@ export interface ResetProviderFreeTierUsageParams {
   providerInstance: string
 }
 
+/** Params for set_provider_free_tier_usage */
+export interface SetProviderFreeTierUsageParams {
+  providerInstance: string
+  creditUsedUsd: number | null
+  creditRemainingUsd: number | null
+  dailyRequests: number | null
+  monthlyRequests: number | null
+  monthlyTokens: number | null
+}
+
 /** Params for get_default_free_tier */
 export interface GetDefaultFreeTierParams {
   providerType: string

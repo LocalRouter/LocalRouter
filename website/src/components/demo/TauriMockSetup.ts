@@ -1484,6 +1484,10 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     toast.success('Free tier usage reset (demo)')
     return null
   },
+  'set_provider_free_tier_usage': () => {
+    toast.success('Free tier usage updated (demo)')
+    return null
+  },
   'get_default_free_tier': (args) => {
     const defaults: Record<string, unknown> = {
       ollama: { kind: 'always_free_local' },

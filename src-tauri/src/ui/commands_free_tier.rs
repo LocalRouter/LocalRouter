@@ -224,6 +224,46 @@ pub async fn reset_provider_free_tier_usage(
     Ok(())
 }
 
+/// Manually set free tier usage for a provider (from UI)
+#[tauri::command]
+pub async fn set_provider_free_tier_usage(
+    provider_instance: String,
+    credit_used_usd: Option<f64>,
+    credit_remaining_usd: Option<f64>,
+    daily_requests: Option<u32>,
+    monthly_requests: Option<u32>,
+    monthly_tokens: Option<u64>,
+    free_tier_manager: State<'_, Arc<FreeTierManager>>,
+) -> Result<(), String> {
+    tracing::info!(
+        "Setting free tier usage for provider '{}': credit_used={:?}, credit_remaining={:?}, daily_req={:?}, monthly_req={:?}, monthly_tok={:?}",
+        provider_instance, credit_used_usd, credit_remaining_usd, daily_requests, monthly_requests, monthly_tokens
+    );
+
+    if credit_used_usd.is_some() || credit_remaining_usd.is_some() {
+        free_tier_manager.set_credit_usage(
+            &provider_instance,
+            credit_used_usd,
+            credit_remaining_usd,
+        );
+    }
+
+    if daily_requests.is_some() || monthly_requests.is_some() || monthly_tokens.is_some() {
+        free_tier_manager.set_rate_limit_usage(
+            &provider_instance,
+            daily_requests,
+            monthly_requests,
+            monthly_tokens,
+        );
+    }
+
+    if let Err(e) = free_tier_manager.persist() {
+        tracing::error!("Failed to persist free tier state: {}", e);
+    }
+
+    Ok(())
+}
+
 /// Get the default free tier config for a provider type
 #[tauri::command]
 pub async fn get_default_free_tier(
