@@ -966,6 +966,14 @@ impl ProviderFactory for PerplexityProviderFactory {
     fn model_list_source(&self) -> ModelListSource {
         ModelListSource::CatalogOnly // Perplexity has no public /models endpoint
     }
+
+    fn default_free_tier(&self) -> FreeTierKind {
+        FreeTierKind::CreditBased {
+            budget_usd: 5.0,
+            reset_period: lr_config::FreeTierResetPeriod::Monthly,
+            detection: lr_config::CreditDetection::LocalOnly,
+        }
+    }
 }
 
 /// Factory for DeepInfra providers
