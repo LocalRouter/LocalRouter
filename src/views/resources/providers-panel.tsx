@@ -22,6 +22,7 @@ import {
   ResizableHandle,
 } from "@/components/ui/resizable"
 import { Input } from "@/components/ui/Input"
+import { Checkbox } from "@/components/ui/checkbox"
 import {
   Select,
   SelectContent,
@@ -1055,19 +1056,44 @@ export function ProvidersPanel({
 
                                     {/* Free Models Only fields */}
                                     {freeTierOverrideKind.kind === 'free_models_only' && (
-                                      <div className="space-y-2">
-                                        <div className="space-y-1">
-                                          <label className="text-xs text-muted-foreground">Free Model Patterns</label>
-                                          <textarea
-                                            className="w-full h-16 px-2 py-1 text-xs rounded-md border bg-background resize-none"
-                                            value={freeTierOverrideKind.free_model_patterns.join('\n')}
-                                            onChange={(e) => setFreeTierOverrideKind({
-                                              ...freeTierOverrideKind,
-                                              free_model_patterns: e.target.value.split('\n').filter(Boolean)
-                                            })}
-                                            placeholder="e.g. meta-llama/Llama-3.3-70B-Instruct-Turbo-Free"
-                                          />
-                                          <p className="text-xs text-muted-foreground">One model ID per line. Only these models are treated as free. All other models from this provider are skipped in free-tier mode.</p>
+                                      <div className="space-y-3">
+                                        <div className="space-y-1.5">
+                                          <label className="text-xs text-muted-foreground">Free Models</label>
+                                          {models.length > 0 ? (
+                                            <div className="rounded-md border max-h-48 overflow-y-auto">
+                                              {models.map((model) => {
+                                                const isSelected = freeTierOverrideKind.free_model_patterns.includes(model.id)
+                                                return (
+                                                  <div
+                                                    key={model.id}
+                                                    className="flex items-center gap-2.5 px-3 py-1.5 cursor-pointer hover:bg-muted/50 border-b last:border-b-0"
+                                                    onClick={() => {
+                                                      const patterns = new Set(freeTierOverrideKind.free_model_patterns)
+                                                      if (isSelected) {
+                                                        patterns.delete(model.id)
+                                                      } else {
+                                                        patterns.add(model.id)
+                                                      }
+                                                      setFreeTierOverrideKind({
+                                                        ...freeTierOverrideKind,
+                                                        free_model_patterns: Array.from(patterns),
+                                                      })
+                                                    }}
+                                                  >
+                                                    <Checkbox checked={isSelected} onCheckedChange={() => {}} />
+                                                    <span className="text-xs truncate">{model.name || model.id}</span>
+                                                  </div>
+                                                )
+                                              })}
+                                            </div>
+                                          ) : (
+                                            <p className="text-xs text-muted-foreground italic py-2">No models loaded for this provider. Models will appear here once the provider is connected.</p>
+                                          )}
+                                          <p className="text-xs text-muted-foreground">
+                                            {freeTierOverrideKind.free_model_patterns.length > 0
+                                              ? `${freeTierOverrideKind.free_model_patterns.length} model${freeTierOverrideKind.free_model_patterns.length === 1 ? '' : 's'} selected as free. All other models from this provider will be skipped in free-tier mode.`
+                                              : 'Select which models are free. Unselected models will be skipped in free-tier mode.'}
+                                          </p>
                                         </div>
                                         <div className="space-y-1">
                                           <label className="text-xs text-muted-foreground">Requests per Minute (RPM)</label>
