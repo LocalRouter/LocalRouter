@@ -25,6 +25,9 @@ const ICON_MAP: Record<string, string> = {
   // LLM Providers
   ollama: 'ollama.png',
   lmstudio: 'lmstudio.png',
+  jan: 'jan.png',
+  gpt4all: 'gpt4all.png',
+  localai: 'localai.png',
   openai: 'openai.png',
   anthropic: 'anthropic.png',
   gemini: 'gemini.png',
@@ -100,6 +103,9 @@ const EMOJI_MAP: Record<string, string> = {
   // LLM Providers
   ollama: '🦙',
   lmstudio: '💻',
+  jan: '👋',
+  gpt4all: '🌿',
+  localai: '🦙',
   openai: '🤖',
   anthropic: '🧠',
   gemini: '✨',
