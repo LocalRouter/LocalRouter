@@ -25,6 +25,7 @@ interface McpPermissionTreeProps extends PermissionTreeProps {
 export function McpPermissionTree({ clientId, permissions, onUpdate }: McpPermissionTreeProps) {
   const [servers, setServers] = useState<McpServer[]>([])
   const [capabilities, setCapabilities] = useState<Record<string, McpServerCapabilities>>({})
+  const [loadingServers, setLoadingServers] = useState<Set<string>>(new Set())
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
 
@@ -33,21 +34,33 @@ export function McpPermissionTree({ clientId, permissions, onUpdate }: McpPermis
       const serverList = await invoke<McpServer[]>("list_mcp_servers")
       const enabledServers = serverList.filter((s) => s.enabled)
       setServers(enabledServers)
+      setLoading(false)
 
-      // Eagerly load capabilities for all enabled servers
-      for (const server of enabledServers) {
-        try {
-          const caps = await invoke<McpServerCapabilities>("get_mcp_server_capabilities", {
-            serverId: server.id,
-          })
-          setCapabilities((prev) => ({ ...prev, [server.id]: caps }))
-        } catch (error) {
-          console.error(`Failed to load capabilities for ${server.id}:`, error)
-        }
-      }
+      // Track which servers are loading capabilities
+      const serverIds = new Set(enabledServers.map((s) => s.id))
+      setLoadingServers(serverIds)
+
+      // Load capabilities in parallel, updating state as each resolves
+      await Promise.all(
+        enabledServers.map(async (server) => {
+          try {
+            const caps = await invoke<McpServerCapabilities>("get_mcp_server_capabilities", {
+              serverId: server.id,
+            })
+            setCapabilities((prev) => ({ ...prev, [server.id]: caps }))
+          } catch (error) {
+            console.error(`Failed to load capabilities for ${server.id}:`, error)
+          } finally {
+            setLoadingServers((prev) => {
+              const next = new Set(prev)
+              next.delete(server.id)
+              return next
+            })
+          }
+        })
+      )
     } catch (error) {
       console.error("Failed to load MCP servers:", error)
-    } finally {
       setLoading(false)
     }
   }, [])
@@ -200,6 +213,7 @@ export function McpPermissionTree({ clientId, permissions, onUpdate }: McpPermis
         id: server.id,
         label: server.name,
         children: children.length > 0 ? children : undefined,
+        loading: loadingServers.has(server.id),
       }
     })
   }

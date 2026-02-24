@@ -1,5 +1,5 @@
 import { useState, useMemo, type ReactNode } from "react"
-import { ChevronRight, ChevronDown } from "lucide-react"
+import { ChevronRight, ChevronDown, Loader2 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import type { TreeNode } from "./types"
 
@@ -207,6 +207,12 @@ export function PermissionTreeSelector<S extends string>({
             </span>
             {node.description && (
               <p className="text-xs text-muted-foreground break-words">{node.description}</p>
+            )}
+            {node.loading && (
+              <span className="inline-flex items-center gap-1 text-xs text-muted-foreground mt-0.5">
+                <Loader2 className="h-3 w-3 animate-spin" />
+                Loading tools...
+              </span>
             )}
           </div>
 

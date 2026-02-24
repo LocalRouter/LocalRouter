@@ -27,6 +27,8 @@ export interface TreeNode {
   children?: TreeNode[]
   isGroup?: boolean
   depth?: number
+  /** Show a loading indicator for this node (e.g. capabilities still loading) */
+  loading?: boolean
 }
 
 export interface PermissionTreeProps {
