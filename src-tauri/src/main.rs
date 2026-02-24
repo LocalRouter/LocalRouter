@@ -22,10 +22,10 @@ use lr_providers::factory::{
     AnthropicProviderFactory, CerebrasProviderFactory, CohereProviderFactory,
     DeepInfraProviderFactory, GPT4AllProviderFactory, GeminiProviderFactory,
     GitHubCopilotProviderFactory, GroqProviderFactory, JanProviderFactory, LMStudioProviderFactory,
-    LocalAIProviderFactory, MistralProviderFactory, OllamaProviderFactory,
-    OpenAICodexProviderFactory, OpenAICompatibleProviderFactory, OpenAIProviderFactory,
-    OpenRouterProviderFactory, PerplexityProviderFactory, TogetherAIProviderFactory,
-    XAIProviderFactory,
+    LlamaCppProviderFactory, LocalAIProviderFactory, MistralProviderFactory,
+    OllamaProviderFactory, OpenAICodexProviderFactory, OpenAICompatibleProviderFactory,
+    OpenAIProviderFactory, OpenRouterProviderFactory, PerplexityProviderFactory,
+    TogetherAIProviderFactory, XAIProviderFactory,
 };
 use lr_providers::registry::ProviderRegistry;
 use lr_server::ServerManager;
@@ -207,6 +207,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
     provider_registry.register_factory(Arc::new(JanProviderFactory));
     provider_registry.register_factory(Arc::new(GPT4AllProviderFactory));
     provider_registry.register_factory(Arc::new(LocalAIProviderFactory));
+    provider_registry.register_factory(Arc::new(LlamaCppProviderFactory));
     // Subscription providers (OAuth-based)
     provider_registry.register_factory(Arc::new(GitHubCopilotProviderFactory));
     provider_registry.register_factory(Arc::new(OpenAICodexProviderFactory));
@@ -232,6 +233,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                             "jan" => config::ProviderConfig::default_jan(),
                             "gpt4all" => config::ProviderConfig::default_gpt4all(),
                             "localai" => config::ProviderConfig::default_localai(),
+                            "llamacpp" => config::ProviderConfig::default_llamacpp(),
                             _ => continue,
                         };
                         info!(
@@ -271,6 +273,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             config::ProviderType::Jan => "jan",
             config::ProviderType::GPT4All => "gpt4all",
             config::ProviderType::LocalAI => "localai",
+            config::ProviderType::LlamaCpp => "llamacpp",
             config::ProviderType::Custom => "openai_compatible",
         };
 
@@ -566,6 +569,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                                 config::ProviderType::Jan => "jan",
                                 config::ProviderType::GPT4All => "gpt4all",
                                 config::ProviderType::LocalAI => "localai",
+                                config::ProviderType::LlamaCpp => "llamacpp",
                                 _ => "openai_compatible",
                             };
 
@@ -590,6 +594,9 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                                         "http://localhost:4891".to_string()
                                     }
                                     config::ProviderType::LocalAI => {
+                                        "http://localhost:8080".to_string()
+                                    }
+                                    config::ProviderType::LlamaCpp => {
                                         "http://localhost:8080".to_string()
                                     }
                                     _ => "http://localhost:8080".to_string(),

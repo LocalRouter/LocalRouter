@@ -2123,6 +2123,9 @@ pub enum ProviderType {
     /// Local LocalAI instance
     #[serde(rename = "localai")]
     LocalAI,
+    /// Local llama.cpp server instance
+    #[serde(rename = "llamacpp")]
+    LlamaCpp,
     /// Custom provider
     Custom,
 }
@@ -2374,6 +2377,20 @@ impl ProviderConfig {
         Self {
             name: "LocalAI".to_string(),
             provider_type: ProviderType::LocalAI,
+            enabled: true,
+            provider_config: Some(serde_json::json!({
+                "base_url": "http://localhost:8080/v1"
+            })),
+            api_key_ref: None,
+            free_tier: None,
+        }
+    }
+
+    /// Create default llama.cpp provider configuration
+    pub fn default_llamacpp() -> Self {
+        Self {
+            name: "llama.cpp".to_string(),
+            provider_type: ProviderType::LlamaCpp,
             enabled: true,
             provider_config: Some(serde_json::json!({
                 "base_url": "http://localhost:8080/v1"

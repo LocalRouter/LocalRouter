@@ -41,6 +41,7 @@ pub mod health;
 pub mod health_cache;
 pub mod jan;
 pub mod key_storage;
+pub mod llamacpp;
 pub mod lmstudio;
 pub mod localai;
 pub mod mistral;

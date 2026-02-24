@@ -285,6 +285,15 @@ export const mockData = {
         { key: "base_url", param_type: "string", required: false, description: "LocalAI server URL", default_value: "http://localhost:8080/v1", sensitive: false },
       ],
     },
+    {
+      provider_type: "llamacpp",
+      display_name: "llama.cpp",
+      category: "local",
+      description: "Run local models with llama.cpp server",
+      setup_parameters: [
+        { key: "base_url", param_type: "string", required: false, description: "llama.cpp server URL", default_value: "http://localhost:8080/v1", sensitive: false },
+      ],
+    },
   ],
 
   mcpServers: [

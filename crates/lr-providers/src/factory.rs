@@ -12,8 +12,9 @@ use serde::{Deserialize, Serialize};
 use super::{
     anthropic::AnthropicProvider, cerebras::CerebrasProvider, cohere::CohereProvider,
     deepinfra::DeepInfraProvider, gemini::GeminiProvider, gpt4all::GPT4AllProvider,
-    groq::GroqProvider, jan::JanProvider, lmstudio::LMStudioProvider, localai::LocalAIProvider,
-    mistral::MistralProvider, ollama::OllamaProvider, openai::OpenAIProvider,
+    groq::GroqProvider, jan::JanProvider, llamacpp::LlamaCppProvider,
+    lmstudio::LMStudioProvider, localai::LocalAIProvider, mistral::MistralProvider,
+    ollama::OllamaProvider, openai::OpenAIProvider,
     openai_compatible::OpenAICompatibleProvider, openrouter::OpenRouterProvider,
     perplexity::PerplexityProvider, togetherai::TogetherAIProvider, xai::XAIProvider,
     ModelProvider,
@@ -1573,6 +1574,109 @@ impl DiscoverableProvider for LocalAIProviderFactory {
     }
 }
 
+/// Factory for llama.cpp providers
+pub struct LlamaCppProviderFactory;
+
+impl ProviderFactory for LlamaCppProviderFactory {
+    fn provider_type(&self) -> &str {
+        "llamacpp"
+    }
+
+    fn display_name(&self) -> &str {
+        "llama.cpp"
+    }
+
+    fn category(&self) -> ProviderCategory {
+        ProviderCategory::Local
+    }
+
+    fn description(&self) -> &str {
+        "llama.cpp local inference server with OpenAI-compatible API"
+    }
+
+    fn default_free_tier(&self) -> FreeTierKind {
+        FreeTierKind::AlwaysFreeLocal
+    }
+
+    fn setup_parameters(&self) -> Vec<SetupParameter> {
+        vec![
+            SetupParameter::optional(
+                "base_url",
+                ParameterType::BaseUrl,
+                "llama.cpp API base URL",
+                Some("http://localhost:8080/v1"),
+                false,
+            ),
+            SetupParameter::optional(
+                "api_key",
+                ParameterType::ApiKey,
+                "API key (optional, not required for local llama.cpp)",
+                None::<String>,
+                true,
+            ),
+        ]
+    }
+
+    fn create(
+        &self,
+        _instance_name: String,
+        config: HashMap<String, String>,
+    ) -> AppResult<Arc<dyn ModelProvider>> {
+        self.validate_config(&config)?;
+
+        let base_url = config
+            .get("base_url")
+            .cloned()
+            .unwrap_or_else(|| "http://localhost:8080/v1".to_string());
+
+        let api_key = config.get("api_key").cloned();
+
+        Ok(Arc::new(
+            LlamaCppProvider::with_base_url(base_url).with_api_key(api_key),
+        ))
+    }
+
+    fn validate_config(&self, config: &HashMap<String, String>) -> AppResult<()> {
+        if let Some(url) = config.get("base_url") {
+            if !url.starts_with("http://") && !url.starts_with("https://") {
+                return Err(AppError::Config(
+                    "base_url must start with http:// or https://".to_string(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn catalog_provider_id(&self) -> Option<&str> {
+        None
+    }
+
+    fn model_list_source(&self) -> ModelListSource {
+        ModelListSource::ApiOnly
+    }
+}
+
+#[async_trait]
+impl DiscoverableProvider for LlamaCppProviderFactory {
+    async fn is_available(&self) -> bool {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(2))
+            .build()
+            .unwrap_or_default();
+
+        let url = format!("{}/models", self.default_base_url());
+        client.get(&url).send().await.is_ok()
+    }
+
+    fn default_base_url(&self) -> &str {
+        "http://localhost:8080/v1"
+    }
+
+    fn default_instance_name(&self) -> &str {
+        "llama.cpp"
+    }
+}
+
 // ==================== SUBSCRIPTION PROVIDER FACTORIES ====================
 
 /// Factory for GitHub Copilot (OAuth subscription)
@@ -1719,6 +1823,7 @@ pub async fn discover_local_providers() -> Vec<DiscoveredProvider> {
         Box::new(JanProviderFactory),
         Box::new(GPT4AllProviderFactory),
         Box::new(LocalAIProviderFactory),
+        Box::new(LlamaCppProviderFactory),
     ];
 
     for factory in &discoverable {

@@ -379,6 +379,10 @@ fn provider_type_str_to_enum(provider_type: &str) -> lr_config::ProviderType {
         "deepinfra" => lr_config::ProviderType::DeepInfra,
         "cerebras" => lr_config::ProviderType::Cerebras,
         "xai" => lr_config::ProviderType::XAI,
+        "jan" => lr_config::ProviderType::Jan,
+        "gpt4all" => lr_config::ProviderType::GPT4All,
+        "localai" => lr_config::ProviderType::LocalAI,
+        "llamacpp" => lr_config::ProviderType::LlamaCpp,
         "openai_compatible" => lr_config::ProviderType::Custom,
         _ => lr_config::ProviderType::Custom,
     }
