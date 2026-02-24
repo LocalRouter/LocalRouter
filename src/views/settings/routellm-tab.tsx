@@ -194,8 +194,10 @@ export function RouteLLMTab({ onTabChange }: RouteLLMTabProps) {
 
             <div className="p-3 bg-yellow-500/10 border border-yellow-600/50 rounded-lg">
               <p className="text-xs text-yellow-900 dark:text-yellow-400">
-                <strong>Download Required:</strong> Models ({ROUTELLM_REQUIREMENTS.DISK_GB} GB) will be downloaded to{" "}
-                <code className="bg-yellow-500/20 px-1 rounded">~/.localrouter/routellm/</code>
+                <strong>Download Required:</strong>{" "}
+                <code className="bg-yellow-500/20 px-1 rounded">{status.model_name}</code>{" "}
+                ({ROUTELLM_REQUIREMENTS.DISK_GB} GB) will be downloaded to{" "}
+                <code className="bg-yellow-500/20 px-1 rounded">{status.model_dir}</code>
               </p>
             </div>
 

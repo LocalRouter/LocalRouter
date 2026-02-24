@@ -23,11 +23,16 @@ pub async fn routellm_get_status(
     if let Some(service) = state.router.get_routellm_service() {
         Ok(service.get_status().await)
     } else {
-        // Service not initialized
+        // Service not initialized - compute path from config dir
+        let model_dir = lr_utils::paths::config_dir()
+            .map(|d| d.join("routellm").display().to_string())
+            .unwrap_or_default();
         Ok(RouteLLMStatus {
             state: lr_routellm::status::RouteLLMState::NotDownloaded,
             memory_usage_mb: None,
             last_access_secs_ago: None,
+            model_dir,
+            model_name: "routellm/bert_gpt4_augmented".to_string(),
         })
     }
 }

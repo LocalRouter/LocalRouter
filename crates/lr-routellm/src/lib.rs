@@ -226,10 +226,19 @@ impl RouteLLMService {
             RouteLLMState::NotDownloaded
         };
 
+        // Derive the user-facing routellm directory from model_path's parent
+        let model_dir = self
+            .model_path
+            .parent()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default();
+
         RouteLLMStatus {
             state,
             memory_usage_mb: if is_loaded { Some(2800) } else { None }, // ~2.5-3 GB with Candle
             last_access_secs_ago: last_access.map(|t| t.elapsed().as_secs()),
+            model_dir,
+            model_name: "routellm/bert_gpt4_augmented".to_string(),
         }
     }
 

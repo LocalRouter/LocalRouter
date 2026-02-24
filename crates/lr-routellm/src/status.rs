@@ -24,6 +24,10 @@ pub struct RouteLLMStatus {
     pub state: RouteLLMState,
     pub memory_usage_mb: Option<u64>,
     pub last_access_secs_ago: Option<u64>,
+    /// Display path for the routellm directory (e.g. ~/.localrouter-dev/routellm/)
+    pub model_dir: String,
+    /// HuggingFace model identifier (e.g. routellm/bert_gpt4_augmented)
+    pub model_name: String,
 }
 
 /// Test prediction result from routellm_test_prediction command

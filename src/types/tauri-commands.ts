@@ -747,6 +747,10 @@ export interface RouteLLMStatus {
   state: RouteLLMState
   memory_usage_mb?: number | null
   last_access_secs_ago?: number | null
+  /** Display path for the routellm directory (e.g. ~/.localrouter-dev/routellm/) */
+  model_dir: string
+  /** HuggingFace model identifier (e.g. routellm/bert_gpt4_augmented) */
+  model_name: string
 }
 
 /**
