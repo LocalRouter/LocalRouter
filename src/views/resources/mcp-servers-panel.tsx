@@ -691,7 +691,7 @@ export function McpServersPanel({
                         {(() => {
                           const health = healthStatus[selectedServer.id]
                           const formatLatency = (ms?: number) => {
-                            if (!ms) return ""
+                            if (ms == null) return ""
                             return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`
                           }
 
@@ -716,10 +716,14 @@ export function McpServersPanel({
                           }
                           if (health.status === "ready") {
                             return (
-                              <div className="flex items-center gap-2 text-green-600">
-                                <CheckCircle className="h-4 w-4" />
-                                <span>Ready</span>
-                                {health.error && <span className="text-muted-foreground">- {health.error}</span>}
+                              <div className="space-y-1">
+                                <div className="flex items-center gap-2 text-green-600">
+                                  <CheckCircle className="h-4 w-4 shrink-0" />
+                                  <span>Ready</span>
+                                </div>
+                                {health.error && (
+                                  <pre className="text-xs text-muted-foreground overflow-auto max-h-32 whitespace-pre-wrap break-all bg-muted/50 rounded p-2">{health.error}</pre>
+                                )}
                               </div>
                             )
                           }
@@ -732,10 +736,14 @@ export function McpServersPanel({
                             )
                           }
                           return (
-                            <div className="flex items-center gap-2 text-red-600">
-                              <XCircle className="h-4 w-4" />
-                              <span>Unhealthy</span>
-                              {health.error && <span className="text-muted-foreground">- {health.error}</span>}
+                            <div className="space-y-1">
+                              <div className="flex items-center gap-2 text-red-600">
+                                <XCircle className="h-4 w-4 shrink-0" />
+                                <span>Unhealthy</span>
+                              </div>
+                              {health.error && (
+                                <pre className="text-xs text-muted-foreground overflow-auto max-h-32 whitespace-pre-wrap break-all bg-muted/50 rounded p-2">{health.error}</pre>
+                              )}
                             </div>
                           )
                         })()}
@@ -977,28 +985,23 @@ export function McpServersPanel({
                       </CardContent>
                     </Card>
 
-                    {/* Enable/Disable */}
-                    <Card>
-                      <CardHeader>
-                        <CardTitle>Enable Server</CardTitle>
-                        <CardDescription>When disabled, this MCP server will not be available to clients</CardDescription>
-                      </CardHeader>
-                      <CardContent>
-                        <div className="flex items-center gap-3">
-                          <Switch checked={selectedServer.enabled} onCheckedChange={() => handleToggle(selectedServer)} />
-                          <span className="text-sm">{selectedServer.enabled ? "Enabled" : "Disabled"}</span>
-                        </div>
-                      </CardContent>
-                    </Card>
-
                     {/* Danger Zone */}
                     <Card className="border-red-200 dark:border-red-900">
                       <CardHeader>
                         <CardTitle className="text-red-600 dark:text-red-400">Danger Zone</CardTitle>
-                        <CardDescription>Irreversible actions for this server</CardDescription>
+                        <CardDescription>Irreversible and destructive actions for this server</CardDescription>
                       </CardHeader>
-                      <CardContent>
+                      <CardContent className="space-y-4">
                         <div className="flex items-center justify-between">
+                          <div>
+                            <p className="text-sm font-medium">Enable server</p>
+                            <p className="text-sm text-muted-foreground">
+                              When disabled, this MCP server will not be available to clients
+                            </p>
+                          </div>
+                          <Switch checked={selectedServer.enabled} onCheckedChange={() => handleToggle(selectedServer)} />
+                        </div>
+                        <div className="flex items-center justify-between pt-4 border-t">
                           <div>
                             <p className="text-sm font-medium">Delete this server</p>
                             <p className="text-sm text-muted-foreground">Permanently delete "{selectedServer.name}" and its configuration</p>

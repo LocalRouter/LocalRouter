@@ -333,37 +333,28 @@ export function ClientSettingsTab({ client, onUpdate, onDelete }: SettingsTabPro
         </CardContent>
       </Card>
 
-      {/* Enable/Disable */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Enable Client</CardTitle>
-          <CardDescription>
-            When disabled, this client's API key will be rejected
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="flex items-center gap-3">
-            <Switch
-              checked={client.enabled}
-              onCheckedChange={handleToggleEnabled}
-            />
-            <span className="text-sm">
-              {client.enabled ? "Enabled" : "Disabled"}
-            </span>
-          </div>
-        </CardContent>
-      </Card>
-
       {/* Danger Zone */}
       <Card className="border-red-200 dark:border-red-900">
         <CardHeader>
           <CardTitle className="text-red-600 dark:text-red-400">Danger Zone</CardTitle>
           <CardDescription>
-            Irreversible actions for this client
+            Irreversible and destructive actions for this client
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium">Enable client</p>
+              <p className="text-sm text-muted-foreground">
+                When disabled, this client's API key will be rejected
+              </p>
+            </div>
+            <Switch
+              checked={client.enabled}
+              onCheckedChange={handleToggleEnabled}
+            />
+          </div>
+          <div className="flex items-center justify-between pt-4 border-t">
             <div>
               <p className="text-sm font-medium">Rotate credentials</p>
               <p className="text-sm text-muted-foreground">

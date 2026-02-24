@@ -617,7 +617,7 @@ export function ProvidersPanel({
                           {(() => {
                             const health = healthStatus[selectedProvider.instance_name]
                             const formatLatency = (ms?: number) => {
-                              if (!ms) return ""
+                              if (ms == null) return ""
                               return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`
                             }
 
