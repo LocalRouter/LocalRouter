@@ -24,8 +24,8 @@ impl AppIntegration for OpenClawIntegration {
 
     fn check_installed(&self) -> AppCapabilities {
         // Audit: only 'openclaw' is documented in public docs.
-    // See: https://docs.openclaw.ai/cli/models
-    let binary = which::which("openclaw").ok();
+        // See: https://docs.openclaw.ai/cli/models
+        let binary = which::which("openclaw").ok();
 
         AppCapabilities {
             installed: binary.is_some(),

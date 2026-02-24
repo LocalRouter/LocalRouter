@@ -398,8 +398,7 @@ impl FreeTierManager {
                 .collect(),
         };
 
-        let data = serde_json::to_string_pretty(&state)
-            .map_err(std::io::Error::other)?;
+        let data = serde_json::to_string_pretty(&state).map_err(std::io::Error::other)?;
 
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;

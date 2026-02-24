@@ -1325,7 +1325,10 @@ impl Router {
         // 6. Check free tier constraints for specific model requests
         if strategy.free_tier_only {
             // Check backoff first
-            if let Some(backoff) = self.free_tier_manager.is_in_backoff(&final_provider, &final_model) {
+            if let Some(backoff) = self
+                .free_tier_manager
+                .is_in_backoff(&final_provider, &final_model)
+            {
                 debug!(
                     "Specific model {}/{} is in backoff: {}",
                     final_provider, final_model, backoff.reason
@@ -1336,9 +1339,9 @@ impl Router {
             }
 
             let free_tier = self.get_effective_free_tier(&final_provider);
-            let status = self
-                .free_tier_manager
-                .classify_model(&final_provider, &final_model, &free_tier);
+            let status =
+                self.free_tier_manager
+                    .classify_model(&final_provider, &final_model, &free_tier);
             if matches!(status, free_tier::ModelFreeStatus::NotFree) {
                 debug!(
                     "Model {}/{} is not free, rejecting in free-tier-only mode",
@@ -1440,7 +1443,10 @@ impl Router {
 
         // 6. Check free tier constraints for specific model requests
         if strategy.free_tier_only {
-            if let Some(backoff) = self.free_tier_manager.is_in_backoff(&final_provider, &final_model) {
+            if let Some(backoff) = self
+                .free_tier_manager
+                .is_in_backoff(&final_provider, &final_model)
+            {
                 debug!(
                     "Specific model {}/{} is in backoff: {}",
                     final_provider, final_model, backoff.reason
@@ -1451,9 +1457,9 @@ impl Router {
             }
 
             let free_tier = self.get_effective_free_tier(&final_provider);
-            let status = self
-                .free_tier_manager
-                .classify_model(&final_provider, &final_model, &free_tier);
+            let status =
+                self.free_tier_manager
+                    .classify_model(&final_provider, &final_model, &free_tier);
             if matches!(status, free_tier::ModelFreeStatus::NotFree) {
                 debug!(
                     "Model {}/{} is not free, rejecting in free-tier-only mode (streaming)",
