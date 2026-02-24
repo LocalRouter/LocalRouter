@@ -86,8 +86,8 @@ mod tests {
 
     #[test]
     fn test_capability_flags() {
-        // Apps that support try_it_out
-        for id in &["claude-code", "codex", "aider", "goose"] {
+        // Apps that support both try_it_out and permanent_config
+        for id in &["claude-code", "aider", "goose"] {
             let integration = get_integration(id).unwrap();
             assert!(
                 integration.supports_try_it_out(),
@@ -97,6 +97,21 @@ mod tests {
             assert!(
                 integration.supports_permanent_config(),
                 "'{}' should support permanent_config",
+                id
+            );
+        }
+
+        // Apps that support try_it_out only (env-var based, no config file)
+        for id in &["codex"] {
+            let integration = get_integration(id).unwrap();
+            assert!(
+                integration.supports_try_it_out(),
+                "'{}' should support try_it_out",
+                id
+            );
+            assert!(
+                !integration.supports_permanent_config(),
+                "'{}' should NOT support permanent_config",
                 id
             );
         }
