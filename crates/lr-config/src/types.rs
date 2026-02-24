@@ -2115,6 +2115,14 @@ pub enum ProviderType {
     /// xAI API
     #[allow(clippy::upper_case_acronyms)]
     XAI,
+    /// Local Jan.ai instance
+    Jan,
+    /// Local GPT4All instance
+    #[serde(rename = "gpt4all")]
+    GPT4All,
+    /// Local LocalAI instance
+    #[serde(rename = "localai")]
+    LocalAI,
     /// Custom provider
     Custom,
 }
@@ -2327,6 +2335,48 @@ impl ProviderConfig {
             enabled: true,
             provider_config: Some(serde_json::json!({
                 "base_url": "http://localhost:1234/v1"
+            })),
+            api_key_ref: None,
+            free_tier: None,
+        }
+    }
+
+    /// Create default Jan provider configuration
+    pub fn default_jan() -> Self {
+        Self {
+            name: "Jan".to_string(),
+            provider_type: ProviderType::Jan,
+            enabled: true,
+            provider_config: Some(serde_json::json!({
+                "base_url": "http://localhost:1337/v1"
+            })),
+            api_key_ref: None,
+            free_tier: None,
+        }
+    }
+
+    /// Create default GPT4All provider configuration
+    pub fn default_gpt4all() -> Self {
+        Self {
+            name: "GPT4All".to_string(),
+            provider_type: ProviderType::GPT4All,
+            enabled: true,
+            provider_config: Some(serde_json::json!({
+                "base_url": "http://localhost:4891/v1"
+            })),
+            api_key_ref: None,
+            free_tier: None,
+        }
+    }
+
+    /// Create default LocalAI provider configuration
+    pub fn default_localai() -> Self {
+        Self {
+            name: "LocalAI".to_string(),
+            provider_type: ProviderType::LocalAI,
+            enabled: true,
+            provider_config: Some(serde_json::json!({
+                "base_url": "http://localhost:8080/v1"
             })),
             api_key_ref: None,
             free_tier: None,

@@ -258,6 +258,33 @@ export const mockData = {
         { key: "base_url", param_type: "string", required: false, description: "LM Studio server URL", default_value: "http://localhost:1234/v1", sensitive: false },
       ],
     },
+    {
+      provider_type: "jan",
+      display_name: "Jan",
+      category: "local",
+      description: "Run local models with Jan.ai",
+      setup_parameters: [
+        { key: "base_url", param_type: "string", required: false, description: "Jan server URL", default_value: "http://localhost:1337/v1", sensitive: false },
+      ],
+    },
+    {
+      provider_type: "gpt4all",
+      display_name: "GPT4All",
+      category: "local",
+      description: "Run local models with GPT4All",
+      setup_parameters: [
+        { key: "base_url", param_type: "string", required: false, description: "GPT4All server URL", default_value: "http://localhost:4891/v1", sensitive: false },
+      ],
+    },
+    {
+      provider_type: "localai",
+      display_name: "LocalAI",
+      category: "local",
+      description: "Run local models with LocalAI",
+      setup_parameters: [
+        { key: "base_url", param_type: "string", required: false, description: "LocalAI server URL", default_value: "http://localhost:8080/v1", sensitive: false },
+      ],
+    },
   ],
 
   mcpServers: [
@@ -622,6 +649,8 @@ export const mockData = {
     state: 'downloaded_not_running',
     memory_usage_mb: null,
     last_access_secs_ago: null,
+    model_dir: '~/.localrouter/routellm',
+    model_name: 'routellm/bert_gpt4_augmented',
   } satisfies RouteLLMStatus,
 
   // UpdateConfig - matches src/types/tauri-commands.ts

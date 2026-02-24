@@ -20,8 +20,9 @@ use localrouter::{
 
 use lr_providers::factory::{
     AnthropicProviderFactory, CerebrasProviderFactory, CohereProviderFactory,
-    DeepInfraProviderFactory, GeminiProviderFactory, GitHubCopilotProviderFactory,
-    GroqProviderFactory, LMStudioProviderFactory, MistralProviderFactory, OllamaProviderFactory,
+    DeepInfraProviderFactory, GPT4AllProviderFactory, GeminiProviderFactory,
+    GitHubCopilotProviderFactory, GroqProviderFactory, JanProviderFactory, LMStudioProviderFactory,
+    LocalAIProviderFactory, MistralProviderFactory, OllamaProviderFactory,
     OpenAICodexProviderFactory, OpenAICompatibleProviderFactory, OpenAIProviderFactory,
     OpenRouterProviderFactory, PerplexityProviderFactory, TogetherAIProviderFactory,
     XAIProviderFactory,
@@ -203,6 +204,9 @@ async fn run_gui_mode() -> anyhow::Result<()> {
     provider_registry.register_factory(Arc::new(CerebrasProviderFactory));
     provider_registry.register_factory(Arc::new(XAIProviderFactory));
     provider_registry.register_factory(Arc::new(LMStudioProviderFactory));
+    provider_registry.register_factory(Arc::new(JanProviderFactory));
+    provider_registry.register_factory(Arc::new(GPT4AllProviderFactory));
+    provider_registry.register_factory(Arc::new(LocalAIProviderFactory));
     // Subscription providers (OAuth-based)
     provider_registry.register_factory(Arc::new(GitHubCopilotProviderFactory));
     provider_registry.register_factory(Arc::new(OpenAICodexProviderFactory));
@@ -225,6 +229,9 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                         let provider_config = match provider.provider_type.as_str() {
                             "ollama" => config::ProviderConfig::default_ollama(),
                             "lmstudio" => config::ProviderConfig::default_lmstudio(),
+                            "jan" => config::ProviderConfig::default_jan(),
+                            "gpt4all" => config::ProviderConfig::default_gpt4all(),
+                            "localai" => config::ProviderConfig::default_localai(),
                             _ => continue,
                         };
                         info!(
@@ -261,6 +268,9 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             config::ProviderType::DeepInfra => "deepinfra",
             config::ProviderType::Cerebras => "cerebras",
             config::ProviderType::XAI => "xai",
+            config::ProviderType::Jan => "jan",
+            config::ProviderType::GPT4All => "gpt4all",
+            config::ProviderType::LocalAI => "localai",
             config::ProviderType::Custom => "openai_compatible",
         };
 
@@ -553,6 +563,9 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                             let provider_type_str = match p.provider_type {
                                 config::ProviderType::Ollama => "ollama",
                                 config::ProviderType::LMStudio => "lmstudio",
+                                config::ProviderType::Jan => "jan",
+                                config::ProviderType::GPT4All => "gpt4all",
+                                config::ProviderType::LocalAI => "localai",
                                 _ => "openai_compatible",
                             };
 
@@ -569,6 +582,15 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                                     }
                                     config::ProviderType::LMStudio => {
                                         "http://localhost:1234".to_string()
+                                    }
+                                    config::ProviderType::Jan => {
+                                        "http://localhost:1337".to_string()
+                                    }
+                                    config::ProviderType::GPT4All => {
+                                        "http://localhost:4891".to_string()
+                                    }
+                                    config::ProviderType::LocalAI => {
+                                        "http://localhost:8080".to_string()
                                     }
                                     _ => "http://localhost:8080".to_string(),
                                 });

@@ -27,6 +27,7 @@ use std::sync::Arc;
 use lr_config::{ConfigManager, SkillsConfig};
 use lr_monitoring::logger::AccessLogger;
 use lr_oauth::clients::OAuthClientManager;
+use lr_providers::registry::ProviderRegistry;
 use lr_server::ServerManager;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -2326,8 +2327,9 @@ pub async fn remove_safety_model(
 // Provider Model Pull Commands
 // ============================================================================
 
-/// Pull (download) a model through a provider that supports it (currently Ollama only).
+/// Pull (download) a model through a provider that supports it.
 ///
+/// Supports any provider that implements `supports_pull()` (Ollama, LM Studio, LocalAI).
 /// Streams progress via `provider-model-pull-progress` Tauri events.
 /// Emits `provider-model-pull-complete` or `provider-model-pull-failed` on finish.
 #[tauri::command]
@@ -2335,40 +2337,27 @@ pub async fn pull_provider_model(
     provider_id: String,
     model_name: String,
     app_handle: AppHandle,
-    config_manager: State<'_, ConfigManager>,
+    provider_registry: State<'_, Arc<ProviderRegistry>>,
 ) -> Result<(), String> {
     use futures::StreamExt;
 
-    let config = config_manager.get();
-    let provider_cfg = config
-        .providers
-        .iter()
-        .find(|p| p.name == provider_id)
-        .ok_or_else(|| format!("Provider '{}' not found", provider_id))?;
+    let provider = provider_registry
+        .get_provider(&provider_id)
+        .ok_or_else(|| format!("Provider '{}' not found or disabled", provider_id))?;
 
-    // Only Ollama supports pulling
-    if provider_cfg.provider_type != lr_config::ProviderType::Ollama {
+    if !provider.supports_pull() {
         return Err(format!(
-            "Provider '{}' does not support model pulling (only Ollama is supported)",
+            "Provider '{}' does not support model pulling",
             provider_id
         ));
     }
 
-    let endpoint = provider_cfg
-        .provider_config
-        .as_ref()
-        .and_then(|cfg| cfg.get("endpoint"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("http://localhost:11434")
-        .to_string();
-
-    let ollama = lr_providers::ollama::OllamaProvider::with_base_url(endpoint);
     let model_name_clone = model_name.clone();
     let provider_id_clone = provider_id.clone();
 
     // Spawn in background so the command returns immediately
     tokio::spawn(async move {
-        match ollama.pull_model(&model_name_clone).await {
+        match provider.pull_model(&model_name_clone).await {
             Ok(mut stream) => {
                 while let Some(result) = stream.next().await {
                     match result {

@@ -1,7 +1,9 @@
-//! LM Studio provider implementation
+//! LocalAI provider implementation
 //!
-//! LM Studio is a desktop application for running LLMs locally with an OpenAI-compatible API.
-//! Default endpoint: http://localhost:1234/v1
+//! LocalAI is an open-source alternative for running LLMs locally with an OpenAI-compatible API.
+//! Default endpoint: http://localhost:8080/v1
+//!
+//! Supports model pulling via POST /models/apply + GET /models/jobs/:uuid
 
 use async_trait::async_trait;
 use chrono::Utc;
@@ -19,25 +21,25 @@ use super::{
 };
 use lr_types::{AppError, AppResult};
 
-/// LM Studio provider for local model inference
-pub struct LMStudioProvider {
+/// LocalAI provider for local model inference
+pub struct LocalAIProvider {
     base_url: String,
     api_key: Option<String>,
     client: Client,
 }
 
 #[allow(dead_code)]
-impl LMStudioProvider {
-    /// Creates a new LM Studio provider with default settings
+impl LocalAIProvider {
+    /// Creates a new LocalAI provider with default settings
     pub fn new() -> Self {
         Self {
-            base_url: "http://localhost:1234/v1".to_string(),
+            base_url: "http://localhost:8080/v1".to_string(),
             api_key: None,
             client: Client::new(),
         }
     }
 
-    /// Creates a new LM Studio provider with custom base URL
+    /// Creates a new LocalAI provider with custom base URL
     pub fn with_base_url(base_url: String) -> Self {
         Self {
             base_url: base_url.trim_end_matches('/').to_string(),
@@ -46,7 +48,7 @@ impl LMStudioProvider {
         }
     }
 
-    /// Creates a new LM Studio provider with optional API key
+    /// Creates a new LocalAI provider with optional API key
     pub fn with_api_key(mut self, api_key: Option<String>) -> Self {
         self.api_key = api_key;
         self
@@ -57,10 +59,10 @@ impl LMStudioProvider {
         let base_url = if let Some(cfg) = config {
             cfg.get("base_url")
                 .and_then(|v| v.as_str())
-                .unwrap_or("http://localhost:1234/v1")
+                .unwrap_or("http://localhost:8080/v1")
                 .to_string()
         } else {
-            "http://localhost:1234/v1".to_string()
+            "http://localhost:8080/v1".to_string()
         };
 
         let api_key = config
@@ -76,8 +78,8 @@ impl LMStudioProvider {
         self.api_key.as_ref().map(|key| format!("Bearer {}", key))
     }
 
-    /// Derive the management API base URL (strip /v1 suffix)
-    fn management_base_url(&self) -> String {
+    /// Derive the native (non-/v1) base URL for management APIs
+    fn native_base_url(&self) -> String {
         self.base_url
             .trim_end_matches('/')
             .trim_end_matches("/v1")
@@ -86,32 +88,28 @@ impl LMStudioProvider {
 }
 
 #[allow(dead_code)]
-impl Default for LMStudioProvider {
+impl Default for LocalAIProvider {
     fn default() -> Self {
         Self::new()
     }
 }
 
-// LM Studio API response types (OpenAI-compatible)
+// LocalAI API response types (OpenAI-compatible)
 
 #[derive(Debug, Deserialize)]
-struct LMStudioModel {
+struct LocalAIModel {
     id: String,
     #[allow(dead_code)]
     object: String,
-    #[allow(dead_code)]
-    created: i64,
-    #[allow(dead_code)]
-    owned_by: String,
 }
 
 #[derive(Debug, Deserialize)]
-struct LMStudioModelsResponse {
-    data: Vec<LMStudioModel>,
+struct LocalAIModelsResponse {
+    data: Vec<LocalAIModel>,
 }
 
 #[derive(Debug, Serialize)]
-struct LMStudioChatRequest {
+struct LocalAIChatRequest {
     model: String,
     messages: Vec<ChatMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -131,80 +129,81 @@ struct LMStudioChatRequest {
 }
 
 #[derive(Debug, Deserialize)]
-struct LMStudioChatResponse {
+struct LocalAIChatResponse {
     id: String,
     object: String,
     created: i64,
     model: String,
-    choices: Vec<LMStudioChoice>,
-    usage: LMStudioUsage,
+    choices: Vec<LocalAIChoice>,
+    usage: LocalAIUsage,
 }
 
 #[derive(Debug, Deserialize)]
-struct LMStudioChoice {
+struct LocalAIChoice {
     index: u32,
     message: ChatMessage,
     finish_reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
-struct LMStudioUsage {
+struct LocalAIUsage {
     prompt_tokens: u32,
     completion_tokens: u32,
     total_tokens: u32,
 }
 
 #[derive(Debug, Deserialize)]
-struct LMStudioStreamChunk {
+struct LocalAIStreamChunk {
     id: String,
     object: String,
     created: i64,
     model: String,
-    choices: Vec<LMStudioStreamChoice>,
+    choices: Vec<LocalAIStreamChoice>,
 }
 
 #[derive(Debug, Deserialize)]
-struct LMStudioStreamChoice {
+struct LocalAIStreamChoice {
     index: u32,
-    delta: LMStudioDelta,
+    delta: LocalAIDelta,
     finish_reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
-struct LMStudioDelta {
+struct LocalAIDelta {
     #[serde(skip_serializing_if = "Option::is_none")]
     role: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     content: Option<String>,
 }
 
-// LM Studio model download API types
+// LocalAI model pull types
 
 #[derive(Debug, Deserialize)]
-struct LMStudioDownloadResponse {
-    #[serde(default)]
-    job_id: Option<String>,
-    status: String,
-    #[serde(default)]
-    total_size_bytes: Option<u64>,
+struct LocalAIApplyResponse {
+    uuid: String,
+    #[allow(dead_code)]
+    status: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
-struct LMStudioDownloadStatus {
+struct LocalAIJobStatus {
     #[allow(dead_code)]
-    job_id: String,
-    status: String,
+    uuid: String,
     #[serde(default)]
-    total_size_bytes: Option<u64>,
+    progress: f64,
     #[serde(default)]
-    downloaded_bytes: Option<u64>,
+    processed: bool,
+    #[serde(default)]
+    message: Option<String>,
+    #[serde(default)]
+    error: Option<String>,
 }
 
 #[async_trait]
 #[allow(dead_code)]
-impl ModelProvider for LMStudioProvider {
+impl ModelProvider for LocalAIProvider {
     fn name(&self) -> &str {
-        "lmstudio"
+        "localai"
     }
 
     async fn health_check(&self) -> ProviderHealth {
@@ -234,7 +233,7 @@ impl ModelProvider for LMStudioProvider {
                         latency_ms: Some(latency_ms),
                         last_checked: Utc::now(),
                         error_message: Some(format!(
-                            "LM Studio API returned status: {}",
+                            "LocalAI API returned status: {}",
                             response.status()
                         )),
                     }
@@ -244,13 +243,13 @@ impl ModelProvider for LMStudioProvider {
                 status: HealthStatus::Unhealthy,
                 latency_ms: None,
                 last_checked: Utc::now(),
-                error_message: Some(format!("Failed to connect to LM Studio: {}", e)),
+                error_message: Some(format!("Failed to connect to LocalAI: {}", e)),
             },
         }
     }
 
     async fn list_models(&self) -> AppResult<Vec<ModelInfo>> {
-        debug!("Fetching LM Studio models from {}", self.base_url);
+        debug!("Fetching LocalAI models from {}", self.base_url);
 
         let mut request = self.client.get(format!("{}/models", self.base_url));
 
@@ -261,17 +260,17 @@ impl ModelProvider for LMStudioProvider {
         let response = request
             .send()
             .await
-            .map_err(|e| AppError::Provider(format!("Failed to fetch LM Studio models: {}", e)))?;
+            .map_err(|e| AppError::Provider(format!("Failed to fetch LocalAI models: {}", e)))?;
 
         if !response.status().is_success() {
             return Err(AppError::Provider(format!(
-                "LM Studio API returned status: {}",
+                "LocalAI API returned status: {}",
                 response.status()
             )));
         }
 
-        let models_response: LMStudioModelsResponse = response.json().await.map_err(|e| {
-            AppError::Provider(format!("Failed to parse LM Studio models response: {}", e))
+        let models_response: LocalAIModelsResponse = response.json().await.map_err(|e| {
+            AppError::Provider(format!("Failed to parse LocalAI models response: {}", e))
         })?;
 
         let models: Vec<ModelInfo> = models_response
@@ -281,30 +280,144 @@ impl ModelProvider for LMStudioProvider {
                 ModelInfo {
                     id: model.id.clone(),
                     name: model.id,
-                    provider: "lmstudio".to_string(),
-                    parameter_count: None, // LM Studio doesn't expose parameter count
-                    context_window: 4096,  // Default, actual value depends on loaded model
+                    provider: "localai".to_string(),
+                    parameter_count: None,
+                    context_window: 4096,
                     supports_streaming: true,
                     capabilities: vec![Capability::Chat, Capability::Completion],
                     detailed_capabilities: None,
                 }
                 .enrich_with_catalog_by_name()
-            }) // Use model-only search for multi-provider system
+            })
             .collect();
 
-        debug!("Found {} LM Studio models", models.len());
+        debug!("Found {} LocalAI models", models.len());
         Ok(models)
     }
 
     async fn get_pricing(&self, _model: &str) -> AppResult<PricingInfo> {
-        // LM Studio is free (local execution)
         Ok(PricingInfo::free())
     }
 
-    async fn complete(&self, request: CompletionRequest) -> AppResult<CompletionResponse> {
-        debug!("Sending completion request to LM Studio: {}", self.base_url);
+    fn supports_pull(&self) -> bool {
+        true
+    }
 
-        let lmstudio_request = LMStudioChatRequest {
+    async fn pull_model(
+        &self,
+        model_name: &str,
+    ) -> AppResult<Pin<Box<dyn Stream<Item = AppResult<PullProgress>> + Send>>> {
+        let native_url = self.native_base_url();
+        let apply_url = format!("{}/models/apply", native_url);
+
+        let body = serde_json::json!({
+            "id": model_name,
+        });
+
+        let mut req = self.client.post(&apply_url).json(&body);
+        if let Some(auth) = self.auth_header() {
+            req = req.header("Authorization", auth);
+        }
+
+        let response = req
+            .send()
+            .await
+            .map_err(|e| AppError::Provider(format!("LocalAI model apply failed: {}", e)))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body_text = response.text().await.unwrap_or_default();
+            return Err(AppError::Provider(format!(
+                "LocalAI model apply failed ({}): {}",
+                status, body_text
+            )));
+        }
+
+        let apply_response: LocalAIApplyResponse = response.json().await.map_err(|e| {
+            AppError::Provider(format!("Failed to parse LocalAI apply response: {}", e))
+        })?;
+
+        let uuid = apply_response.uuid;
+        let job_url = format!("{}/models/jobs/{}", native_url, uuid);
+        let client = self.client.clone();
+        let auth = self.auth_header();
+
+        let stream = async_stream::stream! {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+                let mut req = client.get(&job_url);
+                if let Some(ref auth_header) = auth {
+                    req = req.header("Authorization", auth_header.clone());
+                }
+
+                match req.send().await {
+                    Ok(resp) => {
+                        if !resp.status().is_success() {
+                            yield Err(AppError::Provider(format!(
+                                "LocalAI job status check failed: {}",
+                                resp.status()
+                            )));
+                            break;
+                        }
+
+                        match resp.json::<LocalAIJobStatus>().await {
+                            Ok(status) => {
+                                if let Some(ref error) = status.error {
+                                    yield Err(AppError::Provider(format!(
+                                        "LocalAI pull failed: {}",
+                                        error
+                                    )));
+                                    break;
+                                }
+
+                                let progress_pct = (status.progress * 100.0) as u64;
+                                let message = status.message.unwrap_or_else(|| {
+                                    format!("downloading {}%", progress_pct)
+                                });
+
+                                if status.processed {
+                                    yield Ok(PullProgress {
+                                        status: "success".to_string(),
+                                        total: Some(100),
+                                        completed: Some(100),
+                                    });
+                                    break;
+                                }
+
+                                yield Ok(PullProgress {
+                                    status: message,
+                                    total: Some(100),
+                                    completed: Some(progress_pct),
+                                });
+                            }
+                            Err(e) => {
+                                yield Err(AppError::Provider(format!(
+                                    "Failed to parse LocalAI job status: {}",
+                                    e
+                                )));
+                                break;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        yield Err(AppError::Provider(format!(
+                            "LocalAI job status request failed: {}",
+                            e
+                        )));
+                        break;
+                    }
+                }
+            }
+        };
+
+        Ok(Box::pin(stream))
+    }
+
+    async fn complete(&self, request: CompletionRequest) -> AppResult<CompletionResponse> {
+        debug!("Sending completion request to LocalAI: {}", self.base_url);
+
+        let localai_request = LocalAIChatRequest {
             model: request.model.clone(),
             messages: request.messages.clone(),
             temperature: request.temperature,
@@ -320,7 +433,7 @@ impl ModelProvider for LMStudioProvider {
             .client
             .post(format!("{}/chat/completions", self.base_url))
             .header("Content-Type", "application/json")
-            .json(&lmstudio_request);
+            .json(&localai_request);
 
         if let Some(auth) = self.auth_header() {
             req = req.header("Authorization", auth);
@@ -329,41 +442,42 @@ impl ModelProvider for LMStudioProvider {
         let response = req
             .send()
             .await
-            .map_err(|e| AppError::Provider(format!("LM Studio request failed: {}", e)))?;
+            .map_err(|e| AppError::Provider(format!("LocalAI request failed: {}", e)))?;
 
         if !response.status().is_success() {
             let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
             return Err(AppError::Provider(format!(
-                "LM Studio API error {}: {}",
+                "LocalAI API error {}: {}",
                 status, error_text
             )));
         }
 
-        let lmstudio_response: LMStudioChatResponse = response.json().await.map_err(|e| {
-            AppError::Provider(format!("Failed to parse LM Studio response: {}", e))
-        })?;
+        let localai_response: LocalAIChatResponse = response
+            .json()
+            .await
+            .map_err(|e| AppError::Provider(format!("Failed to parse LocalAI response: {}", e)))?;
 
         Ok(CompletionResponse {
-            id: lmstudio_response.id,
-            object: lmstudio_response.object,
-            created: lmstudio_response.created,
-            model: lmstudio_response.model,
+            id: localai_response.id,
+            object: localai_response.object,
+            created: localai_response.created,
+            model: localai_response.model,
             provider: self.name().to_string(),
-            choices: lmstudio_response
+            choices: localai_response
                 .choices
                 .into_iter()
                 .map(|choice| CompletionChoice {
                     index: choice.index,
                     message: choice.message,
                     finish_reason: choice.finish_reason,
-                    logprobs: None, // LMStudio does not support logprobs
+                    logprobs: None,
                 })
                 .collect(),
             usage: TokenUsage {
-                prompt_tokens: lmstudio_response.usage.prompt_tokens,
-                completion_tokens: lmstudio_response.usage.completion_tokens,
-                total_tokens: lmstudio_response.usage.total_tokens,
+                prompt_tokens: localai_response.usage.prompt_tokens,
+                completion_tokens: localai_response.usage.completion_tokens,
+                total_tokens: localai_response.usage.total_tokens,
                 prompt_tokens_details: None,
                 completion_tokens_details: None,
             },
@@ -372,145 +486,16 @@ impl ModelProvider for LMStudioProvider {
         })
     }
 
-    fn supports_pull(&self) -> bool {
-        true
-    }
-
-    async fn pull_model(
-        &self,
-        model_name: &str,
-    ) -> AppResult<Pin<Box<dyn Stream<Item = AppResult<PullProgress>> + Send>>> {
-        let mgmt_url = self.management_base_url();
-        let download_url = format!("{}/api/v1/models/download", mgmt_url);
-
-        let body = serde_json::json!({
-            "model": model_name,
-        });
-
-        let mut req = self.client.post(&download_url).json(&body);
-        if let Some(auth) = self.auth_header() {
-            req = req.header("Authorization", auth);
-        }
-
-        let response = req
-            .send()
-            .await
-            .map_err(|e| AppError::Provider(format!("LM Studio download request failed: {}", e)))?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body_text = response.text().await.unwrap_or_default();
-            return Err(AppError::Provider(format!(
-                "LM Studio download failed ({}): {}",
-                status, body_text
-            )));
-        }
-
-        let download_response: LMStudioDownloadResponse = response.json().await.map_err(|e| {
-            AppError::Provider(format!(
-                "Failed to parse LM Studio download response: {}",
-                e
-            ))
-        })?;
-
-        // Handle already-downloaded case
-        if download_response.status == "already_downloaded" {
-            let stream = async_stream::stream! {
-                yield Ok(PullProgress {
-                    status: "success".to_string(),
-                    total: None,
-                    completed: None,
-                });
-            };
-            return Ok(Box::pin(stream));
-        }
-
-        let job_id = download_response.job_id.ok_or_else(|| {
-            AppError::Provider("LM Studio download response missing job_id".to_string())
-        })?;
-
-        let status_url = format!("{}/api/v1/models/download/status/{}", mgmt_url, job_id);
-        let client = self.client.clone();
-        let auth = self.auth_header();
-
-        let stream = async_stream::stream! {
-            loop {
-                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-
-                let mut req = client.get(&status_url);
-                if let Some(ref auth_header) = auth {
-                    req = req.header("Authorization", auth_header.clone());
-                }
-
-                match req.send().await {
-                    Ok(resp) => {
-                        if !resp.status().is_success() {
-                            yield Err(AppError::Provider(format!(
-                                "LM Studio download status check failed: {}",
-                                resp.status()
-                            )));
-                            break;
-                        }
-
-                        match resp.json::<LMStudioDownloadStatus>().await {
-                            Ok(status) => {
-                                match status.status.as_str() {
-                                    "completed" => {
-                                        yield Ok(PullProgress {
-                                            status: "success".to_string(),
-                                            total: status.total_size_bytes,
-                                            completed: status.total_size_bytes,
-                                        });
-                                        break;
-                                    }
-                                    "failed" => {
-                                        yield Err(AppError::Provider(
-                                            "LM Studio model download failed".to_string(),
-                                        ));
-                                        break;
-                                    }
-                                    _ => {
-                                        yield Ok(PullProgress {
-                                            status: format!("downloading ({})", status.status),
-                                            total: status.total_size_bytes,
-                                            completed: status.downloaded_bytes,
-                                        });
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                yield Err(AppError::Provider(format!(
-                                    "Failed to parse LM Studio download status: {}",
-                                    e
-                                )));
-                                break;
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        yield Err(AppError::Provider(format!(
-                            "LM Studio download status request failed: {}",
-                            e
-                        )));
-                        break;
-                    }
-                }
-            }
-        };
-
-        Ok(Box::pin(stream))
-    }
-
     async fn stream_complete(
         &self,
         request: CompletionRequest,
     ) -> AppResult<Pin<Box<dyn Stream<Item = AppResult<CompletionChunk>> + Send>>> {
         debug!(
-            "Sending streaming completion request to LM Studio: {}",
+            "Sending streaming completion request to LocalAI: {}",
             self.base_url
         );
 
-        let lmstudio_request = LMStudioChatRequest {
+        let localai_request = LocalAIChatRequest {
             model: request.model.clone(),
             messages: request.messages.clone(),
             temperature: request.temperature,
@@ -526,49 +511,46 @@ impl ModelProvider for LMStudioProvider {
             .client
             .post(format!("{}/chat/completions", self.base_url))
             .header("Content-Type", "application/json")
-            .json(&lmstudio_request);
+            .json(&localai_request);
 
         if let Some(auth) = self.auth_header() {
             req = req.header("Authorization", auth);
         }
 
-        let response = req.send().await.map_err(|e| {
-            AppError::Provider(format!("LM Studio streaming request failed: {}", e))
-        })?;
+        let response = req
+            .send()
+            .await
+            .map_err(|e| AppError::Provider(format!("LocalAI streaming request failed: {}", e)))?;
 
         if !response.status().is_success() {
             let status = response.status();
             return Err(AppError::Provider(format!(
-                "LM Studio streaming API error: {}",
+                "LocalAI streaming API error: {}",
                 status
             )));
         }
 
         use futures::StreamExt;
 
-        // Parse SSE (Server-Sent Events) stream
         let stream = response.bytes_stream().filter_map(|result| async move {
             match result {
                 Ok(bytes) => {
                     let text = String::from_utf8_lossy(&bytes);
 
-                    // Parse SSE format: "data: {...}\n\n"
                     for line in text.lines() {
                         if let Some(json_str) = line.strip_prefix("data: ") {
-                            // Check for [DONE] marker
                             if json_str.trim() == "[DONE]" {
                                 continue;
                             }
 
-                            // Parse JSON chunk
-                            match serde_json::from_str::<LMStudioStreamChunk>(json_str) {
-                                Ok(lmstudio_chunk) => {
+                            match serde_json::from_str::<LocalAIStreamChunk>(json_str) {
+                                Ok(chunk) => {
                                     return Some(Ok(CompletionChunk {
-                                        id: lmstudio_chunk.id,
-                                        object: lmstudio_chunk.object,
-                                        created: lmstudio_chunk.created,
-                                        model: lmstudio_chunk.model,
-                                        choices: lmstudio_chunk
+                                        id: chunk.id,
+                                        object: chunk.object,
+                                        created: chunk.created,
+                                        model: chunk.model,
+                                        choices: chunk
                                             .choices
                                             .into_iter()
                                             .map(|choice| ChunkChoice {
@@ -586,7 +568,7 @@ impl ModelProvider for LMStudioProvider {
                                 }
                                 Err(e) => {
                                     return Some(Err(AppError::Provider(format!(
-                                        "Failed to parse LM Studio chunk: {}",
+                                        "Failed to parse LocalAI chunk: {}",
                                         e
                                     ))));
                                 }
@@ -609,43 +591,40 @@ mod tests {
 
     #[test]
     fn test_provider_name() {
-        let provider = LMStudioProvider::new();
-        assert_eq!(provider.name(), "lmstudio");
+        let provider = LocalAIProvider::new();
+        assert_eq!(provider.name(), "localai");
     }
 
     #[test]
     fn test_default_base_url() {
-        let provider = LMStudioProvider::new();
-        assert_eq!(provider.base_url, "http://localhost:1234/v1");
+        let provider = LocalAIProvider::new();
+        assert_eq!(provider.base_url, "http://localhost:8080/v1");
     }
 
     #[test]
     fn test_custom_base_url() {
-        let provider = LMStudioProvider::with_base_url("http://localhost:5678/v1".to_string());
-        assert_eq!(provider.base_url, "http://localhost:5678/v1");
+        let provider = LocalAIProvider::with_base_url("http://localhost:9090/v1".to_string());
+        assert_eq!(provider.base_url, "http://localhost:9090/v1");
     }
 
     #[test]
-    fn test_base_url_trailing_slash() {
-        let provider = LMStudioProvider::with_base_url("http://localhost:1234/v1/".to_string());
-        assert_eq!(provider.base_url, "http://localhost:1234/v1");
+    fn test_native_base_url() {
+        let provider = LocalAIProvider::new();
+        assert_eq!(provider.native_base_url(), "http://localhost:8080");
+
+        let provider2 = LocalAIProvider::with_base_url("http://myhost:9000/v1/".to_string());
+        assert_eq!(provider2.native_base_url(), "http://myhost:9000");
     }
 
     #[test]
-    fn test_auth_header_with_key() {
-        let provider = LMStudioProvider::new().with_api_key(Some("test-key".to_string()));
-        assert_eq!(provider.auth_header(), Some("Bearer test-key".to_string()));
-    }
-
-    #[test]
-    fn test_auth_header_without_key() {
-        let provider = LMStudioProvider::new();
-        assert_eq!(provider.auth_header(), None);
+    fn test_supports_pull() {
+        let provider = LocalAIProvider::new();
+        assert!(provider.supports_pull());
     }
 
     #[tokio::test]
     async fn test_pricing_is_free() {
-        let provider = LMStudioProvider::new();
+        let provider = LocalAIProvider::new();
         let pricing = provider.get_pricing("any-model").await.unwrap();
         assert_eq!(pricing.input_cost_per_1k, 0.0);
         assert_eq!(pricing.output_cost_per_1k, 0.0);

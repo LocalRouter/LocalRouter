@@ -11,11 +11,12 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     anthropic::AnthropicProvider, cerebras::CerebrasProvider, cohere::CohereProvider,
-    deepinfra::DeepInfraProvider, gemini::GeminiProvider, groq::GroqProvider,
-    lmstudio::LMStudioProvider, mistral::MistralProvider, ollama::OllamaProvider,
-    openai::OpenAIProvider, openai_compatible::OpenAICompatibleProvider,
-    openrouter::OpenRouterProvider, perplexity::PerplexityProvider, togetherai::TogetherAIProvider,
-    xai::XAIProvider, ModelProvider,
+    deepinfra::DeepInfraProvider, gemini::GeminiProvider, gpt4all::GPT4AllProvider,
+    groq::GroqProvider, jan::JanProvider, lmstudio::LMStudioProvider, localai::LocalAIProvider,
+    mistral::MistralProvider, ollama::OllamaProvider, openai::OpenAIProvider,
+    openai_compatible::OpenAICompatibleProvider, openrouter::OpenRouterProvider,
+    perplexity::PerplexityProvider, togetherai::TogetherAIProvider, xai::XAIProvider,
+    ModelProvider,
 };
 use lr_config::FreeTierKind;
 use lr_types::{AppError, AppResult};
@@ -1263,6 +1264,315 @@ impl DiscoverableProvider for LMStudioProviderFactory {
     }
 }
 
+/// Factory for Jan providers
+pub struct JanProviderFactory;
+
+impl ProviderFactory for JanProviderFactory {
+    fn provider_type(&self) -> &str {
+        "jan"
+    }
+
+    fn display_name(&self) -> &str {
+        "Jan"
+    }
+
+    fn category(&self) -> ProviderCategory {
+        ProviderCategory::Local
+    }
+
+    fn description(&self) -> &str {
+        "Jan.ai local inference with OpenAI-compatible API"
+    }
+
+    fn default_free_tier(&self) -> FreeTierKind {
+        FreeTierKind::AlwaysFreeLocal
+    }
+
+    fn setup_parameters(&self) -> Vec<SetupParameter> {
+        vec![
+            SetupParameter::optional(
+                "base_url",
+                ParameterType::BaseUrl,
+                "Jan API base URL",
+                Some("http://localhost:1337/v1"),
+                false,
+            ),
+            SetupParameter::optional(
+                "api_key",
+                ParameterType::ApiKey,
+                "API key (optional, not required for local Jan)",
+                None::<String>,
+                true,
+            ),
+        ]
+    }
+
+    fn create(
+        &self,
+        _instance_name: String,
+        config: HashMap<String, String>,
+    ) -> AppResult<Arc<dyn ModelProvider>> {
+        self.validate_config(&config)?;
+
+        let base_url = config
+            .get("base_url")
+            .cloned()
+            .unwrap_or_else(|| "http://localhost:1337/v1".to_string());
+
+        let api_key = config.get("api_key").cloned();
+
+        Ok(Arc::new(
+            JanProvider::with_base_url(base_url).with_api_key(api_key),
+        ))
+    }
+
+    fn validate_config(&self, config: &HashMap<String, String>) -> AppResult<()> {
+        if let Some(url) = config.get("base_url") {
+            if !url.starts_with("http://") && !url.starts_with("https://") {
+                return Err(AppError::Config(
+                    "base_url must start with http:// or https://".to_string(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn catalog_provider_id(&self) -> Option<&str> {
+        None
+    }
+
+    fn model_list_source(&self) -> ModelListSource {
+        ModelListSource::ApiOnly
+    }
+}
+
+#[async_trait]
+impl DiscoverableProvider for JanProviderFactory {
+    async fn is_available(&self) -> bool {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(2))
+            .build()
+            .unwrap_or_default();
+
+        let url = format!("{}/models", self.default_base_url());
+        client.get(&url).send().await.is_ok()
+    }
+
+    fn default_base_url(&self) -> &str {
+        "http://localhost:1337/v1"
+    }
+
+    fn default_instance_name(&self) -> &str {
+        "Jan"
+    }
+}
+
+/// Factory for GPT4All providers
+pub struct GPT4AllProviderFactory;
+
+impl ProviderFactory for GPT4AllProviderFactory {
+    fn provider_type(&self) -> &str {
+        "gpt4all"
+    }
+
+    fn display_name(&self) -> &str {
+        "GPT4All"
+    }
+
+    fn category(&self) -> ProviderCategory {
+        ProviderCategory::Local
+    }
+
+    fn description(&self) -> &str {
+        "GPT4All local inference with OpenAI-compatible API"
+    }
+
+    fn default_free_tier(&self) -> FreeTierKind {
+        FreeTierKind::AlwaysFreeLocal
+    }
+
+    fn setup_parameters(&self) -> Vec<SetupParameter> {
+        vec![
+            SetupParameter::optional(
+                "base_url",
+                ParameterType::BaseUrl,
+                "GPT4All API base URL",
+                Some("http://localhost:4891/v1"),
+                false,
+            ),
+            SetupParameter::optional(
+                "api_key",
+                ParameterType::ApiKey,
+                "API key (optional, not required for local GPT4All)",
+                None::<String>,
+                true,
+            ),
+        ]
+    }
+
+    fn create(
+        &self,
+        _instance_name: String,
+        config: HashMap<String, String>,
+    ) -> AppResult<Arc<dyn ModelProvider>> {
+        self.validate_config(&config)?;
+
+        let base_url = config
+            .get("base_url")
+            .cloned()
+            .unwrap_or_else(|| "http://localhost:4891/v1".to_string());
+
+        let api_key = config.get("api_key").cloned();
+
+        Ok(Arc::new(
+            GPT4AllProvider::with_base_url(base_url).with_api_key(api_key),
+        ))
+    }
+
+    fn validate_config(&self, config: &HashMap<String, String>) -> AppResult<()> {
+        if let Some(url) = config.get("base_url") {
+            if !url.starts_with("http://") && !url.starts_with("https://") {
+                return Err(AppError::Config(
+                    "base_url must start with http:// or https://".to_string(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn catalog_provider_id(&self) -> Option<&str> {
+        None
+    }
+
+    fn model_list_source(&self) -> ModelListSource {
+        ModelListSource::ApiOnly
+    }
+}
+
+#[async_trait]
+impl DiscoverableProvider for GPT4AllProviderFactory {
+    async fn is_available(&self) -> bool {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(2))
+            .build()
+            .unwrap_or_default();
+
+        let url = format!("{}/models", self.default_base_url());
+        client.get(&url).send().await.is_ok()
+    }
+
+    fn default_base_url(&self) -> &str {
+        "http://localhost:4891/v1"
+    }
+
+    fn default_instance_name(&self) -> &str {
+        "GPT4All"
+    }
+}
+
+/// Factory for LocalAI providers
+pub struct LocalAIProviderFactory;
+
+impl ProviderFactory for LocalAIProviderFactory {
+    fn provider_type(&self) -> &str {
+        "localai"
+    }
+
+    fn display_name(&self) -> &str {
+        "LocalAI"
+    }
+
+    fn category(&self) -> ProviderCategory {
+        ProviderCategory::Local
+    }
+
+    fn description(&self) -> &str {
+        "LocalAI local inference with OpenAI-compatible API"
+    }
+
+    fn default_free_tier(&self) -> FreeTierKind {
+        FreeTierKind::AlwaysFreeLocal
+    }
+
+    fn setup_parameters(&self) -> Vec<SetupParameter> {
+        vec![
+            SetupParameter::optional(
+                "base_url",
+                ParameterType::BaseUrl,
+                "LocalAI API base URL",
+                Some("http://localhost:8080/v1"),
+                false,
+            ),
+            SetupParameter::optional(
+                "api_key",
+                ParameterType::ApiKey,
+                "API key (optional, not required for local LocalAI)",
+                None::<String>,
+                true,
+            ),
+        ]
+    }
+
+    fn create(
+        &self,
+        _instance_name: String,
+        config: HashMap<String, String>,
+    ) -> AppResult<Arc<dyn ModelProvider>> {
+        self.validate_config(&config)?;
+
+        let base_url = config
+            .get("base_url")
+            .cloned()
+            .unwrap_or_else(|| "http://localhost:8080/v1".to_string());
+
+        let api_key = config.get("api_key").cloned();
+
+        Ok(Arc::new(
+            LocalAIProvider::with_base_url(base_url).with_api_key(api_key),
+        ))
+    }
+
+    fn validate_config(&self, config: &HashMap<String, String>) -> AppResult<()> {
+        if let Some(url) = config.get("base_url") {
+            if !url.starts_with("http://") && !url.starts_with("https://") {
+                return Err(AppError::Config(
+                    "base_url must start with http:// or https://".to_string(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn catalog_provider_id(&self) -> Option<&str> {
+        None
+    }
+
+    fn model_list_source(&self) -> ModelListSource {
+        ModelListSource::ApiOnly
+    }
+}
+
+#[async_trait]
+impl DiscoverableProvider for LocalAIProviderFactory {
+    async fn is_available(&self) -> bool {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(2))
+            .build()
+            .unwrap_or_default();
+
+        let url = format!("{}/models", self.default_base_url());
+        client.get(&url).send().await.is_ok()
+    }
+
+    fn default_base_url(&self) -> &str {
+        "http://localhost:8080/v1"
+    }
+
+    fn default_instance_name(&self) -> &str {
+        "LocalAI"
+    }
+}
+
 // ==================== SUBSCRIPTION PROVIDER FACTORIES ====================
 
 /// Factory for GitHub Copilot (OAuth subscription)
@@ -1396,33 +1706,30 @@ pub struct DiscoveredProvider {
     pub base_url: String,
 }
 
-/// Discover available local LLM providers (Ollama, LM Studio)
+/// Discover available local LLM providers
 ///
 /// Checks if local providers are running at their default endpoints.
 /// Returns a list of discovered providers that can be auto-configured.
 pub async fn discover_local_providers() -> Vec<DiscoveredProvider> {
     let mut discovered = Vec::new();
 
-    // Check Ollama
-    let ollama_factory = OllamaProviderFactory;
-    if ollama_factory.is_available().await {
-        tracing::info!("Discovered local Ollama instance");
-        discovered.push(DiscoveredProvider {
-            provider_type: ollama_factory.provider_type().to_string(),
-            instance_name: ollama_factory.default_instance_name().to_string(),
-            base_url: ollama_factory.default_base_url().to_string(),
-        });
-    }
+    let discoverable: Vec<Box<dyn DiscoverableProvider>> = vec![
+        Box::new(OllamaProviderFactory),
+        Box::new(LMStudioProviderFactory),
+        Box::new(JanProviderFactory),
+        Box::new(GPT4AllProviderFactory),
+        Box::new(LocalAIProviderFactory),
+    ];
 
-    // Check LM Studio
-    let lmstudio_factory = LMStudioProviderFactory;
-    if lmstudio_factory.is_available().await {
-        tracing::info!("Discovered local LM Studio instance");
-        discovered.push(DiscoveredProvider {
-            provider_type: lmstudio_factory.provider_type().to_string(),
-            instance_name: lmstudio_factory.default_instance_name().to_string(),
-            base_url: lmstudio_factory.default_base_url().to_string(),
-        });
+    for factory in &discoverable {
+        if factory.is_available().await {
+            tracing::info!("Discovered local {} instance", factory.display_name());
+            discovered.push(DiscoveredProvider {
+                provider_type: factory.provider_type().to_string(),
+                instance_name: factory.default_instance_name().to_string(),
+                base_url: factory.default_base_url().to_string(),
+            });
+        }
     }
 
     discovered

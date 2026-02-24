@@ -20,7 +20,7 @@ import {
 import type { ProviderInstanceInfo } from "@/types/tauri-commands"
 
 /** Provider types that support pulling models on-demand */
-const PULLABLE_PROVIDER_TYPES = new Set(["ollama"])
+const PULLABLE_PROVIDER_TYPES = new Set(["ollama", "lmstudio", "localai"])
 
 /** Selection result from the picker */
 export type PickerSelection = {

@@ -13,6 +13,21 @@ use utoipa::ToSchema;
 
 use lr_types::{AppError, AppResult};
 
+// ==================== MODEL PULL TYPES ====================
+
+/// Progress event for model pull/download operations.
+///
+/// Used by providers that support downloading models on-demand (Ollama, LM Studio, LocalAI).
+/// Emitted as a stream of events during the pull process.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PullProgress {
+    pub status: String,
+    #[serde(default)]
+    pub total: Option<u64>,
+    #[serde(default)]
+    pub completed: Option<u64>,
+}
+
 pub mod anthropic;
 pub mod cerebras;
 pub mod cohere;
@@ -20,11 +35,14 @@ pub mod deepinfra;
 pub mod factory;
 pub mod features;
 pub mod gemini;
+pub mod gpt4all;
 pub mod groq;
 pub mod health;
 pub mod health_cache;
+pub mod jan;
 pub mod key_storage;
 pub mod lmstudio;
+pub mod localai;
 pub mod mistral;
 pub mod oauth;
 pub mod ollama;
@@ -121,6 +139,28 @@ pub trait ModelProvider: Send + Sync {
     /// Default implementation returns None, meaning no API-based credit checking.
     async fn check_credits(&self) -> Option<ProviderCreditsInfo> {
         None
+    }
+
+    /// Whether this provider supports pulling (downloading) models on demand.
+    ///
+    /// Providers that return true must also implement `pull_model()`.
+    /// Currently supported by: Ollama, LM Studio, LocalAI.
+    fn supports_pull(&self) -> bool {
+        false
+    }
+
+    /// Pull (download) a model. Returns a stream of progress events.
+    ///
+    /// The stream should emit `PullProgress` items and end with status `"success"` on completion.
+    /// Default implementation returns an error for providers that don't support pulling.
+    async fn pull_model(
+        &self,
+        _model_name: &str,
+    ) -> AppResult<Pin<Box<dyn Stream<Item = AppResult<PullProgress>> + Send>>> {
+        Err(AppError::Provider(format!(
+            "Provider '{}' does not support model pulling",
+            self.name()
+        )))
     }
 }
 

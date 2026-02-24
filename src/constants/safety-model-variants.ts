@@ -12,12 +12,15 @@ export const CONFIDENCE_MODEL_TYPES = new Set(["granite_guardian", "shield_gemma
 export const PROVIDER_MODEL_NAMES: Record<string, Record<string, string>> = {
   llama_guard: {
     ollama: "llama-guard3:1b",
+    localai: "llama-guard3",
   },
   granite_guardian: {
     ollama: "granite3-guardian:2b",
+    localai: "granite3-guardian",
   },
   shield_gemma: {
     ollama: "shieldgemma:2b",
+    localai: "shieldgemma",
   },
   nemotron: {
     ollama: "llama-3.1-nemotron-safety-guard:8b",
