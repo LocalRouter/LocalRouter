@@ -444,7 +444,7 @@ pub(crate) fn build_tray_menu<R: Runtime, M: Manager<R>>(
     menu_builder = menu_builder.separator();
 
     // Add quit option
-    menu_builder = menu_builder.text("quit", format!("{ICON_PAD}⏻{ICON_PAD} Quit"));
+    menu_builder = menu_builder.text("quit", format!("{ICON_PAD}⏻{ICON_PAD} Quit LocalRouter"));
 
     menu_builder.build()
 }
