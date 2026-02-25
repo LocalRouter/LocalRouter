@@ -6,8 +6,10 @@ use tokio::time::sleep;
 /// Helper to create a test service using the dev directory models
 ///
 /// Note: Tests require SafeTensors models to be available in ~/.localrouter-dev/routellm/.
-/// Run the ignored test `test_download_and_verify_models` first to download them:
-///   cargo test test_download_and_verify -- --ignored
+/// Run the ignored tests first to download them:
+///   cargo test -p lr-routellm test_download_and_verify -- --ignored
+/// Then run the model tests:
+///   cargo test -p lr-routellm -- --ignored
 fn create_test_service() -> RouteLLMService {
     let home_dir = dirs::home_dir().expect("Could not determine home directory");
     let routellm_dir = home_dir.join(".localrouter-dev/routellm");
@@ -20,6 +22,7 @@ fn create_test_service() -> RouteLLMService {
 }
 
 #[tokio::test]
+#[ignore] // Requires downloaded model files
 async fn test_service_initialization() {
     let service = create_test_service();
 
@@ -35,6 +38,7 @@ async fn test_service_initialization() {
 }
 
 #[tokio::test]
+#[ignore] // Requires downloaded model files
 async fn test_double_initialization() {
     let service = create_test_service();
 
@@ -49,6 +53,7 @@ async fn test_double_initialization() {
 }
 
 #[tokio::test]
+#[ignore] // Requires downloaded model files
 async fn test_predict_auto_initialize() {
     let service = create_test_service();
 
@@ -64,6 +69,7 @@ async fn test_predict_auto_initialize() {
 }
 
 #[tokio::test]
+#[ignore] // Requires downloaded model files
 async fn test_simple_prompt_prediction() {
     let service = create_test_service();
 
@@ -82,6 +88,7 @@ async fn test_simple_prompt_prediction() {
 }
 
 #[tokio::test]
+#[ignore] // Requires downloaded model files
 async fn test_complex_prompt_prediction() {
     let service = create_test_service();
 
@@ -103,6 +110,7 @@ async fn test_complex_prompt_prediction() {
 }
 
 #[tokio::test]
+#[ignore] // Requires downloaded model files
 async fn test_predict_with_custom_threshold() {
     let service = create_test_service();
 
@@ -130,6 +138,7 @@ async fn test_predict_with_custom_threshold() {
 }
 
 #[tokio::test]
+#[ignore] // Requires downloaded model files
 async fn test_unload() {
     let service = create_test_service();
 
@@ -159,6 +168,7 @@ async fn test_status_not_downloaded() {
 }
 
 #[tokio::test]
+#[ignore] // Requires downloaded model files
 async fn test_status_started() {
     let service = create_test_service();
 
@@ -173,6 +183,7 @@ async fn test_status_started() {
 }
 
 #[tokio::test]
+#[ignore] // Requires downloaded model files
 async fn test_last_access_tracking() {
     let service = create_test_service();
 
@@ -193,6 +204,7 @@ async fn test_last_access_tracking() {
 }
 
 #[tokio::test]
+#[ignore] // Requires downloaded model files
 async fn test_concurrent_predictions() {
     let service = Arc::new(create_test_service());
 
@@ -214,6 +226,7 @@ async fn test_concurrent_predictions() {
 }
 
 #[tokio::test]
+#[ignore] // Requires downloaded model files
 async fn test_empty_prompt() {
     let service = create_test_service();
 
@@ -227,6 +240,7 @@ async fn test_empty_prompt() {
 }
 
 #[tokio::test]
+#[ignore] // Requires downloaded model files
 async fn test_very_long_prompt() {
     let service = create_test_service();
 
@@ -240,6 +254,7 @@ async fn test_very_long_prompt() {
 }
 
 #[tokio::test]
+#[ignore] // Requires downloaded model files
 async fn test_performance_short_vs_long_text() {
     use std::time::Instant;
 
@@ -321,6 +336,7 @@ async fn test_performance_short_vs_long_text() {
 }
 
 #[tokio::test]
+#[ignore] // Requires downloaded model files
 async fn test_special_characters_prompt() {
     let service = create_test_service();
 
@@ -335,6 +351,7 @@ async fn test_special_characters_prompt() {
 }
 
 #[tokio::test]
+#[ignore] // Requires downloaded model files
 async fn test_threshold_edge_cases() {
     let service = create_test_service();
 
@@ -379,6 +396,7 @@ mod auto_unload_tests {
     }
 
     #[tokio::test]
+    #[ignore] // Requires downloaded model files
     async fn test_auto_unload_prevented_by_activity() {
         let service = Arc::new(create_test_service());
 
