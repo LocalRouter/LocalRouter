@@ -280,9 +280,8 @@ impl FirewallManager {
         guardrail_details: Option<GuardrailApprovalDetails>,
     ) -> AppResult<FirewallApprovalResponse> {
         let request_id = Uuid::new_v4().to_string();
-        // Use 24h safety timeout for all requests (effectively indefinite)
-        // The old 120s auto-deny was a bug — users should not have requests silently denied
-        let timeout = timeout_secs.unwrap_or(86400);
+        // Use the manager's default timeout (typically 24h) as fallback
+        let timeout = timeout_secs.unwrap_or(self.default_timeout_secs);
 
         debug!(
             "Creating firewall approval request {} for client {} {} {} (timeout: {}s, model: {})",
