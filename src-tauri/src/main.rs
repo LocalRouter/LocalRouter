@@ -22,10 +22,10 @@ use lr_providers::factory::{
     AnthropicProviderFactory, CerebrasProviderFactory, CohereProviderFactory,
     DeepInfraProviderFactory, GPT4AllProviderFactory, GeminiProviderFactory,
     GitHubCopilotProviderFactory, GroqProviderFactory, JanProviderFactory, LMStudioProviderFactory,
-    LlamaCppProviderFactory, LocalAIProviderFactory, MistralProviderFactory,
-    OllamaProviderFactory, OpenAICodexProviderFactory, OpenAICompatibleProviderFactory,
-    OpenAIProviderFactory, OpenRouterProviderFactory, PerplexityProviderFactory,
-    TogetherAIProviderFactory, XAIProviderFactory,
+    LlamaCppProviderFactory, LocalAIProviderFactory, MistralProviderFactory, OllamaProviderFactory,
+    OpenAICodexProviderFactory, OpenAICompatibleProviderFactory, OpenAIProviderFactory,
+    OpenRouterProviderFactory, PerplexityProviderFactory, TogetherAIProviderFactory,
+    XAIProviderFactory,
 };
 use lr_providers::registry::ProviderRegistry;
 use lr_server::ServerManager;

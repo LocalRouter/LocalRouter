@@ -275,10 +275,7 @@ impl ModelProvider for LlamaCppProvider {
     }
 
     async fn complete(&self, request: CompletionRequest) -> AppResult<CompletionResponse> {
-        debug!(
-            "Sending completion request to llama.cpp: {}",
-            self.base_url
-        );
+        debug!("Sending completion request to llama.cpp: {}", self.base_url);
 
         let llamacpp_request = LlamaCppChatRequest {
             model: request.model.clone(),

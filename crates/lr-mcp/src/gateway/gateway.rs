@@ -98,9 +98,10 @@ impl McpGateway {
 
         // Create firewall manager with broadcast support if available
         let firewall_manager = match &notification_broadcast {
-            Some(broadcast) => {
-                Arc::new(FirewallManager::new_with_broadcast(86400, broadcast.clone()))
-            }
+            Some(broadcast) => Arc::new(FirewallManager::new_with_broadcast(
+                86400,
+                broadcast.clone(),
+            )),
             None => Arc::new(FirewallManager::default()),
         };
 

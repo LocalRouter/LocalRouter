@@ -12,12 +12,11 @@ use serde::{Deserialize, Serialize};
 use super::{
     anthropic::AnthropicProvider, cerebras::CerebrasProvider, cohere::CohereProvider,
     deepinfra::DeepInfraProvider, gemini::GeminiProvider, gpt4all::GPT4AllProvider,
-    groq::GroqProvider, jan::JanProvider, llamacpp::LlamaCppProvider,
-    lmstudio::LMStudioProvider, localai::LocalAIProvider, mistral::MistralProvider,
-    ollama::OllamaProvider, openai::OpenAIProvider,
-    openai_compatible::OpenAICompatibleProvider, openrouter::OpenRouterProvider,
-    perplexity::PerplexityProvider, togetherai::TogetherAIProvider, xai::XAIProvider,
-    ModelProvider,
+    groq::GroqProvider, jan::JanProvider, llamacpp::LlamaCppProvider, lmstudio::LMStudioProvider,
+    localai::LocalAIProvider, mistral::MistralProvider, ollama::OllamaProvider,
+    openai::OpenAIProvider, openai_compatible::OpenAICompatibleProvider,
+    openrouter::OpenRouterProvider, perplexity::PerplexityProvider, togetherai::TogetherAIProvider,
+    xai::XAIProvider, ModelProvider,
 };
 use lr_config::FreeTierKind;
 use lr_types::{AppError, AppResult};
