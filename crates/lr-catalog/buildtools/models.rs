@@ -164,8 +164,11 @@ impl ModelsDevModel {
         let has_pdf_input = self.modalities.input.iter().any(|m| m == "pdf");
         let has_audio_input = self.modalities.input.iter().any(|m| m == "audio");
         let has_image_output = self.modalities.output.iter().any(|m| m == "image");
+        let has_video_output = self.modalities.output.iter().any(|m| m == "video");
 
-        if has_image_output {
+        if has_video_output {
+            "video"
+        } else if has_image_output {
             "image"
         } else if has_image_input || has_pdf_input || has_audio_input {
             "multimodal"
@@ -263,6 +266,16 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(image_gen_model.modality_category(), "image");
+
+        // Video generation model
+        let video_gen_model = ModelsDevModel {
+            modalities: Modalities {
+                input: vec!["text".to_string(), "image".to_string(), "video".to_string()],
+                output: vec!["video".to_string()],
+            },
+            ..Default::default()
+        };
+        assert_eq!(video_gen_model.modality_category(), "video");
     }
 
     #[test]

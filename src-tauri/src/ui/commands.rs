@@ -1133,6 +1133,7 @@ pub fn get_catalog_stats() -> CatalogStats {
             lr_catalog::Modality::Text => "text",
             lr_catalog::Modality::Multimodal => "multimodal",
             lr_catalog::Modality::Image => "image",
+            lr_catalog::Modality::Video => "video",
         };
         *modalities.entry(modality.to_string()).or_insert(0) += 1;
     }

@@ -10,6 +10,7 @@ pub enum Modality {
     Text,
     Multimodal,
     Image,
+    Video,
 }
 
 #[derive(Debug, Clone, Copy)]

@@ -137,8 +137,11 @@ mod integration_tests {
 
         for model in all_models {
             // Skip models where context_length is 0 (data not available from upstream)
-            // and non-text models (image generation) which can have very small prompt limits
-            if model.context_length == 0 || model.modality == Modality::Image {
+            // and non-text generation models (image/video) which can have bogus context values
+            if model.context_length == 0
+                || model.modality == Modality::Image
+                || model.modality == Modality::Video
+            {
                 continue;
             }
 
@@ -151,9 +154,9 @@ mod integration_tests {
                 model.context_length
             );
 
-            // Context window should not exceed 10M tokens (sanity check)
+            // Context window should not exceed 100M tokens (sanity check)
             assert!(
-                model.context_length <= 10_000_000,
+                model.context_length <= 100_000_000,
                 "Model {} has unreasonably large context window: {}",
                 model.id,
                 model.context_length

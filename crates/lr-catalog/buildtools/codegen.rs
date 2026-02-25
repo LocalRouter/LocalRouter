@@ -223,6 +223,7 @@ impl CatalogCodeGenerator {
         match modality {
             "multimodal" => "Modality::Multimodal",
             "image" => "Modality::Image",
+            "video" => "Modality::Video",
             _ => "Modality::Text",
         }
     }
