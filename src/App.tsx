@@ -165,6 +165,40 @@ function App() {
       }
     })
 
+    // Subscribe to check-for-updates event from background timer
+    // This must be in App.tsx (not UpdatesTab) so periodic checks work
+    // even when the Updates tab isn't open
+    const unsubscribeCheckForUpdates = listen('check-for-updates', async () => {
+      console.log('Background update check triggered')
+      try {
+        const update = await check()
+        await invoke('mark_update_check_performed')
+        if (update?.available) {
+          // Check if this version was skipped
+          const config = await invoke<{ skipped_version?: string }>('get_update_config')
+          if (config.skipped_version === update.version) {
+            await invoke('set_update_notification', { available: false })
+          } else {
+            await invoke('set_update_notification', { available: true })
+            toast.info(`New version ${update.version} available!`, {
+              action: {
+                label: 'View',
+                onClick: () => {
+                  setActiveView('settings')
+                  setActiveSubTab('updates')
+                },
+              },
+            })
+          }
+        } else {
+          await invoke('set_update_notification', { available: false })
+        }
+      } catch (err: any) {
+        const errorMessage = err?.message || (typeof err === 'string' ? err : JSON.stringify(err)) || 'Unknown error'
+        console.error('Background update check failed:', errorMessage)
+      }
+    })
+
     // Subscribe to update-and-restart event from tray menu
     const unsubscribeUpdateAndRestart = listen('update-and-restart', async () => {
       console.log('Update and restart requested from tray menu')
@@ -192,6 +226,7 @@ function App() {
       unsubscribeUpdatesTab.then((fn: any) => fn())
       unsubscribeResourcesTab.then((fn: any) => fn())
       unsubscribeMcpServer.then((fn: any) => fn())
+      unsubscribeCheckForUpdates.then((fn: any) => fn())
       unsubscribeUpdateAndRestart.then((fn: any) => fn())
       unsubscribeGuardrailFlagged.then((fn: any) => fn())
       unsubscribeClientTab.then((fn: any) => fn())

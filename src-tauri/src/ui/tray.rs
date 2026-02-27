@@ -520,6 +520,13 @@ pub fn set_update_available<R: Runtime>(app: &AppHandle<R>, available: bool) -> 
         // Rebuild tray menu to show/hide update notification
         rebuild_tray_menu(app)?;
 
+        // Notify TrayGraphManager to redraw icon with/without update overlay
+        if let Some(tray_graph_manager) =
+            app.try_state::<Arc<crate::ui::tray_graph_manager::TrayGraphManager>>()
+        {
+            tray_graph_manager.notify_activity();
+        }
+
         info!("Tray menu rebuilt with update notification");
     } else {
         error!("UpdateNotificationState not found in app state");
@@ -578,4 +585,46 @@ fn handle_firewall_action_from_tray<R: Runtime>(
             tray_graph_manager.notify_activity();
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_update_notification_state_default() {
+        let state = UpdateNotificationState::new();
+        assert!(!state.is_update_available());
+    }
+
+    #[test]
+    fn test_update_notification_state_set_available() {
+        let state = UpdateNotificationState::new();
+        state.set_update_available(true);
+        assert!(state.is_update_available());
+    }
+
+    #[test]
+    fn test_update_notification_state_toggle() {
+        let state = UpdateNotificationState::new();
+        assert!(!state.is_update_available());
+
+        state.set_update_available(true);
+        assert!(state.is_update_available());
+
+        state.set_update_available(false);
+        assert!(!state.is_update_available());
+    }
+
+    #[test]
+    fn test_update_notification_state_shared() {
+        let state = Arc::new(UpdateNotificationState::new());
+        let state_clone = state.clone();
+
+        state.set_update_available(true);
+        assert!(state_clone.is_update_available());
+
+        state_clone.set_update_available(false);
+        assert!(!state.is_update_available());
+    }
 }

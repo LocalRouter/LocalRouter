@@ -1,6 +1,5 @@
 import { useState, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
-import { listen } from "@tauri-apps/api/event"
 import { check, Update } from "@tauri-apps/plugin-updater"
 import { relaunch } from "@tauri-apps/plugin-process"
 import { open } from "@tauri-apps/plugin-shell"
@@ -126,14 +125,6 @@ export function UpdatesTab() {
     loadCurrentVersion()
     loadUpdateConfig()
     checkForUpdatesOnMount()
-
-    const unlistenUpdateCheck = listen("check-for-updates", () => {
-      handleCheckForUpdates()
-    })
-
-    return () => {
-      unlistenUpdateCheck.then((fn) => fn())
-    }
   }, [])
 
   const loadCurrentVersion = async () => {

@@ -42,6 +42,46 @@ pub async fn save_last_check_timestamp(config_manager: &ConfigManager) -> Result
     Ok(())
 }
 
+/// Result of evaluating whether an update check should be performed
+#[derive(Debug, PartialEq)]
+pub enum UpdateCheckDecision {
+    /// Should perform an update check
+    ShouldCheck,
+    /// First run — set initial timestamp but don't check
+    FirstRun,
+    /// Not time to check yet (interval not elapsed)
+    NotYet,
+    /// Automatic mode is disabled
+    Disabled,
+}
+
+/// Evaluate whether an update check should be performed based on config.
+///
+/// This is the pure decision logic extracted from `start_update_timer`
+/// so it can be tested independently.
+pub fn should_check_for_updates(
+    mode: &UpdateMode,
+    last_check: Option<chrono::DateTime<Utc>>,
+    check_interval_days: u64,
+    now: chrono::DateTime<Utc>,
+) -> UpdateCheckDecision {
+    if *mode != UpdateMode::Automatic {
+        return UpdateCheckDecision::Disabled;
+    }
+
+    match last_check {
+        None => UpdateCheckDecision::FirstRun,
+        Some(last) => {
+            let days_since = (now - last).num_days();
+            if days_since >= check_interval_days as i64 {
+                UpdateCheckDecision::ShouldCheck
+            } else {
+                UpdateCheckDecision::NotYet
+            }
+        }
+    }
+}
+
 /// Start the background update checking timer
 ///
 /// This function:
@@ -59,56 +99,114 @@ pub async fn start_update_timer(app: AppHandle, config_manager: Arc<ConfigManage
 
         let config = config_manager.get();
         let update_config = &config.update;
-
-        // Only check if automatic mode is enabled
-        if update_config.mode != UpdateMode::Automatic {
-            debug!("Automatic updates disabled, skipping check");
-            continue;
-        }
-
         let now = Utc::now();
 
-        // Determine if we should check
-        let should_check = match update_config.last_check {
-            None => {
-                // First run - set timestamp, don't check
+        let decision = should_check_for_updates(
+            &update_config.mode,
+            update_config.last_check,
+            update_config.check_interval_days,
+            now,
+        );
+
+        match decision {
+            UpdateCheckDecision::Disabled => {
+                debug!("Automatic updates disabled, skipping check");
+                continue;
+            }
+            UpdateCheckDecision::FirstRun => {
                 info!("First run detected - setting initial timestamp without checking");
                 if let Err(e) = save_last_check_timestamp(&config_manager).await {
                     error!("Failed to save initial timestamp: {}", e);
                 }
-                false
+                continue;
             }
-            Some(last) => {
-                let days_since = (now - last).num_days();
-                let should = days_since >= update_config.check_interval_days as i64;
-
-                if should {
-                    debug!(
-                        "Time to check for updates ({} days since last check)",
-                        days_since
-                    );
-                } else {
-                    debug!(
-                        "Not time to check yet ({} days since last check, interval: {} days)",
-                        days_since, update_config.check_interval_days
-                    );
+            UpdateCheckDecision::NotYet => {
+                debug!("Not time to check yet");
+                continue;
+            }
+            UpdateCheckDecision::ShouldCheck => {
+                // Trigger update check by emitting event to frontend
+                // Frontend will use @tauri-apps/plugin-updater to actually check
+                // The frontend calls mark_update_check_performed after the check completes,
+                // which saves the timestamp — no need to save here too.
+                info!("Emitting check-for-updates event to frontend");
+                if let Err(e) = app.emit("check-for-updates", ()) {
+                    error!("Failed to emit check-for-updates event: {}", e);
                 }
-
-                should
             }
-        };
-
-        if !should_check {
-            continue;
         }
+    }
+}
 
-        // Trigger update check by emitting event to frontend
-        // Frontend will use @tauri-apps/plugin-updater to actually check
-        // The frontend calls mark_update_check_performed after the check completes,
-        // which saves the timestamp — no need to save here too.
-        info!("Emitting check-for-updates event to frontend");
-        if let Err(e) = app.emit("check-for-updates", ()) {
-            error!("Failed to emit check-for-updates event: {}", e);
-        }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Duration;
+
+    #[test]
+    fn test_disabled_mode_returns_disabled() {
+        let now = Utc::now();
+        assert_eq!(
+            should_check_for_updates(&UpdateMode::Manual, Some(now), 7, now),
+            UpdateCheckDecision::Disabled
+        );
+    }
+
+    #[test]
+    fn test_first_run_no_last_check() {
+        let now = Utc::now();
+        assert_eq!(
+            should_check_for_updates(&UpdateMode::Automatic, None, 7, now),
+            UpdateCheckDecision::FirstRun
+        );
+    }
+
+    #[test]
+    fn test_not_yet_within_interval() {
+        let now = Utc::now();
+        let last_check = now - Duration::days(3);
+        assert_eq!(
+            should_check_for_updates(&UpdateMode::Automatic, Some(last_check), 7, now),
+            UpdateCheckDecision::NotYet
+        );
+    }
+
+    #[test]
+    fn test_should_check_interval_elapsed() {
+        let now = Utc::now();
+        let last_check = now - Duration::days(7);
+        assert_eq!(
+            should_check_for_updates(&UpdateMode::Automatic, Some(last_check), 7, now),
+            UpdateCheckDecision::ShouldCheck
+        );
+    }
+
+    #[test]
+    fn test_should_check_interval_exceeded() {
+        let now = Utc::now();
+        let last_check = now - Duration::days(30);
+        assert_eq!(
+            should_check_for_updates(&UpdateMode::Automatic, Some(last_check), 7, now),
+            UpdateCheckDecision::ShouldCheck
+        );
+    }
+
+    #[test]
+    fn test_just_checked_returns_not_yet() {
+        let now = Utc::now();
+        assert_eq!(
+            should_check_for_updates(&UpdateMode::Automatic, Some(now), 1, now),
+            UpdateCheckDecision::NotYet
+        );
+    }
+
+    #[test]
+    fn test_one_day_interval_checks_daily() {
+        let now = Utc::now();
+        let last_check = now - Duration::days(1);
+        assert_eq!(
+            should_check_for_updates(&UpdateMode::Automatic, Some(last_check), 1, now),
+            UpdateCheckDecision::ShouldCheck
+        );
     }
 }
