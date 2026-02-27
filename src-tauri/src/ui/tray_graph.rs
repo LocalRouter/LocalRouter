@@ -658,6 +658,56 @@ pub fn generate_graph(
     encode_png(&img)
 }
 
+/// Generate a static icon with overlay drawn on top
+///
+/// Decodes the static icon PNG, draws the overlay icon in the top-left corner,
+/// and re-encodes. This avoids rendering the graph frame border in static mode.
+///
+/// # Arguments
+/// * `static_icon_bytes` - Raw PNG bytes of the static icon
+/// * `overlay` - Overlay icon to draw (must not be None)
+/// * `dark_mode` - Whether the system is in dark mode
+///
+/// # Returns
+/// PNG-encoded image as bytes, or None if generation fails
+pub fn generate_static_icon_with_overlay(
+    static_icon_bytes: &[u8],
+    overlay: TrayOverlay,
+    dark_mode: bool,
+) -> Option<Vec<u8>> {
+    use image::ImageReader;
+    use std::io::Cursor;
+
+    // Decode the static icon PNG
+    let reader = ImageReader::new(Cursor::new(static_icon_bytes))
+        .with_guessed_format()
+        .ok()?;
+    let decoded = reader.decode().ok()?;
+    let mut img = decoded.to_rgba8();
+
+    // Draw overlay icon in the top-left corner
+    match &overlay {
+        TrayOverlay::None => {}
+        TrayOverlay::Warning(color) => {
+            draw_exclamation_mark(&mut img, *color);
+        }
+        TrayOverlay::UpdateAvailable => {
+            // Use white for the arrow on the static icon
+            let color = if dark_mode {
+                Rgba([255, 255, 255, 255])
+            } else {
+                Rgba([0, 0, 0, 255])
+            };
+            draw_down_arrow(&mut img, color);
+        }
+        TrayOverlay::FirewallPending => {
+            draw_question_mark(&mut img, StatusDotColors::green(dark_mode));
+        }
+    }
+
+    encode_png(&img)
+}
+
 /// Encode image as PNG bytes
 fn encode_png(img: &RgbaImage) -> Option<Vec<u8>> {
     let mut buffer = Cursor::new(Vec::new());
@@ -1000,5 +1050,41 @@ mod tests {
         let mut file_none = File::create("/tmp/test_tray_graph_macos_none.png").unwrap();
         file_none.write_all(&png_bytes_none).unwrap();
         println!("Wrote macOS graph (no overlay) to /tmp/test_tray_graph_macos_none.png");
+    }
+
+    #[test]
+    fn test_static_icon_with_warning_overlay() {
+        let static_icon: &[u8] = include_bytes!("../../icons/32x32.png");
+        let png = generate_static_icon_with_overlay(
+            static_icon,
+            TrayOverlay::Warning(StatusDotColors::yellow(false)),
+            false,
+        );
+        assert!(png.is_some());
+        assert!(!png.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_static_icon_with_firewall_overlay() {
+        let static_icon: &[u8] = include_bytes!("../../icons/32x32.png");
+        let png = generate_static_icon_with_overlay(
+            static_icon,
+            TrayOverlay::FirewallPending,
+            true,
+        );
+        assert!(png.is_some());
+        assert!(!png.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_static_icon_with_update_overlay() {
+        let static_icon: &[u8] = include_bytes!("../../icons/32x32.png");
+        let png = generate_static_icon_with_overlay(
+            static_icon,
+            TrayOverlay::UpdateAvailable,
+            false,
+        );
+        assert!(png.is_some());
+        assert!(!png.unwrap().is_empty());
     }
 }

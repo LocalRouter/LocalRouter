@@ -498,7 +498,7 @@ impl TrayGraphManager {
         // Determine overlay (Firewall > Health > Update > None)
         let overlay = determine_overlay(app_handle, dark_mode);
 
-        // Static mode: restore original icon instead of generating graph frame
+        // Static mode: use the original app icon (never the graph frame)
         if !tray_graph_enabled {
             const STATIC_ICON: &[u8] = include_bytes!("../../icons/32x32.png");
 
@@ -510,11 +510,15 @@ impl TrayGraphManager {
                 icon_bytes = STATIC_ICON.to_vec();
                 use_template = true;
             } else {
-                // Overlay present: generate empty graph with overlay indicator
-                let graph_config = platform_graph_config();
+                // Overlay present: draw overlay on top of the static icon
+                // (NOT the graph frame — that would look like the graph is still on)
                 icon_bytes =
-                    crate::ui::tray_graph::generate_graph(&[], &graph_config, overlay, dark_mode)
-                        .ok_or_else(|| anyhow::anyhow!("Failed to generate overlay PNG"))?;
+                    crate::ui::tray_graph::generate_static_icon_with_overlay(
+                        STATIC_ICON,
+                        overlay,
+                        dark_mode,
+                    )
+                    .ok_or_else(|| anyhow::anyhow!("Failed to generate static icon with overlay"))?;
                 use_template = false;
             }
 

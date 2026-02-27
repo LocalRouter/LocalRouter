@@ -734,7 +734,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                             );
                         }
                         if let Some(tray_manager) = app_handle
-                            .try_state::<crate::ui::tray_graph_manager::TrayGraphManager>(
+                            .try_state::<Arc<crate::ui::tray_graph_manager::TrayGraphManager>>(
                         ) {
                             tray_manager.notify_activity();
                         }
