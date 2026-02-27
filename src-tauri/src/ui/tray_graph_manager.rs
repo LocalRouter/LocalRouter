@@ -512,13 +512,9 @@ impl TrayGraphManager {
             } else {
                 // Overlay present: generate empty graph with overlay indicator
                 let graph_config = platform_graph_config();
-                icon_bytes = crate::ui::tray_graph::generate_graph(
-                    &[],
-                    &graph_config,
-                    overlay,
-                    dark_mode,
-                )
-                .ok_or_else(|| anyhow::anyhow!("Failed to generate overlay PNG"))?;
+                icon_bytes =
+                    crate::ui::tray_graph::generate_graph(&[], &graph_config, overlay, dark_mode)
+                        .ok_or_else(|| anyhow::anyhow!("Failed to generate overlay PNG"))?;
                 use_template = false;
             }
 
@@ -543,10 +539,7 @@ impl TrayGraphManager {
                 tray.set_icon_as_template(use_template)
                     .map_err(|e| anyhow::anyhow!("Failed to set template mode: {}", e))?;
                 *last_png_hash.write() = current_hash;
-                debug!(
-                    "Tray icon updated: static mode (template={})",
-                    use_template
-                );
+                debug!("Tray icon updated: static mode (template={})", use_template);
             }
 
             return Ok(());
