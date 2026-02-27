@@ -111,7 +111,7 @@ pub async fn routellm_download_models(
     // Use the downloader module (downloads SafeTensors from HuggingFace)
     lr_routellm::downloader::download_models(&model_path, &tokenizer_path, Some(app_handle))
         .await
-        .map_err(|e| format!("Download failed: {}", e))?;
+        .map_err(|e| e.to_string())?;
 
     Ok(())
 }

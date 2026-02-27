@@ -23,18 +23,28 @@ const MAX_RETRIES: usize = 3;
 const RETRY_DELAY_MS: u64 = 2000; // 2 seconds between retries
 const MIN_DISK_SPACE_GB: u64 = 2; // Require 2 GB free space
 
+/// Find the nearest existing ancestor directory for a path
+fn find_existing_ancestor(path: &Path) -> &Path {
+    let mut current = path;
+    loop {
+        if current.exists() {
+            return current;
+        }
+        match current.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => current = parent,
+            _ => return current, // Fall back to whatever we have
+        }
+    }
+}
+
 /// Check available disk space
 fn check_disk_space(path: &Path) -> RouteLLMResult<u64> {
     #[cfg(target_os = "macos")]
     {
         use std::process::Command;
 
-        // Get the parent directory or the path itself
-        let check_path = if path.exists() {
-            path
-        } else {
-            path.parent().unwrap_or(path)
-        };
+        // Walk up the path hierarchy to find a directory that actually exists
+        let check_path = find_existing_ancestor(path);
 
         let output = Command::new("df")
             .arg("-k") // Output in KB
@@ -79,11 +89,7 @@ fn check_disk_space(path: &Path) -> RouteLLMResult<u64> {
     {
         use std::process::Command;
 
-        let check_path = if path.exists() {
-            path
-        } else {
-            path.parent().unwrap_or(path)
-        };
+        let check_path = find_existing_ancestor(path);
 
         let output = Command::new("df")
             .arg("-B1") // Output in bytes
@@ -126,12 +132,7 @@ fn check_disk_space(path: &Path) -> RouteLLMResult<u64> {
     {
         use std::process::Command;
 
-        // Get the parent directory or the path itself
-        let check_path = if path.exists() {
-            path
-        } else {
-            path.parent().unwrap_or(path)
-        };
+        let check_path = find_existing_ancestor(path);
 
         // Get the drive letter from the path (e.g., "C:" from "C:\Users\...")
         let path_str = check_path.to_string_lossy();
