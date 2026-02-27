@@ -765,6 +765,15 @@ impl FreeTierManager {
         // Use API-reported balance if available and recent
         let remaining = if let Some(api_remaining) = tracker.api_remaining_usd {
             api_remaining
+        } else if *budget_usd == 0.0 && tracker.current_cost_usd == 0.0 {
+            // budget_usd=0.0 means "unknown budget, rely on API".
+            // Before the API has been checked, assume capacity is available.
+            return FreeTierCapacity {
+                has_capacity: true,
+                remaining_pct: None,
+                remaining_usd: None,
+                status_message: "Waiting for API credit check".to_string(),
+            };
         } else {
             budget_usd - tracker.current_cost_usd
         };
@@ -908,7 +917,9 @@ impl FreeTierManager {
             )
         } else {
             // Exponential backoff: 1s, 2s, 4s, 8s, 16s, 32s, 60s max
-            let secs = (1u64 << backoff.consecutive_errors.min(5)).min(60);
+            // Use consecutive_errors - 1 since we already incremented above
+            let exponent = (backoff.consecutive_errors - 1).min(6);
+            let secs = (1u64 << exponent).min(60);
             (Duration::from_secs(secs), BackoffSource::ExponentialBackoff)
         };
 

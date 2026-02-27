@@ -10,9 +10,10 @@
 
 use localrouter::config::ConfigManager;
 use localrouter::config::{
-    AppConfig, AutoModelConfig, AvailableModelsSelection, Client, FirewallRules, McpPermissions,
-    McpServerAccess, ModelPermissions, PermissionState, RateLimitTimeWindow, RateLimitType,
-    SkillsAccess, SkillsPermissions, Strategy, StrategyRateLimit,
+    AppConfig, AutoModelConfig, AvailableModelsSelection, Client, FirewallRules, FreeTierFallback,
+    FreeTierKind, McpPermissions, McpServerAccess, ModelPermissions, PermissionState,
+    ProviderConfig, ProviderType, RateLimitTimeWindow, RateLimitType, SkillsAccess,
+    SkillsPermissions, Strategy, StrategyRateLimit,
 };
 use localrouter::monitoring::metrics::MetricsCollector;
 use localrouter::monitoring::storage::MetricsDatabase;
@@ -1082,4 +1083,454 @@ fn test_router_error_should_retry_logic() {
         !non_retryable.should_retry(),
         "Other errors should not be retryable"
     );
+}
+
+// ============================================================================
+// Test 14: Free Tier Mode - Strategy Configuration
+// ============================================================================
+
+/// Helper to create a test config with free_tier_only enabled
+fn create_free_tier_config(
+    strategy_id: &str,
+    allowed_models: AvailableModelsSelection,
+    free_tier_only: bool,
+    free_tier_fallback: localrouter::config::FreeTierFallback,
+) -> AppConfig {
+    let strategy = Strategy {
+        id: strategy_id.to_string(),
+        name: "Free Tier Strategy".to_string(),
+        parent: None,
+        allowed_models,
+        auto_config: None,
+        rate_limits: vec![],
+        free_tier_only,
+        free_tier_fallback,
+    };
+
+    let client = Client {
+        id: "test-client".to_string(),
+        name: "Test Client".to_string(),
+        enabled: true,
+        strategy_id: strategy_id.to_string(),
+        allowed_llm_providers: vec![],
+        mcp_server_access: McpServerAccess::None,
+        roots: None,
+        mcp_sampling_enabled: false,
+        mcp_sampling_requires_approval: true,
+        mcp_sampling_max_tokens: None,
+        mcp_sampling_rate_limit: None,
+        firewall: FirewallRules::default(),
+        mcp_deferred_loading: false,
+        skills_access: SkillsAccess::default(),
+        created_at: chrono::Utc::now(),
+        last_used: None,
+        marketplace_enabled: false,
+        mcp_permissions: McpPermissions::default(),
+        skills_permissions: SkillsPermissions::default(),
+        model_permissions: ModelPermissions::default(),
+        marketplace_permission: PermissionState::Off,
+        client_mode: lr_config::ClientMode::default(),
+        template_id: None,
+        sync_config: false,
+        guardrails_enabled: None,
+        guardrails: lr_config::ClientGuardrailsConfig::default(),
+    };
+
+    AppConfig {
+        strategies: vec![strategy],
+        clients: vec![client],
+        ..AppConfig::default()
+    }
+}
+
+/// Helper to create a router with a provider config for free tier testing.
+/// The provider needs to be in config for `get_effective_free_tier` to find it.
+fn create_free_tier_router(mut config: AppConfig) -> Router {
+    // Add ollama provider to config so get_effective_free_tier can resolve it.
+    // Must set free_tier explicitly since test registry has no factories registered.
+    config.providers.push(ProviderConfig {
+        name: "ollama".to_string(),
+        provider_type: ProviderType::Ollama,
+        enabled: true,
+        provider_config: None,
+        api_key_ref: None,
+        free_tier: Some(FreeTierKind::AlwaysFreeLocal),
+    });
+
+    let config_manager = Arc::new(localrouter::config::ConfigManager::new(
+        config,
+        std::path::PathBuf::from("/tmp/test_free_tier_router.yaml"),
+    ));
+
+    let provider_registry = Arc::new(ProviderRegistry::new());
+    let rate_limiter = Arc::new(RateLimiterManager::new(None));
+
+    let metrics_db_path =
+        std::env::temp_dir().join(format!("test_free_tier_{}.db", uuid::Uuid::new_v4()));
+    let metrics_db = Arc::new(MetricsDatabase::new(metrics_db_path).unwrap());
+    let metrics_collector = Arc::new(MetricsCollector::new(metrics_db));
+
+    Router::new(
+        config_manager,
+        provider_registry,
+        rate_limiter,
+        metrics_collector,
+        Arc::new(lr_router::FreeTierManager::new(None)),
+    )
+}
+
+#[tokio::test]
+async fn test_free_tier_allows_free_provider() {
+    // Ollama is AlwaysFreeLocal - should be allowed in free tier mode
+    let allowed_models = AvailableModelsSelection {
+        selected_all: false,
+        selected_providers: vec!["ollama".to_string()],
+        selected_models: vec![],
+    };
+
+    let config = create_free_tier_config(
+        "free-strategy",
+        allowed_models,
+        true,
+        FreeTierFallback::Off,
+    );
+    let router = create_free_tier_router(config);
+
+    let request = create_test_request("ollama/llama2");
+    let result = router.complete("test-client", request).await;
+
+    // Should fail with provider not found (no actual provider in registry),
+    // NOT with FreeTierExhausted or "not free"
+    match result {
+        Err(AppError::FreeTierExhausted { .. }) => {
+            panic!("Ollama (AlwaysFreeLocal) should not trigger FreeTierExhausted")
+        }
+        Err(AppError::FreeTierFallbackAvailable { .. }) => {
+            panic!("Ollama (AlwaysFreeLocal) should not trigger FreeTierFallbackAvailable")
+        }
+        Err(AppError::Router(msg)) if msg.contains("not free") => {
+            panic!("Ollama should be classified as free, got: {}", msg)
+        }
+        Err(_) => {} // Expected: provider not found in registry
+        Ok(_) => panic!("Expected error (no provider in registry)"),
+    }
+}
+
+#[tokio::test]
+async fn test_free_tier_blocks_paid_provider() {
+    // OpenAI has FreeTierKind::None - should be blocked in free tier mode
+    let allowed_models = AvailableModelsSelection {
+        selected_all: false,
+        selected_providers: vec!["openai".to_string()],
+        selected_models: vec![("openai".to_string(), "gpt-4".to_string())],
+    };
+
+    let mut config = create_free_tier_config(
+        "free-strategy",
+        allowed_models,
+        true,
+        FreeTierFallback::Off,
+    );
+
+    // Add OpenAI provider to config (no free tier)
+    config.providers.push(ProviderConfig {
+        name: "openai".to_string(),
+        provider_type: ProviderType::OpenAI,
+        enabled: true,
+        provider_config: None,
+        api_key_ref: None,
+        free_tier: None, // Factory default: None (paid)
+    });
+
+    let config_manager = Arc::new(localrouter::config::ConfigManager::new(
+        config,
+        std::path::PathBuf::from("/tmp/test_free_tier_paid.yaml"),
+    ));
+    let provider_registry = Arc::new(ProviderRegistry::new());
+    let rate_limiter = Arc::new(RateLimiterManager::new(None));
+    let metrics_db_path =
+        std::env::temp_dir().join(format!("test_ft_paid_{}.db", uuid::Uuid::new_v4()));
+    let metrics_db = Arc::new(MetricsDatabase::new(metrics_db_path).unwrap());
+    let metrics_collector = Arc::new(MetricsCollector::new(metrics_db));
+    let router = Router::new(
+        config_manager,
+        provider_registry,
+        rate_limiter,
+        metrics_collector,
+        Arc::new(lr_router::FreeTierManager::new(None)),
+    );
+
+    let request = create_test_request("openai/gpt-4");
+    let result = router.complete("test-client", request).await;
+
+    // Should be blocked with FreeTierExhausted
+    match result {
+        Err(AppError::FreeTierExhausted { .. }) => {
+            // Expected: paid model blocked in free tier mode
+        }
+        Err(e) => panic!(
+            "Expected FreeTierExhausted for paid model in free tier mode, got: {:?}",
+            e
+        ),
+        Ok(_) => panic!("Expected error for paid model in free tier mode"),
+    }
+}
+
+#[tokio::test]
+async fn test_free_tier_fallback_ask_returns_fallback_available() {
+    // When fallback is Ask, should return FreeTierFallbackAvailable instead of FreeTierExhausted
+    let allowed_models = AvailableModelsSelection {
+        selected_all: false,
+        selected_providers: vec![],
+        selected_models: vec![("openai".to_string(), "gpt-4".to_string())],
+    };
+
+    let mut config = create_free_tier_config(
+        "free-strategy",
+        allowed_models,
+        true,
+        FreeTierFallback::Ask,
+    );
+
+    config.providers.push(ProviderConfig {
+        name: "openai".to_string(),
+        provider_type: ProviderType::OpenAI,
+        enabled: true,
+        provider_config: None,
+        api_key_ref: None,
+        free_tier: None,
+    });
+
+    let config_manager = Arc::new(localrouter::config::ConfigManager::new(
+        config,
+        std::path::PathBuf::from("/tmp/test_free_tier_ask.yaml"),
+    ));
+    let provider_registry = Arc::new(ProviderRegistry::new());
+    let rate_limiter = Arc::new(RateLimiterManager::new(None));
+    let metrics_db_path =
+        std::env::temp_dir().join(format!("test_ft_ask_{}.db", uuid::Uuid::new_v4()));
+    let metrics_db = Arc::new(MetricsDatabase::new(metrics_db_path).unwrap());
+    let metrics_collector = Arc::new(MetricsCollector::new(metrics_db));
+    let router = Router::new(
+        config_manager,
+        provider_registry,
+        rate_limiter,
+        metrics_collector,
+        Arc::new(lr_router::FreeTierManager::new(None)),
+    );
+
+    let request = create_test_request("openai/gpt-4");
+    let result = router.complete("test-client", request).await;
+
+    match result {
+        Err(AppError::FreeTierFallbackAvailable {
+            exhausted_models, ..
+        }) => {
+            assert_eq!(exhausted_models.len(), 1);
+            assert_eq!(exhausted_models[0].0, "openai");
+            assert_eq!(exhausted_models[0].1, "gpt-4");
+        }
+        Err(e) => panic!(
+            "Expected FreeTierFallbackAvailable with Ask fallback, got: {:?}",
+            e
+        ),
+        Ok(_) => panic!("Expected error for paid model"),
+    }
+}
+
+#[tokio::test]
+async fn test_free_tier_off_allows_all_models() {
+    // With free_tier_only: false, paid models should be allowed
+    let allowed_models = AvailableModelsSelection {
+        selected_all: false,
+        selected_providers: vec![],
+        selected_models: vec![("openai".to_string(), "gpt-4".to_string())],
+    };
+
+    let config = create_free_tier_config(
+        "paid-strategy",
+        allowed_models,
+        false, // free tier off
+        FreeTierFallback::Off,
+    );
+    let router = create_free_tier_router(config);
+
+    let request = create_test_request("openai/gpt-4");
+    let result = router.complete("test-client", request).await;
+
+    // Should NOT get free tier error (should fail with provider not found instead)
+    match result {
+        Err(AppError::FreeTierExhausted { .. }) => {
+            panic!("free_tier_only=false should not trigger FreeTierExhausted")
+        }
+        Err(AppError::FreeTierFallbackAvailable { .. }) => {
+            panic!("free_tier_only=false should not trigger FreeTierFallbackAvailable")
+        }
+        Err(_) => {} // Expected: provider not found or model not allowed
+        Ok(_) => panic!("Expected error (no provider in registry)"),
+    }
+}
+
+// ============================================================================
+// Test 15: Free Tier Mode - Streaming
+// ============================================================================
+
+#[tokio::test]
+async fn test_free_tier_streaming_blocks_paid_provider() {
+    let allowed_models = AvailableModelsSelection {
+        selected_all: false,
+        selected_providers: vec![],
+        selected_models: vec![("openai".to_string(), "gpt-4".to_string())],
+    };
+
+    let mut config = create_free_tier_config(
+        "free-strategy",
+        allowed_models,
+        true,
+        FreeTierFallback::Off,
+    );
+
+    config.providers.push(ProviderConfig {
+        name: "openai".to_string(),
+        provider_type: ProviderType::OpenAI,
+        enabled: true,
+        provider_config: None,
+        api_key_ref: None,
+        free_tier: None,
+    });
+
+    let config_manager = Arc::new(localrouter::config::ConfigManager::new(
+        config,
+        std::path::PathBuf::from("/tmp/test_free_tier_stream.yaml"),
+    ));
+    let provider_registry = Arc::new(ProviderRegistry::new());
+    let rate_limiter = Arc::new(RateLimiterManager::new(None));
+    let metrics_db_path =
+        std::env::temp_dir().join(format!("test_ft_stream_{}.db", uuid::Uuid::new_v4()));
+    let metrics_db = Arc::new(MetricsDatabase::new(metrics_db_path).unwrap());
+    let metrics_collector = Arc::new(MetricsCollector::new(metrics_db));
+    let router = Router::new(
+        config_manager,
+        provider_registry,
+        rate_limiter,
+        metrics_collector,
+        Arc::new(lr_router::FreeTierManager::new(None)),
+    );
+
+    let request = create_test_request("openai/gpt-4");
+    let result = router.stream_complete("test-client", request).await;
+
+    match result {
+        Err(AppError::FreeTierExhausted { .. }) => {
+            // Expected: paid model blocked in free tier streaming mode
+        }
+        Err(e) => panic!(
+            "Expected FreeTierExhausted for paid model in streaming free tier mode, got: {:?}",
+            e
+        ),
+        Ok(_) => panic!("Expected error for paid model in free tier streaming mode"),
+    }
+}
+
+// ============================================================================
+// Test 16: Free Tier with Provider User Override
+// ============================================================================
+
+#[tokio::test]
+async fn test_free_tier_user_override_makes_paid_provider_free() {
+    // User overrides OpenAI to be AlwaysFreeLocal (e.g., self-hosted compatible)
+    let allowed_models = AvailableModelsSelection {
+        selected_all: false,
+        selected_providers: vec![],
+        selected_models: vec![("my-openai".to_string(), "gpt-4".to_string())],
+    };
+
+    let mut config = create_free_tier_config(
+        "free-strategy",
+        allowed_models,
+        true,
+        FreeTierFallback::Off,
+    );
+
+    // Add provider with user override to AlwaysFreeLocal
+    config.providers.push(ProviderConfig {
+        name: "my-openai".to_string(),
+        provider_type: ProviderType::OpenAI,
+        enabled: true,
+        provider_config: None,
+        api_key_ref: None,
+        free_tier: Some(FreeTierKind::AlwaysFreeLocal), // User override
+    });
+
+    let config_manager = Arc::new(localrouter::config::ConfigManager::new(
+        config,
+        std::path::PathBuf::from("/tmp/test_free_tier_override.yaml"),
+    ));
+    let provider_registry = Arc::new(ProviderRegistry::new());
+    let rate_limiter = Arc::new(RateLimiterManager::new(None));
+    let metrics_db_path =
+        std::env::temp_dir().join(format!("test_ft_override_{}.db", uuid::Uuid::new_v4()));
+    let metrics_db = Arc::new(MetricsDatabase::new(metrics_db_path).unwrap());
+    let metrics_collector = Arc::new(MetricsCollector::new(metrics_db));
+    let router = Router::new(
+        config_manager,
+        provider_registry,
+        rate_limiter,
+        metrics_collector,
+        Arc::new(lr_router::FreeTierManager::new(None)),
+    );
+
+    let request = create_test_request("my-openai/gpt-4");
+    let result = router.complete("test-client", request).await;
+
+    // Should NOT get free tier error since user override is AlwaysFreeLocal
+    match result {
+        Err(AppError::FreeTierExhausted { .. }) => {
+            panic!("User override to AlwaysFreeLocal should not trigger FreeTierExhausted")
+        }
+        Err(AppError::FreeTierFallbackAvailable { .. }) => {
+            panic!("User override to AlwaysFreeLocal should not trigger FreeTierFallbackAvailable")
+        }
+        Err(_) => {} // Expected: provider not found in registry (but free tier check passed)
+        Ok(_) => panic!("Expected error (no provider in registry)"),
+    }
+}
+
+// ============================================================================
+// Test 17: Free Tier - Provider not in config defaults to None (paid)
+// ============================================================================
+
+#[tokio::test]
+async fn test_free_tier_provider_not_in_config_treated_as_paid() {
+    // If a provider instance isn't in config.providers, get_effective_free_tier
+    // returns FreeTierKind::None, which means it's treated as paid.
+    let allowed_models = AvailableModelsSelection {
+        selected_all: false,
+        selected_providers: vec![],
+        selected_models: vec![("unknown-provider".to_string(), "model".to_string())],
+    };
+
+    let config = create_free_tier_config(
+        "free-strategy",
+        allowed_models,
+        true,
+        FreeTierFallback::Off,
+    );
+    // Note: NOT adding unknown-provider to config.providers
+    let router = create_free_tier_router(config);
+
+    let request = create_test_request("unknown-provider/model");
+    let result = router.complete("test-client", request).await;
+
+    // Provider not in config → FreeTierKind::None → NotFree → FreeTierExhausted
+    match result {
+        Err(AppError::FreeTierExhausted { .. }) => {
+            // Expected: unknown provider treated as paid
+        }
+        Err(e) => panic!(
+            "Expected FreeTierExhausted for unknown provider, got: {:?}",
+            e
+        ),
+        Ok(_) => panic!("Expected error for unknown provider"),
+    }
 }
