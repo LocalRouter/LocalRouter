@@ -939,6 +939,8 @@ pub async fn submit_firewall_approval(
         &state.model_approval_tracker,
         &state.guardrail_approval_tracker,
         &state.guardrail_denial_tracker,
+        pending_info.as_ref(),
+        &action,
     );
 
     // Rebuild tray menu to remove the pending approval item
@@ -952,10 +954,14 @@ pub async fn submit_firewall_approval(
     Ok(())
 }
 
-/// Re-evaluate all pending firewall approval sessions using the unified check_needs_approval.
+/// Re-evaluate all pending firewall approval sessions after a permission change.
 ///
-/// After a persistent action (AllowPermanent, DenyAlways, etc.) changes permissions,
-/// other pending popups for the same resource can be auto-resolved without user interaction.
+/// Uses the unified `check_needs_approval` for clients found in config.
+/// For unknown clients (e.g. debug mode) or when config-based check still returns Ask,
+/// falls back to resource-identity matching: if the pending request targets the same
+/// resource (tool_name + server_name + client_id + request type) as the just-submitted
+/// request, it inherits the same allow/deny outcome.
+#[allow(clippy::too_many_arguments)]
 fn reevaluate_pending_approvals(
     app: &tauri::AppHandle,
     firewall_manager: &lr_mcp::gateway::firewall::FirewallManager,
@@ -963,6 +969,8 @@ fn reevaluate_pending_approvals(
     model_approval_tracker: &lr_server::state::ModelApprovalTracker,
     guardrail_approval_tracker: &lr_server::state::GuardrailApprovalTracker,
     guardrail_denial_tracker: &lr_server::state::GuardrailDenialTracker,
+    submitted_info: Option<&lr_mcp::gateway::firewall::PendingApprovalInfo>,
+    submitted_action: &lr_mcp::gateway::firewall::FirewallApprovalAction,
 ) {
     use lr_mcp::gateway::access_control::{
         check_needs_approval, FirewallCheckContext, FirewallCheckResult,
@@ -976,54 +984,87 @@ fn reevaluate_pending_approvals(
     }
     let config = config_manager.get();
 
+    // Determine the auto-action for resource-identity matches based on submitted action
+    let resource_match_action = match submitted_action {
+        FirewallApprovalAction::AllowPermanent
+        | FirewallApprovalAction::AllowSession
+        | FirewallApprovalAction::Allow1Hour
+        | FirewallApprovalAction::AllowCategories => Some(FirewallApprovalAction::AllowOnce),
+        FirewallApprovalAction::DenyAlways
+        | FirewallApprovalAction::DenySession
+        | FirewallApprovalAction::Deny1Hour
+        | FirewallApprovalAction::BlockCategories => Some(FirewallApprovalAction::Deny),
+        _ => None, // AllowOnce/Deny don't imply anything for other requests
+    };
+
     for info in &pending {
-        let client = match config.clients.iter().find(|c| c.id == info.client_id) {
-            Some(c) => c,
-            None => continue,
-        };
+        let mut auto_action: Option<FirewallApprovalAction> = None;
 
-        let ctx = if info.is_guardrail_request {
-            FirewallCheckContext::Guardrail {
-                has_time_based_bypass: guardrail_approval_tracker.has_valid_bypass(&info.client_id),
-                has_time_based_denial: guardrail_denial_tracker.has_valid_denial(&info.client_id),
-                category_actions_empty: client.guardrails.category_actions.is_empty(),
-            }
-        } else if info.is_model_request {
-            FirewallCheckContext::Model {
-                permissions: &client.model_permissions,
-                provider: &info.server_name,
-                model_id: &info.tool_name,
-                has_time_based_approval: model_approval_tracker.has_valid_approval(
-                    &info.client_id,
-                    &info.server_name,
-                    &info.tool_name,
-                ),
-            }
-        } else if info.tool_name.starts_with("skill_") {
-            FirewallCheckContext::SkillTool {
-                permissions: &client.skills_permissions,
-                skill_name: &info.server_name,
-                tool_name: &info.tool_name,
-                session_approved: false,
-                session_denied: false,
-            }
-        } else {
-            let original_name = info.tool_name.split("__").nth(1).unwrap_or(&info.tool_name);
-            FirewallCheckContext::McpTool {
-                permissions: &client.mcp_permissions,
-                server_id: &info.server_name,
-                original_tool_name: original_name,
-                session_approved: false,
-                session_denied: false,
-            }
-        };
+        // Try config-based re-evaluation first
+        if let Some(client) = config.clients.iter().find(|c| c.id == info.client_id) {
+            let ctx = if info.is_guardrail_request {
+                FirewallCheckContext::Guardrail {
+                    has_time_based_bypass: guardrail_approval_tracker
+                        .has_valid_bypass(&info.client_id),
+                    has_time_based_denial: guardrail_denial_tracker
+                        .has_valid_denial(&info.client_id),
+                    category_actions_empty: client.guardrails.category_actions.is_empty(),
+                }
+            } else if info.is_model_request {
+                FirewallCheckContext::Model {
+                    permissions: &client.model_permissions,
+                    provider: &info.server_name,
+                    model_id: &info.tool_name,
+                    has_time_based_approval: model_approval_tracker.has_valid_approval(
+                        &info.client_id,
+                        &info.server_name,
+                        &info.tool_name,
+                    ),
+                }
+            } else if info.tool_name.starts_with("skill_") {
+                FirewallCheckContext::SkillTool {
+                    permissions: &client.skills_permissions,
+                    skill_name: &info.server_name,
+                    tool_name: &info.tool_name,
+                    session_approved: false,
+                    session_denied: false,
+                }
+            } else {
+                let original_name = info.tool_name.split("__").nth(1).unwrap_or(&info.tool_name);
+                FirewallCheckContext::McpTool {
+                    permissions: &client.mcp_permissions,
+                    server_id: &info.server_name,
+                    original_tool_name: original_name,
+                    session_approved: false,
+                    session_denied: false,
+                }
+            };
 
-        let result = check_needs_approval(&ctx);
-        let auto_action = match result {
-            FirewallCheckResult::Allow => Some(FirewallApprovalAction::AllowOnce),
-            FirewallCheckResult::Deny => Some(FirewallApprovalAction::Deny),
-            FirewallCheckResult::Ask => None,
-        };
+            let result = check_needs_approval(&ctx);
+            auto_action = match result {
+                FirewallCheckResult::Allow => Some(FirewallApprovalAction::AllowOnce),
+                FirewallCheckResult::Deny => Some(FirewallApprovalAction::Deny),
+                FirewallCheckResult::Ask => None,
+            };
+        }
+
+        // Fallback: if config-based check didn't resolve (client not found or still Ask),
+        // check if this pending request matches the just-submitted resource exactly
+        if auto_action.is_none() {
+            if let (Some(submitted), Some(ref match_action)) =
+                (submitted_info, &resource_match_action)
+            {
+                let same_resource = info.client_id == submitted.client_id
+                    && info.tool_name == submitted.tool_name
+                    && info.server_name == submitted.server_name
+                    && info.is_model_request == submitted.is_model_request
+                    && info.is_guardrail_request == submitted.is_guardrail_request;
+
+                if same_resource {
+                    auto_action = Some(match_action.clone());
+                }
+            }
+        }
 
         if let Some(action) = auto_action {
             tracing::info!(

@@ -115,16 +115,29 @@ export function FirewallApproval() {
     loadDetails()
   }, [])
 
-  // Start 1-second button delay when the window gains focus (not on mount)
-  // This prevents accidental clicks when popups appear suddenly
+  // Start button delay when the window gains focus (not on mount)
+  // This prevents accidental clicks when popups appear suddenly.
+  // Also handles the case where the window spawns already focused.
   useEffect(() => {
-    if (loading || !details) return
+    if (loading || !details || buttonsReady) return
     let timer: ReturnType<typeof setTimeout> | null = null
-    const unlistenPromise = getCurrentWebviewWindow().onFocusChanged(({ payload: focused }) => {
-      if (focused && !buttonsReady) {
-        timer = setTimeout(() => setButtonsReady(true), 1000)
-      }
+
+    const startTimer = () => {
+      if (timer) clearTimeout(timer)
+      timer = setTimeout(() => setButtonsReady(true), 500)
+    }
+
+    // Check if already focused (window spawned with focus)
+    const win = getCurrentWebviewWindow()
+    win.isFocused().then((focused) => {
+      if (focused) startTimer()
     })
+
+    // Also listen for future focus changes
+    const unlistenPromise = win.onFocusChanged(({ payload: focused }) => {
+      if (focused) startTimer()
+    })
+
     return () => {
       if (timer) clearTimeout(timer)
       unlistenPromise.then(fn => fn())
