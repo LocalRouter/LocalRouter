@@ -148,6 +148,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       client_mode: 'both' as const,
       template_id: null,
       sync_config: false,
+      guardrails_active: false,
     }
     mockData.clients.push(newClient)
     toast.success(`Client "${args?.name}" created (demo)`)

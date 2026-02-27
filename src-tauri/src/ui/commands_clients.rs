@@ -49,6 +49,8 @@ pub struct ClientInfo {
     pub template_id: Option<String>,
     /// Whether auto-sync of external app config is enabled
     pub sync_config: bool,
+    /// Whether guardrails are active (has non-allow category_actions)
+    pub guardrails_active: bool,
 }
 
 /// List all clients
@@ -76,6 +78,11 @@ pub async fn list_clients(
             client_mode: c.client_mode.clone(),
             template_id: c.template_id.clone(),
             sync_config: c.sync_config,
+            guardrails_active: c
+                .guardrails
+                .category_actions
+                .iter()
+                .any(|a| a.action != "allow"),
         })
         .collect())
 }
@@ -134,6 +141,11 @@ pub async fn create_client(
         client_mode: client.client_mode.clone(),
         template_id: client.template_id.clone(),
         sync_config: client.sync_config,
+        guardrails_active: client
+            .guardrails
+            .category_actions
+            .iter()
+            .any(|a| a.action != "allow"),
     };
 
     Ok((secret, client_info))

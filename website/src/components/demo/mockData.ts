@@ -45,6 +45,7 @@ export const mockData = {
       client_mode: "llm_only",
       template_id: "cursor",
       sync_config: false,
+      guardrails_active: true,
     },
     {
       id: "client-2",
@@ -62,6 +63,7 @@ export const mockData = {
       client_mode: "both",
       template_id: "claude-code",
       sync_config: true,
+      guardrails_active: false,
     },
     {
       id: "client-4",
@@ -79,6 +81,7 @@ export const mockData = {
       client_mode: "both",
       template_id: null,
       sync_config: false,
+      guardrails_active: false,
     },
   ] as Client[],
 

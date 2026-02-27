@@ -96,6 +96,7 @@ export interface ClientInfo {
   client_mode: ClientMode
   template_id: string | null
   sync_config: boolean
+  guardrails_active: boolean
 }
 
 /**

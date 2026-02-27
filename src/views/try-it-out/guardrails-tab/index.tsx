@@ -185,38 +185,48 @@ export function GuardrailsTab({ initialClientId }: GuardrailsTabProps) {
 
             {/* Right: Mode-specific selectors */}
             <div className="flex flex-col gap-3 flex-1 min-w-0">
-              {mode === "client" && (
-                <div className="space-y-2">
-                  <div className="space-y-1.5">
-                    <Label className="text-sm">Client</Label>
-                    <Select value={selectedClientId} onValueChange={setSelectedClientId}>
-                      <SelectTrigger className="w-full max-w-[280px]">
-                        <SelectValue placeholder="Select a client" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {clients.filter((c) => c.enabled).map((c) => (
-                          <SelectItem key={c.id} value={c.client_id}>
-                            {c.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  {selectedClientId && clientCategories.length > 0 && (
-                    <div className="flex flex-wrap gap-1.5">
-                      {clientCategories.filter(c => c.action !== "allow").map((cat) => (
-                        <Badge
-                          key={cat.category}
-                          variant="outline"
-                          className="text-[10px] capitalize"
-                        >
-                          {cat.category.replace(/_/g, " ")} — {categoryActionLabel(cat.action)}
-                        </Badge>
-                      ))}
+              {mode === "client" && (() => {
+                const guardrailClients = clients.filter((c) => c.enabled && c.guardrails_active)
+                return (
+                  <div className="space-y-2">
+                    <div className="space-y-1.5">
+                      <Label className="text-sm">Client</Label>
+                      {guardrailClients.length === 0 ? (
+                        <p className="text-sm text-muted-foreground flex items-center gap-1">
+                          <AlertTriangle className="h-3.5 w-3.5 text-amber-500" />
+                          No clients have guardrails enabled.
+                        </p>
+                      ) : (
+                        <Select value={selectedClientId} onValueChange={setSelectedClientId}>
+                          <SelectTrigger className="w-full max-w-[280px]">
+                            <SelectValue placeholder="Select a client" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {guardrailClients.map((c) => (
+                              <SelectItem key={c.id} value={c.client_id}>
+                                {c.name}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      )}
                     </div>
-                  )}
-                </div>
-              )}
+                    {selectedClientId && clientCategories.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5">
+                        {clientCategories.filter(c => c.action !== "allow").map((cat) => (
+                          <Badge
+                            key={cat.category}
+                            variant="outline"
+                            className="text-[10px] capitalize"
+                          >
+                            {cat.category.replace(/_/g, " ")} — {categoryActionLabel(cat.action)}
+                          </Badge>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )
+              })()}
 
               {mode === "specific_model" && (
                 <div className="space-y-1.5">
@@ -236,12 +246,25 @@ export function GuardrailsTab({ initialClientId }: GuardrailsTabProps) {
                 </div>
               )}
 
-              {mode === "all_models" && enabledModels.length === 0 && (
-                <div className="text-sm text-muted-foreground">
-                  <span className="text-amber-500 flex items-center gap-1">
-                    <AlertTriangle className="h-3.5 w-3.5" />
-                    No models enabled. Configure models in Settings.
-                  </span>
+              {mode === "all_models" && (
+                <div className="space-y-1.5">
+                  {enabledModels.length === 0 ? (
+                    <span className="text-sm text-amber-500 flex items-center gap-1">
+                      <AlertTriangle className="h-3.5 w-3.5" />
+                      No models enabled. Configure models in Settings.
+                    </span>
+                  ) : (
+                    <>
+                      <Label className="text-sm">Safety Models ({enabledModels.length})</Label>
+                      <div className="flex flex-wrap gap-1.5">
+                        {enabledModels.map((m) => (
+                          <Badge key={m.id} variant="outline" className="text-[10px]">
+                            {m.label}
+                          </Badge>
+                        ))}
+                      </div>
+                    </>
+                  )}
                 </div>
               )}
             </div>
