@@ -426,13 +426,24 @@ impl FreeTierManager {
             FreeTierKind::None => ModelFreeStatus::NotFree,
             FreeTierKind::FreeModelsOnly {
                 free_model_patterns,
-                ..
+                max_rpm,
             } => {
-                if Self::model_matches_patterns(model, free_model_patterns) {
-                    ModelFreeStatus::FreeModel
-                } else {
-                    ModelFreeStatus::NotFree
+                if !Self::model_matches_patterns(model, free_model_patterns) {
+                    return ModelFreeStatus::NotFree;
                 }
+                // Check RPM limit if configured
+                if *max_rpm > 0 {
+                    let entry = self
+                        .rate_trackers
+                        .entry(provider_instance.to_string())
+                        .or_insert_with(|| RwLock::new(RateLimitTracker::default()));
+                    let mut tracker = entry.write();
+                    tracker.reset_expired_windows();
+                    if tracker.minute_requests >= *max_rpm {
+                        return ModelFreeStatus::NotFree;
+                    }
+                }
+                ModelFreeStatus::FreeModel
             }
             FreeTierKind::RateLimitedFree { .. } => {
                 let capacity = self.check_rate_limit_capacity(provider_instance, free_tier);
@@ -1496,5 +1507,779 @@ mod tests {
 
         let cap = manager.check_rate_limit_capacity("cerebras", &free_tier);
         assert!(!cap.has_capacity);
+    }
+
+    // ============================================================
+    // Free Tier Mode: RPM enforcement tests
+    // ============================================================
+
+    #[test]
+    fn test_rpm_enforcement_blocks_after_limit() {
+        let manager = FreeTierManager::new(None);
+        let free_tier = FreeTierKind::RateLimitedFree {
+            max_rpm: 5,
+            max_rpd: 0,
+            max_tpm: 0,
+            max_tpd: 0,
+            max_monthly_calls: 0,
+            max_monthly_tokens: 0,
+        };
+
+        // Use up RPM limit
+        for _ in 0..5 {
+            let status = manager.classify_model("gemini", "gemini-pro", &free_tier);
+            assert_eq!(status, ModelFreeStatus::FreeWithinLimits);
+            manager.record_usage("gemini", &free_tier, 100, 0.0);
+        }
+
+        // 6th request should be blocked
+        let status = manager.classify_model("gemini", "gemini-pro", &free_tier);
+        assert_eq!(
+            status,
+            ModelFreeStatus::NotFree,
+            "Should be NotFree after RPM exhausted"
+        );
+    }
+
+    #[test]
+    fn test_rpd_enforcement_blocks_after_daily_limit() {
+        let manager = FreeTierManager::new(None);
+        let free_tier = FreeTierKind::RateLimitedFree {
+            max_rpm: 0,
+            max_rpd: 3,
+            max_tpm: 0,
+            max_tpd: 0,
+            max_monthly_calls: 0,
+            max_monthly_tokens: 0,
+        };
+
+        for _ in 0..3 {
+            let status = manager.classify_model("groq", "llama3", &free_tier);
+            assert_eq!(status, ModelFreeStatus::FreeWithinLimits);
+            manager.record_usage("groq", &free_tier, 100, 0.0);
+        }
+
+        let status = manager.classify_model("groq", "llama3", &free_tier);
+        assert_eq!(
+            status,
+            ModelFreeStatus::NotFree,
+            "Should be NotFree after RPD exhausted"
+        );
+    }
+
+    #[test]
+    fn test_tpm_enforcement_blocks_after_token_limit() {
+        let manager = FreeTierManager::new(None);
+        let free_tier = FreeTierKind::RateLimitedFree {
+            max_rpm: 0,
+            max_rpd: 0,
+            max_tpm: 1000,
+            max_tpd: 0,
+            max_monthly_calls: 0,
+            max_monthly_tokens: 0,
+        };
+
+        // Use up TPM limit
+        manager.record_usage("gemini", &free_tier, 1000, 0.0);
+
+        let status = manager.classify_model("gemini", "gemini-pro", &free_tier);
+        assert_eq!(
+            status,
+            ModelFreeStatus::NotFree,
+            "Should be NotFree after TPM exhausted"
+        );
+    }
+
+    #[test]
+    fn test_monthly_calls_enforcement() {
+        let manager = FreeTierManager::new(None);
+        let free_tier = FreeTierKind::RateLimitedFree {
+            max_rpm: 0,
+            max_rpd: 0,
+            max_tpm: 0,
+            max_tpd: 0,
+            max_monthly_calls: 2,
+            max_monthly_tokens: 0,
+        };
+
+        manager.record_usage("cohere", &free_tier, 100, 0.0);
+        manager.record_usage("cohere", &free_tier, 100, 0.0);
+
+        let status = manager.classify_model("cohere", "command-r", &free_tier);
+        assert_eq!(
+            status,
+            ModelFreeStatus::NotFree,
+            "Should be NotFree after monthly calls exhausted"
+        );
+    }
+
+    #[test]
+    fn test_monthly_tokens_enforcement() {
+        let manager = FreeTierManager::new(None);
+        let free_tier = FreeTierKind::RateLimitedFree {
+            max_rpm: 0,
+            max_rpd: 0,
+            max_tpm: 0,
+            max_tpd: 0,
+            max_monthly_calls: 0,
+            max_monthly_tokens: 500,
+        };
+
+        manager.record_usage("mistral", &free_tier, 500, 0.0);
+
+        let status = manager.classify_model("mistral", "mistral-large", &free_tier);
+        assert_eq!(
+            status,
+            ModelFreeStatus::NotFree,
+            "Should be NotFree after monthly tokens exhausted"
+        );
+    }
+
+    // ============================================================
+    // BUG: FreeModelsOnly max_rpm not enforced in classify_model
+    // ============================================================
+
+    #[test]
+    fn test_bug_free_models_only_rpm_not_enforced() {
+        // BUG: classify_model for FreeModelsOnly ignores max_rpm entirely.
+        // Even after exceeding the RPM limit, it still returns FreeModel.
+        let manager = FreeTierManager::new(None);
+        let free_tier = FreeTierKind::FreeModelsOnly {
+            free_model_patterns: vec![
+                "meta-llama/Llama-3.3-70B-Instruct-Turbo-Free".to_string(),
+            ],
+            max_rpm: 3,
+        };
+
+        let model = "meta-llama/Llama-3.3-70B-Instruct-Turbo-Free";
+
+        // Use up RPM limit
+        for _ in 0..3 {
+            manager.record_usage("togetherai", &free_tier, 100, 0.0);
+        }
+
+        // Should be NotFree after RPM exhausted, but bug: still returns FreeModel
+        let status = manager.classify_model("togetherai", model, &free_tier);
+        assert_eq!(
+            status,
+            ModelFreeStatus::NotFree,
+            "BUG: FreeModelsOnly should enforce max_rpm but classify_model ignores it"
+        );
+    }
+
+    // ============================================================
+    // BUG: CreditBased with budget_usd=0.0 immediately exhausted
+    // ============================================================
+
+    #[test]
+    fn test_bug_credit_based_zero_budget_immediately_exhausted() {
+        // BUG: OpenRouter defaults to budget_usd=0.0 with ProviderApi detection.
+        // check_credit_balance computes remaining = 0.0 - 0.0 = 0.0, and
+        // the check `remaining <= 0.0` returns has_capacity: false immediately,
+        // before the provider API is ever consulted.
+        let manager = FreeTierManager::new(None);
+        let free_tier = FreeTierKind::CreditBased {
+            budget_usd: 0.0,
+            reset_period: lr_config::FreeTierResetPeriod::Never,
+            detection: lr_config::CreditDetection::ProviderApi,
+        };
+
+        // With zero budget and no API data, should default to "has capacity"
+        // because the provider API hasn't been checked yet.
+        let cap = manager.check_credit_balance("openrouter", &free_tier);
+        assert!(
+            cap.has_capacity,
+            "BUG: CreditBased with budget_usd=0.0 and ProviderApi detection should \
+             default to has_capacity=true before API check, but got has_capacity=false. \
+             remaining={:?}",
+            cap.remaining_usd
+        );
+    }
+
+    #[test]
+    fn test_credit_based_zero_budget_with_api_data_works() {
+        // When the API has been checked, the API-reported balance should be used.
+        let manager = FreeTierManager::new(None);
+        let free_tier = FreeTierKind::CreditBased {
+            budget_usd: 0.0,
+            reset_period: lr_config::FreeTierResetPeriod::Never,
+            detection: lr_config::CreditDetection::ProviderApi,
+        };
+
+        // Simulate API reporting $1.50 remaining
+        manager.update_credits_from_api(
+            "openrouter",
+            &lr_providers::ProviderCreditsInfo {
+                remaining_credits_usd: Some(1.50),
+                total_credits_usd: None,
+                used_credits_usd: None,
+                is_free_tier: Some(true),
+            },
+        );
+
+        let cap = manager.check_credit_balance("openrouter", &free_tier);
+        assert!(cap.has_capacity);
+        assert_eq!(cap.remaining_usd, Some(1.50));
+    }
+
+    #[test]
+    fn test_credit_based_zero_budget_classify_model() {
+        // classify_model delegates to check_credit_balance, so this is also broken
+        let manager = FreeTierManager::new(None);
+        let free_tier = FreeTierKind::CreditBased {
+            budget_usd: 0.0,
+            reset_period: lr_config::FreeTierResetPeriod::Never,
+            detection: lr_config::CreditDetection::ProviderApi,
+        };
+
+        let status = manager.classify_model("openrouter", "gpt-4o", &free_tier);
+        assert_eq!(
+            status,
+            ModelFreeStatus::FreeWithinLimits,
+            "BUG: CreditBased with budget_usd=0.0 should be FreeWithinLimits before API check"
+        );
+    }
+
+    // ============================================================
+    // BUG: Exponential backoff off-by-one
+    // ============================================================
+
+    #[test]
+    fn test_bug_exponential_backoff_first_error_duration() {
+        // BUG: consecutive_errors is incremented BEFORE calculating backoff.
+        // So the first error gives 1<<1 = 2s, not 1s as the comment states.
+        // The sequence is 2, 4, 8, 16, 32, 32 (never reaches 60s as claimed).
+        let manager = FreeTierManager::new(None);
+
+        manager.record_rate_limit_error("p", "m", 429, None, None, false);
+
+        // Check the backoff key directly
+        let key = FreeTierManager::backoff_key("p", "m");
+        let entry = manager.backoffs.get(&key).unwrap();
+        let backoff = entry.read();
+
+        // Comment says "1s, 2s, 4s, 8s, 16s, 32s, 60s max"
+        // BUG: First error gives 2s because consecutive_errors was already
+        // incremented to 1, so 1 << 1 = 2.
+        assert_eq!(
+            backoff.current_backoff,
+            Duration::from_secs(1),
+            "BUG: First error backoff should be 1s but is {:?} due to increment-before-use",
+            backoff.current_backoff
+        );
+    }
+
+    #[test]
+    fn test_bug_exponential_backoff_max_never_reaches_60s() {
+        // BUG: The max backoff is 32s (1<<5), not 60s as the .min(60) suggests.
+        // Since consecutive_errors.min(5) caps the shift at 5, 1<<5=32 < 60,
+        // so .min(60) is a dead branch.
+        let manager = FreeTierManager::new(None);
+
+        // Record 10 errors to get max backoff
+        for _ in 0..10 {
+            manager.record_rate_limit_error("p", "m", 429, None, None, false);
+        }
+
+        let key = FreeTierManager::backoff_key("p", "m");
+        let entry = manager.backoffs.get(&key).unwrap();
+        let backoff = entry.read();
+
+        // Comment says max is 60s
+        assert_eq!(
+            backoff.current_backoff,
+            Duration::from_secs(60),
+            "BUG: Max backoff should reach 60s but caps at {:?} because 1<<5=32",
+            backoff.current_backoff
+        );
+    }
+
+    // ============================================================
+    // BUG: Header-based RPM limit reconstruction
+    // ============================================================
+
+    #[test]
+    fn test_bug_header_rpm_limit_reconstruction() {
+        // BUG: check_rate_limit_capacity tries to reconstruct the provider's
+        // total limit as: header_requests_remaining + minute_requests.
+        // But these are independent counters - minute_requests is our local
+        // counter and header_requests_remaining is the provider's counter.
+        // They can't be combined to get the actual limit.
+        let manager = FreeTierManager::new(None);
+        let free_tier = FreeTierKind::RateLimitedFree {
+            max_rpm: 30,
+            max_rpd: 0,
+            max_tpm: 0,
+            max_tpd: 0,
+            max_monthly_calls: 0,
+            max_monthly_tokens: 0,
+        };
+
+        // Simulate: our local counter says 2 requests, but provider says 20 remaining
+        // (provider's actual limit might be 30, with 10 consumed by other clients)
+        manager.record_rate_limit_usage("gemini", 100);
+        manager.record_rate_limit_usage("gemini", 100);
+
+        // Provider says 20 remaining (out of 30 limit)
+        let headers = RateLimitHeaderInfo {
+            requests_remaining: Some(20),
+            requests_limit: None, // Provider didn't send the limit header
+            ..Default::default()
+        };
+        manager.update_from_headers("gemini", &headers);
+
+        let cap = manager.check_rate_limit_capacity("gemini", &free_tier);
+
+        // The bug: code computes limit = 20 + 2 = 22 (wrong, actual limit is 30)
+        // So remaining_pct = 20/22 = 0.909 instead of correct 20/30 = 0.667
+        // The blocking decision is still correct (remaining=20 > 0),
+        // but the percentage is wrong.
+        assert!(cap.has_capacity, "Should still have capacity");
+        // The remaining_pct calculation is wrong but the capacity check is correct
+    }
+
+    // ============================================================
+    // Free tier classify_model integration
+    // ============================================================
+
+    #[test]
+    fn test_classify_model_rate_limited_within_limits() {
+        let manager = FreeTierManager::new(None);
+        let free_tier = FreeTierKind::RateLimitedFree {
+            max_rpm: 10,
+            max_rpd: 0,
+            max_tpm: 0,
+            max_tpd: 0,
+            max_monthly_calls: 0,
+            max_monthly_tokens: 0,
+        };
+
+        let status = manager.classify_model("gemini", "gemini-pro", &free_tier);
+        assert_eq!(status, ModelFreeStatus::FreeWithinLimits);
+    }
+
+    #[test]
+    fn test_classify_model_rate_limited_exhausted() {
+        let manager = FreeTierManager::new(None);
+        let free_tier = FreeTierKind::RateLimitedFree {
+            max_rpm: 2,
+            max_rpd: 0,
+            max_tpm: 0,
+            max_tpd: 0,
+            max_monthly_calls: 0,
+            max_monthly_tokens: 0,
+        };
+
+        manager.record_rate_limit_usage("gemini", 100);
+        manager.record_rate_limit_usage("gemini", 100);
+
+        let status = manager.classify_model("gemini", "gemini-pro", &free_tier);
+        assert_eq!(status, ModelFreeStatus::NotFree);
+    }
+
+    #[test]
+    fn test_classify_model_credit_based_within_budget() {
+        let manager = FreeTierManager::new(None);
+        let free_tier = FreeTierKind::CreditBased {
+            budget_usd: 5.0,
+            reset_period: lr_config::FreeTierResetPeriod::Monthly,
+            detection: lr_config::CreditDetection::LocalOnly,
+        };
+
+        let status = manager.classify_model("deepinfra", "meta-llama/llama3", &free_tier);
+        assert_eq!(status, ModelFreeStatus::FreeWithinLimits);
+    }
+
+    #[test]
+    fn test_classify_model_credit_based_exhausted() {
+        let manager = FreeTierManager::new(None);
+        let free_tier = FreeTierKind::CreditBased {
+            budget_usd: 1.0,
+            reset_period: lr_config::FreeTierResetPeriod::Never,
+            detection: lr_config::CreditDetection::LocalOnly,
+        };
+
+        manager.record_credit_usage("deepinfra", 1.0);
+
+        let status = manager.classify_model("deepinfra", "meta-llama/llama3", &free_tier);
+        assert_eq!(status, ModelFreeStatus::NotFree);
+    }
+
+    #[test]
+    fn test_classify_model_subscription() {
+        let manager = FreeTierManager::new(None);
+        let status = manager.classify_model("openai", "gpt-4", &FreeTierKind::Subscription);
+        assert_eq!(status, ModelFreeStatus::AlwaysFree);
+    }
+
+    #[test]
+    fn test_classify_model_free_models_only_non_matching() {
+        let manager = FreeTierManager::new(None);
+        let free_tier = FreeTierKind::FreeModelsOnly {
+            free_model_patterns: vec!["*:free".to_string()],
+            max_rpm: 0,
+        };
+
+        let status = manager.classify_model("togetherai", "gpt-4", &free_tier);
+        assert_eq!(status, ModelFreeStatus::NotFree);
+    }
+
+    // ============================================================
+    // Multi-limit interaction tests
+    // ============================================================
+
+    #[test]
+    fn test_tightest_limit_wins() {
+        // When multiple limits are set, the tightest one should block
+        let manager = FreeTierManager::new(None);
+        let free_tier = FreeTierKind::RateLimitedFree {
+            max_rpm: 100,  // Generous RPM
+            max_rpd: 2,    // Tight daily limit
+            max_tpm: 0,
+            max_tpd: 0,
+            max_monthly_calls: 0,
+            max_monthly_tokens: 0,
+        };
+
+        manager.record_usage("provider", &free_tier, 100, 0.0);
+        manager.record_usage("provider", &free_tier, 100, 0.0);
+
+        // RPM is fine (2/100) but RPD is exhausted (2/2)
+        let cap = manager.check_rate_limit_capacity("provider", &free_tier);
+        assert!(!cap.has_capacity, "RPD should block even though RPM has capacity");
+    }
+
+    #[test]
+    fn test_tpd_enforcement() {
+        let manager = FreeTierManager::new(None);
+        let free_tier = FreeTierKind::RateLimitedFree {
+            max_rpm: 0,
+            max_rpd: 0,
+            max_tpm: 0,
+            max_tpd: 500,
+            max_monthly_calls: 0,
+            max_monthly_tokens: 0,
+        };
+
+        manager.record_usage("provider", &free_tier, 500, 0.0);
+
+        let cap = manager.check_rate_limit_capacity("provider", &free_tier);
+        assert!(!cap.has_capacity, "Should be blocked after daily token limit");
+    }
+
+    // ============================================================
+    // Provider isolation tests
+    // ============================================================
+
+    #[test]
+    fn test_usage_isolated_per_provider() {
+        let manager = FreeTierManager::new(None);
+        let free_tier = FreeTierKind::RateLimitedFree {
+            max_rpm: 2,
+            max_rpd: 0,
+            max_tpm: 0,
+            max_tpd: 0,
+            max_monthly_calls: 0,
+            max_monthly_tokens: 0,
+        };
+
+        // Exhaust provider A
+        manager.record_rate_limit_usage("providerA", 100);
+        manager.record_rate_limit_usage("providerA", 100);
+
+        // Provider B should still have capacity
+        let cap_a = manager.check_rate_limit_capacity("providerA", &free_tier);
+        let cap_b = manager.check_rate_limit_capacity("providerB", &free_tier);
+
+        assert!(!cap_a.has_capacity, "Provider A should be exhausted");
+        assert!(cap_b.has_capacity, "Provider B should still have capacity");
+    }
+
+    // ============================================================
+    // Header update tests
+    // ============================================================
+
+    #[test]
+    fn test_header_zero_remaining_blocks() {
+        let manager = FreeTierManager::new(None);
+        let free_tier = FreeTierKind::RateLimitedFree {
+            max_rpm: 30,
+            max_rpd: 0,
+            max_tpm: 0,
+            max_tpd: 0,
+            max_monthly_calls: 0,
+            max_monthly_tokens: 0,
+        };
+
+        let headers = RateLimitHeaderInfo {
+            requests_remaining: Some(0),
+            ..Default::default()
+        };
+        manager.update_from_headers("gemini", &headers);
+
+        let cap = manager.check_rate_limit_capacity("gemini", &free_tier);
+        assert!(!cap.has_capacity, "Should block when header says 0 remaining");
+    }
+
+    #[test]
+    fn test_header_daily_remaining_zero_blocks() {
+        let manager = FreeTierManager::new(None);
+        let free_tier = FreeTierKind::RateLimitedFree {
+            max_rpm: 0,
+            max_rpd: 14400,
+            max_tpm: 0,
+            max_tpd: 0,
+            max_monthly_calls: 0,
+            max_monthly_tokens: 0,
+        };
+
+        let headers = RateLimitHeaderInfo {
+            daily_requests_remaining: Some(0),
+            ..Default::default()
+        };
+        manager.update_from_headers("cerebras", &headers);
+
+        let cap = manager.check_rate_limit_capacity("cerebras", &free_tier);
+        assert!(
+            !cap.has_capacity,
+            "Should block when daily header says 0 remaining"
+        );
+    }
+
+    // ============================================================
+    // Backoff + classify interaction
+    // ============================================================
+
+    #[test]
+    fn test_backoff_does_not_affect_classify() {
+        // classify_model checks rate limit capacity, not backoff.
+        // Backoff is checked separately by the router.
+        let manager = FreeTierManager::new(None);
+        let free_tier = FreeTierKind::RateLimitedFree {
+            max_rpm: 100,
+            max_rpd: 0,
+            max_tpm: 0,
+            max_tpd: 0,
+            max_monthly_calls: 0,
+            max_monthly_tokens: 0,
+        };
+
+        manager.record_rate_limit_error("gemini", "gemini-pro", 429, Some(60), None, false);
+
+        // classify_model should still return FreeWithinLimits (backoff is separate)
+        let status = manager.classify_model("gemini", "gemini-pro", &free_tier);
+        assert_eq!(
+            status,
+            ModelFreeStatus::FreeWithinLimits,
+            "Backoff should not affect classify_model"
+        );
+
+        // But is_in_backoff should report it
+        assert!(manager.is_in_backoff("gemini", "gemini-pro").is_some());
+    }
+
+    // ============================================================
+    // Credit-based edge cases
+    // ============================================================
+
+    #[test]
+    fn test_credit_api_remaining_overrides_local_tracking() {
+        let manager = FreeTierManager::new(None);
+        let free_tier = FreeTierKind::CreditBased {
+            budget_usd: 5.0,
+            reset_period: lr_config::FreeTierResetPeriod::Never,
+            detection: lr_config::CreditDetection::LocalOnly,
+        };
+
+        // Local tracking says we've used $4.50
+        manager.record_credit_usage("deepinfra", 4.50);
+
+        // But API says we have $3.00 remaining (maybe we got a refund)
+        manager.update_credits_from_api(
+            "deepinfra",
+            &lr_providers::ProviderCreditsInfo {
+                remaining_credits_usd: Some(3.0),
+                total_credits_usd: None,
+                used_credits_usd: None,
+                is_free_tier: None,
+            },
+        );
+
+        let cap = manager.check_credit_balance("deepinfra", &free_tier);
+        assert!(cap.has_capacity);
+        assert_eq!(cap.remaining_usd, Some(3.0));
+    }
+
+    #[test]
+    fn test_credit_negative_remaining_blocked() {
+        let manager = FreeTierManager::new(None);
+        let free_tier = FreeTierKind::CreditBased {
+            budget_usd: 1.0,
+            reset_period: lr_config::FreeTierResetPeriod::Never,
+            detection: lr_config::CreditDetection::LocalOnly,
+        };
+
+        // Overshoot the budget
+        manager.record_credit_usage("provider", 1.50);
+
+        let cap = manager.check_credit_balance("provider", &free_tier);
+        assert!(!cap.has_capacity);
+    }
+
+    // ============================================================
+    // Persist + reset integration
+    // ============================================================
+
+    #[test]
+    fn test_persist_preserves_all_counters() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("free_tier_all.json");
+
+        let manager = FreeTierManager::new(Some(path.clone()));
+
+        // Set up rate tracking with specific values
+        let free_tier = FreeTierKind::RateLimitedFree {
+            max_rpm: 10,
+            max_rpd: 100,
+            max_tpm: 50000,
+            max_tpd: 500000,
+            max_monthly_calls: 1000,
+            max_monthly_tokens: 1_000_000,
+        };
+
+        manager.record_usage("gemini", &free_tier, 500, 0.0);
+        manager.record_usage("gemini", &free_tier, 300, 0.0);
+        manager.persist().unwrap();
+
+        let loaded = FreeTierManager::load(&path);
+        let tracker = loaded.get_rate_tracker("gemini").unwrap();
+        assert_eq!(tracker.minute_requests, 2);
+        assert_eq!(tracker.daily_requests, 2);
+        assert_eq!(tracker.monthly_requests, 2);
+        assert_eq!(tracker.minute_tokens, 800);
+        assert_eq!(tracker.daily_tokens, 800);
+        assert_eq!(tracker.monthly_tokens, 800);
+    }
+
+    #[test]
+    fn test_reset_clears_all_provider_data() {
+        let manager = FreeTierManager::new(None);
+
+        // Set up various types of state
+        manager.record_rate_limit_usage("provider", 100);
+        manager.record_credit_usage("provider", 1.0);
+        manager.record_rate_limit_error("provider", "model1", 429, Some(30), None, false);
+        manager.record_rate_limit_error("provider", "model2", 429, Some(60), None, false);
+
+        manager.reset_usage("provider");
+
+        // All rate tracking reset
+        let tracker = manager.get_rate_tracker("provider").unwrap();
+        assert_eq!(tracker.minute_requests, 0);
+        assert_eq!(tracker.daily_requests, 0);
+        assert_eq!(tracker.monthly_requests, 0);
+
+        // Credits reset
+        let credit = manager.get_credit_tracker("provider").unwrap();
+        assert!((credit.current_cost_usd).abs() < f64::EPSILON);
+
+        // All backoffs cleared for this provider
+        assert!(manager.is_in_backoff("provider", "model1").is_none());
+        assert!(manager.is_in_backoff("provider", "model2").is_none());
+    }
+
+    // ============================================================
+    // FreeModelsOnly pattern matching edge cases
+    // ============================================================
+
+    #[test]
+    fn test_free_models_only_multiple_patterns() {
+        let manager = FreeTierManager::new(None);
+        let free_tier = FreeTierKind::FreeModelsOnly {
+            free_model_patterns: vec![
+                "*:free".to_string(),
+                "meta-llama/Llama-3.3-70B-Instruct-Turbo-Free".to_string(),
+            ],
+            max_rpm: 0,
+        };
+
+        // Matches glob pattern
+        assert_eq!(
+            manager.classify_model("togetherai", "model:free", &free_tier),
+            ModelFreeStatus::FreeModel
+        );
+
+        // Matches exact pattern
+        assert_eq!(
+            manager.classify_model(
+                "togetherai",
+                "meta-llama/Llama-3.3-70B-Instruct-Turbo-Free",
+                &free_tier
+            ),
+            ModelFreeStatus::FreeModel
+        );
+
+        // Doesn't match any
+        assert_eq!(
+            manager.classify_model("togetherai", "gpt-4", &free_tier),
+            ModelFreeStatus::NotFree
+        );
+    }
+
+    #[test]
+    fn test_glob_pattern_prefix_and_suffix() {
+        // Test "*-Free" pattern
+        assert!(FreeTierManager::model_matches_patterns(
+            "Llama-Free",
+            &["*-Free".to_string()]
+        ));
+        assert!(!FreeTierManager::model_matches_patterns(
+            "Llama-Premium",
+            &["*-Free".to_string()]
+        ));
+    }
+
+    // ============================================================
+    // Manual set usage from UI
+    // ============================================================
+
+    #[test]
+    fn test_set_rate_limit_usage_from_ui() {
+        let manager = FreeTierManager::new(None);
+        let free_tier = FreeTierKind::RateLimitedFree {
+            max_rpm: 0,
+            max_rpd: 100,
+            max_tpm: 0,
+            max_tpd: 0,
+            max_monthly_calls: 50,
+            max_monthly_tokens: 100_000,
+        };
+
+        manager.set_rate_limit_usage("gemini", Some(80), Some(45), Some(90_000));
+
+        let cap = manager.check_rate_limit_capacity("gemini", &free_tier);
+        assert!(cap.has_capacity, "Should still have capacity");
+
+        // Now set at limit
+        manager.set_rate_limit_usage("gemini", Some(100), None, None);
+        let cap = manager.check_rate_limit_capacity("gemini", &free_tier);
+        assert!(!cap.has_capacity, "RPD at limit should block");
+    }
+
+    #[test]
+    fn test_set_credit_usage_from_ui() {
+        let manager = FreeTierManager::new(None);
+        let free_tier = FreeTierKind::CreditBased {
+            budget_usd: 5.0,
+            reset_period: lr_config::FreeTierResetPeriod::Never,
+            detection: lr_config::CreditDetection::LocalOnly,
+        };
+
+        manager.set_credit_usage("deepinfra", Some(4.0), Some(1.0));
+
+        let cap = manager.check_credit_balance("deepinfra", &free_tier);
+        assert!(cap.has_capacity);
+        // API remaining takes priority, so should show $1.00
+        assert_eq!(cap.remaining_usd, Some(1.0));
     }
 }

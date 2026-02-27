@@ -53,6 +53,10 @@ impl ApiErrorResponse {
         resp
     }
 
+    pub fn payment_required(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::PAYMENT_REQUIRED, "free_tier_error", message)
+    }
+
     pub fn internal_error(message: impl Into<String>) -> Self {
         Self::new(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", message)
     }
@@ -114,20 +118,16 @@ impl From<AppError> for ApiErrorResponse {
                 ApiErrorResponse::bad_gateway(format!("Provider error: {}", msg))
             }
             AppError::RateLimitExceeded => ApiErrorResponse::rate_limited("Rate limit exceeded"),
-            AppError::FreeTierExhausted { retry_after_secs } => {
-                ApiErrorResponse::rate_limited_with_retry(
+            AppError::FreeTierExhausted { .. } => {
+                ApiErrorResponse::payment_required(
                     "Free tier exhausted. All free-tier providers are at capacity.",
-                    retry_after_secs,
                 )
             }
-            AppError::FreeTierFallbackAvailable {
-                retry_after_secs, ..
-            } => {
+            AppError::FreeTierFallbackAvailable { .. } => {
                 // This should be caught by the chat handler before reaching here,
                 // but if it leaks through, treat it as exhausted
-                ApiErrorResponse::rate_limited_with_retry(
+                ApiErrorResponse::payment_required(
                     "Free tier exhausted. All free-tier providers are at capacity.",
-                    retry_after_secs,
                 )
             }
             AppError::Unauthorized => ApiErrorResponse::unauthorized("Unauthorized"),

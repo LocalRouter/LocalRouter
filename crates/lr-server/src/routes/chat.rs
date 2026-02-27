@@ -1233,7 +1233,7 @@ async fn check_free_tier_fallback(
     state: &AppState,
     client_id: &str,
     exhausted_models: &[(String, String)],
-    retry_after_secs: u64,
+    _retry_after_secs: u64,
 ) -> ApiResult<()> {
     use lr_mcp::gateway::access_control::{
         check_needs_approval, FirewallCheckContext, FirewallCheckResult,
@@ -1255,9 +1255,8 @@ async fn check_free_tier_fallback(
 
     match check_needs_approval(&ctx) {
         FirewallCheckResult::Allow => Ok(()),
-        FirewallCheckResult::Deny => Err(ApiErrorResponse::rate_limited_with_retry(
-            "Free tier exhausted. All free-tier providers are at capacity.",
-            retry_after_secs,
+        FirewallCheckResult::Deny => Err(ApiErrorResponse::payment_required(
+            "Free tier exhausted. Paid fallback is disabled.",
         )),
         FirewallCheckResult::Ask => {
             // Build exhausted summary for popup
@@ -1299,9 +1298,8 @@ async fn check_free_tier_fallback(
                     // submit_firewall_approval; just allow this request through
                     Ok(())
                 }
-                _ => Err(ApiErrorResponse::rate_limited_with_retry(
+                _ => Err(ApiErrorResponse::payment_required(
                     "Free tier exhausted. Paid fallback denied by user.",
-                    retry_after_secs,
                 )),
             }
         }
