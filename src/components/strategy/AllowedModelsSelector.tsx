@@ -15,6 +15,9 @@
 import { useMemo } from "react"
 import { Checkbox } from "@/components/ui/checkbox"
 import { cn } from "@/lib/utils"
+import { ModelPricingBadge } from "@/components/shared/model-pricing-badge"
+import type { ModelPricingInfo } from "./DragThresholdModelSelector"
+import type { FreeTierKind } from "@/types/tauri-commands"
 
 export interface Model {
   id: string
@@ -33,6 +36,10 @@ interface AllowedModelsSelectorProps {
   onChange: (selection: AllowedModelsSelection) => void
   disabled?: boolean
   className?: string
+  /** Optional pricing data keyed by "provider/modelId" */
+  modelPricing?: Record<string, ModelPricingInfo>
+  /** Optional free tier kinds keyed by provider instance name */
+  freeTierKinds?: Record<string, FreeTierKind>
 }
 
 export function AllowedModelsSelector({
@@ -41,6 +48,8 @@ export function AllowedModelsSelector({
   onChange,
   disabled = false,
   className,
+  modelPricing,
+  freeTierKinds,
 }: AllowedModelsSelectorProps) {
   // Normalize value with defaults to handle potentially missing fields
   const normalizedValue = useMemo((): AllowedModelsSelection => ({
@@ -320,9 +329,16 @@ export function AllowedModelsSelector({
                       onCheckedChange={() => handleModelToggle(provider, model.id)}
                       disabled={!canToggleModel}
                     />
-                    <span className="text-sm text-muted-foreground font-mono">
+                    <span className="text-sm text-muted-foreground font-mono flex-1 truncate">
                       {model.id}
                     </span>
+                    {modelPricing && (
+                      <ModelPricingBadge
+                        inputPricePerMillion={modelPricing[`${provider}/${model.id}`]?.input}
+                        outputPricePerMillion={modelPricing[`${provider}/${model.id}`]?.output}
+                        freeTierKind={freeTierKinds?.[provider]}
+                      />
+                    )}
                   </div>
                 )
               })}

@@ -31,10 +31,17 @@ import {
 import { CSS } from "@dnd-kit/utilities"
 import { GripVertical, Zap, Ban } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { ModelPricingBadge } from "@/components/shared/model-pricing-badge"
+import type { FreeTierKind } from "@/types/tauri-commands"
 
 export interface Model {
   id: string
   provider: string
+}
+
+export interface ModelPricingInfo {
+  input?: number | null
+  output?: number | null
 }
 
 interface DragThresholdModelSelectorProps {
@@ -47,6 +54,10 @@ interface DragThresholdModelSelectorProps {
   className?: string
   /** Disable DragOverlay - useful in modals/dialogs where transforms cause offset issues */
   disableDragOverlay?: boolean
+  /** Optional pricing data keyed by "provider/modelId" */
+  modelPricing?: Record<string, ModelPricingInfo>
+  /** Optional free tier kinds keyed by provider instance name */
+  freeTierKinds?: Record<string, FreeTierKind>
 }
 
 // Unique ID for each model
@@ -65,6 +76,8 @@ function SortableRow({
   isEnabled,
   disabled,
   onToggle,
+  pricing,
+  freeTierKind,
 }: {
   id: string
   provider: string
@@ -73,6 +86,8 @@ function SortableRow({
   isEnabled: boolean
   disabled: boolean
   onToggle: () => void
+  pricing?: ModelPricingInfo
+  freeTierKind?: FreeTierKind
 }) {
   const {
     attributes,
@@ -140,6 +155,15 @@ function SortableRow({
         </span>
       </div>
 
+      {/* Pricing badge */}
+      {pricing && (
+        <ModelPricingBadge
+          inputPricePerMillion={pricing.input}
+          outputPricePerMillion={pricing.output}
+          freeTierKind={freeTierKind}
+        />
+      )}
+
       {/* Provider badge */}
       <span
         className={cn(
@@ -161,11 +185,15 @@ function DragOverlayItem({
   modelId,
   isEnabled,
   index,
+  pricing,
+  freeTierKind,
 }: {
   provider: string
   modelId: string
   isEnabled: boolean
   index: number
+  pricing?: ModelPricingInfo
+  freeTierKind?: FreeTierKind
 }) {
   return (
     <div
@@ -185,6 +213,13 @@ function DragOverlayItem({
         )}
       </div>
       <span className="text-sm font-mono flex-1">{modelId}</span>
+      {pricing && (
+        <ModelPricingBadge
+          inputPricePerMillion={pricing.input}
+          outputPricePerMillion={pricing.output}
+          freeTierKind={freeTierKind}
+        />
+      )}
       <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
         {provider}
       </span>
@@ -257,6 +292,8 @@ export function DragThresholdModelSelector({
   description,
   className,
   disableDragOverlay = false,
+  modelPricing,
+  freeTierKinds,
 }: DragThresholdModelSelectorProps) {
   const [activeId, setActiveId] = useState<string | null>(null)
   const [overZone, setOverZone] = useState<string | null>(null)
@@ -446,6 +483,8 @@ export function DragThresholdModelSelector({
                     isEnabled={true}
                     disabled={disabled}
                     onToggle={() => handleToggle(item.provider, item.modelId)}
+                    pricing={modelPricing?.[`${item.provider}/${item.modelId}`]}
+                    freeTierKind={freeTierKinds?.[item.provider]}
                   />
                 ))
               )}
@@ -484,6 +523,8 @@ export function DragThresholdModelSelector({
                     isEnabled={false}
                     disabled={disabled}
                     onToggle={() => handleToggle(item.provider, item.modelId)}
+                    pricing={modelPricing?.[`${item.provider}/${item.modelId}`]}
+                    freeTierKind={freeTierKinds?.[item.provider]}
                   />
                 ))
               )}
@@ -500,6 +541,8 @@ export function DragThresholdModelSelector({
                 modelId={activeItem.modelId}
                 isEnabled={activeIsEnabled}
                 index={activeIndex}
+                pricing={modelPricing?.[`${activeItem.provider}/${activeItem.modelId}`]}
+                freeTierKind={freeTierKinds?.[activeItem.provider]}
               />
             ) : null}
           </DragOverlay>

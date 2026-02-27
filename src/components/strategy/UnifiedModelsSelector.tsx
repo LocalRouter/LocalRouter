@@ -19,6 +19,9 @@ import { ChevronRight, ChevronDown } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { PermissionStateButton } from "@/components/permissions/PermissionStateButton"
 import type { PermissionState, ModelPermissions } from "@/components/permissions"
+import { ModelPricingBadge } from "@/components/shared/model-pricing-badge"
+import type { ModelPricingInfo } from "./DragThresholdModelSelector"
+import type { FreeTierKind } from "@/types/tauri-commands"
 import { useState } from "react"
 
 export interface Model {
@@ -47,6 +50,10 @@ interface UnifiedModelsSelectorProps {
   onClientUpdate: () => void
   disabled?: boolean
   className?: string
+  /** Optional pricing data keyed by "provider/modelId" */
+  modelPricing?: Record<string, ModelPricingInfo>
+  /** Optional free tier kinds keyed by provider instance name */
+  freeTierKinds?: Record<string, FreeTierKind>
 }
 
 export function UnifiedModelsSelector({
@@ -58,6 +65,8 @@ export function UnifiedModelsSelector({
   onClientUpdate,
   disabled = false,
   className,
+  modelPricing,
+  freeTierKinds,
 }: UnifiedModelsSelectorProps) {
   const [expandedProviders, setExpandedProviders] = useState<Set<string>>(new Set())
   const [saving, setSaving] = useState(false)
@@ -483,6 +492,13 @@ export function UnifiedModelsSelector({
                     )}>
                       {model.id}
                     </span>
+                    {modelPricing && (
+                      <ModelPricingBadge
+                        inputPricePerMillion={modelPricing[`${provider}/${model.id}`]?.input}
+                        outputPricePerMillion={modelPricing[`${provider}/${model.id}`]?.output}
+                        freeTierKind={freeTierKinds?.[provider]}
+                      />
+                    )}
                     <PermissionStateButton
                       value={modelPermission}
                       onChange={(state) => handleModelChange(provider, model.id, state)}

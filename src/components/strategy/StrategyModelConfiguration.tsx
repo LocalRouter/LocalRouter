@@ -30,7 +30,8 @@ import {cn} from "@/lib/utils"
 import {AllowedModelsSelection, AllowedModelsSelector, Model,} from "./AllowedModelsSelector"
 import {UnifiedModelsSelector} from "./UnifiedModelsSelector"
 import type { ModelPermissions } from "@/components/permissions"
-import {DragThresholdModelSelector} from "./DragThresholdModelSelector"
+import {DragThresholdModelSelector, ModelPricingInfo} from "./DragThresholdModelSelector"
+import type { FreeTierKind, ProviderFreeTierStatus } from "@/types/tauri-commands"
 import {ThresholdSelector} from "@/components/routellm/ThresholdSelector"
 import {ROUTELLM_REQUIREMENTS, RouteLLMStatus} from "@/components/routellm/types"
 
@@ -106,6 +107,8 @@ export function StrategyModelConfiguration({
     const [models, setModels] = useState<Model[]>([])
     const [loading, setLoading] = useState(true)
     const [saving, setSaving] = useState(false)
+    const [modelPricing, setModelPricing] = useState<Record<string, ModelPricingInfo>>({})
+    const [freeTierKinds, setFreeTierKinds] = useState<Record<string, FreeTierKind>>({})
 
     // Routing mode: 'allowed' shows only selected models, 'auto' shows only the auto router model
     const [routingMode, setRoutingMode] = useState<RoutingMode>('allowed')
@@ -187,6 +190,13 @@ export function StrategyModelConfiguration({
         }
     }, [routellmStatus?.state])
 
+    interface DetailedModelInfo {
+        model_id: string
+        provider_instance: string
+        input_price_per_million?: number | null
+        output_price_per_million?: number | null
+    }
+
     const loadData = async () => {
         setLoading(true)
         try {
@@ -198,6 +208,30 @@ export function StrategyModelConfiguration({
             setModels(modelsData)
             // Set routing mode based on loaded strategy
             setRoutingMode(strategyData.auto_config?.enabled ? 'auto' : 'allowed')
+
+            // Load pricing and free tier data in the background
+            try {
+                const [detailedModels, ftStatuses] = await Promise.all([
+                    invoke<DetailedModelInfo[]>("list_all_models_detailed"),
+                    invoke<ProviderFreeTierStatus[]>("get_free_tier_status"),
+                ])
+                const pricingMap: Record<string, ModelPricingInfo> = {}
+                for (const m of detailedModels) {
+                    pricingMap[`${m.provider_instance}/${m.model_id}`] = {
+                        input: m.input_price_per_million,
+                        output: m.output_price_per_million,
+                    }
+                }
+                setModelPricing(pricingMap)
+
+                const ftMap: Record<string, FreeTierKind> = {}
+                for (const s of ftStatuses) {
+                    ftMap[s.provider_instance] = s.free_tier
+                }
+                setFreeTierKinds(ftMap)
+            } catch (pricingError) {
+                console.error("Failed to load pricing/free tier data:", pricingError)
+            }
         } catch (error) {
             console.error("Failed to load strategy:", error)
         } finally {
@@ -478,6 +512,8 @@ export function StrategyModelConfiguration({
                                             onStrategyChange={handleAllowedModelsChange}
                                             onClientUpdate={clientContext.onClientUpdate}
                                             disabled={readOnly || saving}
+                                            modelPricing={modelPricing}
+                                            freeTierKinds={freeTierKinds}
                                         />
                                     ) : (
                                         <AllowedModelsSelector
@@ -485,6 +521,8 @@ export function StrategyModelConfiguration({
                                             value={strategy.allowed_models}
                                             onChange={handleAllowedModelsChange}
                                             disabled={readOnly || saving}
+                                            modelPricing={modelPricing}
+                                            freeTierKinds={freeTierKinds}
                                         />
                                     )}
                                 </CardContent>
@@ -548,6 +586,8 @@ export function StrategyModelConfiguration({
                                                     enabledModels={autoConfig?.prioritized_models || []}
                                                     onChange={handlePrioritizedModelsChange}
                                                     disabled={readOnly || saving}
+                                                    modelPricing={modelPricing}
+                                                    freeTierKinds={freeTierKinds}
                                                 />
                                             </CardContent>
                                         </Card>
@@ -640,6 +680,8 @@ export function StrategyModelConfiguration({
                                                             enabledModels={routellmConfig.weak_models}
                                                             onChange={handleWeakModelsChange}
                                                             disabled={readOnly || saving}
+                                                            modelPricing={modelPricing}
+                                                            freeTierKinds={freeTierKinds}
                                                         />
 
                                                         {/* Threshold Selector */}
