@@ -1736,6 +1736,37 @@ impl Router {
                 model
             );
 
+            // Check backoff state (skip providers with recent 429/402)
+            if let Some(backoff) = self.free_tier_manager.is_in_backoff(provider, model) {
+                debug!("Skipping {}/{}: {}", provider, model, backoff.reason);
+                last_error = Some(RouterError::RateLimited {
+                    provider: provider.clone(),
+                    model: model.clone(),
+                    retry_after_secs: backoff.retry_after_secs,
+                });
+                continue;
+            }
+
+            // Check free tier constraints (when free_tier_only is enabled)
+            if strategy.free_tier_only {
+                let free_tier = self.get_effective_free_tier(provider);
+                let status = self
+                    .free_tier_manager
+                    .classify_model(provider, model, &free_tier);
+                match status {
+                    free_tier::ModelFreeStatus::AlwaysFree
+                    | free_tier::ModelFreeStatus::FreeWithinLimits
+                    | free_tier::ModelFreeStatus::FreeModel => { /* allow */ }
+                    free_tier::ModelFreeStatus::NotFree => {
+                        debug!(
+                            "Skipping {}/{} in free-tier-only mode (embeddings)",
+                            provider, model
+                        );
+                        continue;
+                    }
+                }
+            }
+
             // Check strategy rate limits before trying this model
             if let Err(e) = self.check_strategy_rate_limits(strategy, provider, model) {
                 warn!(
@@ -1783,6 +1814,18 @@ impl Router {
         }
 
         // All models failed
+        if strategy.free_tier_only {
+            let retry_after = self
+                .free_tier_manager
+                .get_min_retry_after(selected_models)
+                .unwrap_or(60);
+            return Err(Self::free_tier_exhausted_error(
+                strategy,
+                retry_after,
+                selected_models.clone(),
+            ));
+        }
+
         Err(AppError::Router(format!(
             "All auto-routing embedding models failed. Last error: {}",
             last_error
@@ -1866,7 +1909,39 @@ impl Router {
             (provider, model)
         };
 
-        // 6. Execute the request
+        // 6. Check free tier constraints for specific model requests
+        if strategy.free_tier_only {
+            let exhausted = vec![(final_provider.clone(), final_model.clone())];
+            // Check backoff first
+            if let Some(backoff) = self
+                .free_tier_manager
+                .is_in_backoff(&final_provider, &final_model)
+            {
+                debug!(
+                    "Specific embedding model {}/{} is in backoff: {}",
+                    final_provider, final_model, backoff.reason
+                );
+                return Err(Self::free_tier_exhausted_error(
+                    &strategy,
+                    backoff.retry_after_secs,
+                    exhausted,
+                ));
+            }
+
+            let free_tier = self.get_effective_free_tier(&final_provider);
+            let status =
+                self.free_tier_manager
+                    .classify_model(&final_provider, &final_model, &free_tier);
+            if matches!(status, free_tier::ModelFreeStatus::NotFree) {
+                debug!(
+                    "Embedding model {}/{} is not free, rejecting in free-tier-only mode",
+                    final_provider, final_model
+                );
+                return Err(Self::free_tier_exhausted_error(&strategy, 0, exhausted));
+            }
+        }
+
+        // 7. Execute the request
         debug!(
             "Executing embedding request for client '{}' on {}/{}",
             client_id, final_provider, final_model

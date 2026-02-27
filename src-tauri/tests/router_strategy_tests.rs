@@ -18,7 +18,9 @@ use localrouter::config::{
 use localrouter::monitoring::metrics::MetricsCollector;
 use localrouter::monitoring::storage::MetricsDatabase;
 use localrouter::providers::registry::ProviderRegistry;
-use localrouter::providers::{ChatMessage, ChatMessageContent, CompletionRequest};
+use localrouter::providers::{
+    ChatMessage, ChatMessageContent, CompletionRequest, EmbeddingInput, EmbeddingRequest,
+};
 use localrouter::router::{RateLimiterManager, Router};
 use localrouter::utils::errors::AppError;
 use std::sync::Arc;
@@ -1532,5 +1534,123 @@ async fn test_free_tier_provider_not_in_config_treated_as_paid() {
             e
         ),
         Ok(_) => panic!("Expected error for unknown provider"),
+    }
+}
+
+// ============================================================================
+// Test 18: BUG - Embedding endpoint bypasses free tier enforcement
+// ============================================================================
+
+/// Helper to create a test embedding request
+fn create_test_embedding_request(model: &str) -> EmbeddingRequest {
+    EmbeddingRequest {
+        model: model.to_string(),
+        input: EmbeddingInput::Single("test embedding input".to_string()),
+        encoding_format: None,
+        dimensions: None,
+        user: None,
+    }
+}
+
+#[tokio::test]
+async fn test_bug_embed_bypasses_free_tier_paid_provider() {
+    // BUG: embed() does NOT check strategy.free_tier_only at all.
+    // A paid provider should be blocked in free tier mode, but embed() skips the check.
+    let allowed_models = AvailableModelsSelection {
+        selected_all: false,
+        selected_providers: vec![],
+        selected_models: vec![("openai".to_string(), "text-embedding-ada-002".to_string())],
+    };
+
+    let mut config = create_free_tier_config(
+        "free-strategy",
+        allowed_models,
+        true, // free_tier_only = true
+        FreeTierFallback::Off,
+    );
+
+    // Add OpenAI provider (no free tier)
+    config.providers.push(ProviderConfig {
+        name: "openai".to_string(),
+        provider_type: ProviderType::OpenAI,
+        enabled: true,
+        provider_config: None,
+        api_key_ref: None,
+        free_tier: None, // Factory default: None (paid)
+    });
+
+    let config_manager = Arc::new(ConfigManager::new(
+        config,
+        std::path::PathBuf::from("/tmp/test_embed_ft.yaml"),
+    ));
+    let provider_registry = Arc::new(ProviderRegistry::new());
+    let rate_limiter = Arc::new(RateLimiterManager::new(None));
+    let metrics_db_path =
+        std::env::temp_dir().join(format!("test_embed_ft_{}.db", uuid::Uuid::new_v4()));
+    let metrics_db = Arc::new(MetricsDatabase::new(metrics_db_path).unwrap());
+    let metrics_collector = Arc::new(MetricsCollector::new(metrics_db));
+    let router = Router::new(
+        config_manager,
+        provider_registry,
+        rate_limiter,
+        metrics_collector,
+        Arc::new(lr_router::FreeTierManager::new(None)),
+    );
+
+    let request = create_test_embedding_request("openai/text-embedding-ada-002");
+    let result = router.embed("test-client", request).await;
+
+    // Should be blocked with FreeTierExhausted (same as complete())
+    // BUG: embed() skips the free tier check entirely, so it gets
+    // "Provider not found" instead of FreeTierExhausted
+    match result {
+        Err(AppError::FreeTierExhausted { .. }) => {
+            // Expected: paid model blocked in free tier mode
+        }
+        Err(AppError::FreeTierFallbackAvailable { .. }) => {
+            // Also acceptable depending on fallback
+        }
+        Err(AppError::Router(msg)) if msg.contains("not found") => {
+            panic!(
+                "BUG: embed() bypasses free tier check - got provider error instead \
+                 of FreeTierExhausted: {}",
+                msg
+            );
+        }
+        Err(e) => panic!(
+            "Expected FreeTierExhausted for paid embedding model, got: {:?}",
+            e
+        ),
+        Ok(_) => panic!("Expected error for paid embedding model in free tier mode"),
+    }
+}
+
+#[tokio::test]
+async fn test_bug_embed_allows_free_provider_in_free_tier_mode() {
+    // Even after the free tier check is added, free providers should still work
+    let allowed_models = AvailableModelsSelection {
+        selected_all: false,
+        selected_providers: vec!["ollama".to_string()],
+        selected_models: vec![],
+    };
+
+    let config = create_free_tier_config(
+        "free-strategy",
+        allowed_models,
+        true,
+        FreeTierFallback::Off,
+    );
+    let router = create_free_tier_router(config);
+
+    let request = create_test_embedding_request("ollama/nomic-embed-text");
+    let result = router.embed("test-client", request).await;
+
+    // Should NOT get FreeTierExhausted for Ollama (AlwaysFreeLocal)
+    match result {
+        Err(AppError::FreeTierExhausted { .. }) => {
+            panic!("Ollama (AlwaysFreeLocal) should not trigger FreeTierExhausted for embeddings")
+        }
+        Err(_) => {} // Expected: provider not found in registry (but free tier check passed)
+        Ok(_) => panic!("Expected error (no provider in registry)"),
     }
 }

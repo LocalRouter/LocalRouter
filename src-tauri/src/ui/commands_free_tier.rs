@@ -23,8 +23,12 @@ pub struct ProviderFreeTierStatus {
     pub rate_rpd_limit: Option<u32>,
     pub rate_tpm_used: Option<u64>,
     pub rate_tpm_limit: Option<u64>,
+    pub rate_tpd_used: Option<u64>,
+    pub rate_tpd_limit: Option<u64>,
     pub rate_monthly_calls_used: Option<u32>,
     pub rate_monthly_calls_limit: Option<u32>,
+    pub rate_monthly_tokens_used: Option<u64>,
+    pub rate_monthly_tokens_limit: Option<u64>,
     // Credit-based status
     pub credit_used_usd: Option<f64>,
     pub credit_budget_usd: Option<f64>,
@@ -74,8 +78,12 @@ pub async fn get_free_tier_status(
             rate_rpd_limit: None,
             rate_tpm_used: None,
             rate_tpm_limit: None,
+            rate_tpd_used: None,
+            rate_tpd_limit: None,
             rate_monthly_calls_used: None,
             rate_monthly_calls_limit: None,
+            rate_monthly_tokens_used: None,
+            rate_monthly_tokens_limit: None,
             credit_used_usd: None,
             credit_budget_usd: None,
             credit_remaining_usd: None,
@@ -92,8 +100,9 @@ pub async fn get_free_tier_status(
                 max_rpm,
                 max_rpd,
                 max_tpm,
+                max_tpd,
                 max_monthly_calls,
-                ..
+                max_monthly_tokens,
             } => {
                 if let Some(tracker) = free_tier_manager.get_rate_tracker(&provider.name) {
                     if *max_rpm > 0 {
@@ -108,9 +117,17 @@ pub async fn get_free_tier_status(
                         status.rate_tpm_used = Some(tracker.minute_tokens);
                         status.rate_tpm_limit = Some(*max_tpm);
                     }
+                    if *max_tpd > 0 {
+                        status.rate_tpd_used = Some(tracker.daily_tokens);
+                        status.rate_tpd_limit = Some(*max_tpd);
+                    }
                     if *max_monthly_calls > 0 {
                         status.rate_monthly_calls_used = Some(tracker.monthly_requests);
                         status.rate_monthly_calls_limit = Some(*max_monthly_calls);
+                    }
+                    if *max_monthly_tokens > 0 {
+                        status.rate_monthly_tokens_used = Some(tracker.monthly_tokens);
+                        status.rate_monthly_tokens_limit = Some(*max_monthly_tokens);
                     }
                 }
                 let cap = free_tier_manager
@@ -143,9 +160,30 @@ pub async fn get_free_tier_status(
                 status.has_capacity = true;
                 status.status_message = "Always free".to_string();
             }
-            FreeTierKind::FreeModelsOnly { .. } => {
-                status.has_capacity = true;
-                status.status_message = "Free models available".to_string();
+            FreeTierKind::FreeModelsOnly { max_rpm, .. } => {
+                if *max_rpm > 0 {
+                    if let Some(tracker) = free_tier_manager.get_rate_tracker(&provider.name) {
+                        status.rate_rpm_used = Some(tracker.minute_requests);
+                        status.rate_rpm_limit = Some(*max_rpm);
+                        if tracker.minute_requests >= *max_rpm {
+                            status.has_capacity = false;
+                            status.status_message =
+                                format!("RPM limit reached: {}/{}", tracker.minute_requests, max_rpm);
+                        } else {
+                            status.has_capacity = true;
+                            status.status_message = format!(
+                                "Free models available ({}/{} RPM used)",
+                                tracker.minute_requests, max_rpm
+                            );
+                        }
+                    } else {
+                        status.has_capacity = true;
+                        status.status_message = "Free models available".to_string();
+                    }
+                } else {
+                    status.has_capacity = true;
+                    status.status_message = "Free models available".to_string();
+                }
             }
             FreeTierKind::None => {
                 status.has_capacity = false;

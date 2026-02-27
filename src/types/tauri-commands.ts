@@ -225,8 +225,12 @@ export interface ProviderFreeTierStatus {
   rate_rpd_limit: number | null
   rate_tpm_used: number | null
   rate_tpm_limit: number | null
+  rate_tpd_used: number | null
+  rate_tpd_limit: number | null
   rate_monthly_calls_used: number | null
   rate_monthly_calls_limit: number | null
+  rate_monthly_tokens_used: number | null
+  rate_monthly_tokens_limit: number | null
   credit_used_usd: number | null
   credit_budget_usd: number | null
   credit_remaining_usd: number | null

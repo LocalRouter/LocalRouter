@@ -1061,7 +1061,7 @@ export function ProvidersPanel({
                                         <SelectTrigger className="h-8 text-xs">
                                           <SelectValue />
                                         </SelectTrigger>
-                                        <SelectContent className="max-w-[300px]">
+                                        <SelectContent>
                                           {([
                                             ['none', 'No Free Tier'],
                                             ['always_free_local', 'Always Free (Local)'],
@@ -1073,7 +1073,7 @@ export function ProvidersPanel({
                                             <SelectItem key={value} value={value} className="text-xs py-2">
                                               <div>
                                                 <div className="font-medium">{label}</div>
-                                                <div className="text-[11px] text-muted-foreground font-normal mt-0.5 whitespace-normal">{FREE_TIER_DESCRIPTIONS[value]}</div>
+                                                <div className="text-[11px] text-muted-foreground font-normal mt-0.5 whitespace-normal break-words">{FREE_TIER_DESCRIPTIONS[value]}</div>
                                               </div>
                                             </SelectItem>
                                           ))}
@@ -1306,6 +1306,24 @@ export function ProvidersPanel({
                                         </div>
                                       </div>
                                     )}
+                                    {status.rate_tpd_limit != null && (
+                                      <div>
+                                        <div className="flex justify-between text-xs mb-1">
+                                          <span className="text-muted-foreground">Tokens/day</span>
+                                          <span>{(status.rate_tpd_used ?? 0).toLocaleString()} / {status.rate_tpd_limit.toLocaleString()}</span>
+                                        </div>
+                                        <div className="h-1.5 rounded-full bg-muted overflow-hidden">
+                                          <div
+                                            className={`h-full rounded-full ${
+                                              (status.rate_tpd_used ?? 0) / status.rate_tpd_limit > 0.9 ? 'bg-red-500' :
+                                              (status.rate_tpd_used ?? 0) / status.rate_tpd_limit > 0.7 ? 'bg-amber-500' :
+                                              'bg-green-500'
+                                            }`}
+                                            style={{ width: `${Math.min(100, ((status.rate_tpd_used ?? 0) / status.rate_tpd_limit) * 100)}%` }}
+                                          />
+                                        </div>
+                                      </div>
+                                    )}
                                     {status.rate_monthly_calls_limit != null && (
                                       <div>
                                         <div className="flex justify-between text-xs mb-1">
@@ -1320,6 +1338,24 @@ export function ProvidersPanel({
                                               'bg-green-500'
                                             }`}
                                             style={{ width: `${Math.min(100, ((status.rate_monthly_calls_used ?? 0) / status.rate_monthly_calls_limit) * 100)}%` }}
+                                          />
+                                        </div>
+                                      </div>
+                                    )}
+                                    {status.rate_monthly_tokens_limit != null && (
+                                      <div>
+                                        <div className="flex justify-between text-xs mb-1">
+                                          <span className="text-muted-foreground">Monthly tokens</span>
+                                          <span>{(status.rate_monthly_tokens_used ?? 0).toLocaleString()} / {status.rate_monthly_tokens_limit.toLocaleString()}</span>
+                                        </div>
+                                        <div className="h-1.5 rounded-full bg-muted overflow-hidden">
+                                          <div
+                                            className={`h-full rounded-full ${
+                                              (status.rate_monthly_tokens_used ?? 0) / status.rate_monthly_tokens_limit > 0.9 ? 'bg-red-500' :
+                                              (status.rate_monthly_tokens_used ?? 0) / status.rate_monthly_tokens_limit > 0.7 ? 'bg-amber-500' :
+                                              'bg-green-500'
+                                            }`}
+                                            style={{ width: `${Math.min(100, ((status.rate_monthly_tokens_used ?? 0) / status.rate_monthly_tokens_limit) * 100)}%` }}
                                           />
                                         </div>
                                       </div>
