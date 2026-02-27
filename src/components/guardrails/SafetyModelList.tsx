@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
-import { Trash2, Cloud, Download, AlertTriangle } from "lucide-react"
+import { Trash2, Download, AlertTriangle } from "lucide-react"
 import { Button } from "@/components/ui/Button"
 import { Badge } from "@/components/ui/Badge"
 import { Progress } from "@/components/ui/progress"
@@ -66,9 +66,6 @@ export function SafetyModelList({
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2 min-w-0">
                 <span className="text-sm font-medium truncate">{model.label}</span>
-                <Badge variant="outline" className="text-xs shrink-0">
-                  <Cloud className="h-3 w-3 mr-1" />Provider
-                </Badge>
                 {loadError ? (
                   <Badge variant="destructive" className="text-xs shrink-0" title={loadError}>
                     <AlertTriangle className="h-3 w-3 mr-1" />Load failed
