@@ -498,6 +498,60 @@ impl TrayGraphManager {
         // Determine overlay (Firewall > Health > Update > None)
         let overlay = determine_overlay(app_handle, dark_mode);
 
+        // Static mode: restore original icon instead of generating graph frame
+        if !tray_graph_enabled {
+            const STATIC_ICON: &[u8] = include_bytes!("../../icons/32x32.png");
+
+            let icon_bytes: Vec<u8>;
+            let use_template: bool;
+
+            if overlay == TrayOverlay::None {
+                // No overlay: use the original static icon with template mode
+                icon_bytes = STATIC_ICON.to_vec();
+                use_template = true;
+            } else {
+                // Overlay present: generate empty graph with overlay indicator
+                let graph_config = platform_graph_config();
+                icon_bytes = crate::ui::tray_graph::generate_graph(
+                    &[],
+                    &graph_config,
+                    overlay,
+                    dark_mode,
+                )
+                .ok_or_else(|| anyhow::anyhow!("Failed to generate overlay PNG"))?;
+                use_template = false;
+            }
+
+            // Hash check to avoid redundant updates
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            icon_bytes.hash(&mut hasher);
+            let current_hash = hasher.finish();
+
+            {
+                let last_hash = *last_png_hash.read();
+                if last_hash == current_hash && last_hash != 0 {
+                    return Ok(());
+                }
+            }
+
+            if let Some(tray) = app_handle.tray_by_id("main") {
+                let icon = tauri::image::Image::from_bytes(&icon_bytes)
+                    .map_err(|e| anyhow::anyhow!("Failed to create image: {}", e))?;
+                tray.set_icon(Some(icon))
+                    .map_err(|e| anyhow::anyhow!("Failed to set tray icon: {}", e))?;
+                tray.set_icon_as_template(use_template)
+                    .map_err(|e| anyhow::anyhow!("Failed to set template mode: {}", e))?;
+                *last_png_hash.write() = current_hash;
+                debug!(
+                    "Tray icon updated: static mode (template={})",
+                    use_template
+                );
+            }
+
+            return Ok(());
+        }
+
         // Generate graph PNG with overlay
         let graph_config = platform_graph_config();
         let png_bytes =
