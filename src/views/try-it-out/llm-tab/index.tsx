@@ -171,9 +171,9 @@ export function LlmTab({ initialMode, initialProvider, initialClientId }: LlmTab
       }
     }
     if (initialMode === "client" && initialClientId && clients.length > 0) {
-      const match = clients.find(c => c.id === initialClientId)
+      const match = clients.find(c => c.client_id === initialClientId)
       if (match) {
-        setSelectedClientId(initialClientId)
+        setSelectedClientId(match.id)
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -265,15 +265,19 @@ export function LlmTab({ initialMode, initialProvider, initialClientId }: LlmTab
       const modelsList = response.data || []
       setModels(modelsList.map(m => ({ id: m.id, object: m.object, owned_by: m.owned_by })))
 
-      if (!selectedModel && modelsList.length > 0) {
-        setSelectedModel(modelsList[0].id)
-      }
+      // Auto-select first model if none selected or current selection not in new list
+      // Use functional update to avoid selectedModel dependency and race conditions
+      setSelectedModel(prev => {
+        if (modelsList.length === 0) return ""
+        if (!prev || !modelsList.some(m => m.id === prev)) return modelsList[0].id
+        return prev
+      })
     } catch (error) {
       console.error("Failed to fetch models:", error)
     } finally {
       setLoadingModels(false)
     }
-  }, [openaiClient, selectedModel])
+  }, [openaiClient])
 
   // Fetch models when auth changes
   useEffect(() => {
@@ -281,13 +285,16 @@ export function LlmTab({ initialMode, initialProvider, initialClientId }: LlmTab
       // For direct mode, filter to provider's models
       const filtered = providerModels.filter(m => m.provider === selectedProvider)
       setModels(filtered.map(m => ({ id: m.id, object: "model", owned_by: m.provider })))
-      if (filtered.length > 0 && !selectedModel) {
-        setSelectedModel(filtered[0].id)
-      }
+      setSelectedModel(prev => {
+        if (filtered.length === 0) return ""
+        if (!prev || !filtered.some(m => m.id === prev)) return filtered[0].id
+        return prev
+      })
     } else if (openaiClient) {
       fetchModels()
     }
-  }, [mode, selectedProvider, serverPort, providerModels, openaiClient, fetchModels, selectedModel])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, selectedProvider, serverPort, providerModels, openaiClient, fetchModels])
 
   const getModeDescription = () => {
     switch (mode) {
