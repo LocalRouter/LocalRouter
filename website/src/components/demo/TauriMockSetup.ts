@@ -707,11 +707,43 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   // Models
   // ============================================================================
   'list_all_models': () => mockData.models,
-  'list_all_models_detailed': () => mockData.models.map(m => ({
-    ...m,
-    capabilities: ['chat', 'completion'],
-    pricing: { input: 0.001, output: 0.002 },
-  })),
+  'list_all_models_detailed': () => {
+    const pricingMap: Record<string, { input: number; output: number; source: string }> = {
+      'gpt-4o': { input: 2.50, output: 10.00, source: 'catalog' },
+      'gpt-4o-mini': { input: 0.15, output: 0.60, source: 'catalog' },
+      'gpt-4-turbo': { input: 10.00, output: 30.00, source: 'catalog' },
+      'o1-preview': { input: 15.00, output: 60.00, source: 'catalog' },
+      'o1-mini': { input: 3.00, output: 12.00, source: 'catalog' },
+      'claude-3-5-sonnet-20241022': { input: 3.00, output: 15.00, source: 'catalog' },
+      'claude-3-5-haiku-20241022': { input: 0.80, output: 4.00, source: 'catalog' },
+      'claude-3-opus-20240229': { input: 15.00, output: 75.00, source: 'catalog' },
+      'gemini-1.5-pro': { input: 1.25, output: 5.00, source: 'catalog' },
+      'gemini-1.5-flash': { input: 0.075, output: 0.30, source: 'catalog' },
+    }
+    const providerTypeMap: Record<string, string> = {
+      'openai-primary': 'openai',
+      'anthropic-main': 'anthropic',
+      'ollama-local': 'ollama',
+      'gemini-google': 'gemini',
+      'groq-fast': 'groq',
+      'openrouter-backup': 'openrouter',
+    }
+    return mockData.models.map(m => {
+      const pricing = pricingMap[m.id]
+      return {
+        model_id: m.id,
+        provider_instance: m.provider,
+        provider_type: providerTypeMap[m.provider] || 'unknown',
+        capabilities: ['chat', 'completion'],
+        context_window: m.context_length,
+        supports_streaming: true,
+        input_price_per_million: pricing?.input ?? null,
+        output_price_per_million: pricing?.output ?? null,
+        pricing_source: pricing?.source ?? null,
+        parameter_count: null,
+      }
+    })
+  },
   'list_provider_models': (args) => {
     const provider = args?.instanceName || args?.provider
     return mockData.models.filter(m => m.provider === provider)

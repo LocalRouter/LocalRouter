@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { ProvidersIcon } from "@/components/icons/category-icons"
 import { ProvidersPanel, HealthStatus, HealthCheckEvent } from "./providers-panel"
+import { ModelsPanel } from "./models-panel"
 
 interface LlmProvidersViewProps {
   activeSubTab: string | null
@@ -91,8 +92,8 @@ export function ResourcesView({ activeSubTab, onTabChange }: LlmProvidersViewPro
   }, [])
 
   // Parse subTab to determine which resource type and item is selected
-  // Format: "providers"
-  // Or: "providers/instance-name"
+  // Format: "providers" or "models"
+  // Or: "providers/instance-name" or "models/provider/model-id"
   // Or: "providers/add/provider-type" for opening add dialog
   const parseSubTab = (subTab: string | null) => {
     if (!subTab) return { resourceType: "providers", itemId: null, addType: null }
@@ -134,6 +135,7 @@ export function ResourcesView({ activeSubTab, onTabChange }: LlmProvidersViewPro
       >
         <TabsList className="flex-shrink-0 w-fit">
           <TabsTrigger value="providers">Providers</TabsTrigger>
+          <TabsTrigger value="models">All Models</TabsTrigger>
         </TabsList>
 
         <TabsContent value="providers" className="flex-1 min-h-0 mt-4">
@@ -149,6 +151,14 @@ export function ResourcesView({ activeSubTab, onTabChange }: LlmProvidersViewPro
             }}
             onRefreshHealth={refreshHealth}
             initialAddProviderType={resourceType === "providers" ? addType : null}
+            onViewChange={onTabChange}
+          />
+        </TabsContent>
+
+        <TabsContent value="models" className="flex-1 min-h-0 mt-4">
+          <ModelsPanel
+            selectedId={resourceType === "models" ? itemId : null}
+            onSelect={(id) => handleItemSelect("models", id)}
             onViewChange={onTabChange}
           />
         </TabsContent>

@@ -50,6 +50,7 @@ import ProviderForm, { ProviderType } from "@/components/ProviderForm"
 import ProviderIcon from "@/components/ProviderIcon"
 import { cn } from "@/lib/utils"
 import type { FreeTierKind, ProviderFreeTierStatus } from "@/types/tauri-commands"
+import { ModelPricingBadge } from "@/components/shared/model-pricing-badge"
 
 const FREE_TIER_LABELS: Record<string, string> = {
   none: 'No Free Tier',
@@ -100,6 +101,19 @@ interface ModelInfo {
   capabilities: string[]
 }
 
+interface DetailedModel {
+  model_id: string
+  provider_instance: string
+  provider_type: string
+  capabilities: string[]
+  context_window: number
+  supports_streaming: boolean
+  input_price_per_million?: number
+  output_price_per_million?: number
+  parameter_count?: string
+  pricing_source?: string
+}
+
 interface ProvidersPanelProps {
   selectedId: string | null
   onSelect: (id: string | null) => void
@@ -130,6 +144,10 @@ export function ProvidersPanel({
   const [createDialogOpen, setCreateDialogOpen] = useState(false)
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
   const [providerToDelete, setProviderToDelete] = useState<Provider | null>(null)
+
+  // Detailed models for the Models tab
+  const [detailedModels, setDetailedModels] = useState<DetailedModel[]>([])
+  const [detailedModelsLoading, setDetailedModelsLoading] = useState(false)
 
   // Detail tab state
   const [detailTab, setDetailTab] = useState("info")
@@ -288,6 +306,19 @@ export function ProvidersPanel({
       setModels([])
     } finally {
       setModelsLoading(false)
+    }
+  }, [])
+
+  const loadDetailedModels = useCallback(async (instanceName: string) => {
+    setDetailedModelsLoading(true)
+    try {
+      const allModels = await invoke<DetailedModel[]>("list_all_models_detailed")
+      setDetailedModels(allModels.filter(m => m.provider_instance === instanceName))
+    } catch (error) {
+      console.error("Failed to load detailed models:", error)
+      setDetailedModels([])
+    } finally {
+      setDetailedModelsLoading(false)
     }
   }, [])
 
@@ -590,8 +621,9 @@ export function ProvidersPanel({
                 <Tabs value={detailTab} onValueChange={setDetailTab}>
                   <TabsList>
                     <TabsTrigger value="info">Info</TabsTrigger>
-                    <TabsTrigger value="settings">Settings</TabsTrigger>
+                    <TabsTrigger value="models" onClick={() => loadDetailedModels(selectedProvider.instance_name)}>Models</TabsTrigger>
                     <TabsTrigger value="free-tier" onClick={() => loadFreeTierStatus(selectedProvider.instance_name)}>Free Tier</TabsTrigger>
+                    <TabsTrigger value="settings">Settings</TabsTrigger>
                   </TabsList>
 
                   <TabsContent value="info">
@@ -734,6 +766,64 @@ export function ProvidersPanel({
                           )}
                         </CardContent>
                       </Card>
+                    </div>
+                  </TabsContent>
+
+                  <TabsContent value="models">
+                    <div className="space-y-4">
+                      <div className="flex items-center justify-between">
+                        <p className="text-sm text-muted-foreground">
+                          {detailedModelsLoading ? "Loading..." : `${detailedModels.length} model${detailedModels.length !== 1 ? "s" : ""}`}
+                        </p>
+                      </div>
+                      {detailedModelsLoading ? (
+                        <div className="flex items-center gap-2 text-muted-foreground">
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                          <span>Loading models...</span>
+                        </div>
+                      ) : detailedModels.length === 0 ? (
+                        <p className="text-sm text-muted-foreground">No models available</p>
+                      ) : (
+                        <div className="space-y-1">
+                          {detailedModels.map((model) => {
+                            const ftStatus = freeTierStatus[selectedProvider.instance_name]
+                            return (
+                              <div
+                                key={model.model_id}
+                                className="flex items-center justify-between p-3 rounded-md hover:bg-muted cursor-pointer"
+                                onClick={() => {
+                                  if (onViewChange) {
+                                    onViewChange("resources", `models/${model.provider_instance}/${model.model_id}`)
+                                  }
+                                }}
+                              >
+                                <div className="min-w-0 flex-1">
+                                  <p className="font-medium text-sm truncate">{model.model_id}</p>
+                                  {model.parameter_count && (
+                                    <p className="text-xs text-muted-foreground">{model.parameter_count}</p>
+                                  )}
+                                </div>
+                                <div className="flex items-center gap-3 ml-2">
+                                  <ModelPricingBadge
+                                    inputPricePerMillion={model.input_price_per_million}
+                                    outputPricePerMillion={model.output_price_per_million}
+                                    freeTierKind={ftStatus?.free_tier}
+                                  />
+                                  {model.context_window > 0 && (
+                                    <Badge variant="secondary" className="text-xs whitespace-nowrap">
+                                      {model.context_window >= 1000000
+                                        ? `${(model.context_window / 1000000).toFixed(1)}M`
+                                        : model.context_window >= 1000
+                                        ? `${Math.round(model.context_window / 1000)}k`
+                                        : model.context_window} ctx
+                                    </Badge>
+                                  )}
+                                </div>
+                              </div>
+                            )
+                          })}
+                        </div>
+                      )}
                     </div>
                   </TabsContent>
 
