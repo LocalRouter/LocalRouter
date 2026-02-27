@@ -37,6 +37,12 @@ pub enum AppError {
     #[error("Free tier exhausted (retry after {retry_after_secs}s)")]
     FreeTierExhausted { retry_after_secs: u64 },
 
+    #[error("Free tier exhausted, paid fallback available")]
+    FreeTierFallbackAvailable {
+        retry_after_secs: u64,
+        exhausted_models: Vec<(String, String)>,
+    },
+
     #[error("Internal server error: {0}")]
     Internal(String),
 

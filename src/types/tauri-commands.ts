@@ -161,6 +161,9 @@ export interface StrategyRateLimit {
  * Strategy configuration.
  * Rust: crates/lr-config/src/types.rs - Strategy struct
  */
+/** Rust: crates/lr-config/src/types.rs - FreeTierFallback enum */
+export type FreeTierFallback = 'off' | 'ask' | 'allow'
+
 export interface Strategy {
   id: string
   name: string
@@ -169,6 +172,7 @@ export interface Strategy {
   auto_config?: AutoModelConfig | null
   rate_limits: StrategyRateLimit[]
   free_tier_only?: boolean
+  free_tier_fallback?: FreeTierFallback
 }
 
 // =============================================================================
@@ -1282,6 +1286,7 @@ export interface UpdateStrategyParams {
   autoConfig?: AutoModelConfig | null
   rateLimits?: StrategyRateLimit[] | null
   freeTierOnly?: boolean | null
+  freeTierFallback?: FreeTierFallback | null
 }
 
 /** Params for delete_strategy */

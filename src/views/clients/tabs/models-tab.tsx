@@ -152,12 +152,43 @@ export function ClientModelsTab({
         autoConfig: null,
         rateLimits: null,
         freeTierOnly: enabled,
+        freeTierFallback: null,
       })
       toast.success(enabled ? "Free-tier mode enabled" : "Free-tier mode disabled")
       onUpdate()
     } catch (error) {
       console.error("Failed to update free tier mode:", error)
       toast.error("Failed to update free tier mode")
+      loadStrategies(false)
+    }
+  }, [currentStrategy, onUpdate])
+
+  // Handle free tier fallback change
+  const handleFreeTierFallbackChange = useCallback(async (value: string) => {
+    if (!currentStrategy) return
+    const fallback = value as 'off' | 'ask' | 'allow'
+
+    // Update local state immediately
+    setStrategies(prev => prev.map(s =>
+      s.id === currentStrategy.id
+        ? { ...s, free_tier_fallback: fallback }
+        : s
+    ))
+
+    try {
+      await invoke("update_strategy", {
+        strategyId: currentStrategy.id,
+        name: null,
+        allowedModels: null,
+        autoConfig: null,
+        rateLimits: null,
+        freeTierOnly: null,
+        freeTierFallback: fallback,
+      })
+      onUpdate()
+    } catch (error) {
+      console.error("Failed to update free tier fallback:", error)
+      toast.error("Failed to update paid fallback setting")
       loadStrategies(false)
     }
   }, [currentStrategy, onUpdate])
@@ -316,31 +347,54 @@ export function ClientModelsTab({
 
           {/* Free-Tier Mode */}
           <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2 text-base">
-                <Coins className="h-4 w-4" />
-                Free-Tier Mode
-              </CardTitle>
-              <CardDescription>
-                Restrict routing to free-tier providers only
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              {currentStrategy && (
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-sm font-medium">Free-tier only</p>
-                    <p className="text-sm text-muted-foreground">
-                      Only route to providers with available free-tier capacity. Returns 429 when all free resources are exhausted.
-                    </p>
-                  </div>
+            <CardHeader className="pb-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle className="flex items-center gap-2 text-base">
+                    <Coins className="h-4 w-4" />
+                    Free-Tier Mode
+                  </CardTitle>
+                  <CardDescription>
+                    Restrict model usage to Free and Free-tier only. For Auto Routing, will move onto using next model if model usage limits are reached. Note that completely Free models such as local models will be used indefinitely and should be placed lower in priority as a fallback.
+                  </CardDescription>
+                </div>
+                {currentStrategy && (
                   <Switch
                     checked={currentStrategy.free_tier_only ?? false}
                     onCheckedChange={handleFreeTierToggle}
                   />
+                )}
+              </div>
+            </CardHeader>
+            {currentStrategy?.free_tier_only && (
+              <CardContent className="pt-0">
+                <div className="border-t pt-3">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <span className="text-sm font-medium">Paid Fallback</span>
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        What to do when free-tier usage is depleted
+                      </p>
+                    </div>
+                    <div className="flex gap-1">
+                      {(['off', 'ask', 'allow'] as const).map((value) => (
+                        <button
+                          key={value}
+                          onClick={() => handleFreeTierFallbackChange(value)}
+                          className={`px-3 py-1 text-xs rounded-md border transition-colors ${
+                            (currentStrategy.free_tier_fallback ?? 'off') === value
+                              ? 'bg-primary text-primary-foreground border-primary'
+                              : 'bg-background hover:bg-muted border-border'
+                          }`}
+                        >
+                          {value === 'off' ? 'Off' : value === 'ask' ? 'Ask' : 'Allow'}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
                 </div>
-              )}
-            </CardContent>
+              </CardContent>
+            )}
           </Card>
 
           {/* Model Configuration - with unified permissions when using Allowed Models mode */}

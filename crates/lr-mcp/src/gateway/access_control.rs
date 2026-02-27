@@ -3,7 +3,9 @@
 //! Resolves `PermissionState` into access decisions for all resource types:
 //! MCP tools, skills, marketplace, and models.
 
-use lr_config::{McpPermissions, ModelPermissions, PermissionState, SkillsPermissions};
+use lr_config::{
+    FreeTierFallback, McpPermissions, ModelPermissions, PermissionState, SkillsPermissions,
+};
 
 /// Access decision resolved from PermissionState
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -113,6 +115,10 @@ pub enum FirewallCheckContext<'a> {
         has_time_based_denial: bool,
         category_actions_empty: bool,
     },
+    FreeTierFallback {
+        fallback_mode: &'a FreeTierFallback,
+        has_time_based_approval: bool,
+    },
 }
 
 /// Single source of truth: determines whether a request needs a firewall approval popup.
@@ -198,6 +204,20 @@ pub fn check_needs_approval(ctx: &FirewallCheckContext) -> FirewallCheckResult {
                 FirewallCheckResult::Ask
             }
         }
+        FirewallCheckContext::FreeTierFallback {
+            fallback_mode,
+            has_time_based_approval,
+        } => match fallback_mode {
+            FreeTierFallback::Off => FirewallCheckResult::Deny,
+            FreeTierFallback::Allow => FirewallCheckResult::Allow,
+            FreeTierFallback::Ask => {
+                if *has_time_based_approval {
+                    FirewallCheckResult::Allow
+                } else {
+                    FirewallCheckResult::Ask
+                }
+            }
+        },
     }
 }
 
@@ -852,5 +872,57 @@ mod tests {
             category_actions_empty: false,
         };
         assert_eq!(check_needs_approval(&ctx), FirewallCheckResult::Ask);
+    }
+
+    // --- FreeTierFallback variants ---
+
+    #[test]
+    fn test_check_free_tier_fallback_off() {
+        let mode = FreeTierFallback::Off;
+        let ctx = FirewallCheckContext::FreeTierFallback {
+            fallback_mode: &mode,
+            has_time_based_approval: false,
+        };
+        assert_eq!(check_needs_approval(&ctx), FirewallCheckResult::Deny);
+    }
+
+    #[test]
+    fn test_check_free_tier_fallback_off_ignores_approval() {
+        let mode = FreeTierFallback::Off;
+        let ctx = FirewallCheckContext::FreeTierFallback {
+            fallback_mode: &mode,
+            has_time_based_approval: true,
+        };
+        assert_eq!(check_needs_approval(&ctx), FirewallCheckResult::Deny);
+    }
+
+    #[test]
+    fn test_check_free_tier_fallback_allow() {
+        let mode = FreeTierFallback::Allow;
+        let ctx = FirewallCheckContext::FreeTierFallback {
+            fallback_mode: &mode,
+            has_time_based_approval: false,
+        };
+        assert_eq!(check_needs_approval(&ctx), FirewallCheckResult::Allow);
+    }
+
+    #[test]
+    fn test_check_free_tier_fallback_ask_no_approval() {
+        let mode = FreeTierFallback::Ask;
+        let ctx = FirewallCheckContext::FreeTierFallback {
+            fallback_mode: &mode,
+            has_time_based_approval: false,
+        };
+        assert_eq!(check_needs_approval(&ctx), FirewallCheckResult::Ask);
+    }
+
+    #[test]
+    fn test_check_free_tier_fallback_ask_with_approval() {
+        let mode = FreeTierFallback::Ask;
+        let ctx = FirewallCheckContext::FreeTierFallback {
+            fallback_mode: &mode,
+            has_time_based_approval: true,
+        };
+        assert_eq!(check_needs_approval(&ctx), FirewallCheckResult::Allow);
     }
 }

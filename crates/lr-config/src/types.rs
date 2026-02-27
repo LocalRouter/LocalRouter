@@ -268,6 +268,9 @@ pub struct Strategy {
     /// When all free providers are exhausted, returns 429 with retry-after.
     #[serde(default)]
     pub free_tier_only: bool,
+    /// What to do when free-tier models are exhausted (only used when free_tier_only is true)
+    #[serde(default)]
+    pub free_tier_fallback: FreeTierFallback,
 }
 
 impl Strategy {
@@ -281,6 +284,7 @@ impl Strategy {
             auto_config: None,
             rate_limits: vec![],
             free_tier_only: false,
+            free_tier_fallback: FreeTierFallback::default(),
         }
     }
 
@@ -294,6 +298,7 @@ impl Strategy {
             auto_config: None,
             rate_limits: vec![],
             free_tier_only: false,
+            free_tier_fallback: FreeTierFallback::default(),
         }
     }
 
@@ -1904,6 +1909,19 @@ pub enum RateLimitType {
     TotalTokens,
     /// Cost in USD per time window
     Cost,
+}
+
+/// What to do when free-tier models are exhausted
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FreeTierFallback {
+    /// Return 429 error (no fallback)
+    #[default]
+    Off,
+    /// Show approval popup before using paid models
+    Ask,
+    /// Automatically proceed with paid models
+    Allow,
 }
 
 /// Free tier type for a provider

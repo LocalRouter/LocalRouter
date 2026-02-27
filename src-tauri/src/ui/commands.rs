@@ -2009,6 +2009,7 @@ pub async fn debug_trigger_firewall_popup(
             timeout_seconds: timeout_secs,
             is_model_request: debug_session.is_model_request,
             is_guardrail_request: false,
+            is_free_tier_fallback: false,
             guardrail_details: None,
         };
 

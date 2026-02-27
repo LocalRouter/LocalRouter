@@ -22,6 +22,7 @@ interface ApprovalDetails {
   created_at_secs_ago: number
   is_model_request?: boolean
   is_guardrail_request?: boolean
+  is_free_tier_fallback?: boolean
   guardrail_details?: {
     verdicts: SafetyVerdict[]
     actions_required: CategoryActionRequired[]
@@ -95,8 +96,12 @@ export function FirewallApproval() {
         })
         setDetails(result)
 
-        // Resize window for guardrail popups (more content to display)
-        if (result.is_guardrail_request) {
+        // Resize window based on content type
+        if (result.is_free_tier_fallback) {
+          const win = getCurrentWebviewWindow()
+          await win.setSize(new LogicalSize(400, 280))
+          await win.center()
+        } else if (result.is_guardrail_request) {
           const win = getCurrentWebviewWindow()
           const verdictCount = result.guardrail_details?.verdicts?.length || 0
           const hasFlaggedText = !!result.guardrail_details?.flagged_text
@@ -466,6 +471,7 @@ export function FirewallApproval() {
           argumentsPreview={details.arguments_preview}
           isModelRequest={details.is_model_request}
           isGuardrailRequest={details.is_guardrail_request}
+          isFreeTierFallback={details.is_free_tier_fallback}
           guardrailVerdicts={details.guardrail_details?.verdicts}
           guardrailDirection={details.guardrail_details?.scan_direction}
           guardrailActions={details.guardrail_details?.actions_required}

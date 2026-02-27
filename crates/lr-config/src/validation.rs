@@ -368,6 +368,7 @@ mod tests {
             auto_config: None,
             rate_limits: vec![],
             free_tier_only: false,
+            free_tier_fallback: crate::FreeTierFallback::default(),
         }
     }
 

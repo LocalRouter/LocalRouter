@@ -8,7 +8,7 @@ use futures::{Stream, StreamExt};
 use std::pin::Pin;
 use tracing::{debug, error, info, warn};
 
-use lr_config::ConfigManager;
+use lr_config::{ConfigManager, FreeTierFallback};
 use lr_providers::registry::ProviderRegistry;
 use lr_providers::{
     CompletionChunk, CompletionRequest, CompletionResponse, EmbeddingRequest, EmbeddingResponse,
@@ -346,6 +346,88 @@ impl Router {
     /// Get the RouteLLM service
     pub fn get_routellm_service(&self) -> Option<&Arc<lr_routellm::RouteLLMService>> {
         self.routellm_service.as_ref()
+    }
+
+    /// Build the appropriate error when free-tier models are exhausted.
+    /// Returns `FreeTierFallbackAvailable` if fallback is Ask or Allow,
+    /// otherwise returns `FreeTierExhausted`.
+    fn free_tier_exhausted_error(
+        strategy: &lr_config::Strategy,
+        retry_after_secs: u64,
+        exhausted_models: Vec<(String, String)>,
+    ) -> AppError {
+        match strategy.free_tier_fallback {
+            FreeTierFallback::Off => AppError::FreeTierExhausted { retry_after_secs },
+            FreeTierFallback::Ask | FreeTierFallback::Allow => {
+                AppError::FreeTierFallbackAvailable {
+                    retry_after_secs,
+                    exhausted_models,
+                }
+            }
+        }
+    }
+
+    /// Complete with paid fallback (free-tier disabled, uses all models)
+    pub async fn complete_with_paid_fallback(
+        &self,
+        client_id: &str,
+        request: CompletionRequest,
+    ) -> AppResult<CompletionResponse> {
+        let (_client, mut strategy) = self.validate_client_and_strategy(client_id)?;
+        strategy.free_tier_only = false;
+
+        if request.model == "localrouter/auto" {
+            self.complete_with_auto_routing(client_id, &strategy, request)
+                .await
+        } else {
+            let (provider, model) = Self::parse_model_string(&request.model);
+            let (final_provider, final_model) = if provider.is_empty() {
+                self.find_provider_for_model(&model, &strategy).await?
+            } else {
+                (provider, model)
+            };
+            self.execute_request(client_id, &final_provider, &final_model, request)
+                .await
+        }
+    }
+
+    /// Stream complete with paid fallback (free-tier disabled, uses all models)
+    pub async fn stream_complete_with_paid_fallback(
+        &self,
+        client_id: &str,
+        request: CompletionRequest,
+    ) -> AppResult<Pin<Box<dyn Stream<Item = AppResult<CompletionChunk>> + Send>>> {
+        let (_client, mut strategy) = self.validate_client_and_strategy(client_id)?;
+        strategy.free_tier_only = false;
+
+        if request.model == "localrouter/auto" {
+            self.stream_complete_with_auto_routing(client_id, &strategy, request)
+                .await
+        } else {
+            let (provider, model) = Self::parse_model_string(&request.model);
+            let (final_provider, final_model) = if provider.is_empty() {
+                self.find_provider_for_model(&model, &strategy).await?
+            } else {
+                (provider, model)
+            };
+            let provider_instance = self
+                .provider_registry
+                .get_provider(&final_provider)
+                .ok_or_else(|| {
+                    AppError::Router(format!("Provider '{}' not found", final_provider))
+                })?;
+            let mut modified_request = request;
+            modified_request.model = final_model.clone();
+            let stream = provider_instance.stream_complete(modified_request).await?;
+            let resolved_model = format!("{}/{}", final_provider, final_model);
+            Ok(wrap_stream_with_usage_tracking(
+                stream,
+                client_id.to_string(),
+                resolved_model,
+                self.rate_limiter.clone(),
+            )
+            .await)
+        }
     }
 
     /// Parse model string into (provider, model) tuple
@@ -925,9 +1007,11 @@ impl Router {
                 .free_tier_manager
                 .get_min_retry_after(&selected_models)
                 .unwrap_or(60);
-            return Err(AppError::FreeTierExhausted {
-                retry_after_secs: retry_after,
-            });
+            return Err(Self::free_tier_exhausted_error(
+                strategy,
+                retry_after,
+                selected_models,
+            ));
         }
 
         Err(AppError::Router(format!(
@@ -1109,9 +1193,11 @@ impl Router {
                 .free_tier_manager
                 .get_min_retry_after(&selected_models)
                 .unwrap_or(60);
-            return Err(AppError::FreeTierExhausted {
-                retry_after_secs: retry_after,
-            });
+            return Err(Self::free_tier_exhausted_error(
+                strategy,
+                retry_after,
+                selected_models,
+            ));
         }
 
         Err(AppError::Router(format!(
@@ -1324,6 +1410,7 @@ impl Router {
 
         // 6. Check free tier constraints for specific model requests
         if strategy.free_tier_only {
+            let exhausted = vec![(final_provider.clone(), final_model.clone())];
             // Check backoff first
             if let Some(backoff) = self
                 .free_tier_manager
@@ -1333,9 +1420,11 @@ impl Router {
                     "Specific model {}/{} is in backoff: {}",
                     final_provider, final_model, backoff.reason
                 );
-                return Err(AppError::FreeTierExhausted {
-                    retry_after_secs: backoff.retry_after_secs,
-                });
+                return Err(Self::free_tier_exhausted_error(
+                    &strategy,
+                    backoff.retry_after_secs,
+                    exhausted,
+                ));
             }
 
             let free_tier = self.get_effective_free_tier(&final_provider);
@@ -1347,9 +1436,7 @@ impl Router {
                     "Model {}/{} is not free, rejecting in free-tier-only mode",
                     final_provider, final_model
                 );
-                return Err(AppError::FreeTierExhausted {
-                    retry_after_secs: 0,
-                });
+                return Err(Self::free_tier_exhausted_error(&strategy, 0, exhausted));
             }
         }
 
@@ -1443,6 +1530,7 @@ impl Router {
 
         // 6. Check free tier constraints for specific model requests
         if strategy.free_tier_only {
+            let exhausted = vec![(final_provider.clone(), final_model.clone())];
             if let Some(backoff) = self
                 .free_tier_manager
                 .is_in_backoff(&final_provider, &final_model)
@@ -1451,9 +1539,11 @@ impl Router {
                     "Specific model {}/{} is in backoff: {}",
                     final_provider, final_model, backoff.reason
                 );
-                return Err(AppError::FreeTierExhausted {
-                    retry_after_secs: backoff.retry_after_secs,
-                });
+                return Err(Self::free_tier_exhausted_error(
+                    &strategy,
+                    backoff.retry_after_secs,
+                    exhausted,
+                ));
             }
 
             let free_tier = self.get_effective_free_tier(&final_provider);
@@ -1465,9 +1555,7 @@ impl Router {
                     "Model {}/{} is not free, rejecting in free-tier-only mode (streaming)",
                     final_provider, final_model
                 );
-                return Err(AppError::FreeTierExhausted {
-                    retry_after_secs: 0,
-                });
+                return Err(Self::free_tier_exhausted_error(&strategy, 0, exhausted));
             }
         }
 

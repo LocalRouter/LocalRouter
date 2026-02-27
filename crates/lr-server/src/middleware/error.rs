@@ -120,6 +120,16 @@ impl From<AppError> for ApiErrorResponse {
                     retry_after_secs,
                 )
             }
+            AppError::FreeTierFallbackAvailable {
+                retry_after_secs, ..
+            } => {
+                // This should be caught by the chat handler before reaching here,
+                // but if it leaks through, treat it as exhausted
+                ApiErrorResponse::rate_limited_with_retry(
+                    "Free tier exhausted. All free-tier providers are at capacity.",
+                    retry_after_secs,
+                )
+            }
             AppError::Unauthorized => ApiErrorResponse::unauthorized("Unauthorized"),
             AppError::ApiKey(msg) => {
                 ApiErrorResponse::unauthorized(format!("API key error: {}", msg))

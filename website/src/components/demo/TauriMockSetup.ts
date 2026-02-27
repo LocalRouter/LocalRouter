@@ -693,6 +693,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       if (args?.autoConfig !== undefined) strategy.auto_config = args.autoConfig
       if (args?.rateLimits !== undefined && args.rateLimits !== null) strategy.rate_limits = args.rateLimits
       if (args?.freeTierOnly !== undefined && args.freeTierOnly !== null) (strategy as Record<string, unknown>).free_tier_only = args.freeTierOnly
+      if (args?.freeTierFallback !== undefined && args.freeTierFallback !== null) (strategy as Record<string, unknown>).free_tier_fallback = args.freeTierFallback
     }
     return null
   },

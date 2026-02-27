@@ -108,6 +108,9 @@ pub struct FirewallApprovalSession {
     /// Whether this is a guardrail request
     pub is_guardrail_request: bool,
 
+    /// Whether this is a free-tier fallback approval request
+    pub is_free_tier_fallback: bool,
+
     /// Guardrail-specific details (matches, severity, etc.)
     pub guardrail_details: Option<GuardrailApprovalDetails>,
 }
@@ -138,6 +141,9 @@ pub struct PendingApprovalInfo {
     /// Whether this is a guardrail request
     #[serde(default)]
     pub is_guardrail_request: bool,
+    /// Whether this is a free-tier fallback approval request
+    #[serde(default)]
+    pub is_free_tier_fallback: bool,
     /// Guardrail-specific details
     #[serde(skip_serializing_if = "Option::is_none")]
     pub guardrail_details: Option<GuardrailApprovalDetails>,
@@ -202,6 +208,7 @@ impl FirewallManager {
             timeout_secs,
             false, // MCP/skill tool request
             false, // not guardrail
+            false, // not free-tier fallback
             full_arguments,
             None,
         )
@@ -230,6 +237,7 @@ impl FirewallManager {
             timeout_secs,
             true,  // model request
             false, // not guardrail
+            false, // not free-tier fallback
             full_arguments,
             None,
         )
@@ -258,8 +266,33 @@ impl FirewallManager {
             None,  // no custom timeout — will use 24h safety
             false, // not a model request
             true,  // guardrail request
+            false, // not free-tier fallback
             None,
             Some(guardrail_details),
+        )
+        .await
+    }
+
+    /// Request user approval for a free-tier fallback to paid models
+    pub async fn request_free_tier_fallback_approval(
+        &self,
+        client_id: String,
+        client_name: String,
+        exhausted_summary: String,
+        retry_after_secs: u64,
+    ) -> AppResult<FirewallApprovalResponse> {
+        self.request_approval_internal(
+            client_id,
+            client_name,
+            "Free-Tier Fallback".to_string(), // tool_name
+            "Paid Models".to_string(),        // server_name
+            exhausted_summary,                // arguments_preview
+            Some(retry_after_secs),
+            false, // not a model request
+            false, // not guardrail
+            true,  // free-tier fallback
+            None,
+            None,
         )
         .await
     }
@@ -276,6 +309,7 @@ impl FirewallManager {
         timeout_secs: Option<u64>,
         is_model_request: bool,
         is_guardrail_request: bool,
+        is_free_tier_fallback: bool,
         full_arguments: Option<serde_json::Value>,
         guardrail_details: Option<GuardrailApprovalDetails>,
     ) -> AppResult<FirewallApprovalResponse> {
@@ -310,6 +344,7 @@ impl FirewallManager {
             timeout_seconds: timeout,
             is_model_request,
             is_guardrail_request,
+            is_free_tier_fallback,
             guardrail_details,
         };
 
@@ -336,6 +371,7 @@ impl FirewallManager {
                     "timeout_seconds": timeout,
                     "is_model_request": is_model_request,
                     "is_guardrail_request": is_guardrail_request,
+                    "is_free_tier_fallback": is_free_tier_fallback,
                 })),
             };
 
@@ -458,6 +494,7 @@ impl FirewallManager {
                     timeout_seconds: session.timeout_seconds,
                     is_model_request: session.is_model_request,
                     is_guardrail_request: session.is_guardrail_request,
+                    is_free_tier_fallback: session.is_free_tier_fallback,
                     guardrail_details: session.guardrail_details.clone(),
                 }
             })
@@ -561,6 +598,7 @@ mod tests {
             timeout_seconds: 120,
             is_model_request: false,
             is_guardrail_request: false,
+            is_free_tier_fallback: false,
             guardrail_details: None,
         };
         assert!(session.is_expired());
@@ -581,6 +619,7 @@ mod tests {
             timeout_seconds: 120,
             is_model_request: false,
             is_guardrail_request: false,
+            is_free_tier_fallback: false,
             guardrail_details: None,
         };
         assert!(!session.is_expired());

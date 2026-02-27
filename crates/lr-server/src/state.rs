@@ -474,6 +474,61 @@ impl ModelApprovalTracker {
     }
 }
 
+/// Tracks time-based free-tier fallback approvals
+///
+/// When a user clicks "Allow for 1 Hour" on a free-tier fallback popup,
+/// the approval is stored here and checked before triggering new popups.
+/// Keyed only by client_id (not per-model, since it's a blanket "allow paid" approval).
+#[derive(Clone, Default)]
+pub struct FreeTierApprovalTracker {
+    /// Map of client_id -> expiry_instant
+    approvals: Arc<DashMap<String, Instant>>,
+}
+
+impl FreeTierApprovalTracker {
+    pub fn new() -> Self {
+        Self {
+            approvals: Arc::new(DashMap::new()),
+        }
+    }
+
+    /// Check if a client has a valid time-based free-tier fallback approval
+    pub fn has_valid_approval(&self, client_id: &str) -> bool {
+        if let Some(entry) = self.approvals.get(client_id) {
+            if *entry > Instant::now() {
+                return true;
+            }
+            drop(entry);
+            self.approvals.remove(client_id);
+        }
+        false
+    }
+
+    /// Add a 1-hour approval for free-tier fallback
+    pub fn add_1_hour_approval(&self, client_id: &str) {
+        let expiry = Instant::now() + Duration::from_secs(3600);
+        self.approvals.insert(client_id.to_string(), expiry);
+        tracing::info!("Added free-tier fallback approval: client={}", client_id,);
+    }
+
+    /// Clean up expired approvals
+    pub fn cleanup_expired(&self) -> usize {
+        let now = Instant::now();
+        let expired: Vec<_> = self
+            .approvals
+            .iter()
+            .filter(|entry| *entry.value() <= now)
+            .map(|entry| entry.key().clone())
+            .collect();
+
+        let count = expired.len();
+        for key in expired {
+            self.approvals.remove(&key);
+        }
+        count
+    }
+}
+
 /// Server state shared across all handlers
 #[derive(Clone)]
 pub struct AppState {
@@ -558,6 +613,9 @@ pub struct AppState {
     /// Time-based guardrail denial tracker (deny for 1 hour)
     pub guardrail_denial_tracker: Arc<GuardrailDenialTracker>,
 
+    /// Time-based free-tier fallback approval tracker
+    pub free_tier_approval_tracker: Arc<FreeTierApprovalTracker>,
+
     /// Safety engine for LLM-based content inspection (swappable at runtime)
     pub safety_engine: Arc<RwLock<Option<Arc<lr_guardrails::SafetyEngine>>>>,
 }
@@ -637,6 +695,7 @@ impl AppState {
             model_approval_tracker: Arc::new(ModelApprovalTracker::new()),
             guardrail_approval_tracker: Arc::new(GuardrailApprovalTracker::new()),
             guardrail_denial_tracker: Arc::new(GuardrailDenialTracker::new()),
+            free_tier_approval_tracker: Arc::new(FreeTierApprovalTracker::new()),
             safety_engine: Arc::new(RwLock::new(None)),
         }
     }

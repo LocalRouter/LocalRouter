@@ -1132,6 +1132,8 @@ async fn handle_non_streaming_parallel(
     let created_at = Utc::now();
 
     // Start LLM request immediately (don't wait for guardrails)
+    // Clone for potential paid fallback retry after free-tier exhaustion
+    let provider_request_fallback = provider_request.clone();
     let llm_handle = {
         let router = state.router.clone();
         let api_key_id = auth.api_key_id.clone();
@@ -1158,10 +1160,29 @@ async fn handle_non_streaming_parallel(
     }
 
     // Guardrails passed — unwrap LLM response
-    let response = llm_result
-        .map_err(|e| ApiErrorResponse::internal_error(format!("LLM request failed: {}", e)))?
-        .map_err(|e| {
-            // Record failure metrics
+    let llm_result = llm_result
+        .map_err(|e| ApiErrorResponse::internal_error(format!("LLM request failed: {}", e)))?;
+
+    let response = match llm_result {
+        Ok(resp) => resp,
+        Err(lr_types::AppError::FreeTierFallbackAvailable {
+            retry_after_secs,
+            exhausted_models,
+        }) => {
+            check_free_tier_fallback(
+                &state,
+                &auth.api_key_id,
+                &exhausted_models,
+                retry_after_secs,
+            )
+            .await?;
+            state
+                .router
+                .complete_with_paid_fallback(&auth.api_key_id, provider_request_fallback)
+                .await
+                .map_err(|e| ApiErrorResponse::bad_gateway(format!("Provider error: {}", e)))?
+        }
+        Err(e) => {
             let latency = Instant::now().duration_since(started_at).as_millis() as u64;
             let strategy_id = state
                 .client_manager
@@ -1185,8 +1206,12 @@ async fn handle_non_streaming_parallel(
             ) {
                 tracing::warn!("Failed to write access log: {}", log_err);
             }
-            ApiErrorResponse::bad_gateway(format!("Provider error: {}", e))
-        })?;
+            return Err(ApiErrorResponse::bad_gateway(format!(
+                "Provider error: {}",
+                e
+            )));
+        }
+    };
 
     // Reuse shared response-building logic
     build_non_streaming_response(
@@ -1200,6 +1225,92 @@ async fn handle_non_streaming_parallel(
         created_at,
     )
     .await
+}
+
+/// Check if a free-tier fallback should be allowed, denied, or needs approval.
+/// Returns Ok(()) if the request should proceed with paid models.
+async fn check_free_tier_fallback(
+    state: &AppState,
+    client_id: &str,
+    exhausted_models: &[(String, String)],
+    retry_after_secs: u64,
+) -> ApiResult<()> {
+    use lr_mcp::gateway::access_control::{
+        check_needs_approval, FirewallCheckContext, FirewallCheckResult,
+    };
+    use lr_mcp::gateway::firewall::FirewallApprovalAction;
+
+    // Look up strategy to get fallback_mode
+    let (_client, strategy) = super::helpers::get_client_with_strategy(state, client_id)
+        .map_err(|_| ApiErrorResponse::rate_limited("Free tier exhausted"))?;
+
+    let has_time_based = state
+        .free_tier_approval_tracker
+        .has_valid_approval(client_id);
+
+    let ctx = FirewallCheckContext::FreeTierFallback {
+        fallback_mode: &strategy.free_tier_fallback,
+        has_time_based_approval: has_time_based,
+    };
+
+    match check_needs_approval(&ctx) {
+        FirewallCheckResult::Allow => Ok(()),
+        FirewallCheckResult::Deny => Err(ApiErrorResponse::rate_limited_with_retry(
+            "Free tier exhausted. All free-tier providers are at capacity.",
+            retry_after_secs,
+        )),
+        FirewallCheckResult::Ask => {
+            // Build exhausted summary for popup
+            let summary = exhausted_models
+                .iter()
+                .map(|(p, m)| format!("{}/{}", p, m))
+                .collect::<Vec<_>>()
+                .join(", ");
+
+            let client_name = state
+                .client_manager
+                .get_client(client_id)
+                .map(|c| c.name.clone())
+                .unwrap_or_else(|| client_id.to_string());
+
+            // Get the firewall manager from the MCP gateway
+            let firewall_manager = &state.mcp_gateway.firewall_manager;
+
+            let response = firewall_manager
+                .request_free_tier_fallback_approval(
+                    client_id.to_string(),
+                    client_name,
+                    summary,
+                    retry_after_secs,
+                )
+                .await
+                .map_err(|e| {
+                    ApiErrorResponse::internal_error(format!(
+                        "Failed to request free-tier fallback approval: {}",
+                        e
+                    ))
+                })?;
+
+            match response.action {
+                FirewallApprovalAction::AllowOnce | FirewallApprovalAction::AllowSession => Ok(()),
+                FirewallApprovalAction::Allow1Hour => {
+                    state
+                        .free_tier_approval_tracker
+                        .add_1_hour_approval(client_id);
+                    Ok(())
+                }
+                FirewallApprovalAction::AllowPermanent => {
+                    // Config update (free_tier_fallback = Allow) is handled by
+                    // submit_firewall_approval; just allow this request through
+                    Ok(())
+                }
+                _ => Err(ApiErrorResponse::rate_limited_with_retry(
+                    "Free tier exhausted. Paid fallback denied by user.",
+                    retry_after_secs,
+                )),
+            }
+        }
+    }
 }
 
 /// Handle non-streaming chat completion (sequential guardrails — already resolved)
@@ -1217,10 +1328,29 @@ async fn handle_non_streaming(
     // Call router to get completion
     let response = match state
         .router
-        .complete(&auth.api_key_id, provider_request)
+        .complete(&auth.api_key_id, provider_request.clone())
         .await
     {
         Ok(resp) => resp,
+        Err(lr_types::AppError::FreeTierFallbackAvailable {
+            retry_after_secs,
+            exhausted_models,
+        }) => {
+            // Free-tier exhausted but fallback available — check approval
+            check_free_tier_fallback(
+                &state,
+                &auth.api_key_id,
+                &exhausted_models,
+                retry_after_secs,
+            )
+            .await?;
+            // Approved — retry with paid models
+            state
+                .router
+                .complete_with_paid_fallback(&auth.api_key_id, provider_request)
+                .await
+                .map_err(|e| ApiErrorResponse::bad_gateway(format!("Provider error: {}", e)))?
+        }
         Err(e) => {
             // Record failure metrics
             let latency = Instant::now().duration_since(started_at).as_millis() as u64;
@@ -1514,10 +1644,29 @@ async fn handle_streaming(
     // Call router to get streaming completion
     let stream = match state
         .router
-        .stream_complete(&auth.api_key_id, provider_request)
+        .stream_complete(&auth.api_key_id, provider_request.clone())
         .await
     {
         Ok(s) => s,
+        Err(lr_types::AppError::FreeTierFallbackAvailable {
+            retry_after_secs,
+            exhausted_models,
+        }) => {
+            // Free-tier exhausted but fallback available — check approval
+            check_free_tier_fallback(
+                &state,
+                &auth.api_key_id,
+                &exhausted_models,
+                retry_after_secs,
+            )
+            .await?;
+            // Approved — retry with paid models
+            state
+                .router
+                .stream_complete_with_paid_fallback(&auth.api_key_id, provider_request)
+                .await
+                .map_err(|e| ApiErrorResponse::bad_gateway(format!("Provider error: {}", e)))?
+        }
         Err(e) => {
             // Record failure metrics
             let latency = Instant::now().duration_since(started_at).as_millis() as u64;
@@ -1829,10 +1978,27 @@ async fn handle_streaming_parallel(
     // Start LLM streaming request immediately
     let stream = match state
         .router
-        .stream_complete(&auth.api_key_id, provider_request)
+        .stream_complete(&auth.api_key_id, provider_request.clone())
         .await
     {
         Ok(s) => s,
+        Err(lr_types::AppError::FreeTierFallbackAvailable {
+            retry_after_secs,
+            exhausted_models,
+        }) => {
+            check_free_tier_fallback(
+                &state,
+                &auth.api_key_id,
+                &exhausted_models,
+                retry_after_secs,
+            )
+            .await?;
+            state
+                .router
+                .stream_complete_with_paid_fallback(&auth.api_key_id, provider_request)
+                .await
+                .map_err(|e| ApiErrorResponse::bad_gateway(format!("Provider error: {}", e)))?
+        }
         Err(e) => {
             let latency = Instant::now().duration_since(started_at).as_millis() as u64;
             let strategy_id = state

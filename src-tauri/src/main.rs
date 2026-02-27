@@ -710,6 +710,36 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                 });
                 info!("Registered clients-changed listener for permission notifications");
 
+                // Re-evaluate pending firewall approvals when permissions change
+                let app_state_for_reeval = app_state.clone();
+                let config_manager_for_reeval = config_manager.clone();
+                let app_handle_for_reeval = app.handle().clone();
+                app.listen("clients-changed", move |_event| {
+                    crate::ui::commands_clients::reevaluate_pending_approvals(
+                        &app_handle_for_reeval,
+                        &app_state_for_reeval.mcp_gateway.firewall_manager,
+                        &config_manager_for_reeval,
+                        &app_state_for_reeval.model_approval_tracker,
+                        &app_state_for_reeval.guardrail_approval_tracker,
+                        &app_state_for_reeval.guardrail_denial_tracker,
+                        &app_state_for_reeval.free_tier_approval_tracker,
+                    );
+
+                    // Rebuild tray menu and update icon after re-evaluation
+                    if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app_handle_for_reeval) {
+                        tracing::warn!(
+                            "Failed to rebuild tray menu after re-evaluation: {}",
+                            e
+                        );
+                    }
+                    if let Some(tray_manager) =
+                        app_handle_for_reeval.try_state::<crate::ui::tray_graph_manager::TrayGraphManager>()
+                    {
+                        tray_manager.notify_activity();
+                    }
+                });
+                info!("Registered clients-changed listener for firewall re-evaluation");
+
                 // Spawn firewall approval popup listener
                 // Subscribes to MCP notification broadcast and opens popup windows
                 // when firewall/approvalRequired notifications arrive

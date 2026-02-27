@@ -37,6 +37,7 @@ fn create_test_config(
         auto_config,
         rate_limits,
         free_tier_only: false,
+        free_tier_fallback: Default::default(),
     };
 
     let client = Client {
@@ -469,6 +470,7 @@ async fn test_disabled_client_returns_unauthorized() {
         auto_config: None,
         rate_limits: vec![],
         free_tier_only: false,
+        free_tier_fallback: Default::default(),
     };
 
     let client = Client {

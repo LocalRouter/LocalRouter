@@ -496,6 +496,7 @@ pub async fn update_strategy(
     auto_config: Option<lr_config::AutoModelConfig>,
     rate_limits: Option<Vec<lr_config::StrategyRateLimit>>,
     free_tier_only: Option<bool>,
+    free_tier_fallback: Option<lr_config::FreeTierFallback>,
     config_manager: State<'_, ConfigManager>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
@@ -519,6 +520,9 @@ pub async fn update_strategy(
                 }
                 if let Some(free_tier) = free_tier_only {
                     strategy.free_tier_only = free_tier;
+                }
+                if let Some(fallback) = free_tier_fallback {
+                    strategy.free_tier_fallback = fallback;
                 }
                 found = true;
             }
@@ -733,6 +737,15 @@ pub async fn submit_firewall_approval(
                         "Cleared guardrails category actions permanently for client {}",
                         info.client_id
                     );
+                } else if info.is_free_tier_fallback {
+                    // Set free_tier_fallback to Allow permanently
+                    update_free_tier_fallback_config(
+                        &app,
+                        &config_manager,
+                        &info.client_id,
+                        lr_config::FreeTierFallback::Allow,
+                    )
+                    .await?;
                 } else if info.is_model_request {
                     // Update model permissions to Allow
                     update_model_permission_for_allow_permanent(&app, &config_manager, info)
@@ -757,6 +770,15 @@ pub async fn submit_firewall_approval(
                         .add_1_hour_bypass(&info.client_id);
                     tracing::info!(
                         "Added 1-hour guardrail bypass for client {}",
+                        info.client_id
+                    );
+                } else if info.is_free_tier_fallback {
+                    // Add time-based free-tier fallback approval (1 hour)
+                    state
+                        .free_tier_approval_tracker
+                        .add_1_hour_approval(&info.client_id);
+                    tracing::info!(
+                        "Added 1-hour free-tier fallback approval for client {}",
                         info.client_id
                     );
                 } else if info.is_model_request {
@@ -800,6 +822,15 @@ pub async fn submit_firewall_approval(
                         "Cleared guardrails category actions for client {} (DenyAlways → disable guardrails for client)",
                         info.client_id
                     );
+                } else if info.is_free_tier_fallback {
+                    // Set free_tier_fallback to Off permanently
+                    update_free_tier_fallback_config(
+                        &app,
+                        &config_manager,
+                        &info.client_id,
+                        lr_config::FreeTierFallback::Off,
+                    )
+                    .await?;
                 } else if info.is_model_request {
                     // Update model permissions to Off
                     update_model_permission_for_deny_permanent(&app, &config_manager, info).await?;
@@ -939,8 +970,7 @@ pub async fn submit_firewall_approval(
         &state.model_approval_tracker,
         &state.guardrail_approval_tracker,
         &state.guardrail_denial_tracker,
-        pending_info.as_ref(),
-        &action,
+        &state.free_tier_approval_tracker,
     );
 
     // Rebuild tray menu to remove the pending approval item
@@ -957,20 +987,16 @@ pub async fn submit_firewall_approval(
 /// Re-evaluate all pending firewall approval sessions after a permission change.
 ///
 /// Uses the unified `check_needs_approval` for clients found in config.
-/// For unknown clients (e.g. debug mode) or when config-based check still returns Ask,
-/// falls back to resource-identity matching: if the pending request targets the same
-/// resource (tool_name + server_name + client_id + request type) as the just-submitted
-/// request, it inherits the same allow/deny outcome.
+/// If a client is not found in config or the check returns `Ask`, the popup stays open.
 #[allow(clippy::too_many_arguments)]
-fn reevaluate_pending_approvals(
+pub(crate) fn reevaluate_pending_approvals(
     app: &tauri::AppHandle,
     firewall_manager: &lr_mcp::gateway::firewall::FirewallManager,
     config_manager: &ConfigManager,
     model_approval_tracker: &lr_server::state::ModelApprovalTracker,
     guardrail_approval_tracker: &lr_server::state::GuardrailApprovalTracker,
     guardrail_denial_tracker: &lr_server::state::GuardrailDenialTracker,
-    submitted_info: Option<&lr_mcp::gateway::firewall::PendingApprovalInfo>,
-    submitted_action: &lr_mcp::gateway::firewall::FirewallApprovalAction,
+    free_tier_approval_tracker: &lr_server::state::FreeTierApprovalTracker,
 ) {
     use lr_mcp::gateway::access_control::{
         check_needs_approval, FirewallCheckContext, FirewallCheckResult,
@@ -984,87 +1010,67 @@ fn reevaluate_pending_approvals(
     }
     let config = config_manager.get();
 
-    // Determine the auto-action for resource-identity matches based on submitted action
-    let resource_match_action = match submitted_action {
-        FirewallApprovalAction::AllowPermanent
-        | FirewallApprovalAction::AllowSession
-        | FirewallApprovalAction::Allow1Hour
-        | FirewallApprovalAction::AllowCategories => Some(FirewallApprovalAction::AllowOnce),
-        FirewallApprovalAction::DenyAlways
-        | FirewallApprovalAction::DenySession
-        | FirewallApprovalAction::Deny1Hour
-        | FirewallApprovalAction::BlockCategories => Some(FirewallApprovalAction::Deny),
-        _ => None, // AllowOnce/Deny don't imply anything for other requests
-    };
-
     for info in &pending {
-        let mut auto_action: Option<FirewallApprovalAction> = None;
+        // Only resolve if client is found in config
+        let Some(client) = config.clients.iter().find(|c| c.id == info.client_id) else {
+            continue;
+        };
 
-        // Try config-based re-evaluation first
-        if let Some(client) = config.clients.iter().find(|c| c.id == info.client_id) {
-            let ctx = if info.is_guardrail_request {
-                FirewallCheckContext::Guardrail {
-                    has_time_based_bypass: guardrail_approval_tracker
-                        .has_valid_bypass(&info.client_id),
-                    has_time_based_denial: guardrail_denial_tracker
-                        .has_valid_denial(&info.client_id),
-                    category_actions_empty: client.guardrails.category_actions.is_empty(),
-                }
-            } else if info.is_model_request {
-                FirewallCheckContext::Model {
-                    permissions: &client.model_permissions,
-                    provider: &info.server_name,
-                    model_id: &info.tool_name,
-                    has_time_based_approval: model_approval_tracker.has_valid_approval(
-                        &info.client_id,
-                        &info.server_name,
-                        &info.tool_name,
-                    ),
-                }
-            } else if info.tool_name.starts_with("skill_") {
-                FirewallCheckContext::SkillTool {
-                    permissions: &client.skills_permissions,
-                    skill_name: &info.server_name,
-                    tool_name: &info.tool_name,
-                    session_approved: false,
-                    session_denied: false,
+        let ctx = if info.is_free_tier_fallback {
+            let strategy = config
+                .strategies
+                .iter()
+                .find(|s| s.id == client.strategy_id);
+            if let Some(strategy) = strategy {
+                FirewallCheckContext::FreeTierFallback {
+                    fallback_mode: &strategy.free_tier_fallback,
+                    has_time_based_approval: free_tier_approval_tracker
+                        .has_valid_approval(&info.client_id),
                 }
             } else {
-                let original_name = info.tool_name.split("__").nth(1).unwrap_or(&info.tool_name);
-                FirewallCheckContext::McpTool {
-                    permissions: &client.mcp_permissions,
-                    server_id: &info.server_name,
-                    original_tool_name: original_name,
-                    session_approved: false,
-                    session_denied: false,
-                }
-            };
-
-            let result = check_needs_approval(&ctx);
-            auto_action = match result {
-                FirewallCheckResult::Allow => Some(FirewallApprovalAction::AllowOnce),
-                FirewallCheckResult::Deny => Some(FirewallApprovalAction::Deny),
-                FirewallCheckResult::Ask => None,
-            };
-        }
-
-        // Fallback: if config-based check didn't resolve (client not found or still Ask),
-        // check if this pending request matches the just-submitted resource exactly
-        if auto_action.is_none() {
-            if let (Some(submitted), Some(ref match_action)) =
-                (submitted_info, &resource_match_action)
-            {
-                let same_resource = info.client_id == submitted.client_id
-                    && info.tool_name == submitted.tool_name
-                    && info.server_name == submitted.server_name
-                    && info.is_model_request == submitted.is_model_request
-                    && info.is_guardrail_request == submitted.is_guardrail_request;
-
-                if same_resource {
-                    auto_action = Some(match_action.clone());
-                }
+                continue;
             }
-        }
+        } else if info.is_guardrail_request {
+            FirewallCheckContext::Guardrail {
+                has_time_based_bypass: guardrail_approval_tracker.has_valid_bypass(&info.client_id),
+                has_time_based_denial: guardrail_denial_tracker.has_valid_denial(&info.client_id),
+                category_actions_empty: client.guardrails.category_actions.is_empty(),
+            }
+        } else if info.is_model_request {
+            FirewallCheckContext::Model {
+                permissions: &client.model_permissions,
+                provider: &info.server_name,
+                model_id: &info.tool_name,
+                has_time_based_approval: model_approval_tracker.has_valid_approval(
+                    &info.client_id,
+                    &info.server_name,
+                    &info.tool_name,
+                ),
+            }
+        } else if info.tool_name.starts_with("skill_") {
+            FirewallCheckContext::SkillTool {
+                permissions: &client.skills_permissions,
+                skill_name: &info.server_name,
+                tool_name: &info.tool_name,
+                session_approved: false,
+                session_denied: false,
+            }
+        } else {
+            let original_name = info.tool_name.split("__").nth(1).unwrap_or(&info.tool_name);
+            FirewallCheckContext::McpTool {
+                permissions: &client.mcp_permissions,
+                server_id: &info.server_name,
+                original_tool_name: original_name,
+                session_approved: false,
+                session_denied: false,
+            }
+        };
+
+        let auto_action = match check_needs_approval(&ctx) {
+            FirewallCheckResult::Allow => Some(FirewallApprovalAction::AllowOnce),
+            FirewallCheckResult::Deny => Some(FirewallApprovalAction::Deny),
+            FirewallCheckResult::Ask => None,
+        };
 
         if let Some(action) = auto_action {
             tracing::info!(
@@ -1124,6 +1130,45 @@ async fn update_model_permission_for_allow_permanent(
         .map_err(|e: lr_types::AppError| e.to_string())?;
 
     // Emit clients-changed event
+    if let Err(e) = app.emit("clients-changed", ()) {
+        tracing::error!("Failed to emit clients-changed event: {}", e);
+    }
+
+    Ok(())
+}
+
+/// Helper to update the free_tier_fallback setting on a client's strategy
+async fn update_free_tier_fallback_config(
+    app: &tauri::AppHandle,
+    config_manager: &ConfigManager,
+    client_id: &str,
+    fallback: lr_config::FreeTierFallback,
+) -> Result<(), String> {
+    use tauri::Emitter;
+
+    config_manager
+        .update(|cfg| {
+            // Find the client to get its strategy_id
+            if let Some(client) = cfg.clients.iter().find(|c| c.id == client_id) {
+                let strategy_id = client.strategy_id.clone();
+                if let Some(strategy) = cfg.strategies.iter_mut().find(|s| s.id == strategy_id) {
+                    strategy.free_tier_fallback = fallback.clone();
+                    tracing::info!(
+                        "Updated free_tier_fallback to {:?} for strategy {}",
+                        fallback,
+                        strategy_id
+                    );
+                }
+            }
+        })
+        .map_err(|e| e.to_string())?;
+
+    config_manager.save().await.map_err(|e| e.to_string())?;
+
+    if let Err(e) = app.emit("strategies-changed", ()) {
+        tracing::error!("Failed to emit strategies-changed event: {}", e);
+    }
+    // Also emit clients-changed so pending approvals are re-evaluated
     if let Err(e) = app.emit("clients-changed", ()) {
         tracing::error!("Failed to emit clients-changed event: {}", e);
     }

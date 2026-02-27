@@ -14,13 +14,13 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { ProvidersIcon, McpIcon, SkillsIcon, StoreIcon } from "@/components/icons/category-icons"
-import { Shield } from "lucide-react"
+import { Shield, Coins } from "lucide-react"
 import { categoryActionLabel } from "@/components/permissions/CategoryActionButton"
 import type { SafetyVerdict, CategoryActionRequired } from "@/types/tauri-commands"
 
 export type ApprovalAction = "deny" | "deny_session" | "deny_always" | "block_categories" | "allow_once" | "allow_session" | "allow_1_hour" | "allow_permanent" | "allow_categories" | "deny_1_hour"
 
-export type RequestType = "marketplace" | "skill" | "model" | "tool" | "guardrail"
+export type RequestType = "marketplace" | "skill" | "model" | "tool" | "guardrail" | "free_tier_fallback"
 
 /** Determine request type from server/tool names */
 export function getRequestType(details: {
@@ -28,7 +28,11 @@ export function getRequestType(details: {
   tool_name: string
   is_model_request?: boolean
   is_guardrail_request?: boolean
+  is_free_tier_fallback?: boolean
 }): RequestType {
+  if (details.is_free_tier_fallback) {
+    return "free_tier_fallback"
+  }
   if (details.is_guardrail_request) {
     return "guardrail"
   }
@@ -86,6 +90,12 @@ export function getHeaderContent(requestType: RequestType) {
         title: "Model Access",
         description: "Access to an AI model is being requested",
       }
+    case "free_tier_fallback":
+      return {
+        icon: <Coins className="h-5 w-5 text-amber-500" />,
+        title: "Free Tier Exhausted",
+        description: "All free-tier models are at capacity. Proceed with paid models?",
+      }
     case "guardrail":
       return {
         icon: <Shield className="h-5 w-5 text-red-500" />,
@@ -122,6 +132,7 @@ export interface FirewallApprovalCardProps {
   argumentsPreview?: string
   isModelRequest?: boolean
   isGuardrailRequest?: boolean
+  isFreeTierFallback?: boolean
   guardrailVerdicts?: SafetyVerdict[]
   guardrailDirection?: "request" | "response"
   guardrailActions?: CategoryActionRequired[]
@@ -156,6 +167,7 @@ export function FirewallApprovalCard({
   argumentsPreview,
   isModelRequest,
   isGuardrailRequest,
+  isFreeTierFallback,
   guardrailVerdicts,
   guardrailDirection,
   guardrailActions,
@@ -170,9 +182,10 @@ export function FirewallApprovalCard({
     tool_name: toolName,
     is_model_request: isModelRequest,
     is_guardrail_request: isGuardrailRequest,
+    is_free_tier_fallback: isFreeTierFallback,
   })
   const parsedArgs = parseArguments(argumentsPreview || "")
-  const canEdit = requestType !== "marketplace" && requestType !== "guardrail"
+  const canEdit = requestType !== "marketplace" && requestType !== "guardrail" && requestType !== "free_tier_fallback"
   const disabled = !onAction || submitting
 
   return (
@@ -382,12 +395,12 @@ export function FirewallApprovalCard({
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
-              {!isModelRequest && !isGuardrailRequest && (
+              {!isModelRequest && !isGuardrailRequest && !isFreeTierFallback && (
                 <DropdownMenuItem onClick={() => onAction?.("allow_session")}>
                   Allow for Session
                 </DropdownMenuItem>
               )}
-              {(isModelRequest || isGuardrailRequest) && (
+              {(isModelRequest || isGuardrailRequest || isFreeTierFallback) && (
                 <DropdownMenuItem onClick={() => onAction?.("allow_1_hour")}>
                   Allow for 1 Hour
                 </DropdownMenuItem>
@@ -397,9 +410,11 @@ export function FirewallApprovalCard({
                   Allow Always for Categories
                 </DropdownMenuItem>
               )}
-              <DropdownMenuItem onClick={() => onAction?.("allow_permanent")}>
-                {isGuardrailRequest ? "Allow All Always for Client" : "Allow Always"}
-              </DropdownMenuItem>
+              {!isFreeTierFallback && (
+                <DropdownMenuItem onClick={() => onAction?.("allow_permanent")}>
+                  {isGuardrailRequest ? "Allow All Always for Client" : "Allow Always"}
+                </DropdownMenuItem>
+              )}
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
