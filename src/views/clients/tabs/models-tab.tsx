@@ -347,17 +347,12 @@ export function ClientModelsTab({
 
           {/* Free-Tier Mode */}
           <Card>
-            <CardHeader className="pb-3">
+            <CardHeader>
               <div className="flex items-center justify-between">
-                <div>
-                  <CardTitle className="flex items-center gap-2 text-base">
-                    <Coins className="h-4 w-4" />
-                    Free-Tier Mode
-                  </CardTitle>
-                  <CardDescription>
-                    Restrict model usage to Free and Free-tier only. For Auto Routing, will move onto using next model if model usage limits are reached. Note that completely Free models such as local models will be used indefinitely and should be placed lower in priority as a fallback.
-                  </CardDescription>
-                </div>
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <Coins className="h-4 w-4" />
+                  Free-Tier Mode
+                </CardTitle>
                 {currentStrategy && (
                   <Switch
                     checked={currentStrategy.free_tier_only ?? false}
@@ -365,6 +360,9 @@ export function ClientModelsTab({
                   />
                 )}
               </div>
+              <CardDescription>
+                Restrict model usage to Free and Free-tier only. For Auto Routing, will move onto using next model if model usage limits are reached. Note that completely Free models such as local models will be used indefinitely and should be placed lower in priority as a fallback.
+              </CardDescription>
             </CardHeader>
             {currentStrategy?.free_tier_only && (
               <CardContent className="pt-0">
@@ -376,20 +374,28 @@ export function ClientModelsTab({
                         What to do when free-tier usage is depleted
                       </p>
                     </div>
-                    <div className="flex gap-1">
-                      {(['off', 'ask', 'allow'] as const).map((value) => (
-                        <button
-                          key={value}
-                          onClick={() => handleFreeTierFallbackChange(value)}
-                          className={`px-3 py-1 text-xs rounded-md border transition-colors ${
-                            (currentStrategy.free_tier_fallback ?? 'off') === value
-                              ? 'bg-primary text-primary-foreground border-primary'
-                              : 'bg-background hover:bg-muted border-border'
-                          }`}
-                        >
-                          {value === 'off' ? 'Off' : value === 'ask' ? 'Ask' : 'Allow'}
-                        </button>
-                      ))}
+                    <div className="inline-flex rounded-md border border-border bg-muted/50">
+                      {(['allow', 'ask', 'off'] as const).map((value) => {
+                        const isActive = (currentStrategy.free_tier_fallback ?? 'off') === value
+                        const config = {
+                          allow: { label: 'Allow', activeClass: 'bg-emerald-500 text-white' },
+                          ask: { label: 'Ask', activeClass: 'bg-amber-500 text-white' },
+                          off: { label: 'Off', activeClass: 'bg-zinc-500 text-white' },
+                        }[value]
+                        return (
+                          <button
+                            key={value}
+                            onClick={() => handleFreeTierFallbackChange(value)}
+                            className={`px-3 py-1 text-sm font-medium transition-colors ${
+                              isActive
+                                ? config.activeClass
+                                : 'text-muted-foreground hover:text-foreground hover:bg-muted'
+                            } ${value === 'allow' ? 'rounded-l-md' : ''} ${value === 'off' ? 'rounded-r-md' : ''}`}
+                          >
+                            {config.label}
+                          </button>
+                        )
+                      })}
                     </div>
                   </div>
                 </div>
