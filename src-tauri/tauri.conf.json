@@ -55,7 +55,7 @@
     "windows": [
       {
         "title": "LocalRouter",
-        "width": 1200,
+        "width": 1680,
         "height": 1000,
         "resizable": true,
         "fullscreen": false,
