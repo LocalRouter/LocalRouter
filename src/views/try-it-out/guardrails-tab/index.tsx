@@ -35,6 +35,7 @@ import type {
   ClientGuardrailsConfig,
   CategoryActionEntry,
 } from "@/types/tauri-commands"
+import { categoryActionLabel } from "@/components/permissions/CategoryActionButton"
 
 interface GuardrailsTabProps {
   initialClientId?: string
@@ -209,7 +210,7 @@ export function GuardrailsTab({ initialClientId }: GuardrailsTabProps) {
                           variant="outline"
                           className="text-[10px] capitalize"
                         >
-                          {cat.category.replace(/_/g, " ")} — {cat.action}
+                          {cat.category.replace(/_/g, " ")} — {categoryActionLabel(cat.action)}
                         </Badge>
                       ))}
                     </div>
@@ -374,7 +375,7 @@ export function GuardrailsTab({ initialClientId }: GuardrailsTabProps) {
                                           </span>
                                         )}
                                         {action && (
-                                          <Badge variant="outline" className="text-[10px]">{action}</Badge>
+                                          <Badge variant="outline" className="text-[10px]">{categoryActionLabel(action)}</Badge>
                                         )}
                                       </div>
                                     )

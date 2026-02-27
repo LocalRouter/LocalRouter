@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { ProvidersIcon, McpIcon, SkillsIcon, StoreIcon } from "@/components/icons/category-icons"
 import { Shield } from "lucide-react"
+import { categoryActionLabel } from "@/components/permissions/CategoryActionButton"
 import type { SafetyVerdict, CategoryActionRequired } from "@/types/tauri-commands"
 
 export type ApprovalAction = "deny" | "deny_session" | "deny_always" | "block_categories" | "allow_once" | "allow_session" | "allow_1_hour" | "allow_permanent" | "allow_categories" | "deny_1_hour"
@@ -290,7 +291,7 @@ export function FirewallApprovalCard({
                   {guardrailActions.map((act, i) => (
                     <div key={i} className="flex items-center gap-1.5 text-[10px]">
                       <span className={`px-1 py-0.5 rounded font-bold ${act.action === "allow" ? "bg-emerald-500/20 text-emerald-600" : act.action === "ask" ? "bg-amber-500/20 text-amber-600" : "bg-blue-500/20 text-blue-600"}`}>
-                        {act.action.toUpperCase()}
+                        {categoryActionLabel(act.action).toUpperCase()}
                       </span>
                       <span className="font-medium">{formatCategory(act.category)}</span>
                       <span className="text-muted-foreground ml-auto">{act.model_id}</span>

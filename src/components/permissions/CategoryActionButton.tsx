@@ -14,26 +14,31 @@ interface CategoryActionButtonProps {
 }
 
 const stateConfig: Record<CategoryActionState, { label: string; activeClass: string; rollupClass: string }> = {
-  allow: {
-    label: "Allow",
-    activeClass: "bg-emerald-500 text-white",
-    rollupClass: "bg-emerald-500/30 text-emerald-600"
-  },
-  notify: {
-    label: "Notify",
-    activeClass: "bg-blue-500 text-white",
-    rollupClass: "bg-blue-500/30 text-blue-600"
-  },
-  ask: {
-    label: "Ask",
-    activeClass: "bg-amber-500 text-white",
-    rollupClass: "bg-amber-500/30 text-amber-600"
-  },
   block: {
     label: "Block",
     activeClass: "bg-red-600 text-white",
     rollupClass: "bg-red-600/30 text-red-600"
   },
+  notify: {
+    label: "Ask",
+    activeClass: "bg-blue-500 text-white",
+    rollupClass: "bg-blue-500/30 text-blue-600"
+  },
+  ask: {
+    label: "Warn",
+    activeClass: "bg-amber-500 text-white",
+    rollupClass: "bg-amber-500/30 text-amber-600"
+  },
+  allow: {
+    label: "Off",
+    activeClass: "bg-emerald-500 text-white",
+    rollupClass: "bg-emerald-500/30 text-emerald-600"
+  },
+}
+
+/** Map internal action value to display label */
+export function categoryActionLabel(action: string): string {
+  return stateConfig[action as CategoryActionState]?.label ?? action
 }
 
 export function CategoryActionButton({
@@ -51,7 +56,7 @@ export function CategoryActionButton({
         disabled && "opacity-50 pointer-events-none"
       )}
     >
-      {(["allow", "notify", "ask", "block"] as CategoryActionState[]).map((state) => {
+      {(["block", "notify", "ask", "allow"] as CategoryActionState[]).map((state) => {
         const config = stateConfig[state]
         const isActive = value === state
         const isChildRollup = childRollupStates?.has(state) && !isActive
@@ -76,8 +81,8 @@ export function CategoryActionButton({
               "transition-colors font-medium",
               size === "sm" ? "px-2 py-0.5 text-xs" : "px-3 py-1 text-sm",
               getButtonClass(),
-              state === "allow" && "rounded-l-md",
-              state === "block" && "rounded-r-md"
+              state === "block" && "rounded-l-md",
+              state === "allow" && "rounded-r-md"
             )}
           >
             {config.label}
