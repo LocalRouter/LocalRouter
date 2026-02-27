@@ -1277,12 +1277,7 @@ async fn check_free_tier_fallback(
             let firewall_manager = &state.mcp_gateway.firewall_manager;
 
             let response = firewall_manager
-                .request_free_tier_fallback_approval(
-                    client_id.to_string(),
-                    client_name,
-                    summary,
-                    retry_after_secs,
-                )
+                .request_free_tier_fallback_approval(client_id.to_string(), client_name, summary)
                 .await
                 .map_err(|e| {
                     ApiErrorResponse::internal_error(format!(

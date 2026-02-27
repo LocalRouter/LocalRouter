@@ -279,7 +279,6 @@ impl FirewallManager {
         client_id: String,
         client_name: String,
         exhausted_summary: String,
-        retry_after_secs: u64,
     ) -> AppResult<FirewallApprovalResponse> {
         self.request_approval_internal(
             client_id,
@@ -287,10 +286,10 @@ impl FirewallManager {
             "Free-Tier Fallback".to_string(), // tool_name
             "Paid Models".to_string(),        // server_name
             exhausted_summary,                // arguments_preview
-            Some(retry_after_secs),
-            false, // not a model request
-            false, // not guardrail
-            true,  // free-tier fallback
+            None,                             // use default timeout (24h)
+            false,                            // not a model request
+            false,                            // not guardrail
+            true,                             // free-tier fallback
             None,
             None,
         )
