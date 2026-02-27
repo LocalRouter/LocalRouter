@@ -372,9 +372,9 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
       }
     }
     if (initialMode === "client" && initialClientId && clients.length > 0) {
-      const match = clients.find(c => c.id === initialClientId)
+      const match = clients.find(c => c.client_id === initialClientId)
       if (match) {
-        setSelectedClientId(initialClientId)
+        setSelectedClientId(match.id)
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
