@@ -1220,12 +1220,6 @@ export interface SetClientTemplateParams {
   templateId: string | null
 }
 
-/** Params for set_client_guardrails_enabled */
-export interface SetClientGuardrailsEnabledParams {
-  clientId: string
-  enabled: boolean | null
-}
-
 /** Params for get_client_guardrails_config */
 export interface GetClientGuardrailsConfigParams {
   clientId: string

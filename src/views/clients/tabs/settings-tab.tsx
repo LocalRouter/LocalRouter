@@ -19,13 +19,6 @@ import {
 } from "@/components/ui/alert-dialog"
 import { CLIENT_TEMPLATES } from "@/components/client/ClientTemplates"
 import ServiceIcon from "@/components/ServiceIcon"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/Select"
 import type { ClientMode, SetClientModeParams, SetClientTemplateParams } from "@/types/tauri-commands"
 
 interface Client {
@@ -36,7 +29,6 @@ interface Client {
   strategy_id: string
   client_mode?: ClientMode
   template_id?: string | null
-  guardrails_enabled?: boolean | null
 }
 
 interface SettingsTabProps {
@@ -292,44 +284,6 @@ export function ClientSettingsTab({ client, onUpdate, onDelete }: SettingsTabPro
               )
             })}
           </div>
-        </CardContent>
-      </Card>
-
-      {/* GuardRails Override */}
-      <Card>
-        <CardHeader>
-          <CardTitle>GuardRails</CardTitle>
-          <CardDescription>
-            Override the global guardrails setting for this client
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <Select
-            value={client.guardrails_enabled === true ? "enabled" : client.guardrails_enabled === false ? "disabled" : "global"}
-            onValueChange={async (value) => {
-              try {
-                const enabled = value === "global" ? null : value === "enabled"
-                await invoke("set_client_guardrails_enabled", {
-                  clientId: client.id,
-                  enabled,
-                })
-                onUpdate()
-                toast.success("GuardRails setting updated")
-              } catch (err) {
-                console.error("Failed to update guardrails setting:", err)
-                toast.error("Failed to update GuardRails setting")
-              }
-            }}
-          >
-            <SelectTrigger className="w-48">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="global">Use Global Setting</SelectItem>
-              <SelectItem value="enabled">Enabled</SelectItem>
-              <SelectItem value="disabled">Disabled</SelectItem>
-            </SelectContent>
-          </Select>
         </CardContent>
       </Card>
 

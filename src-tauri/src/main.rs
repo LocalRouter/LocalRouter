@@ -710,35 +710,54 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                 });
                 info!("Registered clients-changed listener for permission notifications");
 
-                // Re-evaluate pending firewall approvals when permissions change
-                let app_state_for_reeval = app_state.clone();
-                let config_manager_for_reeval = config_manager.clone();
-                let app_handle_for_reeval = app.handle().clone();
-                app.listen("clients-changed", move |_event| {
-                    crate::ui::commands_clients::reevaluate_pending_approvals(
-                        &app_handle_for_reeval,
-                        &app_state_for_reeval.mcp_gateway.firewall_manager,
-                        &config_manager_for_reeval,
-                        &app_state_for_reeval.model_approval_tracker,
-                        &app_state_for_reeval.guardrail_approval_tracker,
-                        &app_state_for_reeval.guardrail_denial_tracker,
-                        &app_state_for_reeval.free_tier_approval_tracker,
-                    );
-
-                    // Rebuild tray menu and update icon after re-evaluation
-                    if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app_handle_for_reeval) {
-                        tracing::warn!(
-                            "Failed to rebuild tray menu after re-evaluation: {}",
-                            e
+                // Re-evaluate pending firewall approvals when permissions or strategies change.
+                // clients-changed: covers client permission updates (MCP, model, guardrails)
+                // strategies-changed: covers strategy updates (e.g. free_tier_fallback)
+                let make_reeval_handler = |app_state: std::sync::Arc<lr_server::state::AppState>,
+                                           config_manager: lr_config::ConfigManager,
+                                           app_handle: tauri::AppHandle| {
+                    move |_event: tauri::Event| {
+                        crate::ui::commands_clients::reevaluate_pending_approvals(
+                            &app_handle,
+                            &app_state.mcp_gateway.firewall_manager,
+                            &config_manager,
+                            &app_state.model_approval_tracker,
+                            &app_state.guardrail_approval_tracker,
+                            &app_state.guardrail_denial_tracker,
+                            &app_state.free_tier_approval_tracker,
                         );
+
+                        if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app_handle) {
+                            tracing::warn!(
+                                "Failed to rebuild tray menu after re-evaluation: {}",
+                                e
+                            );
+                        }
+                        if let Some(tray_manager) = app_handle
+                            .try_state::<crate::ui::tray_graph_manager::TrayGraphManager>(
+                        ) {
+                            tray_manager.notify_activity();
+                        }
                     }
-                    if let Some(tray_manager) =
-                        app_handle_for_reeval.try_state::<crate::ui::tray_graph_manager::TrayGraphManager>()
-                    {
-                        tray_manager.notify_activity();
-                    }
-                });
-                info!("Registered clients-changed listener for firewall re-evaluation");
+                };
+
+                app.listen(
+                    "clients-changed",
+                    make_reeval_handler(
+                        app_state.clone(),
+                        config_manager.clone(),
+                        app.handle().clone(),
+                    ),
+                );
+                app.listen(
+                    "strategies-changed",
+                    make_reeval_handler(
+                        app_state.clone(),
+                        config_manager.clone(),
+                        app.handle().clone(),
+                    ),
+                );
+                info!("Registered clients/strategies-changed listeners for firewall re-evaluation");
 
                 // Spawn firewall approval popup listener
                 // Subscribes to MCP notification broadcast and opens popup windows
@@ -1401,7 +1420,6 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             // Client template, mode & guardrails commands
             ui::commands::set_client_mode,
             ui::commands::set_client_template,
-            ui::commands::set_client_guardrails_enabled,
             ui::commands::get_client_guardrails_config,
             ui::commands::update_client_guardrails_config,
             // App launcher commands

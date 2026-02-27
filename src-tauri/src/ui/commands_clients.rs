@@ -1955,19 +1955,6 @@ pub async fn set_client_template(
     Ok(())
 }
 
-/// Legacy no-op: guardrails enabled state is now derived from category_actions.
-/// Kept for backward compatibility with older frontends.
-#[tauri::command]
-pub async fn set_client_guardrails_enabled(
-    _client_id: String,
-    _enabled: Option<bool>,
-    _config_manager: State<'_, ConfigManager>,
-    _app: tauri::AppHandle,
-) -> Result<(), String> {
-    // No-op: presence of category_actions determines guardrails active state
-    Ok(())
-}
-
 /// Get the guardrails configuration for a specific client
 #[tauri::command]
 pub async fn get_client_guardrails_config(

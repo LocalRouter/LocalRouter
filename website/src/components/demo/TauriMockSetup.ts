@@ -206,10 +206,6 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   'get_client_value': () => null,
 
   // Client mode, template, and guardrails
-  'set_client_guardrails_enabled': () => {
-    // No-op: enabled state is derived from category_actions
-    return null
-  },
   'get_client_guardrails_config': (args) => {
     const client = mockData.clients.find(c => c.id === args?.clientId || c.client_id === args?.clientId)
     const guardrails = client ? (client as Record<string, unknown>).guardrails : undefined
