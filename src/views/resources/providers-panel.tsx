@@ -1061,21 +1061,25 @@ export function ProvidersPanel({
                                         <SelectTrigger className="h-8 text-xs">
                                           <SelectValue />
                                         </SelectTrigger>
-                                        <SelectContent>
-                                          <SelectItem value="none" className="text-xs">No Free Tier</SelectItem>
-                                          <SelectItem value="always_free_local" className="text-xs">Always Free (Local)</SelectItem>
-                                          <SelectItem value="subscription" className="text-xs">Subscription</SelectItem>
-                                          <SelectItem value="rate_limited_free" className="text-xs">Rate Limited</SelectItem>
-                                          <SelectItem value="credit_based" className="text-xs">Credit Based</SelectItem>
-                                          <SelectItem value="free_models_only" className="text-xs">Free Models Only</SelectItem>
+                                        <SelectContent className="max-w-[300px]">
+                                          {([
+                                            ['none', 'No Free Tier'],
+                                            ['always_free_local', 'Always Free (Local)'],
+                                            ['subscription', 'Subscription'],
+                                            ['rate_limited_free', 'Rate Limited'],
+                                            ['credit_based', 'Credit Based'],
+                                            ['free_models_only', 'Free Models Only'],
+                                          ] as const).map(([value, label]) => (
+                                            <SelectItem key={value} value={value} className="text-xs py-2">
+                                              <div>
+                                                <div className="font-medium">{label}</div>
+                                                <div className="text-[11px] text-muted-foreground font-normal mt-0.5 whitespace-normal">{FREE_TIER_DESCRIPTIONS[value]}</div>
+                                              </div>
+                                            </SelectItem>
+                                          ))}
                                         </SelectContent>
                                       </Select>
                                     </div>
-
-                                    {/* Type description */}
-                                    <p className="text-xs text-muted-foreground">
-                                      {FREE_TIER_DESCRIPTIONS[freeTierOverrideKind.kind]}
-                                    </p>
 
                                     {/* Rate Limited fields */}
                                     {freeTierOverrideKind.kind === 'rate_limited_free' && (
@@ -1236,17 +1240,13 @@ export function ProvidersPanel({
                             const kind = status.free_tier?.kind
                             return (
                               <div className="space-y-4">
-                                {/* Status */}
+                                {/* Free tier status */}
                                 <div className="flex items-center justify-between">
-                                  <span className="text-sm font-medium">Status</span>
+                                  <span className="text-sm font-medium">Free Tier</span>
                                   <span className={`text-sm ${status.has_capacity ? 'text-green-600' : 'text-red-600'}`}>
-                                    {status.has_capacity ? 'Available' : 'Exhausted'}
+                                    {status.status_message || (status.has_capacity ? 'Available' : 'Exhausted')}
                                   </span>
                                 </div>
-
-                                {status.status_message && (
-                                  <p className="text-sm text-muted-foreground">{status.status_message}</p>
-                                )}
 
                                 {/* Rate limit details */}
                                 {kind === 'rate_limited_free' && (
@@ -1372,7 +1372,7 @@ export function ProvidersPanel({
                                   </div>
                                 )}
 
-                                {/* Actions */}
+                                {/* Actions - only for kinds that track usage */}
                                 {(kind === 'rate_limited_free' || kind === 'credit_based') && (
                                   <div className="flex gap-2 pt-2 border-t">
                                     <Button
@@ -1412,8 +1412,8 @@ export function ProvidersPanel({
                                   </div>
                                 )}
 
-                                {/* Simple reset for other types that don't have editable usage */}
-                                {kind !== 'rate_limited_free' && kind !== 'credit_based' && kind !== 'none' && (
+                                {/* Simple reset for free_models_only which has rate tracking but no editable usage */}
+                                {kind === 'free_models_only' && (
                                   <div className="pt-2 border-t">
                                     <Button
                                       variant="outline"
