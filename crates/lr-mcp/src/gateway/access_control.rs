@@ -70,6 +70,137 @@ pub fn check_model_access(
     perms.resolve_model(provider, model_id).into()
 }
 
+// ============================================================================
+// Unified Firewall Check
+// ============================================================================
+
+/// Result of checking whether a firewall approval popup is needed
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FirewallCheckResult {
+    /// No popup needed, allow the request
+    Allow,
+    /// No popup needed, deny the request
+    Deny,
+    /// Popup needed — user must approve or deny
+    Ask,
+}
+
+/// Context for checking whether a firewall approval is needed.
+/// Each variant provides the type-specific inputs for permission resolution.
+pub enum FirewallCheckContext<'a> {
+    McpTool {
+        permissions: &'a McpPermissions,
+        server_id: &'a str,
+        original_tool_name: &'a str,
+        session_approved: bool,
+        session_denied: bool,
+    },
+    SkillTool {
+        permissions: &'a SkillsPermissions,
+        skill_name: &'a str,
+        tool_name: &'a str,
+        session_approved: bool,
+        session_denied: bool,
+    },
+    Model {
+        permissions: &'a ModelPermissions,
+        provider: &'a str,
+        model_id: &'a str,
+        has_time_based_approval: bool,
+    },
+    Guardrail {
+        has_time_based_bypass: bool,
+        has_time_based_denial: bool,
+        category_actions_empty: bool,
+    },
+}
+
+/// Single source of truth: determines whether a request needs a firewall approval popup.
+///
+/// Used by:
+/// - Original trigger sites (gateway_tools.rs, chat.rs) to decide whether to show a popup
+/// - Re-evaluation (commands_clients.rs) to auto-resolve pending popups after permission changes
+pub fn check_needs_approval(ctx: &FirewallCheckContext) -> FirewallCheckResult {
+    match ctx {
+        FirewallCheckContext::McpTool {
+            permissions,
+            server_id,
+            original_tool_name,
+            session_approved,
+            session_denied,
+        } => {
+            let decision = check_mcp_tool_access(permissions, server_id, original_tool_name);
+            match decision {
+                AccessDecision::Allow => FirewallCheckResult::Allow,
+                AccessDecision::Deny => FirewallCheckResult::Deny,
+                AccessDecision::Ask => {
+                    if *session_denied {
+                        FirewallCheckResult::Deny
+                    } else if *session_approved {
+                        FirewallCheckResult::Allow
+                    } else {
+                        FirewallCheckResult::Ask
+                    }
+                }
+            }
+        }
+        FirewallCheckContext::SkillTool {
+            permissions,
+            skill_name,
+            tool_name,
+            session_approved,
+            session_denied,
+        } => {
+            let decision = check_skill_tool_access(permissions, skill_name, tool_name);
+            match decision {
+                AccessDecision::Allow => FirewallCheckResult::Allow,
+                AccessDecision::Deny => FirewallCheckResult::Deny,
+                AccessDecision::Ask => {
+                    if *session_denied {
+                        FirewallCheckResult::Deny
+                    } else if *session_approved {
+                        FirewallCheckResult::Allow
+                    } else {
+                        FirewallCheckResult::Ask
+                    }
+                }
+            }
+        }
+        FirewallCheckContext::Model {
+            permissions,
+            provider,
+            model_id,
+            has_time_based_approval,
+        } => {
+            let decision = check_model_access(permissions, provider, model_id);
+            match decision {
+                AccessDecision::Allow => FirewallCheckResult::Allow,
+                AccessDecision::Deny => FirewallCheckResult::Deny,
+                AccessDecision::Ask => {
+                    if *has_time_based_approval {
+                        FirewallCheckResult::Allow
+                    } else {
+                        FirewallCheckResult::Ask
+                    }
+                }
+            }
+        }
+        FirewallCheckContext::Guardrail {
+            has_time_based_bypass,
+            has_time_based_denial,
+            category_actions_empty,
+        } => {
+            if *has_time_based_bypass || *category_actions_empty {
+                FirewallCheckResult::Allow
+            } else if *has_time_based_denial {
+                FirewallCheckResult::Deny
+            } else {
+                FirewallCheckResult::Ask
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -303,5 +434,423 @@ mod tests {
             check_model_access(&perms, "openai", "gpt-3.5-turbo"),
             AccessDecision::Allow
         );
+    }
+
+    // ========================================================================
+    // check_needs_approval tests
+    // ========================================================================
+
+    // --- MCP tool variants ---
+
+    #[test]
+    fn test_check_mcp_tool_global_allow() {
+        let perms = McpPermissions {
+            global: PermissionState::Allow,
+            ..Default::default()
+        };
+        let ctx = FirewallCheckContext::McpTool {
+            permissions: &perms,
+            server_id: "srv1",
+            original_tool_name: "read_file",
+            session_approved: false,
+            session_denied: false,
+        };
+        assert_eq!(check_needs_approval(&ctx), FirewallCheckResult::Allow);
+    }
+
+    #[test]
+    fn test_check_mcp_tool_global_off() {
+        let perms = McpPermissions {
+            global: PermissionState::Off,
+            ..Default::default()
+        };
+        let ctx = FirewallCheckContext::McpTool {
+            permissions: &perms,
+            server_id: "srv1",
+            original_tool_name: "read_file",
+            session_approved: false,
+            session_denied: false,
+        };
+        assert_eq!(check_needs_approval(&ctx), FirewallCheckResult::Deny);
+    }
+
+    #[test]
+    fn test_check_mcp_tool_global_ask_no_session() {
+        let perms = McpPermissions {
+            global: PermissionState::Ask,
+            ..Default::default()
+        };
+        let ctx = FirewallCheckContext::McpTool {
+            permissions: &perms,
+            server_id: "srv1",
+            original_tool_name: "read_file",
+            session_approved: false,
+            session_denied: false,
+        };
+        assert_eq!(check_needs_approval(&ctx), FirewallCheckResult::Ask);
+    }
+
+    #[test]
+    fn test_check_mcp_tool_ask_session_approved() {
+        let perms = McpPermissions {
+            global: PermissionState::Ask,
+            ..Default::default()
+        };
+        let ctx = FirewallCheckContext::McpTool {
+            permissions: &perms,
+            server_id: "srv1",
+            original_tool_name: "read_file",
+            session_approved: true,
+            session_denied: false,
+        };
+        assert_eq!(check_needs_approval(&ctx), FirewallCheckResult::Allow);
+    }
+
+    #[test]
+    fn test_check_mcp_tool_ask_session_denied() {
+        let perms = McpPermissions {
+            global: PermissionState::Ask,
+            ..Default::default()
+        };
+        let ctx = FirewallCheckContext::McpTool {
+            permissions: &perms,
+            server_id: "srv1",
+            original_tool_name: "read_file",
+            session_approved: false,
+            session_denied: true,
+        };
+        assert_eq!(check_needs_approval(&ctx), FirewallCheckResult::Deny);
+    }
+
+    #[test]
+    fn test_check_mcp_tool_server_override_allow() {
+        let mut servers = HashMap::new();
+        servers.insert("srv1".to_string(), PermissionState::Allow);
+        let perms = McpPermissions {
+            global: PermissionState::Ask,
+            servers,
+            ..Default::default()
+        };
+        let ctx = FirewallCheckContext::McpTool {
+            permissions: &perms,
+            server_id: "srv1",
+            original_tool_name: "read_file",
+            session_approved: false,
+            session_denied: false,
+        };
+        assert_eq!(check_needs_approval(&ctx), FirewallCheckResult::Allow);
+    }
+
+    #[test]
+    fn test_check_mcp_tool_tool_override_off() {
+        let mut tools = HashMap::new();
+        tools.insert("srv1__write_file".to_string(), PermissionState::Off);
+        let perms = McpPermissions {
+            global: PermissionState::Allow,
+            tools,
+            ..Default::default()
+        };
+        let ctx = FirewallCheckContext::McpTool {
+            permissions: &perms,
+            server_id: "srv1",
+            original_tool_name: "write_file",
+            session_approved: false,
+            session_denied: false,
+        };
+        assert_eq!(check_needs_approval(&ctx), FirewallCheckResult::Deny);
+    }
+
+    #[test]
+    fn test_check_mcp_tool_tool_override_allow_overrides_server_ask() {
+        let mut servers = HashMap::new();
+        servers.insert("srv1".to_string(), PermissionState::Ask);
+        let mut tools = HashMap::new();
+        tools.insert("srv1__read_file".to_string(), PermissionState::Allow);
+        let perms = McpPermissions {
+            global: PermissionState::Off,
+            servers,
+            tools,
+            ..Default::default()
+        };
+        let ctx = FirewallCheckContext::McpTool {
+            permissions: &perms,
+            server_id: "srv1",
+            original_tool_name: "read_file",
+            session_approved: false,
+            session_denied: false,
+        };
+        assert_eq!(check_needs_approval(&ctx), FirewallCheckResult::Allow);
+    }
+
+    // --- Skill tool variants ---
+
+    #[test]
+    fn test_check_skill_tool_global_ask() {
+        let perms = SkillsPermissions {
+            global: PermissionState::Ask,
+            ..Default::default()
+        };
+        let ctx = FirewallCheckContext::SkillTool {
+            permissions: &perms,
+            skill_name: "weather",
+            tool_name: "skill_weather_run_main",
+            session_approved: false,
+            session_denied: false,
+        };
+        assert_eq!(check_needs_approval(&ctx), FirewallCheckResult::Ask);
+    }
+
+    #[test]
+    fn test_check_skill_tool_skill_allow() {
+        let mut skills = HashMap::new();
+        skills.insert("weather".to_string(), PermissionState::Allow);
+        let perms = SkillsPermissions {
+            global: PermissionState::Ask,
+            skills,
+            ..Default::default()
+        };
+        let ctx = FirewallCheckContext::SkillTool {
+            permissions: &perms,
+            skill_name: "weather",
+            tool_name: "skill_weather_run_main",
+            session_approved: false,
+            session_denied: false,
+        };
+        assert_eq!(check_needs_approval(&ctx), FirewallCheckResult::Allow);
+    }
+
+    #[test]
+    fn test_check_skill_tool_tool_override() {
+        let mut skills = HashMap::new();
+        skills.insert("weather".to_string(), PermissionState::Allow);
+        let mut tools = HashMap::new();
+        tools.insert(
+            "weather__skill_weather_run_dangerous".to_string(),
+            PermissionState::Off,
+        );
+        let perms = SkillsPermissions {
+            global: PermissionState::Ask,
+            skills,
+            tools,
+        };
+        let ctx = FirewallCheckContext::SkillTool {
+            permissions: &perms,
+            skill_name: "weather",
+            tool_name: "skill_weather_run_dangerous",
+            session_approved: false,
+            session_denied: false,
+        };
+        assert_eq!(check_needs_approval(&ctx), FirewallCheckResult::Deny);
+    }
+
+    #[test]
+    fn test_check_skill_tool_ask_session_approved() {
+        let perms = SkillsPermissions {
+            global: PermissionState::Ask,
+            ..Default::default()
+        };
+        let ctx = FirewallCheckContext::SkillTool {
+            permissions: &perms,
+            skill_name: "weather",
+            tool_name: "skill_weather_run_main",
+            session_approved: true,
+            session_denied: false,
+        };
+        assert_eq!(check_needs_approval(&ctx), FirewallCheckResult::Allow);
+    }
+
+    #[test]
+    fn test_check_skill_tool_ask_session_denied() {
+        let perms = SkillsPermissions {
+            global: PermissionState::Ask,
+            ..Default::default()
+        };
+        let ctx = FirewallCheckContext::SkillTool {
+            permissions: &perms,
+            skill_name: "weather",
+            tool_name: "skill_weather_run_main",
+            session_approved: false,
+            session_denied: true,
+        };
+        assert_eq!(check_needs_approval(&ctx), FirewallCheckResult::Deny);
+    }
+
+    // --- Model variants ---
+
+    #[test]
+    fn test_check_model_global_allow() {
+        let perms = ModelPermissions {
+            global: PermissionState::Allow,
+            ..Default::default()
+        };
+        let ctx = FirewallCheckContext::Model {
+            permissions: &perms,
+            provider: "openai",
+            model_id: "gpt-4",
+            has_time_based_approval: false,
+        };
+        assert_eq!(check_needs_approval(&ctx), FirewallCheckResult::Allow);
+    }
+
+    #[test]
+    fn test_check_model_global_off() {
+        let perms = ModelPermissions {
+            global: PermissionState::Off,
+            ..Default::default()
+        };
+        let ctx = FirewallCheckContext::Model {
+            permissions: &perms,
+            provider: "openai",
+            model_id: "gpt-4",
+            has_time_based_approval: false,
+        };
+        assert_eq!(check_needs_approval(&ctx), FirewallCheckResult::Deny);
+    }
+
+    #[test]
+    fn test_check_model_global_ask_no_tracker() {
+        let perms = ModelPermissions {
+            global: PermissionState::Ask,
+            ..Default::default()
+        };
+        let ctx = FirewallCheckContext::Model {
+            permissions: &perms,
+            provider: "openai",
+            model_id: "gpt-4",
+            has_time_based_approval: false,
+        };
+        assert_eq!(check_needs_approval(&ctx), FirewallCheckResult::Ask);
+    }
+
+    #[test]
+    fn test_check_model_ask_with_time_based_approval() {
+        let perms = ModelPermissions {
+            global: PermissionState::Ask,
+            ..Default::default()
+        };
+        let ctx = FirewallCheckContext::Model {
+            permissions: &perms,
+            provider: "openai",
+            model_id: "gpt-4",
+            has_time_based_approval: true,
+        };
+        assert_eq!(check_needs_approval(&ctx), FirewallCheckResult::Allow);
+    }
+
+    #[test]
+    fn test_check_model_provider_override() {
+        let mut providers = HashMap::new();
+        providers.insert("openai".to_string(), PermissionState::Allow);
+        let perms = ModelPermissions {
+            global: PermissionState::Ask,
+            providers,
+            ..Default::default()
+        };
+        let ctx = FirewallCheckContext::Model {
+            permissions: &perms,
+            provider: "openai",
+            model_id: "gpt-4",
+            has_time_based_approval: false,
+        };
+        assert_eq!(check_needs_approval(&ctx), FirewallCheckResult::Allow);
+    }
+
+    #[test]
+    fn test_check_model_model_override_off() {
+        let mut models = HashMap::new();
+        models.insert("openai__gpt-4".to_string(), PermissionState::Off);
+        let perms = ModelPermissions {
+            global: PermissionState::Allow,
+            models,
+            ..Default::default()
+        };
+        let ctx = FirewallCheckContext::Model {
+            permissions: &perms,
+            provider: "openai",
+            model_id: "gpt-4",
+            has_time_based_approval: false,
+        };
+        assert_eq!(check_needs_approval(&ctx), FirewallCheckResult::Deny);
+    }
+
+    // --- Guardrail variants ---
+
+    #[test]
+    fn test_check_guardrail_no_bypass_no_denial() {
+        let ctx = FirewallCheckContext::Guardrail {
+            has_time_based_bypass: false,
+            has_time_based_denial: false,
+            category_actions_empty: false,
+        };
+        assert_eq!(check_needs_approval(&ctx), FirewallCheckResult::Ask);
+    }
+
+    #[test]
+    fn test_check_guardrail_has_bypass() {
+        let ctx = FirewallCheckContext::Guardrail {
+            has_time_based_bypass: true,
+            has_time_based_denial: false,
+            category_actions_empty: false,
+        };
+        assert_eq!(check_needs_approval(&ctx), FirewallCheckResult::Allow);
+    }
+
+    #[test]
+    fn test_check_guardrail_has_denial() {
+        let ctx = FirewallCheckContext::Guardrail {
+            has_time_based_bypass: false,
+            has_time_based_denial: true,
+            category_actions_empty: false,
+        };
+        assert_eq!(check_needs_approval(&ctx), FirewallCheckResult::Deny);
+    }
+
+    #[test]
+    fn test_check_guardrail_category_actions_empty() {
+        let ctx = FirewallCheckContext::Guardrail {
+            has_time_based_bypass: false,
+            has_time_based_denial: false,
+            category_actions_empty: true,
+        };
+        assert_eq!(check_needs_approval(&ctx), FirewallCheckResult::Allow);
+    }
+
+    #[test]
+    fn test_check_guardrail_bypass_takes_priority_over_denial() {
+        let ctx = FirewallCheckContext::Guardrail {
+            has_time_based_bypass: true,
+            has_time_based_denial: true,
+            category_actions_empty: false,
+        };
+        assert_eq!(check_needs_approval(&ctx), FirewallCheckResult::Allow);
+    }
+
+    // --- Edge cases ---
+
+    #[test]
+    fn test_check_mixed_session_both_true() {
+        // session_denied wins (checked first)
+        let perms = McpPermissions {
+            global: PermissionState::Ask,
+            ..Default::default()
+        };
+        let ctx = FirewallCheckContext::McpTool {
+            permissions: &perms,
+            server_id: "srv1",
+            original_tool_name: "read_file",
+            session_approved: true,
+            session_denied: true,
+        };
+        assert_eq!(check_needs_approval(&ctx), FirewallCheckResult::Deny);
+    }
+
+    #[test]
+    fn test_check_guardrail_all_flags_false() {
+        let ctx = FirewallCheckContext::Guardrail {
+            has_time_based_bypass: false,
+            has_time_based_denial: false,
+            category_actions_empty: false,
+        };
+        assert_eq!(check_needs_approval(&ctx), FirewallCheckResult::Ask);
     }
 }

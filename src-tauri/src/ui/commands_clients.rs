@@ -685,6 +685,8 @@ pub async fn submit_firewall_approval(
             | FirewallApprovalAction::BlockCategories
             | FirewallApprovalAction::AllowCategories
             | FirewallApprovalAction::Deny1Hour
+            | FirewallApprovalAction::AllowSession
+            | FirewallApprovalAction::DenySession
     ) {
         state
             .mcp_gateway
@@ -929,6 +931,16 @@ pub async fn submit_firewall_approval(
         _ => {}
     }
 
+    // Re-evaluate remaining pending approvals that might now be auto-resolvable
+    reevaluate_pending_approvals(
+        &app,
+        &state.mcp_gateway.firewall_manager,
+        &config_manager,
+        &state.model_approval_tracker,
+        &state.guardrail_approval_tracker,
+        &state.guardrail_denial_tracker,
+    );
+
     // Rebuild tray menu to remove the pending approval item
     if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
         tracing::warn!("Failed to rebuild tray menu after firewall approval: {}", e);
@@ -938,6 +950,96 @@ pub async fn submit_firewall_approval(
     tray_graph_manager.notify_activity();
 
     Ok(())
+}
+
+/// Re-evaluate all pending firewall approval sessions using the unified check_needs_approval.
+///
+/// After a persistent action (AllowPermanent, DenyAlways, etc.) changes permissions,
+/// other pending popups for the same resource can be auto-resolved without user interaction.
+fn reevaluate_pending_approvals(
+    app: &tauri::AppHandle,
+    firewall_manager: &lr_mcp::gateway::firewall::FirewallManager,
+    config_manager: &ConfigManager,
+    model_approval_tracker: &lr_server::state::ModelApprovalTracker,
+    guardrail_approval_tracker: &lr_server::state::GuardrailApprovalTracker,
+    guardrail_denial_tracker: &lr_server::state::GuardrailDenialTracker,
+) {
+    use lr_mcp::gateway::access_control::{
+        check_needs_approval, FirewallCheckContext, FirewallCheckResult,
+    };
+    use lr_mcp::gateway::firewall::FirewallApprovalAction;
+    use tauri::Manager;
+
+    let pending = firewall_manager.list_pending();
+    if pending.is_empty() {
+        return;
+    }
+    let config = config_manager.get();
+
+    for info in &pending {
+        let client = match config.clients.iter().find(|c| c.id == info.client_id) {
+            Some(c) => c,
+            None => continue,
+        };
+
+        let ctx = if info.is_guardrail_request {
+            FirewallCheckContext::Guardrail {
+                has_time_based_bypass: guardrail_approval_tracker.has_valid_bypass(&info.client_id),
+                has_time_based_denial: guardrail_denial_tracker.has_valid_denial(&info.client_id),
+                category_actions_empty: client.guardrails.category_actions.is_empty(),
+            }
+        } else if info.is_model_request {
+            FirewallCheckContext::Model {
+                permissions: &client.model_permissions,
+                provider: &info.server_name,
+                model_id: &info.tool_name,
+                has_time_based_approval: model_approval_tracker.has_valid_approval(
+                    &info.client_id,
+                    &info.server_name,
+                    &info.tool_name,
+                ),
+            }
+        } else if info.tool_name.starts_with("skill_") {
+            FirewallCheckContext::SkillTool {
+                permissions: &client.skills_permissions,
+                skill_name: &info.server_name,
+                tool_name: &info.tool_name,
+                session_approved: false,
+                session_denied: false,
+            }
+        } else {
+            let original_name = info.tool_name.split("__").nth(1).unwrap_or(&info.tool_name);
+            FirewallCheckContext::McpTool {
+                permissions: &client.mcp_permissions,
+                server_id: &info.server_name,
+                original_tool_name: original_name,
+                session_approved: false,
+                session_denied: false,
+            }
+        };
+
+        let result = check_needs_approval(&ctx);
+        let auto_action = match result {
+            FirewallCheckResult::Allow => Some(FirewallApprovalAction::AllowOnce),
+            FirewallCheckResult::Deny => Some(FirewallApprovalAction::Deny),
+            FirewallCheckResult::Ask => None,
+        };
+
+        if let Some(action) = auto_action {
+            tracing::info!(
+                "Auto-resolving firewall request {} ({}) → {:?}",
+                info.request_id,
+                info.tool_name,
+                action
+            );
+            let _ = firewall_manager.submit_response(&info.request_id, action, None);
+            if let Some(window) =
+                app.get_webview_window(&format!("firewall-approval-{}", info.request_id))
+            {
+                let _ = window.close();
+            }
+        }
+    }
 }
 
 /// Helper to update model permissions when AllowPermanent is selected for a model request

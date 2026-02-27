@@ -68,6 +68,7 @@ export function FirewallApproval() {
   const [loading, setLoading] = useState(true)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [buttonsReady, setButtonsReady] = useState(false)
 
   // Edit mode state
   const [editMode, setEditMode] = useState(false)
@@ -113,6 +114,22 @@ export function FirewallApproval() {
 
     loadDetails()
   }, [])
+
+  // Start 1-second button delay when the window gains focus (not on mount)
+  // This prevents accidental clicks when popups appear suddenly
+  useEffect(() => {
+    if (loading || !details) return
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const unlistenPromise = getCurrentWebviewWindow().onFocusChanged(({ payload: focused }) => {
+      if (focused && !buttonsReady) {
+        timer = setTimeout(() => setButtonsReady(true), 1000)
+      }
+    })
+    return () => {
+      if (timer) clearTimeout(timer)
+      unlistenPromise.then(fn => fn())
+    }
+  }, [loading, details, buttonsReady])
 
   const enterEditMode = async () => {
     if (!details) return
@@ -440,7 +457,7 @@ export function FirewallApproval() {
           guardrailDirection={details.guardrail_details?.scan_direction}
           guardrailActions={details.guardrail_details?.actions_required}
           guardrailFlaggedText={details.guardrail_details?.flagged_text}
-          onAction={handleAction}
+          onAction={buttonsReady ? handleAction : undefined}
           onEdit={enterEditMode}
           submitting={submitting}
         />

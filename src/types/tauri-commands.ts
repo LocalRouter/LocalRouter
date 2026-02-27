@@ -1893,6 +1893,12 @@ export interface GetFirewallFullArgumentsParams {
   requestId: string
 }
 
+/** Params for debug_trigger_firewall_popup */
+export interface DebugTriggerFirewallPopupParams {
+  popupType?: "mcp_tool" | "llm_model" | "skill" | "marketplace" | null
+  sendMultiple?: boolean | null
+}
+
 // =============================================================================
 // Marketplace Commands
 // Rust: src-tauri/src/ui/commands_marketplace.rs

@@ -1886,18 +1886,21 @@ pub enum DebugFirewallType {
 ///
 /// This creates a real pending approval in the FirewallManager and opens
 /// the approval popup window.
+///
+/// When `send_multiple` is true, creates 3 sessions:
+/// - Session 1: original resource
+/// - Session 2: same resource (duplicate)
+/// - Session 3: different resource
 #[tauri::command]
 pub async fn debug_trigger_firewall_popup(
     popup_type: Option<DebugFirewallType>,
+    send_multiple: Option<bool>,
     app: AppHandle,
     state: State<'_, Arc<lr_server::state::AppState>>,
 ) -> Result<(), String> {
     let popup_type = popup_type.unwrap_or_default();
+    let send_multiple = send_multiple.unwrap_or(false);
     let firewall_manager = state.mcp_gateway.firewall_manager.clone();
-
-    // Create a fake approval request (this inserts into FirewallManager)
-    let request_id = uuid::Uuid::new_v4().to_string();
-    let timeout_secs: u64 = 30;
 
     // Configure based on popup type
     let (tool_name, server_name, arguments_preview, is_model_request) = match popup_type {
@@ -1927,31 +1930,128 @@ pub async fn debug_trigger_firewall_popup(
         ),
     };
 
-    // Build full arguments for edit mode testing
-    let full_arguments: Option<serde_json::Value> = serde_json::from_str(&arguments_preview).ok();
+    // Build sessions list: 1 normally, 3 for multi-popup mode
+    struct DebugSession {
+        tool_name: String,
+        server_name: String,
+        arguments_preview: String,
+        is_model_request: bool,
+    }
 
-    // For debug purposes, we don't need a response channel since there's no
-    // real MCP request waiting for the approval. Setting response_sender to None
-    // allows the popup to work without errors when submitting a response.
-    let session = lr_mcp::gateway::firewall::FirewallApprovalSession {
-        request_id: request_id.clone(),
-        client_id: "debug-client".to_string(),
-        client_name: "Debug Test Client".to_string(),
-        tool_name,
-        server_name,
-        arguments_preview,
-        full_arguments,
-        response_sender: None, // No response channel for debug mode
-        created_at: std::time::Instant::now(),
-        timeout_seconds: timeout_secs,
+    let mut sessions = vec![DebugSession {
+        tool_name: tool_name.clone(),
+        server_name: server_name.clone(),
+        arguments_preview: arguments_preview.clone(),
         is_model_request,
-        is_guardrail_request: false,
-        guardrail_details: None,
-    };
+    }];
 
-    firewall_manager.insert_pending(request_id.clone(), session);
+    if send_multiple {
+        // Session 2: same resource (duplicate)
+        sessions.push(DebugSession {
+            tool_name: tool_name.clone(),
+            server_name: server_name.clone(),
+            arguments_preview: arguments_preview.clone(),
+            is_model_request,
+        });
 
-    // Rebuild tray menu to show the pending approval item
+        // Session 3: different resource
+        let (alt_tool, alt_server, alt_preview, alt_model) = match popup_type {
+            DebugFirewallType::McpTool => (
+                "github__create_issue".to_string(),
+                "github".to_string(),
+                r#"{"repo": "test/repo", "title": "Test issue"}"#.to_string(),
+                false,
+            ),
+            DebugFirewallType::LlmModel => (
+                "gpt-4o".to_string(),
+                "openai".to_string(),
+                r#"{"prompt": "Write a poem", "max_tokens": 500}"#.to_string(),
+                true,
+            ),
+            DebugFirewallType::Skill => (
+                "skill_sysinfo_run_main".to_string(),
+                "sysinfo".to_string(),
+                r#"{"command": "uptime"}"#.to_string(),
+                false,
+            ),
+            DebugFirewallType::Marketplace => (
+                "marketplace__run_lint".to_string(),
+                "marketplace".to_string(),
+                r#"{"target": "src/", "fix": true}"#.to_string(),
+                false,
+            ),
+        };
+        sessions.push(DebugSession {
+            tool_name: alt_tool,
+            server_name: alt_server,
+            arguments_preview: alt_preview,
+            is_model_request: alt_model,
+        });
+    }
+
+    for (i, debug_session) in sessions.into_iter().enumerate() {
+        let request_id = uuid::Uuid::new_v4().to_string();
+        let timeout_secs: u64 = 30;
+
+        let full_arguments: Option<serde_json::Value> =
+            serde_json::from_str(&debug_session.arguments_preview).ok();
+
+        let session = lr_mcp::gateway::firewall::FirewallApprovalSession {
+            request_id: request_id.clone(),
+            client_id: "debug-client".to_string(),
+            client_name: "Debug Test Client".to_string(),
+            tool_name: debug_session.tool_name,
+            server_name: debug_session.server_name,
+            arguments_preview: debug_session.arguments_preview,
+            full_arguments,
+            response_sender: None,
+            created_at: std::time::Instant::now(),
+            timeout_seconds: timeout_secs,
+            is_model_request: debug_session.is_model_request,
+            is_guardrail_request: false,
+            guardrail_details: None,
+        };
+
+        firewall_manager.insert_pending(request_id.clone(), session);
+
+        // Small delay between windows to avoid overlap
+        if i > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+
+        // Create the firewall approval popup window
+        use tauri::WebviewWindowBuilder;
+        match WebviewWindowBuilder::new(
+            &app,
+            format!("firewall-approval-{}", request_id),
+            tauri::WebviewUrl::App("index.html".into()),
+        )
+        .title("Approval Required")
+        .inner_size(400.0, 320.0)
+        .center()
+        .visible(true)
+        .resizable(false)
+        .decorations(true)
+        .always_on_top(true)
+        .build()
+        {
+            Ok(window) => {
+                let _ = window.set_focus();
+                tracing::info!(
+                    "Debug firewall popup ({:?}) opened for request {} (#{}/{})",
+                    popup_type,
+                    request_id,
+                    i + 1,
+                    if send_multiple { 3 } else { 1 }
+                );
+            }
+            Err(e) => {
+                tracing::error!("Failed to create debug firewall popup: {}", e);
+            }
+        }
+    }
+
+    // Rebuild tray menu to show the pending approval item(s)
     if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
         tracing::warn!("Failed to rebuild tray menu for firewall approval: {}", e);
     }
@@ -1959,35 +2059,6 @@ pub async fn debug_trigger_firewall_popup(
     // Trigger immediate tray icon update to show the question mark overlay
     if let Some(tray_graph_manager) = app.try_state::<Arc<crate::ui::tray::TrayGraphManager>>() {
         tray_graph_manager.notify_activity();
-    }
-
-    // Create the firewall approval popup window
-    use tauri::WebviewWindowBuilder;
-    match WebviewWindowBuilder::new(
-        &app,
-        format!("firewall-approval-{}", request_id),
-        tauri::WebviewUrl::App("index.html".into()),
-    )
-    .title("Approval Required")
-    .inner_size(400.0, 320.0)
-    .center()
-    .visible(true)
-    .resizable(false)
-    .decorations(true)
-    .always_on_top(true)
-    .build()
-    {
-        Ok(window) => {
-            let _ = window.set_focus();
-            tracing::info!(
-                "Debug firewall popup ({:?}) opened for request {}",
-                popup_type,
-                request_id
-            );
-        }
-        Err(e) => {
-            tracing::error!("Failed to create debug firewall popup: {}", e);
-        }
     }
 
     Ok(())

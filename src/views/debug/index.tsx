@@ -13,11 +13,12 @@ type FirewallPopupType = "mcp_tool" | "llm_model" | "skill" | "marketplace"
 export function DebugView({ activeSubTab: _activeSubTab, onTabChange }: DebugViewProps) {
   const [showWizard, setShowWizard] = useState(false)
   const [triggeringFirewall, setTriggeringFirewall] = useState<FirewallPopupType | null>(null)
+  const [sendMultiple, setSendMultiple] = useState(false)
 
   const handleTriggerFirewall = async (popupType: FirewallPopupType) => {
     setTriggeringFirewall(popupType)
     try {
-      await invoke("debug_trigger_firewall_popup", { popupType })
+      await invoke("debug_trigger_firewall_popup", { popupType, sendMultiple })
     } catch (error) {
       console.error("Failed to trigger firewall popup:", error)
     } finally {
@@ -59,6 +60,15 @@ export function DebugView({ activeSubTab: _activeSubTab, onTabChange }: DebugVie
               Test different types of firewall approval popups. Each button creates a fake
               approval request and opens the popup immediately.
             </p>
+
+            <label className="flex items-center gap-2 text-xs">
+              <input
+                type="checkbox"
+                checked={sendMultiple}
+                onChange={(e) => setSendMultiple(e.target.checked)}
+              />
+              Send multiple (3 popups: 2 same resource + 1 different)
+            </label>
 
             <div className="grid grid-cols-2 gap-2">
               <Button

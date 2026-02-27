@@ -516,7 +516,7 @@ async fn check_model_firewall_permission(
     client_context: Option<&ClientAuthContext>,
     request: &ChatCompletionRequest,
 ) -> ApiResult<Option<serde_json::Value>> {
-    use lr_mcp::gateway::access_control::{self, AccessDecision};
+    use lr_mcp::gateway::access_control;
     use lr_mcp::gateway::firewall::FirewallApprovalAction;
 
     // If no client context, skip firewall (using API key auth without client)
@@ -561,13 +561,20 @@ async fn check_model_firewall_permission(
         (matching_model.provider.clone(), matching_model.id.clone())
     };
 
-    // Resolve model access decision
-    let decision =
-        access_control::check_model_access(&client.model_permissions, &provider, &model_id);
+    // Use unified check_needs_approval
+    use lr_mcp::gateway::access_control::{FirewallCheckContext, FirewallCheckResult};
 
-    match decision {
-        AccessDecision::Allow => {
-            // Model is allowed, proceed
+    let ctx = FirewallCheckContext::Model {
+        permissions: &client.model_permissions,
+        provider: &provider,
+        model_id: &model_id,
+        has_time_based_approval: state
+            .model_approval_tracker
+            .has_valid_approval(&client.id, &provider, &model_id),
+    };
+
+    match access_control::check_needs_approval(&ctx) {
+        FirewallCheckResult::Allow => {
             tracing::debug!(
                 "Model firewall: {} allowed for client {}",
                 request.model,
@@ -575,10 +582,9 @@ async fn check_model_firewall_permission(
             );
             Ok(None)
         }
-        AccessDecision::Deny => {
-            // Model is disabled
+        FirewallCheckResult::Deny => {
             tracing::warn!(
-                "Model firewall: {} denied for client {} (permission: Off)",
+                "Model firewall: {} denied for client {}",
                 request.model,
                 client.id
             );
@@ -588,21 +594,7 @@ async fn check_model_firewall_permission(
             ))
             .with_param("model"))
         }
-        AccessDecision::Ask => {
-            // Model requires approval - check time-based approvals first
-            if state
-                .model_approval_tracker
-                .has_valid_approval(&client.id, &provider, &model_id)
-            {
-                tracing::debug!(
-                    "Model firewall: {} has time-based approval for client {}",
-                    request.model,
-                    client.id
-                );
-                return Ok(None);
-            }
-
-            // No valid time-based approval, trigger firewall popup
+        FirewallCheckResult::Ask => {
             tracing::info!(
                 "Model firewall: {} requires approval for client {}",
                 request.model,
@@ -628,9 +620,9 @@ async fn check_model_firewall_permission(
                 .request_model_approval(
                     client.id.clone(),
                     client.name.clone(),
-                    model_id.clone(), // model as "tool_name"
-                    provider.clone(), // provider as "server_name"
-                    Some(120),        // 2 minute timeout
+                    model_id.clone(),
+                    provider.clone(),
+                    Some(120),
                     Some(model_params),
                 )
                 .await
@@ -640,40 +632,16 @@ async fn check_model_firewall_permission(
 
             let edited_arguments = response.edited_arguments;
 
-            // Handle the approval response
             match response.action {
-                FirewallApprovalAction::AllowOnce | FirewallApprovalAction::AllowSession => {
+                FirewallApprovalAction::AllowOnce
+                | FirewallApprovalAction::AllowSession
+                | FirewallApprovalAction::Allow1Hour
+                | FirewallApprovalAction::AllowPermanent
+                | FirewallApprovalAction::AllowCategories => {
                     tracing::info!(
-                        "Model firewall: {} approved (once) for client {}",
+                        "Model firewall: {} approved ({:?}) for client {}",
                         request.model,
-                        client.id
-                    );
-                    Ok(edited_arguments)
-                }
-                FirewallApprovalAction::Allow1Hour => {
-                    // Time-based approval is already handled in submit_firewall_approval
-                    // by adding to model_approval_tracker, but the response reaches here first
-                    // So we just proceed
-                    tracing::info!(
-                        "Model firewall: {} approved (1 hour) for client {}",
-                        request.model,
-                        client.id
-                    );
-                    Ok(edited_arguments)
-                }
-                FirewallApprovalAction::AllowPermanent => {
-                    // Permission update is already handled in submit_firewall_approval
-                    tracing::info!(
-                        "Model firewall: {} approved (permanent) for client {}",
-                        request.model,
-                        client.id
-                    );
-                    Ok(edited_arguments)
-                }
-                FirewallApprovalAction::AllowCategories => {
-                    tracing::info!(
-                        "Model firewall: {} approved (categories allowed) for client {}",
-                        request.model,
+                        response.action,
                         client.id
                     );
                     Ok(edited_arguments)
@@ -831,24 +799,50 @@ async fn handle_guardrail_approval(
         return Ok(());
     };
 
-    // Check for time-based guardrail denial (Deny All for 1 Hour)
-    if state
-        .guardrail_denial_tracker
-        .has_valid_denial(&client_ctx.client_id)
-    {
-        tracing::info!(
-            "Guardrail: auto-denying request for client {} (active denial bypass)",
-            client_ctx.client_id
-        );
-        return Err(ApiErrorResponse::forbidden(
-            "Request blocked by safety guardrails (auto-denied)",
-        ));
-    }
+    // Use unified check for time-based bypass/denial
+    use lr_mcp::gateway::access_control::{FirewallCheckContext, FirewallCheckResult};
+
     let client = state.client_manager.get_client(&client_ctx.client_id);
     let client_id = client
         .as_ref()
         .map(|c| c.id.as_str())
         .unwrap_or(&client_ctx.client_id);
+
+    let ctx = FirewallCheckContext::Guardrail {
+        has_time_based_bypass: state
+            .guardrail_approval_tracker
+            .has_valid_bypass(&client_ctx.client_id),
+        has_time_based_denial: state
+            .guardrail_denial_tracker
+            .has_valid_denial(&client_ctx.client_id),
+        category_actions_empty: client
+            .as_ref()
+            .map(|c| c.guardrails.category_actions.is_empty())
+            .unwrap_or(true),
+    };
+
+    match lr_mcp::gateway::access_control::check_needs_approval(&ctx) {
+        FirewallCheckResult::Allow => {
+            tracing::debug!(
+                "Guardrail: bypassed for client {} (time-based or empty categories)",
+                client_id
+            );
+            return Ok(());
+        }
+        FirewallCheckResult::Deny => {
+            tracing::info!(
+                "Guardrail: auto-denying request for client {} (active denial)",
+                client_id
+            );
+            return Err(ApiErrorResponse::forbidden(
+                "Request blocked by safety guardrails (auto-denied)",
+            ));
+        }
+        FirewallCheckResult::Ask => {
+            // Fall through to popup
+        }
+    }
+
     let client_name = client
         .as_ref()
         .map(|c| c.name.clone())
