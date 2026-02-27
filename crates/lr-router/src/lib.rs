@@ -8,7 +8,7 @@ use futures::{Stream, StreamExt};
 use std::pin::Pin;
 use tracing::{debug, error, info, warn};
 
-use lr_config::{ConfigManager, FreeTierFallback};
+use lr_config::{ConfigManager, FreeTierFallback, FreeTierKind};
 use lr_providers::registry::ProviderRegistry;
 use lr_providers::{
     CompletionChunk, CompletionRequest, CompletionResponse, EmbeddingRequest, EmbeddingResponse,
@@ -167,6 +167,9 @@ async fn wrap_stream_with_usage_tracking(
     client_id: String,
     resolved_model: String,
     rate_limiter: Arc<RateLimiterManager>,
+    free_tier_manager: Arc<FreeTierManager>,
+    free_tier: FreeTierKind,
+    pricing: lr_providers::PricingInfo,
 ) -> Pin<Box<dyn Stream<Item = AppResult<CompletionChunk>> + Send>> {
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -183,6 +186,7 @@ async fn wrap_stream_with_usage_tracking(
     let completion_chars_for_then = completion_chars.clone();
     let client_id_for_then = client_id.clone();
     let rate_limiter_for_then = rate_limiter.clone();
+    let resolved_model_for_then = resolved_model.clone();
 
     let wrapped = stream
         .map(move |chunk_result| {
@@ -207,6 +211,10 @@ async fn wrap_stream_with_usage_tracking(
         let client_id = client_id_for_then.clone();
         let rate_limiter = rate_limiter_for_then.clone();
         let completion_chars = completion_chars_for_then.clone();
+        let free_tier_manager = free_tier_manager.clone();
+        let free_tier = free_tier.clone();
+        let pricing = pricing.clone();
+        let resolved_model = resolved_model_for_then.clone();
 
         async move {
             // Check if this is an error or the last chunk
@@ -222,10 +230,12 @@ async fn wrap_stream_with_usage_tracking(
                 let est_prompt = 10; // Baseline estimate since we don't know actual prompt tokens
                 let est_completion = (completion_chars.load(Ordering::Relaxed) / 4).max(1);
 
+                let est_cost = calculate_cost(est_prompt, est_completion, &pricing);
+
                 let usage = UsageInfo {
                     input_tokens: est_prompt,
                     output_tokens: est_completion,
-                    cost_usd: 0.0,
+                    cost_usd: est_cost,
                 };
 
                 // Record usage (best effort, don't fail the stream)
@@ -240,6 +250,12 @@ async fn wrap_stream_with_usage_tracking(
                         "Recorded estimated streaming usage for API key '{}': {} tokens (approximate)",
                         client_id, est_prompt + est_completion
                     );
+                }
+
+                // Record free tier usage
+                let provider = resolved_model.split('/').next().unwrap_or("");
+                if !provider.is_empty() {
+                    free_tier_manager.record_usage(provider, &free_tier, est_prompt + est_completion, est_cost);
                 }
             }
 
@@ -416,6 +432,11 @@ impl Router {
                 .ok_or_else(|| {
                     AppError::Router(format!("Provider '{}' not found", final_provider))
                 })?;
+            let pricing = provider_instance
+                .get_pricing(&final_model)
+                .await
+                .unwrap_or_else(|_| lr_providers::PricingInfo::free());
+            let free_tier = self.get_effective_free_tier(&final_provider);
             let mut modified_request = request;
             modified_request.model = final_model.clone();
             let stream = provider_instance.stream_complete(modified_request).await?;
@@ -425,6 +446,9 @@ impl Router {
                 client_id.to_string(),
                 resolved_model,
                 self.rate_limiter.clone(),
+                self.free_tier_manager.clone(),
+                free_tier,
+                pricing,
             )
             .await)
         }
@@ -777,6 +801,11 @@ impl Router {
         {
             warn!("Failed to record usage for API key '{}': {}", client_id, e);
         }
+
+        // Record free tier usage
+        let free_tier = self.get_effective_free_tier(provider);
+        let total_tokens = response.usage.prompt_tokens as u64 + response.usage.completion_tokens as u64;
+        self.free_tier_manager.record_usage(provider, &free_tier, total_tokens, cost);
 
         Ok(response)
     }
@@ -1141,11 +1170,19 @@ impl Router {
                     );
                     self.free_tier_manager.clear_backoff(provider, model);
                     let resolved_model = format!("{}/{}", provider, model);
+                    let pricing = provider_instance
+                        .get_pricing(model)
+                        .await
+                        .unwrap_or_else(|_| lr_providers::PricingInfo::free());
+                    let free_tier = self.get_effective_free_tier(provider);
                     return Ok(wrap_stream_with_usage_tracking(
                         stream,
                         client_id.to_string(),
                         resolved_model,
                         self.rate_limiter.clone(),
+                        self.free_tier_manager.clone(),
+                        free_tier,
+                        pricing,
                     )
                     .await);
                 }
@@ -1476,6 +1513,11 @@ impl Router {
                 .provider_registry
                 .get_provider(&provider)
                 .ok_or_else(|| AppError::Router(format!("Provider '{}' not found", provider)))?;
+            let pricing = provider_instance
+                .get_pricing(&model)
+                .await
+                .unwrap_or_else(|_| lr_providers::PricingInfo::free());
+            let free_tier = self.get_effective_free_tier(&provider);
             let mut modified_request = request.clone();
             modified_request.model = model.clone();
             let stream = provider_instance.stream_complete(modified_request).await?;
@@ -1485,6 +1527,9 @@ impl Router {
                 client_id.to_string(),
                 resolved_model,
                 self.rate_limiter.clone(),
+                self.free_tier_manager.clone(),
+                free_tier,
+                pricing,
             )
             .await);
         }
@@ -1565,6 +1610,11 @@ impl Router {
             .get_provider(&final_provider)
             .ok_or_else(|| AppError::Router(format!("Provider '{}' not found", final_provider)))?;
 
+        let pricing = provider_instance
+            .get_pricing(&final_model)
+            .await
+            .unwrap_or_else(|_| lr_providers::PricingInfo::free());
+        let free_tier = self.get_effective_free_tier(&final_provider);
         let mut modified_request = request.clone();
         modified_request.model = final_model.clone();
         let stream = provider_instance.stream_complete(modified_request).await?;
@@ -1574,6 +1624,9 @@ impl Router {
             client_id.to_string(),
             resolved_model,
             self.rate_limiter.clone(),
+            self.free_tier_manager.clone(),
+            free_tier,
+            pricing,
         )
         .await)
     }
@@ -1624,6 +1677,16 @@ impl Router {
         {
             warn!("Failed to record usage for client '{}': {}", client_id, e);
         }
+
+        // Record free tier usage
+        let free_tier = self.get_effective_free_tier(provider);
+        let total_tokens = response.usage.prompt_tokens as u64;
+        let pricing = provider_instance
+            .get_pricing(model)
+            .await
+            .unwrap_or_else(|_| lr_providers::PricingInfo::free());
+        let cost = calculate_cost(total_tokens, 0, &pricing);
+        self.free_tier_manager.record_usage(provider, &free_tier, total_tokens, cost);
 
         Ok(response)
     }

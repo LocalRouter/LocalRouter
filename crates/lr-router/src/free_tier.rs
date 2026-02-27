@@ -793,6 +793,35 @@ impl FreeTierManager {
         tracker.current_cost_usd += cost_usd;
     }
 
+    /// Record usage based on the provider's free tier kind.
+    ///
+    /// Dispatches to the appropriate tracker:
+    /// - `RateLimitedFree` → rate limit tracker
+    /// - `CreditBased` → credit tracker
+    /// - `FreeModelsOnly` → rate limit tracker (if has max_rpm)
+    /// - `AlwaysFreeLocal` / `Subscription` / `None` → no-op
+    pub fn record_usage(
+        &self,
+        provider_instance: &str,
+        free_tier: &FreeTierKind,
+        total_tokens: u64,
+        cost_usd: f64,
+    ) {
+        match free_tier {
+            FreeTierKind::RateLimitedFree { .. } => {
+                self.record_rate_limit_usage(provider_instance, total_tokens);
+            }
+            FreeTierKind::CreditBased { .. } => {
+                self.record_credit_usage(provider_instance, cost_usd);
+            }
+            FreeTierKind::FreeModelsOnly { max_rpm, .. } if *max_rpm > 0 => {
+                self.record_rate_limit_usage(provider_instance, total_tokens);
+            }
+            // AlwaysFreeLocal, Subscription, None, FreeModelsOnly with max_rpm=0
+            _ => {}
+        }
+    }
+
     /// Update credit tracker with info from provider API
     pub fn update_credits_from_api(
         &self,
@@ -1328,5 +1357,144 @@ mod tests {
 
         let min = manager.get_min_retry_after(&models).unwrap();
         assert!(min <= 30);
+    }
+
+    // ============================================================
+    // record_usage() tests
+    // ============================================================
+
+    #[test]
+    fn test_record_usage_rate_limited_free() {
+        let manager = FreeTierManager::new(None);
+        let free_tier = FreeTierKind::RateLimitedFree {
+            max_rpm: 10,
+            max_rpd: 0,
+            max_tpm: 0,
+            max_tpd: 0,
+            max_monthly_calls: 0,
+            max_monthly_tokens: 0,
+        };
+
+        manager.record_usage("groq", &free_tier, 500, 0.001);
+
+        let tracker = manager.get_rate_tracker("groq").unwrap();
+        assert_eq!(tracker.minute_requests, 1);
+        assert_eq!(tracker.minute_tokens, 500);
+        // Credit tracker should not be touched
+        assert!(manager.get_credit_tracker("groq").is_none());
+    }
+
+    #[test]
+    fn test_record_usage_credit_based() {
+        let manager = FreeTierManager::new(None);
+        let free_tier = FreeTierKind::CreditBased {
+            budget_usd: 5.0,
+            reset_period: lr_config::FreeTierResetPeriod::Monthly,
+            detection: lr_config::CreditDetection::LocalOnly,
+        };
+
+        manager.record_usage("openrouter", &free_tier, 500, 0.01);
+
+        let credit = manager.get_credit_tracker("openrouter").unwrap();
+        assert!((credit.current_cost_usd - 0.01).abs() < f64::EPSILON);
+        // Rate tracker should not be touched
+        assert!(manager.get_rate_tracker("openrouter").is_none());
+    }
+
+    #[test]
+    fn test_record_usage_free_models_only() {
+        let manager = FreeTierManager::new(None);
+        let free_tier = FreeTierKind::FreeModelsOnly {
+            free_model_patterns: vec!["*:free".to_string()],
+            max_rpm: 5,
+        };
+
+        manager.record_usage("togetherai", &free_tier, 200, 0.0);
+
+        let tracker = manager.get_rate_tracker("togetherai").unwrap();
+        assert_eq!(tracker.minute_requests, 1);
+        assert_eq!(tracker.minute_tokens, 200);
+    }
+
+    #[test]
+    fn test_record_usage_always_free_local_is_noop() {
+        let manager = FreeTierManager::new(None);
+        manager.record_usage("ollama", &FreeTierKind::AlwaysFreeLocal, 1000, 0.0);
+        assert!(manager.get_rate_tracker("ollama").is_none());
+        assert!(manager.get_credit_tracker("ollama").is_none());
+    }
+
+    #[test]
+    fn test_record_usage_subscription_is_noop() {
+        let manager = FreeTierManager::new(None);
+        manager.record_usage("lmstudio", &FreeTierKind::Subscription, 1000, 0.0);
+        assert!(manager.get_rate_tracker("lmstudio").is_none());
+        assert!(manager.get_credit_tracker("lmstudio").is_none());
+    }
+
+    #[test]
+    fn test_record_usage_none_is_noop() {
+        let manager = FreeTierManager::new(None);
+        manager.record_usage("openai", &FreeTierKind::None, 1000, 0.05);
+        assert!(manager.get_rate_tracker("openai").is_none());
+        assert!(manager.get_credit_tracker("openai").is_none());
+    }
+
+    #[test]
+    fn test_record_usage_accumulates_across_requests() {
+        let manager = FreeTierManager::new(None);
+        let free_tier = FreeTierKind::RateLimitedFree {
+            max_rpm: 100,
+            max_rpd: 0,
+            max_tpm: 0,
+            max_tpd: 0,
+            max_monthly_calls: 0,
+            max_monthly_tokens: 0,
+        };
+
+        manager.record_usage("gemini", &free_tier, 100, 0.0);
+        manager.record_usage("gemini", &free_tier, 200, 0.0);
+        manager.record_usage("gemini", &free_tier, 300, 0.0);
+
+        let tracker = manager.get_rate_tracker("gemini").unwrap();
+        assert_eq!(tracker.minute_requests, 3);
+        assert_eq!(tracker.minute_tokens, 600);
+    }
+
+    #[test]
+    fn test_record_usage_credit_exhaustion() {
+        let manager = FreeTierManager::new(None);
+        let free_tier = FreeTierKind::CreditBased {
+            budget_usd: 1.0,
+            reset_period: lr_config::FreeTierResetPeriod::Never,
+            detection: lr_config::CreditDetection::LocalOnly,
+        };
+
+        // Use up the full budget
+        manager.record_usage("deepinfra", &free_tier, 500, 0.50);
+        manager.record_usage("deepinfra", &free_tier, 500, 0.50);
+
+        let cap = manager.check_credit_balance("deepinfra", &free_tier);
+        assert!(!cap.has_capacity);
+        assert_eq!(cap.remaining_usd, Some(0.0));
+    }
+
+    #[test]
+    fn test_record_usage_rate_limit_exhaustion() {
+        let manager = FreeTierManager::new(None);
+        let free_tier = FreeTierKind::RateLimitedFree {
+            max_rpm: 2,
+            max_rpd: 0,
+            max_tpm: 0,
+            max_tpd: 0,
+            max_monthly_calls: 0,
+            max_monthly_tokens: 0,
+        };
+
+        manager.record_usage("cerebras", &free_tier, 100, 0.0);
+        manager.record_usage("cerebras", &free_tier, 100, 0.0);
+
+        let cap = manager.check_rate_limit_capacity("cerebras", &free_tier);
+        assert!(!cap.has_capacity);
     }
 }
