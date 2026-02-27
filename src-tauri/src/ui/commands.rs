@@ -1880,6 +1880,8 @@ pub enum DebugFirewallType {
     Skill,
     /// Marketplace approval
     Marketplace,
+    /// Free-tier fallback approval
+    FreeTierFallback,
 }
 
 /// Trigger a fake firewall approval popup immediately.
@@ -1903,32 +1905,44 @@ pub async fn debug_trigger_firewall_popup(
     let firewall_manager = state.mcp_gateway.firewall_manager.clone();
 
     // Configure based on popup type
-    let (tool_name, server_name, arguments_preview, is_model_request) = match popup_type {
-        DebugFirewallType::McpTool => (
-            "filesystem__write_file".to_string(),
-            "filesystem".to_string(),
-            r#"{"path": "/tmp/test.txt", "content": "hello world"}"#.to_string(),
-            false,
-        ),
-        DebugFirewallType::LlmModel => (
-            "claude-3-5-sonnet".to_string(),
-            "anthropic".to_string(),
-            r#"{"prompt": "Hello, how are you?", "max_tokens": 1000}"#.to_string(),
-            true,
-        ),
-        DebugFirewallType::Skill => (
-            "skill_web_search_search".to_string(),
-            "web-search".to_string(),
-            r#"{"query": "rust programming", "max_results": 10}"#.to_string(),
-            false,
-        ),
-        DebugFirewallType::Marketplace => (
-            "marketplace__install_package".to_string(),
-            "marketplace".to_string(),
-            r#"{"package": "code-review-tool", "version": "1.2.0"}"#.to_string(),
-            false,
-        ),
-    };
+    let (tool_name, server_name, arguments_preview, is_model_request, is_free_tier_fallback) =
+        match popup_type {
+            DebugFirewallType::McpTool => (
+                "filesystem__write_file".to_string(),
+                "filesystem".to_string(),
+                r#"{"path": "/tmp/test.txt", "content": "hello world"}"#.to_string(),
+                false,
+                false,
+            ),
+            DebugFirewallType::LlmModel => (
+                "claude-3-5-sonnet".to_string(),
+                "anthropic".to_string(),
+                r#"{"prompt": "Hello, how are you?", "max_tokens": 1000}"#.to_string(),
+                true,
+                false,
+            ),
+            DebugFirewallType::Skill => (
+                "skill_web_search_search".to_string(),
+                "web-search".to_string(),
+                r#"{"query": "rust programming", "max_results": 10}"#.to_string(),
+                false,
+                false,
+            ),
+            DebugFirewallType::Marketplace => (
+                "marketplace__install_package".to_string(),
+                "marketplace".to_string(),
+                r#"{"package": "code-review-tool", "version": "1.2.0"}"#.to_string(),
+                false,
+                false,
+            ),
+            DebugFirewallType::FreeTierFallback => (
+                "Free-Tier Fallback".to_string(),
+                "Paid Models".to_string(),
+                "anthropic/claude-3-5-sonnet, openai/gpt-4o".to_string(),
+                false,
+                true,
+            ),
+        };
 
     // Build sessions list: 1 normally, 3 for multi-popup mode
     struct DebugSession {
@@ -1936,6 +1950,7 @@ pub async fn debug_trigger_firewall_popup(
         server_name: String,
         arguments_preview: String,
         is_model_request: bool,
+        is_free_tier_fallback: bool,
     }
 
     let mut sessions = vec![DebugSession {
@@ -1943,6 +1958,7 @@ pub async fn debug_trigger_firewall_popup(
         server_name: server_name.clone(),
         arguments_preview: arguments_preview.clone(),
         is_model_request,
+        is_free_tier_fallback,
     }];
 
     if send_multiple {
@@ -1952,14 +1968,16 @@ pub async fn debug_trigger_firewall_popup(
             server_name: server_name.clone(),
             arguments_preview: arguments_preview.clone(),
             is_model_request,
+            is_free_tier_fallback,
         });
 
         // Session 3: different resource
-        let (alt_tool, alt_server, alt_preview, alt_model) = match popup_type {
+        let (alt_tool, alt_server, alt_preview, alt_model, alt_free_tier) = match popup_type {
             DebugFirewallType::McpTool => (
                 "github__create_issue".to_string(),
                 "github".to_string(),
                 r#"{"repo": "test/repo", "title": "Test issue"}"#.to_string(),
+                false,
                 false,
             ),
             DebugFirewallType::LlmModel => (
@@ -1967,11 +1985,13 @@ pub async fn debug_trigger_firewall_popup(
                 "openai".to_string(),
                 r#"{"prompt": "Write a poem", "max_tokens": 500}"#.to_string(),
                 true,
+                false,
             ),
             DebugFirewallType::Skill => (
                 "skill_sysinfo_run_main".to_string(),
                 "sysinfo".to_string(),
                 r#"{"command": "uptime"}"#.to_string(),
+                false,
                 false,
             ),
             DebugFirewallType::Marketplace => (
@@ -1979,6 +1999,14 @@ pub async fn debug_trigger_firewall_popup(
                 "marketplace".to_string(),
                 r#"{"target": "src/", "fix": true}"#.to_string(),
                 false,
+                false,
+            ),
+            DebugFirewallType::FreeTierFallback => (
+                "Free-Tier Fallback".to_string(),
+                "Paid Models".to_string(),
+                "groq/llama-3-70b, gemini/gemini-1.5-flash".to_string(),
+                false,
+                true,
             ),
         };
         sessions.push(DebugSession {
@@ -1986,12 +2014,13 @@ pub async fn debug_trigger_firewall_popup(
             server_name: alt_server,
             arguments_preview: alt_preview,
             is_model_request: alt_model,
+            is_free_tier_fallback: alt_free_tier,
         });
     }
 
     for (i, debug_session) in sessions.into_iter().enumerate() {
         let request_id = uuid::Uuid::new_v4().to_string();
-        let timeout_secs: u64 = 30;
+        let timeout_secs: u64 = 86400; // 24 hours — match real popup default
 
         let full_arguments: Option<serde_json::Value> =
             serde_json::from_str(&debug_session.arguments_preview).ok();
@@ -2009,7 +2038,7 @@ pub async fn debug_trigger_firewall_popup(
             timeout_seconds: timeout_secs,
             is_model_request: debug_session.is_model_request,
             is_guardrail_request: false,
-            is_free_tier_fallback: false,
+            is_free_tier_fallback: debug_session.is_free_tier_fallback,
             guardrail_details: None,
         };
 

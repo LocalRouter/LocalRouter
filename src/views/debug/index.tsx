@@ -8,7 +8,7 @@ interface DebugViewProps {
   onTabChange: (view: string, subTab?: string | null) => void
 }
 
-type FirewallPopupType = "mcp_tool" | "llm_model" | "skill" | "marketplace"
+type FirewallPopupType = "mcp_tool" | "llm_model" | "skill" | "marketplace" | "free_tier_fallback"
 
 export function DebugView({ activeSubTab: _activeSubTab, onTabChange }: DebugViewProps) {
   const [showWizard, setShowWizard] = useState(false)
@@ -105,6 +105,15 @@ export function DebugView({ activeSubTab: _activeSubTab, onTabChange }: DebugVie
                 disabled={triggeringFirewall !== null}
               >
                 {triggeringFirewall === "marketplace" ? "Opening..." : "Marketplace"}
+              </Button>
+
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => handleTriggerFirewall("free_tier_fallback")}
+                disabled={triggeringFirewall !== null}
+              >
+                {triggeringFirewall === "free_tier_fallback" ? "Opening..." : "Free-Tier Fallback"}
               </Button>
             </div>
           </div>
