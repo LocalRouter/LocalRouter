@@ -2,6 +2,7 @@ import { useState } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { Button } from "@/components/ui/Button"
 import { ClientCreationWizard } from "@/components/wizard/ClientCreationWizard"
+import type { DebugSetTrayOverlayParams } from "@/types/tauri-commands"
 
 interface DebugViewProps {
   activeSubTab: string | null
@@ -10,10 +11,22 @@ interface DebugViewProps {
 
 type FirewallPopupType = "mcp_tool" | "llm_model" | "skill" | "marketplace" | "free_tier_fallback"
 
+type TrayOverlayOption = NonNullable<DebugSetTrayOverlayParams["overlay"]>
+
+const TRAY_OVERLAY_OPTIONS: { value: TrayOverlayOption | "auto"; label: string }[] = [
+  { value: "auto", label: "Auto (normal)" },
+  { value: "none", label: "None" },
+  { value: "warning_yellow", label: "Warning (yellow)" },
+  { value: "warning_red", label: "Warning (red)" },
+  { value: "update_available", label: "Update Available" },
+  { value: "firewall_pending", label: "Firewall Pending" },
+]
+
 export function DebugView({ activeSubTab: _activeSubTab, onTabChange }: DebugViewProps) {
   const [showWizard, setShowWizard] = useState(false)
   const [triggeringFirewall, setTriggeringFirewall] = useState<FirewallPopupType | null>(null)
   const [sendMultiple, setSendMultiple] = useState(false)
+  const [activeTrayOverlay, setActiveTrayOverlay] = useState<TrayOverlayOption | "auto">("auto")
 
   const handleTriggerFirewall = async (popupType: FirewallPopupType) => {
     setTriggeringFirewall(popupType)
@@ -23,6 +36,16 @@ export function DebugView({ activeSubTab: _activeSubTab, onTabChange }: DebugVie
       console.error("Failed to trigger firewall popup:", error)
     } finally {
       setTriggeringFirewall(null)
+    }
+  }
+
+  const handleSetTrayOverlay = async (value: TrayOverlayOption | "auto") => {
+    setActiveTrayOverlay(value)
+    try {
+      const overlay = value === "auto" ? null : value
+      await invoke("debug_set_tray_overlay", { overlay } satisfies DebugSetTrayOverlayParams)
+    } catch (error) {
+      console.error("Failed to set tray overlay:", error)
     }
   }
 
@@ -115,6 +138,27 @@ export function DebugView({ activeSubTab: _activeSubTab, onTabChange }: DebugVie
               >
                 {triggeringFirewall === "free_tier_fallback" ? "Opening..." : "Free-Tier Fallback"}
               </Button>
+            </div>
+          </div>
+
+          {/* Tray icon overlay */}
+          <div className="border rounded-lg p-4 space-y-3">
+            <h2 className="text-sm font-medium">Tray Icon Overlay</h2>
+            <p className="text-xs text-muted-foreground">
+              Force a specific tray icon overlay state. "Auto" returns to normal
+              priority-based behavior.
+            </p>
+            <div className="grid grid-cols-3 gap-2">
+              {TRAY_OVERLAY_OPTIONS.map((opt) => (
+                <Button
+                  key={opt.value}
+                  size="sm"
+                  variant={activeTrayOverlay === opt.value ? "default" : "outline"}
+                  onClick={() => handleSetTrayOverlay(opt.value)}
+                >
+                  {opt.label}
+                </Button>
+              ))}
             </div>
           </div>
         </div>

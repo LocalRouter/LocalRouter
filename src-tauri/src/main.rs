@@ -1500,6 +1500,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands_routellm::open_routellm_folder,
             // Debug commands (dev only)
             ui::commands::debug_trigger_firewall_popup,
+            ui::commands::debug_set_tray_overlay,
             // File system commands
             ui::commands::open_path,
             // Skills commands

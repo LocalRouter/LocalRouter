@@ -1895,8 +1895,13 @@ export interface GetFirewallFullArgumentsParams {
 
 /** Params for debug_trigger_firewall_popup */
 export interface DebugTriggerFirewallPopupParams {
-  popupType?: "mcp_tool" | "llm_model" | "skill" | "marketplace" | null
+  popupType?: "mcp_tool" | "llm_model" | "skill" | "marketplace" | "free_tier_fallback" | null
   sendMultiple?: boolean | null
+}
+
+/** Params for debug_set_tray_overlay */
+export interface DebugSetTrayOverlayParams {
+  overlay?: "none" | "warning_yellow" | "warning_red" | "update_available" | "firewall_pending" | null
 }
 
 // =============================================================================

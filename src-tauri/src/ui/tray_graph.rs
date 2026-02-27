@@ -658,10 +658,63 @@ pub fn generate_graph(
     encode_png(&img)
 }
 
+/// Decode a static icon PNG and convert it to white graphic on transparent background.
+///
+/// Converts all non-transparent pixels to white, preserving their alpha channel.
+/// The background (fully transparent pixels) remains transparent.
+fn decode_static_icon_white_on_transparent(static_icon_bytes: &[u8]) -> Option<RgbaImage> {
+    use image::ImageReader;
+    use std::io::Cursor;
+
+    let reader = ImageReader::new(Cursor::new(static_icon_bytes))
+        .with_guessed_format()
+        .ok()?;
+    let decoded = reader.decode().ok()?;
+    let mut img = decoded.to_rgba8();
+
+    // Convert to white graphic on transparent background:
+    // - Pixels with alpha > 0: set RGB to white, keep alpha
+    // - Fully transparent pixels: stay transparent
+    for pixel in img.pixels_mut() {
+        if pixel[3] > 0 {
+            // Use the original alpha as a luminance-based mask:
+            // Dark pixels (low RGB) in the source are the graphic → make them white + opaque
+            // Light pixels (high RGB) are the background → make them transparent
+            let luminance =
+                (pixel[0] as u16 + pixel[1] as u16 + pixel[2] as u16) / 3;
+            if luminance < 128 {
+                // Dark pixel (part of the graphic) → white, fully opaque
+                pixel[0] = 255;
+                pixel[1] = 255;
+                pixel[2] = 255;
+                pixel[3] = 255;
+            } else {
+                // Light pixel (background) → transparent
+                pixel[0] = 0;
+                pixel[1] = 0;
+                pixel[2] = 0;
+                pixel[3] = 0;
+            }
+        }
+    }
+
+    Some(img)
+}
+
+/// Generate the static tray icon as white graphic on transparent background.
+///
+/// # Returns
+/// PNG-encoded image as bytes, or None if generation fails
+pub fn generate_static_icon(static_icon_bytes: &[u8]) -> Option<Vec<u8>> {
+    let img = decode_static_icon_white_on_transparent(static_icon_bytes)?;
+    encode_png(&img)
+}
+
 /// Generate a static icon with overlay drawn on top
 ///
-/// Decodes the static icon PNG, draws the overlay icon in the top-left corner,
-/// and re-encodes. This avoids rendering the graph frame border in static mode.
+/// Decodes the static icon PNG, converts to white-on-transparent,
+/// draws the overlay icon in the top-left corner, and re-encodes.
+/// This avoids rendering the graph frame border in static mode.
 ///
 /// # Arguments
 /// * `static_icon_bytes` - Raw PNG bytes of the static icon
@@ -675,15 +728,28 @@ pub fn generate_static_icon_with_overlay(
     overlay: TrayOverlay,
     dark_mode: bool,
 ) -> Option<Vec<u8>> {
-    use image::ImageReader;
-    use std::io::Cursor;
+    let mut img = decode_static_icon_white_on_transparent(static_icon_bytes)?;
 
-    // Decode the static icon PNG
-    let reader = ImageReader::new(Cursor::new(static_icon_bytes))
-        .with_guessed_format()
-        .ok()?;
-    let decoded = reader.decode().ok()?;
-    let mut img = decoded.to_rgba8();
+    // Clear the top-left area where the overlay will be drawn.
+    // Uses the same cutout geometry as the graph mode: a circle centered
+    // on (6, 6) with radius 9, clearing all pixels inside it.
+    if overlay != TrayOverlay::None {
+        const CUTOUT_CX: i32 = 6;
+        const CUTOUT_CY: i32 = 6;
+        const CUTOUT_R: i32 = 9;
+        const CUTOUT_R_SQ: i32 = CUTOUT_R * CUTOUT_R;
+        let max_clear_x = (CUTOUT_CX + CUTOUT_R).min(img.width() as i32 - 1);
+        let max_clear_y = (CUTOUT_CY + CUTOUT_R).min(img.height() as i32 - 1);
+        for y in 0..=max_clear_y {
+            for x in 0..=max_clear_x {
+                let dx = x - CUTOUT_CX;
+                let dy = y - CUTOUT_CY;
+                if dx * dx + dy * dy < CUTOUT_R_SQ {
+                    img.put_pixel(x as u32, y as u32, Rgba([0, 0, 0, 0]));
+                }
+            }
+        }
+    }
 
     // Draw overlay icon in the top-left corner
     match &overlay {
@@ -692,13 +758,7 @@ pub fn generate_static_icon_with_overlay(
             draw_exclamation_mark(&mut img, *color);
         }
         TrayOverlay::UpdateAvailable => {
-            // Use white for the arrow on the static icon
-            let color = if dark_mode {
-                Rgba([255, 255, 255, 255])
-            } else {
-                Rgba([0, 0, 0, 255])
-            };
-            draw_down_arrow(&mut img, color);
+            draw_down_arrow(&mut img, Rgba([255, 255, 255, 255]));
         }
         TrayOverlay::FirewallPending => {
             draw_question_mark(&mut img, StatusDotColors::green(dark_mode));
@@ -1086,5 +1146,45 @@ mod tests {
         );
         assert!(png.is_some());
         assert!(!png.unwrap().is_empty());
+    }
+
+    #[test]
+    #[ignore] // Run with: cargo test write_test_static_icon -- --ignored
+    fn write_test_static_icon_to_file() {
+        use std::fs::File;
+        use std::io::Write;
+
+        let static_icon: &[u8] = include_bytes!("../../icons/32x32.png");
+
+        // Plain static icon (no overlay)
+        let png = generate_static_icon(static_icon).unwrap();
+        let mut f = File::create("/tmp/test_static_icon_plain.png").unwrap();
+        f.write_all(&png).unwrap();
+
+        // Warning overlay
+        let png = generate_static_icon_with_overlay(
+            static_icon,
+            TrayOverlay::Warning(StatusDotColors::yellow(true)),
+            true,
+        )
+        .unwrap();
+        let mut f = File::create("/tmp/test_static_icon_warning.png").unwrap();
+        f.write_all(&png).unwrap();
+
+        // Update overlay
+        let png =
+            generate_static_icon_with_overlay(static_icon, TrayOverlay::UpdateAvailable, true)
+                .unwrap();
+        let mut f = File::create("/tmp/test_static_icon_update.png").unwrap();
+        f.write_all(&png).unwrap();
+
+        // Firewall overlay
+        let png =
+            generate_static_icon_with_overlay(static_icon, TrayOverlay::FirewallPending, true)
+                .unwrap();
+        let mut f = File::create("/tmp/test_static_icon_firewall.png").unwrap();
+        f.write_all(&png).unwrap();
+
+        println!("Wrote static icon test images to /tmp/test_static_icon_*.png");
     }
 }

@@ -2094,6 +2094,53 @@ pub async fn debug_trigger_firewall_popup(
     Ok(())
 }
 
+/// Debug tray overlay type for testing icon states
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DebugTrayOverlay {
+    /// No overlay (normal icon)
+    None,
+    /// Yellow exclamation (degraded health)
+    WarningYellow,
+    /// Red exclamation (unhealthy)
+    WarningRed,
+    /// Down arrow (update available)
+    UpdateAvailable,
+    /// Green question mark (firewall pending)
+    FirewallPending,
+}
+
+/// Set a debug override for the tray icon overlay.
+///
+/// Pass a specific overlay type to force that appearance, or `null`
+/// to clear the override and return to normal behavior.
+#[tauri::command]
+pub async fn debug_set_tray_overlay(
+    overlay: Option<DebugTrayOverlay>,
+    app: AppHandle,
+) -> Result<(), String> {
+    use crate::ui::tray_graph::{StatusDotColors, TrayOverlay};
+
+    let dark_mode = crate::ui::tray_graph_manager::detect_dark_mode(&app);
+
+    let tray_overlay = overlay.map(|o| match o {
+        DebugTrayOverlay::None => TrayOverlay::None,
+        DebugTrayOverlay::WarningYellow => {
+            TrayOverlay::Warning(StatusDotColors::yellow(dark_mode))
+        }
+        DebugTrayOverlay::WarningRed => TrayOverlay::Warning(StatusDotColors::red(dark_mode)),
+        DebugTrayOverlay::UpdateAvailable => TrayOverlay::UpdateAvailable,
+        DebugTrayOverlay::FirewallPending => TrayOverlay::FirewallPending,
+    });
+
+    let tray_graph_manager = app
+        .try_state::<Arc<crate::ui::tray::TrayGraphManager>>()
+        .ok_or("TrayGraphManager not available")?;
+    tray_graph_manager.set_debug_overlay(tray_overlay);
+
+    Ok(())
+}
+
 // ============================================================================
 // GuardRails Configuration Commands
 // ============================================================================

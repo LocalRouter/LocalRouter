@@ -1545,6 +1545,10 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     toast.info(`Firewall popup triggered (demo, ${count} popup${count > 1 ? 's' : ''})`)
     return null
   },
+  'debug_set_tray_overlay': (args: Record<string, unknown>) => {
+    toast.info(`Tray overlay set to: ${args?.overlay ?? 'auto'}`)
+    return null
+  },
 
   // ============================================================================
   // Window & System

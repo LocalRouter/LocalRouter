@@ -88,6 +88,9 @@ pub struct TrayGraphManager {
 
     /// Hash of last generated PNG to skip redundant updates
     last_png_hash: Arc<RwLock<u64>>,
+
+    /// Debug override for the tray overlay (bypasses determine_overlay)
+    debug_overlay_override: Arc<RwLock<Option<TrayOverlay>>>,
 }
 
 impl TrayGraphManager {
@@ -107,6 +110,7 @@ impl TrayGraphManager {
         let buckets = Arc::new(RwLock::new(vec![0u64; NUM_BUCKETS]));
         let accumulated_tokens = Arc::new(RwLock::new(0u64));
         let last_png_hash = Arc::new(RwLock::new(0u64));
+        let debug_overlay_override = Arc::new(RwLock::new(None::<TrayOverlay>));
 
         // Clone for background task
         let app_handle_clone = app_handle.clone();
@@ -116,6 +120,7 @@ impl TrayGraphManager {
         let buckets_clone = buckets.clone();
         let accumulated_tokens_clone = accumulated_tokens.clone();
         let last_png_hash_clone = last_png_hash.clone();
+        let debug_overlay_clone = debug_overlay_override.clone();
 
         // Spawn background task with idle-aware timer for smooth graph shifting
         tauri::async_runtime::spawn(async move {
@@ -196,6 +201,7 @@ impl TrayGraphManager {
                         &accumulated_tokens_clone,
                         &last_png_hash_clone,
                         &last_bucket_shift_clone,
+                        &debug_overlay_clone,
                     )
                     .await
                     {
@@ -220,6 +226,7 @@ impl TrayGraphManager {
             buckets,
             accumulated_tokens,
             last_png_hash,
+            debug_overlay_override,
         };
 
         // Subscribe to health status changes to refresh the tray icon
@@ -253,6 +260,15 @@ impl TrayGraphManager {
         }
     }
 
+    /// Set a debug overlay override, bypassing `determine_overlay`.
+    /// Pass `None` to clear the override and return to normal behavior.
+    pub fn set_debug_overlay(&self, overlay: Option<TrayOverlay>) {
+        *self.debug_overlay_override.write() = overlay;
+        // Reset hash to force an immediate icon update
+        *self.last_png_hash.write() = 0;
+        self.notify_activity();
+    }
+
     /// Record tokens from a completed request
     ///
     /// This accumulates tokens for Fast/Medium modes to display real-time activity
@@ -283,6 +299,7 @@ impl TrayGraphManager {
         accumulated_tokens: &Arc<RwLock<u64>>,
         last_png_hash: &Arc<RwLock<u64>>,
         last_bucket_shift: &Arc<RwLock<Option<DateTime<Utc>>>>,
+        debug_overlay_override: &Arc<RwLock<Option<TrayOverlay>>>,
     ) -> Result<(), anyhow::Error> {
         // Get config and metrics collector from state
         let config_manager = app_handle
@@ -495,32 +512,32 @@ impl TrayGraphManager {
             }
         }
 
-        // Determine overlay (Firewall > Health > Update > None)
-        let overlay = determine_overlay(app_handle, dark_mode);
+        // Determine overlay: debug override takes precedence, then normal priority
+        let overlay = {
+            let debug_override = debug_overlay_override.read();
+            if let Some(ref ov) = *debug_override {
+                ov.clone()
+            } else {
+                determine_overlay(app_handle, dark_mode)
+            }
+        };
 
-        // Static mode: use the original app icon (never the graph frame)
+        // Static mode: white graphic on transparent background (never the graph frame)
         if !tray_graph_enabled {
             const STATIC_ICON: &[u8] = include_bytes!("../../icons/32x32.png");
 
-            let icon_bytes: Vec<u8>;
-            let use_template: bool;
-
-            if overlay == TrayOverlay::None {
-                // No overlay: use the original static icon with template mode
-                icon_bytes = STATIC_ICON.to_vec();
-                use_template = true;
+            // Both paths produce white-on-transparent icon; overlay adds colored indicator
+            let icon_bytes = if overlay == TrayOverlay::None {
+                crate::ui::tray_graph::generate_static_icon(STATIC_ICON)
+                    .ok_or_else(|| anyhow::anyhow!("Failed to generate static icon"))?
             } else {
-                // Overlay present: draw overlay on top of the static icon
-                // (NOT the graph frame — that would look like the graph is still on)
-                icon_bytes =
-                    crate::ui::tray_graph::generate_static_icon_with_overlay(
-                        STATIC_ICON,
-                        overlay,
-                        dark_mode,
-                    )
-                    .ok_or_else(|| anyhow::anyhow!("Failed to generate static icon with overlay"))?;
-                use_template = false;
-            }
+                crate::ui::tray_graph::generate_static_icon_with_overlay(
+                    STATIC_ICON,
+                    overlay,
+                    dark_mode,
+                )
+                .ok_or_else(|| anyhow::anyhow!("Failed to generate static icon with overlay"))?
+            };
 
             // Hash check to avoid redundant updates
             use std::hash::{Hash, Hasher};
@@ -540,10 +557,10 @@ impl TrayGraphManager {
                     .map_err(|e| anyhow::anyhow!("Failed to create image: {}", e))?;
                 tray.set_icon(Some(icon))
                     .map_err(|e| anyhow::anyhow!("Failed to set tray icon: {}", e))?;
-                tray.set_icon_as_template(use_template)
-                    .map_err(|e| anyhow::anyhow!("Failed to set template mode: {}", e))?;
+                tray.set_icon_as_template(false)
+                    .map_err(|e| anyhow::anyhow!("Failed to disable template mode: {}", e))?;
                 *last_png_hash.write() = current_hash;
-                debug!("Tray icon updated: static mode (template={})", use_template);
+                debug!("Tray icon updated: static mode (white on transparent)");
             }
 
             return Ok(());
@@ -628,7 +645,7 @@ impl lr_types::TokenRecorder for TrayGraphManager {
 ///
 /// Uses the main window's theme if available, otherwise defaults based on platform.
 /// On macOS, defaults to true (dark mode) since the menu bar needs bright colors for visibility.
-fn detect_dark_mode(app_handle: &AppHandle) -> bool {
+pub fn detect_dark_mode(app_handle: &AppHandle) -> bool {
     // Try to get theme from the main window if it exists
     if let Some(window) = app_handle.get_webview_window("main") {
         if let Ok(theme) = window.theme() {
