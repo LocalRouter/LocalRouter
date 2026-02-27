@@ -4,8 +4,6 @@ import { listen } from "@tauri-apps/api/event"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { ProvidersIcon } from "@/components/icons/category-icons"
 import { ProvidersPanel, HealthStatus, HealthCheckEvent } from "./providers-panel"
-// DEPRECATED: Strategy UI hidden - 1:1 client-to-strategy relationship
-// import { StrategiesPanel } from "./strategies-panel"
 
 interface LlmProvidersViewProps {
   activeSubTab: string | null
@@ -93,8 +91,8 @@ export function ResourcesView({ activeSubTab, onTabChange }: LlmProvidersViewPro
   }, [])
 
   // Parse subTab to determine which resource type and item is selected
-  // Format: "providers", "strategies"
-  // Or: "providers/instance-name", "strategies/strategy-id"
+  // Format: "providers"
+  // Or: "providers/instance-name"
   // Or: "providers/add/provider-type" for opening add dialog
   const parseSubTab = (subTab: string | null) => {
     if (!subTab) return { resourceType: "providers", itemId: null, addType: null }
@@ -136,8 +134,6 @@ export function ResourcesView({ activeSubTab, onTabChange }: LlmProvidersViewPro
       >
         <TabsList className="flex-shrink-0 w-fit">
           <TabsTrigger value="providers">Providers</TabsTrigger>
-          {/* DEPRECATED: Strategy UI hidden - 1:1 client-to-strategy relationship */}
-          {/* <TabsTrigger value="strategies">Model Strategies</TabsTrigger> */}
         </TabsList>
 
         <TabsContent value="providers" className="flex-1 min-h-0 mt-4">
@@ -157,14 +153,6 @@ export function ResourcesView({ activeSubTab, onTabChange }: LlmProvidersViewPro
           />
         </TabsContent>
 
-        {/* DEPRECATED: Strategy UI hidden - 1:1 client-to-strategy relationship */}
-        {/* <TabsContent value="strategies" className="flex-1 min-h-0 mt-4">
-          <StrategiesPanel
-            selectedId={resourceType === "strategies" ? itemId : null}
-            onSelect={(id) => handleItemSelect("strategies", id)}
-            onNavigateToClient={(clientId) => onTabChange("clients", clientId)}
-          />
-        </TabsContent> */}
       </Tabs>
     </div>
   )

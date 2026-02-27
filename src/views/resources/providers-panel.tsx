@@ -345,6 +345,8 @@ export function ProvidersPanel({
       toast.success("Provider created")
       setCreateDialogOpen(false)
       setSelectedProviderType("")
+      setDialogPage("select")
+      setCreateTab("templates")
       await loadProvidersOnly()
       onSelect(instanceName)
       // Trigger health check for the new provider
