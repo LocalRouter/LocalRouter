@@ -340,7 +340,7 @@ export function FirewallApprovalCard({
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start">
-              {!isModelRequest && !isGuardrailRequest && (
+              {!isModelRequest && !isGuardrailRequest && !isFreeTierFallback && (
                 <DropdownMenuItem onClick={() => onAction?.("deny_session")}>
                   Deny for Session
                 </DropdownMenuItem>
@@ -410,11 +410,9 @@ export function FirewallApprovalCard({
                   Allow Always for Categories
                 </DropdownMenuItem>
               )}
-              {!isFreeTierFallback && (
-                <DropdownMenuItem onClick={() => onAction?.("allow_permanent")}>
-                  {isGuardrailRequest ? "Allow All Always for Client" : "Allow Always"}
-                </DropdownMenuItem>
-              )}
+              <DropdownMenuItem onClick={() => onAction?.("allow_permanent")}>
+                {isGuardrailRequest ? "Allow All Always for Client" : "Allow Always"}
+              </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
