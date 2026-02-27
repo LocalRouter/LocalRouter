@@ -621,7 +621,7 @@ export function ProvidersPanel({
                 <Tabs value={detailTab} onValueChange={setDetailTab}>
                   <TabsList>
                     <TabsTrigger value="info">Info</TabsTrigger>
-                    <TabsTrigger value="models" onClick={() => loadDetailedModels(selectedProvider.instance_name)}>Models</TabsTrigger>
+                    <TabsTrigger value="models" onClick={() => { loadDetailedModels(selectedProvider.instance_name); loadFreeTierStatus(selectedProvider.instance_name) }}>Models</TabsTrigger>
                     <TabsTrigger value="free-tier" onClick={() => loadFreeTierStatus(selectedProvider.instance_name)}>Free Tier</TabsTrigger>
                     <TabsTrigger value="settings">Settings</TabsTrigger>
                   </TabsList>
