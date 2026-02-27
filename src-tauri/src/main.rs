@@ -657,10 +657,6 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                 // Set app handle on AppState for event emission
                 app_state.set_app_handle(app.handle().clone());
 
-                // Register access loggers for Tauri commands before wrapping in Arc
-                app.manage(app_state.access_logger.clone());
-                app.manage(app_state.mcp_access_logger.clone());
-
                 let app_state = Arc::new(app_state);
                 app.manage(app_state.clone());
 

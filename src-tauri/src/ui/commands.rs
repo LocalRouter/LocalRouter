@@ -1383,12 +1383,20 @@ pub struct LoggingConfigResponse {
 #[tauri::command]
 pub fn get_logging_config(
     config_manager: State<'_, ConfigManager>,
-    access_logger: State<'_, Arc<lr_monitoring::logger::AccessLogger>>,
+    server_manager: State<'_, Arc<ServerManager>>,
 ) -> Result<LoggingConfigResponse, String> {
     let config = config_manager.get();
+    let log_dir = server_manager
+        .get_state()
+        .map(|s| s.access_logger.log_dir().to_string_lossy().to_string())
+        .unwrap_or_else(|| {
+            AccessLogger::get_log_directory()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default()
+        });
     Ok(LoggingConfigResponse {
         enabled: config.logging.enable_access_log,
-        log_dir: access_logger.log_dir().to_string_lossy().to_string(),
+        log_dir,
     })
 }
 
@@ -1397,8 +1405,7 @@ pub fn get_logging_config(
 pub async fn update_logging_config(
     enabled: bool,
     config_manager: State<'_, ConfigManager>,
-    access_logger: State<'_, Arc<lr_monitoring::logger::AccessLogger>>,
-    mcp_access_logger: State<'_, Arc<lr_monitoring::mcp_logger::McpAccessLogger>>,
+    server_manager: State<'_, Arc<ServerManager>>,
 ) -> Result<(), String> {
     // Update config
     config_manager
@@ -1409,9 +1416,11 @@ pub async fn update_logging_config(
 
     config_manager.save().await.map_err(|e| e.to_string())?;
 
-    // Update the loggers in real-time
-    access_logger.set_enabled(enabled);
-    mcp_access_logger.set_enabled(enabled);
+    // Update the loggers in real-time (uses current server state, works across restarts)
+    if let Some(state) = server_manager.get_state() {
+        state.access_logger.set_enabled(enabled);
+        state.mcp_access_logger.set_enabled(enabled);
+    }
 
     Ok(())
 }
@@ -1419,16 +1428,20 @@ pub async fn update_logging_config(
 /// Open the logs folder in the system file manager
 #[tauri::command]
 pub async fn open_logs_folder(
-    access_logger: State<'_, Arc<lr_monitoring::logger::AccessLogger>>,
+    server_manager: State<'_, Arc<ServerManager>>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     use tauri_plugin_shell::ShellExt;
 
-    let log_dir = access_logger.log_dir();
+    let log_dir = server_manager
+        .get_state()
+        .map(|s| s.access_logger.log_dir().to_path_buf())
+        .or_else(|| AccessLogger::get_log_directory().ok())
+        .ok_or_else(|| "Could not determine log directory".to_string())?;
 
     // Ensure directory exists
     if !log_dir.exists() {
-        std::fs::create_dir_all(log_dir)
+        std::fs::create_dir_all(&log_dir)
             .map_err(|e| format!("Failed to create log directory: {}", e))?;
     }
 
