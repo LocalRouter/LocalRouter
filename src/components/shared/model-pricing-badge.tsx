@@ -31,18 +31,19 @@ function formatPriceLong(price: number): string {
 }
 
 function PricingPill({ kind }: { kind: string }) {
-  if (kind === "subscription") {
+  if (kind === "always_free_local") {
     return (
-      <span className="text-[10px] leading-tight font-medium px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700 dark:bg-blue-950/60 dark:text-blue-400 whitespace-nowrap">
-        Subscription
+      <span className="text-[10px] leading-tight font-medium px-1.5 py-0.5 rounded-full bg-green-100 text-green-700 dark:bg-green-950/60 dark:text-green-400 whitespace-nowrap">
+        Local
       </span>
     )
   }
 
-  if (kind === "none") {
+  if (kind === "subscription" || kind === "none") {
+    const label = kind === "subscription" ? "Subscription" : "API"
     return (
       <span className="text-[10px] leading-tight font-medium px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground whitespace-nowrap">
-        API
+        {label}
       </span>
     )
   }
@@ -77,9 +78,9 @@ export function ModelPricingBadge({
 
   // Compact variant
 
-  // Local providers are always free — don't show any pricing info
+  // Local providers — just show the pill, no price
   if (kind === "always_free_local") {
-    return null
+    return <PricingPill kind={kind} />
   }
 
   const priceStr = hasPricing
@@ -118,12 +119,13 @@ function FullVariant({
   hasPricing: boolean
   kind: string
 }) {
-  // Local providers are always free — minimal display
+  // Local providers — show pill with explanation
   if (kind === "always_free_local") {
     return (
-      <p className="text-sm text-muted-foreground">
-        Free — runs locally on your machine
-      </p>
+      <div className="flex items-center gap-2">
+        <PricingPill kind={kind} />
+        <span className="text-sm text-muted-foreground">Runs locally on your machine</span>
+      </div>
     )
   }
 
