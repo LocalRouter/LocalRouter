@@ -1190,11 +1190,63 @@ export default function Home() {
         </div>
       </section>
 
-      {/* Feature 6: Marketplace */}
+      {/* Feature 6: GuardRails */}
       <section className="border-b py-16 sm:py-24">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
           <div className="grid gap-12 lg:grid-cols-2 lg:gap-16 items-center">
             <div className="order-1 lg:order-2">
+              <div className="flex items-center gap-2 mb-4">
+                <Shield className="h-5 w-5 text-red-500" />
+                <span className="text-sm font-medium text-red-500 uppercase tracking-wide">GuardRails</span>
+              </div>
+              <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">
+                Content Safety Inspection
+              </h2>
+              <p className="mt-4 text-lg text-muted-foreground">
+                Scan LLM requests and responses for prompt injection, jailbreaks, PII leakage, and code injection. When a rule triggers, a popup lets you allow or deny the request.
+              </p>
+              <ul className="mt-8 space-y-4">
+                <li className="flex gap-3">
+                  <Check className="h-5 w-5 shrink-0 text-red-500 mt-0.5" />
+                  <div>
+                    <span className="font-medium">Multi-source detection</span>
+                    <p className="text-sm text-muted-foreground">Built-in rules plus downloadable sources from Microsoft Presidio, LLM Guard, and more</p>
+                  </div>
+                </li>
+                <li className="flex gap-3">
+                  <Check className="h-5 w-5 shrink-0 text-red-500 mt-0.5" />
+                  <div>
+                    <span className="font-medium">Custom regex rules</span>
+                    <p className="text-sm text-muted-foreground">Define your own detection patterns for organization-specific content policies and sensitive data patterns</p>
+                  </div>
+                </li>
+                <li className="flex gap-3">
+                  <Check className="h-5 w-5 shrink-0 text-red-500 mt-0.5" />
+                  <div>
+                    <span className="font-medium">Parallel scanning</span>
+                    <p className="text-sm text-muted-foreground">Guardrail checks run in parallel with provider calls for zero-latency overhead on clean requests</p>
+                  </div>
+                </li>
+              </ul>
+              <Link to="/docs/guardrails" className="mt-6 inline-flex items-center gap-1 text-sm font-medium text-red-500 hover:text-red-400 transition-colors">
+                Learn more <span aria-hidden="true">&rarr;</span>
+              </Link>
+            </div>
+            {/* Visual: GuardRail Approval Demo */}
+            <div className="flex justify-center order-2 lg:order-1">
+              <div className="transform scale-[0.95]">
+                <GuardrailApprovalDemo />
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* Feature 7: Marketplace */}
+      <section className="border-b py-16 sm:py-24">
+        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+          <div className="grid gap-12 lg:grid-cols-2 lg:gap-16 items-center">
+            <div>
               <div className="flex items-center gap-2 mb-4">
                 <Store className="h-5 w-5 text-cyan-500" />
                 <span className="text-sm font-medium text-cyan-500 uppercase tracking-wide">Marketplace</span>
@@ -1233,7 +1285,7 @@ export default function Home() {
               </Link>
             </div>
             {/* Visual: Marketplace Browser */}
-            <div className="relative overflow-x-auto order-2 lg:order-1">
+            <div className="relative overflow-x-auto">
               <div className="rounded-xl border-2 border-slate-700 bg-gradient-to-br from-slate-900 to-slate-800 p-6 shadow-2xl min-w-[480px]">
                 {/* Header */}
                 <div className="flex items-center gap-3 mb-5 pb-8 border-b border-slate-700">
@@ -1323,58 +1375,6 @@ export default function Home() {
                     </div>
                   </div>
                 </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* Feature 7: GuardRails */}
-      <section className="border-b py-16 sm:py-24">
-        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-          <div className="grid gap-12 lg:grid-cols-2 lg:gap-16 items-center">
-            <div>
-              <div className="flex items-center gap-2 mb-4">
-                <Shield className="h-5 w-5 text-red-500" />
-                <span className="text-sm font-medium text-red-500 uppercase tracking-wide">GuardRails</span>
-              </div>
-              <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">
-                Content Safety Inspection
-              </h2>
-              <p className="mt-4 text-lg text-muted-foreground">
-                Scan LLM requests and responses for prompt injection, jailbreaks, PII leakage, and code injection. When a rule triggers, a popup lets you allow or deny the request.
-              </p>
-              <ul className="mt-8 space-y-4">
-                <li className="flex gap-3">
-                  <Check className="h-5 w-5 shrink-0 text-red-500 mt-0.5" />
-                  <div>
-                    <span className="font-medium">Multi-source detection</span>
-                    <p className="text-sm text-muted-foreground">Built-in rules plus downloadable sources from Microsoft Presidio, LLM Guard, and more</p>
-                  </div>
-                </li>
-                <li className="flex gap-3">
-                  <Check className="h-5 w-5 shrink-0 text-red-500 mt-0.5" />
-                  <div>
-                    <span className="font-medium">Custom regex rules</span>
-                    <p className="text-sm text-muted-foreground">Define your own detection patterns for organization-specific content policies and sensitive data patterns</p>
-                  </div>
-                </li>
-                <li className="flex gap-3">
-                  <Check className="h-5 w-5 shrink-0 text-red-500 mt-0.5" />
-                  <div>
-                    <span className="font-medium">Parallel scanning</span>
-                    <p className="text-sm text-muted-foreground">Guardrail checks run in parallel with provider calls for zero-latency overhead on clean requests</p>
-                  </div>
-                </li>
-              </ul>
-              <Link to="/docs/guardrails" className="mt-6 inline-flex items-center gap-1 text-sm font-medium text-red-500 hover:text-red-400 transition-colors">
-                Learn more <span aria-hidden="true">&rarr;</span>
-              </Link>
-            </div>
-            {/* Visual: GuardRail Approval Demo */}
-            <div className="flex justify-center">
-              <div className="transform scale-[0.95]">
-                <GuardrailApprovalDemo />
               </div>
             </div>
           </div>
