@@ -696,6 +696,7 @@ pub async fn submit_firewall_approval(
     let pending_info = if matches!(
         action,
         FirewallApprovalAction::AllowPermanent
+            | FirewallApprovalAction::Allow1Minute
             | FirewallApprovalAction::Allow1Hour
             | FirewallApprovalAction::DenyAlways
             | FirewallApprovalAction::BlockCategories
@@ -769,6 +770,44 @@ pub async fn submit_firewall_approval(
             } else {
                 tracing::warn!(
                     "AllowPermanent requested but couldn't find pending info for request {}",
+                    request_id
+                );
+            }
+        }
+        FirewallApprovalAction::Allow1Minute => {
+            if let Some(ref info) = pending_info {
+                if info.is_guardrail_request {
+                    state
+                        .guardrail_approval_tracker
+                        .add_1_minute_bypass(&info.client_id);
+                    tracing::info!(
+                        "Added 1-minute guardrail bypass for client {}",
+                        info.client_id
+                    );
+                } else if info.is_free_tier_fallback {
+                    state
+                        .free_tier_approval_tracker
+                        .add_1_minute_approval(&info.client_id);
+                    tracing::info!(
+                        "Added 1-minute free-tier fallback approval for client {}",
+                        info.client_id
+                    );
+                } else if info.is_model_request {
+                    state.model_approval_tracker.add_1_minute_approval(
+                        &info.client_id,
+                        &info.server_name,
+                        &info.tool_name,
+                    );
+                    tracing::info!(
+                        "Added 1-minute model approval for client {} model {}__{}",
+                        info.client_id,
+                        info.server_name,
+                        info.tool_name
+                    );
+                }
+            } else {
+                tracing::warn!(
+                    "Allow1Minute requested but couldn't find pending info for request {}",
                     request_id
                 );
             }

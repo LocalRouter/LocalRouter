@@ -384,6 +384,7 @@ async fn handle_guardrail_approval(
     match response.action {
         FirewallApprovalAction::AllowOnce
         | FirewallApprovalAction::AllowSession
+        | FirewallApprovalAction::Allow1Minute
         | FirewallApprovalAction::Allow1Hour
         | FirewallApprovalAction::AllowPermanent
         | FirewallApprovalAction::AllowCategories => Ok(()),

@@ -313,6 +313,11 @@ impl GuardrailApprovalTracker {
         );
     }
 
+    /// Add a 1-minute bypass
+    pub fn add_1_minute_bypass(&self, client_id: &str) {
+        self.add_bypass(client_id, Duration::from_secs(60));
+    }
+
     /// Add a 1-hour bypass
     pub fn add_1_hour_bypass(&self, client_id: &str) {
         self.add_bypass(client_id, Duration::from_secs(3600));
@@ -451,6 +456,11 @@ impl ModelApprovalTracker {
         );
     }
 
+    /// Add a 1-minute approval
+    pub fn add_1_minute_approval(&self, client_id: &str, provider: &str, model_id: &str) {
+        self.add_approval(client_id, provider, model_id, Duration::from_secs(60));
+    }
+
     /// Add a 1-hour approval
     pub fn add_1_hour_approval(&self, client_id: &str, provider: &str, model_id: &str) {
         self.add_approval(client_id, provider, model_id, Duration::from_secs(3600));
@@ -504,11 +514,25 @@ impl FreeTierApprovalTracker {
         false
     }
 
+    /// Add a time-based approval for free-tier fallback
+    pub fn add_approval(&self, client_id: &str, duration: Duration) {
+        let expiry = Instant::now() + duration;
+        self.approvals.insert(client_id.to_string(), expiry);
+        tracing::info!(
+            "Added free-tier fallback approval: client={}, duration={}s",
+            client_id,
+            duration.as_secs(),
+        );
+    }
+
+    /// Add a 1-minute approval for free-tier fallback
+    pub fn add_1_minute_approval(&self, client_id: &str) {
+        self.add_approval(client_id, Duration::from_secs(60));
+    }
+
     /// Add a 1-hour approval for free-tier fallback
     pub fn add_1_hour_approval(&self, client_id: &str) {
-        let expiry = Instant::now() + Duration::from_secs(3600);
-        self.approvals.insert(client_id.to_string(), expiry);
-        tracing::info!("Added free-tier fallback approval: client={}", client_id,);
+        self.add_approval(client_id, Duration::from_secs(3600));
     }
 
     /// Clean up expired approvals

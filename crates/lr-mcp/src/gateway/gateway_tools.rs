@@ -556,7 +556,8 @@ impl McpGateway {
                             Ok(FirewallDecisionResult::Proceed)
                         }
                     }
-                    FirewallApprovalAction::Allow1Hour
+                    FirewallApprovalAction::Allow1Minute
+                    | FirewallApprovalAction::Allow1Hour
                     | FirewallApprovalAction::AllowPermanent
                     | FirewallApprovalAction::AllowCategories => {
                         tracing::info!(

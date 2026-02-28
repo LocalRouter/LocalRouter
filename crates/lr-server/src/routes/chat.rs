@@ -661,6 +661,7 @@ async fn check_model_firewall_permission(
             match response.action {
                 FirewallApprovalAction::AllowOnce
                 | FirewallApprovalAction::AllowSession
+                | FirewallApprovalAction::Allow1Minute
                 | FirewallApprovalAction::Allow1Hour
                 | FirewallApprovalAction::AllowPermanent
                 | FirewallApprovalAction::AllowCategories => {
@@ -929,6 +930,7 @@ async fn handle_guardrail_approval(
     match response.action {
         FirewallApprovalAction::AllowOnce
         | FirewallApprovalAction::AllowSession
+        | FirewallApprovalAction::Allow1Minute
         | FirewallApprovalAction::Allow1Hour
         | FirewallApprovalAction::AllowPermanent
         | FirewallApprovalAction::AllowCategories => {
@@ -1313,6 +1315,12 @@ async fn check_free_tier_fallback(
 
             match response.action {
                 FirewallApprovalAction::AllowOnce | FirewallApprovalAction::AllowSession => Ok(()),
+                FirewallApprovalAction::Allow1Minute => {
+                    state
+                        .free_tier_approval_tracker
+                        .add_1_minute_approval(client_id);
+                    Ok(())
+                }
                 FirewallApprovalAction::Allow1Hour => {
                     state
                         .free_tier_approval_tracker

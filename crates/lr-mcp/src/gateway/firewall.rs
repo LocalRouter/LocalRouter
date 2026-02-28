@@ -34,6 +34,9 @@ pub enum FirewallApprovalAction {
     AllowOnce,
     /// Allow this tool for the rest of the session (MCP/Skills)
     AllowSession,
+    /// Allow this for 1 minute (Models & guardrails: short time-based bypass)
+    #[serde(rename = "allow_1_minute")]
+    Allow1Minute,
     /// Allow this for 1 hour (Models & guardrails: time-based bypass)
     #[serde(rename = "allow_1_hour")]
     Allow1Hour,
@@ -832,6 +835,7 @@ mod tests {
             (FirewallApprovalAction::DenyAlways, "\"deny_always\""),
             (FirewallApprovalAction::AllowOnce, "\"allow_once\""),
             (FirewallApprovalAction::AllowSession, "\"allow_session\""),
+            (FirewallApprovalAction::Allow1Minute, "\"allow_1_minute\""),
             (FirewallApprovalAction::Allow1Hour, "\"allow_1_hour\""),
             (
                 FirewallApprovalAction::AllowPermanent,
