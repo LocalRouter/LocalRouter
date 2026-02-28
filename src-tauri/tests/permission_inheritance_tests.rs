@@ -1099,9 +1099,7 @@ mod has_any_enabled_child_overrides {
         };
 
         assert!(!perms.has_any_enabled_for_provider("Ollama"));
-        assert!(perms.has_any_enabled_for_provider(
-            "Ollama [Subscription Free Tier]"
-        ));
+        assert!(perms.has_any_enabled_for_provider("Ollama [Subscription Free Tier]"));
     }
 }
 

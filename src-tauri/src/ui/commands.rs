@@ -2125,9 +2125,7 @@ pub async fn debug_set_tray_overlay(
 
     let tray_overlay = overlay.map(|o| match o {
         DebugTrayOverlay::None => TrayOverlay::None,
-        DebugTrayOverlay::WarningYellow => {
-            TrayOverlay::Warning(StatusDotColors::yellow(dark_mode))
-        }
+        DebugTrayOverlay::WarningYellow => TrayOverlay::Warning(StatusDotColors::yellow(dark_mode)),
         DebugTrayOverlay::WarningRed => TrayOverlay::Warning(StatusDotColors::red(dark_mode)),
         DebugTrayOverlay::UpdateAvailable => TrayOverlay::UpdateAvailable,
         DebugTrayOverlay::FirewallPending => TrayOverlay::FirewallPending,

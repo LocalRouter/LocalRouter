@@ -680,8 +680,7 @@ fn decode_static_icon_white_on_transparent(static_icon_bytes: &[u8]) -> Option<R
             // Use the original alpha as a luminance-based mask:
             // Dark pixels (low RGB) in the source are the graphic → make them white + opaque
             // Light pixels (high RGB) are the background → make them transparent
-            let luminance =
-                (pixel[0] as u16 + pixel[1] as u16 + pixel[2] as u16) / 3;
+            let luminance = (pixel[0] as u16 + pixel[1] as u16 + pixel[2] as u16) / 3;
             if luminance < 128 {
                 // Dark pixel (part of the graphic) → white, fully opaque
                 pixel[0] = 255;
@@ -1127,11 +1126,8 @@ mod tests {
     #[test]
     fn test_static_icon_with_firewall_overlay() {
         let static_icon: &[u8] = include_bytes!("../../icons/32x32.png");
-        let png = generate_static_icon_with_overlay(
-            static_icon,
-            TrayOverlay::FirewallPending,
-            true,
-        );
+        let png =
+            generate_static_icon_with_overlay(static_icon, TrayOverlay::FirewallPending, true);
         assert!(png.is_some());
         assert!(!png.unwrap().is_empty());
     }
@@ -1139,11 +1135,8 @@ mod tests {
     #[test]
     fn test_static_icon_with_update_overlay() {
         let static_icon: &[u8] = include_bytes!("../../icons/32x32.png");
-        let png = generate_static_icon_with_overlay(
-            static_icon,
-            TrayOverlay::UpdateAvailable,
-            false,
-        );
+        let png =
+            generate_static_icon_with_overlay(static_icon, TrayOverlay::UpdateAvailable, false);
         assert!(png.is_some());
         assert!(!png.unwrap().is_empty());
     }

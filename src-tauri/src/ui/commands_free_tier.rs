@@ -167,8 +167,10 @@ pub async fn get_free_tier_status(
                         status.rate_rpm_limit = Some(*max_rpm);
                         if tracker.minute_requests >= *max_rpm {
                             status.has_capacity = false;
-                            status.status_message =
-                                format!("RPM limit reached: {}/{}", tracker.minute_requests, max_rpm);
+                            status.status_message = format!(
+                                "RPM limit reached: {}/{}",
+                                tracker.minute_requests, max_rpm
+                            );
                         } else {
                             status.has_capacity = true;
                             status.status_message = format!(

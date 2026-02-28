@@ -1190,12 +1190,8 @@ async fn test_free_tier_allows_free_provider() {
         selected_models: vec![],
     };
 
-    let config = create_free_tier_config(
-        "free-strategy",
-        allowed_models,
-        true,
-        FreeTierFallback::Off,
-    );
+    let config =
+        create_free_tier_config("free-strategy", allowed_models, true, FreeTierFallback::Off);
     let router = create_free_tier_router(config);
 
     let request = create_test_request("ollama/llama2");
@@ -1227,12 +1223,8 @@ async fn test_free_tier_blocks_paid_provider() {
         selected_models: vec![("openai".to_string(), "gpt-4".to_string())],
     };
 
-    let mut config = create_free_tier_config(
-        "free-strategy",
-        allowed_models,
-        true,
-        FreeTierFallback::Off,
-    );
+    let mut config =
+        create_free_tier_config("free-strategy", allowed_models, true, FreeTierFallback::Off);
 
     // Add OpenAI provider to config (no free tier)
     config.providers.push(ProviderConfig {
@@ -1287,12 +1279,8 @@ async fn test_free_tier_fallback_ask_returns_fallback_available() {
         selected_models: vec![("openai".to_string(), "gpt-4".to_string())],
     };
 
-    let mut config = create_free_tier_config(
-        "free-strategy",
-        allowed_models,
-        true,
-        FreeTierFallback::Ask,
-    );
+    let mut config =
+        create_free_tier_config("free-strategy", allowed_models, true, FreeTierFallback::Ask);
 
     config.providers.push(ProviderConfig {
         name: "openai".to_string(),
@@ -1385,12 +1373,8 @@ async fn test_free_tier_streaming_blocks_paid_provider() {
         selected_models: vec![("openai".to_string(), "gpt-4".to_string())],
     };
 
-    let mut config = create_free_tier_config(
-        "free-strategy",
-        allowed_models,
-        true,
-        FreeTierFallback::Off,
-    );
+    let mut config =
+        create_free_tier_config("free-strategy", allowed_models, true, FreeTierFallback::Off);
 
     config.providers.push(ProviderConfig {
         name: "openai".to_string(),
@@ -1447,12 +1431,8 @@ async fn test_free_tier_user_override_makes_paid_provider_free() {
         selected_models: vec![("my-openai".to_string(), "gpt-4".to_string())],
     };
 
-    let mut config = create_free_tier_config(
-        "free-strategy",
-        allowed_models,
-        true,
-        FreeTierFallback::Off,
-    );
+    let mut config =
+        create_free_tier_config("free-strategy", allowed_models, true, FreeTierFallback::Off);
 
     // Add provider with user override to AlwaysFreeLocal
     config.providers.push(ProviderConfig {
@@ -1512,12 +1492,8 @@ async fn test_free_tier_provider_not_in_config_treated_as_paid() {
         selected_models: vec![("unknown-provider".to_string(), "model".to_string())],
     };
 
-    let config = create_free_tier_config(
-        "free-strategy",
-        allowed_models,
-        true,
-        FreeTierFallback::Off,
-    );
+    let config =
+        create_free_tier_config("free-strategy", allowed_models, true, FreeTierFallback::Off);
     // Note: NOT adding unknown-provider to config.providers
     let router = create_free_tier_router(config);
 
@@ -1634,12 +1610,8 @@ async fn test_bug_embed_allows_free_provider_in_free_tier_mode() {
         selected_models: vec![],
     };
 
-    let config = create_free_tier_config(
-        "free-strategy",
-        allowed_models,
-        true,
-        FreeTierFallback::Off,
-    );
+    let config =
+        create_free_tier_config("free-strategy", allowed_models, true, FreeTierFallback::Off);
     let router = create_free_tier_router(config);
 
     let request = create_test_embedding_request("ollama/nomic-embed-text");
