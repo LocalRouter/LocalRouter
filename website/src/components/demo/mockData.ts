@@ -142,6 +142,9 @@ export const mockData = {
         { key: "base_url", param_type: "string", required: false, description: "Custom API base URL", default_value: "https://api.openai.com/v1", sensitive: false },
         { key: "organization", param_type: "string", required: false, description: "OpenAI organization ID", sensitive: false },
       ],
+      default_free_tier: { kind: "none" },
+      free_tier_short_text: "",
+      free_tier_long_text: "No free tier available. All API usage is billed.",
     },
     {
       provider_type: "anthropic",
@@ -152,6 +155,9 @@ export const mockData = {
         { key: "api_key", param_type: "string", required: true, description: "Anthropic API key", sensitive: true },
         { key: "base_url", param_type: "string", required: false, description: "Custom API base URL", default_value: "https://api.anthropic.com", sensitive: false },
       ],
+      default_free_tier: { kind: "none" },
+      free_tier_short_text: "",
+      free_tier_long_text: "No free tier available. All API usage is billed.",
     },
     {
       provider_type: "ollama",
@@ -161,6 +167,9 @@ export const mockData = {
       setup_parameters: [
         { key: "base_url", param_type: "string", required: false, description: "Ollama server URL", default_value: "http://localhost:11434", sensitive: false },
       ],
+      default_free_tier: { kind: "always_free_local" },
+      free_tier_short_text: "Free — runs locally",
+      free_tier_long_text: "Runs entirely on your machine. No API costs, no rate limits.",
     },
     {
       provider_type: "gemini",
@@ -170,6 +179,9 @@ export const mockData = {
       setup_parameters: [
         { key: "api_key", param_type: "string", required: true, description: "Google AI API key", sensitive: true },
       ],
+      default_free_tier: { kind: "rate_limited_free", max_rpm: 10, max_rpd: 250, max_tpm: 250000, max_tpd: 0, max_monthly_calls: 0, max_monthly_tokens: 0 },
+      free_tier_short_text: "Free tier: 10 req/min, 250 req/day",
+      free_tier_long_text: "Free access within rate limits: 10 req/min, 250 req/day, 250K tokens/min. Router auto-skips when exhausted.",
     },
     {
       provider_type: "groq",
@@ -179,6 +191,9 @@ export const mockData = {
       setup_parameters: [
         { key: "api_key", param_type: "string", required: true, description: "Groq API key", sensitive: true },
       ],
+      default_free_tier: { kind: "rate_limited_free", max_rpm: 30, max_rpd: 14400, max_tpm: 6000, max_tpd: 500000, max_monthly_calls: 0, max_monthly_tokens: 0 },
+      free_tier_short_text: "Free tier: 30 req/min, 14.4K req/day",
+      free_tier_long_text: "Free access within rate limits: 30 req/min, 14.4K req/day, 6K tokens/min, 500K tokens/day. Router auto-skips when exhausted.",
     },
     {
       provider_type: "mistral",
@@ -188,6 +203,9 @@ export const mockData = {
       setup_parameters: [
         { key: "api_key", param_type: "string", required: true, description: "Mistral API key", sensitive: true },
       ],
+      default_free_tier: { kind: "rate_limited_free", max_rpm: 60, max_rpd: 0, max_tpm: 500000, max_tpd: 0, max_monthly_calls: 0, max_monthly_tokens: 1000000000 },
+      free_tier_short_text: "Free tier: 60 req/min, 500K tokens/min",
+      free_tier_long_text: "Free access within rate limits: 60 req/min, 500K tokens/min, 1B tokens/mo. Router auto-skips when exhausted.",
     },
     {
       provider_type: "openrouter",
@@ -197,6 +215,9 @@ export const mockData = {
       setup_parameters: [
         { key: "api_key", param_type: "string", required: true, description: "OpenRouter API key", sensitive: true },
       ],
+      default_free_tier: { kind: "credit_based", budget_usd: 0, reset_period: "never", detection: { type: "provider_api" } },
+      free_tier_short_text: "Free models available",
+      free_tier_long_text: "Some models available for free via provider API.",
     },
     {
       provider_type: "together",
@@ -206,6 +227,9 @@ export const mockData = {
       setup_parameters: [
         { key: "api_key", param_type: "string", required: true, description: "Together AI API key", sensitive: true },
       ],
+      default_free_tier: { kind: "free_models_only", free_model_patterns: ["meta-llama/Llama-3.3-70B-Instruct-Turbo-Free"], max_rpm: 3 },
+      free_tier_short_text: "Free models: 3 req/min",
+      free_tier_long_text: "1 free model. Rate-limited to 3 req/min.",
     },
     {
       provider_type: "deepinfra",
@@ -215,6 +239,9 @@ export const mockData = {
       setup_parameters: [
         { key: "api_key", param_type: "string", required: true, description: "DeepInfra API key", sensitive: true },
       ],
+      default_free_tier: { kind: "credit_based", budget_usd: 5, reset_period: "monthly", detection: { type: "local_only" } },
+      free_tier_short_text: "$5/mo free credits",
+      free_tier_long_text: "$5 in monthly free credits. Router auto-skips when exhausted.",
     },
     {
       provider_type: "perplexity",
@@ -224,6 +251,9 @@ export const mockData = {
       setup_parameters: [
         { key: "api_key", param_type: "string", required: true, description: "Perplexity API key", sensitive: true },
       ],
+      default_free_tier: { kind: "credit_based", budget_usd: 5, reset_period: "monthly", detection: { type: "local_only" } },
+      free_tier_short_text: "$5/mo free credits",
+      free_tier_long_text: "$5 in monthly free credits. Router auto-skips when exhausted.",
     },
     {
       provider_type: "xai",
@@ -233,6 +263,9 @@ export const mockData = {
       setup_parameters: [
         { key: "api_key", param_type: "string", required: true, description: "xAI API key", sensitive: true },
       ],
+      default_free_tier: { kind: "credit_based", budget_usd: 25, reset_period: "never", detection: { type: "local_only" } },
+      free_tier_short_text: "$25 free credits",
+      free_tier_long_text: "$25 in one-time free credits. Router auto-skips when exhausted.",
     },
     {
       provider_type: "cerebras",
@@ -242,6 +275,9 @@ export const mockData = {
       setup_parameters: [
         { key: "api_key", param_type: "string", required: true, description: "Cerebras API key", sensitive: true },
       ],
+      default_free_tier: { kind: "rate_limited_free", max_rpm: 30, max_rpd: 14400, max_tpm: 60000, max_tpd: 1000000, max_monthly_calls: 0, max_monthly_tokens: 0 },
+      free_tier_short_text: "Free tier: 30 req/min, 14.4K req/day",
+      free_tier_long_text: "Free access within rate limits: 30 req/min, 14.4K req/day, 60K tokens/min, 1M tokens/day. Router auto-skips when exhausted.",
     },
     {
       provider_type: "cohere",
@@ -251,6 +287,9 @@ export const mockData = {
       setup_parameters: [
         { key: "api_key", param_type: "string", required: true, description: "Cohere API key", sensitive: true },
       ],
+      default_free_tier: { kind: "rate_limited_free", max_rpm: 20, max_rpd: 0, max_tpm: 100000, max_tpd: 0, max_monthly_calls: 1000, max_monthly_tokens: 0 },
+      free_tier_short_text: "Free tier: 20 req/min, 100K tokens/min",
+      free_tier_long_text: "Free access within rate limits: 20 req/min, 100K tokens/min, 1K calls/mo. Router auto-skips when exhausted.",
     },
     {
       provider_type: "lmstudio",
@@ -260,6 +299,9 @@ export const mockData = {
       setup_parameters: [
         { key: "base_url", param_type: "string", required: false, description: "LM Studio server URL", default_value: "http://localhost:1234/v1", sensitive: false },
       ],
+      default_free_tier: { kind: "always_free_local" },
+      free_tier_short_text: "Free — runs locally",
+      free_tier_long_text: "Runs entirely on your machine. No API costs, no rate limits.",
     },
     {
       provider_type: "jan",
@@ -269,6 +311,9 @@ export const mockData = {
       setup_parameters: [
         { key: "base_url", param_type: "string", required: false, description: "Jan server URL", default_value: "http://localhost:1337/v1", sensitive: false },
       ],
+      default_free_tier: { kind: "always_free_local" },
+      free_tier_short_text: "Free — runs locally",
+      free_tier_long_text: "Runs entirely on your machine. No API costs, no rate limits.",
     },
     {
       provider_type: "gpt4all",
@@ -278,6 +323,9 @@ export const mockData = {
       setup_parameters: [
         { key: "base_url", param_type: "string", required: false, description: "GPT4All server URL", default_value: "http://localhost:4891/v1", sensitive: false },
       ],
+      default_free_tier: { kind: "always_free_local" },
+      free_tier_short_text: "Free — runs locally",
+      free_tier_long_text: "Runs entirely on your machine. No API costs, no rate limits.",
     },
     {
       provider_type: "localai",
@@ -287,6 +335,9 @@ export const mockData = {
       setup_parameters: [
         { key: "base_url", param_type: "string", required: false, description: "LocalAI server URL", default_value: "http://localhost:8080/v1", sensitive: false },
       ],
+      default_free_tier: { kind: "always_free_local" },
+      free_tier_short_text: "Free — runs locally",
+      free_tier_long_text: "Runs entirely on your machine. No API costs, no rate limits.",
     },
     {
       provider_type: "llamacpp",
@@ -296,6 +347,9 @@ export const mockData = {
       setup_parameters: [
         { key: "base_url", param_type: "string", required: false, description: "llama.cpp server URL", default_value: "http://localhost:8080/v1", sensitive: false },
       ],
+      default_free_tier: { kind: "always_free_local" },
+      free_tier_short_text: "Free — runs locally",
+      free_tier_long_text: "Runs entirely on your machine. No API costs, no rate limits.",
     },
   ],
 

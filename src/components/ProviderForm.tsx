@@ -22,6 +22,8 @@ export interface ProviderType {
   category: ProviderCategory
   description: string
   setup_parameters: SetupParameter[]
+  free_tier_short_text?: string
+  free_tier_long_text?: string
 }
 
 interface OAuthFlowResult {

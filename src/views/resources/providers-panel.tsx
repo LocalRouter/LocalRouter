@@ -547,7 +547,17 @@ export function ProvidersPanel({
                         <ProviderIcon providerId={provider.provider_type.toLowerCase()} size={20} />
                         <div className="flex-1 min-w-0">
                           <p className="font-medium truncate">{provider.instance_name}</p>
-                          <p className="text-xs text-muted-foreground">{provider.provider_type}</p>
+                          <div className="flex items-center gap-1.5">
+                            <p className="text-xs text-muted-foreground">{provider.provider_type}</p>
+                            {(() => {
+                              const typeInfo = providerTypes.find(t => t.provider_type === provider.provider_type)
+                              return typeInfo?.free_tier_short_text ? (
+                                <span className="text-[10px] text-green-600 dark:text-green-400 font-medium truncate">
+                                  {typeInfo.free_tier_short_text}
+                                </span>
+                              ) : null
+                            })()}
+                          </div>
                         </div>
                         <div className="flex items-center gap-2">
                           {health && health.latency_ms != null && health.status !== "pending" && (
@@ -979,6 +989,12 @@ export function ProvidersPanel({
                           <CardDescription>
                             Configure how this provider's free tier is tracked
                           </CardDescription>
+                          {(() => {
+                            const typeInfo = providerTypes.find(t => t.provider_type === selectedProvider.provider_type)
+                            return typeInfo?.free_tier_long_text ? (
+                              <p className="text-sm text-muted-foreground mt-1">{typeInfo.free_tier_long_text}</p>
+                            ) : null
+                          })()}
                         </CardHeader>
                         <CardContent>
                           {(() => {
@@ -1552,6 +1568,11 @@ export function ProvidersPanel({
                         <p className="text-xs text-muted-foreground line-clamp-2 mt-0.5">
                           {type.description}
                         </p>
+                        {type.free_tier_short_text && (
+                          <p className="text-[11px] text-green-600 dark:text-green-400 font-medium mt-1">
+                            {type.free_tier_short_text}
+                          </p>
+                        )}
                       </div>
                     </button>
                   )

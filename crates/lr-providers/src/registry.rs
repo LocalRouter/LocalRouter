@@ -19,8 +19,161 @@ use tracing::{debug, info, warn};
 use super::factory::{ProviderFactory, SetupParameter};
 use super::health::HealthCheckManager;
 use super::{ModelInfo, ModelProvider, ProviderHealth};
-use lr_config::ModelCacheConfig;
+use lr_config::{FreeTierKind, ModelCacheConfig};
 use lr_types::{AppError, AppResult};
+
+/// Format a number with K/M/B suffix for human-readable display.
+pub fn format_number(n: u64) -> String {
+    if n == 0 {
+        return "0".to_string();
+    }
+    if n >= 1_000_000_000 && n.is_multiple_of(1_000_000_000) {
+        format!("{}B", n / 1_000_000_000)
+    } else if n >= 1_000_000_000 {
+        format!("{:.1}B", n as f64 / 1_000_000_000.0)
+    } else if n >= 1_000_000 && n.is_multiple_of(1_000_000) {
+        format!("{}M", n / 1_000_000)
+    } else if n >= 1_000_000 {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    } else if n >= 1_000 && n.is_multiple_of(1_000) {
+        format!("{}K", n / 1_000)
+    } else if n >= 1_000 {
+        format!("{:.1}K", n as f64 / 1_000.0)
+    } else {
+        n.to_string()
+    }
+}
+
+/// Generate human-readable (short_text, long_text) descriptions from a FreeTierKind.
+///
+/// - `short_text`: brief label for provider cards (empty string for `None`)
+/// - `long_text`: detailed description for free tier configuration tab
+pub fn free_tier_description_texts(kind: &FreeTierKind) -> (String, String) {
+    match kind {
+        FreeTierKind::None => (
+            String::new(),
+            "No free tier available. All API usage is billed.".to_string(),
+        ),
+        FreeTierKind::AlwaysFreeLocal => (
+            "Free — runs locally".to_string(),
+            "Runs entirely on your machine. No API costs, no rate limits.".to_string(),
+        ),
+        FreeTierKind::Subscription => (
+            "Included in subscription".to_string(),
+            "Included in your existing subscription at no additional cost.".to_string(),
+        ),
+        FreeTierKind::RateLimitedFree {
+            max_rpm,
+            max_rpd,
+            max_tpm,
+            max_tpd,
+            max_monthly_calls,
+            max_monthly_tokens,
+        } => {
+            // Build limit parts for display
+            let mut parts = Vec::new();
+            if *max_rpm > 0 {
+                parts.push(format!("{} req/min", max_rpm));
+            }
+            if *max_rpd > 0 {
+                parts.push(format!("{} req/day", format_number(*max_rpd as u64)));
+            }
+            if *max_tpm > 0 {
+                parts.push(format!("{} tokens/min", format_number(*max_tpm)));
+            }
+            if *max_tpd > 0 {
+                parts.push(format!("{} tokens/day", format_number(*max_tpd)));
+            }
+            if *max_monthly_calls > 0 {
+                parts.push(format!(
+                    "{} calls/mo",
+                    format_number(*max_monthly_calls as u64)
+                ));
+            }
+            if *max_monthly_tokens > 0 {
+                parts.push(format!("{} tokens/mo", format_number(*max_monthly_tokens)));
+            }
+
+            let short = if parts.len() >= 2 {
+                format!("Free tier: {}", parts[..2].join(", "))
+            } else if parts.len() == 1 {
+                format!("Free tier: {}", parts[0])
+            } else {
+                "Free tier available".to_string()
+            };
+
+            let long = if parts.is_empty() {
+                "Free access within rate limits. Router auto-skips when exhausted.".to_string()
+            } else {
+                format!(
+                    "Free access within rate limits: {}. Router auto-skips when exhausted.",
+                    parts.join(", ")
+                )
+            };
+
+            (short, long)
+        }
+        FreeTierKind::CreditBased {
+            budget_usd,
+            reset_period,
+            ..
+        } => {
+            if *budget_usd == 0.0 {
+                (
+                    "Free models available".to_string(),
+                    "Some models available for free via provider API.".to_string(),
+                )
+            } else {
+                let period_text = match reset_period {
+                    lr_config::FreeTierResetPeriod::Monthly => "monthly",
+                    lr_config::FreeTierResetPeriod::Daily => "daily",
+                    lr_config::FreeTierResetPeriod::Never => "one-time",
+                };
+                let budget_str = if *budget_usd == budget_usd.floor() {
+                    format!("${}", *budget_usd as u64)
+                } else {
+                    format!("${:.2}", budget_usd)
+                };
+                let short = if *reset_period == lr_config::FreeTierResetPeriod::Never {
+                    format!("{} free credits", budget_str)
+                } else {
+                    format!("{}/mo free credits", budget_str)
+                };
+                let long = format!(
+                    "{} in {} free credits. Router auto-skips when exhausted.",
+                    budget_str, period_text
+                );
+                (short, long)
+            }
+        }
+        FreeTierKind::FreeModelsOnly {
+            max_rpm,
+            free_model_patterns,
+        } => {
+            let short = if *max_rpm > 0 {
+                format!("Free models: {} req/min", max_rpm)
+            } else {
+                "Free models available".to_string()
+            };
+            let model_count = free_model_patterns.len();
+            let long = if *max_rpm > 0 {
+                format!(
+                    "{} free model{}. Rate-limited to {} req/min.",
+                    model_count,
+                    if model_count == 1 { "" } else { "s" },
+                    max_rpm
+                )
+            } else {
+                format!(
+                    "{} free model{} available.",
+                    model_count,
+                    if model_count == 1 { "" } else { "s" },
+                )
+            };
+            (short, long)
+        }
+    }
+}
 
 /// Cached model list for a single provider
 #[derive(Clone)]
@@ -106,6 +259,9 @@ pub struct ProviderTypeInfo {
     pub category: super::factory::ProviderCategory,
     pub description: String,
     pub setup_parameters: Vec<SetupParameter>,
+    pub default_free_tier: FreeTierKind,
+    pub free_tier_short_text: String,
+    pub free_tier_long_text: String,
 }
 
 /// Information about a provider instance (for listing)
@@ -179,12 +335,19 @@ impl ProviderRegistry {
         self.factories
             .read()
             .values()
-            .map(|factory| ProviderTypeInfo {
-                provider_type: factory.provider_type().to_string(),
-                display_name: factory.display_name().to_string(),
-                category: factory.category(),
-                description: factory.description().to_string(),
-                setup_parameters: factory.setup_parameters(),
+            .map(|factory| {
+                let free_tier = factory.default_free_tier();
+                let (short_text, long_text) = free_tier_description_texts(&free_tier);
+                ProviderTypeInfo {
+                    provider_type: factory.provider_type().to_string(),
+                    display_name: factory.display_name().to_string(),
+                    category: factory.category(),
+                    description: factory.description().to_string(),
+                    setup_parameters: factory.setup_parameters(),
+                    default_free_tier: free_tier,
+                    free_tier_short_text: short_text,
+                    free_tier_long_text: long_text,
+                }
             })
             .collect()
     }
@@ -976,5 +1139,114 @@ mod tests {
         registry.invalidate_all_caches();
 
         assert_eq!(registry.model_cache.read().len(), 0);
+    }
+
+    #[test]
+    fn test_format_number() {
+        assert_eq!(format_number(0), "0");
+        assert_eq!(format_number(5), "5");
+        assert_eq!(format_number(999), "999");
+        assert_eq!(format_number(1_000), "1K");
+        assert_eq!(format_number(6_000), "6K");
+        assert_eq!(format_number(14_400), "14.4K");
+        assert_eq!(format_number(60_000), "60K");
+        assert_eq!(format_number(100_000), "100K");
+        assert_eq!(format_number(250_000), "250K");
+        assert_eq!(format_number(500_000), "500K");
+        assert_eq!(format_number(1_000_000), "1M");
+        assert_eq!(format_number(1_000_000_000), "1B");
+    }
+
+    #[test]
+    fn test_free_tier_texts_none() {
+        let (short, long) = free_tier_description_texts(&FreeTierKind::None);
+        assert!(short.is_empty());
+        assert!(long.contains("No free tier"));
+    }
+
+    #[test]
+    fn test_free_tier_texts_always_free_local() {
+        let (short, long) = free_tier_description_texts(&FreeTierKind::AlwaysFreeLocal);
+        assert!(short.contains("locally"));
+        assert!(long.contains("your machine"));
+    }
+
+    #[test]
+    fn test_free_tier_texts_subscription() {
+        let (short, long) = free_tier_description_texts(&FreeTierKind::Subscription);
+        assert!(short.contains("subscription"));
+        assert!(long.contains("subscription"));
+    }
+
+    #[test]
+    fn test_free_tier_texts_rate_limited() {
+        let kind = FreeTierKind::RateLimitedFree {
+            max_rpm: 10,
+            max_rpd: 250,
+            max_tpm: 250_000,
+            max_tpd: 0,
+            max_monthly_calls: 0,
+            max_monthly_tokens: 0,
+        };
+        let (short, long) = free_tier_description_texts(&kind);
+        assert!(short.contains("10 req/min"));
+        assert!(long.contains("250K tokens/min"));
+    }
+
+    #[test]
+    fn test_free_tier_texts_credit_based_zero() {
+        let kind = FreeTierKind::CreditBased {
+            budget_usd: 0.0,
+            reset_period: lr_config::FreeTierResetPeriod::Never,
+            detection: lr_config::CreditDetection::ProviderApi,
+        };
+        let (short, _long) = free_tier_description_texts(&kind);
+        assert_eq!(short, "Free models available");
+    }
+
+    #[test]
+    fn test_free_tier_texts_credit_based_monthly() {
+        let kind = FreeTierKind::CreditBased {
+            budget_usd: 5.0,
+            reset_period: lr_config::FreeTierResetPeriod::Monthly,
+            detection: lr_config::CreditDetection::LocalOnly,
+        };
+        let (short, long) = free_tier_description_texts(&kind);
+        assert_eq!(short, "$5/mo free credits");
+        assert!(long.contains("monthly"));
+    }
+
+    #[test]
+    fn test_free_tier_texts_credit_based_onetime() {
+        let kind = FreeTierKind::CreditBased {
+            budget_usd: 25.0,
+            reset_period: lr_config::FreeTierResetPeriod::Never,
+            detection: lr_config::CreditDetection::LocalOnly,
+        };
+        let (short, long) = free_tier_description_texts(&kind);
+        assert_eq!(short, "$25 free credits");
+        assert!(long.contains("one-time"));
+    }
+
+    #[test]
+    fn test_free_tier_texts_free_models_only() {
+        let kind = FreeTierKind::FreeModelsOnly {
+            free_model_patterns: vec!["model-a".to_string()],
+            max_rpm: 3,
+        };
+        let (short, long) = free_tier_description_texts(&kind);
+        assert!(short.contains("3 req/min"));
+        assert!(long.contains("1 free model"));
+    }
+
+    #[tokio::test]
+    async fn test_provider_type_info_includes_free_tier() {
+        let registry = ProviderRegistry::new();
+        registry.register_factory(Arc::new(OllamaProviderFactory));
+        let types = registry.list_provider_types();
+        assert_eq!(types.len(), 1);
+        assert_eq!(types[0].default_free_tier, FreeTierKind::AlwaysFreeLocal);
+        assert!(!types[0].free_tier_short_text.is_empty());
+        assert!(!types[0].free_tier_long_text.is_empty());
     }
 }
