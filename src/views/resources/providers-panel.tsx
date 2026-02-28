@@ -138,7 +138,6 @@ export function ProvidersPanel({
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState("")
   const [models, setModels] = useState<ModelInfo[]>([])
-  const [modelsLoading, setModelsLoading] = useState(false)
 
   // Dialog states
   const [createDialogOpen, setCreateDialogOpen] = useState(false)
@@ -297,15 +296,12 @@ export function ProvidersPanel({
   }, [setUsageValues, loadFreeTierStatus])
 
   const loadModels = useCallback(async (instanceName: string) => {
-    setModelsLoading(true)
     try {
       const modelList = await invoke<ModelInfo[]>("list_provider_models", { instanceName })
       setModels(modelList)
     } catch (error) {
       console.error("Failed to load models:", error)
       setModels([])
-    } finally {
-      setModelsLoading(false)
     }
   }, [])
 
@@ -720,52 +716,6 @@ export function ProvidersPanel({
                           })()}
                         </CardContent>
                       </Card>
-
-                      {/* Models List */}
-                      <Card>
-                        <CardHeader className="pb-3">
-                          <CardTitle className="text-sm">
-                            Models {!modelsLoading && models.length > 0 && (
-                              <span className="text-muted-foreground font-normal">({models.length})</span>
-                            )}
-                          </CardTitle>
-                        </CardHeader>
-                        <CardContent>
-                          {modelsLoading ? (
-                            <div className="flex items-center gap-2 text-muted-foreground">
-                              <Loader2 className="h-4 w-4 animate-spin" />
-                              <span>Loading models...</span>
-                            </div>
-                          ) : models.length === 0 ? (
-                            <p className="text-sm text-muted-foreground">No models available</p>
-                          ) : (
-                            <div className="space-y-2">
-                              {models.map((model) => (
-                                <div
-                                  key={model.id}
-                                  className="flex items-center justify-between p-2 rounded-md bg-muted/50"
-                                >
-                                  <div className="min-w-0 flex-1">
-                                    <p className="font-medium text-sm truncate">{model.name || model.id}</p>
-                                    <p className="text-xs text-muted-foreground truncate">{model.id}</p>
-                                  </div>
-                                  <div className="flex items-center gap-2 ml-2">
-                                    {model.context_window > 0 && (
-                                      <Badge variant="secondary" className="text-xs whitespace-nowrap">
-                                        {model.context_window >= 1000000
-                                          ? `${(model.context_window / 1000000).toFixed(1)}M`
-                                          : model.context_window >= 1000
-                                          ? `${Math.round(model.context_window / 1000)}k`
-                                          : model.context_window} ctx
-                                      </Badge>
-                                    )}
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
-                          )}
-                        </CardContent>
-                      </Card>
                     </div>
                   </TabsContent>
 
@@ -1003,32 +953,30 @@ export function ProvidersPanel({
                             return (
                               <div className="space-y-4">
                                 {/* Type + Override Toggle */}
-                                <div className="flex items-center justify-between">
-                                  <div className="flex items-center gap-2">
-                                    <span className="text-sm font-medium">Type</span>
-                                    <TooltipProvider delayDuration={300}>
-                                      <Tooltip>
-                                        <TooltipTrigger asChild>
-                                          <span>
-                                            <Badge variant={
-                                              kind === 'always_free_local' ? 'default' :
-                                              kind === 'subscription' ? 'default' :
-                                              kind === 'none' ? 'secondary' :
-                                              'outline'
-                                            } className="cursor-help">
-                                              {FREE_TIER_LABELS[kind ?? 'none'] ?? 'No Free Tier'}
-                                            </Badge>
-                                          </span>
-                                        </TooltipTrigger>
-                                        <TooltipContent side="bottom" className="max-w-xs text-xs">
-                                          {FREE_TIER_DESCRIPTIONS[kind ?? 'none']}
-                                        </TooltipContent>
-                                      </Tooltip>
-                                    </TooltipProvider>
-                                    {status.is_user_override && (
-                                      <Badge variant="outline" className="text-xs">Override</Badge>
-                                    )}
-                                  </div>
+                                <div className="flex items-center gap-2">
+                                  <span className="text-sm font-medium">Type</span>
+                                  <TooltipProvider delayDuration={300}>
+                                    <Tooltip>
+                                      <TooltipTrigger asChild>
+                                        <span>
+                                          <Badge variant={
+                                            kind === 'always_free_local' ? 'default' :
+                                            kind === 'subscription' ? 'default' :
+                                            kind === 'none' ? 'secondary' :
+                                            'outline'
+                                          } className="cursor-help">
+                                            {FREE_TIER_LABELS[kind ?? 'none'] ?? 'No Free Tier'}
+                                          </Badge>
+                                        </span>
+                                      </TooltipTrigger>
+                                      <TooltipContent side="bottom" className="max-w-xs text-xs">
+                                        {FREE_TIER_DESCRIPTIONS[kind ?? 'none']}
+                                      </TooltipContent>
+                                    </Tooltip>
+                                  </TooltipProvider>
+                                  {status.is_user_override && (
+                                    <Badge variant="outline" className="text-xs">Override</Badge>
+                                  )}
                                   <Button
                                     variant="ghost"
                                     size="sm"
