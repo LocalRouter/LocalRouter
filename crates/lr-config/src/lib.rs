@@ -311,6 +311,7 @@ impl ConfigManager {
             sync_config: false,
             guardrails_enabled: None,
             guardrails: ClientGuardrailsConfig::default(),
+            coding_agents_permissions: CodingAgentsPermissions::default(),
         };
 
         self.update(|cfg| {

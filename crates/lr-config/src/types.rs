@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use uuid::Uuid;
 
-pub(crate) const CONFIG_VERSION: u32 = 14;
+pub(crate) const CONFIG_VERSION: u32 = 15;
 
 /// Suffix for auto-generated client strategy names
 pub const CLIENT_STRATEGY_NAME_SUFFIX: &str = "'s strategy";
@@ -392,6 +392,10 @@ pub struct AppConfig {
     /// GuardRails configuration for content inspection
     #[serde(default)]
     pub guardrails: GuardrailsConfig,
+
+    /// AI coding agents configuration
+    #[serde(default)]
+    pub coding_agents: CodingAgentsConfig,
 }
 
 /// Pricing override for a specific model
@@ -1194,6 +1198,193 @@ pub struct SkillsConfig {
     pub skill_paths: Vec<String>,
 }
 
+/// Coding agents configuration
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct CodingAgentsConfig {
+    /// Per-agent configurations
+    #[serde(default)]
+    pub agents: Vec<CodingAgentConfig>,
+
+    /// Default working directory for new sessions (if not specified per-agent)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_working_directory: Option<String>,
+
+    /// Maximum concurrent sessions across all agents (default: 10)
+    #[serde(default = "default_max_concurrent_sessions")]
+    pub max_concurrent_sessions: usize,
+
+    /// Output ring buffer size per session in lines (default: 1000)
+    #[serde(default = "default_output_buffer_size")]
+    pub output_buffer_size: usize,
+}
+
+fn default_max_concurrent_sessions() -> usize {
+    10
+}
+
+fn default_output_buffer_size() -> usize {
+    1000
+}
+
+/// Configuration for a single coding agent
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CodingAgentConfig {
+    /// Which agent this configures
+    pub agent_type: CodingAgentType,
+
+    /// Whether this agent is available for use
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Default working directory for this agent's sessions
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub working_directory: Option<String>,
+
+    /// Default model override
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_id: Option<String>,
+
+    /// Default permission mode for new sessions
+    #[serde(default)]
+    pub permission_mode: CodingPermissionMode,
+
+    /// Extra environment variables to set when spawning
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub env: std::collections::HashMap<String, String>,
+
+    /// Custom binary path (auto-detected if not set)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binary_path: Option<String>,
+}
+
+/// Supported coding agent types
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum CodingAgentType {
+    ClaudeCode,
+    GeminiCli,
+    Codex,
+    Amp,
+    Aider,
+    Cursor,
+    Opencode,
+    QwenCode,
+    Copilot,
+    Droid,
+}
+
+impl CodingAgentType {
+    /// Tool name prefix (used in MCP tool names like `{prefix}_start`)
+    pub fn tool_prefix(&self) -> &str {
+        match self {
+            CodingAgentType::ClaudeCode => "claude_code",
+            CodingAgentType::GeminiCli => "gemini_cli",
+            CodingAgentType::Codex => "codex",
+            CodingAgentType::Amp => "amp",
+            CodingAgentType::Aider => "aider",
+            CodingAgentType::Cursor => "cursor",
+            CodingAgentType::Opencode => "opencode",
+            CodingAgentType::QwenCode => "qwen_code",
+            CodingAgentType::Copilot => "copilot",
+            CodingAgentType::Droid => "droid",
+        }
+    }
+
+    /// Human-readable display name
+    pub fn display_name(&self) -> &str {
+        match self {
+            CodingAgentType::ClaudeCode => "Claude Code",
+            CodingAgentType::GeminiCli => "Gemini CLI",
+            CodingAgentType::Codex => "Codex",
+            CodingAgentType::Amp => "Amp",
+            CodingAgentType::Aider => "Aider",
+            CodingAgentType::Cursor => "Cursor",
+            CodingAgentType::Opencode => "Opencode",
+            CodingAgentType::QwenCode => "Qwen Code",
+            CodingAgentType::Copilot => "Copilot",
+            CodingAgentType::Droid => "Droid",
+        }
+    }
+
+    /// CLI binary name for auto-detection
+    pub fn binary_name(&self) -> &str {
+        match self {
+            CodingAgentType::ClaudeCode => "claude",
+            CodingAgentType::GeminiCli => "gemini",
+            CodingAgentType::Codex => "codex",
+            CodingAgentType::Amp => "amp",
+            CodingAgentType::Aider => "aider",
+            CodingAgentType::Cursor => "cursor",
+            CodingAgentType::Opencode => "opencode",
+            CodingAgentType::QwenCode => "qwen",
+            CodingAgentType::Copilot => "copilot",
+            CodingAgentType::Droid => "droid",
+        }
+    }
+
+    /// All known agent types
+    pub fn all() -> &'static [CodingAgentType] {
+        &[
+            CodingAgentType::ClaudeCode,
+            CodingAgentType::GeminiCli,
+            CodingAgentType::Codex,
+            CodingAgentType::Amp,
+            CodingAgentType::Aider,
+            CodingAgentType::Cursor,
+            CodingAgentType::Opencode,
+            CodingAgentType::QwenCode,
+            CodingAgentType::Copilot,
+            CodingAgentType::Droid,
+        ]
+    }
+}
+
+impl std::fmt::Display for CodingAgentType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.display_name())
+    }
+}
+
+/// Permission mode for coding agent sessions
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CodingPermissionMode {
+    /// Auto-approve all tool usage
+    Auto,
+    /// Require approval for tool usage
+    #[default]
+    Supervised,
+    /// Plan-only mode
+    Plan,
+}
+
+/// Per-client permissions for coding agents
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct CodingAgentsPermissions {
+    /// Global permission for all coding agents (default: Off)
+    #[serde(default)]
+    pub global: PermissionState,
+    /// Per-agent overrides (agent tool_prefix -> state)
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub agents: std::collections::HashMap<String, PermissionState>,
+}
+
+impl CodingAgentsPermissions {
+    /// Resolve permission for a specific agent
+    pub fn resolve_agent(&self, agent_prefix: &str) -> PermissionState {
+        self.agents
+            .get(agent_prefix)
+            .cloned()
+            .unwrap_or_else(|| self.global.clone())
+    }
+
+    /// Check if any agent access is possible
+    pub fn has_any_access(&self) -> bool {
+        self.global.is_enabled()
+            || self.agents.values().any(|s| s.is_enabled())
+    }
+}
+
 /// Marketplace configuration for MCP server and skill discovery
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MarketplaceConfig {
@@ -1587,6 +1778,10 @@ pub struct Client {
     /// Marketplace permission state (Allow/Ask/Off)
     #[serde(default)]
     pub marketplace_permission: PermissionState,
+
+    /// AI coding agents permissions (hierarchical Allow/Ask/Off)
+    #[serde(default)]
+    pub coding_agents_permissions: CodingAgentsPermissions,
 
     /// Client mode: controls which features (LLM, MCP, both) are exposed
     #[serde(default)]
@@ -2281,6 +2476,7 @@ impl Default for AppConfig {
             skills: SkillsConfig::default(),
             marketplace: MarketplaceConfig::default(),
             guardrails: GuardrailsConfig::default(),
+            coding_agents: CodingAgentsConfig::default(),
         }
     }
 }
@@ -2466,6 +2662,7 @@ impl Client {
             sync_config: false,
             guardrails_enabled: None,
             guardrails: ClientGuardrailsConfig::default(),
+            coding_agents_permissions: CodingAgentsPermissions::default(),
         }
     }
 

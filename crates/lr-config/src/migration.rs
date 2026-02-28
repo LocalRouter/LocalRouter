@@ -98,6 +98,11 @@ pub fn migrate_config(mut config: AppConfig) -> AppResult<AppConfig> {
         config = migrate_to_v14(config)?;
     }
 
+    // Migrate to v15: AI coding agents (new fields have defaults, no-op migration)
+    if config.version < 15 {
+        config = migrate_to_v15(config)?;
+    }
+
     // Update version to current
     config.version = CONFIG_VERSION;
 
@@ -492,6 +497,12 @@ fn migrate_to_v13(mut config: AppConfig) -> AppResult<AppConfig> {
 fn migrate_to_v14(mut config: AppConfig) -> AppResult<AppConfig> {
     info!("Migrating to version 14: Free tier mode support");
     config.version = 14;
+    Ok(config)
+}
+
+fn migrate_to_v15(mut config: AppConfig) -> AppResult<AppConfig> {
+    info!("Migrating to version 15: AI coding agents support");
+    config.version = 15;
     Ok(config)
 }
 

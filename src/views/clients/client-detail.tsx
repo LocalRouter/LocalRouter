@@ -16,9 +16,10 @@ import { ClientConfigTab } from "./tabs/config-tab"
 import { ClientModelsTab } from "./tabs/models-tab"
 import { ClientMcpTab } from "./tabs/mcp-tab"
 import { ClientSkillsTab } from "./tabs/skills-tab"
+import { ClientCodingAgentsTab } from "./tabs/coding-agents-tab"
 import { ClientGuardrailsTab } from "./tabs/guardrails-tab"
 import { ClientSettingsTab } from "./tabs/settings-tab"
-import type { McpPermissions, SkillsPermissions, ModelPermissions, PermissionState } from "@/components/permissions"
+import type { McpPermissions, SkillsPermissions, CodingAgentsPermissions, ModelPermissions, PermissionState } from "@/components/permissions"
 import type { ClientMode } from "@/types/tauri-commands"
 
 interface Client {
@@ -30,6 +31,7 @@ interface Client {
   mcp_deferred_loading: boolean
   mcp_permissions: McpPermissions
   skills_permissions: SkillsPermissions
+  coding_agents_permissions: CodingAgentsPermissions
   model_permissions: ModelPermissions
   marketplace_permission: PermissionState
   client_mode?: ClientMode
@@ -63,6 +65,7 @@ export function ClientDetail({
   const showModelsTab = clientMode !== "mcp_only"
   const showMcpTab = clientMode !== "llm_only"
   const showSkillsTab = clientMode !== "llm_only"
+  const showCodingAgentsTab = clientMode !== "llm_only"
 
   useEffect(() => {
     if (!initialClient) {
@@ -98,7 +101,8 @@ export function ClientDetail({
     if (activeTab === "models" && !showModelsTab) setActiveTab("connect")
     if (activeTab === "mcp" && !showMcpTab) setActiveTab("connect")
     if (activeTab === "skills" && !showSkillsTab) setActiveTab("connect")
-  }, [clientMode, activeTab, showModelsTab, showMcpTab, showSkillsTab])
+    if (activeTab === "coding-agents" && !showCodingAgentsTab) setActiveTab("connect")
+  }, [clientMode, activeTab, showModelsTab, showMcpTab, showSkillsTab, showCodingAgentsTab])
 
   const loadClient = async () => {
     try {
@@ -183,6 +187,7 @@ export function ClientDetail({
             {showModelsTab && <TabsTrigger value="models">Models</TabsTrigger>}
             {showMcpTab && <TabsTrigger value="mcp">MCP</TabsTrigger>}
             {showSkillsTab && <TabsTrigger value="skills">Skills</TabsTrigger>}
+            {showCodingAgentsTab && <TabsTrigger value="coding-agents">Coding Agents</TabsTrigger>}
             <TabsTrigger value="guardrails">GuardRails</TabsTrigger>
             <TabsTrigger value="settings">Settings</TabsTrigger>
           </TabsList>
@@ -211,6 +216,12 @@ export function ClientDetail({
           {showSkillsTab && (
             <TabsContent value="skills">
               <ClientSkillsTab client={client} onUpdate={loadClient} />
+            </TabsContent>
+          )}
+
+          {showCodingAgentsTab && (
+            <TabsContent value="coding-agents">
+              <ClientCodingAgentsTab client={client} onUpdate={loadClient} />
             </TabsContent>
           )}
 

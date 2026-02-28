@@ -34,6 +34,12 @@ pub struct UnavailableServerInfo {
     pub error: String,
 }
 
+/// Information about a coding agent for instruction building
+pub struct CodingAgentInfo {
+    pub name: String,
+    pub tool_prefix: String,
+}
+
 /// Context for building gateway instructions
 pub struct InstructionsContext {
     /// Available MCP servers with their info
@@ -44,6 +50,8 @@ pub struct InstructionsContext {
     pub skills: Vec<SkillInfo>,
     /// Whether deferred loading is enabled
     pub deferred_loading: bool,
+    /// Coding agents accessible to this client
+    pub coding_agents: Vec<CodingAgentInfo>,
 }
 
 /// Merge initialize results from multiple servers
@@ -165,9 +173,10 @@ pub fn build_gateway_instructions(ctx: &InstructionsContext) -> Option<String> {
     let has_servers = !ctx.servers.is_empty();
     let has_skills = !ctx.skills.is_empty();
     let has_unavailable = !ctx.unavailable_servers.is_empty();
+    let has_agents = !ctx.coding_agents.is_empty();
 
     // Nothing to describe
-    if !has_servers && !has_skills && !has_unavailable {
+    if !has_servers && !has_skills && !has_unavailable && !has_agents {
         return None;
     }
 
@@ -182,6 +191,21 @@ pub fn build_gateway_instructions(ctx: &InstructionsContext) -> Option<String> {
     // --- 3. Per-server instructions in XML tags ---
     if has_servers {
         build_server_instructions_section(&mut inst, &ctx.servers);
+    }
+
+    // --- 4. Coding agents section ---
+    if has_agents {
+        inst.push_str("\n## AI Coding Agents\n\n");
+        inst.push_str("You have access to the following AI coding agents. Each agent can be started with a prompt, and you can interact with it through a session-based API.\n\n");
+        for agent in &ctx.coding_agents {
+            inst.push_str(&format!(
+                "- **{}**: `{}_start`, `{}_say`, `{}_status`, `{}_respond`, `{}_interrupt`, `{}_list`\n",
+                agent.name,
+                agent.tool_prefix, agent.tool_prefix, agent.tool_prefix,
+                agent.tool_prefix, agent.tool_prefix, agent.tool_prefix,
+            ));
+        }
+        inst.push_str("\nWorkflow: Start a session → poll status → respond to questions → get results.\n");
     }
 
     Some(inst)
@@ -649,6 +673,7 @@ mod tests {
             }],
             unavailable_servers: Vec::new(),
             skills: Vec::new(),
+            coding_agents: Vec::new(),
             deferred_loading: false,
         };
 
@@ -680,6 +705,7 @@ mod tests {
             }],
             unavailable_servers: Vec::new(),
             skills: Vec::new(),
+            coding_agents: Vec::new(),
             deferred_loading: false,
         };
 
@@ -703,6 +729,7 @@ mod tests {
             }],
             unavailable_servers: Vec::new(),
             skills: Vec::new(),
+            coding_agents: Vec::new(),
             deferred_loading: false,
         };
 
@@ -724,6 +751,7 @@ mod tests {
                 description: Some("Automated code review".to_string()),
                 get_info_tool: "skill_code_review_get_info".to_string(),
             }],
+            coding_agents: Vec::new(),
             deferred_loading: false,
         };
 
@@ -753,6 +781,7 @@ mod tests {
             }],
             unavailable_servers: Vec::new(),
             skills: Vec::new(),
+            coding_agents: Vec::new(),
             deferred_loading: true,
         };
 
@@ -783,6 +812,7 @@ mod tests {
                 description: None,
                 get_info_tool: "skill_deploy_get_info".to_string(),
             }],
+            coding_agents: Vec::new(),
             deferred_loading: false,
         };
 
@@ -806,6 +836,7 @@ mod tests {
             servers: Vec::new(),
             unavailable_servers: Vec::new(),
             skills: Vec::new(),
+            coding_agents: Vec::new(),
             deferred_loading: false,
         };
 
@@ -825,6 +856,7 @@ mod tests {
                 description: None,
                 get_info_tool: "skill_test_get_info".to_string(),
             }],
+            coding_agents: Vec::new(),
             deferred_loading: false,
         };
 
@@ -847,6 +879,7 @@ mod tests {
             }],
             unavailable_servers: Vec::new(),
             skills: Vec::new(),
+            coding_agents: Vec::new(),
             deferred_loading: false,
         };
 
@@ -869,6 +902,7 @@ mod tests {
             }],
             unavailable_servers: Vec::new(),
             skills: Vec::new(),
+            coding_agents: Vec::new(),
             deferred_loading: false,
         };
 
@@ -892,6 +926,7 @@ mod tests {
             }],
             unavailable_servers: Vec::new(),
             skills: Vec::new(),
+            coding_agents: Vec::new(),
             deferred_loading: false,
         };
 

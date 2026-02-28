@@ -686,6 +686,7 @@ pub async fn mcp_gateway_handler(
             client.skills_permissions.clone(),
             client.name.clone(),
             client.marketplace_permission.clone(),
+            client.coding_agents_permissions.clone(),
             request,
         )
         .await

@@ -67,6 +67,7 @@ impl McpGateway {
                 let info_loaded = session_read.skills_info_loaded.clone();
                 let async_enabled = session_read.skills_async_enabled;
                 let marketplace_permission = session_read.marketplace_permission.clone();
+                let coding_agents_perms = session_read.coding_agents_permissions.clone();
                 drop(session_read);
 
                 self.append_skill_tools(
@@ -77,6 +78,7 @@ impl McpGateway {
                     true,
                 );
                 self.append_marketplace_tools(&mut tools, &marketplace_permission);
+                self.append_coding_agent_tools(&mut tools, &coding_agents_perms);
 
                 let tool_names: Vec<String> = tools
                     .iter()
@@ -108,6 +110,7 @@ impl McpGateway {
                 let info_loaded = session_read.skills_info_loaded.clone();
                 let async_enabled = session_read.skills_async_enabled;
                 let marketplace_permission = session_read.marketplace_permission.clone();
+                let coding_agents_perms = session_read.coding_agents_permissions.clone();
                 drop(session_read);
 
                 // Skills always use their own deferred loading (get_info unlocks run/read)
@@ -119,6 +122,7 @@ impl McpGateway {
                     true,
                 );
                 self.append_marketplace_tools(&mut tools, &marketplace_permission);
+                self.append_coding_agent_tools(&mut tools, &coding_agents_perms);
 
                 tracing::info!("handle_tools_list CACHED: returning {} tools", tools.len(),);
 
@@ -159,6 +163,7 @@ impl McpGateway {
         let info_loaded = session_read.skills_info_loaded.clone();
         let async_enabled = session_read.skills_async_enabled;
         let marketplace_permission = session_read.marketplace_permission.clone();
+        let coding_agents_perms = session_read.coding_agents_permissions.clone();
         drop(session_read);
 
         let mut all_tools: Vec<serde_json::Value> = tools
@@ -175,6 +180,7 @@ impl McpGateway {
             true,
         );
         self.append_marketplace_tools(&mut all_tools, &marketplace_permission);
+        self.append_coding_agent_tools(&mut all_tools, &coding_agents_perms);
 
         let mut result = json!({"tools": all_tools});
         if let Some(failures) = failures {
@@ -305,6 +311,13 @@ impl McpGateway {
 
             return self
                 .handle_skill_tool_call(session, &tool_name, request)
+                .await;
+        }
+
+        // Check if it's a coding agent tool
+        if lr_coding_agents::mcp_tools::is_coding_agent_tool(&tool_name) {
+            return self
+                .handle_coding_agent_tool_call(session, &tool_name, request)
                 .await;
         }
 
@@ -989,6 +1002,103 @@ impl McpGateway {
             Err(e) => Ok(JsonRpcResponse::success(
                 request.id.unwrap_or(Value::Null),
                 json!({
+                    "content": [{
+                        "type": "text",
+                        "text": format!("Error: {}", e)
+                    }],
+                    "isError": true
+                }),
+            )),
+        }
+    }
+
+    /// Append coding agent tools to the tool list
+    pub(crate) fn append_coding_agent_tools(
+        &self,
+        tools: &mut Vec<serde_json::Value>,
+        permissions: &lr_config::CodingAgentsPermissions,
+    ) {
+        if !permissions.has_any_access() {
+            return;
+        }
+        if let Some(manager) = self.coding_agent_manager.get() {
+            let agent_tools =
+                lr_coding_agents::mcp_tools::build_coding_agent_tools(manager, permissions);
+            for tool in agent_tools {
+                tools.push(serde_json::to_value(&tool).unwrap_or_default());
+            }
+        }
+    }
+
+    /// Handle a coding agent tool call
+    pub(crate) async fn handle_coding_agent_tool_call(
+        &self,
+        session: Arc<RwLock<GatewaySession>>,
+        tool_name: &str,
+        request: JsonRpcRequest,
+    ) -> AppResult<JsonRpcResponse> {
+        let manager = match self.coding_agent_manager.get() {
+            Some(m) => m,
+            None => {
+                return Ok(JsonRpcResponse::error(
+                    request.id.unwrap_or(Value::Null),
+                    JsonRpcError::custom(
+                        -32601,
+                        "Coding agents support is not configured".to_string(),
+                        None,
+                    ),
+                ));
+            }
+        };
+
+        // Get client_id and permissions from session
+        let session_read = session.read().await;
+        let client_id = session_read.client_id.clone();
+        let permissions = session_read.coding_agents_permissions.clone();
+        drop(session_read);
+
+        // Check permission for the specific agent
+        if let Some(agent_type) = lr_coding_agents::mcp_tools::agent_type_from_tool(tool_name) {
+            let perm = permissions.resolve_agent(agent_type.tool_prefix());
+            if !perm.is_enabled() {
+                return Ok(JsonRpcResponse::error(
+                    request.id.unwrap_or(Value::Null),
+                    JsonRpcError::custom(
+                        -32601,
+                        format!("Access denied for {}", agent_type.display_name()),
+                        None,
+                    ),
+                ));
+            }
+        }
+
+        // Extract arguments from params
+        let arguments = request
+            .params
+            .as_ref()
+            .and_then(|p| p.get("arguments"))
+            .cloned()
+            .unwrap_or(serde_json::json!({}));
+
+        match lr_coding_agents::mcp_tools::handle_coding_agent_tool_call(
+            tool_name,
+            &arguments,
+            manager,
+            &client_id,
+        )
+        .await
+        {
+            Ok(Some(response)) => Ok(JsonRpcResponse::success(
+                request.id.unwrap_or(Value::Null),
+                response,
+            )),
+            Ok(None) => Ok(JsonRpcResponse::error(
+                request.id.unwrap_or(Value::Null),
+                JsonRpcError::tool_not_found(tool_name),
+            )),
+            Err(e) => Ok(JsonRpcResponse::success(
+                request.id.unwrap_or(Value::Null),
+                serde_json::json!({
                     "content": [{
                         "type": "text",
                         "text": format!("Error: {}", e)

@@ -143,6 +143,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       last_used: null,
       mcp_permissions: { global: 'ask' as const, servers: {}, tools: {}, resources: {}, prompts: {} },
       skills_permissions: { global: 'ask' as const, skills: {}, tools: {} },
+      coding_agents_permissions: { global: 'ask' as const, agents: {} },
       model_permissions: { global: 'allow' as const, providers: {}, models: {} },
       marketplace_permission: 'ask' as const,
       client_mode: 'both' as const,
@@ -921,6 +922,41 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   },
   'remove_skills_path': () => {
     toast.success('Skills path removed (demo)')
+    return null
+  },
+
+  // ============================================================================
+  // Coding Agents
+  // ============================================================================
+  'list_coding_agents': () => [
+    { agentType: 'claude_code', displayName: 'Claude Code', toolPrefix: 'claude_code', binaryName: 'claude', installed: true, enabled: true, workingDirectory: null, modelId: null, permissionMode: 'auto' },
+    { agentType: 'gemini_cli', displayName: 'Gemini CLI', toolPrefix: 'gemini_cli', binaryName: 'gemini', installed: true, enabled: false, workingDirectory: null, modelId: null, permissionMode: 'auto' },
+    { agentType: 'codex', displayName: 'Codex', toolPrefix: 'codex', binaryName: 'codex', installed: false, enabled: false, workingDirectory: null, modelId: null, permissionMode: 'supervised' },
+    { agentType: 'amp', displayName: 'Amp', toolPrefix: 'amp', binaryName: 'amp', installed: false, enabled: false, workingDirectory: null, modelId: null, permissionMode: 'auto' },
+    { agentType: 'aider', displayName: 'Aider', toolPrefix: 'aider', binaryName: 'aider', installed: true, enabled: false, workingDirectory: null, modelId: null, permissionMode: 'auto' },
+    { agentType: 'opencode', displayName: 'Opencode', toolPrefix: 'opencode', binaryName: 'opencode', installed: false, enabled: false, workingDirectory: null, modelId: null, permissionMode: 'auto' },
+    { agentType: 'cursor', displayName: 'Cursor', toolPrefix: 'cursor', binaryName: 'cursor', installed: false, enabled: false, workingDirectory: null, modelId: null, permissionMode: 'auto' },
+    { agentType: 'qwen_code', displayName: 'Qwen Code', toolPrefix: 'qwen_code', binaryName: 'qwen-code', installed: false, enabled: false, workingDirectory: null, modelId: null, permissionMode: 'auto' },
+    { agentType: 'copilot', displayName: 'GitHub Copilot', toolPrefix: 'copilot', binaryName: 'gh', installed: false, enabled: false, workingDirectory: null, modelId: null, permissionMode: 'auto' },
+    { agentType: 'droid', displayName: 'Droid', toolPrefix: 'droid', binaryName: 'droid', installed: false, enabled: false, workingDirectory: null, modelId: null, permissionMode: 'auto' },
+  ],
+  'set_coding_agent_enabled': (args) => {
+    toast.success(`Coding agent ${args?.agentType} ${args?.enabled ? 'enabled' : 'disabled'} (demo)`)
+    return null
+  },
+  'update_coding_agent_config': () => null,
+  'list_coding_sessions': () => [],
+  'end_coding_session': () => null,
+  'set_client_coding_agents_permission': (args) => {
+    const client = mockData.clients.find(c => c.client_id === args?.clientId)
+    if (client) {
+      const perms = (client as Record<string, unknown>).coding_agents_permissions as { global: string; agents: Record<string, string> }
+      if (args?.level === 'global') {
+        perms.global = args.state
+      } else if (args?.key) {
+        perms.agents[args.key] = args.state
+      }
+    }
     return null
   },
 

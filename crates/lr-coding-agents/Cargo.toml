@@ -1,0 +1,25 @@
+[package]
+name = "lr-coding-agents"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "AI coding agent orchestration for LocalRouter MCP Gateway"
+
+[dependencies]
+lr-types = { workspace = true }
+lr-config = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+uuid = { workspace = true }
+dashmap = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+which = { workspace = true }
+
+command-group = { version = "5.0", features = ["with-tokio"] }

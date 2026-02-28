@@ -8,6 +8,7 @@ use tokio::sync::RwLock;
 
 use crate::manager::McpServerManager;
 use crate::protocol::{JsonRpcError, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse};
+use lr_coding_agents::manager::CodingAgentManager;
 use lr_marketplace::MarketplaceService;
 use lr_router::Router;
 use lr_skills::executor::ScriptExecutor;
@@ -66,6 +67,10 @@ pub struct McpGateway {
     /// Marketplace service (optional, for MCP server/skill discovery)
     /// Uses OnceLock so it can be set after Arc construction via &self
     pub(crate) marketplace_service: OnceLock<Arc<MarketplaceService>>,
+
+    /// Coding agent manager (optional, for AI coding agent orchestration)
+    /// Uses OnceLock so it can be set after Arc construction via &self
+    pub(crate) coding_agent_manager: OnceLock<Arc<CodingAgentManager>>,
 }
 
 impl McpGateway {
@@ -118,6 +123,7 @@ impl McpGateway {
             script_executor: OnceLock::new(),
             skills_async_override: OnceLock::new(),
             marketplace_service: OnceLock::new(),
+            coding_agent_manager: OnceLock::new(),
         }
     }
 
@@ -152,6 +158,12 @@ impl McpGateway {
     /// Uses OnceLock so this can be called on `&self` (gateway is behind Arc).
     pub fn set_marketplace_service(&self, service: Arc<MarketplaceService>) {
         let _ = self.marketplace_service.set(service);
+    }
+
+    /// Set coding agent manager for AI coding agent orchestration.
+    /// Uses OnceLock so this can be called on `&self` (gateway is behind Arc).
+    pub fn set_coding_agent_support(&self, manager: Arc<CodingAgentManager>) {
+        let _ = self.coding_agent_manager.set(manager);
     }
 
     /// Check if skill support has been configured
@@ -308,6 +320,7 @@ impl McpGateway {
             lr_config::SkillsPermissions::default(),
             String::new(),
             lr_config::PermissionState::Off, // marketplace_permission
+            lr_config::CodingAgentsPermissions::default(),
             request,
         )
         .await
@@ -325,6 +338,7 @@ impl McpGateway {
         skills_permissions: lr_config::SkillsPermissions,
         client_name: String,
         marketplace_permission: lr_config::PermissionState,
+        coding_agents_permissions: lr_config::CodingAgentsPermissions,
         request: JsonRpcRequest,
     ) -> AppResult<JsonRpcResponse> {
         let method = request.method.clone();
@@ -365,6 +379,7 @@ impl McpGateway {
             let mut session_write = session.write().await;
             session_write.client_name = client_name;
             session_write.marketplace_permission = marketplace_permission;
+            session_write.coding_agents_permissions = coding_agents_permissions;
         }
 
         // Update last activity
@@ -905,6 +920,7 @@ impl McpGateway {
                     unavailable_servers: unavailable,
                     skills: skill_infos,
                     deferred_loading: false,
+                    coding_agents: Vec::new(),
                 });
 
                 let merged = MergedCapabilities {
@@ -1035,6 +1051,7 @@ impl McpGateway {
                     unavailable_servers: unavailable,
                     skills: skill_infos,
                     deferred_loading: false,
+                    coding_agents: Vec::new(),
                 });
 
                 let merged = MergedCapabilities {
@@ -1313,6 +1330,7 @@ impl McpGateway {
             unavailable_servers: unavailable,
             skills: skill_infos,
             deferred_loading: deferred_enabled,
+            coding_agents: Vec::new(),
         });
 
         // Store instructions in merged capabilities

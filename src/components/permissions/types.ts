@@ -14,6 +14,11 @@ export interface SkillsPermissions {
   tools: Record<string, PermissionState>
 }
 
+export interface CodingAgentsPermissions {
+  global: PermissionState
+  agents: Record<string, PermissionState>
+}
+
 export interface ModelPermissions {
   global: PermissionState
   providers: Record<string, PermissionState>

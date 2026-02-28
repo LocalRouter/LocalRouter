@@ -9,7 +9,7 @@ import {
   Bug,
   Store,
 } from "lucide-react"
-import { ProvidersIcon, McpIcon, SkillsIcon } from "@/components/icons/category-icons"
+import { ProvidersIcon, McpIcon, SkillsIcon, CodingAgentsIcon } from "@/components/icons/category-icons"
 import { Logo } from "@/components/Logo"
 import { cn } from "@/lib/utils"
 import {
@@ -40,7 +40,7 @@ interface HealthCacheState {
   aggregate_status: AggregateHealthStatus
 }
 
-export type View = 'dashboard' | 'clients' | 'resources' | 'mcp-servers' | 'skills' | 'marketplace' | 'settings' | 'try-it-out' | 'debug'
+export type View = 'dashboard' | 'clients' | 'resources' | 'mcp-servers' | 'skills' | 'coding-agents' | 'marketplace' | 'settings' | 'try-it-out' | 'debug'
 
 interface SidebarProps {
   activeView: View
@@ -62,6 +62,7 @@ const resourceNavItems: NavItem[] = [
   { id: 'resources', icon: ProvidersIcon, label: 'LLM Providers', shortcut: '⌘3' },
   { id: 'mcp-servers', icon: McpIcon, label: 'MCP', shortcut: '⌘4' },
   { id: 'skills', icon: SkillsIcon, label: 'Skills', shortcut: '⌘5' },
+  { id: 'coding-agents', icon: CodingAgentsIcon, label: 'Coding Agents', shortcut: '⌘9' },
 ]
 
 const bottomNavItems: NavItem[] = [
@@ -217,6 +218,10 @@ export function Sidebar({ activeView, onViewChange }: SidebarProps) {
           case '8':
             e.preventDefault()
             onViewChange('settings')
+            break
+          case '9':
+            e.preventDefault()
+            onViewChange('coding-agents')
             break
         }
       }

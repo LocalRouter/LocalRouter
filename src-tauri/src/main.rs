@@ -551,6 +551,19 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                     info!("Marketplace wired to MCP gateway");
                 }
 
+                // Initialize coding agent manager
+                {
+                    let coding_agents_config = config_manager.get().coding_agents.clone();
+                    let coding_agent_manager = Arc::new(
+                        lr_coding_agents::manager::CodingAgentManager::new(coding_agents_config),
+                    );
+                    app_state
+                        .mcp_gateway
+                        .set_coding_agent_support(coding_agent_manager.clone());
+                    app.manage(coding_agent_manager);
+                    info!("Coding agents wired to MCP gateway");
+                }
+
                 // Initialize safety engine for guardrails
                 {
                     let config_snapshot = config_manager.get();
@@ -1542,6 +1555,13 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands_free_tier::reset_provider_free_tier_usage,
             ui::commands_free_tier::set_provider_free_tier_usage,
             ui::commands_free_tier::get_default_free_tier,
+            // Coding agents commands
+            ui::commands_coding_agents::list_coding_agents,
+            ui::commands_coding_agents::set_coding_agent_enabled,
+            ui::commands_coding_agents::update_coding_agent_config,
+            ui::commands_coding_agents::list_coding_sessions,
+            ui::commands_coding_agents::end_coding_session,
+            ui::commands_coding_agents::set_client_coding_agents_permission,
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {

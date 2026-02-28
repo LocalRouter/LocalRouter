@@ -1039,8 +1039,130 @@ export default function Home() {
         </div>
       </section>
 
-      {/* Feature 5: Firewall */}
+      {/* Feature 5: AI Coding Agents via MCP */}
       <section className="border-b py-16 sm:py-24 bg-muted/30">
+        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+          <div className="grid gap-12 lg:grid-cols-2 lg:gap-16 items-center">
+            {/* Visual: Coding Agents Architecture */}
+            <div className="relative order-2 lg:order-1 overflow-x-auto">
+              <div className="rounded-xl border bg-gradient-to-br from-orange-950 to-slate-900 p-6 shadow-2xl min-w-[480px]">
+                {/* Three-column layout: Client → Gateway → Agents */}
+                <div className="flex items-stretch gap-3">
+                  {/* Client */}
+                  <div className="flex flex-col items-center justify-center">
+                    <div className="rounded-lg bg-blue-500/20 border border-blue-500/30 p-3 text-center">
+                      <div className="h-8 w-8 rounded bg-blue-500/30 flex items-center justify-center mx-auto mb-1">
+                        <span className="text-blue-400 text-sm font-bold">{'</>'}</span>
+                      </div>
+                      <div className="text-white text-xs font-medium">Client</div>
+                      <div className="text-blue-400 text-[10px]">MCP App</div>
+                    </div>
+                  </div>
+
+                  {/* Connection */}
+                  <div className="flex flex-col items-center justify-center">
+                    <div className="flex items-center gap-1">
+                      <div className="w-6 h-0.5 bg-slate-500" />
+                      <div className="px-1.5 py-0.5 rounded bg-slate-700 text-slate-400 text-[9px] font-mono">MCP</div>
+                      <div className="w-6 h-0.5 bg-slate-500" />
+                    </div>
+                  </div>
+
+                  {/* Gateway */}
+                  <div className="flex flex-col items-center justify-center">
+                    <div className="rounded-lg bg-orange-500/20 border-2 border-orange-500/50 p-3 text-center">
+                      <Terminal className="h-6 w-6 text-orange-400 mx-auto mb-1" />
+                      <div className="text-white text-xs font-medium">Agents</div>
+                      <div className="text-orange-400 text-[10px]">Gateway</div>
+                    </div>
+                  </div>
+
+                  {/* Arrow */}
+                  <div className="flex flex-col items-center justify-center">
+                    <div className="w-3 h-0.5 bg-orange-600" />
+                  </div>
+
+                  {/* Agent processes */}
+                  <div className="flex flex-col gap-2">
+                    <div className="rounded-lg bg-orange-500/10 border border-orange-500/30 p-2 flex items-center gap-2">
+                      <Terminal className="h-4 w-4 text-orange-400" />
+                      <div>
+                        <div className="text-white text-xs font-medium">Claude Code</div>
+                        <div className="text-orange-400 text-[10px]">Session</div>
+                      </div>
+                    </div>
+                    <div className="rounded-lg bg-orange-500/10 border border-orange-500/30 p-2 flex items-center gap-2">
+                      <Terminal className="h-4 w-4 text-orange-400" />
+                      <div>
+                        <div className="text-white text-xs font-medium">Gemini CLI</div>
+                        <div className="text-orange-400 text-[10px]">Session</div>
+                      </div>
+                    </div>
+                    <div className="rounded-lg bg-orange-500/10 border border-orange-500/30 p-2 flex items-center gap-2">
+                      <Terminal className="h-4 w-4 text-orange-400" />
+                      <div>
+                        <div className="text-white text-xs font-medium">Codex</div>
+                        <div className="text-orange-400 text-[10px]">Session</div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Legend */}
+                <div className="mt-4 pt-3 border-t border-white/10 flex justify-center gap-4">
+                  <div className="flex items-center gap-1.5">
+                    <div className="h-2 w-2 rounded-full bg-orange-500" />
+                    <span className="text-slate-400 text-[10px]">Agent sessions</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <div className="h-2 w-2 rounded-full bg-slate-500" />
+                    <span className="text-slate-400 text-[10px]">MCP transport</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="order-1 lg:order-2">
+              <div className="flex items-center gap-2 mb-4">
+                <Terminal className="h-5 w-5 text-orange-500" />
+                <span className="text-sm font-medium text-orange-500 uppercase tracking-wide">Coding Agents</span>
+              </div>
+              <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">
+                AI Coding Agents via MCP
+              </h2>
+              <p className="mt-4 text-lg text-muted-foreground">
+                Orchestrate AI coding agents as MCP tools. Any MCP client can spawn, interact with, and manage coding sessions across Claude Code, Gemini CLI, Codex, and more.
+              </p>
+              <ul className="mt-8 space-y-4">
+                <li className="flex gap-3">
+                  <Check className="h-5 w-5 shrink-0 text-orange-500 mt-0.5" />
+                  <div>
+                    <span className="font-medium">Multi-agent orchestration</span>
+                    <p className="text-sm text-muted-foreground">10 coding agents supported. Each gets 6 MCP tools for full session lifecycle management</p>
+                  </div>
+                </li>
+                <li className="flex gap-3">
+                  <Check className="h-5 w-5 shrink-0 text-orange-500 mt-0.5" />
+                  <div>
+                    <span className="font-medium">Session-based interaction</span>
+                    <p className="text-sm text-muted-foreground">Long-lived sessions with bidirectional communication. Poll status, send messages, auto-resume on exit</p>
+                  </div>
+                </li>
+                <li className="flex gap-3">
+                  <Check className="h-5 w-5 shrink-0 text-orange-500 mt-0.5" />
+                  <div>
+                    <span className="font-medium">Approval routing</span>
+                    <p className="text-sm text-muted-foreground">Tool and plan approvals forwarded via MCP elicitation or polling. Full control over agent permissions</p>
+                  </div>
+                </li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* Feature 6: Firewall */}
+      <section className="border-b py-16 sm:py-24">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
           <div className="grid gap-12 lg:grid-cols-2 lg:gap-16 items-center">
             {/* Visual: Firewall Architecture */}

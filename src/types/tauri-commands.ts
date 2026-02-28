@@ -56,6 +56,15 @@ export interface SkillsPermissions {
 }
 
 /**
+ * Hierarchical coding agents permission system.
+ * Rust: crates/lr-config/src/types.rs - CodingAgentsPermissions struct
+ */
+export interface CodingAgentsPermissions {
+  global: PermissionState
+  agents: Record<string, PermissionState>
+}
+
+/**
  * Hierarchical model permission system.
  * Rust: crates/lr-config/src/types.rs - ModelPermissions struct
  */
@@ -91,6 +100,7 @@ export interface ClientInfo {
   last_used: string | null
   mcp_permissions: McpPermissions
   skills_permissions: SkillsPermissions
+  coding_agents_permissions: CodingAgentsPermissions
   model_permissions: ModelPermissions
   marketplace_permission: PermissionState
   client_mode: ClientMode
@@ -2217,4 +2227,93 @@ export interface ProviderModelPullProgress {
   status: string
   total: number | null
   completed: number | null
+}
+
+// =============================================================================
+// Coding Agents Types
+// Rust: src-tauri/src/ui/commands_coding_agents.rs
+// =============================================================================
+
+/**
+ * Coding agent type enum.
+ * Rust: crates/lr-config/src/types.rs - CodingAgentType enum
+ */
+export type CodingAgentType =
+  | 'claude_code'
+  | 'gemini_cli'
+  | 'codex'
+  | 'amp'
+  | 'opencode'
+  | 'cursor'
+  | 'qwen_code'
+  | 'copilot'
+  | 'droid'
+  | 'aider'
+
+/**
+ * Coding agent permission mode.
+ * Rust: crates/lr-config/src/types.rs - CodingPermissionMode enum
+ */
+export type CodingPermissionMode = 'auto' | 'supervised' | 'plan'
+
+/**
+ * Coding agent info returned from list_coding_agents.
+ * Rust: src-tauri/src/ui/commands_coding_agents.rs - CodingAgentInfo struct
+ */
+export interface CodingAgentInfo {
+  agentType: CodingAgentType
+  displayName: string
+  toolPrefix: string
+  binaryName: string
+  installed: boolean
+  enabled: boolean
+  workingDirectory: string | null
+  modelId: string | null
+  permissionMode: CodingPermissionMode
+}
+
+/**
+ * Coding session info returned from list_coding_sessions.
+ * Rust: src-tauri/src/ui/commands_coding_agents.rs - CodingSessionInfo struct
+ */
+export interface CodingSessionInfo {
+  sessionId: string
+  agentType: CodingAgentType
+  clientId: string
+  workingDirectory: string
+  displayText: string
+  status: string
+  createdAt: string
+}
+
+// =============================================================================
+// Coding Agents Command Parameters
+// Rust: src-tauri/src/ui/commands_coding_agents.rs
+// =============================================================================
+
+/** Params for set_coding_agent_enabled */
+export interface SetCodingAgentEnabledParams {
+  agentType: CodingAgentType
+  enabled: boolean
+}
+
+/** Params for update_coding_agent_config */
+export interface UpdateCodingAgentConfigParams {
+  agentType: CodingAgentType
+  workingDirectory?: string | null
+  modelId?: string | null
+  permissionMode?: CodingPermissionMode | null
+}
+
+/** Params for end_coding_session */
+export interface EndCodingSessionParams {
+  sessionId: string
+}
+
+/** Params for set_client_coding_agents_permission */
+export interface SetClientCodingAgentsPermissionParams {
+  clientId: string
+  level: 'global' | 'agent'
+  key?: string | null
+  state: PermissionState
 }
