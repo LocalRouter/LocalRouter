@@ -169,6 +169,11 @@ export function AppShell({
     onViewChange('mcp-servers', `add/${templateId}`)
   }
 
+  const handleAddClient = (templateId: string) => {
+    // Navigate to clients panel with the wizard open for this template
+    onViewChange('clients', `add/${templateId}`)
+  }
+
   return (
     <div className="flex h-full w-full bg-background overflow-hidden">
       {/* Sidebar */}
@@ -192,6 +197,7 @@ export function AppShell({
         onViewChange={handleViewChange}
         onAddProvider={handleAddProvider}
         onAddMcpServer={handleAddMcpServer}
+        onAddClient={handleAddClient}
         clients={clients}
         providers={providers}
         providerTypes={providerTypes}

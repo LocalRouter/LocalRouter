@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
 import { Plus, Users } from "lucide-react"
@@ -39,6 +39,7 @@ export function ClientsView({ activeSubTab, onTabChange }: ClientsViewProps) {
   const [clients, setClients] = useState<Client[]>([])
   const [loading, setLoading] = useState(true)
   const [wizardOpen, setWizardOpen] = useState(false)
+  const [wizardTemplateId, setWizardTemplateId] = useState<string | null>(null)
   const [search, setSearch] = useState("")
 
   useEffect(() => {
@@ -79,10 +80,26 @@ export function ClientsView({ activeSubTab, onTabChange }: ClientsViewProps) {
     onTabChange("clients", `${clientId}|config`)
   }
 
+  // Handle add/<templateId> navigation from command palette
+  const addTemplatePrefix = "add/"
+  const isAddNavigation = activeSubTab?.startsWith(addTemplatePrefix)
+  const addTemplateIdFromNav = isAddNavigation ? activeSubTab!.slice(addTemplatePrefix.length) : null
+  const handledAddRef = useRef<string | null>(null)
+
+  useEffect(() => {
+    if (addTemplateIdFromNav && handledAddRef.current !== addTemplateIdFromNav) {
+      handledAddRef.current = addTemplateIdFromNav
+      setWizardTemplateId(addTemplateIdFromNav)
+      setWizardOpen(true)
+      // Clear the add/ subTab so it doesn't re-trigger
+      onTabChange("clients", null)
+    }
+  }, [addTemplateIdFromNav])
+
   // Parse subTab to get client ID and optional inner tab
   // Format: "clientId" or "clientId|tab" or "clientId|tab|mode"
   const parseSubTab = (subTab: string | null) => {
-    if (!subTab) return { clientId: null, innerTab: null, mode: null }
+    if (!subTab || subTab.startsWith(addTemplatePrefix)) return { clientId: null, innerTab: null, mode: null }
     const parts = subTab.split("|")
     return {
       clientId: parts[0] || null,
@@ -190,8 +207,15 @@ export function ClientsView({ activeSubTab, onTabChange }: ClientsViewProps) {
 
       <ClientCreationWizard
         open={wizardOpen}
-        onOpenChange={setWizardOpen}
+        onOpenChange={(open) => {
+          setWizardOpen(open)
+          if (!open) {
+            setWizardTemplateId(null)
+            handledAddRef.current = null
+          }
+        }}
         onComplete={handleWizardComplete}
+        initialTemplateId={wizardTemplateId}
       />
     </div>
   )

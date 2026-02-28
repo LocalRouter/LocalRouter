@@ -13,7 +13,7 @@
  * 7. Credentials - View and copy the generated credentials
  */
 
-import { useState, useMemo } from "react"
+import { useState, useMemo, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
 import { ChevronLeft, ChevronRight, Loader2 } from "lucide-react"
@@ -34,7 +34,7 @@ import { StepModels } from "./steps/StepModels"
 import { StepMcp } from "./steps/StepMcp"
 import { StepSkills } from "./steps/StepSkills"
 import { StepCredentials } from "./steps/StepCredentials"
-import type { ClientTemplate } from "@/components/client/ClientTemplates"
+import { CLIENT_TEMPLATES, type ClientTemplate } from "@/components/client/ClientTemplates"
 import type { ClientMode, SetClientModeParams, SetClientTemplateParams } from "@/types/tauri-commands"
 import type { McpPermissions, SkillsPermissions, ModelPermissions } from "@/components/permissions/types"
 
@@ -98,6 +98,8 @@ interface ClientCreationWizardProps {
   onComplete: (clientId: string) => void
   /** Show welcome step on first launch */
   showWelcome?: boolean
+  /** Pre-select a template by ID and skip the template step */
+  initialTemplateId?: string | null
 }
 
 interface ClientInfo {
@@ -141,10 +143,29 @@ export function ClientCreationWizard({
   onOpenChange,
   onComplete,
   showWelcome = false,
+  initialTemplateId,
 }: ClientCreationWizardProps) {
   const [currentStep, setCurrentStep] = useState(0)
   const [creating, setCreating] = useState(false)
   const [state, setState] = useState<WizardState>(INITIAL_STATE)
+
+  // Pre-select template when wizard opens with initialTemplateId
+  useEffect(() => {
+    if (open && initialTemplateId) {
+      const template = CLIENT_TEMPLATES.find(t => t.id === initialTemplateId)
+      if (template) {
+        const isCustom = template.id === "custom"
+        setState(prev => ({
+          ...prev,
+          selectedTemplate: template,
+          clientMode: isCustom ? "both" : template.defaultMode,
+          clientName: prev.clientName || (isCustom ? "" : template.name),
+        }))
+        // Skip to mode step (index 0 if no welcome, 1 if welcome)
+        setCurrentStep(showWelcome ? 2 : 1)
+      }
+    }
+  }, [open, initialTemplateId])
 
   // Build visible steps dynamically based on state
   const visibleSteps = useMemo<StepDef[]>(() => {

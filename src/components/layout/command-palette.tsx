@@ -27,6 +27,7 @@ import {
 } from "@/components/ui/command"
 import type { View } from "./sidebar"
 import { MCP_SERVER_TEMPLATES } from "@/components/mcp/McpServerTemplates"
+import { CLIENT_TEMPLATES } from "@/components/client/ClientTemplates"
 
 interface ProviderType {
   provider_type: string
@@ -41,6 +42,7 @@ interface CommandPaletteProps {
   onViewChange: (view: View, subTab?: string) => void
   onAddProvider?: (providerType: string) => void
   onAddMcpServer?: (templateId: string) => void
+  onAddClient?: (templateId: string) => void
   // Data for search
   clients?: Array<{ id: string; name: string; client_id: string }>
   providers?: Array<{ instance_name: string; provider_type: string }>
@@ -56,6 +58,7 @@ export function CommandPalette({
   onViewChange,
   onAddProvider,
   onAddMcpServer,
+  onAddClient,
   clients = [],
   providers = [],
   providerTypes = [],
@@ -214,7 +217,7 @@ export function CommandPalette({
           <>
             <CommandSeparator />
             <CommandGroup heading="Clients">
-              {clients.slice(0, 5).map((client) => (
+              {clients.map((client) => (
                 <CommandItem
                   key={client.id}
                   onSelect={() =>
@@ -237,7 +240,7 @@ export function CommandPalette({
           <>
             <CommandSeparator />
             <CommandGroup heading="Providers">
-              {providers.slice(0, 5).map((provider) => (
+              {providers.map((provider) => (
                 <CommandItem
                   key={provider.instance_name}
                   onSelect={() =>
@@ -262,7 +265,7 @@ export function CommandPalette({
           <>
             <CommandSeparator />
             <CommandGroup heading="Models">
-              {models.slice(0, 8).map((model) => (
+              {models.map((model) => (
                 <CommandItem
                   key={`${model.provider}/${model.id}`}
                   onSelect={() =>
@@ -287,7 +290,7 @@ export function CommandPalette({
           <>
             <CommandSeparator />
             <CommandGroup heading="MCP">
-              {mcpServers.slice(0, 5).map((server) => (
+              {mcpServers.map((server) => (
                 <CommandItem
                   key={server.id}
                   onSelect={() =>
@@ -329,12 +332,35 @@ export function CommandPalette({
           </>
         )} */}
 
+        {/* Client Templates (Add Client) */}
+        {onAddClient && (
+          <>
+            <CommandSeparator />
+            <CommandGroup heading="Add Client">
+              {CLIENT_TEMPLATES.map((template) => (
+                <CommandItem
+                  key={template.id}
+                  onSelect={() =>
+                    runCommand(() => onAddClient(template.id))
+                  }
+                >
+                  <Plus className="mr-2 h-4 w-4" />
+                  <span>{template.name}</span>
+                  <span className="ml-2 text-xs text-muted-foreground">
+                    {template.category.replace(/_/g, ' ')}
+                  </span>
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </>
+        )}
+
         {/* Provider Templates (Add Provider) */}
         {providerTypes.length > 0 && onAddProvider && (
           <>
             <CommandSeparator />
             <CommandGroup heading="Add LLM Provider">
-              {providerTypes.slice(0, 8).map((type) => (
+              {providerTypes.map((type) => (
                 <CommandItem
                   key={type.provider_type}
                   onSelect={() =>
@@ -357,7 +383,7 @@ export function CommandPalette({
           <>
             <CommandSeparator />
             <CommandGroup heading="Add MCP">
-              {MCP_SERVER_TEMPLATES.slice(0, 8).map((template) => (
+              {MCP_SERVER_TEMPLATES.map((template) => (
                 <CommandItem
                   key={template.id}
                   onSelect={() =>
