@@ -625,6 +625,487 @@ mod model_permissions {
 }
 
 // =============================================================================
+// Child Allows/Asks Override Parent Off Tests
+// =============================================================================
+// These tests verify that a more specific (child) permission overrides
+// a less specific (parent) "Off" permission, which is the key inheritance
+// guarantee of the permission system.
+
+mod child_overrides_parent {
+    use super::*;
+
+    // ---- MCP: Tool overrides ----
+
+    #[test]
+    fn test_mcp_tool_allow_overrides_server_and_global_off() {
+        let mut servers = HashMap::new();
+        servers.insert("server-1".to_string(), PermissionState::Off);
+
+        let mut tools = HashMap::new();
+        tools.insert("server-1__my-tool".to_string(), PermissionState::Allow);
+
+        let perms = McpPermissions {
+            global: PermissionState::Off,
+            servers,
+            tools,
+            resources: HashMap::new(),
+            prompts: HashMap::new(),
+        };
+
+        assert_eq!(perms.resolve_server("server-1"), PermissionState::Off);
+        assert_eq!(
+            perms.resolve_tool("server-1", "my-tool"),
+            PermissionState::Allow
+        );
+        // Other tools still inherit Off
+        assert_eq!(
+            perms.resolve_tool("server-1", "other-tool"),
+            PermissionState::Off
+        );
+    }
+
+    #[test]
+    fn test_mcp_tool_ask_overrides_server_and_global_off() {
+        let mut servers = HashMap::new();
+        servers.insert("server-1".to_string(), PermissionState::Off);
+
+        let mut tools = HashMap::new();
+        tools.insert("server-1__my-tool".to_string(), PermissionState::Ask);
+
+        let perms = McpPermissions {
+            global: PermissionState::Off,
+            servers,
+            tools,
+            resources: HashMap::new(),
+            prompts: HashMap::new(),
+        };
+
+        assert_eq!(
+            perms.resolve_tool("server-1", "my-tool"),
+            PermissionState::Ask
+        );
+    }
+
+    #[test]
+    fn test_mcp_resource_allow_overrides_server_and_global_off() {
+        let mut servers = HashMap::new();
+        servers.insert("server-1".to_string(), PermissionState::Off);
+
+        let mut resources = HashMap::new();
+        resources.insert(
+            "server-1__file:///allowed.txt".to_string(),
+            PermissionState::Allow,
+        );
+
+        let perms = McpPermissions {
+            global: PermissionState::Off,
+            servers,
+            tools: HashMap::new(),
+            resources,
+            prompts: HashMap::new(),
+        };
+
+        assert_eq!(
+            perms.resolve_resource("server-1", "file:///allowed.txt"),
+            PermissionState::Allow
+        );
+        assert_eq!(
+            perms.resolve_resource("server-1", "file:///other.txt"),
+            PermissionState::Off
+        );
+    }
+
+    #[test]
+    fn test_mcp_prompt_allow_overrides_server_and_global_off() {
+        let mut servers = HashMap::new();
+        servers.insert("server-1".to_string(), PermissionState::Off);
+
+        let mut prompts = HashMap::new();
+        prompts.insert(
+            "server-1__allowed-prompt".to_string(),
+            PermissionState::Allow,
+        );
+
+        let perms = McpPermissions {
+            global: PermissionState::Off,
+            servers,
+            tools: HashMap::new(),
+            resources: HashMap::new(),
+            prompts,
+        };
+
+        assert_eq!(
+            perms.resolve_prompt("server-1", "allowed-prompt"),
+            PermissionState::Allow
+        );
+        assert_eq!(
+            perms.resolve_prompt("server-1", "other-prompt"),
+            PermissionState::Off
+        );
+    }
+
+    #[test]
+    fn test_mcp_tool_allow_overrides_global_off_no_server_override() {
+        // Global=Off, no server-level override, tool=Allow
+        let mut tools = HashMap::new();
+        tools.insert("server-1__my-tool".to_string(), PermissionState::Allow);
+
+        let perms = McpPermissions {
+            global: PermissionState::Off,
+            servers: HashMap::new(),
+            tools,
+            resources: HashMap::new(),
+            prompts: HashMap::new(),
+        };
+
+        // Server inherits Off from global
+        assert_eq!(perms.resolve_server("server-1"), PermissionState::Off);
+        // But tool has explicit Allow
+        assert_eq!(
+            perms.resolve_tool("server-1", "my-tool"),
+            PermissionState::Allow
+        );
+    }
+
+    // ---- Skills: Tool overrides ----
+
+    #[test]
+    fn test_skills_tool_allow_overrides_skill_and_global_off() {
+        let mut skills = HashMap::new();
+        skills.insert("filesystem".to_string(), PermissionState::Off);
+
+        let mut tools = HashMap::new();
+        tools.insert("filesystem__read_file".to_string(), PermissionState::Allow);
+
+        let perms = SkillsPermissions {
+            global: PermissionState::Off,
+            skills,
+            tools,
+        };
+
+        assert_eq!(perms.resolve_skill("filesystem"), PermissionState::Off);
+        assert_eq!(
+            perms.resolve_tool("filesystem", "read_file"),
+            PermissionState::Allow
+        );
+        assert_eq!(
+            perms.resolve_tool("filesystem", "write_file"),
+            PermissionState::Off
+        );
+    }
+
+    #[test]
+    fn test_skills_tool_ask_overrides_skill_and_global_off() {
+        let mut skills = HashMap::new();
+        skills.insert("filesystem".to_string(), PermissionState::Off);
+
+        let mut tools = HashMap::new();
+        tools.insert("filesystem__read_file".to_string(), PermissionState::Ask);
+
+        let perms = SkillsPermissions {
+            global: PermissionState::Off,
+            skills,
+            tools,
+        };
+
+        assert_eq!(
+            perms.resolve_tool("filesystem", "read_file"),
+            PermissionState::Ask
+        );
+    }
+
+    #[test]
+    fn test_skills_tool_allow_overrides_global_off_no_skill_override() {
+        let mut tools = HashMap::new();
+        tools.insert("filesystem__read_file".to_string(), PermissionState::Allow);
+
+        let perms = SkillsPermissions {
+            global: PermissionState::Off,
+            skills: HashMap::new(),
+            tools,
+        };
+
+        assert_eq!(perms.resolve_skill("filesystem"), PermissionState::Off);
+        assert_eq!(
+            perms.resolve_tool("filesystem", "read_file"),
+            PermissionState::Allow
+        );
+    }
+
+    // ---- Models: Model overrides ----
+
+    #[test]
+    fn test_model_allow_overrides_provider_and_global_off() {
+        let mut providers = HashMap::new();
+        providers.insert("Ollama".to_string(), PermissionState::Off);
+
+        let mut models = HashMap::new();
+        models.insert("Ollama__llama3.2:1b".to_string(), PermissionState::Allow);
+
+        let perms = ModelPermissions {
+            global: PermissionState::Off,
+            providers,
+            models,
+        };
+
+        assert_eq!(perms.resolve_provider("Ollama"), PermissionState::Off);
+        assert_eq!(
+            perms.resolve_model("Ollama", "llama3.2:1b"),
+            PermissionState::Allow
+        );
+        assert_eq!(
+            perms.resolve_model("Ollama", "llama3.2:3b"),
+            PermissionState::Off
+        );
+    }
+
+    #[test]
+    fn test_model_ask_overrides_provider_and_global_off() {
+        let mut providers = HashMap::new();
+        providers.insert("Ollama".to_string(), PermissionState::Off);
+
+        let mut models = HashMap::new();
+        models.insert("Ollama__llama3.2:1b".to_string(), PermissionState::Ask);
+
+        let perms = ModelPermissions {
+            global: PermissionState::Off,
+            providers,
+            models,
+        };
+
+        assert_eq!(
+            perms.resolve_model("Ollama", "llama3.2:1b"),
+            PermissionState::Ask
+        );
+    }
+
+    #[test]
+    fn test_model_allow_overrides_global_off_no_provider_override() {
+        // Global=Off, no provider-level override, model=Allow
+        let mut models = HashMap::new();
+        models.insert("Ollama__llama3.2:1b".to_string(), PermissionState::Allow);
+
+        let perms = ModelPermissions {
+            global: PermissionState::Off,
+            providers: HashMap::new(),
+            models,
+        };
+
+        assert_eq!(perms.resolve_provider("Ollama"), PermissionState::Off);
+        assert_eq!(
+            perms.resolve_model("Ollama", "llama3.2:1b"),
+            PermissionState::Allow
+        );
+    }
+
+    #[test]
+    fn test_model_with_subscription_free_tier_provider() {
+        // Simulates the exact bug scenario: same model in two providers,
+        // one provider Off, the other has model=Allow
+        let mut providers = HashMap::new();
+        providers.insert("Ollama".to_string(), PermissionState::Off);
+        providers.insert(
+            "Ollama [Subscription Free Tier]".to_string(),
+            PermissionState::Off,
+        );
+
+        let mut models = HashMap::new();
+        models.insert(
+            "Ollama [Subscription Free Tier]__llama3.2:1b".to_string(),
+            PermissionState::Allow,
+        );
+
+        let perms = ModelPermissions {
+            global: PermissionState::Off,
+            providers,
+            models,
+        };
+
+        // Wrong provider -> Off (no model-level override for "Ollama__llama3.2:1b")
+        assert_eq!(
+            perms.resolve_model("Ollama", "llama3.2:1b"),
+            PermissionState::Off
+        );
+
+        // Correct provider -> Allow (model-level override exists)
+        assert_eq!(
+            perms.resolve_model("Ollama [Subscription Free Tier]", "llama3.2:1b"),
+            PermissionState::Allow
+        );
+    }
+}
+
+// =============================================================================
+// has_any_enabled_for_* with child overrides
+// =============================================================================
+
+mod has_any_enabled_child_overrides {
+    use super::*;
+
+    #[test]
+    fn test_mcp_has_any_enabled_for_server_with_tool_allow() {
+        let mut servers = HashMap::new();
+        servers.insert("server-1".to_string(), PermissionState::Off);
+
+        let mut tools = HashMap::new();
+        tools.insert("server-1__my-tool".to_string(), PermissionState::Allow);
+
+        let perms = McpPermissions {
+            global: PermissionState::Off,
+            servers,
+            tools,
+            resources: HashMap::new(),
+            prompts: HashMap::new(),
+        };
+
+        // Server is Off, but a tool is Allow → should return true
+        assert!(perms.has_any_enabled_for_server("server-1"));
+        // Other server has nothing enabled
+        assert!(!perms.has_any_enabled_for_server("server-2"));
+    }
+
+    #[test]
+    fn test_mcp_has_any_enabled_for_server_with_resource_allow() {
+        let mut servers = HashMap::new();
+        servers.insert("server-1".to_string(), PermissionState::Off);
+
+        let mut resources = HashMap::new();
+        resources.insert(
+            "server-1__file:///data.txt".to_string(),
+            PermissionState::Allow,
+        );
+
+        let perms = McpPermissions {
+            global: PermissionState::Off,
+            servers,
+            tools: HashMap::new(),
+            resources,
+            prompts: HashMap::new(),
+        };
+
+        assert!(perms.has_any_enabled_for_server("server-1"));
+    }
+
+    #[test]
+    fn test_mcp_has_any_enabled_for_server_with_prompt_ask() {
+        let mut servers = HashMap::new();
+        servers.insert("server-1".to_string(), PermissionState::Off);
+
+        let mut prompts = HashMap::new();
+        prompts.insert("server-1__my-prompt".to_string(), PermissionState::Ask);
+
+        let perms = McpPermissions {
+            global: PermissionState::Off,
+            servers,
+            tools: HashMap::new(),
+            resources: HashMap::new(),
+            prompts,
+        };
+
+        assert!(perms.has_any_enabled_for_server("server-1"));
+    }
+
+    #[test]
+    fn test_skills_has_any_enabled_for_skill_with_tool_allow() {
+        let mut skills = HashMap::new();
+        skills.insert("filesystem".to_string(), PermissionState::Off);
+
+        let mut tools = HashMap::new();
+        tools.insert("filesystem__read_file".to_string(), PermissionState::Allow);
+
+        let perms = SkillsPermissions {
+            global: PermissionState::Off,
+            skills,
+            tools,
+        };
+
+        // Skill is Off, but tool is Allow → should return true
+        assert!(perms.has_any_enabled_for_skill("filesystem"));
+        assert!(!perms.has_any_enabled_for_skill("http"));
+    }
+
+    #[test]
+    fn test_skills_has_any_enabled_for_skill_with_tool_ask() {
+        let mut skills = HashMap::new();
+        skills.insert("filesystem".to_string(), PermissionState::Off);
+
+        let mut tools = HashMap::new();
+        tools.insert("filesystem__read_file".to_string(), PermissionState::Ask);
+
+        let perms = SkillsPermissions {
+            global: PermissionState::Off,
+            skills,
+            tools,
+        };
+
+        assert!(perms.has_any_enabled_for_skill("filesystem"));
+    }
+
+    #[test]
+    fn test_model_has_any_enabled_for_provider_with_model_allow() {
+        let mut providers = HashMap::new();
+        providers.insert("Ollama".to_string(), PermissionState::Off);
+
+        let mut models = HashMap::new();
+        models.insert("Ollama__llama3.2:1b".to_string(), PermissionState::Allow);
+
+        let perms = ModelPermissions {
+            global: PermissionState::Off,
+            providers,
+            models,
+        };
+
+        // Provider is Off, but model is Allow → should return true
+        assert!(perms.has_any_enabled_for_provider("Ollama"));
+        assert!(!perms.has_any_enabled_for_provider("OpenAI"));
+    }
+
+    #[test]
+    fn test_model_has_any_enabled_for_provider_with_model_ask() {
+        let mut providers = HashMap::new();
+        providers.insert("Ollama".to_string(), PermissionState::Off);
+
+        let mut models = HashMap::new();
+        models.insert("Ollama__llama3.2:1b".to_string(), PermissionState::Ask);
+
+        let perms = ModelPermissions {
+            global: PermissionState::Off,
+            providers,
+            models,
+        };
+
+        assert!(perms.has_any_enabled_for_provider("Ollama"));
+    }
+
+    #[test]
+    fn test_model_has_any_enabled_with_subscription_provider() {
+        let mut providers = HashMap::new();
+        providers.insert("Ollama".to_string(), PermissionState::Off);
+        providers.insert(
+            "Ollama [Subscription Free Tier]".to_string(),
+            PermissionState::Off,
+        );
+
+        let mut models = HashMap::new();
+        models.insert(
+            "Ollama [Subscription Free Tier]__llama3.2:1b".to_string(),
+            PermissionState::Allow,
+        );
+
+        let perms = ModelPermissions {
+            global: PermissionState::Off,
+            providers,
+            models,
+        };
+
+        assert!(!perms.has_any_enabled_for_provider("Ollama"));
+        assert!(perms.has_any_enabled_for_provider(
+            "Ollama [Subscription Free Tier]"
+        ));
+    }
+}
+
+// =============================================================================
 // Permission State Tests
 // =============================================================================
 

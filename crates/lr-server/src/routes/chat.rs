@@ -467,9 +467,22 @@ async fn validate_client_provider_access(
                 ApiErrorResponse::internal_error(format!("Failed to list models: {}", e))
             })?;
 
-        let matching_model = all_models
+        // Collect all matching models to handle duplicates across providers
+        let matching_models: Vec<_> = all_models
             .iter()
-            .find(|m| m.id.eq_ignore_ascii_case(&request.model))
+            .filter(|m| m.id.eq_ignore_ascii_case(&request.model))
+            .collect();
+
+        // Prefer a model from a provider where the client has permission
+        let matching_model = matching_models
+            .iter()
+            .find(|m| {
+                client
+                    .model_permissions
+                    .resolve_model(&m.provider, &m.id)
+                    .is_enabled()
+            })
+            .or(matching_models.first())
             .ok_or_else(|| {
                 ApiErrorResponse::bad_request(format!("Model not found: {}", request.model))
                     .with_param("model")
@@ -550,9 +563,22 @@ async fn check_model_firewall_permission(
                 ApiErrorResponse::internal_error(format!("Failed to list models: {}", e))
             })?;
 
-        let matching_model = all_models
+        // Collect all matching models to handle duplicates across providers
+        let matching_models: Vec<_> = all_models
             .iter()
-            .find(|m| m.id.eq_ignore_ascii_case(&request.model))
+            .filter(|m| m.id.eq_ignore_ascii_case(&request.model))
+            .collect();
+
+        // Prefer a model from a provider where the client has permission
+        let matching_model = matching_models
+            .iter()
+            .find(|m| {
+                client
+                    .model_permissions
+                    .resolve_model(&m.provider, &m.id)
+                    .is_enabled()
+            })
+            .or(matching_models.first())
             .ok_or_else(|| {
                 ApiErrorResponse::bad_request(format!("Model not found: {}", request.model))
                     .with_param("model")
