@@ -12,7 +12,8 @@ use tracing::{debug, info};
 /// Manages all coding agent sessions
 pub struct CodingAgentManager {
     /// All sessions, keyed by session ID
-    sessions: DashMap<SessionId, Arc<Mutex<CodingSession>>>,
+    /// Value: (client_id, session) — client_id stored outside Mutex for lockless ownership checks
+    sessions: DashMap<SessionId, (String, Arc<Mutex<CodingSession>>)>,
     /// Global config
     config: CodingAgentsConfig,
 }
@@ -152,7 +153,8 @@ impl CodingAgentManager {
         session.process = Some(process);
 
         let session_arc = Arc::new(Mutex::new(session));
-        self.sessions.insert(session_id.clone(), session_arc.clone());
+        self.sessions
+            .insert(session_id.clone(), (client_id.to_string(), session_arc.clone()));
 
         // Start background stdout reader
         spawn_output_reader(session_arc);
@@ -189,21 +191,25 @@ impl CodingAgentManager {
         match session.status {
             SessionStatus::Active | SessionStatus::AwaitingInput => {
                 // Process alive: write to stdin
-                if let Some(ref mut process) = session.process {
-                    if let Some(ref mut stdin) = process.stdin {
-                        let msg = format!("{}\n", message);
-                        stdin
-                            .write_all(msg.as_bytes())
-                            .await
-                            .map_err(|e| CodingAgentError::IoError(e.to_string()))?;
-                        stdin
-                            .flush()
-                            .await
-                            .map_err(|e| CodingAgentError::IoError(e.to_string()))?;
-                        session.status = SessionStatus::Active;
-                        session.last_activity = chrono::Utc::now();
-                    }
-                }
+                let process = session
+                    .process
+                    .as_mut()
+                    .ok_or_else(|| CodingAgentError::IoError("No process handle".to_string()))?;
+                let stdin = process
+                    .stdin
+                    .as_mut()
+                    .ok_or_else(|| CodingAgentError::IoError("Process stdin not available".to_string()))?;
+                let msg = format!("{}\n", message);
+                stdin
+                    .write_all(msg.as_bytes())
+                    .await
+                    .map_err(|e| CodingAgentError::IoError(e.to_string()))?;
+                stdin
+                    .flush()
+                    .await
+                    .map_err(|e| CodingAgentError::IoError(e.to_string()))?;
+                session.status = SessionStatus::Active;
+                session.last_activity = chrono::Utc::now();
             }
             SessionStatus::Done | SessionStatus::Error | SessionStatus::Interrupted => {
                 // Process exited: auto-resume via spawn_follow_up
@@ -232,7 +238,7 @@ impl CodingAgentManager {
                 drop(session);
 
                 let session_arc2 = self.sessions.get(&session_id_clone)
-                    .map(|r| r.value().clone())
+                    .map(|r| r.value().1.clone())
                     .ok_or(CodingAgentError::SessionNotFound(session_id_clone))?;
                 spawn_output_reader(session_arc2);
 
@@ -374,11 +380,16 @@ impl CodingAgentManager {
         let limit = limit.unwrap_or(50);
         let mut summaries = Vec::new();
 
-        for entry in self.sessions.iter() {
-            let session = entry.value().lock().await;
-            if session.client_id != client_id {
-                continue;
-            }
+        // Pre-filter by client_id without locking the Mutex
+        let matching_sessions: Vec<_> = self
+            .sessions
+            .iter()
+            .filter(|entry| entry.value().0 == client_id)
+            .map(|entry| entry.value().1.clone())
+            .collect();
+
+        for session_arc in matching_sessions {
+            let session = session_arc.lock().await;
             if let Some(at) = agent_type {
                 if session.agent_type != at {
                     continue;
@@ -403,8 +414,14 @@ impl CodingAgentManager {
     /// List all sessions (admin)
     pub async fn list_all_sessions(&self) -> Vec<SessionSummary> {
         let mut summaries = Vec::new();
-        for entry in self.sessions.iter() {
-            let session = entry.value().lock().await;
+        let all_sessions: Vec<_> = self
+            .sessions
+            .iter()
+            .map(|entry| entry.value().1.clone())
+            .collect();
+
+        for session_arc in all_sessions {
+            let session = session_arc.lock().await;
             summaries.push(SessionSummary {
                 session_id: session.id.clone(),
                 working_directory: session.working_directory.to_string_lossy().to_string(),
@@ -419,7 +436,7 @@ impl CodingAgentManager {
 
     /// End a session (admin)
     pub async fn end_session(&self, session_id: &str) -> Result<(), CodingAgentError> {
-        if let Some((_, session_arc)) = self.sessions.remove(session_id) {
+        if let Some((_, (_, session_arc))) = self.sessions.remove(session_id) {
             let mut session = session_arc.lock().await;
             if let Some(ref process) = session.process {
                 process.cancel.cancel();
@@ -434,21 +451,25 @@ impl CodingAgentManager {
         }
     }
 
-    /// Get a session, validating client ownership
+    /// Get a session, validating client ownership.
+    /// Client ownership is checked against the client_id stored alongside the session
+    /// in the DashMap (outside the Mutex), so no lock is needed for validation.
     fn get_session(
         &self,
         session_id: &str,
-        _client_id: &str,
+        client_id: &str,
     ) -> Result<Arc<Mutex<CodingSession>>, CodingAgentError> {
         let entry = self
             .sessions
             .get(session_id)
             .ok_or_else(|| CodingAgentError::SessionNotFound(session_id.to_string()))?;
 
-        // We need to check client_id but session is behind Mutex
-        // Clone the Arc and check after acquiring lock would be a deadlock risk
-        // Instead, store client_id alongside the session for quick validation
-        Ok(entry.value().clone())
+        let (owner, session_arc) = entry.value();
+        if owner != client_id {
+            return Err(CodingAgentError::ClientMismatch);
+        }
+
+        Ok(session_arc.clone())
     }
 }
 
@@ -640,10 +661,11 @@ fn spawn_output_reader(session: Arc<Mutex<CodingSession>>) {
 
 fn truncate_prompt(prompt: &str, max_len: usize) -> String {
     let first_line = prompt.lines().next().unwrap_or(prompt);
-    if first_line.len() <= max_len {
+    if first_line.chars().count() <= max_len {
         first_line.to_string()
     } else {
-        format!("{}...", &first_line[..max_len - 3])
+        let truncated: String = first_line.chars().take(max_len.saturating_sub(3)).collect();
+        format!("{}...", truncated)
     }
 }
 
@@ -684,12 +706,39 @@ impl CodingAgentError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lr_config::{CodingAgentConfig, CodingAgentsConfig};
+
+    fn test_config() -> CodingAgentsConfig {
+        CodingAgentsConfig {
+            agents: vec![
+                CodingAgentConfig {
+                    agent_type: CodingAgentType::ClaudeCode,
+                    enabled: true,
+                    working_directory: Some("/tmp/test".to_string()),
+                    model_id: Some("claude-3-opus".to_string()),
+                    permission_mode: CodingPermissionMode::Supervised,
+                    env: Default::default(),
+                    binary_path: None,
+                },
+                CodingAgentConfig {
+                    agent_type: CodingAgentType::GeminiCli,
+                    enabled: false,
+                    working_directory: None,
+                    model_id: None,
+                    permission_mode: CodingPermissionMode::Auto,
+                    env: Default::default(),
+                    binary_path: None,
+                },
+            ],
+            default_working_directory: Some("/tmp/default".to_string()),
+            max_concurrent_sessions: 5,
+            output_buffer_size: 100,
+        }
+    }
 
     #[test]
     fn test_detect_installed_agents() {
-        // Just verify it doesn't panic
         let agents = CodingAgentManager::detect_installed_agents();
-        // We can't assert specific agents are installed in CI
         assert!(agents.len() <= CodingAgentType::all().len());
     }
 
@@ -704,5 +753,568 @@ mod tests {
             truncate_prompt("line1\nline2\nline3", 80),
             "line1"
         );
+    }
+
+    #[test]
+    fn test_truncate_prompt_multibyte_utf8() {
+        // Should not panic on multi-byte UTF-8 characters
+        let emoji_prompt = "🚀🔥💻 This is a prompt with emojis that is quite long";
+        let result = truncate_prompt(emoji_prompt, 10);
+        assert!(result.ends_with("..."));
+        // Should contain valid UTF-8
+        assert!(result.chars().count() <= 10);
+    }
+
+    #[test]
+    fn test_truncate_prompt_exact_boundary() {
+        assert_eq!(truncate_prompt("12345", 5), "12345");
+        assert_eq!(truncate_prompt("123456", 5), "12...");
+    }
+
+    #[test]
+    fn test_truncate_prompt_cjk_characters() {
+        let cjk = "这是一个很长的中文提示符号";
+        let result = truncate_prompt(cjk, 8);
+        assert!(result.ends_with("..."));
+        assert!(result.chars().count() <= 8);
+    }
+
+    #[test]
+    fn test_manager_new() {
+        let config = test_config();
+        let manager = CodingAgentManager::new(config);
+        assert_eq!(manager.config().max_concurrent_sessions, 5);
+        assert_eq!(manager.config().output_buffer_size, 100);
+    }
+
+    #[test]
+    fn test_is_agent_enabled() {
+        let config = test_config();
+        let manager = CodingAgentManager::new(config);
+        assert!(manager.is_agent_enabled(CodingAgentType::ClaudeCode));
+        assert!(!manager.is_agent_enabled(CodingAgentType::GeminiCli));
+        assert!(!manager.is_agent_enabled(CodingAgentType::Codex)); // not configured at all
+    }
+
+    #[test]
+    fn test_enabled_agents() {
+        let config = test_config();
+        let manager = CodingAgentManager::new(config);
+        let enabled = manager.enabled_agents();
+        assert_eq!(enabled.len(), 1);
+        assert_eq!(enabled[0], CodingAgentType::ClaudeCode);
+    }
+
+    #[test]
+    fn test_agent_config() {
+        let config = test_config();
+        let manager = CodingAgentManager::new(config);
+
+        let cc_config = manager.agent_config(CodingAgentType::ClaudeCode);
+        assert!(cc_config.is_some());
+        let cc = cc_config.unwrap();
+        assert_eq!(cc.model_id, Some("claude-3-opus".to_string()));
+        assert_eq!(cc.working_directory, Some("/tmp/test".to_string()));
+
+        let codex_config = manager.agent_config(CodingAgentType::Codex);
+        assert!(codex_config.is_none());
+    }
+
+    #[test]
+    fn test_update_config() {
+        let config = test_config();
+        let mut manager = CodingAgentManager::new(config);
+        assert_eq!(manager.config().max_concurrent_sessions, 5);
+
+        let mut new_config = test_config();
+        new_config.max_concurrent_sessions = 20;
+        manager.update_config(new_config);
+        assert_eq!(manager.config().max_concurrent_sessions, 20);
+    }
+
+    #[tokio::test]
+    async fn test_get_session_not_found() {
+        let manager = CodingAgentManager::new(test_config());
+        let result = manager.get_session("nonexistent", "client-1");
+        assert!(result.is_err());
+        let err = result.err().unwrap();
+        assert!(matches!(err, CodingAgentError::SessionNotFound(ref id) if id == "nonexistent"));
+    }
+
+    #[tokio::test]
+    async fn test_get_session_client_mismatch() {
+        let manager = CodingAgentManager::new(test_config());
+
+        // Manually insert a session to test ownership
+        let session = CodingSession::new(
+            "test-session".to_string(),
+            CodingAgentType::ClaudeCode,
+            "client-A".to_string(),
+            PathBuf::from("/tmp"),
+            SessionConfig {
+                model: None,
+                permission_mode: CodingPermissionMode::Supervised,
+                env: Default::default(),
+            },
+            "test prompt".to_string(),
+            100,
+        );
+        manager.sessions.insert(
+            "test-session".to_string(),
+            ("client-A".to_string(), Arc::new(Mutex::new(session))),
+        );
+
+        // Owner can access
+        let result = manager.get_session("test-session", "client-A");
+        assert!(result.is_ok());
+
+        // Different client cannot access
+        let result = manager.get_session("test-session", "client-B");
+        assert!(result.is_err());
+        assert!(matches!(result.err().unwrap(), CodingAgentError::ClientMismatch));
+    }
+
+    #[tokio::test]
+    async fn test_list_sessions_filters_by_client() {
+        let manager = CodingAgentManager::new(test_config());
+
+        // Insert sessions for different clients
+        for (id, client) in [("s1", "client-A"), ("s2", "client-B"), ("s3", "client-A")] {
+            let session = CodingSession::new(
+                id.to_string(),
+                CodingAgentType::ClaudeCode,
+                client.to_string(),
+                PathBuf::from("/tmp"),
+                SessionConfig {
+                    model: None,
+                    permission_mode: CodingPermissionMode::Supervised,
+                    env: Default::default(),
+                },
+                format!("prompt for {}", id),
+                100,
+            );
+            manager.sessions.insert(
+                id.to_string(),
+                (client.to_string(), Arc::new(Mutex::new(session))),
+            );
+        }
+
+        let client_a_sessions = manager.list_sessions("client-A", None, None).await;
+        assert_eq!(client_a_sessions.len(), 2);
+
+        let client_b_sessions = manager.list_sessions("client-B", None, None).await;
+        assert_eq!(client_b_sessions.len(), 1);
+
+        let client_c_sessions = manager.list_sessions("client-C", None, None).await;
+        assert_eq!(client_c_sessions.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_list_sessions_filters_by_agent_type() {
+        let manager = CodingAgentManager::new(test_config());
+
+        let session1 = CodingSession::new(
+            "s1".to_string(),
+            CodingAgentType::ClaudeCode,
+            "client-A".to_string(),
+            PathBuf::from("/tmp"),
+            SessionConfig {
+                model: None,
+                permission_mode: CodingPermissionMode::Supervised,
+                env: Default::default(),
+            },
+            "claude prompt".to_string(),
+            100,
+        );
+        let session2 = CodingSession::new(
+            "s2".to_string(),
+            CodingAgentType::Codex,
+            "client-A".to_string(),
+            PathBuf::from("/tmp"),
+            SessionConfig {
+                model: None,
+                permission_mode: CodingPermissionMode::Auto,
+                env: Default::default(),
+            },
+            "codex prompt".to_string(),
+            100,
+        );
+
+        manager.sessions.insert(
+            "s1".to_string(),
+            ("client-A".to_string(), Arc::new(Mutex::new(session1))),
+        );
+        manager.sessions.insert(
+            "s2".to_string(),
+            ("client-A".to_string(), Arc::new(Mutex::new(session2))),
+        );
+
+        let claude_sessions = manager
+            .list_sessions("client-A", Some(CodingAgentType::ClaudeCode), None)
+            .await;
+        assert_eq!(claude_sessions.len(), 1);
+        assert_eq!(claude_sessions[0].session_id, "s1");
+
+        let codex_sessions = manager
+            .list_sessions("client-A", Some(CodingAgentType::Codex), None)
+            .await;
+        assert_eq!(codex_sessions.len(), 1);
+        assert_eq!(codex_sessions[0].session_id, "s2");
+    }
+
+    #[tokio::test]
+    async fn test_list_sessions_limit() {
+        let manager = CodingAgentManager::new(test_config());
+
+        for i in 0..10 {
+            let id = format!("s{}", i);
+            let session = CodingSession::new(
+                id.clone(),
+                CodingAgentType::ClaudeCode,
+                "client-A".to_string(),
+                PathBuf::from("/tmp"),
+                SessionConfig {
+                    model: None,
+                    permission_mode: CodingPermissionMode::Supervised,
+                    env: Default::default(),
+                },
+                format!("prompt {}", i),
+                100,
+            );
+            manager.sessions.insert(
+                id,
+                ("client-A".to_string(), Arc::new(Mutex::new(session))),
+            );
+        }
+
+        let sessions = manager.list_sessions("client-A", None, Some(3)).await;
+        assert_eq!(sessions.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_list_all_sessions() {
+        let manager = CodingAgentManager::new(test_config());
+
+        for (id, client) in [("s1", "client-A"), ("s2", "client-B")] {
+            let session = CodingSession::new(
+                id.to_string(),
+                CodingAgentType::ClaudeCode,
+                client.to_string(),
+                PathBuf::from("/tmp"),
+                SessionConfig {
+                    model: None,
+                    permission_mode: CodingPermissionMode::Supervised,
+                    env: Default::default(),
+                },
+                "prompt".to_string(),
+                100,
+            );
+            manager.sessions.insert(
+                id.to_string(),
+                (client.to_string(), Arc::new(Mutex::new(session))),
+            );
+        }
+
+        let all = manager.list_all_sessions().await;
+        assert_eq!(all.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_end_session() {
+        let manager = CodingAgentManager::new(test_config());
+
+        let session = CodingSession::new(
+            "s1".to_string(),
+            CodingAgentType::ClaudeCode,
+            "client-A".to_string(),
+            PathBuf::from("/tmp"),
+            SessionConfig {
+                model: None,
+                permission_mode: CodingPermissionMode::Supervised,
+                env: Default::default(),
+            },
+            "prompt".to_string(),
+            100,
+        );
+        manager.sessions.insert(
+            "s1".to_string(),
+            ("client-A".to_string(), Arc::new(Mutex::new(session))),
+        );
+
+        assert!(manager.end_session("s1").await.is_ok());
+        assert!(manager.sessions.is_empty());
+
+        // Ending non-existent session should error
+        let result = manager.end_session("nonexistent").await;
+        assert!(matches!(
+            result.unwrap_err(),
+            CodingAgentError::SessionNotFound(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_respond_no_pending_question() {
+        let manager = CodingAgentManager::new(test_config());
+
+        let session = CodingSession::new(
+            "s1".to_string(),
+            CodingAgentType::ClaudeCode,
+            "client-A".to_string(),
+            PathBuf::from("/tmp"),
+            SessionConfig {
+                model: None,
+                permission_mode: CodingPermissionMode::Supervised,
+                env: Default::default(),
+            },
+            "prompt".to_string(),
+            100,
+        );
+        manager.sessions.insert(
+            "s1".to_string(),
+            ("client-A".to_string(), Arc::new(Mutex::new(session))),
+        );
+
+        let result = manager
+            .respond("s1", "client-A", "q1", vec!["allow".to_string()])
+            .await;
+        assert!(matches!(
+            result.unwrap_err(),
+            CodingAgentError::NoPendingQuestion
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_respond_question_id_mismatch() {
+        let manager = CodingAgentManager::new(test_config());
+
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        let mut session = CodingSession::new(
+            "s1".to_string(),
+            CodingAgentType::ClaudeCode,
+            "client-A".to_string(),
+            PathBuf::from("/tmp"),
+            SessionConfig {
+                model: None,
+                permission_mode: CodingPermissionMode::Supervised,
+                env: Default::default(),
+            },
+            "prompt".to_string(),
+            100,
+        );
+        session.pending_question = Some(PendingQuestion {
+            id: "correct-id".to_string(),
+            question_type: QuestionType::ToolApproval,
+            questions: vec![QuestionItem {
+                question: "Allow?".to_string(),
+                options: vec!["allow".to_string(), "deny".to_string()],
+            }],
+            resolve: tx,
+        });
+
+        manager.sessions.insert(
+            "s1".to_string(),
+            ("client-A".to_string(), Arc::new(Mutex::new(session))),
+        );
+
+        let result = manager
+            .respond("s1", "client-A", "wrong-id", vec!["allow".to_string()])
+            .await;
+        assert!(matches!(
+            result.unwrap_err(),
+            CodingAgentError::QuestionIdMismatch { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_respond_approve() {
+        let manager = CodingAgentManager::new(test_config());
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let mut session = CodingSession::new(
+            "s1".to_string(),
+            CodingAgentType::ClaudeCode,
+            "client-A".to_string(),
+            PathBuf::from("/tmp"),
+            SessionConfig {
+                model: None,
+                permission_mode: CodingPermissionMode::Supervised,
+                env: Default::default(),
+            },
+            "prompt".to_string(),
+            100,
+        );
+        session.status = SessionStatus::AwaitingInput;
+        session.pending_question = Some(PendingQuestion {
+            id: "q1".to_string(),
+            question_type: QuestionType::ToolApproval,
+            questions: vec![QuestionItem {
+                question: "Allow Edit?".to_string(),
+                options: vec!["allow".to_string(), "deny".to_string()],
+            }],
+            resolve: tx,
+        });
+
+        manager.sessions.insert(
+            "s1".to_string(),
+            ("client-A".to_string(), Arc::new(Mutex::new(session))),
+        );
+
+        let result = manager
+            .respond("s1", "client-A", "q1", vec!["allow".to_string()])
+            .await;
+        assert!(result.is_ok());
+        let resp = result.unwrap();
+        assert_eq!(resp.status, SessionStatus::Active);
+
+        // Verify the approval was sent through the channel
+        let approval = rx.await.unwrap();
+        assert!(matches!(approval, ApprovalResponse::Approved));
+    }
+
+    #[tokio::test]
+    async fn test_respond_deny_with_reason() {
+        let manager = CodingAgentManager::new(test_config());
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let mut session = CodingSession::new(
+            "s1".to_string(),
+            CodingAgentType::ClaudeCode,
+            "client-A".to_string(),
+            PathBuf::from("/tmp"),
+            SessionConfig {
+                model: None,
+                permission_mode: CodingPermissionMode::Supervised,
+                env: Default::default(),
+            },
+            "prompt".to_string(),
+            100,
+        );
+        session.pending_question = Some(PendingQuestion {
+            id: "q1".to_string(),
+            question_type: QuestionType::ToolApproval,
+            questions: vec![QuestionItem {
+                question: "Allow Edit?".to_string(),
+                options: vec!["allow".to_string(), "deny".to_string()],
+            }],
+            resolve: tx,
+        });
+
+        manager.sessions.insert(
+            "s1".to_string(),
+            ("client-A".to_string(), Arc::new(Mutex::new(session))),
+        );
+
+        let result = manager
+            .respond(
+                "s1",
+                "client-A",
+                "q1",
+                vec!["deny: too dangerous".to_string()],
+            )
+            .await;
+        assert!(result.is_ok());
+
+        let approval = rx.await.unwrap();
+        match approval {
+            ApprovalResponse::Denied { reason } => {
+                assert_eq!(reason, Some("too dangerous".to_string()));
+            }
+            _ => panic!("Expected Denied"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_respond_question_answers() {
+        let manager = CodingAgentManager::new(test_config());
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let mut session = CodingSession::new(
+            "s1".to_string(),
+            CodingAgentType::ClaudeCode,
+            "client-A".to_string(),
+            PathBuf::from("/tmp"),
+            SessionConfig {
+                model: None,
+                permission_mode: CodingPermissionMode::Supervised,
+                env: Default::default(),
+            },
+            "prompt".to_string(),
+            100,
+        );
+        session.pending_question = Some(PendingQuestion {
+            id: "q1".to_string(),
+            question_type: QuestionType::Question,
+            questions: vec![QuestionItem {
+                question: "Which auth method?".to_string(),
+                options: vec!["OAuth".to_string(), "JWT".to_string()],
+            }],
+            resolve: tx,
+        });
+
+        manager.sessions.insert(
+            "s1".to_string(),
+            ("client-A".to_string(), Arc::new(Mutex::new(session))),
+        );
+
+        let result = manager
+            .respond("s1", "client-A", "q1", vec!["OAuth".to_string()])
+            .await;
+        assert!(result.is_ok());
+
+        let approval = rx.await.unwrap();
+        match approval {
+            ApprovalResponse::Answered { answers } => {
+                assert_eq!(answers, vec!["OAuth".to_string()]);
+            }
+            _ => panic!("Expected Answered"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_status_returns_session_data() {
+        let manager = CodingAgentManager::new(test_config());
+
+        let mut session = CodingSession::new(
+            "s1".to_string(),
+            CodingAgentType::ClaudeCode,
+            "client-A".to_string(),
+            PathBuf::from("/tmp"),
+            SessionConfig {
+                model: None,
+                permission_mode: CodingPermissionMode::Supervised,
+                env: Default::default(),
+            },
+            "test prompt".to_string(),
+            100,
+        );
+        session.append_output("line 1".to_string());
+        session.append_output("line 2".to_string());
+        session.append_output("line 3".to_string());
+
+        manager.sessions.insert(
+            "s1".to_string(),
+            ("client-A".to_string(), Arc::new(Mutex::new(session))),
+        );
+
+        let result = manager.status("s1", "client-A", Some(2)).await;
+        assert!(result.is_ok());
+        let status = result.unwrap();
+        assert_eq!(status.status, SessionStatus::Active);
+        assert_eq!(status.recent_output.len(), 2);
+        assert_eq!(status.recent_output[0], "line 2");
+        assert_eq!(status.recent_output[1], "line 3");
+    }
+
+    #[test]
+    fn test_coding_agent_error_display() {
+        let err = CodingAgentError::SessionNotFound("abc".to_string());
+        assert_eq!(err.to_string(), "Session not found: abc");
+        assert_eq!(err.to_mcp_error(), "Session not found: abc");
+
+        let err = CodingAgentError::ClientMismatch;
+        assert_eq!(err.to_string(), "Session belongs to a different client");
+
+        let err = CodingAgentError::TooManySessions { max: 10 };
+        assert!(err.to_string().contains("10"));
     }
 }

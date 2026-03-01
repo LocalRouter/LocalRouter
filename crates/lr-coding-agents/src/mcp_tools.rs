@@ -22,11 +22,19 @@ pub fn is_coding_agent_tool(tool_name: &str) -> bool {
     })
 }
 
-/// Extract the agent type from a tool name
+/// Extract the agent type from a tool name.
+/// Matches on `{prefix}_` boundary to avoid false positives
+/// (e.g., `copilot_start` must not match a hypothetical `cop` prefix).
 pub fn agent_type_from_tool(tool_name: &str) -> Option<CodingAgentType> {
-    CodingAgentType::all().iter().find(|agent| {
-        tool_name.starts_with(agent.tool_prefix())
-    }).copied()
+    // Sort by prefix length descending so longer prefixes match first
+    // (e.g., "qwen_code" before "qwen" if such overlap existed)
+    let mut agents = CodingAgentType::all().to_vec();
+    agents.sort_by_key(|b| std::cmp::Reverse(b.tool_prefix().len()));
+
+    agents.into_iter().find(|agent| {
+        let prefix_with_sep = format!("{}_", agent.tool_prefix());
+        tool_name.starts_with(&prefix_with_sep)
+    })
 }
 
 /// Extract the action suffix from a tool name (e.g., "start", "say", "status")
@@ -392,53 +400,328 @@ fn parse_permission_mode(s: &str) -> Option<CodingPermissionMode> {
     }
 }
 
-/// Information about available coding agents for gateway instructions
-pub struct CodingAgentInfo {
-    pub name: String,
-    pub tool_prefix: String,
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lr_config::{CodingAgentConfig, CodingAgentsConfig, PermissionState};
+
+    fn test_manager() -> CodingAgentManager {
+        let config = CodingAgentsConfig {
+            agents: vec![
+                CodingAgentConfig {
+                    agent_type: CodingAgentType::ClaudeCode,
+                    enabled: true,
+                    working_directory: None,
+                    model_id: None,
+                    permission_mode: CodingPermissionMode::Supervised,
+                    env: Default::default(),
+                    binary_path: None,
+                },
+                CodingAgentConfig {
+                    agent_type: CodingAgentType::Codex,
+                    enabled: true,
+                    working_directory: None,
+                    model_id: None,
+                    permission_mode: CodingPermissionMode::Auto,
+                    env: Default::default(),
+                    binary_path: None,
+                },
+                CodingAgentConfig {
+                    agent_type: CodingAgentType::GeminiCli,
+                    enabled: false,
+                    working_directory: None,
+                    model_id: None,
+                    permission_mode: CodingPermissionMode::Supervised,
+                    env: Default::default(),
+                    binary_path: None,
+                },
+            ],
+            default_working_directory: None,
+            max_concurrent_sessions: 10,
+            output_buffer_size: 100,
+        };
+        CodingAgentManager::new(config)
+    }
+
+    // ── is_coding_agent_tool ──
+
+    #[test]
+    fn test_is_coding_agent_tool_valid() {
+        assert!(is_coding_agent_tool("claude_code_start"));
+        assert!(is_coding_agent_tool("claude_code_say"));
+        assert!(is_coding_agent_tool("claude_code_status"));
+        assert!(is_coding_agent_tool("claude_code_respond"));
+        assert!(is_coding_agent_tool("claude_code_interrupt"));
+        assert!(is_coding_agent_tool("claude_code_list"));
+        assert!(is_coding_agent_tool("codex_start"));
+        assert!(is_coding_agent_tool("gemini_cli_start"));
+        assert!(is_coding_agent_tool("amp_say"));
+        assert!(is_coding_agent_tool("aider_status"));
+    }
+
+    #[test]
+    fn test_is_coding_agent_tool_invalid() {
+        assert!(!is_coding_agent_tool("random_tool"));
+        assert!(!is_coding_agent_tool("skill_something_run"));
+        assert!(!is_coding_agent_tool("claude_code_unknown"));
+        assert!(!is_coding_agent_tool(""));
+    }
+
+    // ── agent_type_from_tool ──
+
+    #[test]
+    fn test_agent_type_from_tool_valid() {
+        assert_eq!(
+            agent_type_from_tool("claude_code_start"),
+            Some(CodingAgentType::ClaudeCode)
+        );
+        assert_eq!(
+            agent_type_from_tool("codex_say"),
+            Some(CodingAgentType::Codex)
+        );
+        assert_eq!(
+            agent_type_from_tool("gemini_cli_status"),
+            Some(CodingAgentType::GeminiCli)
+        );
+        assert_eq!(
+            agent_type_from_tool("amp_respond"),
+            Some(CodingAgentType::Amp)
+        );
+        assert_eq!(
+            agent_type_from_tool("aider_list"),
+            Some(CodingAgentType::Aider)
+        );
+        assert_eq!(
+            agent_type_from_tool("copilot_interrupt"),
+            Some(CodingAgentType::Copilot)
+        );
+    }
+
+    #[test]
+    fn test_agent_type_from_tool_invalid() {
+        assert_eq!(agent_type_from_tool("random_start"), None);
+        assert_eq!(agent_type_from_tool(""), None);
+    }
+
+    #[test]
+    fn test_agent_type_from_tool_boundary_match() {
+        // "qwen_code_start" should match "qwen_code", not be confused
+        assert_eq!(
+            agent_type_from_tool("qwen_code_start"),
+            Some(CodingAgentType::QwenCode)
+        );
+        // "copilot_start" must not match anything shorter
+        assert_eq!(
+            agent_type_from_tool("copilot_start"),
+            Some(CodingAgentType::Copilot)
+        );
+    }
+
+    // ── action_from_tool ──
+
+    #[test]
+    fn test_action_from_tool() {
+        assert_eq!(action_from_tool("claude_code_start"), Some("start"));
+        assert_eq!(action_from_tool("codex_say"), Some("say"));
+        assert_eq!(action_from_tool("amp_status"), Some("status"));
+        assert_eq!(action_from_tool("aider_respond"), Some("respond"));
+        assert_eq!(action_from_tool("copilot_interrupt"), Some("interrupt"));
+        assert_eq!(action_from_tool("droid_list"), Some("list"));
+        assert_eq!(action_from_tool("unknown_tool"), None);
+    }
+
+    // ── build_coding_agent_tools ──
+
+    #[test]
+    fn test_build_coding_agent_tools_all_allowed() {
+        let manager = test_manager();
+        let permissions = CodingAgentsPermissions {
+            global: PermissionState::Allow,
+            agents: Default::default(),
+        };
+
+        let tools = build_coding_agent_tools(&manager, &permissions);
+        // ClaudeCode (enabled) + Codex (enabled) = 2 agents × 6 tools = 12
+        assert_eq!(tools.len(), 12);
+
+        // Verify tool names
+        let names: Vec<_> = tools.iter().map(|t| t.name.as_str()).collect();
+        assert!(names.contains(&"claude_code_start"));
+        assert!(names.contains(&"claude_code_list"));
+        assert!(names.contains(&"codex_start"));
+        assert!(names.contains(&"codex_list"));
+
+        // GeminiCli is disabled at agent level, so not included
+        assert!(!names.contains(&"gemini_cli_start"));
+    }
+
+    #[test]
+    fn test_build_coding_agent_tools_no_access() {
+        let manager = test_manager();
+        let permissions = CodingAgentsPermissions {
+            global: PermissionState::Off,
+            agents: Default::default(),
+        };
+
+        let tools = build_coding_agent_tools(&manager, &permissions);
+        assert!(tools.is_empty());
+    }
+
+    #[test]
+    fn test_build_coding_agent_tools_per_agent_override() {
+        let manager = test_manager();
+        let mut agents = std::collections::HashMap::new();
+        agents.insert("codex".to_string(), PermissionState::Off);
+
+        let permissions = CodingAgentsPermissions {
+            global: PermissionState::Allow,
+            agents,
+        };
+
+        let tools = build_coding_agent_tools(&manager, &permissions);
+        // Only ClaudeCode should appear (6 tools)
+        assert_eq!(tools.len(), 6);
+        let names: Vec<_> = tools.iter().map(|t| t.name.as_str()).collect();
+        assert!(names.contains(&"claude_code_start"));
+        assert!(!names.contains(&"codex_start"));
+    }
+
+    #[test]
+    fn test_build_tools_for_agent_generates_six_tools() {
+        let tools = build_tools_for_agent(CodingAgentType::ClaudeCode);
+        assert_eq!(tools.len(), 6);
+
+        let expected_names = vec![
+            "claude_code_start",
+            "claude_code_say",
+            "claude_code_status",
+            "claude_code_respond",
+            "claude_code_interrupt",
+            "claude_code_list",
+        ];
+
+        for expected in expected_names {
+            assert!(
+                tools.iter().any(|t| t.name == expected),
+                "Missing tool: {}",
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn test_build_tools_for_agent_has_descriptions() {
+        let tools = build_tools_for_agent(CodingAgentType::Codex);
+        for tool in &tools {
+            assert!(
+                tool.description.is_some(),
+                "Tool {} has no description",
+                tool.name
+            );
+            assert!(
+                tool.description.as_ref().unwrap().contains("Codex"),
+                "Tool {} description should mention agent name",
+                tool.name
+            );
+        }
+    }
+
+    #[test]
+    fn test_build_tools_start_requires_prompt() {
+        let tools = build_tools_for_agent(CodingAgentType::ClaudeCode);
+        let start = tools.iter().find(|t| t.name == "claude_code_start").unwrap();
+        let required = start.input_schema["required"].as_array().unwrap();
+        assert!(required.iter().any(|v| v == "prompt"));
+    }
+
+    // ── parse_permission_mode ──
+
+    #[test]
+    fn test_parse_permission_mode() {
+        assert_eq!(
+            parse_permission_mode("auto"),
+            Some(CodingPermissionMode::Auto)
+        );
+        assert_eq!(
+            parse_permission_mode("supervised"),
+            Some(CodingPermissionMode::Supervised)
+        );
+        assert_eq!(
+            parse_permission_mode("plan"),
+            Some(CodingPermissionMode::Plan)
+        );
+        assert_eq!(parse_permission_mode("unknown"), None);
+        assert_eq!(parse_permission_mode(""), None);
+    }
+
+    // ── handle_coding_agent_tool_call ──
+
+    #[tokio::test]
+    async fn test_handle_tool_call_unknown_tool() {
+        let manager = test_manager();
+        let result = handle_coding_agent_tool_call("unknown_start", &json!({}), &manager, "c1")
+            .await;
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_none()); // None = not a coding agent tool
+    }
+
+    #[tokio::test]
+    async fn test_handle_tool_call_disabled_agent() {
+        let manager = test_manager();
+        // GeminiCli is disabled in test_manager
+        let result = handle_coding_agent_tool_call(
+            "gemini_cli_start",
+            &json!({"prompt": "test"}),
+            &manager,
+            "c1",
+        )
+        .await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not enabled"));
+    }
+
+    #[tokio::test]
+    async fn test_handle_tool_call_list_empty() {
+        let manager = test_manager();
+        let result = handle_coding_agent_tool_call(
+            "claude_code_list",
+            &json!({}),
+            &manager,
+            "c1",
+        )
+        .await;
+        assert!(result.is_ok());
+        let value = result.unwrap().unwrap();
+        let sessions = value["sessions"].as_array().unwrap();
+        assert!(sessions.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_handle_tool_call_status_missing_session() {
+        let manager = test_manager();
+        let result = handle_coding_agent_tool_call(
+            "claude_code_status",
+            &json!({"sessionId": "nonexistent"}),
+            &manager,
+            "c1",
+        )
+        .await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn test_handle_tool_call_start_missing_prompt() {
+        let manager = test_manager();
+        let result = handle_coding_agent_tool_call(
+            "claude_code_start",
+            &json!({}),
+            &manager,
+            "c1",
+        )
+        .await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("prompt"));
+    }
 }
 
-/// Build instruction text about available coding agents
-pub fn build_coding_agents_instructions(
-    manager: &CodingAgentManager,
-    permissions: &CodingAgentsPermissions,
-) -> Option<String> {
-    let mut agents: Vec<CodingAgentInfo> = Vec::new();
-
-    for agent_type in CodingAgentType::all() {
-        if !manager.is_agent_enabled(*agent_type) {
-            continue;
-        }
-        let perm = permissions.resolve_agent(agent_type.tool_prefix());
-        if !perm.is_enabled() {
-            continue;
-        }
-        agents.push(CodingAgentInfo {
-            name: agent_type.display_name().to_string(),
-            tool_prefix: agent_type.tool_prefix().to_string(),
-        });
-    }
-
-    if agents.is_empty() {
-        return None;
-    }
-
-    let mut text = String::from("\n\n## AI Coding Agents\n\nYou have access to the following AI coding agents. Each agent can be started with a prompt, and you can interact with it through a session-based API.\n\nAvailable agents:\n");
-
-    for agent in &agents {
-        text.push_str(&format!(
-            "- **{}**: Use `{}_start` to begin a session, `{}_say` to send messages, `{}_status` to check progress, `{}_respond` to answer questions, `{}_interrupt` to stop, `{}_list` to see sessions.\n",
-            agent.name,
-            agent.tool_prefix,
-            agent.tool_prefix,
-            agent.tool_prefix,
-            agent.tool_prefix,
-            agent.tool_prefix,
-            agent.tool_prefix,
-        ));
-    }
-
-    text.push_str("\nWorkflow: Start a session → poll status → respond to questions → get results.\n");
-
-    Some(text)
-}

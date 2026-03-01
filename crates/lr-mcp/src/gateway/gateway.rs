@@ -197,6 +197,30 @@ impl McpGateway {
             .collect()
     }
 
+    /// Collect enabled coding agent info for gateway instructions
+    fn collect_coding_agent_info(
+        &self,
+        permissions: &lr_config::CodingAgentsPermissions,
+    ) -> Vec<super::merger::CodingAgentInfo> {
+        if !permissions.has_any_access() {
+            return Vec::new();
+        }
+        let Some(cam) = self.coding_agent_manager.get() else {
+            return Vec::new();
+        };
+        use lr_config::CodingAgentType;
+        CodingAgentType::all()
+            .iter()
+            .filter(|at| {
+                cam.is_agent_enabled(**at) && permissions.resolve_agent(at.tool_prefix()).is_enabled()
+            })
+            .map(|at| super::merger::CodingAgentInfo {
+                name: at.display_name().to_string(),
+                tool_prefix: at.tool_prefix().to_string(),
+            })
+            .collect()
+    }
+
     /// Build `McpServerInstructionInfo` list from init results and catalogs.
     ///
     /// Maps server UUIDs to human-readable names and groups tools/resources/prompts by server.
@@ -911,16 +935,18 @@ impl McpGateway {
 
                 let session_read = session.read().await;
                 let skills_permissions = session_read.skills_permissions.clone();
+                let ca_permissions = session_read.coding_agents_permissions.clone();
                 drop(session_read);
 
                 let skill_infos = self.collect_skill_info(&skills_permissions);
+                let coding_agent_infos = self.collect_coding_agent_info(&ca_permissions);
                 let unavailable = self.build_unavailable_server_infos(&start_failures);
                 let instructions = build_gateway_instructions(&InstructionsContext {
                     servers: Vec::new(),
                     unavailable_servers: unavailable,
                     skills: skill_infos,
                     deferred_loading: false,
-                    coding_agents: Vec::new(),
+                    coding_agents: coding_agent_infos,
                 });
 
                 let merged = MergedCapabilities {
@@ -1042,16 +1068,18 @@ impl McpGateway {
 
                 let session_read = session.read().await;
                 let skills_permissions = session_read.skills_permissions.clone();
+                let ca_permissions = session_read.coding_agents_permissions.clone();
                 drop(session_read);
 
                 let skill_infos = self.collect_skill_info(&skills_permissions);
+                let coding_agent_infos = self.collect_coding_agent_info(&ca_permissions);
                 let unavailable = self.build_unavailable_server_infos(&failures);
                 let instructions = build_gateway_instructions(&InstructionsContext {
                     servers: Vec::new(),
                     unavailable_servers: unavailable,
                     skills: skill_infos,
                     deferred_loading: false,
-                    coding_agents: Vec::new(),
+                    coding_agents: coding_agent_infos,
                 });
 
                 let merged = MergedCapabilities {
@@ -1250,6 +1278,7 @@ impl McpGateway {
         // Build gateway instructions based on the full context
         let session_read = session.read().await;
         let skills_permissions = session_read.skills_permissions.clone();
+        let ca_permissions = session_read.coding_agents_permissions.clone();
         let deferred_state = session_read.deferred_loading.clone();
         let active_server_ids = session_read.allowed_servers.clone();
         drop(session_read);
@@ -1262,6 +1291,7 @@ impl McpGateway {
         } else {
             Vec::new()
         };
+        let coding_agent_infos = self.collect_coding_agent_info(&ca_permissions);
 
         let deferred_enabled = deferred_state.as_ref().map(|d| d.enabled).unwrap_or(false);
 
@@ -1330,7 +1360,7 @@ impl McpGateway {
             unavailable_servers: unavailable,
             skills: skill_infos,
             deferred_loading: deferred_enabled,
-            coding_agents: Vec::new(),
+            coding_agents: coding_agent_infos,
         });
 
         // Store instructions in merged capabilities

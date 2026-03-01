@@ -36,14 +36,18 @@ impl GatewayApprovalRouter {
     /// Create a tool approval request and return its ID.
     /// The caller should then store the PendingQuestion on the session
     /// and block on the oneshot receiver.
+    /// Create an approval request. Returns:
+    /// - The question ID
+    /// - A `PendingQuestion` to store on the session (contains the `Sender`)
+    /// - A `oneshot::Receiver` for the caller to await the response
     pub fn create_approval(
         &self,
         session_id: &str,
         question_type: QuestionType,
         questions: Vec<QuestionItem>,
-    ) -> (String, PendingQuestion) {
+    ) -> (String, PendingQuestion, oneshot::Receiver<ApprovalResponse>) {
         let id = uuid::Uuid::new_v4().to_string();
-        let (tx, _rx) = oneshot::channel();
+        let (tx, rx) = oneshot::channel();
 
         let pending = PendingQuestion {
             id: id.clone(),
@@ -68,7 +72,7 @@ impl GatewayApprovalRouter {
 
         debug!(question_id = %id, session_id = %session_id, "Created approval request");
 
-        (id, pending)
+        (id, pending, rx)
     }
 
     /// Remove a pending question (called after it's resolved)
@@ -100,7 +104,7 @@ mod tests {
     fn test_create_and_remove_approval() {
         let router = GatewayApprovalRouter::new();
 
-        let (id, _pending) = router.create_approval(
+        let (id, _pending, _rx) = router.create_approval(
             "session-1",
             QuestionType::ToolApproval,
             vec![QuestionItem {
@@ -114,5 +118,90 @@ mod tests {
 
         router.remove_pending(&id);
         assert_eq!(router.pending_for_session("session-1").len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_approval_response_flows_through_channel() {
+        let router = GatewayApprovalRouter::new();
+
+        let (_id, pending, rx) = router.create_approval(
+            "session-1",
+            QuestionType::ToolApproval,
+            vec![QuestionItem {
+                question: "Allow Edit?".to_string(),
+                options: vec!["allow".to_string(), "deny".to_string()],
+            }],
+        );
+
+        // Send response through the channel
+        let _ = pending.resolve.send(ApprovalResponse::Approved);
+
+        // Receiver should get it
+        let response = rx.await.unwrap();
+        assert!(matches!(response, ApprovalResponse::Approved));
+    }
+
+    #[tokio::test]
+    async fn test_approval_denied_with_reason() {
+        let router = GatewayApprovalRouter::new();
+
+        let (_id, pending, rx) = router.create_approval(
+            "session-1",
+            QuestionType::ToolApproval,
+            vec![QuestionItem {
+                question: "Allow Edit?".to_string(),
+                options: vec!["allow".to_string(), "deny".to_string()],
+            }],
+        );
+
+        let _ = pending.resolve.send(ApprovalResponse::Denied {
+            reason: Some("too dangerous".to_string()),
+        });
+
+        let response = rx.await.unwrap();
+        match response {
+            ApprovalResponse::Denied { reason } => {
+                assert_eq!(reason, Some("too dangerous".to_string()));
+            }
+            _ => panic!("Expected Denied response"),
+        }
+    }
+
+    #[test]
+    fn test_pending_for_multiple_sessions() {
+        let router = GatewayApprovalRouter::new();
+
+        let (id1, _p1, _rx1) = router.create_approval(
+            "session-1",
+            QuestionType::ToolApproval,
+            vec![QuestionItem {
+                question: "Q1".to_string(),
+                options: vec![],
+            }],
+        );
+
+        let (_id2, _p2, _rx2) = router.create_approval(
+            "session-2",
+            QuestionType::Question,
+            vec![QuestionItem {
+                question: "Q2".to_string(),
+                options: vec!["a".to_string(), "b".to_string()],
+            }],
+        );
+
+        let (_id3, _p3, _rx3) = router.create_approval(
+            "session-1",
+            QuestionType::PlanApproval,
+            vec![QuestionItem {
+                question: "Q3".to_string(),
+                options: vec![],
+            }],
+        );
+
+        assert_eq!(router.pending_for_session("session-1").len(), 2);
+        assert_eq!(router.pending_for_session("session-2").len(), 1);
+
+        router.remove_pending(&id1);
+        assert_eq!(router.pending_for_session("session-1").len(), 1);
     }
 }
