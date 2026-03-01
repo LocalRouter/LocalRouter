@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
-import type { Client, Provider, McpServer, Skill, HealthCacheState, UseGraphDataResult } from '../types'
+import type { Client, Provider, McpServer, Skill, CodingAgent, HealthCacheState, UseGraphDataResult } from '../types'
 
 // How long to show a client as "connected" after last activity (ms)
 const ACTIVITY_TIMEOUT_MS = 10_000
@@ -11,6 +11,7 @@ export function useGraphData(): UseGraphDataResult {
   const [providers, setProviders] = useState<Provider[]>([])
   const [mcpServers, setMcpServers] = useState<McpServer[]>([])
   const [skills, setSkills] = useState<Skill[]>([])
+  const [codingAgents, setCodingAgents] = useState<CodingAgent[]>([])
   const [healthState, setHealthState] = useState<HealthCacheState | null>(null)
   const [activeConnections, setActiveConnections] = useState<string[]>([])
   const [loading, setLoading] = useState(true)
@@ -48,11 +49,12 @@ export function useGraphData(): UseGraphDataResult {
   // Fetch all data
   const fetchData = useCallback(async () => {
     try {
-      const [clientList, providerList, mcpServerList, skillList, health, connections] = await Promise.all([
+      const [clientList, providerList, mcpServerList, skillList, codingAgentList, health, connections] = await Promise.all([
         invoke<Client[]>('list_clients').catch(() => []),
         invoke<Provider[]>('list_provider_instances').catch(() => []),
         invoke<McpServer[]>('list_mcp_servers').catch(() => []),
         invoke<Skill[]>('list_skills').catch(() => []),
+        invoke<CodingAgent[]>('list_coding_agents').catch(() => []),
         invoke<HealthCacheState>('get_health_cache').catch(() => null),
         invoke<string[]>('get_active_connections').catch(() => []),
       ])
@@ -61,6 +63,7 @@ export function useGraphData(): UseGraphDataResult {
       setProviders(providerList)
       setMcpServers(mcpServerList)
       setSkills(skillList)
+      setCodingAgents(codingAgentList.filter(a => a.installed))
       setHealthState(health)
 
       // Initialize SSE connections from server
@@ -166,6 +169,14 @@ export function useGraphData(): UseGraphDataResult {
       unlisteners.push(unlisten)
     }
 
+    // Coding agents changed
+    const setupCodingAgentsListener = async () => {
+      const unlisten = await listen('coding-agents-changed', () => {
+        fetchData()
+      })
+      unlisteners.push(unlisten)
+    }
+
     // Set up all listeners
     Promise.all([
       setupHealthListener(),
@@ -175,6 +186,7 @@ export function useGraphData(): UseGraphDataResult {
       setupConfigListener(),
       setupClientsListener(),
       setupSkillsListener(),
+      setupCodingAgentsListener(),
     ])
 
     return () => {
@@ -187,6 +199,7 @@ export function useGraphData(): UseGraphDataResult {
     providers,
     mcpServers,
     skills,
+    codingAgents,
     healthState,
     activeConnections,
     loading,

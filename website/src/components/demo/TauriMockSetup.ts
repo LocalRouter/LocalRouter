@@ -929,21 +929,17 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   // Coding Agents
   // ============================================================================
   'list_coding_agents': () => [
-    { agentType: 'claude_code', displayName: 'Claude Code', toolPrefix: 'claude_code', binaryName: 'claude', installed: true, enabled: true, workingDirectory: null, modelId: null, permissionMode: 'auto' },
-    { agentType: 'gemini_cli', displayName: 'Gemini CLI', toolPrefix: 'gemini_cli', binaryName: 'gemini', installed: true, enabled: false, workingDirectory: null, modelId: null, permissionMode: 'auto' },
-    { agentType: 'codex', displayName: 'Codex', toolPrefix: 'codex', binaryName: 'codex', installed: false, enabled: false, workingDirectory: null, modelId: null, permissionMode: 'supervised' },
-    { agentType: 'amp', displayName: 'Amp', toolPrefix: 'amp', binaryName: 'amp', installed: false, enabled: false, workingDirectory: null, modelId: null, permissionMode: 'auto' },
-    { agentType: 'aider', displayName: 'Aider', toolPrefix: 'aider', binaryName: 'aider', installed: true, enabled: false, workingDirectory: null, modelId: null, permissionMode: 'auto' },
-    { agentType: 'opencode', displayName: 'Opencode', toolPrefix: 'opencode', binaryName: 'opencode', installed: false, enabled: false, workingDirectory: null, modelId: null, permissionMode: 'auto' },
-    { agentType: 'cursor', displayName: 'Cursor', toolPrefix: 'cursor', binaryName: 'cursor', installed: false, enabled: false, workingDirectory: null, modelId: null, permissionMode: 'auto' },
-    { agentType: 'qwen_code', displayName: 'Qwen Code', toolPrefix: 'qwen_code', binaryName: 'qwen-code', installed: false, enabled: false, workingDirectory: null, modelId: null, permissionMode: 'auto' },
-    { agentType: 'copilot', displayName: 'GitHub Copilot', toolPrefix: 'copilot', binaryName: 'gh', installed: false, enabled: false, workingDirectory: null, modelId: null, permissionMode: 'auto' },
-    { agentType: 'droid', displayName: 'Droid', toolPrefix: 'droid', binaryName: 'droid', installed: false, enabled: false, workingDirectory: null, modelId: null, permissionMode: 'auto' },
+    { agentType: 'claude_code', displayName: 'Claude Code', toolPrefix: 'claude_code', binaryName: 'claude', installed: true, workingDirectory: null, modelId: null, permissionMode: 'auto' },
+    { agentType: 'gemini_cli', displayName: 'Gemini CLI', toolPrefix: 'gemini_cli', binaryName: 'gemini', installed: true, workingDirectory: null, modelId: null, permissionMode: 'auto' },
+    { agentType: 'codex', displayName: 'Codex', toolPrefix: 'codex', binaryName: 'codex', installed: false, workingDirectory: null, modelId: null, permissionMode: 'supervised' },
+    { agentType: 'amp', displayName: 'Amp', toolPrefix: 'amp', binaryName: 'amp', installed: false, workingDirectory: null, modelId: null, permissionMode: 'auto' },
+    { agentType: 'aider', displayName: 'Aider', toolPrefix: 'aider', binaryName: 'aider', installed: true, workingDirectory: null, modelId: null, permissionMode: 'auto' },
+    { agentType: 'opencode', displayName: 'Opencode', toolPrefix: 'opencode', binaryName: 'opencode', installed: false, workingDirectory: null, modelId: null, permissionMode: 'auto' },
+    { agentType: 'cursor', displayName: 'Cursor', toolPrefix: 'cursor', binaryName: 'cursor', installed: false, workingDirectory: null, modelId: null, permissionMode: 'auto' },
+    { agentType: 'qwen_code', displayName: 'Qwen Code', toolPrefix: 'qwen_code', binaryName: 'qwen-code', installed: false, workingDirectory: null, modelId: null, permissionMode: 'auto' },
+    { agentType: 'copilot', displayName: 'GitHub Copilot', toolPrefix: 'copilot', binaryName: 'gh', installed: false, workingDirectory: null, modelId: null, permissionMode: 'auto' },
+    { agentType: 'droid', displayName: 'Droid', toolPrefix: 'droid', binaryName: 'droid', installed: false, workingDirectory: null, modelId: null, permissionMode: 'auto' },
   ],
-  'set_coding_agent_enabled': (args) => {
-    toast.success(`Coding agent ${args?.agentType} ${args?.enabled ? 'enabled' : 'disabled'} (demo)`)
-    return null
-  },
   'update_coding_agent_config': () => null,
   'list_coding_sessions': () => [],
   'end_coding_session': () => null,

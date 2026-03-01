@@ -5,8 +5,8 @@
 use std::sync::Arc;
 
 use lr_config::{
-    client_strategy_name, ClientMode, ConfigManager, McpPermissions, ModelPermissions,
-    PermissionState, SkillsPermissions,
+    client_strategy_name, ClientMode, CodingAgentsPermissions, ConfigManager, McpPermissions,
+    ModelPermissions, PermissionState, SkillsPermissions,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, State};
@@ -39,6 +39,8 @@ pub struct ClientInfo {
     pub mcp_permissions: McpPermissions,
     /// Unified Skills permissions (hierarchical Allow/Ask/Off)
     pub skills_permissions: SkillsPermissions,
+    /// Unified Coding Agents permissions (hierarchical Allow/Ask/Off)
+    pub coding_agents_permissions: CodingAgentsPermissions,
     /// Unified Model permissions (hierarchical Allow/Ask/Off)
     pub model_permissions: ModelPermissions,
     /// Marketplace permission state
@@ -73,6 +75,7 @@ pub async fn list_clients(
             last_used: c.last_used.map(|t| t.to_rfc3339()),
             mcp_permissions: c.mcp_permissions.clone(),
             skills_permissions: c.skills_permissions.clone(),
+            coding_agents_permissions: c.coding_agents_permissions.clone(),
             model_permissions: c.model_permissions.clone(),
             marketplace_permission: c.marketplace_permission.clone(),
             client_mode: c.client_mode.clone(),
@@ -136,6 +139,7 @@ pub async fn create_client(
         last_used: client.last_used.map(|t| t.to_rfc3339()),
         mcp_permissions: client.mcp_permissions.clone(),
         skills_permissions: client.skills_permissions.clone(),
+        coding_agents_permissions: client.coding_agents_permissions.clone(),
         model_permissions: client.model_permissions.clone(),
         marketplace_permission: client.marketplace_permission.clone(),
         client_mode: client.client_mode.clone(),

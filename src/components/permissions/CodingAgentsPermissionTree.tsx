@@ -12,7 +12,6 @@ interface CodingAgentInfo {
   toolPrefix: string
   binaryName: string
   installed: boolean
-  enabled: boolean
 }
 
 interface CodingAgentsPermissionTreeProps extends PermissionTreeProps {
@@ -27,8 +26,8 @@ export function CodingAgentsPermissionTree({ clientId, permissions, onUpdate }: 
   const loadAgents = useCallback(async () => {
     try {
       const agentList = await invoke<CodingAgentInfo[]>("list_coding_agents")
-      const enabledAgents = agentList.filter((a) => a.enabled)
-      setAgents(enabledAgents)
+      const installedAgents = agentList.filter((a) => a.installed)
+      setAgents(installedAgents)
     } catch (error) {
       console.error("Failed to load coding agents:", error)
     } finally {
@@ -113,7 +112,7 @@ export function CodingAgentsPermissionTree({ clientId, permissions, onUpdate }: 
       disabled={saving}
       loading={loading}
       globalLabel="All Coding Agents"
-      emptyMessage="No coding agents enabled. Enable agents in the Coding Agents view."
+      emptyMessage="No coding agents installed. Install a supported coding agent to manage permissions."
     />
   )
 }

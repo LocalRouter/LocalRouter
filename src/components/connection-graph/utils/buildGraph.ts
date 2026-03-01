@@ -5,6 +5,7 @@ import type {
   Provider,
   McpServer,
   Skill,
+  CodingAgent,
   HealthCacheState,
   GraphNode,
   GraphEdge,
@@ -12,6 +13,7 @@ import type {
   ProviderNodeData,
   McpServerNodeData,
   SkillNodeData,
+  CodingAgentNodeData,
   MarketplaceNodeData,
   ItemHealthStatus,
 } from '../types'
@@ -40,12 +42,13 @@ function getMcpServerHealth(
   return health?.status ?? 'pending'
 }
 
-// Build nodes from data, only including providers/servers/skills that are connected to a client
+// Build nodes from data, only including providers/servers/skills/agents that are connected to a client
 function buildNodes(
   clients: Client[],
   providers: Provider[],
   mcpServers: McpServer[],
   skills: Skill[],
+  codingAgents: CodingAgent[],
   healthState: HealthCacheState | null,
   activeConnections: string[],
   connectedTargetIds: Set<string>
@@ -150,6 +153,24 @@ function buildNodes(
     })
   })
 
+  // Add Coding Agent nodes — only installed agents connected to at least one client
+  codingAgents.forEach((agent) => {
+    if (!connectedTargetIds.has(`coding-agent-${agent.agentType}`)) return
+
+    const nodeData: CodingAgentNodeData = {
+      id: agent.agentType,
+      name: agent.displayName,
+      type: 'codingAgent',
+    }
+
+    nodes.push({
+      id: `coding-agent-${agent.agentType}`,
+      type: 'codingAgent',
+      data: nodeData,
+      position: { x: 0, y: 0 },
+    })
+  })
+
   // Add Marketplace node if any client has marketplace permission enabled (both 'allow' and 'ask')
   const hasMarketplaceClient = enabledClients.some(c => c.marketplace_permission !== 'off')
   if (hasMarketplaceClient && connectedTargetIds.has('marketplace')) {
@@ -173,7 +194,7 @@ function buildNodes(
 // Determine edge style based on permission state for a client's connection
 function getPermissionEdgeStyle(
   client: Client,
-  targetType: 'server' | 'skill',
+  targetType: 'server' | 'skill' | 'codingAgent',
   targetId: string,
   isConnected: boolean
 ): Record<string, string | number> {
@@ -181,6 +202,8 @@ function getPermissionEdgeStyle(
   let state: string
   if (targetType === 'server') {
     state = client.mcp_permissions?.servers?.[targetId] ?? client.mcp_permissions?.global ?? 'off'
+  } else if (targetType === 'codingAgent') {
+    state = client.coding_agents_permissions?.agents?.[targetId] ?? client.coding_agents_permissions?.global ?? 'off'
   } else {
     state = client.skills_permissions?.skills?.[targetId] ?? client.skills_permissions?.global ?? 'off'
   }
@@ -201,7 +224,7 @@ function getPermissionEdgeStyle(
   }
 
   // Allow — standard style
-  const defaultColor = targetType === 'server' ? '#10b981' : '#f59e0b'
+  const defaultColor = targetType === 'server' ? '#10b981' : targetType === 'codingAgent' ? '#f97316' : '#f59e0b'
   return {
     stroke: isConnected ? defaultColor : '#64748b',
     strokeWidth: isConnected ? 2 : 1,
@@ -214,6 +237,7 @@ function buildEdges(
   providers: Provider[],
   mcpServers: McpServer[],
   skills: Skill[],
+  codingAgents: CodingAgent[],
   activeConnections: string[]
 ): GraphEdge[] {
   const edges: GraphEdge[] = []
@@ -226,6 +250,7 @@ function buildEdges(
   const providerNames = new Set(enabledProviders.map(p => p.instance_name))
   const mcpServerIds = new Set(enabledMcpServers.map(s => s.id))
   const skillNames = new Set(skills.map(s => s.name))
+  const codingAgentTypes = new Set(codingAgents.map(a => a.agentType))
 
   enabledClients.forEach((client) => {
     const isConnected = activeConnections.includes(client.id)
@@ -289,6 +314,27 @@ function buildEdges(
         id: `edge-${client.id}-skill-${skillName}`,
         source: `client-${client.id}`,
         target: `skill-${skillName}`,
+        animated: isConnected,
+        style: firewallStyle,
+        data: { isActive: isConnected },
+      })
+    })
+
+    // Create edges to coding agents based on coding_agents_permissions
+    // If global is not 'off', client has access to all agents
+    // Otherwise, check specific agent permissions
+    const clientCodingAgents = client.coding_agents_permissions?.global !== 'off'
+      ? Array.from(codingAgentTypes)
+      : Object.entries(client.coding_agents_permissions?.agents ?? {})
+          .filter(([type, state]) => state !== 'off' && codingAgentTypes.has(type))
+          .map(([type]) => type)
+
+    clientCodingAgents.forEach((agentType) => {
+      const firewallStyle = getPermissionEdgeStyle(client, 'codingAgent', agentType, isConnected)
+      edges.push({
+        id: `edge-${client.id}-coding-agent-${agentType}`,
+        source: `client-${client.id}`,
+        target: `coding-agent-${agentType}`,
         animated: isConnected,
         style: firewallStyle,
         data: { isActive: isConnected },
@@ -382,13 +428,14 @@ export function buildGraph(
   providers: Provider[],
   mcpServers: McpServer[],
   skills: Skill[],
+  codingAgents: CodingAgent[],
   healthState: HealthCacheState | null,
   activeConnections: string[]
 ): { nodes: GraphNode[]; edges: GraphEdge[]; bounds: { width: number; height: number } } {
   // Build edges first to determine which targets are connected to clients
-  const edges = buildEdges(clients, providers, mcpServers, skills, activeConnections)
+  const edges = buildEdges(clients, providers, mcpServers, skills, codingAgents, activeConnections)
   const connectedTargetIds = new Set(edges.map(e => e.target))
-  const nodes = buildNodes(clients, providers, mcpServers, skills, healthState, activeConnections, connectedTargetIds)
+  const nodes = buildNodes(clients, providers, mcpServers, skills, codingAgents, healthState, activeConnections, connectedTargetIds)
   const layoutedNodes = applyDagreLayout(nodes, edges)
   const bounds = calculateBounds(layoutedNodes)
 

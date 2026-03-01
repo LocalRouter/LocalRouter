@@ -3,12 +3,12 @@ import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
 import { toast } from "sonner"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
-import { Switch } from "@/components/ui/switch"
 import { Badge } from "@/components/ui/Badge"
 import { Label } from "@/components/ui/label"
 import { Input } from "@/components/ui/Input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/Select"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import { CodingAgentsIcon } from "@/components/icons/category-icons"
 import type {
   CodingAgentInfo,
   CodingAgentType,
@@ -66,16 +66,6 @@ export function CodingAgentsView({ activeSubTab }: CodingAgentsViewProps) {
     }
   }, [activeSubTab])
 
-  const handleToggleEnabled = async (agentType: CodingAgentType, enabled: boolean) => {
-    try {
-      await invoke("set_coding_agent_enabled", { agentType, enabled })
-      toast.success(`${agents.find(a => a.agentType === agentType)?.displayName} ${enabled ? "enabled" : "disabled"}`)
-    } catch (error) {
-      console.error("Failed to toggle agent:", error)
-      toast.error("Failed to update agent")
-    }
-  }
-
   const handleUpdateConfig = async (
     agentType: CodingAgentType,
     field: string,
@@ -96,23 +86,39 @@ export function CodingAgentsView({ activeSubTab }: CodingAgentsViewProps) {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-full">
-        <p className="text-muted-foreground">Loading coding agents...</p>
+      <div className="flex flex-col h-full min-h-0">
+        <div className="flex-shrink-0 pb-4">
+          <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
+            <CodingAgentsIcon className="h-6 w-6" />
+            Coding Agents
+          </h1>
+          <p className="text-sm text-muted-foreground">
+            AI coding agents available as MCP tools through the gateway
+          </p>
+        </div>
+        <div className="flex items-center justify-center flex-1">
+          <p className="text-muted-foreground">Loading coding agents...</p>
+        </div>
       </div>
     )
   }
 
   return (
-    <div className="flex h-full">
+    <div className="flex flex-col h-full min-h-0">
+      <div className="flex-shrink-0 pb-4">
+        <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
+          <CodingAgentsIcon className="h-6 w-6" />
+          Coding Agents
+        </h1>
+        <p className="text-sm text-muted-foreground">
+          AI coding agents available as MCP tools through the gateway
+        </p>
+      </div>
+
+      <div className="flex flex-1 min-h-0 rounded-lg border">
       {/* Agent list */}
       <div className="w-64 border-r">
-        <div className="p-4 border-b">
-          <h2 className="text-sm font-semibold">Coding Agents</h2>
-          <p className="text-xs text-muted-foreground mt-1">
-            AI coding agents available as MCP tools
-          </p>
-        </div>
-        <ScrollArea className="h-[calc(100vh-8rem)]">
+        <ScrollArea className="h-full">
           <div className="p-2 space-y-1">
             {agents.map((agent) => (
               <button
@@ -129,13 +135,14 @@ export function CodingAgentsView({ activeSubTab }: CodingAgentsViewProps) {
                   <div className="text-xs text-muted-foreground">{agent.binaryName}</div>
                 </div>
                 <div className="flex items-center gap-1.5">
-                  {agent.installed && (
+                  {agent.installed ? (
                     <Badge variant="outline" className="text-[10px] px-1 py-0">
                       installed
                     </Badge>
-                  )}
-                  {agent.enabled && (
-                    <div className="h-1.5 w-1.5 rounded-full bg-green-500" />
+                  ) : (
+                    <Badge variant="secondary" className="text-[10px] px-1 py-0">
+                      not found
+                    </Badge>
                   )}
                 </div>
               </button>
@@ -162,14 +169,10 @@ export function CodingAgentsView({ activeSubTab }: CodingAgentsViewProps) {
                   ) : (
                     <Badge variant="secondary">Not Found</Badge>
                   )}
-                  <Switch
-                    checked={selected.enabled}
-                    onCheckedChange={(checked) => handleToggleEnabled(selected.agentType, checked)}
-                  />
                 </div>
               </div>
 
-              {selected.enabled && (
+              {selected.installed && (
                 <>
                   <Card>
                     <CardHeader>
@@ -235,7 +238,7 @@ export function CodingAgentsView({ activeSubTab }: CodingAgentsViewProps) {
                     <CardHeader>
                       <CardTitle>MCP Tools</CardTitle>
                       <CardDescription>
-                        When enabled, these tools are exposed to MCP clients through the gateway.
+                        These tools are exposed to MCP clients through the gateway.
                       </CardDescription>
                     </CardHeader>
                     <CardContent>
@@ -262,6 +265,19 @@ export function CodingAgentsView({ activeSubTab }: CodingAgentsViewProps) {
                     </CardContent>
                   </Card>
                 </>
+              )}
+
+              {!selected.installed && (
+                <Card>
+                  <CardContent className="py-8">
+                    <div className="text-center text-muted-foreground">
+                      <p className="font-medium">Agent not installed</p>
+                      <p className="text-sm mt-1">
+                        Install <code className="bg-muted px-1 py-0.5 rounded">{selected.binaryName}</code> to make it available as an MCP tool.
+                      </p>
+                    </div>
+                  </CardContent>
+                </Card>
               )}
 
               {/* Active sessions for this agent */}
@@ -298,12 +314,13 @@ export function CodingAgentsView({ activeSubTab }: CodingAgentsViewProps) {
               <div className="text-center">
                 <p className="text-muted-foreground">Select a coding agent to configure</p>
                 <p className="text-xs text-muted-foreground mt-1">
-                  Enable agents to expose them as MCP tools in the gateway
+                  Installed agents are automatically available as MCP tools
                 </p>
               </div>
             </div>
           )}
         </ScrollArea>
+      </div>
       </div>
     </div>
   )

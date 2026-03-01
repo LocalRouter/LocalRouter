@@ -1,14 +1,13 @@
 //! Tauri commands for AI coding agents management.
 
 use lr_coding_agents::manager::CodingAgentManager;
-use lr_config::{
-    CodingAgentConfig, CodingAgentType, CodingPermissionMode, ConfigManager, PermissionState,
-};
+use lr_config::{CodingAgentType, CodingPermissionMode, ConfigManager, PermissionState};
 use serde::Serialize;
 use std::sync::Arc;
 use tauri::{Emitter, State};
 
-/// Detected agent info returned to the frontend
+/// Detected agent info returned to the frontend.
+/// An agent is implicitly enabled when installed — no explicit enable flag.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CodingAgentInfo {
@@ -17,7 +16,6 @@ pub struct CodingAgentInfo {
     pub tool_prefix: String,
     pub binary_name: String,
     pub installed: bool,
-    pub enabled: bool,
     pub working_directory: Option<String>,
     pub model_id: Option<String>,
     pub permission_mode: CodingPermissionMode,
@@ -59,7 +57,6 @@ pub async fn list_coding_agents(
                 tool_prefix: agent_type.tool_prefix().to_string(),
                 binary_name: agent_type.binary_name().to_string(),
                 installed: installed.contains(agent_type),
-                enabled: agent_config.is_some_and(|c| c.enabled),
                 working_directory: agent_config.and_then(|c| c.working_directory.clone()),
                 model_id: agent_config.and_then(|c| c.model_id.clone()),
                 permission_mode: agent_config
@@ -70,47 +67,6 @@ pub async fn list_coding_agents(
         .collect();
 
     Ok(agents)
-}
-
-/// Enable or disable a coding agent
-#[tauri::command]
-pub async fn set_coding_agent_enabled(
-    agent_type: CodingAgentType,
-    enabled: bool,
-    config_manager: State<'_, ConfigManager>,
-    app: tauri::AppHandle,
-) -> Result<(), String> {
-    config_manager
-        .update(|cfg| {
-            if let Some(agent) = cfg
-                .coding_agents
-                .agents
-                .iter_mut()
-                .find(|a| a.agent_type == agent_type)
-            {
-                agent.enabled = enabled;
-            } else if enabled {
-                // Create a new config entry
-                cfg.coding_agents.agents.push(CodingAgentConfig {
-                    agent_type,
-                    enabled: true,
-                    working_directory: None,
-                    model_id: None,
-                    permission_mode: CodingPermissionMode::default(),
-                    env: std::collections::HashMap::new(),
-                    binary_path: None,
-                });
-            }
-        })
-        .map_err(|e| e.to_string())?;
-
-    config_manager.save().await.map_err(|e| e.to_string())?;
-
-    if let Err(e) = app.emit("coding-agents-changed", ()) {
-        tracing::error!("Failed to emit coding-agents-changed event: {}", e);
-    }
-
-    Ok(())
 }
 
 /// Update coding agent configuration

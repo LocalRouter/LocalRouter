@@ -41,21 +41,18 @@ impl CodingAgentManager {
         self.config.agents.iter().find(|a| a.agent_type == agent_type)
     }
 
-    /// Check if an agent type is enabled
+    /// Check if an agent type is available (binary installed on system).
+    /// Agents are implicitly enabled when installed — no explicit enable flag.
     pub fn is_agent_enabled(&self, agent_type: CodingAgentType) -> bool {
-        self.config
-            .agents
-            .iter()
-            .any(|a| a.agent_type == agent_type && a.enabled)
+        which::which(agent_type.binary_name()).is_ok()
     }
 
-    /// Get all enabled agent types
+    /// Get all available agent types (installed on system)
     pub fn enabled_agents(&self) -> Vec<CodingAgentType> {
-        self.config
-            .agents
+        CodingAgentType::all()
             .iter()
-            .filter(|a| a.enabled)
-            .map(|a| a.agent_type)
+            .filter(|t| which::which(t.binary_name()).is_ok())
+            .copied()
             .collect()
     }
 
@@ -713,7 +710,6 @@ mod tests {
             agents: vec![
                 CodingAgentConfig {
                     agent_type: CodingAgentType::ClaudeCode,
-                    enabled: true,
                     working_directory: Some("/tmp/test".to_string()),
                     model_id: Some("claude-3-opus".to_string()),
                     permission_mode: CodingPermissionMode::Supervised,
@@ -722,7 +718,6 @@ mod tests {
                 },
                 CodingAgentConfig {
                     agent_type: CodingAgentType::GeminiCli,
-                    enabled: false,
                     working_directory: None,
                     model_id: None,
                     permission_mode: CodingPermissionMode::Auto,
@@ -788,21 +783,24 @@ mod tests {
     }
 
     #[test]
-    fn test_is_agent_enabled() {
+    fn test_is_agent_enabled_checks_installation() {
         let config = test_config();
         let manager = CodingAgentManager::new(config);
-        assert!(manager.is_agent_enabled(CodingAgentType::ClaudeCode));
-        assert!(!manager.is_agent_enabled(CodingAgentType::GeminiCli));
-        assert!(!manager.is_agent_enabled(CodingAgentType::Codex)); // not configured at all
+        // is_agent_enabled checks if binary is on PATH
+        // We can't guarantee which agents are installed in CI,
+        // but the method should not panic for any agent type
+        for agent_type in CodingAgentType::all() {
+            let _ = manager.is_agent_enabled(*agent_type);
+        }
     }
 
     #[test]
-    fn test_enabled_agents() {
+    fn test_enabled_agents_matches_installed() {
         let config = test_config();
         let manager = CodingAgentManager::new(config);
         let enabled = manager.enabled_agents();
-        assert_eq!(enabled.len(), 1);
-        assert_eq!(enabled[0], CodingAgentType::ClaudeCode);
+        let installed = CodingAgentManager::detect_installed_agents();
+        assert_eq!(enabled, installed);
     }
 
     #[test]

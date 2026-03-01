@@ -19,6 +19,7 @@ import { AccessKeyNode } from './nodes/AccessKeyNode'
 import { ProviderNode } from './nodes/ProviderNode'
 import { McpServerNode } from './nodes/McpServerNode'
 import { SkillNode } from './nodes/SkillNode'
+import { CodingAgentNode } from './nodes/CodingAgentNode'
 import { MarketplaceNode } from './nodes/MarketplaceNode'
 import type { GraphNodeData } from './types'
 
@@ -28,6 +29,7 @@ const nodeTypes: NodeTypes = {
   provider: ProviderNode,
   mcpServer: McpServerNode,
   skill: SkillNode,
+  codingAgent: CodingAgentNode,
   marketplace: MarketplaceNode,
 }
 
@@ -38,7 +40,7 @@ interface ConnectionGraphProps {
 }
 
 export function ConnectionGraph({ className, onViewChange }: ConnectionGraphProps) {
-  const { clients, providers, mcpServers, skills, healthState, activeConnections, loading, error } = useGraphData()
+  const { clients, providers, mcpServers, skills, codingAgents, healthState, activeConnections, loading, error } = useGraphData()
 
   // Build the graph from data
   const { graphNodes, graphEdges, graphBounds } = useMemo(() => {
@@ -47,11 +49,12 @@ export function ConnectionGraph({ className, onViewChange }: ConnectionGraphProp
       providers,
       mcpServers,
       skills,
+      codingAgents,
       healthState,
       activeConnections
     )
     return { graphNodes: nodes as Node<GraphNodeData>[], graphEdges: edges as Edge[], graphBounds: bounds }
-  }, [clients, providers, mcpServers, skills, healthState, activeConnections])
+  }, [clients, providers, mcpServers, skills, codingAgents, healthState, activeConnections])
 
   // React Flow state
   const [nodes, setNodes, onNodesChange] = useNodesState<GraphNodeData>([])
@@ -67,7 +70,8 @@ export function ConnectionGraph({ className, onViewChange }: ConnectionGraphProp
   const isEmpty = clients.filter(c => c.enabled).length === 0 &&
     providers.filter(p => p.enabled).length === 0 &&
     mcpServers.filter(s => s.enabled).length === 0 &&
-    skills.length === 0
+    skills.length === 0 &&
+    codingAgents.length === 0
 
   // Count connected apps
   const connectedCount = activeConnections.length
@@ -90,6 +94,9 @@ export function ConnectionGraph({ className, onViewChange }: ConnectionGraphProp
         break
       case 'skill':
         onViewChange('skills', id)
+        break
+      case 'codingAgent':
+        onViewChange('coding-agents', id)
         break
       case 'marketplace':
         onViewChange('marketplace')

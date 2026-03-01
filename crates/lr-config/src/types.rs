@@ -1226,15 +1226,12 @@ fn default_output_buffer_size() -> usize {
     1000
 }
 
-/// Configuration for a single coding agent
+/// Configuration for a single coding agent.
+/// An agent is implicitly enabled if its binary is installed on the system.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CodingAgentConfig {
     /// Which agent this configures
     pub agent_type: CodingAgentType,
-
-    /// Whether this agent is available for use
-    #[serde(default)]
-    pub enabled: bool,
 
     /// Default working directory for this agent's sessions
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -1,11 +1,11 @@
 import { Node, Edge } from 'reactflow'
-import type { McpPermissions, SkillsPermissions, ModelPermissions, PermissionState } from '@/components/permissions'
+import type { McpPermissions, SkillsPermissions, ModelPermissions, PermissionState, CodingAgentsPermissions } from '@/components/permissions'
 
 // Health status from backend
 export type ItemHealthStatus = 'healthy' | 'degraded' | 'unhealthy' | 'ready' | 'pending' | 'disabled'
 
 // Graph node types
-export type GraphNodeType = 'accessKey' | 'provider' | 'mcpServer' | 'skill' | 'marketplace'
+export type GraphNodeType = 'accessKey' | 'provider' | 'mcpServer' | 'skill' | 'marketplace' | 'codingAgent'
 
 // Base node data shared by all node types
 export interface BaseNodeData {
@@ -43,19 +43,25 @@ export interface SkillNodeData extends BaseNodeData {
   type: 'skill'
 }
 
+// Coding agent node data
+export interface CodingAgentNodeData extends BaseNodeData {
+  type: 'codingAgent'
+}
+
 // Marketplace node data
 export interface MarketplaceNodeData extends BaseNodeData {
   type: 'marketplace'
 }
 
 // Union type for all node data
-export type GraphNodeData = AccessKeyNodeData | ProviderNodeData | McpServerNodeData | SkillNodeData | MarketplaceNodeData
+export type GraphNodeData = AccessKeyNodeData | ProviderNodeData | McpServerNodeData | SkillNodeData | CodingAgentNodeData | MarketplaceNodeData
 
 // Typed nodes
 export type AccessKeyNode = Node<AccessKeyNodeData, 'accessKey'>
 export type ProviderNode = Node<ProviderNodeData, 'provider'>
 export type McpServerNode = Node<McpServerNodeData, 'mcpServer'>
 export type SkillNode = Node<SkillNodeData, 'skill'>
+export type CodingAgentNode = Node<CodingAgentNodeData, 'codingAgent'>
 export type MarketplaceNode = Node<MarketplaceNodeData, 'marketplace'>
 export type GraphNode = Node<GraphNodeData>
 
@@ -74,6 +80,7 @@ export interface Client {
   last_used: string | null
   mcp_permissions: McpPermissions
   skills_permissions: SkillsPermissions
+  coding_agents_permissions: CodingAgentsPermissions
   model_permissions: ModelPermissions
   marketplace_permission: PermissionState
 }
@@ -95,6 +102,13 @@ export interface McpServer {
 // Skill info from backend
 export interface Skill {
   name: string
+}
+
+// Coding agent info from backend
+export interface CodingAgent {
+  agentType: string
+  displayName: string
+  installed: boolean
 }
 
 // Health cache state from backend
@@ -122,6 +136,7 @@ export interface UseGraphDataResult {
   providers: Provider[]
   mcpServers: McpServer[]
   skills: Skill[]
+  codingAgents: CodingAgent[]
   healthState: HealthCacheState | null
   activeConnections: string[]
   loading: boolean

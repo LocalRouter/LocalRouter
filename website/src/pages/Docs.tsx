@@ -26,6 +26,7 @@ import {
   X,
   ChevronLeft,
   ChevronRight,
+  Terminal,
 } from 'lucide-react'
 
 // --- Section data ---
@@ -187,6 +188,29 @@ const sections: DocSection[] = [
     ],
   },
   {
+    id: 'coding-agents',
+    title: 'AI Coding Agents',
+    icon: <Terminal className="h-4 w-4" />,
+    subsections: [
+      { id: 'coding-agents-overview', title: 'Overview' },
+      { id: 'coding-agents-supported', title: 'Supported Agents' },
+      { id: 'coding-agents-mcp-tools', title: 'MCP Tool Interface', children: [
+        { id: 'coding-agents-tool-start', title: 'Starting Sessions' },
+        { id: 'coding-agents-tool-say', title: 'Sending Messages' },
+        { id: 'coding-agents-tool-status', title: 'Checking Status' },
+        { id: 'coding-agents-tool-respond', title: 'Responding to Questions' },
+        { id: 'coding-agents-tool-interrupt', title: 'Interrupting Sessions' },
+        { id: 'coding-agents-tool-list', title: 'Listing Sessions' },
+      ]},
+      { id: 'coding-agents-approvals', title: 'Approval & Elicitation Flow', children: [
+        { id: 'coding-agents-elicitation', title: 'Elicitation (Direct)' },
+        { id: 'coding-agents-polling', title: 'Polling (Fallback)' },
+      ]},
+      { id: 'coding-agents-session-lifecycle', title: 'Session Lifecycle' },
+      { id: 'coding-agents-permissions', title: 'Per-Client Permissions' },
+    ],
+  },
+  {
     id: 'firewall',
     title: 'Firewall',
     icon: <ShieldCheck className="h-4 w-4" />,
@@ -331,7 +355,7 @@ interface SidebarGroup {
 const sidebarGroups: SidebarGroup[] = [
   { label: 'Getting Started', sectionIds: ['introduction', 'getting-started'] },
   { label: 'Core Features', sectionIds: ['clients', 'providers', 'model-selection-routing', 'rate-limiting'] },
-  { label: 'MCP & Extensions', sectionIds: ['unified-mcp-gateway', 'skills', 'marketplace'] },
+  { label: 'MCP & Extensions', sectionIds: ['unified-mcp-gateway', 'skills', 'coding-agents', 'marketplace'] },
   { label: 'Security', sectionIds: ['firewall', 'guardrails', 'privacy-security'] },
   { label: 'Operations', sectionIds: ['monitoring', 'configuration'] },
   { label: 'API Reference', sectionIds: ['api-openai-gateway', 'api-mcp-gateway'] },

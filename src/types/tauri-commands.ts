@@ -2266,7 +2266,6 @@ export interface CodingAgentInfo {
   toolPrefix: string
   binaryName: string
   installed: boolean
-  enabled: boolean
   workingDirectory: string | null
   modelId: string | null
   permissionMode: CodingPermissionMode
@@ -2290,12 +2289,6 @@ export interface CodingSessionInfo {
 // Coding Agents Command Parameters
 // Rust: src-tauri/src/ui/commands_coding_agents.rs
 // =============================================================================
-
-/** Params for set_coding_agent_enabled */
-export interface SetCodingAgentEnabledParams {
-  agentType: CodingAgentType
-  enabled: boolean
-}
 
 /** Params for update_coding_agent_config */
 export interface UpdateCodingAgentConfigParams {

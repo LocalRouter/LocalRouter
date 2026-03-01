@@ -400,6 +400,9 @@ export default function Home() {
                   </div>
                 </li>
               </ul>
+              <Link to="/docs/model-selection-routing#free-tier-mode" className="mt-6 inline-flex items-center gap-1 text-sm font-medium text-teal-500 hover:text-teal-400 transition-colors">
+                Learn more <span aria-hidden="true">&rarr;</span>
+              </Link>
             </div>
           </div>
         </div>
@@ -1043,8 +1046,7 @@ export default function Home() {
       <section className="border-b py-16 sm:py-24 bg-muted/30">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
           <div className="grid gap-12 lg:grid-cols-2 lg:gap-16 items-center">
-            {/* Visual: Coding Agents Architecture */}
-            <div className="relative order-2 lg:order-1 overflow-x-auto">
+            <div className="order-2 overflow-x-auto">
               <div className="rounded-xl border bg-gradient-to-br from-orange-950 to-slate-900 p-6 shadow-2xl min-w-[480px]">
                 {/* Three-column layout: Client → Gateway → Agents */}
                 <div className="flex items-stretch gap-3">
@@ -1122,7 +1124,7 @@ export default function Home() {
               </div>
             </div>
 
-            <div className="order-1 lg:order-2">
+            <div className="order-1">
               <div className="flex items-center gap-2 mb-4">
                 <Terminal className="h-5 w-5 text-orange-500" />
                 <span className="text-sm font-medium text-orange-500 uppercase tracking-wide">Coding Agents</span>
@@ -1156,6 +1158,9 @@ export default function Home() {
                   </div>
                 </li>
               </ul>
+              <Link to="/docs/coding-agents" className="mt-6 inline-flex items-center gap-1 text-sm font-medium text-orange-500 hover:text-orange-400 transition-colors">
+                Learn more <span aria-hidden="true">&rarr;</span>
+              </Link>
             </div>
           </div>
         </div>
@@ -1166,7 +1171,7 @@ export default function Home() {
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
           <div className="grid gap-12 lg:grid-cols-2 lg:gap-16 items-center">
             {/* Visual: Firewall Architecture */}
-            <div className="relative order-2 lg:order-2">
+            <div className="relative order-2 lg:order-1">
               <div className="relative w-full aspect-[4/3]">
                 {/* SVG Connection Lines */}
                 <svg className="absolute inset-0 w-full h-full pointer-events-none" viewBox="0 0 400 300" preserveAspectRatio="xMidYMid meet">
@@ -1277,7 +1282,7 @@ export default function Home() {
               </div>
             </div>
 
-            <div className="order-1 lg:order-1">
+            <div className="order-1 lg:order-2">
               <div className="flex items-center gap-2 mb-4">
                 <ShieldCheck className="h-5 w-5 text-amber-500" />
                 <span className="text-sm font-medium text-amber-500 uppercase tracking-wide">Firewall</span>
@@ -1316,7 +1321,7 @@ export default function Home() {
       <section className="border-b py-16 sm:py-24">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
           <div className="grid gap-12 lg:grid-cols-2 lg:gap-16 items-center">
-            <div className="order-1 lg:order-2">
+            <div>
               <div className="flex items-center gap-2 mb-4">
                 <Shield className="h-5 w-5 text-red-500" />
                 <span className="text-sm font-medium text-red-500 uppercase tracking-wide">GuardRails</span>
@@ -1355,7 +1360,7 @@ export default function Home() {
               </Link>
             </div>
             {/* Visual: GuardRail Approval Demo */}
-            <div className="flex justify-center order-2 lg:order-1">
+            <div className="flex justify-center">
               <div className="transform scale-[0.95]">
                 <GuardrailApprovalDemo />
               </div>
@@ -1368,7 +1373,7 @@ export default function Home() {
       <section className="border-b py-16 sm:py-24">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
           <div className="grid gap-12 lg:grid-cols-2 lg:gap-16 items-center">
-            <div>
+            <div className="order-1 lg:order-2">
               <div className="flex items-center gap-2 mb-4">
                 <Store className="h-5 w-5 text-cyan-500" />
                 <span className="text-sm font-medium text-cyan-500 uppercase tracking-wide">Marketplace</span>
@@ -1407,7 +1412,7 @@ export default function Home() {
               </Link>
             </div>
             {/* Visual: Marketplace Browser */}
-            <div className="relative overflow-x-auto">
+            <div className="relative overflow-x-auto order-2 lg:order-1">
               <div className="rounded-xl border-2 border-slate-700 bg-gradient-to-br from-slate-900 to-slate-800 p-6 shadow-2xl min-w-[480px]">
                 {/* Header */}
                 <div className="flex items-center gap-3 mb-5 pb-8 border-b border-slate-700">

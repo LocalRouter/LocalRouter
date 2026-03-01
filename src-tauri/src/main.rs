@@ -1557,7 +1557,6 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands_free_tier::get_default_free_tier,
             // Coding agents commands
             ui::commands_coding_agents::list_coding_agents,
-            ui::commands_coding_agents::set_coding_agent_enabled,
             ui::commands_coding_agents::update_coding_agent_config,
             ui::commands_coding_agents::list_coding_sessions,
             ui::commands_coding_agents::end_coding_session,
