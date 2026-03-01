@@ -47,7 +47,7 @@ export function CodingAgentsPermissionTree({ clientId, permissions, onUpdate }: 
     }
   }, [loadAgents])
 
-  const handlePermissionChange = async (key: string, state: PermissionState) => {
+  const handlePermissionChange = async (key: string, state: PermissionState, _parentState: PermissionState) => {
     setSaving(true)
     try {
       await invoke("set_client_coding_agents_permission", {

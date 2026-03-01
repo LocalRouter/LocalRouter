@@ -165,13 +165,20 @@ pub async fn set_client_coding_agents_permission(
                 match level {
                     CodingAgentsPermissionLevel::Global => {
                         client.coding_agents_permissions.global = state.clone();
+                        // Clear all per-agent overrides so they inherit the new global value
+                        client.coding_agents_permissions.agents.clear();
                     }
                     CodingAgentsPermissionLevel::Agent => {
                         if let Some(agent_key) = &key {
-                            client
-                                .coding_agents_permissions
-                                .agents
-                                .insert(agent_key.clone(), state.clone());
+                            // If the new state matches the global, remove the override (inherit)
+                            if state == client.coding_agents_permissions.global {
+                                client.coding_agents_permissions.agents.remove(agent_key);
+                            } else {
+                                client
+                                    .coding_agents_permissions
+                                    .agents
+                                    .insert(agent_key.clone(), state.clone());
+                            }
                         }
                     }
                 }
