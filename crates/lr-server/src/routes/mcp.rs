@@ -461,7 +461,10 @@ pub async fn mcp_gateway_handler(
         // Marketplace:
         // - "All" mode: enable only if globally enabled
         // - Direct mode (specific server/skill): disabled
-        if is_all_mode && state.config_manager.get().marketplace.enabled {
+        if is_all_mode
+            && (state.config_manager.get().marketplace.mcp_enabled
+                || state.config_manager.get().marketplace.skills_enabled)
+        {
             test_client.marketplace_permission = lr_config::PermissionState::Allow;
         } else {
             test_client.marketplace_permission = lr_config::PermissionState::Off;

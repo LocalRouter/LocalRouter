@@ -7,7 +7,6 @@ import {
   Cpu,
   RefreshCw,
   Plus,
-  Store,
   Shield,
   FileText,
   ScrollText,
@@ -119,7 +118,7 @@ export function CommandPalette({
             onSelect={() => runCommand(() => onViewChange('mcp-servers'))}
           >
             <McpIcon className="mr-2 h-4 w-4" />
-            <span>MCP</span>
+            <span>MCP Servers</span>
             <CommandShortcut>⌘4</CommandShortcut>
           </CommandItem>
           <CommandItem
@@ -149,13 +148,6 @@ export function CommandPalette({
             <Cpu className="mr-2 h-4 w-4" />
             <span>Strong/Weak</span>
             <CommandShortcut>⌘8</CommandShortcut>
-          </CommandItem>
-          <CommandItem
-            onSelect={() => runCommand(() => onViewChange('marketplace'))}
-          >
-            <Store className="mr-2 h-4 w-4" />
-            <span>Marketplace</span>
-            <CommandShortcut>⌘9</CommandShortcut>
           </CommandItem>
           <CommandItem
             onSelect={() => runCommand(() => onViewChange('settings'))}

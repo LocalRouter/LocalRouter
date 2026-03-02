@@ -39,6 +39,9 @@ pub enum MarketplaceError {
     #[error("Install timed out")]
     InstallTimeout,
 
+    #[error("{0}")]
+    NotEnabled(String),
+
     #[error("Invalid tool name: {0}")]
     InvalidToolName(String),
 

@@ -523,8 +523,8 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                 let service =
                     marketplace::MarketplaceService::new(config.marketplace.clone(), data_dir);
                 info!(
-                    "Marketplace service initialized (enabled: {})",
-                    config.marketplace.enabled
+                    "Marketplace service initialized (mcp_enabled: {}, skills_enabled: {})",
+                    config.marketplace.mcp_enabled, config.marketplace.skills_enabled
                 );
                 Some(Arc::new(service))
             };
@@ -738,6 +738,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                             &app_state.guardrail_approval_tracker,
                             &app_state.guardrail_denial_tracker,
                             &app_state.free_tier_approval_tracker,
+                            &app_state.auto_router_approval_tracker,
                         );
 
                         if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app_handle) {
@@ -1530,6 +1531,8 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             // Marketplace commands
             ui::commands_marketplace::marketplace_get_config,
             ui::commands_marketplace::marketplace_set_enabled,
+            ui::commands_marketplace::marketplace_set_mcp_enabled,
+            ui::commands_marketplace::marketplace_set_skills_enabled,
             ui::commands_marketplace::marketplace_set_registry_url,
             ui::commands_marketplace::marketplace_list_skill_sources,
             ui::commands_marketplace::marketplace_add_skill_source,

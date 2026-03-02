@@ -475,7 +475,7 @@ export const mockData = {
         ] as [string, string][],
       },
       auto_config: {
-        enabled: true,
+        permission: "allow" as const,
         model_name: "auto",
         prioritized_models: [
           ["openai-primary", "gpt-4o"],
@@ -745,7 +745,8 @@ export const mockData = {
 
   // MarketplaceConfig - matches src/types/tauri-commands.ts
   marketplaceConfig: {
-    enabled: true,
+    mcp_enabled: true,
+    skills_enabled: true,
     registry_url: "https://registry.localrouter.ai",
     skill_sources: [
       {

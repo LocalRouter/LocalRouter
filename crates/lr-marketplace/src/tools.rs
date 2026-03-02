@@ -108,12 +108,38 @@ pub async fn handle_tool_call(
     );
 
     match tool {
-        SEARCH_MCP_SERVERS => handle_search_mcp_servers(service, arguments).await,
+        SEARCH_MCP_SERVERS => {
+            if !service.is_mcp_enabled() {
+                return Err(MarketplaceError::NotEnabled(
+                    "MCP marketplace is not enabled".to_string(),
+                ));
+            }
+            handle_search_mcp_servers(service, arguments).await
+        }
         INSTALL_MCP_SERVER => {
+            if !service.is_mcp_enabled() {
+                return Err(MarketplaceError::NotEnabled(
+                    "MCP marketplace is not enabled".to_string(),
+                ));
+            }
             handle_install_mcp_server(service, arguments, client_id, client_name).await
         }
-        SEARCH_SKILLS => handle_search_skills(service, arguments).await,
-        INSTALL_SKILL => handle_install_skill(service, arguments, client_id, client_name).await,
+        SEARCH_SKILLS => {
+            if !service.is_skills_enabled() {
+                return Err(MarketplaceError::NotEnabled(
+                    "Skills marketplace is not enabled".to_string(),
+                ));
+            }
+            handle_search_skills(service, arguments).await
+        }
+        INSTALL_SKILL => {
+            if !service.is_skills_enabled() {
+                return Err(MarketplaceError::NotEnabled(
+                    "Skills marketplace is not enabled".to_string(),
+                ));
+            }
+            handle_install_skill(service, arguments, client_id, client_name).await
+        }
         _ => Err(MarketplaceError::InvalidToolName(tool_name.to_string())),
     }
 }

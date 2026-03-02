@@ -726,6 +726,15 @@ pub async fn submit_firewall_approval(
                         "Cleared guardrails category actions permanently for client {}",
                         info.client_id
                     );
+                } else if info.is_auto_router_request {
+                    // Set auto_config.permission to Allow permanently
+                    update_auto_router_permission(
+                        &app,
+                        &config_manager,
+                        &info.client_id,
+                        lr_config::PermissionState::Allow,
+                    )
+                    .await?;
                 } else if info.is_free_tier_fallback {
                     // Set free_tier_fallback to Allow permanently
                     update_free_tier_fallback_config(
@@ -758,6 +767,14 @@ pub async fn submit_firewall_approval(
                         .add_1_minute_bypass(&info.client_id);
                     tracing::info!(
                         "Added 1-minute guardrail bypass for client {}",
+                        info.client_id
+                    );
+                } else if info.is_auto_router_request {
+                    state
+                        .auto_router_approval_tracker
+                        .add_1_minute_approval(&info.client_id);
+                    tracing::info!(
+                        "Added 1-minute auto-router approval for client {}",
                         info.client_id
                     );
                 } else if info.is_free_tier_fallback {
@@ -797,6 +814,15 @@ pub async fn submit_firewall_approval(
                         .add_1_hour_bypass(&info.client_id);
                     tracing::info!(
                         "Added 1-hour guardrail bypass for client {}",
+                        info.client_id
+                    );
+                } else if info.is_auto_router_request {
+                    // Add time-based auto-router approval (1 hour)
+                    state
+                        .auto_router_approval_tracker
+                        .add_1_hour_approval(&info.client_id);
+                    tracing::info!(
+                        "Added 1-hour auto-router approval for client {}",
                         info.client_id
                     );
                 } else if info.is_free_tier_fallback {
@@ -849,6 +875,15 @@ pub async fn submit_firewall_approval(
                         "Cleared guardrails category actions for client {} (DenyAlways → disable guardrails for client)",
                         info.client_id
                     );
+                } else if info.is_auto_router_request {
+                    // Set auto_config.permission to Off permanently
+                    update_auto_router_permission(
+                        &app,
+                        &config_manager,
+                        &info.client_id,
+                        lr_config::PermissionState::Off,
+                    )
+                    .await?;
                 } else if info.is_free_tier_fallback {
                     // Set free_tier_fallback to Off permanently
                     update_free_tier_fallback_config(
@@ -1020,6 +1055,7 @@ pub async fn submit_firewall_approval(
         &state.guardrail_approval_tracker,
         &state.guardrail_denial_tracker,
         &state.free_tier_approval_tracker,
+        &state.auto_router_approval_tracker,
     );
 
     // Rebuild tray menu to remove the pending approval item
@@ -1046,6 +1082,7 @@ pub(crate) fn reevaluate_pending_approvals(
     guardrail_approval_tracker: &lr_server::state::GuardrailApprovalTracker,
     guardrail_denial_tracker: &lr_server::state::GuardrailDenialTracker,
     free_tier_approval_tracker: &lr_server::state::FreeTierApprovalTracker,
+    auto_router_approval_tracker: &lr_server::state::AutoRouterApprovalTracker,
 ) {
     use lr_mcp::gateway::access_control::{
         check_needs_approval, FirewallCheckContext, FirewallCheckResult,
@@ -1065,7 +1102,25 @@ pub(crate) fn reevaluate_pending_approvals(
             continue;
         };
 
-        let ctx = if info.is_free_tier_fallback {
+        let ctx = if info.is_auto_router_request {
+            let strategy = config
+                .strategies
+                .iter()
+                .find(|s| s.id == client.strategy_id);
+            if let Some(strategy) = strategy {
+                if let Some(ref auto_config) = strategy.auto_config {
+                    FirewallCheckContext::AutoRouter {
+                        permission: &auto_config.permission,
+                        has_time_based_approval: auto_router_approval_tracker
+                            .has_valid_approval(&info.client_id),
+                    }
+                } else {
+                    continue;
+                }
+            } else {
+                continue;
+            }
+        } else if info.is_free_tier_fallback {
             let strategy = config
                 .strategies
                 .iter()
@@ -1218,6 +1273,45 @@ async fn update_free_tier_fallback_config(
         tracing::error!("Failed to emit strategies-changed event: {}", e);
     }
     // Also emit clients-changed so pending approvals are re-evaluated
+    if let Err(e) = app.emit("clients-changed", ()) {
+        tracing::error!("Failed to emit clients-changed event: {}", e);
+    }
+
+    Ok(())
+}
+
+/// Helper to update auto-router permission on a client's strategy
+async fn update_auto_router_permission(
+    app: &tauri::AppHandle,
+    config_manager: &ConfigManager,
+    client_id: &str,
+    permission: lr_config::PermissionState,
+) -> Result<(), String> {
+    use tauri::Emitter;
+
+    config_manager
+        .update(|cfg| {
+            if let Some(client) = cfg.clients.iter().find(|c| c.id == client_id) {
+                let strategy_id = client.strategy_id.clone();
+                if let Some(strategy) = cfg.strategies.iter_mut().find(|s| s.id == strategy_id) {
+                    if let Some(ref mut auto_config) = strategy.auto_config {
+                        auto_config.permission = permission.clone();
+                        tracing::info!(
+                            "Updated auto_config.permission to {:?} for strategy {}",
+                            permission,
+                            strategy_id
+                        );
+                    }
+                }
+            }
+        })
+        .map_err(|e| e.to_string())?;
+
+    config_manager.save().await.map_err(|e| e.to_string())?;
+
+    if let Err(e) = app.emit("strategies-changed", ()) {
+        tracing::error!("Failed to emit strategies-changed event: {}", e);
+    }
     if let Err(e) = app.emit("clients-changed", ()) {
         tracing::error!("Failed to emit clients-changed event: {}", e);
     }
@@ -1898,7 +1992,8 @@ pub async fn set_client_marketplace_permission(
                 client.marketplace_enabled = state.is_enabled();
                 // If enabling marketplace, also enable global marketplace
                 if state.is_enabled() {
-                    cfg.marketplace.enabled = true;
+                    cfg.marketplace.mcp_enabled = true;
+                    cfg.marketplace.skills_enabled = true;
                 }
                 found = true;
             }

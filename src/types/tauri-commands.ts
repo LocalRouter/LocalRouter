@@ -150,13 +150,25 @@ export interface AvailableModelsSelection {
 }
 
 /**
+ * RouteLLM routing configuration within auto model config.
+ * Rust: crates/lr-config/src/types.rs - RouteLLMConfig struct
+ */
+export interface RouteLLMConfig {
+  enabled: boolean
+  threshold: number
+  weak_models: [string, string][]
+}
+
+/**
  * Auto routing configuration for localrouter/auto virtual model.
  * Rust: crates/lr-config/src/types.rs - AutoModelConfig struct
  */
 export interface AutoModelConfig {
-  strong_model: string
-  weak_model: string
-  threshold: number
+  permission: PermissionState
+  model_name: string
+  prioritized_models: [string, string][]
+  available_models: [string, string][]
+  routellm_config?: RouteLLMConfig | null
 }
 
 /**
@@ -898,7 +910,8 @@ export interface MarketplaceSkillSource {
  * Rust: crates/lr-config/src/types.rs - MarketplaceConfig struct
  */
 export interface MarketplaceConfig {
-  enabled: boolean
+  mcp_enabled: boolean
+  skills_enabled: boolean
   registry_url: string
   skill_sources: MarketplaceSkillSource[]
 }
@@ -1924,6 +1937,16 @@ export interface DebugSetTrayOverlayParams {
 
 /** Params for marketplace_set_enabled */
 export interface MarketplaceSetEnabledParams {
+  enabled: boolean
+}
+
+/** Params for marketplace_set_mcp_enabled */
+export interface MarketplaceSetMcpEnabledParams {
+  enabled: boolean
+}
+
+/** Params for marketplace_set_skills_enabled */
+export interface MarketplaceSetSkillsEnabledParams {
   enabled: boolean
 }
 

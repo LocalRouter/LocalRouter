@@ -108,6 +108,16 @@ pub fn migrate_config(mut config: AppConfig) -> AppResult<AppConfig> {
         config = migrate_to_v16(config)?;
     }
 
+    // Migrate to v17: Split marketplace enabled into mcp_enabled + skills_enabled
+    if config.version < 17 {
+        config = migrate_to_v17(config)?;
+    }
+
+    // Migrate to v18: Auto-router permission (enabled: bool → permission: PermissionState)
+    if config.version < 18 {
+        config = migrate_to_v18(config)?;
+    }
+
     // Update version to current
     config.version = CONFIG_VERSION;
 
@@ -546,6 +556,38 @@ fn migrate_to_v16(mut config: AppConfig) -> AppResult<AppConfig> {
     }
 
     config.version = 16;
+    Ok(config)
+}
+
+/// Migrate to version 17: Split marketplace enabled into per-type toggles
+///
+/// Copies the old `enabled` value to both `mcp_enabled` and `skills_enabled`.
+fn migrate_to_v17(mut config: AppConfig) -> AppResult<AppConfig> {
+    info!("Migrating to version 17: Split marketplace enabled into mcp_enabled + skills_enabled");
+
+    let was_enabled = config.marketplace.enabled;
+    config.marketplace.mcp_enabled = was_enabled;
+    config.marketplace.skills_enabled = was_enabled;
+
+    config.version = 17;
+    Ok(config)
+}
+
+/// Migrate to version 18: Auto-router permission
+///
+/// Converts `AutoModelConfig.enabled: bool` → `AutoModelConfig.permission: PermissionState`.
+/// The old `enabled` field is deserialized by serde into `AutoModelConfig.enabled: Option<bool>`,
+/// and `migrate_enabled_field()` copies it into `permission`.
+fn migrate_to_v18(mut config: AppConfig) -> AppResult<AppConfig> {
+    info!("Migrating to version 18: Auto-router permission (enabled → permission)");
+
+    for strategy in &mut config.strategies {
+        if let Some(ref mut auto_config) = strategy.auto_config {
+            auto_config.migrate_enabled_field();
+        }
+    }
+
+    config.version = 18;
     Ok(config)
 }
 

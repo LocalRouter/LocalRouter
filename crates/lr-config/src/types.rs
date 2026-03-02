@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use uuid::Uuid;
 
-pub(crate) const CONFIG_VERSION: u32 = 16;
+pub(crate) const CONFIG_VERSION: u32 = 18;
 
 /// Suffix for auto-generated client strategy names
 pub const CLIENT_STRATEGY_NAME_SUFFIX: &str = "'s strategy";
@@ -226,10 +226,14 @@ impl Default for RouteLLMConfig {
 }
 
 /// Auto model configuration for localrouter/auto virtual model
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct AutoModelConfig {
-    /// Whether auto-routing is enabled
-    pub enabled: bool,
+    /// Permission state for auto-routing (Allow/Ask/Off)
+    #[serde(default)]
+    pub permission: PermissionState,
+    /// Backward-compat: old `enabled` bool → migrated to `permission` in v18
+    #[serde(default, skip_serializing)]
+    pub enabled: Option<bool>,
     /// Custom model name for the auto router (default: "localrouter/auto")
     #[serde(default = "default_auto_model_name")]
     pub model_name: String,
@@ -241,6 +245,22 @@ pub struct AutoModelConfig {
     /// RouteLLM intelligent routing configuration
     #[serde(skip_serializing_if = "Option::is_none")]
     pub routellm_config: Option<RouteLLMConfig>,
+}
+
+impl AutoModelConfig {
+    /// Migrate the old `enabled` bool field into `permission` if present.
+    /// Called during config migration v18.
+    pub fn migrate_enabled_field(&mut self) {
+        if let Some(was_enabled) = self.enabled.take() {
+            if self.permission == PermissionState::Off {
+                self.permission = if was_enabled {
+                    PermissionState::Allow
+                } else {
+                    PermissionState::Off
+                };
+            }
+        }
+    }
 }
 
 fn default_auto_model_name() -> String {
@@ -1391,8 +1411,16 @@ impl CodingAgentsPermissions {
 /// Marketplace configuration for MCP server and skill discovery
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MarketplaceConfig {
-    /// Whether marketplace is enabled globally
+    /// Whether MCP marketplace is enabled
     #[serde(default)]
+    pub mcp_enabled: bool,
+
+    /// Whether Skills marketplace is enabled
+    #[serde(default)]
+    pub skills_enabled: bool,
+
+    /// Legacy field for backward-compatible deserialization
+    #[serde(default, skip_serializing)]
     pub enabled: bool,
 
     /// MCP server registry URL
@@ -1407,6 +1435,8 @@ pub struct MarketplaceConfig {
 impl Default for MarketplaceConfig {
     fn default() -> Self {
         Self {
+            mcp_enabled: false,
+            skills_enabled: false,
             enabled: false,
             registry_url: default_marketplace_registry_url(),
             skill_sources: default_marketplace_skill_sources(),

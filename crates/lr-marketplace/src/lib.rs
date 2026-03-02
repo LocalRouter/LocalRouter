@@ -159,9 +159,20 @@ impl MarketplaceService {
         self.config.read().clone()
     }
 
-    /// Check if marketplace is enabled
+    /// Check if marketplace is enabled (either MCP or Skills)
     pub fn is_enabled(&self) -> bool {
-        self.config.read().enabled
+        let cfg = self.config.read();
+        cfg.mcp_enabled || cfg.skills_enabled
+    }
+
+    /// Check if MCP marketplace is enabled
+    pub fn is_mcp_enabled(&self) -> bool {
+        self.config.read().mcp_enabled
+    }
+
+    /// Check if Skills marketplace is enabled
+    pub fn is_skills_enabled(&self) -> bool {
+        self.config.read().skills_enabled
     }
 
     /// Get reference to the install manager

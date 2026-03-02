@@ -1083,7 +1083,16 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   // ============================================================================
   'get_marketplace_config': () => mockData.marketplaceConfig,
   'marketplace_set_enabled': (args) => {
-    mockData.marketplaceConfig.enabled = args?.enabled ?? true
+    mockData.marketplaceConfig.mcp_enabled = args?.enabled ?? true
+    mockData.marketplaceConfig.skills_enabled = args?.enabled ?? true
+    return null
+  },
+  'marketplace_set_mcp_enabled': (args) => {
+    mockData.marketplaceConfig.mcp_enabled = args?.enabled ?? true
+    return null
+  },
+  'marketplace_set_skills_enabled': (args) => {
+    mockData.marketplaceConfig.skills_enabled = args?.enabled ?? true
     return null
   },
   'marketplace_set_registry_url': () => null,

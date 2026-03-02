@@ -6,7 +6,6 @@ import {
   Settings,
   RefreshCw,
   Bug,
-  Store,
   ChevronsLeft,
   ChevronsRight,
   Shield,
@@ -45,7 +44,7 @@ interface HealthCacheState {
 }
 
 export type View = 'dashboard' | 'clients' | 'resources' | 'mcp-servers' | 'skills'
-  | 'coding-agents' | 'guardrails' | 'strong-weak' | 'marketplace' | 'settings' | 'debug'
+  | 'coding-agents' | 'guardrails' | 'strong-weak' | 'settings' | 'debug'
 
 interface SidebarProps {
   activeView: View
@@ -60,21 +59,29 @@ interface NavItem {
   indent?: boolean
 }
 
+interface NavHeading {
+  heading: string
+}
+
+type NavEntry = NavItem | NavHeading
+
+function isNavHeading(entry: NavEntry): entry is NavHeading {
+  return 'heading' in entry
+}
+
 const clientNavItems: NavItem[] = [
   { id: 'clients', icon: Users, label: 'Client', shortcut: '⌘2' },
 ]
 
-const resourceNavItems: NavItem[] = [
-  { id: 'resources', icon: ProvidersIcon, label: 'LLM Provider', shortcut: '⌘3' },
-  { id: 'mcp-servers', icon: McpIcon, label: 'MCP', shortcut: '⌘4' },
+const resourceNavEntries: NavEntry[] = [
+  { heading: 'LLM' },
+  { id: 'resources', icon: ProvidersIcon, label: 'Providers', shortcut: '⌘3', indent: true },
+  { id: 'guardrails', icon: Shield, label: 'GuardRails', shortcut: '⌘7', indent: true },
+  { id: 'strong-weak', icon: Cpu, label: 'Strong/Weak', shortcut: '⌘8', indent: true },
+  { heading: 'MCP' },
+  { id: 'mcp-servers', icon: McpIcon, label: 'Servers', shortcut: '⌘4', indent: true },
   { id: 'skills', icon: SkillsIcon, label: 'Skill', shortcut: '⌘5', indent: true },
   { id: 'coding-agents', icon: CodingAgentsIcon, label: 'Coding Agents', shortcut: '⌘6', indent: true },
-]
-
-const featureNavItems: NavItem[] = [
-  { id: 'guardrails', icon: Shield, label: 'GuardRails', shortcut: '⌘7' },
-  { id: 'strong-weak', icon: Cpu, label: 'Strong/Weak', shortcut: '⌘8' },
-  { id: 'marketplace', icon: Store, label: 'Marketplace', shortcut: '⌘9' },
 ]
 
 const bottomNavItems: NavItem[] = [
@@ -241,10 +248,6 @@ export function Sidebar({ activeView, onViewChange }: SidebarProps) {
             e.preventDefault()
             onViewChange('strong-weak')
             break
-          case '9':
-            e.preventDefault()
-            onViewChange('marketplace')
-            break
         }
       }
     }
@@ -252,6 +255,20 @@ export function Sidebar({ activeView, onViewChange }: SidebarProps) {
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [onViewChange])
+
+  const renderNavEntry = (entry: NavEntry, index: number) => {
+    if (isNavHeading(entry)) {
+      if (!expanded) {
+        return <div key={`heading-${index}`} className="my-1 h-px bg-border" />
+      }
+      return (
+        <div key={`heading-${index}`} className="px-2 pt-2 pb-0.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">
+          {entry.heading}
+        </div>
+      )
+    }
+    return renderNavItem(entry)
+  }
 
   const renderNavItem = (item: NavItem) => {
     const Icon = item.icon
@@ -261,7 +278,7 @@ export function Sidebar({ activeView, onViewChange }: SidebarProps) {
       <button
         onClick={() => onViewChange(item.id)}
         className={cn(
-          "flex items-center rounded-md transition-colors h-8 w-full gap-2 whitespace-nowrap",
+          "flex items-center rounded-md transition-all duration-200 ease-in-out h-8 w-full gap-2 whitespace-nowrap",
           item.indent && expanded ? "pl-6 pr-2" : "px-2",
           isActive
             ? "bg-accent text-accent-foreground"
@@ -338,13 +355,7 @@ export function Sidebar({ activeView, onViewChange }: SidebarProps) {
           <div className="my-1 h-px bg-border" />
 
           {/* Resources section */}
-          {resourceNavItems.map(renderNavItem)}
-
-          {/* Separator */}
-          <div className="my-1 h-px bg-border" />
-
-          {/* Features section */}
-          {featureNavItems.map(renderNavItem)}
+          {resourceNavEntries.map(renderNavEntry)}
         </nav>
 
         {/* Bottom Navigation */}

@@ -33,7 +33,7 @@ pub async fn marketplace_get_config(
     Ok(config.marketplace)
 }
 
-/// Set marketplace enabled state
+/// Set marketplace enabled state (sets both MCP and Skills)
 #[tauri::command]
 pub async fn marketplace_set_enabled(
     enabled: bool,
@@ -42,13 +42,59 @@ pub async fn marketplace_set_enabled(
 ) -> Result<(), String> {
     config_manager
         .update(|cfg| {
-            cfg.marketplace.enabled = enabled;
+            cfg.marketplace.mcp_enabled = enabled;
+            cfg.marketplace.skills_enabled = enabled;
         })
         .map_err(|e| e.to_string())?;
 
     config_manager.save().await.map_err(|e| e.to_string())?;
 
-    // Update the service config if available
+    if let Some(ref service) = *marketplace_service.inner() {
+        let config = config_manager.get();
+        service.update_config(config.marketplace);
+    }
+
+    Ok(())
+}
+
+/// Set MCP marketplace enabled state
+#[tauri::command]
+pub async fn marketplace_set_mcp_enabled(
+    enabled: bool,
+    config_manager: State<'_, ConfigManager>,
+    marketplace_service: State<'_, Option<Arc<MarketplaceService>>>,
+) -> Result<(), String> {
+    config_manager
+        .update(|cfg| {
+            cfg.marketplace.mcp_enabled = enabled;
+        })
+        .map_err(|e| e.to_string())?;
+
+    config_manager.save().await.map_err(|e| e.to_string())?;
+
+    if let Some(ref service) = *marketplace_service.inner() {
+        let config = config_manager.get();
+        service.update_config(config.marketplace);
+    }
+
+    Ok(())
+}
+
+/// Set Skills marketplace enabled state
+#[tauri::command]
+pub async fn marketplace_set_skills_enabled(
+    enabled: bool,
+    config_manager: State<'_, ConfigManager>,
+    marketplace_service: State<'_, Option<Arc<MarketplaceService>>>,
+) -> Result<(), String> {
+    config_manager
+        .update(|cfg| {
+            cfg.marketplace.skills_enabled = enabled;
+        })
+        .map_err(|e| e.to_string())?;
+
+    config_manager.save().await.map_err(|e| e.to_string())?;
+
     if let Some(ref service) = *marketplace_service.inner() {
         let config = config_manager.get();
         service.update_config(config.marketplace);
@@ -279,8 +325,8 @@ pub async fn marketplace_search_mcp_servers(
         .as_ref()
         .ok_or_else(|| "Marketplace service not initialized".to_string())?;
 
-    if !service.is_enabled() {
-        return Err("Marketplace is not enabled".to_string());
+    if !service.is_mcp_enabled() {
+        return Err("MCP marketplace is not enabled".to_string());
     }
 
     service
@@ -301,8 +347,8 @@ pub async fn marketplace_search_skills(
         .as_ref()
         .ok_or_else(|| "Marketplace service not initialized".to_string())?;
 
-    if !service.is_enabled() {
-        return Err("Marketplace is not enabled".to_string());
+    if !service.is_skills_enabled() {
+        return Err("Skills marketplace is not enabled".to_string());
     }
 
     service
@@ -632,7 +678,8 @@ pub async fn set_client_marketplace_enabled(
 
             // If enabling for any client, also enable marketplace globally
             if enabled {
-                cfg.marketplace.enabled = true;
+                cfg.marketplace.mcp_enabled = true;
+                cfg.marketplace.skills_enabled = true;
             }
         })
         .map_err(|e| e.to_string())?;

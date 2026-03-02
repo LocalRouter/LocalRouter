@@ -76,7 +76,8 @@ export interface SkillListing {
 }
 
 interface MarketplaceConfig {
-  enabled: boolean
+  mcp_enabled: boolean
+  skills_enabled: boolean
   registry_url: string
   skill_sources: { repo_url: string; branch: string; path: string; label: string }[]
 }
@@ -125,9 +126,11 @@ export function MarketplaceSearchPanel({
     loadConfig()
   }, [])
 
+  const isEnabled = type === "mcp" ? config?.mcp_enabled : config?.skills_enabled
+
   // Trigger initial search when config is loaded and enabled
   useEffect(() => {
-    if (config?.enabled && !hasInitialSearch.current) {
+    if (isEnabled && !hasInitialSearch.current) {
       hasInitialSearch.current = true
       if (type === "mcp") {
         loadMcpServers()
@@ -135,7 +138,7 @@ export function MarketplaceSearchPanel({
         searchSkills()
       }
     }
-  }, [config?.enabled, type])
+  }, [isEnabled, type])
 
   const loadConfig = async () => {
     try {
@@ -150,9 +153,10 @@ export function MarketplaceSearchPanel({
 
   const handleEnableMarketplace = async () => {
     try {
-      await invoke("marketplace_set_enabled", { enabled: true })
+      const command = type === "mcp" ? "marketplace_set_mcp_enabled" : "marketplace_set_skills_enabled"
+      await invoke(command, { enabled: true })
       await loadConfig()
-      toast.success("Marketplace enabled")
+      toast.success(`${type === "mcp" ? "MCP" : "Skills"} marketplace enabled`)
     } catch (error) {
       console.error("Failed to enable marketplace:", error)
       toast.error("Failed to enable marketplace")
@@ -213,12 +217,13 @@ export function MarketplaceSearchPanel({
     )
   }
 
-  if (!config?.enabled) {
+  if (!isEnabled) {
+    const label = type === "mcp" ? "MCP" : "Skills"
     return (
       <DisabledOverlay
-        title="Marketplace Disabled"
-        description="Enable the marketplace to browse and install resources from online registries."
-        actionLabel="Enable Marketplace"
+        title={`${label} Marketplace Disabled`}
+        description={`Enable the ${label} marketplace to browse and install ${type === "mcp" ? "MCP servers" : "skills"} from online registries.`}
+        actionLabel={`Enable ${label} Marketplace`}
         onAction={handleEnableMarketplace}
         className={className}
       >
@@ -274,9 +279,12 @@ export function MarketplaceSearchPanel({
                               <span className="text-xs text-muted-foreground">v{pkg.version}</span>
                             )}
                           </div>
-                          {server.vendor && (
-                            <p className="text-xs text-muted-foreground">by {server.vendor}</p>
-                          )}
+                          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                            {server.vendor && <span>by {server.vendor}</span>}
+                            <Badge variant="outline" className="text-xs">
+                              {server.source_id}
+                            </Badge>
+                          </div>
                           <p className="text-xs text-muted-foreground line-clamp-2 mt-1">
                             {server.description}
                           </p>

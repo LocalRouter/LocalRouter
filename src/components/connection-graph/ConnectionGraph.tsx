@@ -99,7 +99,7 @@ export function ConnectionGraph({ className, onViewChange }: ConnectionGraphProp
         onViewChange('coding-agents')
         break
       case 'marketplace':
-        onViewChange('marketplace')
+        onViewChange('mcp-servers', 'marketplace')
         break
     }
   }, [onViewChange])
