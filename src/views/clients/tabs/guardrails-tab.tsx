@@ -161,7 +161,7 @@ export function ClientGuardrailsTab({ client, onUpdate, onViewChange }: ClientGu
             {onViewChange && (
               <button
                 className="text-blue-500 hover:underline ml-1"
-                onClick={() => onViewChange("try-it-out", `guardrails/init/client/${client.client_id}`)}
+                onClick={() => onViewChange("guardrails", `try-it-out/init/client/${client.client_id}`)}
               >
                 Test in Try It Out
               </button>
@@ -181,12 +181,12 @@ export function ClientGuardrailsTab({ client, onUpdate, onViewChange }: ClientGu
                   {onViewChange ? (
                     <button
                       className="text-blue-500 hover:underline"
-                      onClick={() => onViewChange("settings", "guardrails")}
+                      onClick={() => onViewChange("guardrails", "models")}
                     >
-                      Settings &rarr; GuardRails
+                      GuardRails &rarr; Models
                     </button>
                   ) : (
-                    "Settings"
+                    "GuardRails"
                   )}.
                 </span>
               </CardDescription>

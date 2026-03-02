@@ -7,8 +7,10 @@
 import { useState, useEffect, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { McpIcon } from "@/components/icons/category-icons"
 import { McpServersPanel, McpHealthStatus, McpHealthCheckEvent } from "../resources/mcp-servers-panel"
+import { McpTab } from "@/views/try-it-out/mcp-tab"
 
 interface McpServersViewProps {
   activeSubTab: string | null
@@ -16,17 +18,19 @@ interface McpServersViewProps {
 }
 
 export function McpServersView({ activeSubTab, onTabChange }: McpServersViewProps) {
-  // Parse subTab to get selected server ID or add template
-  // Format: "server-id" or "add/template-id"
+  // Parse subTab to determine top-level tab and server selection
+  // Format: "try-it-out" or "try-it-out/init/..." or "server-id" or "add/template-id"
   const parseSubTab = (subTab: string | null) => {
-    if (!subTab) return { selectedId: null, addTemplateId: null }
+    if (!subTab) return { topTab: "servers", selectedId: null, addTemplateId: null, tryItOutInit: null as string | null }
+    if (subTab === "try-it-out") return { topTab: "try-it-out", selectedId: null, addTemplateId: null, tryItOutInit: null as string | null }
+    if (subTab.startsWith("try-it-out/")) return { topTab: "try-it-out", selectedId: null, addTemplateId: null, tryItOutInit: subTab.slice(11) }
     if (subTab.startsWith("add/")) {
-      return { selectedId: null, addTemplateId: subTab.slice(4) }
+      return { topTab: "servers", selectedId: null, addTemplateId: subTab.slice(4), tryItOutInit: null as string | null }
     }
-    return { selectedId: subTab, addTemplateId: null }
+    return { topTab: "servers", selectedId: subTab, addTemplateId: null, tryItOutInit: null as string | null }
   }
 
-  const { selectedId, addTemplateId } = parseSubTab(activeSubTab)
+  const { topTab, selectedId, addTemplateId, tryItOutInit } = parseSubTab(activeSubTab)
 
   // Lifted health status state - persists across interactions
   const [healthStatus, setHealthStatus] = useState<Record<string, McpHealthStatus>>({})
@@ -111,6 +115,23 @@ export function McpServersView({ activeSubTab, onTabChange }: McpServersViewProp
     onTabChange("mcp-servers", id)
   }
 
+  const handleTopTabChange = (tab: string) => {
+    onTabChange("mcp-servers", tab === "servers" ? null : tab)
+  }
+
+  // Parse init path for try-it-out
+  const parseTryItOutInit = () => {
+    if (!tryItOutInit || !tryItOutInit.startsWith("init/")) return {}
+    const parts = tryItOutInit.slice(5).split("/")
+    const mode = parts[0] as "client" | "all" | "direct" | undefined
+    const target = parts.slice(1).join("/") || undefined
+    if (mode === "client" && target) return { initialMode: mode, initialClientId: target }
+    if (mode === "direct" && target) return { initialMode: mode, initialDirectTarget: target }
+    return {}
+  }
+
+  const tryItOutInitProps = parseTryItOutInit()
+
   return (
     <div className="flex flex-col h-full min-h-0">
       <div className="flex-shrink-0 pb-4">
@@ -120,22 +141,41 @@ export function McpServersView({ activeSubTab, onTabChange }: McpServersViewProp
         </p>
       </div>
 
-      <div className="flex-1 min-h-0">
-        <McpServersPanel
-          selectedId={selectedId}
-          onSelect={handleSelect}
-          healthStatus={healthStatus}
-          onHealthInit={(serverIds) => {
-            if (!healthInitialized) {
-              setHealthInitialized(true)
-              startHealthChecks(serverIds)
-            }
-          }}
-          onRefreshHealth={refreshHealth}
-          initialAddTemplateId={addTemplateId}
-          onViewChange={onTabChange}
-        />
-      </div>
+      <Tabs
+        value={topTab}
+        onValueChange={handleTopTabChange}
+        className="flex flex-col flex-1 min-h-0"
+      >
+        <TabsList className="flex-shrink-0 w-fit">
+          <TabsTrigger value="servers">Servers</TabsTrigger>
+          <TabsTrigger value="try-it-out">Try It Out</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="servers" className="flex-1 min-h-0 mt-4">
+          <McpServersPanel
+            selectedId={selectedId}
+            onSelect={handleSelect}
+            healthStatus={healthStatus}
+            onHealthInit={(serverIds) => {
+              if (!healthInitialized) {
+                setHealthInitialized(true)
+                startHealthChecks(serverIds)
+              }
+            }}
+            onRefreshHealth={refreshHealth}
+            initialAddTemplateId={addTemplateId}
+            onViewChange={onTabChange}
+          />
+        </TabsContent>
+
+        <TabsContent value="try-it-out" className="flex-1 min-h-0 mt-4">
+          <McpTab
+            innerPath={null}
+            onPathChange={() => {}}
+            {...tryItOutInitProps}
+          />
+        </TabsContent>
+      </Tabs>
     </div>
   )
 }

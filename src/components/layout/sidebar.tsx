@@ -4,14 +4,15 @@ import { listen } from '@tauri-apps/api/event'
 import {
   Users,
   Settings,
-  FlaskConical,
   RefreshCw,
   Bug,
   Store,
   ChevronsLeft,
   ChevronsRight,
+  Shield,
+  Cpu,
 } from "lucide-react"
-import { ProvidersIcon, McpIcon, SkillsIcon } from "@/components/icons/category-icons"
+import { ProvidersIcon, McpIcon, SkillsIcon, CodingAgentsIcon } from "@/components/icons/category-icons"
 import { Logo } from "@/components/Logo"
 import { cn } from "@/lib/utils"
 import {
@@ -43,7 +44,8 @@ interface HealthCacheState {
   aggregate_status: AggregateHealthStatus
 }
 
-export type View = 'dashboard' | 'clients' | 'resources' | 'mcp-servers' | 'skills' | 'marketplace' | 'settings' | 'try-it-out' | 'debug'
+export type View = 'dashboard' | 'clients' | 'resources' | 'mcp-servers' | 'skills'
+  | 'coding-agents' | 'guardrails' | 'strong-weak' | 'marketplace' | 'settings' | 'debug'
 
 interface SidebarProps {
   activeView: View
@@ -54,7 +56,8 @@ interface NavItem {
   id: View
   icon: React.ElementType
   label: string
-  shortcut: string
+  shortcut?: string
+  indent?: boolean
 }
 
 const clientNavItems: NavItem[] = [
@@ -64,14 +67,19 @@ const clientNavItems: NavItem[] = [
 const resourceNavItems: NavItem[] = [
   { id: 'resources', icon: ProvidersIcon, label: 'LLM Provider', shortcut: '⌘3' },
   { id: 'mcp-servers', icon: McpIcon, label: 'MCP', shortcut: '⌘4' },
-  { id: 'skills', icon: SkillsIcon, label: 'Skill', shortcut: '⌘5' },
+  { id: 'skills', icon: SkillsIcon, label: 'Skill', shortcut: '⌘5', indent: true },
+  { id: 'coding-agents', icon: CodingAgentsIcon, label: 'Coding Agents', shortcut: '⌘6', indent: true },
+]
+
+const featureNavItems: NavItem[] = [
+  { id: 'guardrails', icon: Shield, label: 'GuardRails', shortcut: '⌘7' },
+  { id: 'strong-weak', icon: Cpu, label: 'Strong/Weak', shortcut: '⌘8' },
+  { id: 'marketplace', icon: Store, label: 'Marketplace', shortcut: '⌘9' },
 ]
 
 const bottomNavItems: NavItem[] = [
-  ...(import.meta.env.DEV ? [{ id: 'debug' as View, icon: Bug, label: 'Debug', shortcut: '⌘0' }] : []),
-  { id: 'try-it-out', icon: FlaskConical, label: 'Try It Out', shortcut: '⌘6' },
-  { id: 'marketplace', icon: Store, label: 'Marketplace', shortcut: '⌘7' },
-  { id: 'settings', icon: Settings, label: 'Settings', shortcut: '⌘8' },
+  { id: 'settings', icon: Settings, label: 'Settings' },
+  ...(import.meta.env.DEV ? [{ id: 'debug' as View, icon: Bug, label: 'Debug' }] : []),
 ]
 
 export function Sidebar({ activeView, onViewChange }: SidebarProps) {
@@ -223,19 +231,19 @@ export function Sidebar({ activeView, onViewChange }: SidebarProps) {
             break
           case '6':
             e.preventDefault()
-            onViewChange('try-it-out')
+            onViewChange('coding-agents')
             break
           case '7':
             e.preventDefault()
-            onViewChange('marketplace')
+            onViewChange('guardrails')
             break
           case '8':
             e.preventDefault()
-            onViewChange('settings')
+            onViewChange('strong-weak')
             break
           case '9':
             e.preventDefault()
-            onViewChange('settings')
+            onViewChange('marketplace')
             break
         }
       }
@@ -253,7 +261,8 @@ export function Sidebar({ activeView, onViewChange }: SidebarProps) {
       <button
         onClick={() => onViewChange(item.id)}
         className={cn(
-          "flex items-center rounded-md transition-colors h-8 w-full gap-2 px-2 whitespace-nowrap",
+          "flex items-center rounded-md transition-colors h-8 w-full gap-2 whitespace-nowrap",
+          item.indent && expanded ? "pl-6 pr-2" : "px-2",
           isActive
             ? "bg-accent text-accent-foreground"
             : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
@@ -272,9 +281,11 @@ export function Sidebar({ activeView, onViewChange }: SidebarProps) {
         <TooltipContent side="right" sideOffset={8}>
           <div className="flex items-center gap-2">
             {!expanded && <span>{item.label}</span>}
-            <kbd className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
-              {item.shortcut}
-            </kbd>
+            {item.shortcut && (
+              <kbd className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                {item.shortcut}
+              </kbd>
+            )}
           </div>
         </TooltipContent>
       </Tooltip>
@@ -328,6 +339,12 @@ export function Sidebar({ activeView, onViewChange }: SidebarProps) {
 
           {/* Resources section */}
           {resourceNavItems.map(renderNavItem)}
+
+          {/* Separator */}
+          <div className="my-1 h-px bg-border" />
+
+          {/* Features section */}
+          {featureNavItems.map(renderNavItem)}
         </nav>
 
         {/* Bottom Navigation */}

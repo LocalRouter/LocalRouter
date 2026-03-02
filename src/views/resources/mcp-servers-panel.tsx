@@ -651,7 +651,7 @@ export function McpServersPanel({
                     <Button
                       variant="outline"
                       size="sm"
-                      onClick={() => onViewChange("try-it-out", `mcp/init/direct/server:${selectedServer.id}`)}
+                      onClick={() => onViewChange("mcp-servers", "try-it-out")}
                     >
                       <FlaskConical className="h-4 w-4 mr-1" />
                       Try It Out

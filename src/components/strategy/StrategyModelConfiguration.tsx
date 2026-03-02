@@ -695,7 +695,7 @@ export function StrategyModelConfiguration({
                                                         <Button
                                                             variant="outline"
                                                             size="sm"
-                                                            onClick={() => onTabChange?.("try-it-out", "routellm")}
+                                                            onClick={() => onTabChange?.("strong-weak", "try-it-out")}
                                                         >
                                                             <ExternalLink className="h-3 w-3 mr-1" />
                                                             Try It Out

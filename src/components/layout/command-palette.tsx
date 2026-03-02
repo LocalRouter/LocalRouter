@@ -5,16 +5,15 @@ import {
   Settings,
   Server,
   Cpu,
-  // Route, // DEPRECATED: Strategy UI hidden
   RefreshCw,
   Plus,
   Store,
-  FlaskConical,
+  Shield,
   FileText,
   ScrollText,
   Info,
 } from "lucide-react"
-import { ProvidersIcon, McpIcon } from "@/components/icons/category-icons"
+import { ProvidersIcon, McpIcon, SkillsIcon, CodingAgentsIcon } from "@/components/icons/category-icons"
 import {
   CommandDialog,
   CommandEmpty,
@@ -113,53 +112,56 @@ export function CommandPalette({
             onSelect={() => runCommand(() => onViewChange('resources'))}
           >
             <ProvidersIcon className="mr-2 h-4 w-4" />
-            <span>Resources</span>
+            <span>LLM Provider</span>
             <CommandShortcut>⌘3</CommandShortcut>
-          </CommandItem>
-          <CommandItem
-            onSelect={() => runCommand(() => onViewChange('settings'))}
-          >
-            <Settings className="mr-2 h-4 w-4" />
-            <span>Settings</span>
-            <CommandShortcut>⌘4</CommandShortcut>
-          </CommandItem>
-          <CommandItem
-            onSelect={() => runCommand(() => onViewChange('marketplace'))}
-          >
-            <Store className="mr-2 h-4 w-4" />
-            <span>Marketplace</span>
-            <CommandShortcut>⌘5</CommandShortcut>
-          </CommandItem>
-          <CommandItem
-            onSelect={() => runCommand(() => onViewChange('try-it-out'))}
-          >
-            <FlaskConical className="mr-2 h-4 w-4" />
-            <span>Try it out</span>
-            <CommandShortcut>⌘6</CommandShortcut>
-          </CommandItem>
-        </CommandGroup>
-
-        <CommandSeparator />
-
-        {/* Quick access to resource subtabs */}
-        <CommandGroup heading="Resources">
-          <CommandItem
-            onSelect={() => runCommand(() => onViewChange('resources', 'providers'))}
-          >
-            <ProvidersIcon className="mr-2 h-4 w-4" />
-            <span>Providers</span>
-          </CommandItem>
-          <CommandItem
-            onSelect={() => runCommand(() => onViewChange('resources', 'models'))}
-          >
-            <Cpu className="mr-2 h-4 w-4" />
-            <span>Models</span>
           </CommandItem>
           <CommandItem
             onSelect={() => runCommand(() => onViewChange('mcp-servers'))}
           >
             <McpIcon className="mr-2 h-4 w-4" />
             <span>MCP</span>
+            <CommandShortcut>⌘4</CommandShortcut>
+          </CommandItem>
+          <CommandItem
+            onSelect={() => runCommand(() => onViewChange('skills'))}
+          >
+            <SkillsIcon className="mr-2 h-4 w-4" />
+            <span>Skills</span>
+            <CommandShortcut>⌘5</CommandShortcut>
+          </CommandItem>
+          <CommandItem
+            onSelect={() => runCommand(() => onViewChange('coding-agents'))}
+          >
+            <CodingAgentsIcon className="mr-2 h-4 w-4" />
+            <span>Coding Agents</span>
+            <CommandShortcut>⌘6</CommandShortcut>
+          </CommandItem>
+          <CommandItem
+            onSelect={() => runCommand(() => onViewChange('guardrails'))}
+          >
+            <Shield className="mr-2 h-4 w-4" />
+            <span>GuardRails</span>
+            <CommandShortcut>⌘7</CommandShortcut>
+          </CommandItem>
+          <CommandItem
+            onSelect={() => runCommand(() => onViewChange('strong-weak'))}
+          >
+            <Cpu className="mr-2 h-4 w-4" />
+            <span>Strong/Weak</span>
+            <CommandShortcut>⌘8</CommandShortcut>
+          </CommandItem>
+          <CommandItem
+            onSelect={() => runCommand(() => onViewChange('marketplace'))}
+          >
+            <Store className="mr-2 h-4 w-4" />
+            <span>Marketplace</span>
+            <CommandShortcut>⌘9</CommandShortcut>
+          </CommandItem>
+          <CommandItem
+            onSelect={() => runCommand(() => onViewChange('settings'))}
+          >
+            <Settings className="mr-2 h-4 w-4" />
+            <span>Settings</span>
           </CommandItem>
         </CommandGroup>
 
@@ -172,19 +174,6 @@ export function CommandPalette({
           >
             <Server className="mr-2 h-4 w-4" />
             <span>Server Configuration</span>
-          </CommandItem>
-          {/* DEPRECATED: Strategy UI hidden - 1:1 client-to-strategy relationship */}
-          {/* <CommandItem
-            onSelect={() => runCommand(() => onViewChange('settings', 'routing'))}
-          >
-            <Route className="mr-2 h-4 w-4" />
-            <span>Strategies</span>
-          </CommandItem> */}
-          <CommandItem
-            onSelect={() => runCommand(() => onViewChange('settings', 'routellm'))}
-          >
-            <Cpu className="mr-2 h-4 w-4" />
-            <span>Strong/Weak</span>
           </CommandItem>
           <CommandItem
             onSelect={() => runCommand(() => onViewChange('settings', 'updates'))}

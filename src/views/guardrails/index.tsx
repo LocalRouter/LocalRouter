@@ -2,15 +2,15 @@ import { useState, useEffect, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
 import { toast } from "sonner"
-import {
-  Shield,
-} from "lucide-react"
+import { Shield } from "lucide-react"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Switch } from "@/components/ui/switch"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/Badge"
 import { SafetyModelList } from "@/components/guardrails/SafetyModelList"
 import { SafetyModelPicker, type PickerSelection } from "@/components/guardrails/SafetyModelPicker"
+import { GuardrailsTab as GuardrailsTryItOut } from "@/views/try-it-out/guardrails-tab"
 import type {
   GuardrailsConfig,
   SafetyModelConfig,
@@ -21,11 +21,26 @@ import type {
   ProviderModelPullProgress,
 } from "@/types/tauri-commands"
 
-interface GuardrailsTabProps {
-  onTabChange?: (view: string, subTab?: string | null) => void
+interface GuardrailsViewProps {
+  activeSubTab: string | null
+  onTabChange: (view: string, subTab?: string | null) => void
 }
 
-export function GuardrailsTab({ onTabChange }: GuardrailsTabProps) {
+// Parse init path: "try-it-out/init/<mode>/<target>" -> { initMode, initTarget }
+function parseInitPath(subTab: string | null): {
+  tab: string
+  initClientId?: string
+} {
+  if (!subTab) return { tab: "models" }
+  const parts = subTab.split("/")
+  const tab = parts[0] || "models"
+  if (parts[1] === "init" && parts[2] === "client" && parts[3]) {
+    return { tab, initClientId: parts[3] }
+  }
+  return { tab }
+}
+
+export function GuardrailsView({ activeSubTab, onTabChange }: GuardrailsViewProps) {
   const [config, setConfig] = useState<GuardrailsConfig>({
     scan_requests: true,
     safety_models: [],
@@ -33,12 +48,10 @@ export function GuardrailsTab({ onTabChange }: GuardrailsTabProps) {
     parallel_guardrails: true,
   })
   const [isLoading, setIsLoading] = useState(true)
-
-  // Ollama pull progress: providerId:modelName → progress
   const [pullProgress, setPullProgress] = useState<Record<string, ProviderModelPullProgress>>({})
-
-  // Load errors (model_id → error message)
   const [loadErrors, setLoadErrors] = useState<Record<string, string>>({})
+
+  const { tab, initClientId } = parseInitPath(activeSubTab)
 
   const loadConfig = useCallback(async () => {
     try {
@@ -56,7 +69,7 @@ export function GuardrailsTab({ onTabChange }: GuardrailsTabProps) {
     loadConfig()
   }, [loadConfig])
 
-  // Listen for Ollama pull progress and load error events
+  // Listen for pull progress and load error events
   useEffect(() => {
     const unlisteners: (() => void)[] = []
 
@@ -132,11 +145,11 @@ export function GuardrailsTab({ onTabChange }: GuardrailsTabProps) {
       provider_id: selection.providerId,
       model_name: selection.modelName,
       confidence_threshold: null,
-      enabled_categories: null,
-      prompt_template: null,
       safe_indicator: null,
       output_regex: null,
       category_mapping: null,
+      enabled_categories: null,
+      prompt_template: null,
     }
 
     try {
@@ -147,7 +160,6 @@ export function GuardrailsTab({ onTabChange }: GuardrailsTabProps) {
       rebuildEngine()
 
       if (selection.needsPull) {
-        // Trigger pull in background — progress is tracked via events
         toast.info(`Pulling "${selection.modelName}" from ${selection.providerId}...`)
         invoke("pull_provider_model", {
           providerId: selection.providerId,
@@ -163,82 +175,104 @@ export function GuardrailsTab({ onTabChange }: GuardrailsTabProps) {
     }
   }
 
+  const handleTabChange = (newTab: string) => {
+    onTabChange("guardrails", newTab)
+  }
+
   if (isLoading) {
-    return <div className="text-sm text-muted-foreground">Loading...</div>
+    return (
+      <div className="flex flex-col h-full min-h-0">
+        <div className="flex-shrink-0 pb-4">
+          <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
+            <Shield className="h-6 w-6" />
+            GuardRails
+          </h1>
+          <p className="text-sm text-muted-foreground">Loading...</p>
+        </div>
+      </div>
+    )
   }
 
   return (
-    <div className="space-y-4">
-      {/* Card: GuardRails */}
-      <Card>
-        <CardHeader>
-          <div className="flex items-center gap-2">
-            <Shield className="h-5 w-5 text-red-500" />
-            <CardTitle>GuardRails</CardTitle>
-            <Badge variant="outline" className="bg-purple-500/10 text-purple-900 dark:text-purple-400">EXPERIMENTAL</Badge>
+    <div className="flex flex-col h-full min-h-0">
+      <div className="flex-shrink-0 pb-4">
+        <div className="flex items-center gap-2">
+          <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
+            <Shield className="h-6 w-6" />
+            GuardRails
+          </h1>
+          <Badge variant="outline" className="bg-purple-500/10 text-purple-900 dark:text-purple-400">EXPERIMENTAL</Badge>
+        </div>
+        <p className="text-sm text-muted-foreground">
+          Configure safety models and test content moderation
+        </p>
+      </div>
+
+      <Tabs
+        value={tab}
+        onValueChange={handleTabChange}
+        className="flex flex-col flex-1 min-h-0"
+      >
+        <TabsList className="flex-shrink-0 w-fit">
+          <TabsTrigger value="models">Models</TabsTrigger>
+          <TabsTrigger value="try-it-out">Try It Out</TabsTrigger>
+          <TabsTrigger value="settings">Settings</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="models" className="flex-1 min-h-0 mt-4">
+          <div className="space-y-4">
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Safety Models</CardTitle>
+                <CardDescription>
+                  Add a safety model from a configured provider (Ollama, LM Studio, or any OpenAI-compatible API).
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <SafetyModelPicker
+                  existingModelIds={config.safety_models.map(m => m.id)}
+                  onSelect={handlePickerSelect}
+                />
+
+                <SafetyModelList
+                  models={config.safety_models}
+                  pullProgress={pullProgress}
+                  loadErrors={loadErrors}
+                  onRemove={handleRemoveModel}
+                />
+              </CardContent>
+            </Card>
           </div>
-          <CardDescription>
-            Configure safety models via external providers (Ollama, LM Studio, etc.). Enable guardrails per-client in the Clients view,
-            then test in{" "}
-            {onTabChange ? (
-              <button
-                className="text-blue-500 hover:underline"
-                onClick={() => onTabChange("guardrails", "try-it-out")}
-              >
-                Try It Out &rarr; GuardRails
-              </button>
-            ) : (
-              <>Try It Out &rarr; GuardRails</>
-            )}.
-          </CardDescription>
-        </CardHeader>
-      </Card>
+        </TabsContent>
 
-      {/* Card: Settings */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Settings</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {/* Parallel Scanning */}
-          <div className="flex items-center justify-between">
-            <div>
-              <Label>Parallel Scanning</Label>
-              <p className="text-xs text-muted-foreground">
-                Run safety checks alongside the LLM request for lower latency. Automatically falls back to sequential scanning for models with side effects (e.g. Perplexity Sonar).
-              </p>
-            </div>
-            <Switch
-              checked={config.parallel_guardrails}
-              onCheckedChange={(checked) => saveConfig({ ...config, parallel_guardrails: checked })}
-            />
+        <TabsContent value="try-it-out" className="flex-1 min-h-0 mt-4">
+          <GuardrailsTryItOut initialClientId={initClientId} />
+        </TabsContent>
+
+        <TabsContent value="settings" className="flex-1 min-h-0 mt-4">
+          <div className="space-y-4">
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Settings</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <Label>Parallel Scanning</Label>
+                    <p className="text-xs text-muted-foreground">
+                      Run safety checks alongside the LLM request for lower latency. Automatically falls back to sequential scanning for models with side effects (e.g. Perplexity Sonar).
+                    </p>
+                  </div>
+                  <Switch
+                    checked={config.parallel_guardrails}
+                    onCheckedChange={(checked) => saveConfig({ ...config, parallel_guardrails: checked })}
+                  />
+                </div>
+              </CardContent>
+            </Card>
           </div>
-        </CardContent>
-      </Card>
-
-      {/* Card: Safety Models */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Safety Models</CardTitle>
-          <CardDescription>
-            Add a safety model from a configured provider (Ollama, LM Studio, or any OpenAI-compatible API).
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <SafetyModelPicker
-            existingModelIds={config.safety_models.map(m => m.id)}
-            onSelect={handlePickerSelect}
-          />
-
-          <SafetyModelList
-            models={config.safety_models}
-            pullProgress={pullProgress}
-            loadErrors={loadErrors}
-            onRemove={handleRemoveModel}
-          />
-        </CardContent>
-      </Card>
-
+        </TabsContent>
+      </Tabs>
     </div>
   )
 }

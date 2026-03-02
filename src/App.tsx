@@ -11,8 +11,10 @@ import { ResourcesView } from './views/resources'
 import { McpServersView } from './views/mcp-servers'
 import { SkillsView } from './views/skills'
 import { MarketplaceView } from './views/marketplace'
-import { TryItOutView } from './views/try-it-out'
 import { SettingsView } from './views/settings'
+import { GuardrailsView } from './views/guardrails'
+import { StrongWeakView } from './views/strong-weak'
+import { CodingAgentsView } from './views/coding-agents'
 import { ClientCreationWizard } from './components/wizard/ClientCreationWizard'
 
 const DebugView = import.meta.env.DEV
@@ -272,16 +274,30 @@ function App() {
             onTabChange={handleChildViewChange}
           />
         )
-      case 'marketplace':
+      case 'coding-agents':
         return (
-          <MarketplaceView
+          <CodingAgentsView
             activeSubTab={activeSubTab}
             onTabChange={handleChildViewChange}
           />
         )
-      case 'try-it-out':
+      case 'guardrails':
         return (
-          <TryItOutView
+          <GuardrailsView
+            activeSubTab={activeSubTab}
+            onTabChange={handleChildViewChange}
+          />
+        )
+      case 'strong-weak':
+        return (
+          <StrongWeakView
+            activeSubTab={activeSubTab}
+            onTabChange={handleChildViewChange}
+          />
+        )
+      case 'marketplace':
+        return (
+          <MarketplaceView
             activeSubTab={activeSubTab}
             onTabChange={handleChildViewChange}
           />

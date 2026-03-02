@@ -1,0 +1,331 @@
+import { useState, useEffect } from "react"
+import { invoke } from "@tauri-apps/api/core"
+import { listen } from "@tauri-apps/api/event"
+import { toast } from "sonner"
+import { Download, FolderOpen, Cpu } from "lucide-react"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Button } from "@/components/ui/Button"
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
+import { Badge } from "@/components/ui/Badge"
+import { Label } from "@/components/ui/label"
+import { Progress } from "@/components/ui/progress"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/Select"
+import { ROUTELLM_REQUIREMENTS } from "@/components/routellm/types"
+import { ThresholdSelector } from "@/components/routellm/ThresholdSelector"
+import type { RouteLLMStatus, RouteLLMState } from "@/types/tauri-commands"
+
+interface StrongWeakViewProps {
+  activeSubTab: string | null
+  onTabChange: (view: string, subTab?: string | null) => void
+}
+
+export function StrongWeakView({ activeSubTab, onTabChange }: StrongWeakViewProps) {
+  const [status, setStatus] = useState<RouteLLMStatus | null>(null)
+  const [idleTimeout, setIdleTimeout] = useState(600)
+  const [isDownloading, setIsDownloading] = useState(false)
+  const [downloadProgress, setDownloadProgress] = useState(0)
+  const [testThreshold, setTestThreshold] = useState(0.3)
+
+  const tab = activeSubTab || "try-it-out"
+
+  useEffect(() => {
+    loadStatus()
+
+    const unlistenProgress = listen("routellm-download-progress", (event: any) => {
+      const { progress } = event.payload
+      setDownloadProgress(progress * 100)
+    })
+
+    const unlistenComplete = listen("routellm-download-complete", () => {
+      setIsDownloading(false)
+      setDownloadProgress(100)
+      loadStatus()
+      toast.success("Strong/Weak models downloaded successfully!")
+    })
+
+    const unlistenFailed = listen("routellm-download-failed", (event: any) => {
+      setIsDownloading(false)
+      toast.error(`Download failed: ${event.payload.error}`)
+    })
+
+    return () => {
+      unlistenProgress.then((fn) => fn())
+      unlistenComplete.then((fn) => fn())
+      unlistenFailed.then((fn) => fn())
+    }
+  }, [])
+
+  const loadStatus = async () => {
+    try {
+      const routellmStatus = await invoke<RouteLLMStatus>("routellm_get_status")
+      setStatus(routellmStatus)
+    } catch (error) {
+      console.error("Failed to load RouteLLM status:", error)
+    }
+  }
+
+  const handleDownload = async () => {
+    setIsDownloading(true)
+    setDownloadProgress(0)
+
+    try {
+      await invoke("routellm_download_models")
+    } catch (error: any) {
+      console.error("Failed to start download:", error)
+      toast.error(`Download failed: ${error.message || error}`)
+      setIsDownloading(false)
+    }
+  }
+
+  const updateSettings = async () => {
+    try {
+      await invoke("routellm_update_settings", {
+        idleTimeoutSecs: idleTimeout,
+      })
+      toast.success("Strong/Weak settings updated")
+    } catch (error: any) {
+      toast.error(`Failed to update: ${error.message || error}`)
+    }
+  }
+
+  const openFolder = async () => {
+    try {
+      await invoke("open_routellm_folder")
+    } catch (error) {
+      console.error("Failed to open folder:", error)
+      toast.error("Failed to open folder")
+    }
+  }
+
+  const getStatusInfo = (state: RouteLLMState) => {
+    switch (state) {
+      case "not_downloaded":
+        return { label: "Not Downloaded", variant: "secondary" as const, icon: "⬇️" }
+      case "downloading":
+        return { label: "Downloading...", variant: "default" as const, icon: "⏬️" }
+      case "downloaded_not_running":
+        return { label: "Model not loaded", variant: "outline" as const, icon: "⏸️" }
+      case "initializing":
+        return { label: "Loading...", variant: "default" as const, icon: "🔄" }
+      case "started":
+        return { label: "Model loaded", variant: "success" as const, icon: "▶️" }
+      default:
+        return { label: "Unknown", variant: "secondary" as const, icon: "❓" }
+    }
+  }
+
+  const isReady =
+    status?.state !== "not_downloaded" && status?.state !== "downloading"
+
+  const handleTabChange = (newTab: string) => {
+    onTabChange("strong-weak", newTab)
+  }
+
+  return (
+    <div className="flex flex-col h-full min-h-0">
+      <div className="flex-shrink-0 pb-4">
+        <div className="flex items-center gap-2">
+          <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
+            <Cpu className="h-6 w-6" />
+            Strong/Weak
+          </h1>
+          <Badge variant="outline" className="bg-purple-500/10 text-purple-900 dark:text-purple-400">EXPERIMENTAL</Badge>
+        </div>
+        <p className="text-sm text-muted-foreground">
+          Intelligent routing that analyzes complexity to select the most cost-effective model
+        </p>
+      </div>
+
+      {/* Status / Download Section */}
+      <div className="flex-shrink-0 space-y-4 pb-4">
+        <Card>
+          <CardHeader className="pb-3">
+            <div className="flex items-center justify-between">
+              <CardDescription>
+                Analyzes each request's complexity to route simple queries to faster, cheaper models and complex ones to stronger models
+              </CardDescription>
+            </div>
+          </CardHeader>
+          <CardContent>
+            {status && (
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <span className="text-2xl">{getStatusInfo(status.state).icon}</span>
+                  <Badge variant={getStatusInfo(status.state).variant}>
+                    {getStatusInfo(status.state).label}
+                  </Badge>
+                </div>
+                <div className="flex gap-2">
+                  {status.state === "not_downloaded" && !isDownloading && (
+                    <Button variant="outline" size="sm" onClick={handleDownload}>
+                      <Download className="h-3 w-3 mr-1" />
+                      Download
+                    </Button>
+                  )}
+                  <Button variant="ghost" size="sm" onClick={openFolder}>
+                    <FolderOpen className="h-3 w-3 mr-1" />
+                    Open Folder
+                  </Button>
+                </div>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* Download Section */}
+        {status?.state === "not_downloaded" && (
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-sm">Download Models</CardTitle>
+              <CardDescription>
+                Strong/Weak uses machine learning to analyze prompts and select the most
+                cost-effective model while maintaining quality.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid grid-cols-3 gap-3 text-center">
+                <div className="p-3 bg-green-500/10 rounded-lg">
+                  <p className="text-lg font-bold text-green-800 dark:text-green-400">30-60%</p>
+                  <p className="text-xs text-muted-foreground">Cost Savings</p>
+                </div>
+                <div className="p-3 bg-blue-500/10 rounded-lg">
+                  <p className="text-lg font-bold text-blue-800 dark:text-blue-400">85-95%</p>
+                  <p className="text-xs text-muted-foreground">Quality Retained</p>
+                </div>
+                <div className="p-3 bg-purple-500/10 rounded-lg">
+                  <p className="text-lg font-bold text-purple-800 dark:text-purple-400">{ROUTELLM_REQUIREMENTS.PER_REQUEST_MS}ms</p>
+                  <p className="text-xs text-muted-foreground">Selection Time</p>
+                </div>
+              </div>
+
+              <div className="p-3 bg-yellow-500/10 border border-yellow-600/50 rounded-lg">
+                <p className="text-xs text-yellow-900 dark:text-yellow-400">
+                  <strong>Download Required:</strong>{" "}
+                  <code className="bg-yellow-500/20 px-1 rounded">{status.model_name}</code>{" "}
+                  ({ROUTELLM_REQUIREMENTS.DISK_GB} GB) will be downloaded to{" "}
+                  <code className="bg-yellow-500/20 px-1 rounded">{status.model_dir}</code>
+                </p>
+              </div>
+
+              <Button onClick={handleDownload} disabled={isDownloading}>
+                <Download className="h-4 w-4 mr-2" />
+                {isDownloading ? `Downloading... ${downloadProgress.toFixed(0)}%` : "Download Models"}
+              </Button>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Download Progress */}
+        {isDownloading && (
+          <Card>
+            <CardContent className="pt-6">
+              <div className="space-y-2">
+                <div className="flex justify-between text-sm">
+                  <span>Downloading Strong/Weak Models...</span>
+                  <span>{downloadProgress.toFixed(0)}%</span>
+                </div>
+                <Progress value={downloadProgress} />
+              </div>
+            </CardContent>
+          </Card>
+        )}
+      </div>
+
+      {/* Tabs - Only when downloaded */}
+      {isReady && (
+        <Tabs
+          value={tab}
+          onValueChange={handleTabChange}
+          className="flex flex-col flex-1 min-h-0"
+        >
+          <TabsList className="flex-shrink-0 w-fit">
+            <TabsTrigger value="try-it-out">Try It Out</TabsTrigger>
+            <TabsTrigger value="settings">Settings</TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="try-it-out" className="flex-1 min-h-0 mt-4">
+            <Card>
+              <CardContent className="pt-6">
+                <ThresholdSelector
+                  value={testThreshold}
+                  onChange={setTestThreshold}
+                  showTryItOut
+                />
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          <TabsContent value="settings" className="flex-1 min-h-0 mt-4">
+            <div className="space-y-4">
+              {/* Resource Info */}
+              <Card className="border-yellow-600/50 bg-yellow-500/5">
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-sm text-yellow-900 dark:text-yellow-400">Resource Requirements</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="grid grid-cols-2 gap-4 text-sm">
+                    <div>
+                      <span className="text-muted-foreground">Cold Start:</span>{" "}
+                      <span className="font-medium">{ROUTELLM_REQUIREMENTS.COLD_START_SECS}s</span>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground">Disk Space:</span>{" "}
+                      <span className="font-medium">{ROUTELLM_REQUIREMENTS.DISK_GB} GB</span>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground">Latency:</span>{" "}
+                      <span className="font-medium">{ROUTELLM_REQUIREMENTS.PER_REQUEST_MS}ms per request</span>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground">Memory:</span>{" "}
+                      <span className="font-medium">{ROUTELLM_REQUIREMENTS.MEMORY_GB} GB (when loaded)</span>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-sm">Memory Management</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="space-y-2">
+                    <Label>Auto-Unload After Idle</Label>
+                    <Select
+                      value={idleTimeout.toString()}
+                      onValueChange={(value) => setIdleTimeout(parseInt(value))}
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="300">5 minutes</SelectItem>
+                        <SelectItem value="600">10 minutes (recommended)</SelectItem>
+                        <SelectItem value="1800">30 minutes</SelectItem>
+                        <SelectItem value="3600">1 hour</SelectItem>
+                        <SelectItem value="0">Never</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <p className="text-xs text-muted-foreground">
+                      Automatically unload models after inactivity to save RAM ({ROUTELLM_REQUIREMENTS.MEMORY_GB} GB)
+                    </p>
+                  </div>
+
+                  <Button size="sm" onClick={updateSettings}>
+                    Save Settings
+                  </Button>
+                </CardContent>
+              </Card>
+            </div>
+          </TabsContent>
+        </Tabs>
+      )}
+    </div>
+  )
+}

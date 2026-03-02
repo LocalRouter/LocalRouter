@@ -36,6 +36,7 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog"
 import { MarketplaceSearchPanel, type SkillListing } from "@/components/add-resource"
+import { McpTab } from "@/views/try-it-out/mcp-tab"
 import { cn } from "@/lib/utils"
 
 interface SkillInfo {
@@ -70,10 +71,13 @@ interface SkillsViewProps {
 }
 
 export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
+  const topTab = activeSubTab === "try-it-out" ? "try-it-out" : "skills"
+  const skillSubTab = topTab === "skills" ? activeSubTab : null
+
   const [skills, setSkills] = useState<SkillInfo[]>([])
   const [loading, setLoading] = useState(true)
   const [rescanning, setRescanning] = useState(false)
-  const [selectedSkill, setSelectedSkill] = useState<string | null>(activeSubTab)
+  const [selectedSkill, setSelectedSkill] = useState<string | null>(skillSubTab)
   const [skillFiles, setSkillFiles] = useState<SkillFile[]>([])
   const [loadingFiles, setLoadingFiles] = useState(false)
   const [expandedFiles, setExpandedFiles] = useState<Set<string>>(new Set())
@@ -379,6 +383,17 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
         </p>
       </div>
 
+      <Tabs
+        value={topTab}
+        onValueChange={(tab) => onTabChange("skills", tab === "skills" ? null : tab)}
+        className="flex flex-col flex-1 min-h-0"
+      >
+        <TabsList className="flex-shrink-0 w-fit">
+          <TabsTrigger value="skills">Skills</TabsTrigger>
+          <TabsTrigger value="try-it-out">Try It Out</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="skills" className="flex-1 min-h-0 mt-4">
       <ResizablePanelGroup direction="horizontal" className="flex-1 min-h-0 rounded-lg border">
         {/* List Panel */}
         <ResizablePanel defaultSize={35} minSize={25}>
@@ -457,7 +472,7 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
                       <Button
                         variant="outline"
                         size="sm"
-                        onClick={() => onTabChange("try-it-out", `mcp/init/direct/skill:${selectedSkillInfo.name}`)}
+                        onClick={() => onTabChange("skills", "try-it-out")}
                       >
                         <FlaskConical className="h-4 w-4 mr-1" />
                         Try It Out
@@ -1092,6 +1107,16 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
           )}
         </DialogContent>
       </Dialog>
+        </TabsContent>
+
+        <TabsContent value="try-it-out" className="flex-1 min-h-0 mt-4">
+          <McpTab
+            innerPath={null}
+            onPathChange={() => {}}
+            initialMode="direct"
+          />
+        </TabsContent>
+      </Tabs>
     </div>
   )
 }

@@ -96,7 +96,7 @@ export function ConnectionGraph({ className, onViewChange }: ConnectionGraphProp
         onViewChange('skills', id)
         break
       case 'codingAgent':
-        onViewChange('settings', 'coding-agents')
+        onViewChange('coding-agents')
         break
       case 'marketplace':
         onViewChange('marketplace')

@@ -605,7 +605,7 @@ export function ProvidersPanel({
                       <Button
                         variant="outline"
                         size="sm"
-                        onClick={() => onViewChange("try-it-out", `llm/init/direct/${selectedProvider.instance_name}`)}
+                        onClick={() => onViewChange("resources", "try-it-out")}
                       >
                         <FlaskConical className="h-4 w-4 mr-1" />
                         Try It Out

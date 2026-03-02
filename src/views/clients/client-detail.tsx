@@ -157,7 +157,7 @@ export function ClientDetail({
               <DropdownMenuContent align="end">
                 {showModelsTab && (
                   <DropdownMenuItem
-                    onClick={() => onViewChange("try-it-out", `llm/init/client/${client.client_id}`)}
+                    onClick={() => onViewChange("resources", `try-it-out/init/client/${client.client_id}`)}
                   >
                     <MessageSquare className="h-4 w-4 mr-2" />
                     LLM
@@ -165,14 +165,14 @@ export function ClientDetail({
                 )}
                 {showMcpTab && (
                   <DropdownMenuItem
-                    onClick={() => onViewChange("try-it-out", `mcp/init/client/${client.client_id}`)}
+                    onClick={() => onViewChange("mcp-servers", `try-it-out/init/client/${client.client_id}`)}
                   >
                     <Puzzle className="h-4 w-4 mr-2" />
                     MCP & Skills
                   </DropdownMenuItem>
                 )}
                 <DropdownMenuItem
-                  onClick={() => onViewChange("try-it-out", `guardrails/init/client/${client.client_id}`)}
+                  onClick={() => onViewChange("guardrails", `try-it-out/init/client/${client.client_id}`)}
                 >
                   <Shield className="h-4 w-4 mr-2" />
                   GuardRails
