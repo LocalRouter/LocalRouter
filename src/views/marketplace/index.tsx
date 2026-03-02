@@ -17,6 +17,7 @@ import {
   RefreshCw,
 } from "lucide-react"
 import { McpIcon, SkillsIcon, StoreIcon } from "@/components/icons/category-icons"
+import { SamplePopupButton } from "@/components/shared/SamplePopupButton"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card"
 import { Input } from "@/components/ui/Input"
@@ -583,10 +584,13 @@ export function MarketplaceView({ activeSubTab: _activeSubTab, onTabChange: _onT
               Browse and install MCP servers and skills
             </p>
           </div>
-          <Button variant="outline" size="sm" onClick={openSettings}>
-            <Settings className="h-4 w-4 mr-2" />
-            Settings
-          </Button>
+          <div className="flex items-center gap-2">
+            <SamplePopupButton popupType="marketplace" />
+            <Button variant="outline" size="sm" onClick={openSettings}>
+              <Settings className="h-4 w-4 mr-2" />
+              Settings
+            </Button>
+          </div>
         </div>
       </div>
 
@@ -641,55 +645,72 @@ export function MarketplaceView({ activeSubTab: _activeSubTab, onTabChange: _onT
               ) : (
                 <div className="space-y-4">
                   <div className="grid gap-4">
-                    {mcpServers.map((server) => (
-                      <Card key={server.name}>
-                        <CardHeader className="pb-2">
-                          <div className="flex items-start justify-between">
-                            <div>
-                              <CardTitle className="text-base">{server.name}</CardTitle>
-                              {server.vendor && (
-                                <p className="text-xs text-muted-foreground">by {server.vendor}</p>
-                              )}
+                    {mcpServers.map((server) => {
+                      const pkg = server.packages[0]
+                      return (
+                        <Card key={server.name}>
+                          <CardHeader className="pb-2">
+                            <div className="flex items-start justify-between">
+                              <div>
+                                <CardTitle className="text-base">{server.name}</CardTitle>
+                                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                                  {server.vendor && <span>by {server.vendor}</span>}
+                                  {pkg?.version && <span>v{pkg.version}</span>}
+                                  <Badge variant="outline" className="text-xs">
+                                    {server.source_id}
+                                  </Badge>
+                                </div>
+                              </div>
+                              <div className="flex gap-1">
+                                {server.available_transports.includes("stdio") && (
+                                  <Badge variant="secondary" className="text-xs">
+                                    <Package className="h-3 w-3 mr-1" />
+                                    stdio
+                                  </Badge>
+                                )}
+                                {server.remotes.length > 0 && (
+                                  <Badge variant="secondary" className="text-xs">
+                                    <Globe className="h-3 w-3 mr-1" />
+                                    remote
+                                  </Badge>
+                                )}
+                              </div>
                             </div>
-                            <div className="flex gap-1">
-                              {server.available_transports.includes("stdio") && (
-                                <Badge variant="secondary" className="text-xs">
-                                  <Package className="h-3 w-3 mr-1" />
-                                  stdio
-                                </Badge>
-                              )}
-                              {server.remotes.length > 0 && (
-                                <Badge variant="secondary" className="text-xs">
-                                  <Globe className="h-3 w-3 mr-1" />
-                                  remote
-                                </Badge>
-                              )}
+                          </CardHeader>
+                          <CardContent>
+                            <p className="text-sm text-muted-foreground mb-3">{server.description}</p>
+                            {(pkg?.registry || pkg?.license) && (
+                              <div className="flex flex-wrap gap-1 mb-3">
+                                {pkg?.registry && (
+                                  <Badge variant="secondary" className="text-xs">{pkg.registry}</Badge>
+                                )}
+                                {pkg?.license && (
+                                  <Badge variant="secondary" className="text-xs">{pkg.license}</Badge>
+                                )}
+                              </div>
+                            )}
+                            <div className="flex items-center justify-between">
+                              <div className="flex gap-2">
+                                {server.homepage && (
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={() => open(server.homepage!)}
+                                  >
+                                    <ExternalLink className="h-4 w-4 mr-1" />
+                                    Source
+                                  </Button>
+                                )}
+                              </div>
+                              <Button size="sm" onClick={() => handleMcpInstallClick(server)}>
+                                <Download className="h-4 w-4 mr-1" />
+                                Install
+                              </Button>
                             </div>
-                          </div>
-                        </CardHeader>
-                        <CardContent>
-                          <p className="text-sm text-muted-foreground mb-3">{server.description}</p>
-                          <div className="flex items-center justify-between">
-                            <div className="flex gap-2">
-                              {server.homepage && (
-                                <Button
-                                  variant="ghost"
-                                  size="sm"
-                                  onClick={() => open(server.homepage!)}
-                                >
-                                  <ExternalLink className="h-4 w-4 mr-1" />
-                                  Homepage
-                                </Button>
-                              )}
-                            </div>
-                            <Button size="sm" onClick={() => handleMcpInstallClick(server)}>
-                              <Download className="h-4 w-4 mr-1" />
-                              Install
-                            </Button>
-                          </div>
-                        </CardContent>
-                      </Card>
-                    ))}
+                          </CardContent>
+                        </Card>
+                      )
+                    })}
                   </div>
                   {mcpHasMore && (
                     <div className="flex justify-center pt-4">

@@ -14,6 +14,7 @@ import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
 // DEPRECATED: Route, AlertTriangle unused - Strategy UI hidden
 import { /* Route, AlertTriangle, */ Gauge, Coins } from "lucide-react"
+import { SamplePopupButton } from "@/components/shared/SamplePopupButton"
 import {
   Card,
   CardContent,
@@ -397,6 +398,15 @@ export function ClientModelsTab({
                         )
                       })}
                     </div>
+                  </div>
+                  <div className="border-t pt-3 mt-3 flex items-center justify-between">
+                    <div>
+                      <span className="text-sm font-medium">Approval Popup Preview</span>
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        Preview the popup shown when free-tier usage is depleted
+                      </p>
+                    </div>
+                    <SamplePopupButton popupType="free_tier_fallback" />
                   </div>
                 </div>
               </CardContent>

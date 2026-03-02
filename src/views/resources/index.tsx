@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { ProvidersIcon } from "@/components/icons/category-icons"
+import { SamplePopupButton } from "@/components/shared/SamplePopupButton"
 import { ProvidersPanel, HealthStatus, HealthCheckEvent } from "./providers-panel"
 import { ModelsPanel } from "./models-panel"
 import { LlmTab } from "@/views/try-it-out/llm-tab"
@@ -114,14 +115,13 @@ export function ResourcesView({ activeSubTab, onTabChange }: LlmProvidersViewPro
 
   const { resourceType, itemId, addType, tryItOutInit } = parseSubTab(activeSubTab)
 
-  // Parse init path for try-it-out
+  // Parse init path for try-it-out (direct mode only)
   const parseTryItOutInit = () => {
     if (!tryItOutInit || !tryItOutInit.startsWith("init/")) return {}
     const parts = tryItOutInit.slice(5).split("/")
-    const mode = parts[0] as "client" | "direct" | undefined
+    const mode = parts[0]
     const target = parts.slice(1).join("/") || undefined
-    if (mode === "client" && target) return { initialMode: mode, initialClientId: target }
-    if (mode === "direct" && target) return { initialMode: mode, initialProvider: target }
+    if (mode === "direct" && target) return { initialProvider: target }
     return {}
   }
 
@@ -139,9 +139,12 @@ export function ResourcesView({ activeSubTab, onTabChange }: LlmProvidersViewPro
     <div className="flex flex-col h-full min-h-0">
       <div className="flex-shrink-0 pb-4">
         <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2"><ProvidersIcon className="h-6 w-6" />LLM Providers</h1>
-        <p className="text-sm text-muted-foreground">
-          Manage LLM providers
-        </p>
+        <div className="flex items-center gap-2">
+          <p className="text-sm text-muted-foreground">
+            Manage LLM providers
+          </p>
+          <SamplePopupButton popupType="llm_model" />
+        </div>
       </div>
 
       <Tabs
@@ -181,7 +184,7 @@ export function ResourcesView({ activeSubTab, onTabChange }: LlmProvidersViewPro
         </TabsContent>
 
         <TabsContent value="try-it-out" className="flex-1 min-h-0 mt-4">
-          <LlmTab {...tryItOutInitProps} />
+          <LlmTab initialMode="direct" hideModeSwitcher {...tryItOutInitProps} />
         </TabsContent>
 
       </Tabs>
