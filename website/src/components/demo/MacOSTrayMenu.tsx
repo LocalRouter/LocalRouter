@@ -7,7 +7,7 @@
  * Key sync points:
  * - Menu item labels and icons (TRAY_INDENT, ICON_PAD patterns)
  * - Menu structure (headers, separators, submenus)
- * - Client submenu structure (Copy ID, strategies, MCP, skills)
+ * - Client submenu structure (Copy ID, strategies, MCP, skills, coding agents)
  */
 
 import { useState } from 'react'
@@ -164,6 +164,29 @@ function ClientSubmenu({ client }: { client: (typeof mockData.clients)[0] }) {
               {mockData.skills.length > MAX_TRAY_ITEMS && (
                 <MenuItem label={`${TRAY_INDENT}More…`} />
               )}
+            </>
+          )}
+
+          <Separator />
+
+          <MenuItem label="Coding Agents" disabled />
+
+          {mockData.codingAgents.filter(a => a.installed).length === 0 ? (
+            <MenuItem label={`${TRAY_INDENT}No coding agents installed`} disabled />
+          ) : (
+            <>
+              {mockData.codingAgents.filter(a => a.installed).slice(0, MAX_TRAY_ITEMS).map((agent) => {
+                const agentPerm = client.coding_agents_permissions.agents[agent.toolPrefix]
+                const isAllowed =
+                  agentPerm === 'allow' ||
+                  (agentPerm === undefined && client.coding_agents_permissions.global === 'allow')
+                return (
+                  <MenuItem
+                    key={agent.toolPrefix}
+                    label={isAllowed ? `✓  ${agent.displayName}` : `${TRAY_INDENT}${agent.displayName}`}
+                  />
+                )
+              })}
             </>
           )}
         </>

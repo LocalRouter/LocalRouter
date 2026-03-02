@@ -428,6 +428,59 @@ pub(crate) fn build_tray_menu<R: Runtime, M: Manager<R>>(
                         )?;
                         client_submenu = client_submenu.item(&no_skills_item);
                     }
+
+                    // === Coding Agents Allowlist section (also hidden for LlmOnly) ===
+                    client_submenu = client_submenu.separator();
+
+                    let coding_agents_header = MenuItem::with_id(
+                        app,
+                        format!("coding_agents_header_{}", client.id),
+                        "Coding Agents",
+                        false,
+                        None::<&str>,
+                    )?;
+                    client_submenu = client_submenu.item(&coding_agents_header);
+
+                    let installed_agents =
+                        lr_coding_agents::manager::CodingAgentManager::detect_installed_agents();
+
+                    if installed_agents.is_empty() {
+                        let no_agents_label = format!("{}No coding agents installed", TRAY_INDENT);
+                        let no_agents_item = MenuItem::with_id(
+                            app,
+                            format!("no_coding_agents_{}", client.id),
+                            &no_agents_label,
+                            false,
+                            None::<&str>,
+                        )?;
+                        client_submenu = client_submenu.item(&no_agents_item);
+                    } else {
+                        for agent_type in installed_agents.iter().take(MAX_TRAY_ITEMS) {
+                            let agent_prefix = agent_type.tool_prefix();
+                            let is_allowed = client
+                                .coding_agents_permissions
+                                .resolve_agent(agent_prefix)
+                                .is_enabled();
+                            let label = if is_allowed {
+                                format!("✓  {}", agent_type.display_name())
+                            } else {
+                                format!("{}{}", TRAY_INDENT, agent_type.display_name())
+                            };
+
+                            client_submenu = client_submenu.text(
+                                format!("toggle_coding_agent_{}__{}", client.id, agent_prefix),
+                                label,
+                            );
+                        }
+
+                        // Show "More…" if truncated
+                        if installed_agents.len() > MAX_TRAY_ITEMS {
+                            client_submenu = client_submenu.text(
+                                format!("open_coding_agents_{}", client.id),
+                                format!("{}More…", TRAY_INDENT),
+                            );
+                        }
+                    }
                 }
 
                 let client_menu = client_submenu.build()?;
@@ -1041,6 +1094,71 @@ pub(crate) async fn handle_toggle_skill_access<R: Runtime>(
                         .skills
                         .insert(skill_name.to_string(), lr_config::PermissionState::Allow);
                     info!("Skill {} added to client {}", skill_name, client_id);
+                }
+                found = true;
+            }
+        })
+        .map_err(|e| tauri::Error::Anyhow(e.into()))?;
+
+    if !found {
+        return Err(tauri::Error::Anyhow(anyhow::anyhow!("Client not found")));
+    }
+
+    config_manager
+        .save()
+        .await
+        .map_err(|e| tauri::Error::Anyhow(e.into()))?;
+
+    // Rebuild tray menu
+    rebuild_tray_menu(app)?;
+
+    // Emit event for UI updates
+    if let Err(e) = app.emit("clients-changed", ()) {
+        error!("Failed to emit clients-changed event: {}", e);
+    }
+
+    Ok(())
+}
+
+/// Toggle coding agent access for a client (Allow ↔ Off)
+pub(crate) async fn handle_toggle_coding_agent_access<R: Runtime>(
+    app: &AppHandle<R>,
+    client_id: &str,
+    agent_prefix: &str,
+) -> tauri::Result<()> {
+    info!(
+        "Toggling coding agent {} access for client {}",
+        agent_prefix, client_id
+    );
+
+    let config_manager = app.state::<ConfigManager>();
+
+    let mut found = false;
+    config_manager
+        .update(|cfg| {
+            if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
+                let is_allowed = client
+                    .coding_agents_permissions
+                    .resolve_agent(agent_prefix)
+                    .is_enabled();
+                if is_allowed {
+                    client
+                        .coding_agents_permissions
+                        .agents
+                        .insert(agent_prefix.to_string(), lr_config::PermissionState::Off);
+                    info!(
+                        "Coding agent {} disabled for client {}",
+                        agent_prefix, client_id
+                    );
+                } else {
+                    client
+                        .coding_agents_permissions
+                        .agents
+                        .insert(agent_prefix.to_string(), lr_config::PermissionState::Allow);
+                    info!(
+                        "Coding agent {} enabled for client {}",
+                        agent_prefix, client_id
+                    );
                 }
                 found = true;
             }

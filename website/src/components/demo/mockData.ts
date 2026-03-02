@@ -756,6 +756,9 @@ export const mockData = {
     refresh_rate_secs: 10,
   },
 
+  // Sidebar expanded state - matches UiConfig.sidebar_expanded
+  sidebarExpanded: true,
+
   activeConnections: [
     {
       id: "conn-1",
@@ -792,6 +795,13 @@ export const mockData = {
       created_at: "2025-01-20T14:00:00Z",
       expires_at: "2025-07-20T14:00:00Z",
     },
+  ],
+
+  codingAgents: [
+    { toolPrefix: "claude_code", displayName: "Claude Code", installed: true },
+    { toolPrefix: "gemini_cli", displayName: "Gemini CLI", installed: true },
+    { toolPrefix: "codex", displayName: "Codex", installed: false },
+    { toolPrefix: "aider", displayName: "Aider", installed: true },
   ],
 
   homeDir: "/Users/demo",
