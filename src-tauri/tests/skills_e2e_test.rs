@@ -159,7 +159,8 @@ async fn test_skills_e2e_all_tool_commands() {
             skills_permissions.clone(),
             "Test Client".to_string(),
             PermissionState::Off,
-            lr_config::CodingAgentsPermissions::default(),
+            lr_config::PermissionState::Off,
+            None,
             tools_list_req,
         )
         .await
@@ -205,7 +206,8 @@ async fn test_skills_e2e_all_tool_commands() {
             skills_permissions.clone(),
             "Test Client".to_string(),
             PermissionState::Off,
-            lr_config::CodingAgentsPermissions::default(),
+            lr_config::PermissionState::Off,
+            None,
             show_req,
         )
         .await
@@ -258,7 +260,8 @@ async fn test_skills_e2e_all_tool_commands() {
             skills_permissions.clone(),
             "Test Client".to_string(),
             PermissionState::Off,
-            lr_config::CodingAgentsPermissions::default(),
+            lr_config::PermissionState::Off,
+            None,
             tools_list_req2,
         )
         .await
@@ -315,7 +318,8 @@ async fn test_skills_e2e_all_tool_commands() {
             skills_permissions.clone(),
             "Test Client".to_string(),
             PermissionState::Off,
-            lr_config::CodingAgentsPermissions::default(),
+            lr_config::PermissionState::Off,
+            None,
             resource_req,
         )
         .await
@@ -358,7 +362,8 @@ async fn test_skills_e2e_all_tool_commands() {
             skills_permissions.clone(),
             "Test Client".to_string(),
             PermissionState::Off,
-            lr_config::CodingAgentsPermissions::default(),
+            lr_config::PermissionState::Off,
+            None,
             run_sync_req,
         )
         .await
@@ -423,7 +428,8 @@ async fn test_skills_e2e_all_tool_commands() {
             skills_permissions.clone(),
             "Test Client".to_string(),
             PermissionState::Off,
-            lr_config::CodingAgentsPermissions::default(),
+            lr_config::PermissionState::Off,
+            None,
             run_async_req,
         )
         .await
@@ -465,7 +471,8 @@ async fn test_skills_e2e_all_tool_commands() {
                 skills_permissions.clone(),
                 "Test Client".to_string(),
                 PermissionState::Off,
-            lr_config::CodingAgentsPermissions::default(),
+                lr_config::PermissionState::Off,
+                None,
                 poll_req,
             )
             .await
@@ -585,7 +592,8 @@ async fn test_no_skill_tools_when_no_skills_configured() {
             SkillsPermissions::default(),
             "Test Client".to_string(),
             PermissionState::Off,
-            lr_config::CodingAgentsPermissions::default(),
+            lr_config::PermissionState::Off,
+            None,
             req,
         )
         .await
@@ -627,7 +635,8 @@ async fn test_skill_tools_present_after_cache_hit() {
             skills_permissions.clone(),
             "Test Client".to_string(),
             PermissionState::Off,
-            lr_config::CodingAgentsPermissions::default(),
+            lr_config::PermissionState::Off,
+            None,
             req,
         )
         .await
@@ -652,7 +661,8 @@ async fn test_skill_tools_present_after_cache_hit() {
             skills_permissions.clone(),
             "Test Client".to_string(),
             PermissionState::Off,
-            lr_config::CodingAgentsPermissions::default(),
+            lr_config::PermissionState::Off,
+            None,
             req2,
         )
         .await
@@ -692,7 +702,8 @@ async fn test_skill_tools_present_with_deferred_loading() {
             skills_permissions.clone(),
             "Test Client".to_string(),
             PermissionState::Off,
-            lr_config::CodingAgentsPermissions::default(),
+            lr_config::PermissionState::Off,
+            None,
             req,
         )
         .await
@@ -729,7 +740,8 @@ async fn test_skill_tools_present_with_deferred_loading() {
             skills_permissions.clone(),
             "Test Client".to_string(),
             PermissionState::Off,
-            lr_config::CodingAgentsPermissions::default(),
+            lr_config::PermissionState::Off,
+            None,
             req2,
         )
         .await
@@ -770,7 +782,8 @@ async fn test_run_tool_blocked_before_get_info() {
             skills_permissions.clone(),
             "Test Client".to_string(),
             PermissionState::Off,
-            lr_config::CodingAgentsPermissions::default(),
+            lr_config::PermissionState::Off,
+            None,
             req,
         )
         .await
@@ -795,7 +808,8 @@ async fn test_run_tool_blocked_before_get_info() {
             skills_permissions.clone(),
             "Test Client".to_string(),
             PermissionState::Off,
-            lr_config::CodingAgentsPermissions::default(),
+            lr_config::PermissionState::Off,
+            None,
             run_req,
         )
         .await

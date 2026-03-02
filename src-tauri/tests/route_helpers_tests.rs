@@ -42,6 +42,8 @@ fn create_test_client(id: &str, name: &str, enabled: bool, strategy_id: &str) ->
         mcp_permissions: McpPermissions::default(),
         skills_permissions: SkillsPermissions::default(),
         coding_agents_permissions: lr_config::CodingAgentsPermissions::default(),
+        coding_agent_permission: lr_config::PermissionState::Off,
+        coding_agent_type: None,
         model_permissions: ModelPermissions::default(),
         marketplace_permission: PermissionState::Off,
         client_mode: lr_config::ClientMode::default(),

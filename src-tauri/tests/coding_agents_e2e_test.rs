@@ -1,7 +1,8 @@
 //! End-to-end integration tests for the Coding Agents system via MCP gateway.
 //!
-//! Starts real coding agent processes through the MCP gateway's `{prefix}_start` tool,
-//! polls `{prefix}_status` until the session completes, and verifies output.
+//! Starts real coding agent processes through the MCP gateway's unified
+//! `coding_agent_start` tool, polls `coding_agent_status` until the session
+//! completes, and verifies output.
 //!
 //! All tests that spawn real processes are `#[ignore]` by default since they require
 //! the respective agent binaries on PATH and are not run in CI.
@@ -20,7 +21,7 @@ use localrouter::monitoring::storage::MetricsDatabase;
 use localrouter::providers::registry::ProviderRegistry;
 use localrouter::router::{RateLimiterManager, Router};
 use lr_coding_agents::manager::CodingAgentManager;
-use lr_config::{CodingAgentsConfig, CodingAgentsPermissions, PermissionState};
+use lr_config::{CodingAgentType, CodingAgentsConfig, PermissionState};
 use serde_json::json;
 use std::sync::Arc;
 
@@ -50,12 +51,12 @@ fn create_test_router() -> Arc<Router> {
     ))
 }
 
-/// Helper: send a JSON-RPC request through the gateway with coding agents enabled.
+/// Helper: send a JSON-RPC request through the gateway with coding agent enabled.
 /// Returns the `result` field of the JSON-RPC response.
 async fn gateway_request(
     gateway: &Arc<McpGateway>,
     client_id: &str,
-    permissions: &CodingAgentsPermissions,
+    agent_type: CodingAgentType,
     request: JsonRpcRequest,
 ) -> serde_json::Value {
     let response = gateway
@@ -68,7 +69,8 @@ async fn gateway_request(
             lr_config::SkillsPermissions::default(),
             "E2E Test Client".to_string(),
             PermissionState::Off,
-            permissions.clone(),
+            PermissionState::Allow,
+            Some(agent_type),
             request,
         )
         .await
@@ -86,12 +88,11 @@ async fn gateway_request(
         .expect("Response should have a result (not an error)")
 }
 
-fn setup_gateway() -> (Arc<McpGateway>, CodingAgentsPermissions) {
+fn setup_gateway() -> Arc<McpGateway> {
     let coding_agents_config = CodingAgentsConfig {
-        agents: vec![],
-        default_working_directory: Some(std::env::temp_dir().to_string_lossy().to_string()),
         max_concurrent_sessions: 5,
         output_buffer_size: 1000,
+        ..Default::default()
     };
     let manager = Arc::new(CodingAgentManager::new(coding_agents_config));
 
@@ -100,18 +101,13 @@ fn setup_gateway() -> (Arc<McpGateway>, CodingAgentsPermissions) {
     let gateway = McpGateway::new(server_manager, GatewayConfig::default(), router);
     gateway.set_coding_agent_support(manager);
 
-    let permissions = CodingAgentsPermissions {
-        global: PermissionState::Allow,
-        agents: Default::default(),
-    };
-
-    (Arc::new(gateway), permissions)
+    Arc::new(gateway)
 }
 
 async fn initialize_gateway(
     gateway: &Arc<McpGateway>,
     client_id: &str,
-    permissions: &CodingAgentsPermissions,
+    agent_type: CodingAgentType,
 ) {
     let init_req = JsonRpcRequest::with_id(
         1,
@@ -122,7 +118,7 @@ async fn initialize_gateway(
             "clientInfo": { "name": "e2e-test", "version": "1.0.0" }
         })),
     );
-    let init_result = gateway_request(gateway, client_id, permissions, init_req).await;
+    let init_result = gateway_request(gateway, client_id, agent_type, init_req).await;
     assert!(
         init_result.get("protocolVersion").is_some(),
         "Initialize should return protocolVersion, got: {init_result}"
@@ -130,11 +126,10 @@ async fn initialize_gateway(
 }
 
 /// Call a coding agent tool and return the raw result JSON.
-/// The gateway returns tool results directly as JSON (not wrapped in MCP content array).
 async fn call_tool(
     gateway: &Arc<McpGateway>,
     client_id: &str,
-    permissions: &CodingAgentsPermissions,
+    agent_type: CodingAgentType,
     tool_name: &str,
     arguments: serde_json::Value,
 ) -> serde_json::Value {
@@ -146,20 +141,18 @@ async fn call_tool(
             "arguments": arguments
         })),
     );
-    gateway_request(gateway, client_id, permissions, req).await
+    gateway_request(gateway, client_id, agent_type, req).await
 }
 
-/// Poll `{tool_prefix}_status` until the session reaches a terminal state (done/error).
+/// Poll `coding_agent_status` until the session reaches a terminal state (done/error).
 /// Returns the final status response.
 async fn poll_until_done(
     gateway: &Arc<McpGateway>,
     client_id: &str,
-    permissions: &CodingAgentsPermissions,
-    tool_prefix: &str,
+    agent_type: CodingAgentType,
     session_id: &str,
     timeout_secs: u64,
 ) -> serde_json::Value {
-    let status_tool = format!("{tool_prefix}_status");
     let timeout = std::time::Duration::from_secs(timeout_secs);
     let start_time = std::time::Instant::now();
 
@@ -169,8 +162,8 @@ async fn poll_until_done(
         let result = call_tool(
             gateway,
             client_id,
-            permissions,
-            &status_tool,
+            agent_type,
+            "coding_agent_status",
             json!({ "sessionId": session_id, "outputLines": 100 }),
         )
         .await;
@@ -179,7 +172,14 @@ async fn poll_until_done(
         eprintln!("  poll: status={status}");
 
         if let Some(output) = result["recentOutput"].as_array() {
-            for line in output.iter().rev().take(3).collect::<Vec<_>>().into_iter().rev() {
+            for line in output
+                .iter()
+                .rev()
+                .take(3)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+            {
                 if let Some(l) = line.as_str() {
                     if !l.is_empty() {
                         eprintln!("    | {}", &l[..l.len().min(120)]);
@@ -202,24 +202,26 @@ async fn poll_until_done(
 
 /// Run a full E2E time query test for any coding agent.
 /// Starts a session, polls until completion, and verifies output.
-async fn run_agent_e2e_time_query(binary_name: &str, tool_prefix: &str, display_name: &str) {
+async fn run_agent_e2e_time_query(
+    binary_name: &str,
+    agent_type: CodingAgentType,
+    display_name: &str,
+) {
     if which::which(binary_name).is_err() {
         eprintln!("SKIP: `{binary_name}` binary not found on PATH");
         return;
     }
 
-    let (gateway, permissions) = setup_gateway();
-    let client_id = &format!("test-{tool_prefix}-time");
-    initialize_gateway(&gateway, client_id, &permissions).await;
-
-    let start_tool = format!("{tool_prefix}_start");
+    let gateway = setup_gateway();
+    let client_id = &format!("test-{}-time", agent_type.tool_prefix());
+    initialize_gateway(&gateway, client_id, agent_type).await;
 
     eprintln!("Starting {display_name} session...");
     let start_result = call_tool(
         &gateway,
         client_id,
-        &permissions,
-        &start_tool,
+        agent_type,
+        "coding_agent_start",
         json!({
             "prompt": "Tell me what time it is right now. Just respond with the current time, nothing else.",
             "permissionMode": "auto"
@@ -227,9 +229,9 @@ async fn run_agent_e2e_time_query(binary_name: &str, tool_prefix: &str, display_
     )
     .await;
 
-    let session_id = start_result["sessionId"]
-        .as_str()
-        .unwrap_or_else(|| panic!("{display_name} start should return sessionId, got: {start_result}"));
+    let session_id = start_result["sessionId"].as_str().unwrap_or_else(|| {
+        panic!("{display_name} start should return sessionId, got: {start_result}")
+    });
     assert_eq!(
         start_result["status"].as_str().unwrap(),
         "active",
@@ -238,7 +240,7 @@ async fn run_agent_e2e_time_query(binary_name: &str, tool_prefix: &str, display_
     eprintln!("{display_name} session started: {session_id}");
 
     // Poll until done (120s timeout)
-    let final_status = poll_until_done(&gateway, client_id, &permissions, tool_prefix, session_id, 120).await;
+    let final_status = poll_until_done(&gateway, client_id, agent_type, session_id, 120).await;
 
     eprintln!("{display_name} final status: {final_status}");
     assert_eq!(
@@ -249,7 +251,10 @@ async fn run_agent_e2e_time_query(binary_name: &str, tool_prefix: &str, display_
         final_status["recentOutput"]
     );
 
-    let has_output = final_status["result"].as_str().map(|r| !r.is_empty()).unwrap_or(false)
+    let has_output = final_status["result"]
+        .as_str()
+        .map(|r| !r.is_empty())
+        .unwrap_or(false)
         || final_status["recentOutput"]
             .as_array()
             .map(|a| !a.is_empty())
@@ -263,32 +268,41 @@ async fn run_agent_e2e_time_query(binary_name: &str, tool_prefix: &str, display_
 }
 
 /// Run a list + interrupt test for any coding agent.
-async fn run_agent_e2e_list_and_interrupt(binary_name: &str, tool_prefix: &str, display_name: &str) {
+async fn run_agent_e2e_list_and_interrupt(
+    binary_name: &str,
+    agent_type: CodingAgentType,
+    display_name: &str,
+) {
     if which::which(binary_name).is_err() {
         eprintln!("SKIP: `{binary_name}` binary not found on PATH");
         return;
     }
 
-    let (gateway, permissions) = setup_gateway();
-    let client_id = &format!("test-{tool_prefix}-interrupt");
-    initialize_gateway(&gateway, client_id, &permissions).await;
-
-    let start_tool = format!("{tool_prefix}_start");
-    let list_tool = format!("{tool_prefix}_list");
-    let interrupt_tool = format!("{tool_prefix}_interrupt");
-    let status_tool = format!("{tool_prefix}_status");
+    let gateway = setup_gateway();
+    let client_id = &format!("test-{}-interrupt", agent_type.tool_prefix());
+    initialize_gateway(&gateway, client_id, agent_type).await;
 
     // List sessions — should be empty
-    let list_result = call_tool(&gateway, client_id, &permissions, &list_tool, json!({})).await;
+    let list_result = call_tool(
+        &gateway,
+        client_id,
+        agent_type,
+        "coding_agent_list",
+        json!({}),
+    )
+    .await;
     let sessions = list_result["sessions"].as_array().unwrap();
-    assert!(sessions.is_empty(), "{display_name}: should start with no sessions");
+    assert!(
+        sessions.is_empty(),
+        "{display_name}: should start with no sessions"
+    );
 
     // Start a session with a longer task so we can interrupt it
     let start_result = call_tool(
         &gateway,
         client_id,
-        &permissions,
-        &start_tool,
+        agent_type,
+        "coding_agent_start",
         json!({
             "prompt": "Write a very long essay about the history of computing. Make it at least 10000 words.",
             "permissionMode": "auto"
@@ -299,7 +313,14 @@ async fn run_agent_e2e_list_and_interrupt(binary_name: &str, tool_prefix: &str, 
     eprintln!("{display_name} session started: {session_id}");
 
     // List sessions — should have one
-    let list_result = call_tool(&gateway, client_id, &permissions, &list_tool, json!({})).await;
+    let list_result = call_tool(
+        &gateway,
+        client_id,
+        agent_type,
+        "coding_agent_list",
+        json!({}),
+    )
+    .await;
     let sessions = list_result["sessions"].as_array().unwrap();
     assert_eq!(sessions.len(), 1, "{display_name}: should have one session");
 
@@ -311,8 +332,8 @@ async fn run_agent_e2e_list_and_interrupt(binary_name: &str, tool_prefix: &str, 
     let interrupt_result = call_tool(
         &gateway,
         client_id,
-        &permissions,
-        &interrupt_tool,
+        agent_type,
+        "coding_agent_interrupt",
         json!({ "sessionId": session_id }),
     )
     .await;
@@ -323,8 +344,8 @@ async fn run_agent_e2e_list_and_interrupt(binary_name: &str, tool_prefix: &str, 
     let status_result = call_tool(
         &gateway,
         client_id,
-        &permissions,
-        &status_tool,
+        agent_type,
+        "coding_agent_status",
         json!({ "sessionId": session_id, "outputLines": 10 }),
     )
     .await;
@@ -349,8 +370,8 @@ async fn test_coding_agents_e2e_raw_claude_process() {
         return;
     }
 
-    use tokio::io::AsyncBufReadExt;
     use std::process::Stdio;
+    use tokio::io::AsyncBufReadExt;
 
     let mut cmd = tokio::process::Command::new("claude");
     cmd.current_dir(std::env::temp_dir());
@@ -381,14 +402,24 @@ async fn test_coding_agents_e2e_raw_claude_process() {
         }
     });
 
-    timeout.await.expect("Raw claude process should complete within 60s");
+    timeout
+        .await
+        .expect("Raw claude process should complete within 60s");
 
-    assert!(!output_lines.is_empty(), "Should have received output lines");
     assert!(
-        output_lines.iter().any(|l| l.contains("\"type\":\"result\"")),
+        !output_lines.is_empty(),
+        "Should have received output lines"
+    );
+    assert!(
+        output_lines
+            .iter()
+            .any(|l| l.contains("\"type\":\"result\"")),
         "Should have received a result line"
     );
-    eprintln!("Got {} output lines from raw claude process", output_lines.len());
+    eprintln!(
+        "Got {} output lines from raw claude process",
+        output_lines.len()
+    );
 
     child.kill().await.ok();
 }
@@ -401,25 +432,26 @@ async fn test_coding_agents_e2e_tools_list() {
         return;
     }
 
-    let (gateway, permissions) = setup_gateway();
+    let gateway = setup_gateway();
     let client_id = "test-tools-list";
-    initialize_gateway(&gateway, client_id, &permissions).await;
+    initialize_gateway(&gateway, client_id, CodingAgentType::ClaudeCode).await;
 
-    // tools/list should include all 6 claude_code_* tools
+    // tools/list should include all 6 coding_agent_* tools
     let list_req = JsonRpcRequest::with_id(2, "tools/list".to_string(), Some(json!({})));
-    let list_result = gateway_request(&gateway, client_id, &permissions, list_req).await;
+    let list_result =
+        gateway_request(&gateway, client_id, CodingAgentType::ClaudeCode, list_req).await;
     let tools = list_result["tools"]
         .as_array()
         .expect("tools/list should return tools array");
     let tool_names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
 
     let expected = [
-        "claude_code_start",
-        "claude_code_say",
-        "claude_code_status",
-        "claude_code_respond",
-        "claude_code_interrupt",
-        "claude_code_list",
+        "coding_agent_start",
+        "coding_agent_say",
+        "coding_agent_status",
+        "coding_agent_respond",
+        "coding_agent_interrupt",
+        "coding_agent_list",
     ];
     for name in &expected {
         assert!(
@@ -432,13 +464,13 @@ async fn test_coding_agents_e2e_tools_list() {
 #[tokio::test]
 #[ignore]
 async fn test_e2e_claude_code_time_query() {
-    run_agent_e2e_time_query("claude", "claude_code", "Claude Code").await;
+    run_agent_e2e_time_query("claude", CodingAgentType::ClaudeCode, "Claude Code").await;
 }
 
 #[tokio::test]
 #[ignore]
 async fn test_e2e_claude_code_list_and_interrupt() {
-    run_agent_e2e_list_and_interrupt("claude", "claude_code", "Claude Code").await;
+    run_agent_e2e_list_and_interrupt("claude", CodingAgentType::ClaudeCode, "Claude Code").await;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -453,13 +485,13 @@ async fn test_e2e_claude_code_list_and_interrupt() {
 #[tokio::test]
 #[ignore]
 async fn test_e2e_gemini_cli_time_query() {
-    run_agent_e2e_time_query("gemini", "gemini_cli", "Gemini CLI").await;
+    run_agent_e2e_time_query("gemini", CodingAgentType::GeminiCli, "Gemini CLI").await;
 }
 
 #[tokio::test]
 #[ignore]
 async fn test_e2e_gemini_cli_list_and_interrupt() {
-    run_agent_e2e_list_and_interrupt("gemini", "gemini_cli", "Gemini CLI").await;
+    run_agent_e2e_list_and_interrupt("gemini", CodingAgentType::GeminiCli, "Gemini CLI").await;
 }
 
 // --- Codex ---
@@ -467,13 +499,13 @@ async fn test_e2e_gemini_cli_list_and_interrupt() {
 #[tokio::test]
 #[ignore]
 async fn test_e2e_codex_time_query() {
-    run_agent_e2e_time_query("codex", "codex", "Codex").await;
+    run_agent_e2e_time_query("codex", CodingAgentType::Codex, "Codex").await;
 }
 
 #[tokio::test]
 #[ignore]
 async fn test_e2e_codex_list_and_interrupt() {
-    run_agent_e2e_list_and_interrupt("codex", "codex", "Codex").await;
+    run_agent_e2e_list_and_interrupt("codex", CodingAgentType::Codex, "Codex").await;
 }
 
 // --- Amp ---
@@ -481,13 +513,13 @@ async fn test_e2e_codex_list_and_interrupt() {
 #[tokio::test]
 #[ignore]
 async fn test_e2e_amp_time_query() {
-    run_agent_e2e_time_query("amp", "amp", "Amp").await;
+    run_agent_e2e_time_query("amp", CodingAgentType::Amp, "Amp").await;
 }
 
 #[tokio::test]
 #[ignore]
 async fn test_e2e_amp_list_and_interrupt() {
-    run_agent_e2e_list_and_interrupt("amp", "amp", "Amp").await;
+    run_agent_e2e_list_and_interrupt("amp", CodingAgentType::Amp, "Amp").await;
 }
 
 // --- Aider ---
@@ -495,13 +527,13 @@ async fn test_e2e_amp_list_and_interrupt() {
 #[tokio::test]
 #[ignore]
 async fn test_e2e_aider_time_query() {
-    run_agent_e2e_time_query("aider", "aider", "Aider").await;
+    run_agent_e2e_time_query("aider", CodingAgentType::Aider, "Aider").await;
 }
 
 #[tokio::test]
 #[ignore]
 async fn test_e2e_aider_list_and_interrupt() {
-    run_agent_e2e_list_and_interrupt("aider", "aider", "Aider").await;
+    run_agent_e2e_list_and_interrupt("aider", CodingAgentType::Aider, "Aider").await;
 }
 
 // --- Cursor ---
@@ -509,13 +541,13 @@ async fn test_e2e_aider_list_and_interrupt() {
 #[tokio::test]
 #[ignore]
 async fn test_e2e_cursor_time_query() {
-    run_agent_e2e_time_query("cursor", "cursor", "Cursor").await;
+    run_agent_e2e_time_query("cursor", CodingAgentType::Cursor, "Cursor").await;
 }
 
 #[tokio::test]
 #[ignore]
 async fn test_e2e_cursor_list_and_interrupt() {
-    run_agent_e2e_list_and_interrupt("cursor", "cursor", "Cursor").await;
+    run_agent_e2e_list_and_interrupt("cursor", CodingAgentType::Cursor, "Cursor").await;
 }
 
 // --- Opencode ---
@@ -523,13 +555,13 @@ async fn test_e2e_cursor_list_and_interrupt() {
 #[tokio::test]
 #[ignore]
 async fn test_e2e_opencode_time_query() {
-    run_agent_e2e_time_query("opencode", "opencode", "Opencode").await;
+    run_agent_e2e_time_query("opencode", CodingAgentType::Opencode, "Opencode").await;
 }
 
 #[tokio::test]
 #[ignore]
 async fn test_e2e_opencode_list_and_interrupt() {
-    run_agent_e2e_list_and_interrupt("opencode", "opencode", "Opencode").await;
+    run_agent_e2e_list_and_interrupt("opencode", CodingAgentType::Opencode, "Opencode").await;
 }
 
 // --- Qwen Code ---
@@ -537,13 +569,13 @@ async fn test_e2e_opencode_list_and_interrupt() {
 #[tokio::test]
 #[ignore]
 async fn test_e2e_qwen_code_time_query() {
-    run_agent_e2e_time_query("qwen", "qwen_code", "Qwen Code").await;
+    run_agent_e2e_time_query("qwen", CodingAgentType::QwenCode, "Qwen Code").await;
 }
 
 #[tokio::test]
 #[ignore]
 async fn test_e2e_qwen_code_list_and_interrupt() {
-    run_agent_e2e_list_and_interrupt("qwen", "qwen_code", "Qwen Code").await;
+    run_agent_e2e_list_and_interrupt("qwen", CodingAgentType::QwenCode, "Qwen Code").await;
 }
 
 // --- Copilot ---
@@ -551,13 +583,13 @@ async fn test_e2e_qwen_code_list_and_interrupt() {
 #[tokio::test]
 #[ignore]
 async fn test_e2e_copilot_time_query() {
-    run_agent_e2e_time_query("copilot", "copilot", "Copilot").await;
+    run_agent_e2e_time_query("copilot", CodingAgentType::Copilot, "Copilot").await;
 }
 
 #[tokio::test]
 #[ignore]
 async fn test_e2e_copilot_list_and_interrupt() {
-    run_agent_e2e_list_and_interrupt("copilot", "copilot", "Copilot").await;
+    run_agent_e2e_list_and_interrupt("copilot", CodingAgentType::Copilot, "Copilot").await;
 }
 
 // --- Droid ---
@@ -565,11 +597,11 @@ async fn test_e2e_copilot_list_and_interrupt() {
 #[tokio::test]
 #[ignore]
 async fn test_e2e_droid_time_query() {
-    run_agent_e2e_time_query("droid", "droid", "Droid").await;
+    run_agent_e2e_time_query("droid", CodingAgentType::Droid, "Droid").await;
 }
 
 #[tokio::test]
 #[ignore]
 async fn test_e2e_droid_list_and_interrupt() {
-    run_agent_e2e_list_and_interrupt("droid", "droid", "Droid").await;
+    run_agent_e2e_list_and_interrupt("droid", CodingAgentType::Droid, "Droid").await;
 }
