@@ -58,13 +58,13 @@ interface NavItem {
 }
 
 const clientNavItems: NavItem[] = [
-  { id: 'clients', icon: Users, label: 'Clients', shortcut: '⌘2' },
+  { id: 'clients', icon: Users, label: 'Client', shortcut: '⌘2' },
 ]
 
 const resourceNavItems: NavItem[] = [
-  { id: 'resources', icon: ProvidersIcon, label: 'LLM Providers', shortcut: '⌘3' },
+  { id: 'resources', icon: ProvidersIcon, label: 'LLM Provider', shortcut: '⌘3' },
   { id: 'mcp-servers', icon: McpIcon, label: 'MCP', shortcut: '⌘4' },
-  { id: 'skills', icon: SkillsIcon, label: 'Skills', shortcut: '⌘5' },
+  { id: 'skills', icon: SkillsIcon, label: 'Skill', shortcut: '⌘5' },
   { id: 'coding-agents', icon: CodingAgentsIcon, label: 'Coding Agents', shortcut: '⌘9' },
 ]
 
@@ -292,7 +292,7 @@ export function Sidebar({ activeView, onViewChange }: SidebarProps) {
       <aside
         className={cn(
           "group/sidebar relative flex h-full flex-col border-r bg-background transition-[width] duration-200 ease-in-out",
-          expanded ? "w-48" : "w-12"
+          expanded ? "w-40" : "w-12"
         )}
       >
         {/* Logo - Dashboard */}
