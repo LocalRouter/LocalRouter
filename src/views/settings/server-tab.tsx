@@ -14,6 +14,7 @@ import {
   SelectValue,
 } from "@/components/ui/Select"
 import { Alert, AlertDescription } from "@/components/ui/alert"
+import type { SetMaxCodingSessionsParams } from "@/types/tauri-commands"
 
 interface ServerConfig {
   host: string
@@ -40,11 +41,14 @@ export function ServerTab() {
   const [networkInterfaces, setNetworkInterfaces] = useState<NetworkInterface[]>([])
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false)
   const [executablePath, setExecutablePath] = useState<string>("")
+  const [maxCodingSessions, setMaxCodingSessions] = useState<number>(10)
+  const [editMaxCodingSessions, setEditMaxCodingSessions] = useState<number>(10)
 
   useEffect(() => {
     loadConfig()
     loadNetworkInterfaces()
     loadExecutablePath()
+    loadMaxCodingSessions()
   }, [])
 
   useEffect(() => {
@@ -78,6 +82,26 @@ export function ServerTab() {
       setExecutablePath(path)
     } catch (error) {
       console.error("Failed to load executable path:", error)
+    }
+  }
+
+  const loadMaxCodingSessions = async () => {
+    try {
+      const max = await invoke<number>("get_max_coding_sessions")
+      setMaxCodingSessions(max)
+      setEditMaxCodingSessions(max)
+    } catch (error) {
+      console.error("Failed to load max coding sessions:", error)
+    }
+  }
+
+  const saveMaxCodingSessions = async () => {
+    try {
+      await invoke("set_max_coding_sessions", { maxSessions: editMaxCodingSessions } satisfies SetMaxCodingSessionsParams)
+      setMaxCodingSessions(editMaxCodingSessions)
+      toast.success("Max coding sessions updated")
+    } catch (error: any) {
+      toast.error(`Failed to update: ${error.message || error}`)
     }
   }
 
@@ -291,6 +315,48 @@ export function ServerTab() {
               </Button>
             </div>
           </form>
+        </CardContent>
+      </Card>
+
+      {/* Resource Limits */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-sm">Resource Limits</CardTitle>
+          <CardDescription>
+            Control resource usage for server features
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="space-y-2">
+              <Label htmlFor="max-coding-sessions">Max Concurrent Coding Agent Sessions</Label>
+              <Input
+                id="max-coding-sessions"
+                type="number"
+                min={0}
+                value={editMaxCodingSessions}
+                onChange={(e) => setEditMaxCodingSessions(parseInt(e.target.value) || 0)}
+              />
+              <p className="text-xs text-muted-foreground">
+                Maximum number of coding agent sessions running at the same time. Set to 0 for unlimited.
+              </p>
+            </div>
+          </div>
+
+          {editMaxCodingSessions !== maxCodingSessions && (
+            <div className="flex gap-2">
+              <Button size="sm" onClick={saveMaxCodingSessions}>
+                Save
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setEditMaxCodingSessions(maxCodingSessions)}
+              >
+                Reset
+              </Button>
+            </div>
+          )}
         </CardContent>
       </Card>
 

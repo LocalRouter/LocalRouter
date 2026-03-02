@@ -141,6 +141,35 @@ pub async fn end_coding_session(
         .map_err(|e| e.to_string())
 }
 
+/// Get max concurrent coding agent sessions
+#[tauri::command]
+pub async fn get_max_coding_sessions(
+    config_manager: State<'_, ConfigManager>,
+) -> Result<usize, String> {
+    Ok(config_manager.get().coding_agents.max_concurrent_sessions)
+}
+
+/// Set max concurrent coding agent sessions (0 = unlimited)
+#[tauri::command]
+pub async fn set_max_coding_sessions(
+    max_sessions: usize,
+    config_manager: State<'_, ConfigManager>,
+    coding_agent_manager: State<'_, Arc<CodingAgentManager>>,
+) -> Result<(), String> {
+    config_manager
+        .update(|cfg| {
+            cfg.coding_agents.max_concurrent_sessions = max_sessions;
+        })
+        .map_err(|e| e.to_string())?;
+
+    config_manager.save().await.map_err(|e| e.to_string())?;
+
+    // Hot-reload into the running manager
+    coding_agent_manager.set_max_concurrent_sessions(max_sessions);
+
+    Ok(())
+}
+
 /// Permission level for coding agents (global or per-agent)
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]

@@ -4,6 +4,7 @@ use crate::types::*;
 use dashmap::DashMap;
 use lr_config::{CodingAgentType, CodingAgentsConfig, CodingPermissionMode};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
@@ -16,19 +17,30 @@ pub struct CodingAgentManager {
     sessions: DashMap<SessionId, (String, Arc<Mutex<CodingSession>>)>,
     /// Global config
     config: CodingAgentsConfig,
+    /// Max concurrent sessions (atomic so it can be updated without &mut self)
+    max_concurrent_sessions: AtomicUsize,
 }
 
 impl CodingAgentManager {
     pub fn new(config: CodingAgentsConfig) -> Self {
+        let max = config.max_concurrent_sessions;
         Self {
             sessions: DashMap::new(),
             config,
+            max_concurrent_sessions: AtomicUsize::new(max),
         }
     }
 
     /// Update config (called when config changes)
     pub fn update_config(&mut self, config: CodingAgentsConfig) {
+        self.max_concurrent_sessions
+            .store(config.max_concurrent_sessions, Ordering::Relaxed);
         self.config = config;
+    }
+
+    /// Update max concurrent sessions at runtime (0 = unlimited)
+    pub fn set_max_concurrent_sessions(&self, max: usize) {
+        self.max_concurrent_sessions.store(max, Ordering::Relaxed);
     }
 
     /// Get config reference
@@ -75,11 +87,10 @@ impl CodingAgentManager {
         model: Option<String>,
         permission_mode: Option<CodingPermissionMode>,
     ) -> Result<StartResponse, CodingAgentError> {
-        // Check concurrent session limit
-        if self.sessions.len() >= self.config.max_concurrent_sessions {
-            return Err(CodingAgentError::TooManySessions {
-                max: self.config.max_concurrent_sessions,
-            });
+        // Check concurrent session limit (0 = unlimited)
+        let max = self.max_concurrent_sessions.load(Ordering::Relaxed);
+        if max > 0 && self.sessions.len() >= max {
+            return Err(CodingAgentError::TooManySessions { max });
         }
 
         // Resolve working directory

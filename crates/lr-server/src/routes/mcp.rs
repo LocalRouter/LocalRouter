@@ -77,8 +77,7 @@ fn send_response(
     tag = "mcp",
     responses(
         (status = 200, description = "SSE event stream or API info", content_type = "text/event-stream"),
-        (status = 401, description = "Unauthorized", body = crate::types::ErrorResponse),
-        (status = 403, description = "Forbidden - no MCP server access", body = crate::types::ErrorResponse)
+        (status = 401, description = "Unauthorized", body = crate::types::ErrorResponse)
     ),
     security(("bearer" = []))
 )]
@@ -160,21 +159,9 @@ pub async fn mcp_gateway_get_handler(
             Err(e) => return e.into_response(),
         };
 
-        // Check MCP or skills access using hierarchical permissions
-        let has_mcp_access = client.mcp_permissions.has_any_access();
-        let has_skills_access = (client.skills_permissions.global.is_enabled()
-            || !client.skills_permissions.skills.is_empty())
-            && state.mcp_gateway.has_skill_support();
-
-        if !has_mcp_access && !has_skills_access {
-            return ApiErrorResponse::forbidden(
-                "Client has no MCP server or skills access. Configure permissions in client settings.",
-            )
-            .into_response();
-        }
-
         // Get allowed servers based on mcp_permissions
-        // If global is enabled, allow all servers; otherwise filter by permissions
+        // An empty server list is valid — the gateway also serves marketplace,
+        // coding agents, and skills which don't require MCP server access.
         if client.mcp_permissions.global.is_enabled() {
             all_server_ids
         } else {
@@ -371,7 +358,6 @@ pub async fn mcp_gateway_get_handler(
     responses(
         (status = 200, description = "JSON-RPC response", body = lr_mcp::protocol::JsonRpcResponse),
         (status = 401, description = "Unauthorized", body = crate::types::ErrorResponse),
-        (status = 403, description = "Forbidden - no MCP server access", body = crate::types::ErrorResponse),
         (status = 500, description = "Internal server error", body = crate::types::ErrorResponse)
     ),
     security(
@@ -509,20 +495,9 @@ pub async fn mcp_gateway_handler(
             Err(e) => return e.into_response(),
         };
 
-        // Check MCP or skills access using hierarchical permissions
-        let has_mcp_access = client.mcp_permissions.has_any_access();
-        let has_skills_access = (client.skills_permissions.global.is_enabled()
-            || !client.skills_permissions.skills.is_empty())
-            && state.mcp_gateway.has_skill_support();
-
-        if !has_mcp_access && !has_skills_access {
-            return ApiErrorResponse::forbidden(
-                "Client has no MCP server or skills access. Configure permissions in client settings.",
-            )
-            .into_response();
-        }
-
         // Get allowed servers based on mcp_permissions
+        // An empty server list is valid — the gateway also serves marketplace,
+        // coding agents, and skills which don't require MCP server access.
         let allowed = if client.mcp_permissions.global.is_enabled() {
             all_server_ids.clone()
         } else {

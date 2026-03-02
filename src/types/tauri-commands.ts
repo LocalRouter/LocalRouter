@@ -2310,3 +2310,8 @@ export interface SetClientCodingAgentsPermissionParams {
   key?: string | null
   state: PermissionState
 }
+
+/** Params for set_max_coding_sessions */
+export interface SetMaxCodingSessionsParams {
+  maxSessions: number
+}

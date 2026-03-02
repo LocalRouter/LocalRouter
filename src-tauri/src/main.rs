@@ -1561,6 +1561,8 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands_coding_agents::list_coding_sessions,
             ui::commands_coding_agents::end_coding_session,
             ui::commands_coding_agents::set_client_coding_agents_permission,
+            ui::commands_coding_agents::get_max_coding_sessions,
+            ui::commands_coding_agents::set_max_coding_sessions,
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {

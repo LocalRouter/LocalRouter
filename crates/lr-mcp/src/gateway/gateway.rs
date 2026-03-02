@@ -919,89 +919,79 @@ impl McpGateway {
             }
         }
 
-        // If no servers could be started, check if skills are available as fallback
+        // If no servers could be started, proceed without MCP servers.
+        // The gateway still serves other features (marketplace, coding agents, skills).
         if started_servers.is_empty() {
-            // Check if this session has skills access and the gateway has skill support
-            let session_read = session.read().await;
-            let has_skills = (session_read.skills_permissions.global.is_enabled()
-                || !session_read.skills_permissions.skills.is_empty())
-                && self.has_skill_support();
-            drop(session_read);
-
-            if has_skills {
-                tracing::info!(
-                    "No MCP servers available, but skills are configured — proceeding in skills-only mode"
-                );
-
-                let session_read = session.read().await;
-                let skills_permissions = session_read.skills_permissions.clone();
-                let ca_permissions = session_read.coding_agents_permissions.clone();
-                drop(session_read);
-
-                let skill_infos = self.collect_skill_info(&skills_permissions);
-                let coding_agent_infos = self.collect_coding_agent_info(&ca_permissions);
-                let unavailable = self.build_unavailable_server_infos(&start_failures);
-                let instructions = build_gateway_instructions(&InstructionsContext {
-                    servers: Vec::new(),
-                    unavailable_servers: unavailable,
-                    skills: skill_infos,
-                    deferred_loading: false,
-                    coding_agents: coding_agent_infos,
-                });
-
-                let merged = MergedCapabilities {
-                    protocol_version: "2024-11-05".to_string(),
-                    capabilities: ServerCapabilities {
-                        tools: Some(ToolsCapability {
-                            list_changed: Some(true),
-                        }),
-                        resources: None,
-                        prompts: None,
-                        logging: None,
-                    },
-                    server_info: ServerInfo {
-                        name: "LocalRouter MCP Gateway (skills-only)".to_string(),
-                        version: env!("CARGO_PKG_VERSION").to_string(),
-                        description: None,
-                    },
-                    failures: start_failures,
-                    instructions: instructions.clone(),
-                };
-
-                let mut response_value = json!({
-                    "protocolVersion": merged.protocol_version,
-                    "capabilities": {
-                        "tools": { "listChanged": true }
-                    },
-                    "serverInfo": {
-                        "name": merged.server_info.name,
-                        "version": merged.server_info.version
-                    }
-                });
-                if let Some(inst) = &instructions {
-                    response_value["instructions"] = json!(inst);
-                }
-
-                {
-                    let mut session_write = session.write().await;
-                    session_write.merged_capabilities = Some(merged);
-                }
-
-                return Ok(JsonRpcResponse::success(
-                    request.id.unwrap_or(Value::Null),
-                    response_value,
-                ));
+            // Only error if servers were attempted and ALL failed — not if there were none to start
+            if !start_failures.is_empty() && allowed_servers.is_empty() {
+                // Shouldn't happen, but guard against it
             }
 
-            let error_summary = start_failures
-                .iter()
-                .map(|f| format!("{}: {}", f.server_id, f.error))
-                .collect::<Vec<_>>()
-                .join("; ");
-            return Err(AppError::Mcp(format!(
-                "All MCP servers failed to start: {}",
-                error_summary
-            )));
+            if !start_failures.is_empty() {
+                tracing::warn!(
+                    "All {} MCP servers failed to start, proceeding without MCP servers",
+                    start_failures.len()
+                );
+            }
+
+            let session_read = session.read().await;
+            let skills_permissions = session_read.skills_permissions.clone();
+            let ca_permissions = session_read.coding_agents_permissions.clone();
+            drop(session_read);
+
+            let skill_infos = self.collect_skill_info(&skills_permissions);
+            let coding_agent_infos = self.collect_coding_agent_info(&ca_permissions);
+            let unavailable = self.build_unavailable_server_infos(&start_failures);
+            let instructions = build_gateway_instructions(&InstructionsContext {
+                servers: Vec::new(),
+                unavailable_servers: unavailable,
+                skills: skill_infos,
+                deferred_loading: false,
+                coding_agents: coding_agent_infos,
+            });
+
+            let merged = MergedCapabilities {
+                protocol_version: "2024-11-05".to_string(),
+                capabilities: ServerCapabilities {
+                    tools: Some(ToolsCapability {
+                        list_changed: Some(true),
+                    }),
+                    resources: None,
+                    prompts: None,
+                    logging: None,
+                },
+                server_info: ServerInfo {
+                    name: "LocalRouter MCP Gateway".to_string(),
+                    version: env!("CARGO_PKG_VERSION").to_string(),
+                    description: None,
+                },
+                failures: start_failures,
+                instructions: instructions.clone(),
+            };
+
+            let mut response_value = json!({
+                "protocolVersion": merged.protocol_version,
+                "capabilities": {
+                    "tools": { "listChanged": true }
+                },
+                "serverInfo": {
+                    "name": merged.server_info.name,
+                    "version": merged.server_info.version
+                }
+            });
+            if let Some(inst) = &instructions {
+                response_value["instructions"] = json!(inst);
+            }
+
+            {
+                let mut session_write = session.write().await;
+                session_write.merged_capabilities = Some(merged);
+            }
+
+            return Ok(JsonRpcResponse::success(
+                request.id.unwrap_or(Value::Null),
+                response_value,
+            ));
         }
 
         // Update session to only include successfully started servers
