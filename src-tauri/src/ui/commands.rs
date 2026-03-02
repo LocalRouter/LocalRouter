@@ -1269,6 +1269,30 @@ pub async fn update_tray_graph_settings(
     Ok(())
 }
 
+/// Get sidebar expanded state
+#[tauri::command]
+pub fn get_sidebar_expanded(config_manager: State<'_, ConfigManager>) -> Result<bool, String> {
+    let config = config_manager.get();
+    Ok(config.ui.sidebar_expanded)
+}
+
+/// Set sidebar expanded state
+#[tauri::command]
+pub async fn set_sidebar_expanded(
+    expanded: bool,
+    config_manager: State<'_, ConfigManager>,
+) -> Result<(), String> {
+    config_manager
+        .update(|config| {
+            config.ui.sidebar_expanded = expanded;
+        })
+        .map_err(|e| e.to_string())?;
+
+    config_manager.save().await.map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
 /// Get user's home directory
 #[tauri::command]
 pub fn get_home_dir() -> Result<String, String> {

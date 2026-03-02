@@ -8,6 +8,8 @@ import {
   RefreshCw,
   Bug,
   Store,
+  ChevronsLeft,
+  ChevronsRight,
 } from "lucide-react"
 import { ProvidersIcon, McpIcon, SkillsIcon, CodingAgentsIcon } from "@/components/icons/category-icons"
 import { Logo } from "@/components/Logo"
@@ -18,6 +20,7 @@ import {
   TooltipTrigger,
   TooltipProvider,
 } from "@/components/ui/tooltip"
+import type { SetSidebarExpandedParams } from "@/types/tauri-commands"
 
 type AggregateHealthStatus = 'red' | 'yellow' | 'green'
 type ItemHealthStatus = 'healthy' | 'degraded' | 'unhealthy' | 'ready' | 'pending' | 'disabled'
@@ -75,6 +78,14 @@ const bottomNavItems: NavItem[] = [
 export function Sidebar({ activeView, onViewChange }: SidebarProps) {
   const [healthState, setHealthState] = React.useState<HealthCacheState | null>(null)
   const [isRefreshing, setIsRefreshing] = React.useState(false)
+  const [expanded, setExpanded] = React.useState(true) // default expanded, will load from config
+
+  // Load sidebar expanded state from config
+  React.useEffect(() => {
+    invoke<boolean>('get_sidebar_expanded')
+      .then(setExpanded)
+      .catch((error) => console.error('Failed to load sidebar state:', error))
+  }, [])
 
   // Load health cache state
   React.useEffect(() => {
@@ -134,6 +145,17 @@ export function Sidebar({ activeView, onViewChange }: SidebarProps) {
     } finally {
       // Reset refreshing state after a delay to show the animation
       setTimeout(() => setIsRefreshing(false), 1000)
+    }
+  }
+
+  // Toggle sidebar expanded state
+  const toggleExpanded = async () => {
+    const newExpanded = !expanded
+    setExpanded(newExpanded)
+    try {
+      await invoke('set_sidebar_expanded', { expanded: newExpanded } satisfies SetSidebarExpandedParams)
+    } catch (error) {
+      console.error('Failed to save sidebar state:', error)
     }
   }
 
@@ -231,150 +253,142 @@ export function Sidebar({ activeView, onViewChange }: SidebarProps) {
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [onViewChange])
 
+  const renderNavItem = (item: NavItem) => {
+    const Icon = item.icon
+    const isActive = activeView === item.id
+
+    const button = (
+      <button
+        onClick={() => onViewChange(item.id)}
+        className={cn(
+          "flex items-center rounded-md transition-colors",
+          expanded ? "h-8 w-full gap-2 px-2" : "h-8 w-8 justify-center",
+          isActive
+            ? "bg-accent text-accent-foreground"
+            : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+        )}
+      >
+        <Icon className="h-4 w-4 shrink-0" />
+        {expanded ? (
+          <>
+            <span className="flex-1 truncate text-left text-sm">{item.label}</span>
+            <kbd className="rounded bg-muted px-1 py-0.5 text-[10px] font-medium text-muted-foreground">
+              {item.shortcut}
+            </kbd>
+          </>
+        ) : (
+          <span className="sr-only">{item.label}</span>
+        )}
+      </button>
+    )
+
+    if (expanded) {
+      return <div key={item.id}>{button}</div>
+    }
+
+    return (
+      <Tooltip key={item.id}>
+        <TooltipTrigger asChild>
+          {button}
+        </TooltipTrigger>
+        <TooltipContent side="right" sideOffset={8}>
+          <div className="flex items-center gap-2">
+            <span>{item.label}</span>
+            <kbd className="ml-auto rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+              {item.shortcut}
+            </kbd>
+          </div>
+        </TooltipContent>
+      </Tooltip>
+    )
+  }
+
   return (
     <TooltipProvider delayDuration={0}>
-      <aside className="flex h-full w-12 flex-col border-r bg-background">
+      <aside
+        className={cn(
+          "flex h-full flex-col border-r bg-background transition-[width] duration-200 ease-in-out",
+          expanded ? "w-44" : "w-12"
+        )}
+      >
         {/* Logo - Dashboard */}
-        <div className="flex h-12 items-center justify-center border-b">
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                onClick={() => onViewChange('dashboard')}
-                className={cn(
-                  "flex h-8 w-8 items-center justify-center rounded-md transition-colors",
-                  activeView === 'dashboard'
-                    ? "bg-primary text-primary-foreground"
-                    : "bg-primary/80 text-primary-foreground hover:bg-primary"
-                )}
-              >
-                <Logo className="h-4 w-4" />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="right" sideOffset={8}>
-              <div className="flex items-center gap-2">
-                <span className="font-semibold">Dashboard</span>
-                <kbd className="ml-auto rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
-                  ⌘1
-                </kbd>
-              </div>
-            </TooltipContent>
-          </Tooltip>
+        <div className={cn(
+          "flex h-12 items-center border-b",
+          expanded ? "px-2 gap-2" : "justify-center"
+        )}>
+          {expanded ? (
+            <button
+              onClick={() => onViewChange('dashboard')}
+              className={cn(
+                "flex h-8 w-full items-center gap-2 rounded-md px-2 transition-colors",
+                activeView === 'dashboard'
+                  ? "bg-primary text-primary-foreground"
+                  : "bg-primary/80 text-primary-foreground hover:bg-primary"
+              )}
+            >
+              <Logo className="h-4 w-4 shrink-0" />
+              <span className="truncate text-sm font-semibold">LocalRouter</span>
+              <kbd className="ml-auto rounded bg-primary-foreground/20 px-1 py-0.5 text-[10px] font-medium text-primary-foreground/70">
+                ⌘1
+              </kbd>
+            </button>
+          ) : (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  onClick={() => onViewChange('dashboard')}
+                  className={cn(
+                    "flex h-8 w-8 items-center justify-center rounded-md transition-colors",
+                    activeView === 'dashboard'
+                      ? "bg-primary text-primary-foreground"
+                      : "bg-primary/80 text-primary-foreground hover:bg-primary"
+                  )}
+                >
+                  <Logo className="h-4 w-4" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="right" sideOffset={8}>
+                <div className="flex items-center gap-2">
+                  <span className="font-semibold">Dashboard</span>
+                  <kbd className="ml-auto rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                    ⌘1
+                  </kbd>
+                </div>
+              </TooltipContent>
+            </Tooltip>
+          )}
         </div>
 
         {/* Main Navigation */}
         <nav className="flex flex-1 flex-col gap-1 p-2">
           {/* Client section */}
-          {clientNavItems.map((item) => {
-            const Icon = item.icon
-            const isActive = activeView === item.id
-
-            return (
-              <Tooltip key={item.id}>
-                <TooltipTrigger asChild>
-                  <button
-                    onClick={() => onViewChange(item.id)}
-                    className={cn(
-                      "flex h-8 w-8 items-center justify-center rounded-md transition-colors",
-                      isActive
-                        ? "bg-accent text-accent-foreground"
-                        : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
-                    )}
-                  >
-                    <Icon className="h-4 w-4" />
-                    <span className="sr-only">{item.label}</span>
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent side="right" sideOffset={8}>
-                  <div className="flex items-center gap-2">
-                    <span>{item.label}</span>
-                    <kbd className="ml-auto rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
-                      {item.shortcut}
-                    </kbd>
-                  </div>
-                </TooltipContent>
-              </Tooltip>
-            )
-          })}
+          {clientNavItems.map(renderNavItem)}
 
           {/* Separator */}
           <div className="my-1 h-px bg-border" />
 
           {/* Resources section */}
-          {resourceNavItems.map((item) => {
-            const Icon = item.icon
-            const isActive = activeView === item.id
-
-            return (
-              <Tooltip key={item.id}>
-                <TooltipTrigger asChild>
-                  <button
-                    onClick={() => onViewChange(item.id)}
-                    className={cn(
-                      "flex h-8 w-8 items-center justify-center rounded-md transition-colors",
-                      isActive
-                        ? "bg-accent text-accent-foreground"
-                        : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
-                    )}
-                  >
-                    <Icon className="h-4 w-4" />
-                    <span className="sr-only">{item.label}</span>
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent side="right" sideOffset={8}>
-                  <div className="flex items-center gap-2">
-                    <span>{item.label}</span>
-                    <kbd className="ml-auto rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
-                      {item.shortcut}
-                    </kbd>
-                  </div>
-                </TooltipContent>
-              </Tooltip>
-            )
-          })}
+          {resourceNavItems.map(renderNavItem)}
         </nav>
 
         {/* Bottom Navigation */}
         <nav className="flex flex-col gap-1 p-2">
-          {bottomNavItems.map((item) => {
-            const Icon = item.icon
-            const isActive = activeView === item.id
-
-            return (
-              <Tooltip key={item.id}>
-                <TooltipTrigger asChild>
-                  <button
-                    onClick={() => onViewChange(item.id)}
-                    className={cn(
-                      "flex h-8 w-8 items-center justify-center rounded-md transition-colors",
-                      isActive
-                        ? "bg-accent text-accent-foreground"
-                        : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
-                    )}
-                  >
-                    <Icon className="h-4 w-4" />
-                    <span className="sr-only">{item.label}</span>
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent side="right" sideOffset={8}>
-                  <div className="flex items-center gap-2">
-                    <span>{item.label}</span>
-                    <kbd className="ml-auto rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
-                      {item.shortcut}
-                    </kbd>
-                  </div>
-                </TooltipContent>
-              </Tooltip>
-            )
-          })}
+          {bottomNavItems.map(renderNavItem)}
         </nav>
 
-        {/* Status indicator with enhanced health tooltip */}
-        <div className="border-t p-2">
+        {/* Status indicator and toggle */}
+        <div className={cn(
+          "flex items-center border-t p-2",
+          expanded ? "gap-1" : "flex-col gap-1"
+        )}>
+          {/* Health status */}
           <Tooltip>
             <TooltipTrigger asChild>
               <button
                 onClick={handleRefresh}
-                className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-accent transition-colors"
+                className={cn(
+                  "flex h-8 w-8 shrink-0 items-center justify-center rounded-md hover:bg-accent transition-colors",
+                )}
                 disabled={isRefreshing || hasAnyPending()}
               >
                 {isRefreshing || hasAnyPending() ? (
@@ -455,6 +469,30 @@ export function Sidebar({ activeView, onViewChange }: SidebarProps) {
               </div>
             </TooltipContent>
           </Tooltip>
+
+          {/* Expand/collapse toggle */}
+          {expanded ? (
+            <button
+              onClick={toggleExpanded}
+              className="ml-auto flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground transition-colors"
+            >
+              <ChevronsLeft className="h-4 w-4" />
+            </button>
+          ) : (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  onClick={toggleExpanded}
+                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground transition-colors"
+                >
+                  <ChevronsRight className="h-4 w-4" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="right" sideOffset={8}>
+                Expand sidebar
+              </TooltipContent>
+            </Tooltip>
+          )}
         </div>
       </aside>
     </TooltipProvider>

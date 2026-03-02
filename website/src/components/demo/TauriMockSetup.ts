@@ -1377,6 +1377,13 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     }
     return null
   },
+  'get_sidebar_expanded': (): boolean => mockData.sidebarExpanded,
+  'set_sidebar_expanded': (args): null => {
+    if (args && typeof args.expanded === 'boolean') {
+      mockData.sidebarExpanded = args.expanded
+    }
+    return null
+  },
 
   // ============================================================================
   // GuardRails - LLM-based Safety Models

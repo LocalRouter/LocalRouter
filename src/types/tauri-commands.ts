@@ -2315,3 +2315,13 @@ export interface SetClientCodingAgentsPermissionParams {
 export interface SetMaxCodingSessionsParams {
   maxSessions: number
 }
+
+// =============================================================================
+// Sidebar Command Parameters
+// Rust: src-tauri/src/ui/commands.rs
+// =============================================================================
+
+/** Params for set_sidebar_expanded */
+export interface SetSidebarExpandedParams {
+  expanded: boolean
+}

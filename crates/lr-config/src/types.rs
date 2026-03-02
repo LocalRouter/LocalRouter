@@ -422,6 +422,11 @@ pub struct UiConfig {
     /// - Slow (60): 1 minute per bar, 30 minute total (direct mapping)
     #[serde(default = "default_tray_graph_refresh_rate")]
     pub tray_graph_refresh_rate_secs: u64,
+
+    /// Whether the sidebar is expanded (showing labels) or collapsed (icons only).
+    /// Defaults to true (expanded) on fresh installs.
+    #[serde(default = "default_sidebar_expanded")]
+    pub sidebar_expanded: bool,
 }
 
 /// Update checking mode
@@ -1377,8 +1382,7 @@ impl CodingAgentsPermissions {
 
     /// Check if any agent access is possible
     pub fn has_any_access(&self) -> bool {
-        self.global.is_enabled()
-            || self.agents.values().any(|s| s.is_enabled())
+        self.global.is_enabled() || self.agents.values().any(|s| s.is_enabled())
     }
 }
 
@@ -2511,6 +2515,7 @@ impl Default for UiConfig {
         Self {
             tray_graph_enabled: false, // Static icon by default; user can enable activity graph
             tray_graph_refresh_rate_secs: default_tray_graph_refresh_rate(),
+            sidebar_expanded: default_sidebar_expanded(),
         }
     }
 }
@@ -2692,6 +2697,10 @@ impl McpServerConfig {
 
 fn default_tray_graph_refresh_rate() -> u64 {
     60 // Slow: 1 minute per bar (default)
+}
+
+fn default_sidebar_expanded() -> bool {
+    true // Expanded by default on fresh install
 }
 
 #[cfg(test)]
