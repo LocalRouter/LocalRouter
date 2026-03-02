@@ -198,26 +198,34 @@ impl CodingAgentManager {
 
         match session.status {
             SessionStatus::Active | SessionStatus::AwaitingInput => {
-                // Process alive: write to stdin
-                let process = session
+                // Try to write to stdin if available (interactive mode)
+                let has_stdin = session
                     .process
-                    .as_mut()
-                    .ok_or_else(|| CodingAgentError::IoError("No process handle".to_string()))?;
-                let stdin = process
-                    .stdin
-                    .as_mut()
-                    .ok_or_else(|| CodingAgentError::IoError("Process stdin not available".to_string()))?;
-                let msg = format!("{}\n", message);
-                stdin
-                    .write_all(msg.as_bytes())
-                    .await
-                    .map_err(|e| CodingAgentError::IoError(e.to_string()))?;
-                stdin
-                    .flush()
-                    .await
-                    .map_err(|e| CodingAgentError::IoError(e.to_string()))?;
-                session.status = SessionStatus::Active;
-                session.last_activity = chrono::Utc::now();
+                    .as_ref()
+                    .and_then(|p| p.stdin.as_ref())
+                    .is_some();
+
+                if has_stdin {
+                    let process = session.process.as_mut().unwrap();
+                    let stdin = process.stdin.as_mut().unwrap();
+                    let msg = format!("{}\n", message);
+                    stdin
+                        .write_all(msg.as_bytes())
+                        .await
+                        .map_err(|e| CodingAgentError::IoError(e.to_string()))?;
+                    stdin
+                        .flush()
+                        .await
+                        .map_err(|e| CodingAgentError::IoError(e.to_string()))?;
+                    session.status = SessionStatus::Active;
+                    session.last_activity = chrono::Utc::now();
+                } else {
+                    // No stdin (process was spawned in -p mode with null stdin).
+                    // Wait for current process to finish, then auto-resume below.
+                    return Err(CodingAgentError::IoError(
+                        "Session is still running. Wait for it to complete, then use 'say' to send a follow-up.".to_string()
+                    ));
+                }
             }
             SessionStatus::Done | SessionStatus::Error | SessionStatus::Interrupted => {
                 // Process exited: auto-resume via spawn_follow_up
@@ -494,7 +502,10 @@ async fn spawn_agent_process(
 
     let mut cmd = tokio::process::Command::new(binary);
     cmd.current_dir(working_dir);
-    cmd.stdin(Stdio::piped());
+    // Use null stdin for -p mode: the prompt is passed as CLI args, and piped stdin
+    // blocks Claude Code from proceeding. The `say` command handles follow-up messages
+    // by spawning a new process when the session has ended.
+    cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
 
@@ -502,6 +513,11 @@ async fn spawn_agent_process(
     for (k, v) in &config.env {
         cmd.env(k, v);
     }
+
+    // Clear env vars that prevent nested sessions (e.g., when spawned from inside Claude Code)
+    cmd.env_remove("CLAUDECODE");
+    cmd.env_remove("CLAUDE_CODE_ENTRYPOINT");
+    cmd.env_remove("CLAUDE_CODE_SESSION_ACCESS_TOKEN");
 
     // Build agent-specific CLI args
     match agent_type {
@@ -579,18 +595,16 @@ async fn spawn_agent_process(
 
     let cancel = tokio_util::sync::CancellationToken::new();
 
-    let mut group_child: command_group::AsyncGroupChild = cmd
+    let group_child: command_group::AsyncGroupChild = cmd
         .group_spawn()
         .map_err(|e: std::io::Error| CodingAgentError::SpawnFailed {
             agent: agent_type.display_name().to_string(),
             reason: e.to_string(),
         })?;
 
-    let stdin = group_child.inner().stdin.take();
-
     Ok(AgentProcess {
         child: group_child,
-        stdin,
+        stdin: None,
         cancel,
     })
 }
