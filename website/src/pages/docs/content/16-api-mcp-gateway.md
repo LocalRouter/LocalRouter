@@ -22,7 +22,7 @@ Sessions persist across multiple HTTP requests using the `Mcp-Session-Id` header
 
 MCP endpoint authentication uses the same mechanism as the OpenAI endpoints — a Bearer token in the `Authorization` header. The client's MCP server access permissions (configured via `mcp_server_access` on the client) determine which upstream servers are accessible.
 
-Requests to `tools/call` for a server the client cannot access return a JSON-RPC error with code `-32600` (Invalid Request).
+Requests to `tools/call` for a server the client cannot access return an error.
 
 <!-- @entry mcp-methods -->
 
@@ -68,8 +68,8 @@ The server returns a `GetPromptResult` with `description` and `messages` — an 
 
 <!-- @entry mcp-error-handling -->
 
-MCP errors follow the JSON-RPC 2.0 error format with `code`, `message`, and optional `data` fields. Standard error codes include `-32700` (Parse error), `-32600` (Invalid request), `-32601` (Method not found), and `-32603` (Internal error).
+MCP errors follow the JSON-RPC 2.0 error format with `code`, `message`, and optional `data` fields.
 
-**Aggregate requests** (`tools/list`): Partial failures are handled gracefully — tools from healthy servers are returned while failed servers are omitted, with error details available in response metadata.
+**Aggregate requests** (`tools/list`): Partial failures are handled gracefully — tools from healthy servers are returned while failed servers are omitted.
 
-**Targeted requests** (`tools/call`): Upstream server errors are wrapped in the JSON-RPC error format and returned to the client.
+**Targeted requests** (`tools/call`): Upstream server errors are returned directly to the client.

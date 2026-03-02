@@ -22,7 +22,7 @@ Configuration is stored in `~/.localrouter/` and secrets are stored using the sy
 
 <!-- @entry first-run -->
 
-When you first launch LocalRouter, the Axum HTTP server starts on `localhost:3625`. The UI opens in a native window showing the dashboard. No providers are configured yet, so the first step is adding at least one provider API key.
+When you first launch LocalRouter, the HTTP server starts on `localhost:3625`. The UI opens in a native window showing the dashboard. No providers are configured yet, so the first step is adding at least one provider API key.
 
 You can verify the server is running by visiting `http://localhost:3625/health` in your browser — it should return a healthy status response.
 

@@ -56,14 +56,8 @@ LLM Guard integration connects to the LLM Guard service for ML-based content sca
 
 It runs as a separate service and provides higher accuracy than pattern-based detection at the cost of additional latency (~50-100ms per scan).
 
-<!-- @entry custom-regex-rules -->
-
-Custom regex rules allow you to define your own content patterns to detect or block. Each rule specifies a regex pattern, a severity level, and an action (block, warn, or redact). Rules are evaluated against both request and response content.
-
-This is useful for organization-specific policies — for example, blocking requests that mention internal project names, detecting proprietary code patterns, or flagging specific terminology.
-
 <!-- @entry parallel-scanning -->
 
-All configured detection sources run in parallel for each request, minimizing the impact on request latency. The scanning pipeline uses Tokio's async tasks to execute all detectors concurrently and collects results as they complete.
+All configured detection sources run in parallel for each request, minimizing the impact on request latency. The overall scan time equals the slowest individual detector rather than the sum of all detectors.
 
-The overall scan time equals the slowest individual detector rather than the sum of all detectors. If any detector exceeds a configurable timeout, it is skipped and the request proceeds with partial scan results.
+If any detector exceeds a configurable timeout, it is skipped and the request proceeds with partial scan results.

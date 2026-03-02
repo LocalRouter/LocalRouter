@@ -7,6 +7,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { useTheme } from "@/hooks/use-theme"
+import { open } from "@tauri-apps/plugin-shell"
 
 interface HeaderProps {
   onOpenCommandPalette: () => void
@@ -81,7 +82,7 @@ export function Header({ onOpenCommandPalette }: HeaderProps) {
         </DropdownMenu>
 
         {/* Help */}
-        <Button variant="ghost" size="icon">
+        <Button variant="ghost" size="icon" onClick={() => open("https://localrouter.ai/docs")}>
           <HelpCircle className="h-4 w-4" />
           <span className="sr-only">Help</span>
         </Button>

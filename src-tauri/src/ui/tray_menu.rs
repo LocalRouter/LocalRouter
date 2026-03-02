@@ -310,31 +310,29 @@ pub(crate) fn build_tray_menu<R: Runtime, M: Manager<R>>(
 
                 // === Quick toggles section (hidden for McpOnly) ===
                 if show_llm {
+                    let models_header = MenuItem::with_id(
+                        app,
+                        format!("models_header_{}", client.id),
+                        "Models",
+                        false,
+                        None::<&str>,
+                    )?;
+                    client_submenu = client_submenu.item(&models_header);
+
                     if let Some(strategy) =
                         all_strategies.iter().find(|s| s.id == client.strategy_id)
                     {
-                        // Rate Limits sub-section
-                        if !strategy.rate_limits.is_empty() {
-                            let rl_header = MenuItem::with_id(
-                                app,
-                                format!("rate_limits_header_{}", client.id),
-                                "Rate Limits",
-                                false,
-                                None::<&str>,
-                            )?;
-                            client_submenu = client_submenu.item(&rl_header);
-
-                            for (idx, limit) in strategy.rate_limits.iter().enumerate() {
-                                let label = if limit.enabled {
-                                    format!("✓  {}", format_rate_limit(limit))
-                                } else {
-                                    format!("{}{}", TRAY_INDENT, format_rate_limit(limit))
-                                };
-                                client_submenu = client_submenu.text(
-                                    format!("toggle_rate_limit_{}__{}", client.id, idx),
-                                    label,
-                                );
-                            }
+                        // Rate Limits
+                        for (idx, limit) in strategy.rate_limits.iter().enumerate() {
+                            let label = if limit.enabled {
+                                format!("✓  Rate Limit: {}", format_rate_limit(limit))
+                            } else {
+                                format!("{}Rate Limit: {}", TRAY_INDENT, format_rate_limit(limit))
+                            };
+                            client_submenu = client_submenu.text(
+                                format!("toggle_rate_limit_{}__{}", client.id, idx),
+                                label,
+                            );
                         }
 
                         // Free Tier Mode toggle

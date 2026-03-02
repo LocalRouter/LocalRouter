@@ -6,7 +6,7 @@ All OpenAI-compatible endpoints require authentication via a Bearer token in the
 Authorization: Bearer lr-your_secret_key_here
 ```
 
-Requests without a valid token receive a `401 Unauthorized` response. The special token `internal-test` is available for UI testing only and bypasses client restrictions.
+Requests without a valid token receive a `401 Unauthorized` response.
 
 All endpoints below are served at the root path (e.g., `GET /models`). The `/v1` prefix is also accepted for compatibility with clients that include it (e.g., `GET /v1/models`). Both the OpenAI gateway and MCP gateway share the same root — their endpoints do not conflict.
 
@@ -42,7 +42,7 @@ The response includes the server status, uptime, version, and the number of conf
 
 <!-- @entry openai-spec -->
 
-`GET /openapi.json` returns the full OpenAPI 3.0 specification for all LocalRouter endpoints. The spec is auto-generated from the Rust source code using `utoipa` annotations and includes request/response schemas, authentication requirements, and endpoint descriptions.
+`GET /openapi.json` returns the full OpenAPI 3.0 specification for all LocalRouter endpoints. The spec includes request/response schemas, authentication requirements, and endpoint descriptions.
 
 This spec can be imported into API clients like Postman or used to generate client libraries in any language.
 

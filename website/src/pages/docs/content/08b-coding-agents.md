@@ -57,9 +57,9 @@ Parameters:
 - `permissionMode` — Switch permission mode (interrupts + resumes if active)
 
 Behavior:
-- **Process alive, no mode change:** writes message to stdin
-- **Process alive, mode change:** sends interrupt, then resumes with new mode
-- **Process exited:** auto-resumes with the message via follow-up spawn
+- **Session active, no mode change:** sends the message to the agent
+- **Session active, mode change:** interrupts and resumes with the new mode
+- **Session ended:** auto-resumes the session with the message
 
 <!-- @entry coding-agents-tool-status -->
 
@@ -111,9 +111,9 @@ When a coding agent needs approval (tool use, plan review) or wants to ask a cla
 
 <!-- @entry coding-agents-elicitation -->
 
-If the MCP client supports **elicitation** (the `elicitation/create` method), approval requests are forwarded directly to the client. The client receives the question inline and can respond immediately without polling.
+If the MCP client supports **elicitation**, approval requests are forwarded directly to the client. The client receives the question inline and can respond immediately without polling.
 
-Flow: Agent requests approval → Gateway creates elicitation request → Client receives inline question → Client responds → Agent proceeds.
+Flow: Agent requests approval → Gateway forwards to client → Client responds → Agent proceeds.
 
 This is the preferred path as it provides real-time interaction.
 
@@ -138,7 +138,7 @@ Sessions follow a state machine:
 - **Error** — Agent encountered an error. Can be resumed via `{agent}_say` (auto-resume).
 - **Interrupted** — Agent was interrupted. Can be resumed via `{agent}_say` (auto-resume).
 
-Any terminal state (`done`, `error`, `interrupted`) transitions back to `active` when `{agent}_say` is called — the session auto-resumes with a follow-up spawn.
+Any terminal state (`done`, `error`, `interrupted`) transitions back to `active` when `{agent}_say` is called — the session auto-resumes automatically.
 
 <!-- @entry coding-agents-permissions -->
 

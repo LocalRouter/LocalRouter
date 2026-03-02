@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { open } from "@tauri-apps/plugin-shell"
-import { ExternalLink, ChevronDown, ChevronRight, Heart, Code, Cpu, Shield } from "lucide-react"
+import { ExternalLink, ChevronDown, ChevronRight, Heart, Code } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Badge } from "@/components/ui/Badge"
 import { Button } from "@/components/ui/Button"
@@ -130,15 +130,15 @@ export function AboutTab() {
         </CardContent>
       </Card>
 
-      {/* Inspirations & Credits */}
+      {/* Licenses & Credits */}
       <Card>
         <CardHeader className="pb-3">
           <CardTitle className="text-sm flex items-center gap-2">
             <Heart className="h-4 w-4" />
-            Inspirations & Credits
+            Licenses & Credits
           </CardTitle>
           <CardDescription>
-            This project was inspired by the following projects. No code was directly used, but their ideas influenced the design.
+            Projects that inspired LocalRouter's design, and third-party resources downloaded at runtime.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
@@ -169,52 +169,22 @@ export function AboutTab() {
               </p>
             </div>
           ))}
-        </CardContent>
-      </Card>
-
-      {/* Strong/Weak Model Licenses */}
-      <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="text-sm flex items-center gap-2">
-            <Cpu className="h-4 w-4" />
-            Strong/Weak Model Licenses
-          </CardTitle>
-          <CardDescription>
-            When using Strong/Weak intelligent routing, the following model weights are downloaded.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="p-3 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-lg">
-            <div className="flex items-center gap-2 mb-2">
+          <div className="p-3 bg-muted/50 rounded-lg border">
+            <div className="flex items-center gap-2 mb-1">
               <span className="font-medium text-sm">routellm/mf_gpt4_augmented</span>
-              <Badge variant="outline" className="text-xs bg-amber-100 dark:bg-amber-900/50">
+              <Badge variant="secondary" className="text-xs">
                 Apache-2.0
               </Badge>
             </div>
             <p className="text-xs text-muted-foreground">
-              Matrix factorization router model trained on GPT-4 preference data. Hosted on Hugging Face.
+              Matrix factorization router model downloaded when using Strong/Weak intelligent routing.
             </p>
           </div>
-        </CardContent>
-      </Card>
-
-      {/* Guardrails Sources */}
-      <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="text-sm flex items-center gap-2">
-            <Shield className="h-4 w-4" />
-            Guardrails Rule Sources
-          </CardTitle>
-          <CardDescription>
-            When guardrails are enabled, regex patterns are downloaded from these open-source projects.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="p-3 bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 rounded-lg">
+          <div className="p-3 bg-muted/50 rounded-lg border">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <span className="font-medium text-sm">Microsoft Presidio</span>
-                <Badge variant="outline" className="text-xs bg-blue-100 dark:bg-blue-900/50">
+                <Badge variant="secondary" className="text-xs">
                   MIT
                 </Badge>
               </div>
@@ -227,14 +197,14 @@ export function AboutTab() {
               </Button>
             </div>
             <p className="text-xs text-muted-foreground mt-1">
-              PII detection recognizers with regex patterns for credit cards, emails, phone numbers, and more.
+              PII detection regex patterns downloaded when guardrails are enabled.
             </p>
           </div>
-          <div className="p-3 bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 rounded-lg">
+          <div className="p-3 bg-muted/50 rounded-lg border">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <span className="font-medium text-sm">LLM Guard (ProtectAI)</span>
-                <Badge variant="outline" className="text-xs bg-blue-100 dark:bg-blue-900/50">
+                <Badge variant="secondary" className="text-xs">
                   MIT
                 </Badge>
               </div>
@@ -247,7 +217,7 @@ export function AboutTab() {
               </Button>
             </div>
             <p className="text-xs text-muted-foreground mt-1">
-              Input/output scanners with secret detection patterns for API keys, tokens, and credentials.
+              Secret detection patterns downloaded when guardrails are enabled.
             </p>
           </div>
         </CardContent>

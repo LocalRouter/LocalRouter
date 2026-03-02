@@ -456,8 +456,8 @@ export function LlmTab({ initialMode, initialProvider, initialClientId }: LlmTab
                       <SelectValue placeholder={loadingModels ? "Loading models..." : "Select a model"} />
                     </SelectTrigger>
                     <SelectContent>
-                      {models.map((model) => (
-                        <SelectItem key={model.id} value={model.id}>
+                      {models.map((model, index) => (
+                        <SelectItem key={`${model.owned_by}/${model.id}-${index}`} value={model.id}>
                           {model.id}
                         </SelectItem>
                       ))}

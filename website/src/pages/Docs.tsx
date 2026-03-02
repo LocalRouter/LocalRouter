@@ -246,7 +246,6 @@ const sections: DocSection[] = [
         { id: 'source-presidio', title: 'Microsoft Presidio' },
         { id: 'source-llm-guard', title: 'LLM Guard' },
       ]},
-      { id: 'custom-regex-rules', title: 'Custom Regex Rules' },
       { id: 'parallel-scanning', title: 'Parallel Scanning' },
     ],
   },

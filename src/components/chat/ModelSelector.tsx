@@ -25,8 +25,8 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
         {models.length === 0 ? (
           <option value="">No models available</option>
         ) : (
-          models.map((model) => (
-            <option key={model.model_id} value={model.model_id}>
+          models.map((model, index) => (
+            <option key={`${model.provider_instance}/${model.model_id}-${index}`} value={model.model_id}>
               {model.model_id}
             </option>
           ))

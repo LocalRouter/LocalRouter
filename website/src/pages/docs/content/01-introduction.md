@@ -16,12 +16,12 @@ All data stays on your machine — zero telemetry, zero external assets, and sec
 
 <!-- @entry architecture-overview -->
 
-LocalRouter is built with a Rust/Tauri 2.x backend and a React/TypeScript frontend. The backend runs an Axum HTTP server on port 3625 that exposes OpenAI-compatible endpoints (`/chat/completions`, `/models`, etc.) and MCP proxy endpoints. Both gateways are served at the root — their endpoints do not conflict, so no path prefix is required.
+LocalRouter runs an HTTP server on port 3625 that serves two gateways at the same root path:
 
-**Routing engine.** The routing engine receives incoming requests, authenticates the client, checks rate limits, selects a model (via auto-routing or explicit model ID), and dispatches to the appropriate provider.
+**OpenAI-compatible gateway.** Exposes standard endpoints (`/chat/completions`, `/models`, `/embeddings`, etc.) that any OpenAI-compatible client can use. The routing engine authenticates the client, checks rate limits, selects a model (via auto-routing or explicit model ID), and dispatches to the appropriate provider.
 
-**MCP gateway.** The MCP gateway manages connections to upstream MCP servers, namespaces their tools, and proxies JSON-RPC calls.
+**MCP gateway.** Manages connections to upstream MCP servers, namespaces their tools, and proxies JSON-RPC calls. Clients connect once and gain access to all configured MCP servers.
 
-**Monitoring.** The monitoring system collects per-request metrics (latency, tokens, cost) in memory with time-series bucketing.
+**Monitoring.** Collects per-request metrics (latency, tokens, cost) viewable from the dashboard.
 
-The frontend communicates with the backend via Tauri IPC commands for configuration, while API consumers interact through the HTTP server.
+The UI is a native desktop window for managing configuration, while API consumers interact through the HTTP server.

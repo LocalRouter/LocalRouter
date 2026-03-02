@@ -791,11 +791,11 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
         <DialogContent className="max-w-lg max-h-[80vh] flex flex-col overflow-hidden">
           <DialogHeader className="flex-shrink-0">
             <DialogTitle>Add Skills</DialogTitle>
-            {dialogPage === "select" && (
-              <DialogDescription>
-                Manage local skill paths or install from the marketplace.
-              </DialogDescription>
-            )}
+            <DialogDescription>
+              {dialogPage === "select"
+                ? "Manage local skill paths or install from the marketplace."
+                : "Preview and install the selected skill."}
+            </DialogDescription>
           </DialogHeader>
 
           {dialogPage === "select" ? (
