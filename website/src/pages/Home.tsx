@@ -233,7 +233,7 @@ export default function Home() {
       <section className="border-b">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-8 text-center">
           <h2 className="text-2xl font-bold sm:text-3xl">App Demo</h2>
-          <p className="mt-2 text-sm text-muted-foreground">UI preview only — no live functionality</p>
+          <p className="mt-2 text-sm text-muted-foreground">UI preview only — no live functionality — XP is now end-of-life</p>
         </div>
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 pb-8">
           <iframe
@@ -243,7 +243,7 @@ export default function Home() {
             title="LocalRouter Windows XP Demo"
           />
           <p className="mt-2 text-[11px] text-muted-foreground/60 text-right">
-            Desktop powered by <a href="https://github.com/ShizukuIchi/winXP" target="_blank" rel="noopener noreferrer" className="underline hover:text-muted-foreground">WinXP</a>
+            Desktop powered by <a href="https://github.com/ShizukuIchi/winXP" target="_blank" rel="noopener noreferrer" className="underline hover:text-muted-foreground">WinXP</a> theme
           </p>
         </div>
       </section>
@@ -780,6 +780,201 @@ export default function Home() {
         </div>
       </section>
 
+      {/* Feature 6: Firewall */}
+      <section className="border-b py-16 sm:py-24">
+        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+          <div className="grid gap-12 lg:grid-cols-2 lg:gap-16 items-center">
+            <div>
+              <div className="flex items-center gap-2 mb-4">
+                <ShieldCheck className="h-5 w-5 text-amber-500" />
+                <span className="text-sm font-medium text-amber-500 uppercase tracking-wide">Firewall</span>
+              </div>
+              <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">
+                Runtime Approval Firewall
+              </h2>
+              <p className="mt-4 text-lg text-muted-foreground">
+                Interactive approval prompts for sensitive operations. Allow once, allow for session, or deny. Configurable per client, model, MCP server, and skill.
+              </p>
+              <ul className="mt-8 space-y-4">
+                <li className="flex gap-3">
+                  <Check className="h-5 w-5 shrink-0 text-amber-500 mt-0.5" />
+                  <div>
+                    <span className="font-medium">Request inspection & modification</span>
+                    <p className="text-sm text-muted-foreground">Inspect and modify tool arguments, model parameters, and API payloads in real time before they reach their destination</p>
+                  </div>
+                </li>
+                <li className="flex gap-3">
+                  <Check className="h-5 w-5 shrink-0 text-amber-500 mt-0.5" />
+                  <div>
+                    <span className="font-medium">Granular approval policies</span>
+                    <p className="text-sm text-muted-foreground">Gate access to models, MCP tools, skills, and marketplace installations. Allow once, for session, or deny &mdash; configurable per client</p>
+                  </div>
+                </li>
+              </ul>
+              <Link to="/docs/firewall" className="mt-6 inline-flex items-center gap-1 text-sm font-medium text-amber-500 hover:text-amber-400 transition-colors">
+                Learn more <span aria-hidden="true">&rarr;</span>
+              </Link>
+            </div>
+            {/* Visual: Firewall Architecture */}
+            <div className="relative">
+              <div className="relative w-full aspect-[4/3]">
+                {/* SVG Connection Lines */}
+                <svg className="absolute inset-0 w-full h-full pointer-events-none" viewBox="0 0 400 300" preserveAspectRatio="xMidYMid meet">
+                  {/* Left clients to firewall */}
+                  {/* Cursor (front) right edge → Firewall left edge */}
+                  <path d="M 88 66 Q 120 66 155 112" stroke="url(#fw-gradient-blue)" strokeWidth="2" fill="none" opacity="0.7" />
+                  {/* Cline (middle) right edge → Firewall left edge */}
+                  <path d="M 94 78 Q 125 78 155 117" stroke="url(#fw-gradient-blue)" strokeWidth="2" fill="none" opacity="0.7" />
+                  {/* WebUI (back) right edge → Firewall left edge */}
+                  <path d="M 100 90 Q 128 90 155 122" stroke="url(#fw-gradient-blue)" strokeWidth="2" fill="none" opacity="0.7" />
+
+                  {/* Firewall to right resources */}
+                  {/* Firewall right edge → LLMs (front) left edge */}
+                  <path d="M 245 109 Q 274 66 302 66" stroke="url(#fw-gradient-multi)" strokeWidth="2" fill="none" opacity="0.7" />
+                  {/* Firewall right edge → MCPs left edge */}
+                  <path d="M 245 114 Q 274 78 302 78" stroke="url(#fw-gradient-multi)" strokeWidth="2" fill="none" opacity="0.7" />
+                  {/* Firewall right edge → Skills left edge */}
+                  <path d="M 245 119 Q 270 90 296 90" stroke="url(#fw-gradient-multi)" strokeWidth="2" fill="none" opacity="0.7" />
+                  {/* Firewall right edge → Marketplace left edge */}
+                  <path d="M 245 124 Q 268 102 290 102" stroke="url(#fw-gradient-multi)" strokeWidth="2" fill="none" opacity="0.7" />
+
+                  {/* Firewall down to permission dialog */}
+                  <path d="M 200 159 L 200 204" stroke="url(#fw-gradient-amber)" strokeWidth="2.5" fill="none" />
+                  <circle cx="200" cy="204" r="3" fill="#f59e0b" />
+
+                  <defs>
+                    <linearGradient id="fw-gradient-blue" x1="0%" y1="0%" x2="100%" y2="0%">
+                      <stop offset="0%" stopColor="#3b82f6" stopOpacity="0.8" />
+                      <stop offset="100%" stopColor="#f59e0b" stopOpacity="0.5" />
+                    </linearGradient>
+                    <linearGradient id="fw-gradient-multi" x1="0%" y1="0%" x2="100%" y2="0%">
+                      <stop offset="0%" stopColor="#f59e0b" stopOpacity="0.5" />
+                      <stop offset="100%" stopColor="#8b5cf6" stopOpacity="0.8" />
+                    </linearGradient>
+                    <linearGradient id="fw-gradient-amber" x1="0%" y1="0%" x2="0%" y2="100%">
+                      <stop offset="0%" stopColor="#f59e0b" stopOpacity="0.8" />
+                      <stop offset="100%" stopColor="#f59e0b" stopOpacity="0.5" />
+                    </linearGradient>
+                  </defs>
+                </svg>
+
+                {/* Left: Clients Stack (diagonally offset) */}
+                <div className="absolute left-[2%] top-[12%]">
+                  <div className="text-[9px] sm:text-xs font-medium text-blue-500 uppercase tracking-wide mb-2">Clients</div>
+                  <div className="relative">
+                    {/* Client 3 (back) */}
+                    <div className="absolute top-8 left-4 flex items-center gap-1.5 px-2 py-1.5 rounded-lg bg-blue-500/10 border border-blue-500/30 shadow-sm backdrop-blur-sm">
+                      <img src="/icons/open-webui.png" alt="Open WebUI" className="h-4 w-4" />
+                      <span className="text-[10px] sm:text-xs font-medium text-white/80">WebUI</span>
+                    </div>
+                    {/* Client 2 (middle) */}
+                    <div className="absolute top-4 left-2 flex items-center gap-1.5 px-2 py-1.5 rounded-lg bg-blue-500/15 border border-blue-500/40 shadow-sm backdrop-blur-sm">
+                      <div className="h-4 w-4 rounded bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center text-white font-bold text-[7px]">C</div>
+                      <span className="text-[10px] sm:text-xs font-medium text-white/90">Cline</span>
+                    </div>
+                    {/* Client 1 (front) */}
+                    <div className="relative flex items-center gap-1.5 px-2 py-1.5 rounded-lg bg-blue-500/20 border border-blue-500/50 shadow-lg backdrop-blur-sm">
+                      <img src="/icons/cursor.svg" alt="Cursor" className="h-4 w-4" />
+                      <span className="text-[10px] sm:text-xs font-medium text-white">Cursor</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Center: LocalRouter Firewall */}
+                <div className="absolute left-1/2 top-[28%] -translate-x-1/2">
+                  <div className="rounded-xl border-2 border-amber-500/50 bg-gradient-to-br from-amber-500/20 to-orange-500/20 p-3 shadow-xl backdrop-blur-sm">
+                    <div className="text-center">
+                      <div className="h-10 w-10 rounded-lg bg-gradient-to-br from-amber-500 to-orange-600 flex items-center justify-center mx-auto mb-1 shadow-lg">
+                        <Shield className="h-5 w-5 text-white" />
+                      </div>
+                      <div className="font-bold text-xs text-white">LocalRouter</div>
+                      <div className="text-[9px] text-amber-400">Firewall</div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Right: Resources Stack (diagonally offset) */}
+                <div className="absolute right-[2%] top-[12%]">
+                  <div className="text-[9px] sm:text-xs font-medium text-violet-500 uppercase tracking-wide mb-2 text-right">Resources</div>
+                  <div className="relative">
+                    {/* Resource 4 (back) */}
+                    <div className="absolute top-12 -left-4 flex items-center gap-1.5 px-2 py-1.5 rounded-lg bg-cyan-500/10 border border-cyan-500/30 shadow-sm backdrop-blur-sm">
+                      <Store className="h-4 w-4 text-cyan-400" />
+                      <span className="text-[10px] sm:text-xs font-medium text-white/80">Marketplace</span>
+                    </div>
+                    {/* Resource 3 */}
+                    <div className="absolute top-8 -left-2 flex items-center gap-1.5 px-2 py-1.5 rounded-lg bg-violet-500/10 border border-violet-500/30 shadow-sm backdrop-blur-sm">
+                      <Sparkles className="h-4 w-4 text-violet-400" />
+                      <span className="text-[10px] sm:text-xs font-medium text-white/85">Skills</span>
+                    </div>
+                    {/* Resource 2 */}
+                    <div className="absolute top-4 left-0 flex items-center gap-1.5 px-2 py-1.5 rounded-lg bg-emerald-500/15 border border-emerald-500/40 shadow-sm backdrop-blur-sm">
+                      <Wrench className="h-4 w-4 text-emerald-400" />
+                      <span className="text-[10px] sm:text-xs font-medium text-white/90">MCPs</span>
+                    </div>
+                    {/* Resource 1 (front) */}
+                    <div className="relative flex items-center gap-1.5 px-2 py-1.5 rounded-lg bg-violet-500/20 border border-violet-500/50 shadow-lg backdrop-blur-sm">
+                      <img src="/icons/chatgpt.svg" alt="LLM" className="h-4 w-4" />
+                      <span className="text-[10px] sm:text-xs font-medium text-white">LLMs</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Bottom: Permission Dialog */}
+                <div className="absolute left-1/2 top-[68%] -translate-x-1/2 scale-75 origin-top">
+                  <FirewallApprovalDemo />
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* Feature 6: GuardRails */}
+      <section className="border-b py-16 sm:py-24">
+        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+          <div className="grid gap-12 lg:grid-cols-2 lg:gap-16 items-center">
+            {/* Visual: GuardRail Approval Demo */}
+            <div className="flex justify-center order-2 lg:order-1">
+              <div className="transform scale-[0.95]">
+                <GuardrailApprovalDemo />
+              </div>
+            </div>
+            <div className="order-1 lg:order-2">
+              <div className="flex items-center gap-2 mb-4">
+                <Shield className="h-5 w-5 text-red-500" />
+                <span className="text-sm font-medium text-red-500 uppercase tracking-wide">GuardRails</span>
+              </div>
+              <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">
+                Content Safety Inspection
+              </h2>
+              <p className="mt-4 text-lg text-muted-foreground">
+                Scan LLM requests and responses for prompt injection, jailbreaks, PII leakage, and code injection. When a rule triggers, a popup lets you allow or deny the request.
+              </p>
+              <ul className="mt-8 space-y-4">
+                <li className="flex gap-3">
+                  <Check className="h-5 w-5 shrink-0 text-red-500 mt-0.5" />
+                  <div>
+                    <span className="font-medium">Multi-source detection</span>
+                    <p className="text-sm text-muted-foreground">Built-in rules plus downloadable sources from Microsoft Presidio, LLM Guard, and more</p>
+                  </div>
+                </li>
+                <li className="flex gap-3">
+                  <Check className="h-5 w-5 shrink-0 text-red-500 mt-0.5" />
+                  <div>
+                    <span className="font-medium">Parallel scanning</span>
+                    <p className="text-sm text-muted-foreground">Guardrail checks run in parallel with provider calls for zero-latency overhead on clean requests</p>
+                  </div>
+                </li>
+              </ul>
+              <Link to="/docs/guardrails" className="mt-6 inline-flex items-center gap-1 text-sm font-medium text-red-500 hover:text-red-400 transition-colors">
+                Learn more <span aria-hidden="true">&rarr;</span>
+              </Link>
+            </div>
+          </div>
+        </div>
+      </section>
+
       {/* Feature 3: Unified MCP */}
       <section className="border-b py-16 sm:py-24">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
@@ -1166,209 +1361,6 @@ export default function Home() {
         </div>
       </section>
 
-      {/* Feature 6: Firewall */}
-      <section className="border-b py-16 sm:py-24">
-        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-          <div className="grid gap-12 lg:grid-cols-2 lg:gap-16 items-center">
-            {/* Visual: Firewall Architecture */}
-            <div className="relative order-2 lg:order-1">
-              <div className="relative w-full aspect-[4/3]">
-                {/* SVG Connection Lines */}
-                <svg className="absolute inset-0 w-full h-full pointer-events-none" viewBox="0 0 400 300" preserveAspectRatio="xMidYMid meet">
-                  {/* Left clients to firewall */}
-                  {/* Cursor (front) right edge → Firewall left edge */}
-                  <path d="M 88 66 Q 120 66 155 112" stroke="url(#fw-gradient-blue)" strokeWidth="2" fill="none" opacity="0.7" />
-                  {/* Cline (middle) right edge → Firewall left edge */}
-                  <path d="M 94 78 Q 125 78 155 117" stroke="url(#fw-gradient-blue)" strokeWidth="2" fill="none" opacity="0.7" />
-                  {/* WebUI (back) right edge → Firewall left edge */}
-                  <path d="M 100 90 Q 128 90 155 122" stroke="url(#fw-gradient-blue)" strokeWidth="2" fill="none" opacity="0.7" />
-
-                  {/* Firewall to right resources */}
-                  {/* Firewall right edge → LLMs (front) left edge */}
-                  <path d="M 245 109 Q 274 66 302 66" stroke="url(#fw-gradient-multi)" strokeWidth="2" fill="none" opacity="0.7" />
-                  {/* Firewall right edge → MCPs left edge */}
-                  <path d="M 245 114 Q 274 78 302 78" stroke="url(#fw-gradient-multi)" strokeWidth="2" fill="none" opacity="0.7" />
-                  {/* Firewall right edge → Skills left edge */}
-                  <path d="M 245 119 Q 270 90 296 90" stroke="url(#fw-gradient-multi)" strokeWidth="2" fill="none" opacity="0.7" />
-                  {/* Firewall right edge → Marketplace left edge */}
-                  <path d="M 245 124 Q 268 102 290 102" stroke="url(#fw-gradient-multi)" strokeWidth="2" fill="none" opacity="0.7" />
-
-                  {/* Firewall down to permission dialog */}
-                  <path d="M 200 159 L 200 204" stroke="url(#fw-gradient-amber)" strokeWidth="2.5" fill="none" />
-                  <circle cx="200" cy="204" r="3" fill="#f59e0b" />
-
-                  <defs>
-                    <linearGradient id="fw-gradient-blue" x1="0%" y1="0%" x2="100%" y2="0%">
-                      <stop offset="0%" stopColor="#3b82f6" stopOpacity="0.8" />
-                      <stop offset="100%" stopColor="#f59e0b" stopOpacity="0.5" />
-                    </linearGradient>
-                    <linearGradient id="fw-gradient-multi" x1="0%" y1="0%" x2="100%" y2="0%">
-                      <stop offset="0%" stopColor="#f59e0b" stopOpacity="0.5" />
-                      <stop offset="100%" stopColor="#8b5cf6" stopOpacity="0.8" />
-                    </linearGradient>
-                    <linearGradient id="fw-gradient-amber" x1="0%" y1="0%" x2="0%" y2="100%">
-                      <stop offset="0%" stopColor="#f59e0b" stopOpacity="0.8" />
-                      <stop offset="100%" stopColor="#f59e0b" stopOpacity="0.5" />
-                    </linearGradient>
-                  </defs>
-                </svg>
-
-                {/* Left: Clients Stack (diagonally offset) */}
-                <div className="absolute left-[2%] top-[12%]">
-                  <div className="text-[9px] sm:text-xs font-medium text-blue-500 uppercase tracking-wide mb-2">Clients</div>
-                  <div className="relative">
-                    {/* Client 3 (back) */}
-                    <div className="absolute top-8 left-4 flex items-center gap-1.5 px-2 py-1.5 rounded-lg bg-blue-500/10 border border-blue-500/30 shadow-sm backdrop-blur-sm">
-                      <img src="/icons/open-webui.png" alt="Open WebUI" className="h-4 w-4" />
-                      <span className="text-[10px] sm:text-xs font-medium text-white/80">WebUI</span>
-                    </div>
-                    {/* Client 2 (middle) */}
-                    <div className="absolute top-4 left-2 flex items-center gap-1.5 px-2 py-1.5 rounded-lg bg-blue-500/15 border border-blue-500/40 shadow-sm backdrop-blur-sm">
-                      <div className="h-4 w-4 rounded bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center text-white font-bold text-[7px]">C</div>
-                      <span className="text-[10px] sm:text-xs font-medium text-white/90">Cline</span>
-                    </div>
-                    {/* Client 1 (front) */}
-                    <div className="relative flex items-center gap-1.5 px-2 py-1.5 rounded-lg bg-blue-500/20 border border-blue-500/50 shadow-lg backdrop-blur-sm">
-                      <img src="/icons/cursor.svg" alt="Cursor" className="h-4 w-4" />
-                      <span className="text-[10px] sm:text-xs font-medium text-white">Cursor</span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Center: LocalRouter Firewall */}
-                <div className="absolute left-1/2 top-[28%] -translate-x-1/2">
-                  <div className="rounded-xl border-2 border-amber-500/50 bg-gradient-to-br from-amber-500/20 to-orange-500/20 p-3 shadow-xl backdrop-blur-sm">
-                    <div className="text-center">
-                      <div className="h-10 w-10 rounded-lg bg-gradient-to-br from-amber-500 to-orange-600 flex items-center justify-center mx-auto mb-1 shadow-lg">
-                        <Shield className="h-5 w-5 text-white" />
-                      </div>
-                      <div className="font-bold text-xs text-white">LocalRouter</div>
-                      <div className="text-[9px] text-amber-400">Firewall</div>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Right: Resources Stack (diagonally offset) */}
-                <div className="absolute right-[2%] top-[12%]">
-                  <div className="text-[9px] sm:text-xs font-medium text-violet-500 uppercase tracking-wide mb-2 text-right">Resources</div>
-                  <div className="relative">
-                    {/* Resource 4 (back) */}
-                    <div className="absolute top-12 -left-4 flex items-center gap-1.5 px-2 py-1.5 rounded-lg bg-cyan-500/10 border border-cyan-500/30 shadow-sm backdrop-blur-sm">
-                      <Store className="h-4 w-4 text-cyan-400" />
-                      <span className="text-[10px] sm:text-xs font-medium text-white/80">Marketplace</span>
-                    </div>
-                    {/* Resource 3 */}
-                    <div className="absolute top-8 -left-2 flex items-center gap-1.5 px-2 py-1.5 rounded-lg bg-violet-500/10 border border-violet-500/30 shadow-sm backdrop-blur-sm">
-                      <Sparkles className="h-4 w-4 text-violet-400" />
-                      <span className="text-[10px] sm:text-xs font-medium text-white/85">Skills</span>
-                    </div>
-                    {/* Resource 2 */}
-                    <div className="absolute top-4 left-0 flex items-center gap-1.5 px-2 py-1.5 rounded-lg bg-emerald-500/15 border border-emerald-500/40 shadow-sm backdrop-blur-sm">
-                      <Wrench className="h-4 w-4 text-emerald-400" />
-                      <span className="text-[10px] sm:text-xs font-medium text-white/90">MCPs</span>
-                    </div>
-                    {/* Resource 1 (front) */}
-                    <div className="relative flex items-center gap-1.5 px-2 py-1.5 rounded-lg bg-violet-500/20 border border-violet-500/50 shadow-lg backdrop-blur-sm">
-                      <img src="/icons/chatgpt.svg" alt="LLM" className="h-4 w-4" />
-                      <span className="text-[10px] sm:text-xs font-medium text-white">LLMs</span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Bottom: Permission Dialog */}
-                <div className="absolute left-1/2 top-[68%] -translate-x-1/2 scale-75 origin-top">
-                  <FirewallApprovalDemo />
-                </div>
-              </div>
-            </div>
-
-            <div className="order-1 lg:order-2">
-              <div className="flex items-center gap-2 mb-4">
-                <ShieldCheck className="h-5 w-5 text-amber-500" />
-                <span className="text-sm font-medium text-amber-500 uppercase tracking-wide">Firewall</span>
-              </div>
-              <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">
-                Runtime Approval Firewall
-              </h2>
-              <p className="mt-4 text-lg text-muted-foreground">
-                Interactive approval prompts for sensitive operations. Allow once, allow for session, or deny. Configurable per client, model, MCP server, and skill.
-              </p>
-              <ul className="mt-8 space-y-4">
-                <li className="flex gap-3">
-                  <Check className="h-5 w-5 shrink-0 text-amber-500 mt-0.5" />
-                  <div>
-                    <span className="font-medium">Request inspection & modification</span>
-                    <p className="text-sm text-muted-foreground">Inspect and modify tool arguments, model parameters, and API payloads in real time before they reach their destination</p>
-                  </div>
-                </li>
-                <li className="flex gap-3">
-                  <Check className="h-5 w-5 shrink-0 text-amber-500 mt-0.5" />
-                  <div>
-                    <span className="font-medium">Granular approval policies</span>
-                    <p className="text-sm text-muted-foreground">Gate access to models, MCP tools, skills, and marketplace installations. Allow once, for session, or deny &mdash; configurable per client</p>
-                  </div>
-                </li>
-              </ul>
-              <Link to="/docs/firewall" className="mt-6 inline-flex items-center gap-1 text-sm font-medium text-amber-500 hover:text-amber-400 transition-colors">
-                Learn more <span aria-hidden="true">&rarr;</span>
-              </Link>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* Feature 6: GuardRails */}
-      <section className="border-b py-16 sm:py-24">
-        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-          <div className="grid gap-12 lg:grid-cols-2 lg:gap-16 items-center">
-            <div>
-              <div className="flex items-center gap-2 mb-4">
-                <Shield className="h-5 w-5 text-red-500" />
-                <span className="text-sm font-medium text-red-500 uppercase tracking-wide">GuardRails</span>
-              </div>
-              <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">
-                Content Safety Inspection
-              </h2>
-              <p className="mt-4 text-lg text-muted-foreground">
-                Scan LLM requests and responses for prompt injection, jailbreaks, PII leakage, and code injection. When a rule triggers, a popup lets you allow or deny the request.
-              </p>
-              <ul className="mt-8 space-y-4">
-                <li className="flex gap-3">
-                  <Check className="h-5 w-5 shrink-0 text-red-500 mt-0.5" />
-                  <div>
-                    <span className="font-medium">Multi-source detection</span>
-                    <p className="text-sm text-muted-foreground">Built-in rules plus downloadable sources from Microsoft Presidio, LLM Guard, and more</p>
-                  </div>
-                </li>
-                <li className="flex gap-3">
-                  <Check className="h-5 w-5 shrink-0 text-red-500 mt-0.5" />
-                  <div>
-                    <span className="font-medium">Custom regex rules</span>
-                    <p className="text-sm text-muted-foreground">Define your own detection patterns for organization-specific content policies and sensitive data patterns</p>
-                  </div>
-                </li>
-                <li className="flex gap-3">
-                  <Check className="h-5 w-5 shrink-0 text-red-500 mt-0.5" />
-                  <div>
-                    <span className="font-medium">Parallel scanning</span>
-                    <p className="text-sm text-muted-foreground">Guardrail checks run in parallel with provider calls for zero-latency overhead on clean requests</p>
-                  </div>
-                </li>
-              </ul>
-              <Link to="/docs/guardrails" className="mt-6 inline-flex items-center gap-1 text-sm font-medium text-red-500 hover:text-red-400 transition-colors">
-                Learn more <span aria-hidden="true">&rarr;</span>
-              </Link>
-            </div>
-            {/* Visual: GuardRail Approval Demo */}
-            <div className="flex justify-center">
-              <div className="transform scale-[0.95]">
-                <GuardrailApprovalDemo />
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
-
       {/* Feature 7: Marketplace */}
       <section className="border-b py-16 sm:py-24">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
@@ -1379,7 +1371,7 @@ export default function Home() {
                 <span className="text-sm font-medium text-cyan-500 uppercase tracking-wide">Marketplace</span>
               </div>
               <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">
-                MCP &amp; Skill Marketplace
+                Marketplace for MCP &amp; Skills
               </h2>
               <p className="mt-4 text-lg text-muted-foreground">
                 Browse and install MCP servers and skills from your registries. Marketplace accessible over MCP tools for AI-assisted discovery. All installs require your approval.

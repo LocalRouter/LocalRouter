@@ -407,6 +407,7 @@ mod tests {
             limit_type: RateLimitType::Requests,
             value: f64::NAN,
             time_window: RateLimitTimeWindow::Minute,
+            enabled: true,
         }];
         let mut config = AppConfig::default();
         config.strategies = vec![s];
@@ -420,6 +421,7 @@ mod tests {
             limit_type: RateLimitType::Requests,
             value: f64::INFINITY,
             time_window: RateLimitTimeWindow::Minute,
+            enabled: true,
         }];
         let mut config = AppConfig::default();
         config.strategies = vec![s];
@@ -433,6 +435,7 @@ mod tests {
             limit_type: RateLimitType::Requests,
             value: -1.0,
             time_window: RateLimitTimeWindow::Minute,
+            enabled: true,
         }];
         let mut config = AppConfig::default();
         config.strategies = vec![s];
@@ -446,6 +449,7 @@ mod tests {
             limit_type: RateLimitType::Requests,
             value: 0.0,
             time_window: RateLimitTimeWindow::Minute,
+            enabled: true,
         }];
         let mut config = AppConfig::default();
         config.strategies = vec![s];
@@ -459,6 +463,7 @@ mod tests {
             limit_type: RateLimitType::Requests,
             value: 100.0,
             time_window: RateLimitTimeWindow::Minute,
+            enabled: true,
         }];
         let mut config = AppConfig::default();
         config.strategies = vec![s];

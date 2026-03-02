@@ -6,9 +6,10 @@
 
 use crate::ui::tray_menu::{
     build_tray_menu, copy_to_clipboard, handle_add_mcp_to_client, handle_copy_mcp_bearer,
-    handle_copy_mcp_url, handle_copy_url, handle_create_and_copy_api_key, handle_prioritized_list,
-    handle_set_client_strategy, handle_toggle_client_enabled, handle_toggle_coding_agent_access,
-    handle_toggle_mcp_access, handle_toggle_skill_access,
+    handle_copy_mcp_url, handle_copy_url, handle_create_and_copy_api_key,
+    handle_open_client_settings, handle_prioritized_list, handle_toggle_client_enabled,
+    handle_toggle_coding_agent_access, handle_toggle_free_tier, handle_toggle_mcp_access,
+    handle_toggle_rate_limit, handle_toggle_skill_access, handle_toggle_weak_model,
 };
 use lr_utils::test_mode::is_test_mode;
 use parking_lot::RwLock;
@@ -311,25 +312,55 @@ pub fn setup_tray<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
                             }
                         });
                     }
-                    // Handle set strategy: set_strategy_<client_id>_<strategy_id>
-                    else if let Some(rest) = id.strip_prefix("set_strategy_") {
-                        if let Some((client_id, strategy_id)) = rest.split_once('_') {
-                            info!(
-                                "Set strategy requested: client={}, strategy={}",
-                                client_id, strategy_id
-                            );
-                            let app_clone = app.clone();
-                            let client_id = client_id.to_string();
-                            let strategy_id = strategy_id.to_string();
-                            tauri::async_runtime::spawn(async move {
-                                if let Err(e) =
-                                    handle_set_client_strategy(&app_clone, &client_id, &strategy_id)
-                                        .await
-                                {
-                                    error!("Failed to set client strategy: {}", e);
-                                }
-                            });
+                    // Handle open client settings: open_client_settings_<client_id>
+                    else if let Some(client_id) = id.strip_prefix("open_client_settings_") {
+                        info!("Open client settings requested: {}", client_id);
+                        if let Err(e) = handle_open_client_settings(app, client_id) {
+                            error!("Failed to open client settings: {}", e);
                         }
+                    }
+                    // Handle toggle rate limit: toggle_rate_limit_<client_id>__<index>
+                    else if let Some(rest) = id.strip_prefix("toggle_rate_limit_") {
+                        if let Some((client_id, index_str)) = rest.split_once("__") {
+                            if let Ok(index) = index_str.parse::<usize>() {
+                                info!(
+                                    "Toggle rate limit requested: client={}, index={}",
+                                    client_id, index
+                                );
+                                let app_clone = app.clone();
+                                let client_id = client_id.to_string();
+                                tauri::async_runtime::spawn(async move {
+                                    if let Err(e) =
+                                        handle_toggle_rate_limit(&app_clone, &client_id, index)
+                                            .await
+                                    {
+                                        error!("Failed to toggle rate limit: {}", e);
+                                    }
+                                });
+                            }
+                        }
+                    }
+                    // Handle toggle free tier: toggle_free_tier_<client_id>
+                    else if let Some(client_id) = id.strip_prefix("toggle_free_tier_") {
+                        info!("Toggle free tier requested: {}", client_id);
+                        let app_clone = app.clone();
+                        let client_id = client_id.to_string();
+                        tauri::async_runtime::spawn(async move {
+                            if let Err(e) = handle_toggle_free_tier(&app_clone, &client_id).await {
+                                error!("Failed to toggle free tier: {}", e);
+                            }
+                        });
+                    }
+                    // Handle toggle weak model routing: toggle_weak_model_<client_id>
+                    else if let Some(client_id) = id.strip_prefix("toggle_weak_model_") {
+                        info!("Toggle weak model routing requested: {}", client_id);
+                        let app_clone = app.clone();
+                        let client_id = client_id.to_string();
+                        tauri::async_runtime::spawn(async move {
+                            if let Err(e) = handle_toggle_weak_model(&app_clone, &client_id).await {
+                                error!("Failed to toggle weak model routing: {}", e);
+                            }
+                        });
                     }
                     // Handle toggle MCP: toggle_mcp_<client_id>_<server_id>
                     else if let Some(rest) = id.strip_prefix("toggle_mcp_") {
@@ -371,29 +402,18 @@ pub fn setup_tray<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
                             });
                         }
                     }
-                    // Handle toggle coding agent: toggle_coding_agent_<client_id>__<agent_prefix>
-                    // Uses __ (double underscore) as separator since agent prefixes contain _
-                    else if let Some(rest) = id.strip_prefix("toggle_coding_agent_") {
-                        if let Some((client_id, agent_prefix)) = rest.split_once("__") {
-                            info!(
-                                "Toggle coding agent requested: client={}, agent={}",
-                                client_id, agent_prefix
-                            );
-                            let app_clone = app.clone();
-                            let client_id = client_id.to_string();
-                            let agent_prefix = agent_prefix.to_string();
-                            tauri::async_runtime::spawn(async move {
-                                if let Err(e) = handle_toggle_coding_agent_access(
-                                    &app_clone,
-                                    &client_id,
-                                    &agent_prefix,
-                                )
-                                .await
-                                {
-                                    error!("Failed to toggle coding agent access: {}", e);
-                                }
-                            });
-                        }
+                    // Handle toggle coding agent: toggle_coding_agent_<client_id>
+                    else if let Some(client_id) = id.strip_prefix("toggle_coding_agent_") {
+                        info!("Toggle coding agent requested: client={}", client_id);
+                        let app_clone = app.clone();
+                        let client_id = client_id.to_string();
+                        tauri::async_runtime::spawn(async move {
+                            if let Err(e) =
+                                handle_toggle_coding_agent_access(&app_clone, &client_id).await
+                            {
+                                error!("Failed to toggle coding agent access: {}", e);
+                            }
+                        });
                     }
                     // Handle toggle client enabled: toggle_client_enabled_<client_id>
                     else if let Some(client_id) = id.strip_prefix("toggle_client_enabled_") {

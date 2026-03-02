@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use uuid::Uuid;
 
-pub(crate) const CONFIG_VERSION: u32 = 15;
+pub(crate) const CONFIG_VERSION: u32 = 16;
 
 /// Suffix for auto-generated client strategy names
 pub const CLIENT_STRATEGY_NAME_SUFFIX: &str = "'s strategy";
@@ -38,6 +38,8 @@ pub struct StrategyRateLimit {
     pub limit_type: RateLimitType,
     pub value: f64,
     pub time_window: RateLimitTimeWindow,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
 }
 
 /// Available models selection configuration
@@ -1206,12 +1208,12 @@ pub struct SkillsConfig {
 /// Coding agents configuration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct CodingAgentsConfig {
-    /// Per-agent configurations
-    #[serde(default)]
+    /// Migration shim: old per-agent configurations (deserialize only)
+    #[serde(default, skip_serializing)]
     pub agents: Vec<CodingAgentConfig>,
 
-    /// Default working directory for new sessions (if not specified per-agent)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Migration shim: old default working directory (deserialize only)
+    #[serde(default, skip_serializing)]
     pub default_working_directory: Option<String>,
 
     /// Maximum concurrent sessions across all agents (default: 10)
@@ -1780,9 +1782,17 @@ pub struct Client {
     #[serde(default)]
     pub marketplace_permission: PermissionState,
 
-    /// AI coding agents permissions (hierarchical Allow/Ask/Off)
-    #[serde(default)]
+    /// Migration shim: old hierarchical coding agents permissions (deserialize only)
+    #[serde(default, skip_serializing)]
     pub coding_agents_permissions: CodingAgentsPermissions,
+
+    /// Coding agent permission (Allow/Ask/Off)
+    #[serde(default)]
+    pub coding_agent_permission: PermissionState,
+
+    /// Which coding agent type this client uses (None = not selected)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coding_agent_type: Option<CodingAgentType>,
 
     /// Client mode: controls which features (LLM, MCP, both) are exposed
     #[serde(default)]
@@ -2665,6 +2675,8 @@ impl Client {
             guardrails_enabled: None,
             guardrails: ClientGuardrailsConfig::default(),
             coding_agents_permissions: CodingAgentsPermissions::default(),
+            coding_agent_permission: PermissionState::default(),
+            coding_agent_type: None,
         }
     }
 

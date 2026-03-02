@@ -43,6 +43,43 @@ const MAX_TRAY_ITEMS: usize = 10;
 /// Uses two thin spaces (\u{2009}) per side.
 pub(crate) const ICON_PAD: &str = "\u{2009}\u{2009}";
 
+/// Format a rate limit for display in the tray menu.
+/// Examples: "100 requests / hr", "$5.00 / day", "10,000 tokens / min"
+fn format_rate_limit(limit: &lr_config::StrategyRateLimit) -> String {
+    let value_str = match limit.limit_type {
+        lr_config::RateLimitType::Cost => format!("${:.2}", limit.value),
+        _ => {
+            if limit.value >= 1000.0 {
+                format!("{:.0}", limit.value)
+            } else if limit.value == limit.value.floor() {
+                format!("{:.0}", limit.value)
+            } else {
+                format!("{:.1}", limit.value)
+            }
+        }
+    };
+
+    let type_str = match limit.limit_type {
+        lr_config::RateLimitType::Requests => "requests",
+        lr_config::RateLimitType::InputTokens => "input tokens",
+        lr_config::RateLimitType::OutputTokens => "output tokens",
+        lr_config::RateLimitType::TotalTokens => "tokens",
+        lr_config::RateLimitType::Cost => "",
+    };
+
+    let window_str = match limit.time_window {
+        lr_config::RateLimitTimeWindow::Minute => "min",
+        lr_config::RateLimitTimeWindow::Hour => "hr",
+        lr_config::RateLimitTimeWindow::Day => "day",
+    };
+
+    if type_str.is_empty() {
+        format!("{} / {}", value_str, window_str)
+    } else {
+        format!("{} {} / {}", value_str, type_str, window_str)
+    }
+}
+
 /// Build the system tray menu
 pub(crate) fn build_tray_menu<R: Runtime, M: Manager<R>>(
     app: &M,
@@ -217,7 +254,7 @@ pub(crate) fn build_tray_menu<R: Runtime, M: Manager<R>>(
         let mcp_server_manager = app.try_state::<Arc<McpServerManager>>();
         let config_manager = app.try_state::<ConfigManager>();
 
-        // Get all strategies for the strategy selector
+        // Get all strategies for quick toggles
         let all_strategies: Vec<lr_config::Strategy> = config_manager
             .map(|cm| cm.get().strategies.clone())
             .unwrap_or_default();
@@ -261,50 +298,77 @@ pub(crate) fn build_tray_menu<R: Runtime, M: Manager<R>>(
                     format!("{ICON_PAD}⧉{ICON_PAD} Copy API Key / Client Secret (Bearer, OAuth)"),
                 );
 
+                client_submenu = client_submenu.text(
+                    format!("open_client_settings_{}", client.id),
+                    format!("{ICON_PAD}⚙{ICON_PAD} Settings"),
+                );
+
                 client_submenu = client_submenu.separator();
 
                 let show_llm = !matches!(client.client_mode, ClientMode::McpOnly);
                 let show_mcp = !matches!(client.client_mode, ClientMode::LlmOnly);
 
-                // === Model strategy section (hidden for McpOnly) ===
+                // === Quick toggles section (hidden for McpOnly) ===
                 if show_llm {
-                    let strategy_header = MenuItem::with_id(
-                        app,
-                        format!("strategy_header_{}", client.id),
-                        "Model strategy",
-                        false,
-                        None::<&str>,
-                    )?;
-                    client_submenu = client_submenu.item(&strategy_header);
+                    if let Some(strategy) =
+                        all_strategies.iter().find(|s| s.id == client.strategy_id)
+                    {
+                        // Rate Limits sub-section
+                        if !strategy.rate_limits.is_empty() {
+                            let rl_header = MenuItem::with_id(
+                                app,
+                                format!("rate_limits_header_{}", client.id),
+                                "Rate Limits",
+                                false,
+                                None::<&str>,
+                            )?;
+                            client_submenu = client_submenu.item(&rl_header);
 
-                    // List strategies with checkmark on selected (truncated to MAX_TRAY_ITEMS)
-                    for strategy in all_strategies.iter().take(MAX_TRAY_ITEMS) {
-                        let is_selected = strategy.id == client.strategy_id;
-                        let label = if is_selected {
-                            format!("✓  {}", strategy.name)
-                        } else {
-                            format!("{}{}", TRAY_INDENT, strategy.name)
-                        };
+                            for (idx, limit) in strategy.rate_limits.iter().enumerate() {
+                                let label = if limit.enabled {
+                                    format!("✓  {}", format_rate_limit(limit))
+                                } else {
+                                    format!("{}{}", TRAY_INDENT, format_rate_limit(limit))
+                                };
+                                client_submenu = client_submenu.text(
+                                    format!("toggle_rate_limit_{}__{}", client.id, idx),
+                                    label,
+                                );
+                            }
+                        }
 
-                        let strategy_item = MenuItem::with_id(
-                            app,
-                            format!("set_strategy_{}_{}", client.id, strategy.id),
-                            &label,
-                            !is_selected,
-                            None::<&str>,
-                        )?;
-                        client_submenu = client_submenu.item(&strategy_item);
+                        // Free Tier Mode toggle
+                        {
+                            let label = if strategy.free_tier_only {
+                                "✓  Free Tier Mode".to_string()
+                            } else {
+                                format!("{}Free Tier Mode", TRAY_INDENT)
+                            };
+                            client_submenu = client_submenu
+                                .text(format!("toggle_free_tier_{}", client.id), label);
+                        }
+
+                        // Weak Model Routing toggle (only if auto_config enabled + routellm has weak_models)
+                        if let Some(ref auto_config) = strategy.auto_config {
+                            if auto_config.enabled {
+                                if let Some(ref routellm) = auto_config.routellm_config {
+                                    if !routellm.weak_models.is_empty() {
+                                        let label = if routellm.enabled {
+                                            "✓  Weak Model Routing".to_string()
+                                        } else {
+                                            format!("{}Weak Model Routing", TRAY_INDENT)
+                                        };
+                                        client_submenu = client_submenu.text(
+                                            format!("toggle_weak_model_{}", client.id),
+                                            label,
+                                        );
+                                    }
+                                }
+                            }
+                        }
+
+                        client_submenu = client_submenu.separator();
                     }
-
-                    // Show "More…" if truncated
-                    if all_strategies.len() > MAX_TRAY_ITEMS {
-                        client_submenu = client_submenu.text(
-                            format!("open_client_models_{}", client.id),
-                            format!("{}More…", TRAY_INDENT),
-                        );
-                    }
-
-                    client_submenu = client_submenu.separator();
                 }
 
                 // === MCP Allowlist section (hidden for LlmOnly) ===
@@ -429,57 +493,34 @@ pub(crate) fn build_tray_menu<R: Runtime, M: Manager<R>>(
                         client_submenu = client_submenu.item(&no_skills_item);
                     }
 
-                    // === Coding Agents Allowlist section (also hidden for LlmOnly) ===
+                    // === Coding Agent section (also hidden for LlmOnly) ===
                     client_submenu = client_submenu.separator();
 
                     let coding_agents_header = MenuItem::with_id(
                         app,
                         format!("coding_agents_header_{}", client.id),
-                        "Coding Agents",
+                        "Coding Agent",
                         false,
                         None::<&str>,
                     )?;
                     client_submenu = client_submenu.item(&coding_agents_header);
 
-                    let installed_agents =
-                        lr_coding_agents::manager::CodingAgentManager::detect_installed_agents();
-
-                    if installed_agents.is_empty() {
-                        let no_agents_label = format!("{}No coding agents installed", TRAY_INDENT);
-                        let no_agents_item = MenuItem::with_id(
-                            app,
-                            format!("no_coding_agents_{}", client.id),
-                            &no_agents_label,
-                            false,
-                            None::<&str>,
-                        )?;
-                        client_submenu = client_submenu.item(&no_agents_item);
-                    } else {
-                        for agent_type in installed_agents.iter().take(MAX_TRAY_ITEMS) {
-                            let agent_prefix = agent_type.tool_prefix();
-                            let is_allowed = client
-                                .coding_agents_permissions
-                                .resolve_agent(agent_prefix)
-                                .is_enabled();
-                            let label = if is_allowed {
-                                format!("✓  {}", agent_type.display_name())
+                    {
+                        let is_enabled = client.coding_agent_permission.is_enabled();
+                        let agent_label = if let Some(at) = &client.coding_agent_type {
+                            if is_enabled {
+                                format!("✓  {}", at.display_name())
                             } else {
-                                format!("{}{}", TRAY_INDENT, agent_type.display_name())
-                            };
+                                format!("{}{}  (off)", TRAY_INDENT, at.display_name())
+                            }
+                        } else if is_enabled {
+                            format!("{}Enabled (no agent selected)", TRAY_INDENT)
+                        } else {
+                            format!("{}Off", TRAY_INDENT)
+                        };
 
-                            client_submenu = client_submenu.text(
-                                format!("toggle_coding_agent_{}__{}", client.id, agent_prefix),
-                                label,
-                            );
-                        }
-
-                        // Show "More…" if truncated
-                        if installed_agents.len() > MAX_TRAY_ITEMS {
-                            client_submenu = client_submenu.text(
-                                format!("open_coding_agents_{}", client.id),
-                                format!("{}More…", TRAY_INDENT),
-                            );
-                        }
+                        client_submenu = client_submenu
+                            .text(format!("toggle_coding_agent_{}", client.id), agent_label);
                     }
                 }
 
@@ -909,27 +950,50 @@ pub(crate) async fn handle_add_mcp_to_client<R: Runtime>(
     Ok(())
 }
 
-/// Handle setting a client's strategy
-pub(crate) async fn handle_set_client_strategy<R: Runtime>(
+/// Handle opening client settings in the UI
+pub(crate) fn handle_open_client_settings<R: Runtime>(
     app: &AppHandle<R>,
     client_id: &str,
-    strategy_id: &str,
 ) -> tauri::Result<()> {
-    info!("Setting strategy {} for client {}", strategy_id, client_id);
+    info!("Opening settings for client {}", client_id);
 
-    // Get managers from state
-    let client_manager = app.state::<Arc<ClientManager>>();
+    // Show the main window
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+
+    // Emit event to navigate to the client tab
+    if let Err(e) = app.emit("open-client-tab", client_id) {
+        error!("Failed to emit open-client-tab event: {}", e);
+    }
+
+    Ok(())
+}
+
+/// Handle toggling a rate limit's enabled state
+pub(crate) async fn handle_toggle_rate_limit<R: Runtime>(
+    app: &AppHandle<R>,
+    client_id: &str,
+    index: usize,
+) -> tauri::Result<()> {
+    info!("Toggling rate limit {} for client {}", index, client_id);
+
     let config_manager = app.state::<ConfigManager>();
 
-    // Update client's strategy in client manager
-    client_manager
-        .set_client_strategy(client_id, strategy_id)
-        .map_err(|e| tauri::Error::Anyhow(e.into()))?;
-
-    // Save to config
     config_manager
         .update(|cfg| {
-            cfg.clients = client_manager.get_configs();
+            if let Some(client) = cfg.clients.iter().find(|c| c.id == client_id) {
+                if let Some(strategy) = cfg
+                    .strategies
+                    .iter_mut()
+                    .find(|s| s.id == client.strategy_id)
+                {
+                    if let Some(limit) = strategy.rate_limits.get_mut(index) {
+                        limit.enabled = !limit.enabled;
+                    }
+                }
+            }
         })
         .map_err(|e| tauri::Error::Anyhow(e.into()))?;
 
@@ -938,15 +1002,89 @@ pub(crate) async fn handle_set_client_strategy<R: Runtime>(
         .await
         .map_err(|e| tauri::Error::Anyhow(e.into()))?;
 
-    // Rebuild tray menu
     rebuild_tray_menu(app)?;
 
-    // Emit event for UI updates
-    if let Err(e) = app.emit("clients-changed", ()) {
-        error!("Failed to emit clients-changed event: {}", e);
+    if let Err(e) = app.emit("strategies-changed", ()) {
+        error!("Failed to emit strategies-changed event: {}", e);
     }
 
-    info!("Strategy {} set for client {}", strategy_id, client_id);
+    Ok(())
+}
+
+/// Handle toggling free tier mode for a client's strategy
+pub(crate) async fn handle_toggle_free_tier<R: Runtime>(
+    app: &AppHandle<R>,
+    client_id: &str,
+) -> tauri::Result<()> {
+    info!("Toggling free tier mode for client {}", client_id);
+
+    let config_manager = app.state::<ConfigManager>();
+
+    config_manager
+        .update(|cfg| {
+            if let Some(client) = cfg.clients.iter().find(|c| c.id == client_id) {
+                if let Some(strategy) = cfg
+                    .strategies
+                    .iter_mut()
+                    .find(|s| s.id == client.strategy_id)
+                {
+                    strategy.free_tier_only = !strategy.free_tier_only;
+                }
+            }
+        })
+        .map_err(|e| tauri::Error::Anyhow(e.into()))?;
+
+    config_manager
+        .save()
+        .await
+        .map_err(|e| tauri::Error::Anyhow(e.into()))?;
+
+    rebuild_tray_menu(app)?;
+
+    if let Err(e) = app.emit("strategies-changed", ()) {
+        error!("Failed to emit strategies-changed event: {}", e);
+    }
+
+    Ok(())
+}
+
+/// Handle toggling weak model routing for a client's strategy
+pub(crate) async fn handle_toggle_weak_model<R: Runtime>(
+    app: &AppHandle<R>,
+    client_id: &str,
+) -> tauri::Result<()> {
+    info!("Toggling weak model routing for client {}", client_id);
+
+    let config_manager = app.state::<ConfigManager>();
+
+    config_manager
+        .update(|cfg| {
+            if let Some(client) = cfg.clients.iter().find(|c| c.id == client_id) {
+                if let Some(strategy) = cfg
+                    .strategies
+                    .iter_mut()
+                    .find(|s| s.id == client.strategy_id)
+                {
+                    if let Some(ref mut auto_config) = strategy.auto_config {
+                        if let Some(ref mut routellm) = auto_config.routellm_config {
+                            routellm.enabled = !routellm.enabled;
+                        }
+                    }
+                }
+            }
+        })
+        .map_err(|e| tauri::Error::Anyhow(e.into()))?;
+
+    config_manager
+        .save()
+        .await
+        .map_err(|e| tauri::Error::Anyhow(e.into()))?;
+
+    rebuild_tray_menu(app)?;
+
+    if let Err(e) = app.emit("strategies-changed", ()) {
+        error!("Failed to emit strategies-changed event: {}", e);
+    }
 
     Ok(())
 }
@@ -1120,16 +1258,12 @@ pub(crate) async fn handle_toggle_skill_access<R: Runtime>(
     Ok(())
 }
 
-/// Toggle coding agent access for a client (Allow ↔ Off)
+/// Toggle coding agent permission for a client (Allow ↔ Off)
 pub(crate) async fn handle_toggle_coding_agent_access<R: Runtime>(
     app: &AppHandle<R>,
     client_id: &str,
-    agent_prefix: &str,
 ) -> tauri::Result<()> {
-    info!(
-        "Toggling coding agent {} access for client {}",
-        agent_prefix, client_id
-    );
+    info!("Toggling coding agent access for client {}", client_id);
 
     let config_manager = app.state::<ConfigManager>();
 
@@ -1137,28 +1271,12 @@ pub(crate) async fn handle_toggle_coding_agent_access<R: Runtime>(
     config_manager
         .update(|cfg| {
             if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
-                let is_allowed = client
-                    .coding_agents_permissions
-                    .resolve_agent(agent_prefix)
-                    .is_enabled();
-                if is_allowed {
-                    client
-                        .coding_agents_permissions
-                        .agents
-                        .insert(agent_prefix.to_string(), lr_config::PermissionState::Off);
-                    info!(
-                        "Coding agent {} disabled for client {}",
-                        agent_prefix, client_id
-                    );
+                if client.coding_agent_permission.is_enabled() {
+                    client.coding_agent_permission = lr_config::PermissionState::Off;
+                    info!("Coding agent disabled for client {}", client_id);
                 } else {
-                    client
-                        .coding_agents_permissions
-                        .agents
-                        .insert(agent_prefix.to_string(), lr_config::PermissionState::Allow);
-                    info!(
-                        "Coding agent {} enabled for client {}",
-                        agent_prefix, client_id
-                    );
+                    client.coding_agent_permission = lr_config::PermissionState::Allow;
+                    info!("Coding agent enabled for client {}", client_id);
                 }
                 found = true;
             }

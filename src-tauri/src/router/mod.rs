@@ -478,6 +478,9 @@ impl Router {
             .get_pre_estimate_for_strategy(&strategy.id, 10);
 
         for limit in &strategy.rate_limits {
+            if !limit.enabled {
+                continue;
+            }
             let window_secs = limit.time_window.to_seconds();
 
             let (current_requests, current_tokens, current_cost) = self

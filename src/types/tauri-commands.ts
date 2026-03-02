@@ -100,7 +100,8 @@ export interface ClientInfo {
   last_used: string | null
   mcp_permissions: McpPermissions
   skills_permissions: SkillsPermissions
-  coding_agents_permissions: CodingAgentsPermissions
+  coding_agent_permission: PermissionState
+  coding_agent_type: CodingAgentType | null
   model_permissions: ModelPermissions
   marketplace_permission: PermissionState
   client_mode: ClientMode
@@ -166,6 +167,7 @@ export interface StrategyRateLimit {
   limit_type: 'requests' | 'tokens' | 'cost'
   value: number
   time_window_seconds: number
+  enabled?: boolean
 }
 
 /**
@@ -1207,12 +1209,6 @@ export interface RotateClientSecretParams {
 export interface ToggleClientDeferredLoadingParams {
   clientId: string
   enabled: boolean
-}
-
-/** Params for assign_client_strategy */
-export interface AssignClientStrategyParams {
-  clientId: string
-  strategyId: string
 }
 
 /** Params for get_client */
@@ -2263,12 +2259,8 @@ export type CodingPermissionMode = 'auto' | 'supervised' | 'plan'
 export interface CodingAgentInfo {
   agentType: CodingAgentType
   displayName: string
-  toolPrefix: string
   binaryName: string
   installed: boolean
-  workingDirectory: string | null
-  modelId: string | null
-  permissionMode: CodingPermissionMode
 }
 
 /**
@@ -2290,25 +2282,21 @@ export interface CodingSessionInfo {
 // Rust: src-tauri/src/ui/commands_coding_agents.rs
 // =============================================================================
 
-/** Params for update_coding_agent_config */
-export interface UpdateCodingAgentConfigParams {
-  agentType: CodingAgentType
-  workingDirectory?: string | null
-  modelId?: string | null
-  permissionMode?: CodingPermissionMode | null
-}
-
 /** Params for end_coding_session */
 export interface EndCodingSessionParams {
   sessionId: string
 }
 
-/** Params for set_client_coding_agents_permission */
-export interface SetClientCodingAgentsPermissionParams {
+/** Params for set_client_coding_agent_permission */
+export interface SetClientCodingAgentPermissionParams {
   clientId: string
-  level: 'global' | 'agent'
-  key?: string | null
-  state: PermissionState
+  permission: PermissionState
+}
+
+/** Params for set_client_coding_agent_type */
+export interface SetClientCodingAgentTypeParams {
+  clientId: string
+  agentType: CodingAgentType | null
 }
 
 /** Params for set_max_coding_sessions */

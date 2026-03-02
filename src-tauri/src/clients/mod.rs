@@ -414,20 +414,6 @@ impl ClientManager {
         Ok(())
     }
 
-    /// Set the strategy for a client
-    pub fn set_client_strategy(&self, client_id: &str, strategy_id: &str) -> AppResult<()> {
-        let mut clients = self.clients.write();
-
-        let client = clients
-            .iter_mut()
-            .find(|c| c.id == client_id)
-            .ok_or_else(|| AppError::Config(format!("Client not found: {}", client_id)))?;
-
-        client.strategy_id = strategy_id.to_string();
-
-        Ok(())
-    }
-
     /// Get a client by client_id
     pub fn get_client(&self, client_id: &str) -> Option<Client> {
         let clients = self.clients.read();

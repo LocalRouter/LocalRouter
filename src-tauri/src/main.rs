@@ -1429,7 +1429,6 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::update_strategy,
             ui::commands::delete_strategy,
             ui::commands::get_clients_using_strategy,
-            ui::commands::assign_client_strategy,
             // Client template, mode & guardrails commands
             ui::commands::set_client_mode,
             ui::commands::set_client_template,
@@ -1560,12 +1559,12 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands_free_tier::get_default_free_tier,
             // Coding agents commands
             ui::commands_coding_agents::list_coding_agents,
-            ui::commands_coding_agents::update_coding_agent_config,
             ui::commands_coding_agents::list_coding_sessions,
             ui::commands_coding_agents::end_coding_session,
-            ui::commands_coding_agents::set_client_coding_agents_permission,
             ui::commands_coding_agents::get_max_coding_sessions,
             ui::commands_coding_agents::set_max_coding_sessions,
+            ui::commands_coding_agents::set_client_coding_agent_permission,
+            ui::commands_coding_agents::set_client_coding_agent_type,
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {

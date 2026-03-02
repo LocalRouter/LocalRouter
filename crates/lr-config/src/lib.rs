@@ -312,6 +312,8 @@ impl ConfigManager {
             guardrails_enabled: None,
             guardrails: ClientGuardrailsConfig::default(),
             coding_agents_permissions: CodingAgentsPermissions::default(),
+            coding_agent_permission: PermissionState::default(),
+            coding_agent_type: None,
         };
 
         self.update(|cfg| {
@@ -347,37 +349,6 @@ impl ConfigManager {
         })?;
 
         Ok(())
-    }
-
-    /// Assign a client to a different strategy (clears parent if selecting non-owned strategy)
-    pub fn assign_client_strategy(&self, client_id: &str, new_strategy_id: &str) -> AppResult<()> {
-        // First check if client exists
-        {
-            let cfg = self.config.read();
-            if !cfg.clients.iter().any(|c| c.id == client_id) {
-                return Err(AppError::Config("Client not found".into()));
-            }
-        }
-
-        self.update(|cfg| {
-            if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
-                let old_strategy_id = client.strategy_id.clone();
-
-                // If selecting a different strategy (not own), clear parent from that strategy
-                if old_strategy_id != new_strategy_id {
-                    if let Some(new_strategy) =
-                        cfg.strategies.iter_mut().find(|s| s.id == new_strategy_id)
-                    {
-                        // Clear parent if it's not the current client
-                        if new_strategy.parent.as_ref() != Some(&client_id.to_string()) {
-                            new_strategy.parent = None;
-                        }
-                    }
-                }
-
-                client.strategy_id = new_strategy_id.to_string();
-            }
-        })
     }
 
     /// Rename a strategy (clears parent if changing from default name)

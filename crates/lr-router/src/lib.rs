@@ -633,6 +633,9 @@ impl Router {
             .get_pre_estimate_for_strategy(&strategy.id, 10);
 
         for limit in &strategy.rate_limits {
+            if !limit.enabled {
+                continue;
+            }
             let window_secs = limit.time_window.to_seconds();
 
             let (current_requests, current_tokens, current_cost) = self
@@ -804,8 +807,10 @@ impl Router {
 
         // Record free tier usage
         let free_tier = self.get_effective_free_tier(provider);
-        let total_tokens = response.usage.prompt_tokens as u64 + response.usage.completion_tokens as u64;
-        self.free_tier_manager.record_usage(provider, &free_tier, total_tokens, cost);
+        let total_tokens =
+            response.usage.prompt_tokens as u64 + response.usage.completion_tokens as u64;
+        self.free_tier_manager
+            .record_usage(provider, &free_tier, total_tokens, cost);
 
         Ok(response)
     }
@@ -1686,7 +1691,8 @@ impl Router {
             .await
             .unwrap_or_else(|_| lr_providers::PricingInfo::free());
         let cost = calculate_cost(total_tokens, 0, &pricing);
-        self.free_tier_manager.record_usage(provider, &free_tier, total_tokens, cost);
+        self.free_tier_manager
+            .record_usage(provider, &free_tier, total_tokens, cost);
 
         Ok(response)
     }

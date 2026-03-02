@@ -143,7 +143,8 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       last_used: null,
       mcp_permissions: { global: 'ask' as const, servers: {}, tools: {}, resources: {}, prompts: {} },
       skills_permissions: { global: 'ask' as const, skills: {}, tools: {} },
-      coding_agents_permissions: { global: 'ask' as const, agents: {} },
+      coding_agent_permission: 'ask' as const,
+      coding_agent_type: null,
       model_permissions: { global: 'allow' as const, providers: {}, models: {} },
       marketplace_permission: 'ask' as const,
       client_mode: 'both' as const,
@@ -195,14 +196,6 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   'rotate_client_secret': () => {
     setTimeout(() => emit('clients-changed', {}), 10)
     return { secret: `demo-secret-${generateId()}` }
-  },
-  'assign_client_strategy': (args) => {
-    const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.clientId)
-    if (client) {
-      client.strategy_id = args?.strategyId
-      setTimeout(() => emit('clients-changed', {}), 10)
-    }
-    return null
   },
   'get_client_value': () => null,
 
@@ -929,31 +922,32 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   // Coding Agents
   // ============================================================================
   'list_coding_agents': () => [
-    { agentType: 'claude_code', displayName: 'Claude Code', toolPrefix: 'claude_code', binaryName: 'claude', installed: true, workingDirectory: null, modelId: null, permissionMode: 'auto' },
-    { agentType: 'gemini_cli', displayName: 'Gemini CLI', toolPrefix: 'gemini_cli', binaryName: 'gemini', installed: true, workingDirectory: null, modelId: null, permissionMode: 'auto' },
-    { agentType: 'codex', displayName: 'Codex', toolPrefix: 'codex', binaryName: 'codex', installed: false, workingDirectory: null, modelId: null, permissionMode: 'supervised' },
-    { agentType: 'amp', displayName: 'Amp', toolPrefix: 'amp', binaryName: 'amp', installed: false, workingDirectory: null, modelId: null, permissionMode: 'auto' },
-    { agentType: 'aider', displayName: 'Aider', toolPrefix: 'aider', binaryName: 'aider', installed: true, workingDirectory: null, modelId: null, permissionMode: 'auto' },
-    { agentType: 'opencode', displayName: 'Opencode', toolPrefix: 'opencode', binaryName: 'opencode', installed: false, workingDirectory: null, modelId: null, permissionMode: 'auto' },
-    { agentType: 'cursor', displayName: 'Cursor', toolPrefix: 'cursor', binaryName: 'cursor', installed: false, workingDirectory: null, modelId: null, permissionMode: 'auto' },
-    { agentType: 'qwen_code', displayName: 'Qwen Code', toolPrefix: 'qwen_code', binaryName: 'qwen-code', installed: false, workingDirectory: null, modelId: null, permissionMode: 'auto' },
-    { agentType: 'copilot', displayName: 'GitHub Copilot', toolPrefix: 'copilot', binaryName: 'gh', installed: false, workingDirectory: null, modelId: null, permissionMode: 'auto' },
-    { agentType: 'droid', displayName: 'Droid', toolPrefix: 'droid', binaryName: 'droid', installed: false, workingDirectory: null, modelId: null, permissionMode: 'auto' },
+    { agentType: 'claude_code', displayName: 'Claude Code', binaryName: 'claude', installed: true },
+    { agentType: 'gemini_cli', displayName: 'Gemini CLI', binaryName: 'gemini', installed: true },
+    { agentType: 'codex', displayName: 'Codex', binaryName: 'codex', installed: false },
+    { agentType: 'amp', displayName: 'Amp', binaryName: 'amp', installed: false },
+    { agentType: 'aider', displayName: 'Aider', binaryName: 'aider', installed: true },
+    { agentType: 'opencode', displayName: 'Opencode', binaryName: 'opencode', installed: false },
+    { agentType: 'cursor', displayName: 'Cursor', binaryName: 'cursor', installed: false },
+    { agentType: 'qwen_code', displayName: 'Qwen Code', binaryName: 'qwen-code', installed: false },
+    { agentType: 'copilot', displayName: 'GitHub Copilot', binaryName: 'gh', installed: false },
+    { agentType: 'droid', displayName: 'Droid', binaryName: 'droid', installed: false },
   ],
-  'update_coding_agent_config': () => null,
   'list_coding_sessions': () => [],
   'end_coding_session': () => null,
   'get_max_coding_sessions': () => 10,
   'set_max_coding_sessions': () => null,
-  'set_client_coding_agents_permission': (args) => {
+  'set_client_coding_agent_permission': (args) => {
     const client = mockData.clients.find(c => c.client_id === args?.clientId)
     if (client) {
-      const perms = (client as Record<string, unknown>).coding_agents_permissions as { global: string; agents: Record<string, string> }
-      if (args?.level === 'global') {
-        perms.global = args.state
-      } else if (args?.key) {
-        perms.agents[args.key] = args.state
-      }
+      (client as Record<string, unknown>).coding_agent_permission = args?.permission ?? 'off'
+    }
+    return null
+  },
+  'set_client_coding_agent_type': (args) => {
+    const client = mockData.clients.find(c => c.client_id === args?.clientId)
+    if (client) {
+      (client as Record<string, unknown>).coding_agent_type = args?.agentType ?? null
     }
     return null
   },

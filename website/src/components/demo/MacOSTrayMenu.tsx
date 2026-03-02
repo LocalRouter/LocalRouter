@@ -7,7 +7,7 @@
  * Key sync points:
  * - Menu item labels and icons (TRAY_INDENT, ICON_PAD patterns)
  * - Menu structure (headers, separators, submenus)
- * - Client submenu structure (Copy ID, strategies, MCP, skills, coding agents)
+ * - Client submenu structure (Copy ID, settings, quick toggles, MCP, skills, coding agents)
  */
 
 import { useState } from 'react'
@@ -86,29 +86,63 @@ function ClientSubmenu({ client }: { client: (typeof mockData.clients)[0] }) {
         }}
       />
 
-      {/* Model strategy section (hidden for mcp_only) */}
-      {showLlm && (
-        <>
-          <Separator />
+      <MenuItem
+        icon={<Settings className="w-3 h-3" />}
+        label="Settings"
+      />
 
-          <MenuItem label="Model strategy" disabled />
+      {/* Quick toggles section (hidden for mcp_only) */}
+      {showLlm && (() => {
+        const strategy = mockData.strategies.find(s => s.id === client.strategy_id)
+        if (!strategy) return null
+        const hasRateLimits = strategy.rate_limits && strategy.rate_limits.length > 0
+        const hasWeakModel = strategy.auto_config?.enabled &&
+          strategy.auto_config?.routellm_config?.weak_models?.length > 0
 
-          {mockData.strategies.slice(0, MAX_TRAY_ITEMS).map((strategy) => {
-            const isSelected = strategy.id === client.strategy_id
-            return (
+        return (
+          <>
+            {hasRateLimits && (
+              <>
+                <Separator />
+                <MenuItem label="Rate Limits" disabled />
+                {strategy.rate_limits.map((limit, idx) => {
+                  const enabled = limit.enabled !== false
+                  const valueStr = limit.limit_type === 'cost'
+                    ? `$${limit.value.toFixed(2)}`
+                    : `${limit.value}`
+                  const typeStr = limit.limit_type === 'requests' ? 'requests'
+                    : limit.limit_type === 'cost' ? '' : 'tokens'
+                  const windowStr = limit.time_window_seconds === 60 ? 'min'
+                    : limit.time_window_seconds === 3600 ? 'hr' : 'day'
+                  const display = typeStr
+                    ? `${valueStr} ${typeStr} / ${windowStr}`
+                    : `${valueStr} / ${windowStr}`
+                  return (
+                    <MenuItem
+                      key={idx}
+                      label={enabled ? `✓  ${display}` : `${TRAY_INDENT}${display}`}
+                    />
+                  )
+                })}
+              </>
+            )}
+
+            {!hasRateLimits && <Separator />}
+
+            <MenuItem
+              label={strategy.free_tier_only ? '✓  Free Tier Mode' : `${TRAY_INDENT}Free Tier Mode`}
+            />
+
+            {hasWeakModel && (
               <MenuItem
-                key={strategy.id}
-                label={isSelected ? `✓  ${strategy.name}` : `${TRAY_INDENT}${strategy.name}`}
-                disabled={isSelected}
+                label={strategy.auto_config!.routellm_config!.enabled
+                  ? '✓  Weak Model Routing'
+                  : `${TRAY_INDENT}Weak Model Routing`}
               />
-            )
-          })}
-
-          {mockData.strategies.length > MAX_TRAY_ITEMS && (
-            <MenuItem label={`${TRAY_INDENT}More…`} />
-          )}
-        </>
-      )}
+            )}
+          </>
+        )
+      })()}
 
       {/* MCP Allowlist section (hidden for llm_only) */}
       {showMcp && (
@@ -169,26 +203,18 @@ function ClientSubmenu({ client }: { client: (typeof mockData.clients)[0] }) {
 
           <Separator />
 
-          <MenuItem label="Coding Agents" disabled />
+          <MenuItem label="Coding Agent" disabled />
 
-          {mockData.codingAgents.filter(a => a.installed).length === 0 ? (
-            <MenuItem label={`${TRAY_INDENT}No coding agents installed`} disabled />
-          ) : (
-            <>
-              {mockData.codingAgents.filter(a => a.installed).slice(0, MAX_TRAY_ITEMS).map((agent) => {
-                const agentPerm = client.coding_agents_permissions.agents[agent.toolPrefix]
-                const isAllowed =
-                  agentPerm === 'allow' ||
-                  (agentPerm === undefined && client.coding_agents_permissions.global === 'allow')
-                return (
-                  <MenuItem
-                    key={agent.toolPrefix}
-                    label={isAllowed ? `✓  ${agent.displayName}` : `${TRAY_INDENT}${agent.displayName}`}
-                  />
-                )
-              })}
-            </>
-          )}
+          {(() => {
+            const isEnabled = client.coding_agent_permission !== 'off'
+            const selectedAgent = client.coding_agent_type
+              ? mockData.codingAgents.find(a => a.agentType === client.coding_agent_type)
+              : null
+            const label = selectedAgent
+              ? `${isEnabled ? '✓' : TRAY_INDENT} ${selectedAgent.displayName}`
+              : `${TRAY_INDENT}None selected`
+            return <MenuItem label={label} />
+          })()}
         </>
       )}
     </div>

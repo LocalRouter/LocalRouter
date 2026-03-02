@@ -40,7 +40,8 @@ export const mockData = {
       last_used: "2025-02-03T14:30:00Z",
       mcp_permissions: { global: "allow", servers: {}, tools: {}, resources: {}, prompts: {} },
       skills_permissions: { global: "allow", skills: {}, tools: {} },
-      coding_agents_permissions: { global: "allow", agents: {} },
+      coding_agent_permission: "off",
+      coding_agent_type: null,
       model_permissions: { global: "allow", providers: {}, models: {} },
       marketplace_permission: "allow",
       client_mode: "llm_only",
@@ -59,7 +60,8 @@ export const mockData = {
       last_used: "2025-02-03T15:45:00Z",
       mcp_permissions: { global: "ask", servers: { "mcp-github": "allow", "mcp-filesystem": "allow" }, tools: {}, resources: {}, prompts: {} },
       skills_permissions: { global: "allow", skills: {}, tools: {} },
-      coding_agents_permissions: { global: "allow", agents: {} },
+      coding_agent_permission: "allow",
+      coding_agent_type: "claude_code",
       model_permissions: { global: "allow", providers: {}, models: { "gpt-4o": "allow", "claude-3-5-sonnet-20241022": "allow" } },
       marketplace_permission: "ask",
       client_mode: "both",
@@ -78,7 +80,8 @@ export const mockData = {
       last_used: null,
       mcp_permissions: { global: "ask", servers: {}, tools: {}, resources: {}, prompts: {} },
       skills_permissions: { global: "ask", skills: {}, tools: {} },
-      coding_agents_permissions: { global: "ask", agents: {} },
+      coding_agent_permission: "ask",
+      coding_agent_type: null,
       model_permissions: { global: "ask", providers: {}, models: {} },
       marketplace_permission: "ask",
       client_mode: "both",
@@ -437,7 +440,11 @@ export const mockData = {
         models: [],
       },
       auto_config: null,
-      rate_limits: [],
+      rate_limits: [
+        { limit_type: 'requests' as const, value: 100, time_window_seconds: 3600, enabled: true },
+        { limit_type: 'cost' as const, value: 5.00, time_window_seconds: 86400, enabled: false },
+      ],
+      free_tier_only: false,
     },
     {
       id: "strategy-fast",
@@ -453,6 +460,7 @@ export const mockData = {
       },
       auto_config: null,
       rate_limits: [],
+      free_tier_only: true,
     },
     {
       id: "strategy-quality",
@@ -476,12 +484,16 @@ export const mockData = {
         ] as [string, string][],
         available_models: [] as [string, string][],
         routellm_config: {
-          enabled: false,
+          enabled: true,
           threshold: 0.5,
-          weak_models: [] as [string, string][],
+          weak_models: [
+            ["openai-primary", "gpt-4o-mini"],
+            ["groq-fast", "llama-3.2-3b-instruct"],
+          ] as [string, string][],
         },
       },
       rate_limits: [],
+      free_tier_only: false,
     },
     {
       id: "strategy-local",
@@ -497,6 +509,7 @@ export const mockData = {
       },
       auto_config: null,
       rate_limits: [],
+      free_tier_only: false,
     },
   ],
 
@@ -798,10 +811,10 @@ export const mockData = {
   ],
 
   codingAgents: [
-    { toolPrefix: "claude_code", displayName: "Claude Code", installed: true },
-    { toolPrefix: "gemini_cli", displayName: "Gemini CLI", installed: true },
-    { toolPrefix: "codex", displayName: "Codex", installed: false },
-    { toolPrefix: "aider", displayName: "Aider", installed: true },
+    { agentType: "claude_code", displayName: "Claude Code", binaryName: "claude", installed: true },
+    { agentType: "gemini_cli", displayName: "Gemini CLI", binaryName: "gemini", installed: true },
+    { agentType: "codex", displayName: "Codex", binaryName: "codex", installed: false },
+    { agentType: "aider", displayName: "Aider", binaryName: "aider", installed: true },
   ],
 
   homeDir: "/Users/demo",

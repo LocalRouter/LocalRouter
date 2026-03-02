@@ -64,6 +64,8 @@ fn create_test_config(
         mcp_permissions: McpPermissions::default(),
         skills_permissions: SkillsPermissions::default(),
         coding_agents_permissions: lr_config::CodingAgentsPermissions::default(),
+        coding_agent_permission: lr_config::PermissionState::Off,
+        coding_agent_type: None,
         model_permissions: ModelPermissions::default(),
         marketplace_permission: PermissionState::Off,
         client_mode: lr_config::ClientMode::default(),
@@ -400,6 +402,7 @@ async fn test_strategy_rate_limit_requests() {
         limit_type: RateLimitType::Requests,
         value: 5.0,
         time_window: RateLimitTimeWindow::Minute,
+        enabled: true,
     }];
 
     let allowed_models = AvailableModelsSelection {
@@ -431,6 +434,7 @@ async fn test_strategy_rate_limit_cost_ignores_free_models() {
         limit_type: RateLimitType::Cost,
         value: 1.0, // $1 limit
         time_window: RateLimitTimeWindow::Hour,
+        enabled: true,
     }];
 
     let allowed_models = AvailableModelsSelection {
@@ -498,6 +502,8 @@ async fn test_disabled_client_returns_unauthorized() {
         mcp_permissions: McpPermissions::default(),
         skills_permissions: SkillsPermissions::default(),
         coding_agents_permissions: lr_config::CodingAgentsPermissions::default(),
+        coding_agent_permission: lr_config::PermissionState::Off,
+        coding_agent_type: None,
         model_permissions: ModelPermissions::default(),
         marketplace_permission: PermissionState::Off,
         client_mode: lr_config::ClientMode::default(),
@@ -548,6 +554,8 @@ async fn test_client_with_missing_strategy() {
         mcp_permissions: McpPermissions::default(),
         skills_permissions: SkillsPermissions::default(),
         coding_agents_permissions: lr_config::CodingAgentsPermissions::default(),
+        coding_agent_permission: lr_config::PermissionState::Off,
+        coding_agent_type: None,
         model_permissions: ModelPermissions::default(),
         marketplace_permission: PermissionState::Off,
         client_mode: lr_config::ClientMode::default(),
@@ -1016,6 +1024,7 @@ async fn test_auto_routing_strategy_rate_limits_checked_per_model() {
         limit_type: RateLimitType::Requests,
         value: 0.0, // Zero requests allowed
         time_window: RateLimitTimeWindow::Minute,
+        enabled: true,
     }];
 
     let config = create_test_config(
@@ -1133,6 +1142,8 @@ fn create_free_tier_config(
         mcp_permissions: McpPermissions::default(),
         skills_permissions: SkillsPermissions::default(),
         coding_agents_permissions: lr_config::CodingAgentsPermissions::default(),
+        coding_agent_permission: lr_config::PermissionState::Off,
+        coding_agent_type: None,
         model_permissions: ModelPermissions::default(),
         marketplace_permission: PermissionState::Off,
         client_mode: lr_config::ClientMode::default(),

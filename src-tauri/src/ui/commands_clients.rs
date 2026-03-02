@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use lr_config::{
-    client_strategy_name, ClientMode, CodingAgentsPermissions, ConfigManager, McpPermissions,
+    client_strategy_name, ClientMode, CodingAgentType, ConfigManager, McpPermissions,
     ModelPermissions, PermissionState, SkillsPermissions,
 };
 use serde::{Deserialize, Serialize};
@@ -39,8 +39,10 @@ pub struct ClientInfo {
     pub mcp_permissions: McpPermissions,
     /// Unified Skills permissions (hierarchical Allow/Ask/Off)
     pub skills_permissions: SkillsPermissions,
-    /// Unified Coding Agents permissions (hierarchical Allow/Ask/Off)
-    pub coding_agents_permissions: CodingAgentsPermissions,
+    /// Coding agent permission (Allow/Ask/Off)
+    pub coding_agent_permission: PermissionState,
+    /// Which coding agent type this client uses
+    pub coding_agent_type: Option<CodingAgentType>,
     /// Unified Model permissions (hierarchical Allow/Ask/Off)
     pub model_permissions: ModelPermissions,
     /// Marketplace permission state
@@ -75,7 +77,8 @@ pub async fn list_clients(
             last_used: c.last_used.map(|t| t.to_rfc3339()),
             mcp_permissions: c.mcp_permissions.clone(),
             skills_permissions: c.skills_permissions.clone(),
-            coding_agents_permissions: c.coding_agents_permissions.clone(),
+            coding_agent_permission: c.coding_agent_permission.clone(),
+            coding_agent_type: c.coding_agent_type,
             model_permissions: c.model_permissions.clone(),
             marketplace_permission: c.marketplace_permission.clone(),
             client_mode: c.client_mode.clone(),
@@ -139,7 +142,8 @@ pub async fn create_client(
         last_used: client.last_used.map(|t| t.to_rfc3339()),
         mcp_permissions: client.mcp_permissions.clone(),
         skills_permissions: client.skills_permissions.clone(),
-        coding_agents_permissions: client.coding_agents_permissions.clone(),
+        coding_agent_permission: client.coding_agent_permission.clone(),
+        coding_agent_type: client.coding_agent_type,
         model_permissions: client.model_permissions.clone(),
         marketplace_permission: client.marketplace_permission.clone(),
         client_mode: client.client_mode.clone(),
@@ -631,41 +635,6 @@ pub async fn get_clients_using_strategy(
         .collect())
 }
 
-/// Assign a client to a different strategy
-#[tauri::command]
-pub async fn assign_client_strategy(
-    client_id: String,
-    strategy_id: String,
-    config_manager: State<'_, ConfigManager>,
-    app: tauri::AppHandle,
-) -> Result<(), String> {
-    tracing::info!("Assigning client {} to strategy {}", client_id, strategy_id);
-
-    config_manager
-        .assign_client_strategy(&client_id, &strategy_id)
-        .map_err(|e| e.to_string())?;
-
-    // Persist to disk
-    config_manager.save().await.map_err(|e| e.to_string())?;
-
-    // Rebuild tray menu
-    if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
-        tracing::error!("Failed to rebuild tray menu: {}", e);
-    }
-
-    // Emit events for UI updates
-    if let Err(e) = app.emit("strategies-changed", ()) {
-        tracing::error!("Failed to emit strategies-changed event: {}", e);
-    }
-    if let Err(e) = app.emit("clients-changed", ()) {
-        tracing::error!("Failed to emit clients-changed event: {}", e);
-    }
-
-    tracing::info!("Client {} assigned to strategy {}", client_id, strategy_id);
-
-    Ok(())
-}
-
 // ============================================================================
 // Firewall Approval Commands
 // ============================================================================
@@ -679,6 +648,7 @@ pub async fn submit_firewall_approval(
     edited_arguments: Option<String>,
     state: State<'_, Arc<lr_server::state::AppState>>,
     config_manager: State<'_, ConfigManager>,
+    client_manager: State<'_, Arc<lr_clients::ClientManager>>,
     tray_graph_manager: State<'_, Arc<crate::ui::tray::TrayGraphManager>>,
 ) -> Result<(), String> {
     use lr_mcp::gateway::firewall::FirewallApprovalAction;
@@ -708,6 +678,7 @@ pub async fn submit_firewall_approval(
             | FirewallApprovalAction::Deny1Hour
             | FirewallApprovalAction::AllowSession
             | FirewallApprovalAction::DenySession
+            | FirewallApprovalAction::DisableClient
     ) {
         state
             .mcp_gateway
@@ -725,6 +696,7 @@ pub async fn submit_firewall_approval(
     let submit_action = match &action {
         FirewallApprovalAction::BlockCategories => FirewallApprovalAction::Deny,
         FirewallApprovalAction::Deny1Hour => FirewallApprovalAction::Deny,
+        FirewallApprovalAction::DisableClient => FirewallApprovalAction::Deny,
         FirewallApprovalAction::AllowCategories => FirewallApprovalAction::AllowOnce,
         other => other.clone(),
     };
@@ -1012,6 +984,28 @@ pub async fn submit_firewall_approval(
                         info.client_id
                     );
                 }
+            }
+        }
+        FirewallApprovalAction::DisableClient => {
+            if let Some(ref info) = pending_info {
+                // Disable the client entirely
+                client_manager
+                    .disable_client(&info.client_id)
+                    .map_err(|e| e.to_string())?;
+                config_manager
+                    .update(|cfg| {
+                        if let Some(client) =
+                            cfg.clients.iter_mut().find(|c| c.id == info.client_id)
+                        {
+                            client.enabled = false;
+                        }
+                    })
+                    .map_err(|e| e.to_string())?;
+                config_manager.save().await.map_err(|e| e.to_string())?;
+                tracing::info!(
+                    "Disabled client {} via guardrail DisableClient action",
+                    info.client_id
+                );
             }
         }
         _ => {}

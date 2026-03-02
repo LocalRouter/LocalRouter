@@ -38,6 +38,8 @@ pub struct StrategyRateLimit {
     pub limit_type: RateLimitType,
     pub value: f64,
     pub time_window: RateLimitTimeWindow,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
 }
 
 /// Available models selection configuration
