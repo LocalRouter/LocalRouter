@@ -1,9 +1,12 @@
-//! End-to-end integration test for the Coding Agents system via MCP gateway.
+//! End-to-end integration tests for the Coding Agents system via MCP gateway.
 //!
-//! Starts a real Claude Code process through the MCP gateway's `claude_code_start` tool,
-//! polls `claude_code_status` until the session completes, and verifies output.
+//! Starts real coding agent processes through the MCP gateway's `{prefix}_start` tool,
+//! polls `{prefix}_status` until the session completes, and verifies output.
 //!
-//! Requires `claude` binary on PATH. Skipped automatically if not installed.
+//! All tests that spawn real processes are `#[ignore]` by default since they require
+//! the respective agent binaries on PATH and are not run in CI.
+//! Run explicitly with: `cargo test --test coding_agents_e2e_test -- --ignored`
+//! Run a specific agent: `cargo test --test coding_agents_e2e_test test_e2e_claude_code -- --ignored`
 
 mod mcp_tests;
 
@@ -146,15 +149,17 @@ async fn call_tool(
     gateway_request(gateway, client_id, permissions, req).await
 }
 
-/// Poll `claude_code_status` until the session reaches a terminal state (done/error).
+/// Poll `{tool_prefix}_status` until the session reaches a terminal state (done/error).
 /// Returns the final status response.
 async fn poll_until_done(
     gateway: &Arc<McpGateway>,
     client_id: &str,
     permissions: &CodingAgentsPermissions,
+    tool_prefix: &str,
     session_id: &str,
     timeout_secs: u64,
 ) -> serde_json::Value {
+    let status_tool = format!("{tool_prefix}_status");
     let timeout = std::time::Duration::from_secs(timeout_secs);
     let start_time = std::time::Instant::now();
 
@@ -165,7 +170,7 @@ async fn poll_until_done(
             gateway,
             client_id,
             permissions,
-            "claude_code_status",
+            &status_tool,
             json!({ "sessionId": session_id, "outputLines": 100 }),
         )
         .await;
@@ -195,12 +200,149 @@ async fn poll_until_done(
     }
 }
 
+/// Run a full E2E time query test for any coding agent.
+/// Starts a session, polls until completion, and verifies output.
+async fn run_agent_e2e_time_query(binary_name: &str, tool_prefix: &str, display_name: &str) {
+    if which::which(binary_name).is_err() {
+        eprintln!("SKIP: `{binary_name}` binary not found on PATH");
+        return;
+    }
+
+    let (gateway, permissions) = setup_gateway();
+    let client_id = &format!("test-{tool_prefix}-time");
+    initialize_gateway(&gateway, client_id, &permissions).await;
+
+    let start_tool = format!("{tool_prefix}_start");
+
+    eprintln!("Starting {display_name} session...");
+    let start_result = call_tool(
+        &gateway,
+        client_id,
+        &permissions,
+        &start_tool,
+        json!({
+            "prompt": "Tell me what time it is right now. Just respond with the current time, nothing else.",
+            "permissionMode": "auto"
+        }),
+    )
+    .await;
+
+    let session_id = start_result["sessionId"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{display_name} start should return sessionId, got: {start_result}"));
+    assert_eq!(
+        start_result["status"].as_str().unwrap(),
+        "active",
+        "{display_name} session should be active"
+    );
+    eprintln!("{display_name} session started: {session_id}");
+
+    // Poll until done (120s timeout)
+    let final_status = poll_until_done(&gateway, client_id, &permissions, tool_prefix, session_id, 120).await;
+
+    eprintln!("{display_name} final status: {final_status}");
+    assert_eq!(
+        final_status["status"].as_str().unwrap(),
+        "done",
+        "{display_name} session should complete successfully. Result: {:?}, Output: {:?}",
+        final_status["result"],
+        final_status["recentOutput"]
+    );
+
+    let has_output = final_status["result"].as_str().map(|r| !r.is_empty()).unwrap_or(false)
+        || final_status["recentOutput"]
+            .as_array()
+            .map(|a| !a.is_empty())
+            .unwrap_or(false);
+    assert!(has_output, "{display_name} session should produce output");
+
+    eprintln!(
+        "{display_name} result: {}",
+        final_status["result"].as_str().unwrap_or("(none)")
+    );
+}
+
+/// Run a list + interrupt test for any coding agent.
+async fn run_agent_e2e_list_and_interrupt(binary_name: &str, tool_prefix: &str, display_name: &str) {
+    if which::which(binary_name).is_err() {
+        eprintln!("SKIP: `{binary_name}` binary not found on PATH");
+        return;
+    }
+
+    let (gateway, permissions) = setup_gateway();
+    let client_id = &format!("test-{tool_prefix}-interrupt");
+    initialize_gateway(&gateway, client_id, &permissions).await;
+
+    let start_tool = format!("{tool_prefix}_start");
+    let list_tool = format!("{tool_prefix}_list");
+    let interrupt_tool = format!("{tool_prefix}_interrupt");
+    let status_tool = format!("{tool_prefix}_status");
+
+    // List sessions — should be empty
+    let list_result = call_tool(&gateway, client_id, &permissions, &list_tool, json!({})).await;
+    let sessions = list_result["sessions"].as_array().unwrap();
+    assert!(sessions.is_empty(), "{display_name}: should start with no sessions");
+
+    // Start a session with a longer task so we can interrupt it
+    let start_result = call_tool(
+        &gateway,
+        client_id,
+        &permissions,
+        &start_tool,
+        json!({
+            "prompt": "Write a very long essay about the history of computing. Make it at least 10000 words.",
+            "permissionMode": "auto"
+        }),
+    )
+    .await;
+    let session_id = start_result["sessionId"].as_str().unwrap();
+    eprintln!("{display_name} session started: {session_id}");
+
+    // List sessions — should have one
+    let list_result = call_tool(&gateway, client_id, &permissions, &list_tool, json!({})).await;
+    let sessions = list_result["sessions"].as_array().unwrap();
+    assert_eq!(sessions.len(), 1, "{display_name}: should have one session");
+
+    // Give it a moment to start running
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+    // Interrupt the session
+    eprintln!("Interrupting {display_name} session...");
+    let interrupt_result = call_tool(
+        &gateway,
+        client_id,
+        &permissions,
+        &interrupt_tool,
+        json!({ "sessionId": session_id }),
+    )
+    .await;
+    eprintln!("{display_name} interrupt result: {interrupt_result}");
+
+    // Check final status
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    let status_result = call_tool(
+        &gateway,
+        client_id,
+        &permissions,
+        &status_tool,
+        json!({ "sessionId": session_id, "outputLines": 10 }),
+    )
+    .await;
+    let status = status_result["status"].as_str().unwrap();
+    assert!(
+        status == "interrupted" || status == "done" || status == "error",
+        "{display_name}: after interrupt, status should be terminal. Got: {status}"
+    );
+    eprintln!("{display_name} final status after interrupt: {status}");
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Direct process spawn test — bypass the manager to verify claude binary produces output
 #[tokio::test]
+#[ignore]
 async fn test_coding_agents_e2e_raw_claude_process() {
     if which::which("claude").is_err() {
         eprintln!("SKIP: `claude` binary not found on PATH");
@@ -252,6 +394,7 @@ async fn test_coding_agents_e2e_raw_claude_process() {
 }
 
 #[tokio::test]
+#[ignore]
 async fn test_coding_agents_e2e_tools_list() {
     if which::which("claude").is_err() {
         eprintln!("SKIP: `claude` binary not found on PATH");
@@ -287,145 +430,146 @@ async fn test_coding_agents_e2e_tools_list() {
 }
 
 #[tokio::test]
-async fn test_coding_agents_e2e_claude_code_time_query() {
-    if which::which("claude").is_err() {
-        eprintln!("SKIP: `claude` binary not found on PATH");
-        return;
-    }
-
-    let (gateway, permissions) = setup_gateway();
-    let client_id = "test-time-query";
-    initialize_gateway(&gateway, client_id, &permissions).await;
-
-    // Start a session asking Claude Code for the time
-    eprintln!("Starting Claude Code session...");
-    let start_result = call_tool(
-        &gateway,
-        client_id,
-        &permissions,
-        "claude_code_start",
-        json!({
-            "prompt": "Tell me what time it is right now. Just respond with the current time, nothing else.",
-            "permissionMode": "auto"
-        }),
-    )
-    .await;
-
-    let session_id = start_result["sessionId"]
-        .as_str()
-        .expect("start should return session_id");
-    assert_eq!(
-        start_result["status"].as_str().unwrap(),
-        "active",
-        "Session should be active"
-    );
-    eprintln!("Session started: {session_id}");
-
-    // Poll until done (120s timeout — Claude Code needs to initialize)
-    let final_status = poll_until_done(&gateway, client_id, &permissions, session_id, 120).await;
-
-    eprintln!("Final status: {final_status}");
-    assert_eq!(
-        final_status["status"].as_str().unwrap(),
-        "done",
-        "Session should complete successfully. Result: {:?}, Output: {:?}",
-        final_status["result"],
-        final_status["recentOutput"]
-    );
-
-    // Verify we got some output
-    let has_output = final_status["result"].as_str().map(|r| !r.is_empty()).unwrap_or(false)
-        || final_status["recentOutput"]
-            .as_array()
-            .map(|a| !a.is_empty())
-            .unwrap_or(false);
-    assert!(has_output, "Session should produce output");
-
-    eprintln!(
-        "Result: {}",
-        final_status["result"].as_str().unwrap_or("(none)")
-    );
+#[ignore]
+async fn test_e2e_claude_code_time_query() {
+    run_agent_e2e_time_query("claude", "claude_code", "Claude Code").await;
 }
 
 #[tokio::test]
-async fn test_coding_agents_e2e_list_and_interrupt() {
-    if which::which("claude").is_err() {
-        eprintln!("SKIP: `claude` binary not found on PATH");
-        return;
-    }
+#[ignore]
+async fn test_e2e_claude_code_list_and_interrupt() {
+    run_agent_e2e_list_and_interrupt("claude", "claude_code", "Claude Code").await;
+}
 
-    let (gateway, permissions) = setup_gateway();
-    let client_id = "test-list-interrupt";
-    initialize_gateway(&gateway, client_id, &permissions).await;
+// ═══════════════════════════════════════════════════════════════════════════
+// Per-agent E2E tests
+// ═══════════════════════════════════════════════════════════════════════════
+// Each agent has two tests: time_query (start → poll → done) and
+// list_and_interrupt (list → start → list → interrupt → verify).
+// All are #[ignore] — run with: cargo test --test coding_agents_e2e_test -- --ignored
 
-    // List sessions — should be empty
-    let list_result = call_tool(
-        &gateway,
-        client_id,
-        &permissions,
-        "claude_code_list",
-        json!({}),
-    )
-    .await;
-    let sessions = list_result["sessions"].as_array().unwrap();
-    assert!(sessions.is_empty(), "Should start with no sessions");
+// --- Gemini CLI ---
 
-    // Start a session with a longer task so we can interrupt it
-    let start_result = call_tool(
-        &gateway,
-        client_id,
-        &permissions,
-        "claude_code_start",
-        json!({
-            "prompt": "Write a very long essay about the history of computing. Make it at least 10000 words.",
-            "permissionMode": "auto"
-        }),
-    )
-    .await;
-    let session_id = start_result["sessionId"].as_str().unwrap();
-    eprintln!("Started session: {session_id}");
+#[tokio::test]
+#[ignore]
+async fn test_e2e_gemini_cli_time_query() {
+    run_agent_e2e_time_query("gemini", "gemini_cli", "Gemini CLI").await;
+}
 
-    // List sessions — should have one
-    let list_result = call_tool(
-        &gateway,
-        client_id,
-        &permissions,
-        "claude_code_list",
-        json!({}),
-    )
-    .await;
-    let sessions = list_result["sessions"].as_array().unwrap();
-    assert_eq!(sessions.len(), 1, "Should have one session");
+#[tokio::test]
+#[ignore]
+async fn test_e2e_gemini_cli_list_and_interrupt() {
+    run_agent_e2e_list_and_interrupt("gemini", "gemini_cli", "Gemini CLI").await;
+}
 
-    // Give it a moment to start running
-    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+// --- Codex ---
 
-    // Interrupt the session
-    eprintln!("Interrupting session...");
-    let interrupt_result = call_tool(
-        &gateway,
-        client_id,
-        &permissions,
-        "claude_code_interrupt",
-        json!({ "sessionId": session_id }),
-    )
-    .await;
-    eprintln!("Interrupt result: {interrupt_result}");
+#[tokio::test]
+#[ignore]
+async fn test_e2e_codex_time_query() {
+    run_agent_e2e_time_query("codex", "codex", "Codex").await;
+}
 
-    // Check final status — should be interrupted or done
-    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-    let status_result = call_tool(
-        &gateway,
-        client_id,
-        &permissions,
-        "claude_code_status",
-        json!({ "sessionId": session_id, "outputLines": 10 }),
-    )
-    .await;
-    let status = status_result["status"].as_str().unwrap();
-    assert!(
-        status == "interrupted" || status == "done" || status == "error",
-        "After interrupt, status should be terminal. Got: {status}"
-    );
-    eprintln!("Final status after interrupt: {status}");
+#[tokio::test]
+#[ignore]
+async fn test_e2e_codex_list_and_interrupt() {
+    run_agent_e2e_list_and_interrupt("codex", "codex", "Codex").await;
+}
+
+// --- Amp ---
+
+#[tokio::test]
+#[ignore]
+async fn test_e2e_amp_time_query() {
+    run_agent_e2e_time_query("amp", "amp", "Amp").await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_e2e_amp_list_and_interrupt() {
+    run_agent_e2e_list_and_interrupt("amp", "amp", "Amp").await;
+}
+
+// --- Aider ---
+
+#[tokio::test]
+#[ignore]
+async fn test_e2e_aider_time_query() {
+    run_agent_e2e_time_query("aider", "aider", "Aider").await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_e2e_aider_list_and_interrupt() {
+    run_agent_e2e_list_and_interrupt("aider", "aider", "Aider").await;
+}
+
+// --- Cursor ---
+
+#[tokio::test]
+#[ignore]
+async fn test_e2e_cursor_time_query() {
+    run_agent_e2e_time_query("cursor", "cursor", "Cursor").await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_e2e_cursor_list_and_interrupt() {
+    run_agent_e2e_list_and_interrupt("cursor", "cursor", "Cursor").await;
+}
+
+// --- Opencode ---
+
+#[tokio::test]
+#[ignore]
+async fn test_e2e_opencode_time_query() {
+    run_agent_e2e_time_query("opencode", "opencode", "Opencode").await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_e2e_opencode_list_and_interrupt() {
+    run_agent_e2e_list_and_interrupt("opencode", "opencode", "Opencode").await;
+}
+
+// --- Qwen Code ---
+
+#[tokio::test]
+#[ignore]
+async fn test_e2e_qwen_code_time_query() {
+    run_agent_e2e_time_query("qwen", "qwen_code", "Qwen Code").await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_e2e_qwen_code_list_and_interrupt() {
+    run_agent_e2e_list_and_interrupt("qwen", "qwen_code", "Qwen Code").await;
+}
+
+// --- Copilot ---
+
+#[tokio::test]
+#[ignore]
+async fn test_e2e_copilot_time_query() {
+    run_agent_e2e_time_query("copilot", "copilot", "Copilot").await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_e2e_copilot_list_and_interrupt() {
+    run_agent_e2e_list_and_interrupt("copilot", "copilot", "Copilot").await;
+}
+
+// --- Droid ---
+
+#[tokio::test]
+#[ignore]
+async fn test_e2e_droid_time_query() {
+    run_agent_e2e_time_query("droid", "droid", "Droid").await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_e2e_droid_list_and_interrupt() {
+    run_agent_e2e_list_and_interrupt("droid", "droid", "Droid").await;
 }
