@@ -6,13 +6,11 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Badge } from "@/components/ui/Badge"
 import { Label } from "@/components/ui/label"
 import { Input } from "@/components/ui/Input"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/Select"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { CodingAgentsIcon } from "@/components/icons/category-icons"
 import type {
   CodingAgentInfo,
   CodingAgentType,
-  CodingPermissionMode,
   CodingSessionInfo,
 } from "@/types/tauri-commands"
 
@@ -192,75 +190,8 @@ export function CodingAgentsView({ activeSubTab }: CodingAgentsViewProps) {
                           }
                         />
                         <p className="text-xs text-muted-foreground">
-                          Override the default working directory for this agent.
+                          Override the working directory for this agent. If omitted, the MCP client can specify one per session. When no directory is provided at all, a temporary directory is created (e.g. under /tmp on macOS).
                         </p>
-                      </div>
-
-                      <div className="space-y-2">
-                        <Label>Model Override</Label>
-                        <Input
-                          placeholder="Default (agent's default model)"
-                          defaultValue={selected.modelId || ""}
-                          onBlur={(e) =>
-                            handleUpdateConfig(selected.agentType, "modelId", e.target.value || null)
-                          }
-                        />
-                        <p className="text-xs text-muted-foreground">
-                          Override the model used by this agent (e.g., claude-sonnet-4-6).
-                        </p>
-                      </div>
-
-                      <div className="space-y-2">
-                        <Label>Permission Mode</Label>
-                        <Select
-                          value={selected.permissionMode}
-                          onValueChange={(value) =>
-                            handleUpdateConfig(selected.agentType, "permissionMode", value as CodingPermissionMode)
-                          }
-                        >
-                          <SelectTrigger>
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="auto">Auto</SelectItem>
-                            <SelectItem value="supervised">Supervised</SelectItem>
-                            <SelectItem value="plan">Plan</SelectItem>
-                          </SelectContent>
-                        </Select>
-                        <p className="text-xs text-muted-foreground">
-                          Controls tool approval behavior. Auto allows all, Supervised requires approval, Plan requires plan approval.
-                        </p>
-                      </div>
-                    </CardContent>
-                  </Card>
-
-                  <Card>
-                    <CardHeader>
-                      <CardTitle>MCP Tools</CardTitle>
-                      <CardDescription>
-                        These tools are exposed to MCP clients through the gateway.
-                      </CardDescription>
-                    </CardHeader>
-                    <CardContent>
-                      <div className="space-y-2">
-                        {[
-                          { suffix: "_start", desc: "Start a new coding session" },
-                          { suffix: "_say", desc: "Send a message to a session" },
-                          { suffix: "_status", desc: "Check session status and output" },
-                          { suffix: "_respond", desc: "Respond to pending questions" },
-                          { suffix: "_interrupt", desc: "Interrupt a running session" },
-                          { suffix: "_list", desc: "List sessions for this agent" },
-                        ].map(({ suffix, desc }) => (
-                          <div
-                            key={suffix}
-                            className="flex items-center justify-between py-1.5 px-3 rounded bg-muted/50"
-                          >
-                            <code className="text-xs font-mono">
-                              {selected.toolPrefix}{suffix}
-                            </code>
-                            <span className="text-xs text-muted-foreground">{desc}</span>
-                          </div>
-                        ))}
                       </div>
                     </CardContent>
                   </Card>

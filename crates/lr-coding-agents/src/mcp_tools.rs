@@ -98,7 +98,7 @@ fn build_tools_for_agent(agent_type: CodingAgentType) -> Vec<McpTool> {
                     },
                     "workingDirectory": {
                         "type": "string",
-                        "description": "Working directory for the session"
+                        "description": "Working directory for the session. If omitted, a temporary directory is created."
                     },
                     "model": {
                         "type": "string",
