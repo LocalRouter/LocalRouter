@@ -64,7 +64,7 @@ mod config_tests {
     fn test_auto_model_config_with_routellm() {
         // Strong models come from prioritized_models in AutoModelConfig
         let auto_config = AutoModelConfig {
-            enabled: true,
+            permission: lr_config::PermissionState::Allow,
             model_name: "localrouter/auto".to_string(),
             prioritized_models: vec![("ollama".to_string(), "llama3.2".to_string())],
             available_models: vec![],
@@ -73,9 +73,10 @@ mod config_tests {
                 threshold: 0.5,
                 weak_models: vec![("ollama".to_string(), "qwen2.5".to_string())],
             }),
+            ..Default::default()
         };
 
-        assert!(auto_config.enabled);
+        assert!(auto_config.permission.is_enabled());
         assert!(auto_config.routellm_config.is_some());
         // Strong models are prioritized_models
         assert_eq!(auto_config.prioritized_models.len(), 1);

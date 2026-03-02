@@ -66,17 +66,78 @@ pub async fn chat_completions(
     // Validate request
     validate_request(&request)?;
 
-    // Check if auto-routing is enabled for this client's strategy
-    // If so, override the requested model with localrouter/auto
-    if let Ok((_client, strategy)) = get_client_with_strategy(&state, &auth.api_key_id) {
+    // Check auto-routing permission for this client's strategy
+    if let Ok((client, strategy)) = get_client_with_strategy(&state, &auth.api_key_id) {
         if let Some(auto_config) = &strategy.auto_config {
-            if auto_config.enabled {
-                tracing::info!(
-                    "Auto-routing enabled: overriding '{}' with '{}'",
-                    request.model,
-                    auto_config.model_name
-                );
-                request.model = "localrouter/auto".to_string();
+            use lr_mcp::gateway::access_control::{
+                check_needs_approval, FirewallCheckContext, FirewallCheckResult,
+            };
+
+            let ctx = FirewallCheckContext::AutoRouter {
+                permission: &auto_config.permission,
+                has_time_based_approval: state
+                    .auto_router_approval_tracker
+                    .has_valid_approval(&client.id),
+            };
+
+            match check_needs_approval(&ctx) {
+                FirewallCheckResult::Allow => {
+                    tracing::info!(
+                        "Auto-routing allowed: overriding '{}' with '{}'",
+                        request.model,
+                        auto_config.model_name
+                    );
+                    request.model = "localrouter/auto".to_string();
+                }
+                FirewallCheckResult::Ask => {
+                    // Build a preview of prioritized models for the popup
+                    let models_preview = auto_config
+                        .prioritized_models
+                        .iter()
+                        .take(5)
+                        .map(|(p, m)| format!("{}/{}", p, m))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+
+                    let response = state
+                        .mcp_gateway
+                        .firewall_manager
+                        .request_auto_router_approval(
+                            client.id.clone(),
+                            client.name.clone(),
+                            models_preview,
+                        )
+                        .await
+                        .map_err(|e| {
+                            ApiErrorResponse::internal_error(format!(
+                                "Auto-router approval failed: {}",
+                                e
+                            ))
+                        })?;
+
+                    use lr_mcp::gateway::firewall::FirewallApprovalAction;
+                    match response.action {
+                        FirewallApprovalAction::AllowOnce
+                        | FirewallApprovalAction::AllowSession
+                        | FirewallApprovalAction::Allow1Minute
+                        | FirewallApprovalAction::Allow1Hour
+                        | FirewallApprovalAction::AllowPermanent => {
+                            tracing::info!(
+                                "Auto-routing approved ({:?}): overriding '{}' with '{}'",
+                                response.action,
+                                request.model,
+                                auto_config.model_name
+                            );
+                            request.model = "localrouter/auto".to_string();
+                        }
+                        _ => {
+                            return Err(ApiErrorResponse::forbidden("Auto-routing denied by user"));
+                        }
+                    }
+                }
+                FirewallCheckResult::Deny => {
+                    // Off — skip auto-routing, use client's requested model
+                }
             }
         }
     }

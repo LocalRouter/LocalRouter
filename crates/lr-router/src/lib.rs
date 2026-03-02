@@ -900,7 +900,7 @@ impl Router {
             AppError::Router("localrouter/auto not configured for this strategy".into())
         })?;
 
-        if !auto_config.enabled {
+        if !auto_config.permission.is_enabled() {
             return Err(AppError::Router(
                 "localrouter/auto is disabled for this strategy".into(),
             ));
@@ -1068,7 +1068,7 @@ impl Router {
             AppError::Router("localrouter/auto not configured for this strategy".into())
         })?;
 
-        if !auto_config.enabled {
+        if !auto_config.permission.is_enabled() {
             return Err(AppError::Router(
                 "localrouter/auto is disabled for this strategy".into(),
             ));
@@ -1709,7 +1709,7 @@ impl Router {
             AppError::Router("localrouter/auto not configured for this strategy".into())
         })?;
 
-        if !auto_config.enabled {
+        if !auto_config.permission.is_enabled() {
             return Err(AppError::Router(
                 "localrouter/auto is disabled for this strategy".into(),
             ));

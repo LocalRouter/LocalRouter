@@ -36,8 +36,10 @@ import {ThresholdSelector} from "@/components/routellm/ThresholdSelector"
 import {ROUTELLM_REQUIREMENTS, RouteLLMStatus} from "@/components/routellm/types"
 
 // Strategy configuration types
+import type { PermissionState } from "@/types/tauri-commands"
+
 export interface AutoModelConfig {
-    enabled: boolean
+    permission: PermissionState
     model_name: string
     prioritized_models: [string, string][]
     available_models: [string, string][]
@@ -208,7 +210,7 @@ export function StrategyModelConfiguration({
             setStrategy(strategyData)
             setModels(modelsData)
             // Set routing mode based on loaded strategy
-            setRoutingMode(strategyData.auto_config?.enabled ? 'auto' : 'allowed')
+            setRoutingMode(strategyData.auto_config?.permission !== 'off' ? 'auto' : 'allowed')
 
             // Load pricing and free tier data in the background
             try {
@@ -294,7 +296,7 @@ export function StrategyModelConfiguration({
         if (mode === 'auto') {
             // Enable auto-routing
             const newConfig: AutoModelConfig = {
-                enabled: true,
+                permission: 'allow',
                 model_name: strategy?.auto_config?.model_name || 'localrouter/auto',
                 prioritized_models: strategy?.auto_config?.prioritized_models || [],
                 available_models: strategy?.auto_config?.available_models || [],
@@ -319,12 +321,12 @@ export function StrategyModelConfiguration({
                 }
             }
         } else {
-            // Disable auto-routing (keep config but set enabled to false)
+            // Disable auto-routing (keep config but set permission to off)
             if (strategy?.auto_config) {
                 updateStrategy({
                     auto_config: {
                         ...strategy.auto_config,
-                        enabled: false,
+                        permission: 'off',
                     },
                 })
             }

@@ -14,13 +14,13 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { ProvidersIcon, McpIcon, SkillsIcon, StoreIcon } from "@/components/icons/category-icons"
-import { Shield, Coins } from "lucide-react"
+import { Shield, Coins, Bot } from "lucide-react"
 import { categoryActionLabel } from "@/components/permissions/CategoryActionButton"
 import type { SafetyVerdict, CategoryActionRequired } from "@/types/tauri-commands"
 
 export type ApprovalAction = "deny" | "deny_session" | "deny_always" | "block_categories" | "allow_once" | "allow_session" | "allow_1_minute" | "allow_1_hour" | "allow_permanent" | "allow_categories" | "deny_1_hour" | "disable_client"
 
-export type RequestType = "marketplace" | "skill" | "model" | "tool" | "guardrail" | "free_tier_fallback"
+export type RequestType = "marketplace" | "skill" | "model" | "tool" | "guardrail" | "free_tier_fallback" | "auto_router"
 
 /** Determine request type from server/tool names */
 export function getRequestType(details: {
@@ -29,7 +29,11 @@ export function getRequestType(details: {
   is_model_request?: boolean
   is_guardrail_request?: boolean
   is_free_tier_fallback?: boolean
+  is_auto_router_request?: boolean
 }): RequestType {
+  if (details.is_auto_router_request) {
+    return "auto_router"
+  }
   if (details.is_free_tier_fallback) {
     return "free_tier_fallback"
   }
@@ -102,6 +106,12 @@ export function getHeaderContent(requestType: RequestType) {
         title: "GuardRail Alert",
         description: "Content flagged by guardrail rules",
       }
+    case "auto_router":
+      return {
+        icon: <Bot className="h-5 w-5 text-emerald-500" />,
+        title: "Auto Router",
+        description: "Auto-routing will select a model for this request",
+      }
     default:
       return {
         icon: <McpIcon className="h-5 w-5 text-blue-500" />,
@@ -133,6 +143,7 @@ export interface FirewallApprovalCardProps {
   isModelRequest?: boolean
   isGuardrailRequest?: boolean
   isFreeTierFallback?: boolean
+  isAutoRouterRequest?: boolean
   guardrailVerdicts?: SafetyVerdict[]
   guardrailDirection?: "request" | "response"
   guardrailActions?: CategoryActionRequired[]
@@ -168,6 +179,7 @@ export function FirewallApprovalCard({
   isModelRequest,
   isGuardrailRequest,
   isFreeTierFallback,
+  isAutoRouterRequest,
   guardrailVerdicts,
   guardrailDirection,
   guardrailActions,
@@ -183,9 +195,10 @@ export function FirewallApprovalCard({
     is_model_request: isModelRequest,
     is_guardrail_request: isGuardrailRequest,
     is_free_tier_fallback: isFreeTierFallback,
+    is_auto_router_request: isAutoRouterRequest,
   })
   const parsedArgs = parseArguments(argumentsPreview || "")
-  const canEdit = requestType !== "marketplace" && requestType !== "guardrail" && requestType !== "free_tier_fallback"
+  const canEdit = requestType !== "marketplace" && requestType !== "guardrail" && requestType !== "free_tier_fallback" && requestType !== "auto_router"
   const disabled = !onAction || submitting
 
   return (
@@ -230,6 +243,17 @@ export function FirewallApprovalCard({
               </code>
               <span className="text-muted-foreground">Provider:</span>
               <span className="truncate">{serverName}</span>
+            </>
+          ) : requestType === "auto_router" ? (
+            <>
+              <span className="text-muted-foreground">Mode:</span>
+              <span className="font-medium">Auto Model Selection</span>
+              {argumentsPreview && (
+                <>
+                  <span className="text-muted-foreground">Models:</span>
+                  <span className="font-mono truncate text-[11px]" title={argumentsPreview}>{argumentsPreview}</span>
+                </>
+              )}
             </>
           ) : (
             <>

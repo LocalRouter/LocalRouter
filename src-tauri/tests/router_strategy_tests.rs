@@ -232,11 +232,12 @@ async fn test_strategy_allows_all_provider_models() {
 #[tokio::test]
 async fn test_auto_routing_requires_enabled() {
     let auto_config = AutoModelConfig {
-        enabled: false,
+        permission: lr_config::PermissionState::Off,
         model_name: "localrouter/auto".to_string(),
         prioritized_models: vec![("ollama".to_string(), "llama2".to_string())],
         available_models: vec![],
         routellm_config: None,
+        ..Default::default()
     };
 
     let allowed_models = AvailableModelsSelection {
@@ -267,11 +268,12 @@ async fn test_auto_routing_requires_enabled() {
 #[tokio::test]
 async fn test_auto_routing_requires_prioritized_models() {
     let auto_config = AutoModelConfig {
-        enabled: true,
+        permission: lr_config::PermissionState::Allow,
         model_name: "localrouter/auto".to_string(),
         prioritized_models: vec![], // Empty list
         available_models: vec![],
         routellm_config: None,
+        ..Default::default()
     };
 
     let allowed_models = AvailableModelsSelection {
@@ -600,11 +602,12 @@ async fn test_client_with_missing_strategy() {
 async fn test_streaming_supports_auto_routing() {
     // Verify that streaming now supports auto-routing (as of recent implementation)
     let auto_config = AutoModelConfig {
-        enabled: true,
+        permission: lr_config::PermissionState::Allow,
         model_name: "localrouter/auto".to_string(),
         prioritized_models: vec![("ollama".to_string(), "llama2".to_string())],
         available_models: vec![],
         routellm_config: None,
+        ..Default::default()
     };
 
     let allowed_models = AvailableModelsSelection {
@@ -947,7 +950,7 @@ async fn test_nonexistent_client_returns_unauthorized() {
 async fn test_auto_routing_fallback_configuration() {
     // Verify that auto-routing is configured to try multiple models in order
     let auto_config = AutoModelConfig {
-        enabled: true,
+        permission: lr_config::PermissionState::Allow,
         model_name: "localrouter/auto".to_string(),
         prioritized_models: vec![
             ("ollama".to_string(), "model1".to_string()),
@@ -956,6 +959,7 @@ async fn test_auto_routing_fallback_configuration() {
         ],
         available_models: vec![],
         routellm_config: None,
+        ..Default::default()
     };
 
     let allowed_models = AvailableModelsSelection {
@@ -1003,7 +1007,7 @@ async fn test_auto_routing_strategy_rate_limits_checked_per_model() {
     use localrouter::config::RateLimitType;
 
     let auto_config = AutoModelConfig {
-        enabled: true,
+        permission: lr_config::PermissionState::Allow,
         model_name: "localrouter/auto".to_string(),
         prioritized_models: vec![
             ("ollama".to_string(), "model1".to_string()),
@@ -1011,6 +1015,7 @@ async fn test_auto_routing_strategy_rate_limits_checked_per_model() {
         ],
         available_models: vec![],
         routellm_config: None,
+        ..Default::default()
     };
 
     let allowed_models = AvailableModelsSelection {

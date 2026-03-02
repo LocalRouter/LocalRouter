@@ -23,6 +23,7 @@ interface ApprovalDetails {
   is_model_request?: boolean
   is_guardrail_request?: boolean
   is_free_tier_fallback?: boolean
+  is_auto_router_request?: boolean
   guardrail_details?: {
     verdicts: SafetyVerdict[]
     actions_required: CategoryActionRequired[]
@@ -472,6 +473,7 @@ export function FirewallApproval() {
           isModelRequest={details.is_model_request}
           isGuardrailRequest={details.is_guardrail_request}
           isFreeTierFallback={details.is_free_tier_fallback}
+          isAutoRouterRequest={details.is_auto_router_request}
           guardrailVerdicts={details.guardrail_details?.verdicts}
           guardrailDirection={details.guardrail_details?.scan_direction}
           guardrailActions={details.guardrail_details?.actions_required}

@@ -329,10 +329,8 @@ pub(crate) fn build_tray_menu<R: Runtime, M: Manager<R>>(
                             } else {
                                 format!("{}Rate Limit: {}", TRAY_INDENT, format_rate_limit(limit))
                             };
-                            client_submenu = client_submenu.text(
-                                format!("toggle_rate_limit_{}__{}", client.id, idx),
-                                label,
-                            );
+                            client_submenu = client_submenu
+                                .text(format!("toggle_rate_limit_{}__{}", client.id, idx), label);
                         }
 
                         // Free Tier Mode toggle
@@ -348,7 +346,7 @@ pub(crate) fn build_tray_menu<R: Runtime, M: Manager<R>>(
 
                         // Weak Model Routing toggle (only if auto_config enabled + routellm has weak_models)
                         if let Some(ref auto_config) = strategy.auto_config {
-                            if auto_config.enabled {
+                            if auto_config.permission.is_enabled() {
                                 if let Some(ref routellm) = auto_config.routellm_config {
                                     if !routellm.weak_models.is_empty() {
                                         let label = if routellm.enabled {

@@ -44,7 +44,7 @@ pub async fn list_models<B>(
     // If auto-routing is enabled, return ONLY the auto router model
     // This simplifies the client experience - they see one model to use
     if let Some(auto_config) = &strategy.auto_config {
-        if auto_config.enabled {
+        if auto_config.permission.is_enabled() {
             return Ok(Json(ModelsResponse {
                 object: "list".to_string(),
                 data: vec![ModelData {
@@ -146,7 +146,7 @@ pub async fn get_model<B>(
 
     // Special handling for auto router virtual model
     if let Some(auto_config) = &strategy.auto_config {
-        if auto_config.enabled && model_id == auto_config.model_name {
+        if auto_config.permission.is_enabled() && model_id == auto_config.model_name {
             return Ok(Json(ModelData {
                 id: auto_config.model_name.clone(),
                 object: "model".to_string(),

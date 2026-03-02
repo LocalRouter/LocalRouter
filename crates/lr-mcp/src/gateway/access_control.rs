@@ -119,6 +119,10 @@ pub enum FirewallCheckContext<'a> {
         fallback_mode: &'a FreeTierFallback,
         has_time_based_approval: bool,
     },
+    AutoRouter {
+        permission: &'a PermissionState,
+        has_time_based_approval: bool,
+    },
 }
 
 /// Single source of truth: determines whether a request needs a firewall approval popup.
@@ -211,6 +215,20 @@ pub fn check_needs_approval(ctx: &FirewallCheckContext) -> FirewallCheckResult {
             FreeTierFallback::Off => FirewallCheckResult::Deny,
             FreeTierFallback::Allow => FirewallCheckResult::Allow,
             FreeTierFallback::Ask => {
+                if *has_time_based_approval {
+                    FirewallCheckResult::Allow
+                } else {
+                    FirewallCheckResult::Ask
+                }
+            }
+        },
+        FirewallCheckContext::AutoRouter {
+            permission,
+            has_time_based_approval,
+        } => match permission {
+            PermissionState::Allow => FirewallCheckResult::Allow,
+            PermissionState::Off => FirewallCheckResult::Deny,
+            PermissionState::Ask => {
                 if *has_time_based_approval {
                     FirewallCheckResult::Allow
                 } else {

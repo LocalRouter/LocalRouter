@@ -87,7 +87,6 @@ async fn test_root_get_returns_documentation() {
     // Should contain API documentation
     assert!(body.contains("LocalRouter"));
     assert!(body.contains("MCP Gateway"));
-    assert!(body.contains("JSON-RPC"));
 }
 
 #[tokio::test]

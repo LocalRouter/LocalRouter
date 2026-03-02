@@ -96,7 +96,7 @@ function ClientSubmenu({ client }: { client: (typeof mockData.clients)[0] }) {
         const strategy = mockData.strategies.find(s => s.id === client.strategy_id)
         if (!strategy) return null
         const hasRateLimits = strategy.rate_limits && strategy.rate_limits.length > 0
-        const hasWeakModel = strategy.auto_config?.enabled &&
+        const hasWeakModel = strategy.auto_config?.permission !== 'off' &&
           strategy.auto_config?.routellm_config?.weak_models?.length > 0
 
         return (

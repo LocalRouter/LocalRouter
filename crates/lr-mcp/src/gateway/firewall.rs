@@ -116,6 +116,9 @@ pub struct FirewallApprovalSession {
     /// Whether this is a free-tier fallback approval request
     pub is_free_tier_fallback: bool,
 
+    /// Whether this is an auto-router approval request
+    pub is_auto_router_request: bool,
+
     /// Guardrail-specific details (matches, severity, etc.)
     pub guardrail_details: Option<GuardrailApprovalDetails>,
 }
@@ -149,6 +152,9 @@ pub struct PendingApprovalInfo {
     /// Whether this is a free-tier fallback approval request
     #[serde(default)]
     pub is_free_tier_fallback: bool,
+    /// Whether this is an auto-router approval request
+    #[serde(default)]
+    pub is_auto_router_request: bool,
     /// Guardrail-specific details
     #[serde(skip_serializing_if = "Option::is_none")]
     pub guardrail_details: Option<GuardrailApprovalDetails>,
@@ -214,6 +220,7 @@ impl FirewallManager {
             false, // MCP/skill tool request
             false, // not guardrail
             false, // not free-tier fallback
+            false, // not auto-router
             full_arguments,
             None,
         )
@@ -243,6 +250,7 @@ impl FirewallManager {
             true,  // model request
             false, // not guardrail
             false, // not free-tier fallback
+            false, // not auto-router
             full_arguments,
             None,
         )
@@ -272,6 +280,7 @@ impl FirewallManager {
             false, // not a model request
             true,  // guardrail request
             false, // not free-tier fallback
+            false, // not auto-router
             None,
             Some(guardrail_details),
         )
@@ -295,6 +304,31 @@ impl FirewallManager {
             false,                            // not a model request
             false,                            // not guardrail
             true,                             // free-tier fallback
+            false,                            // not auto-router
+            None,
+            None,
+        )
+        .await
+    }
+
+    /// Request user approval for auto-router override
+    pub async fn request_auto_router_approval(
+        &self,
+        client_id: String,
+        client_name: String,
+        models_preview: String,
+    ) -> AppResult<FirewallApprovalResponse> {
+        self.request_approval_internal(
+            client_id,
+            client_name,
+            "localrouter/auto".to_string(), // tool_name
+            "Auto Router".to_string(),      // server_name
+            models_preview,                 // arguments_preview
+            None,                           // use default timeout
+            false,                          // not a model request
+            false,                          // not guardrail
+            false,                          // not free-tier fallback
+            true,                           // auto-router request
             None,
             None,
         )
@@ -314,6 +348,7 @@ impl FirewallManager {
         is_model_request: bool,
         is_guardrail_request: bool,
         is_free_tier_fallback: bool,
+        is_auto_router_request: bool,
         full_arguments: Option<serde_json::Value>,
         guardrail_details: Option<GuardrailApprovalDetails>,
     ) -> AppResult<FirewallApprovalResponse> {
@@ -349,6 +384,7 @@ impl FirewallManager {
             is_model_request,
             is_guardrail_request,
             is_free_tier_fallback,
+            is_auto_router_request,
             guardrail_details,
         };
 
@@ -376,6 +412,7 @@ impl FirewallManager {
                     "is_model_request": is_model_request,
                     "is_guardrail_request": is_guardrail_request,
                     "is_free_tier_fallback": is_free_tier_fallback,
+                    "is_auto_router_request": is_auto_router_request,
                 })),
             };
 
@@ -499,6 +536,7 @@ impl FirewallManager {
                     is_model_request: session.is_model_request,
                     is_guardrail_request: session.is_guardrail_request,
                     is_free_tier_fallback: session.is_free_tier_fallback,
+                    is_auto_router_request: session.is_auto_router_request,
                     guardrail_details: session.guardrail_details.clone(),
                 }
             })
@@ -603,6 +641,7 @@ mod tests {
             is_model_request: false,
             is_guardrail_request: false,
             is_free_tier_fallback: false,
+            is_auto_router_request: false,
             guardrail_details: None,
         };
         assert!(session.is_expired());
@@ -624,6 +663,7 @@ mod tests {
             is_model_request: false,
             is_guardrail_request: false,
             is_free_tier_fallback: false,
+            is_auto_router_request: false,
             guardrail_details: None,
         };
         assert!(!session.is_expired());

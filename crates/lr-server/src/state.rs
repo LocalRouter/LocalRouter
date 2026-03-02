@@ -553,6 +553,69 @@ impl FreeTierApprovalTracker {
     }
 }
 
+/// Time-based auto-router approval tracker.
+///
+/// When auto-routing permission is "Ask", the user can grant a time-limited approval
+/// (1 minute or 1 hour) to auto-route requests without further popups.
+/// Keyed by client_id.
+#[derive(Clone, Default)]
+pub struct AutoRouterApprovalTracker {
+    approvals: Arc<DashMap<String, Instant>>,
+}
+
+impl AutoRouterApprovalTracker {
+    pub fn new() -> Self {
+        Self {
+            approvals: Arc::new(DashMap::new()),
+        }
+    }
+
+    pub fn has_valid_approval(&self, client_id: &str) -> bool {
+        if let Some(entry) = self.approvals.get(client_id) {
+            if *entry > Instant::now() {
+                return true;
+            }
+            drop(entry);
+            self.approvals.remove(client_id);
+        }
+        false
+    }
+
+    pub fn add_approval(&self, client_id: &str, duration: Duration) {
+        let expiry = Instant::now() + duration;
+        self.approvals.insert(client_id.to_string(), expiry);
+        tracing::info!(
+            "Added auto-router approval: client={}, duration={}s",
+            client_id,
+            duration.as_secs(),
+        );
+    }
+
+    pub fn add_1_minute_approval(&self, client_id: &str) {
+        self.add_approval(client_id, Duration::from_secs(60));
+    }
+
+    pub fn add_1_hour_approval(&self, client_id: &str) {
+        self.add_approval(client_id, Duration::from_secs(3600));
+    }
+
+    pub fn cleanup_expired(&self) -> usize {
+        let now = Instant::now();
+        let expired: Vec<_> = self
+            .approvals
+            .iter()
+            .filter(|entry| *entry.value() <= now)
+            .map(|entry| entry.key().clone())
+            .collect();
+
+        let count = expired.len();
+        for key in expired {
+            self.approvals.remove(&key);
+        }
+        count
+    }
+}
+
 /// Server state shared across all handlers
 #[derive(Clone)]
 pub struct AppState {
@@ -640,6 +703,9 @@ pub struct AppState {
     /// Time-based free-tier fallback approval tracker
     pub free_tier_approval_tracker: Arc<FreeTierApprovalTracker>,
 
+    /// Time-based auto-router approval tracker
+    pub auto_router_approval_tracker: Arc<AutoRouterApprovalTracker>,
+
     /// Safety engine for LLM-based content inspection (swappable at runtime)
     pub safety_engine: Arc<RwLock<Option<Arc<lr_guardrails::SafetyEngine>>>>,
 }
@@ -720,6 +786,7 @@ impl AppState {
             guardrail_approval_tracker: Arc::new(GuardrailApprovalTracker::new()),
             guardrail_denial_tracker: Arc::new(GuardrailDenialTracker::new()),
             free_tier_approval_tracker: Arc::new(FreeTierApprovalTracker::new()),
+            auto_router_approval_tracker: Arc::new(AutoRouterApprovalTracker::new()),
             safety_engine: Arc::new(RwLock::new(None)),
         }
     }

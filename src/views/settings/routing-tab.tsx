@@ -31,12 +31,11 @@ interface Strategy {
   name: string
   parent: string | null
   auto_config?: {
-    enabled: boolean
-    mode: string
-    prioritized_models: string[]
-    weak_models: string[]
-    threshold?: number
-  }
+    permission: 'allow' | 'ask' | 'off'
+    model_name: string
+    prioritized_models: [string, string][]
+    available_models: [string, string][]
+  } | null
   rate_limits: any[]
 }
 
@@ -243,7 +242,7 @@ export function RoutingTab({ selectedStrategyId, onSelectStrategy }: RoutingTabP
                       </TableCell>
                       <TableCell>{clientsUsing.length}</TableCell>
                       <TableCell>
-                        {strategy.auto_config?.enabled ? (
+                        {strategy.auto_config?.permission !== 'off' ? (
                           <Badge variant="success" className="text-xs">
                             Enabled
                           </Badge>
@@ -360,7 +359,7 @@ function StrategyDetail({
               <Zap className="h-8 w-8 text-muted-foreground" />
               <div>
                 <p className="text-2xl font-bold">
-                  {strategy.auto_config?.enabled ? "On" : "Off"}
+                  {strategy.auto_config?.permission !== 'off' ? "On" : "Off"}
                 </p>
                 <p className="text-xs text-muted-foreground">Auto Selection</p>
               </div>
@@ -414,18 +413,16 @@ function StrategyDetail({
               <div className="grid gap-2 text-sm">
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Status</span>
-                  <span>{strategy.auto_config.enabled ? "Enabled" : "Disabled"}</span>
+                  <span>{strategy.auto_config.permission !== 'off' ? "Enabled" : "Disabled"}</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-muted-foreground">Mode</span>
-                  <span className="capitalize">{strategy.auto_config.mode}</span>
+                  <span className="text-muted-foreground">Permission</span>
+                  <span className="capitalize">{strategy.auto_config.permission}</span>
                 </div>
-                {strategy.auto_config.threshold !== undefined && (
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">Threshold</span>
-                    <span>{strategy.auto_config.threshold}</span>
-                  </div>
-                )}
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Models</span>
+                  <span>{strategy.auto_config.prioritized_models.length} prioritized</span>
+                </div>
               </div>
             </div>
           )}
