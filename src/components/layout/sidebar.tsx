@@ -139,11 +139,9 @@ export function Sidebar({ activeView, onViewChange }: SidebarProps) {
     setIsRefreshing(true)
     try {
       await invoke('refresh_all_health')
-      // State will be updated via the health-status-changed event
     } catch (error) {
       console.error('Failed to refresh health:', error)
     } finally {
-      // Reset refreshing state after a delay to show the animation
       setTimeout(() => setIsRefreshing(false), 1000)
     }
   }
@@ -161,18 +159,13 @@ export function Sidebar({ activeView, onViewChange }: SidebarProps) {
 
   // Check if any items are in pending/loading state
   const hasAnyPending = (): boolean => {
-    if (!healthState) return true // No state yet = loading
-
-    // Check providers
+    if (!healthState) return true
     for (const health of Object.values(healthState.providers)) {
       if (health.status === 'pending') return true
     }
-
-    // Check MCP servers
     for (const health of Object.values(healthState.mcp_servers)) {
       if (health.status === 'pending') return true
     }
-
     return false
   }
 
@@ -270,21 +263,12 @@ export function Sidebar({ activeView, onViewChange }: SidebarProps) {
       >
         <Icon className="h-4 w-4 shrink-0" />
         {expanded ? (
-          <>
-            <span className="flex-1 truncate text-left text-sm">{item.label}</span>
-            <kbd className="rounded bg-muted px-1 py-0.5 text-[10px] font-medium text-muted-foreground">
-              {item.shortcut}
-            </kbd>
-          </>
+          <span className="truncate text-left text-sm">{item.label}</span>
         ) : (
           <span className="sr-only">{item.label}</span>
         )}
       </button>
     )
-
-    if (expanded) {
-      return <div key={item.id}>{button}</div>
-    }
 
     return (
       <Tooltip key={item.id}>
@@ -293,8 +277,8 @@ export function Sidebar({ activeView, onViewChange }: SidebarProps) {
         </TooltipTrigger>
         <TooltipContent side="right" sideOffset={8}>
           <div className="flex items-center gap-2">
-            <span>{item.label}</span>
-            <kbd className="ml-auto rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+            {!expanded && <span>{item.label}</span>}
+            <kbd className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
               {item.shortcut}
             </kbd>
           </div>
@@ -307,8 +291,8 @@ export function Sidebar({ activeView, onViewChange }: SidebarProps) {
     <TooltipProvider delayDuration={0}>
       <aside
         className={cn(
-          "flex h-full flex-col border-r bg-background transition-[width] duration-200 ease-in-out",
-          expanded ? "w-44" : "w-12"
+          "group/sidebar relative flex h-full flex-col border-r bg-background transition-[width] duration-200 ease-in-out",
+          expanded ? "w-48" : "w-12"
         )}
       >
         {/* Logo - Dashboard */}
@@ -316,47 +300,35 @@ export function Sidebar({ activeView, onViewChange }: SidebarProps) {
           "flex h-12 items-center border-b",
           expanded ? "px-2 gap-2" : "justify-center"
         )}>
-          {expanded ? (
-            <button
-              onClick={() => onViewChange('dashboard')}
-              className={cn(
-                "flex h-8 w-full items-center gap-2 rounded-md px-2 transition-colors",
-                activeView === 'dashboard'
-                  ? "bg-primary text-primary-foreground"
-                  : "bg-primary/80 text-primary-foreground hover:bg-primary"
-              )}
-            >
-              <Logo className="h-4 w-4 shrink-0" />
-              <span className="truncate text-sm font-semibold">LocalRouter</span>
-              <kbd className="ml-auto rounded bg-primary-foreground/20 px-1 py-0.5 text-[10px] font-medium text-primary-foreground/70">
-                ⌘1
-              </kbd>
-            </button>
-          ) : (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button
-                  onClick={() => onViewChange('dashboard')}
-                  className={cn(
-                    "flex h-8 w-8 items-center justify-center rounded-md transition-colors",
-                    activeView === 'dashboard'
-                      ? "bg-primary text-primary-foreground"
-                      : "bg-primary/80 text-primary-foreground hover:bg-primary"
-                  )}
-                >
-                  <Logo className="h-4 w-4" />
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="right" sideOffset={8}>
-                <div className="flex items-center gap-2">
-                  <span className="font-semibold">Dashboard</span>
-                  <kbd className="ml-auto rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
-                    ⌘1
-                  </kbd>
-                </div>
-              </TooltipContent>
-            </Tooltip>
-          )}
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                onClick={() => onViewChange('dashboard')}
+                className={cn(
+                  "flex items-center rounded-md transition-colors",
+                  expanded
+                    ? "h-8 w-full gap-2 px-2"
+                    : "h-8 w-8 justify-center",
+                  activeView === 'dashboard'
+                    ? "bg-primary text-primary-foreground"
+                    : "bg-primary/80 text-primary-foreground hover:bg-primary"
+                )}
+              >
+                <Logo className="h-4 w-4 shrink-0" />
+                {expanded && (
+                  <span className="truncate text-sm font-semibold">LocalRouter</span>
+                )}
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="right" sideOffset={8}>
+              <div className="flex items-center gap-2">
+                {!expanded && <span className="font-semibold">Dashboard</span>}
+                <kbd className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                  ⌘1
+                </kbd>
+              </div>
+            </TooltipContent>
+          </Tooltip>
         </div>
 
         {/* Main Navigation */}
@@ -376,19 +348,13 @@ export function Sidebar({ activeView, onViewChange }: SidebarProps) {
           {bottomNavItems.map(renderNavItem)}
         </nav>
 
-        {/* Status indicator and toggle */}
-        <div className={cn(
-          "flex items-center border-t p-2",
-          expanded ? "gap-1" : "flex-col gap-1"
-        )}>
-          {/* Health status */}
+        {/* Status indicator */}
+        <div className="flex items-center justify-center border-t p-2">
           <Tooltip>
             <TooltipTrigger asChild>
               <button
                 onClick={handleRefresh}
-                className={cn(
-                  "flex h-8 w-8 shrink-0 items-center justify-center rounded-md hover:bg-accent transition-colors",
-                )}
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md hover:bg-accent transition-colors"
                 disabled={isRefreshing || hasAnyPending()}
               >
                 {isRefreshing || hasAnyPending() ? (
@@ -469,31 +435,19 @@ export function Sidebar({ activeView, onViewChange }: SidebarProps) {
               </div>
             </TooltipContent>
           </Tooltip>
-
-          {/* Expand/collapse toggle */}
-          {expanded ? (
-            <button
-              onClick={toggleExpanded}
-              className="ml-auto flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground transition-colors"
-            >
-              <ChevronsLeft className="h-4 w-4" />
-            </button>
-          ) : (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button
-                  onClick={toggleExpanded}
-                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground transition-colors"
-                >
-                  <ChevronsRight className="h-4 w-4" />
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="right" sideOffset={8}>
-                Expand sidebar
-              </TooltipContent>
-            </Tooltip>
-          )}
         </div>
+
+        {/* Expand/collapse toggle - centered, visible on sidebar hover */}
+        <button
+          onClick={toggleExpanded}
+          className="absolute right-0 top-1/2 z-10 -translate-y-1/2 translate-x-1/2 flex h-6 w-6 items-center justify-center rounded-full border bg-background text-muted-foreground shadow-sm opacity-0 group-hover/sidebar:opacity-100 transition-opacity hover:bg-accent hover:text-accent-foreground"
+        >
+          {expanded ? (
+            <ChevronsLeft className="h-3 w-3" />
+          ) : (
+            <ChevronsRight className="h-3 w-3" />
+          )}
+        </button>
       </aside>
     </TooltipProvider>
   )
