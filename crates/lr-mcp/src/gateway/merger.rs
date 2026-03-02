@@ -37,7 +37,6 @@ pub struct UnavailableServerInfo {
 /// Information about a coding agent for instruction building
 pub struct CodingAgentInfo {
     pub name: String,
-    pub tool_prefix: String,
 }
 
 /// Context for building gateway instructions
@@ -195,17 +194,16 @@ pub fn build_gateway_instructions(ctx: &InstructionsContext) -> Option<String> {
 
     // --- 4. Coding agents section ---
     if has_agents {
-        inst.push_str("\n## AI Coding Agents\n\n");
-        inst.push_str("You have access to the following AI coding agents. Each agent can be started with a prompt, and you can interact with it through a session-based API.\n\n");
-        for agent in &ctx.coding_agents {
+        inst.push_str("\n## AI Coding Agent\n\n");
+        if let Some(agent) = ctx.coding_agents.first() {
             inst.push_str(&format!(
-                "- **{}**: `{}_start`, `{}_say`, `{}_status`, `{}_respond`, `{}_interrupt`, `{}_list`\n",
+                "You have access to **{}** as a coding agent. Use the unified tools: `coding_agent_start`, `coding_agent_say`, `coding_agent_status`, `coding_agent_respond`, `coding_agent_interrupt`, `coding_agent_list`.\n",
                 agent.name,
-                agent.tool_prefix, agent.tool_prefix, agent.tool_prefix,
-                agent.tool_prefix, agent.tool_prefix, agent.tool_prefix,
             ));
         }
-        inst.push_str("\nWorkflow: Start a session → poll status → respond to questions → get results.\n");
+        inst.push_str(
+            "\nWorkflow: Start a session → poll status → respond to questions → get results.\n",
+        );
     }
 
     Some(inst)

@@ -200,25 +200,24 @@ impl McpGateway {
     /// Collect enabled coding agent info for gateway instructions
     fn collect_coding_agent_info(
         &self,
-        permissions: &lr_config::CodingAgentsPermissions,
+        permission: &lr_config::PermissionState,
+        agent_type: Option<lr_config::CodingAgentType>,
     ) -> Vec<super::merger::CodingAgentInfo> {
-        if !permissions.has_any_access() {
+        if !permission.is_enabled() {
             return Vec::new();
         }
+        let Some(at) = agent_type else {
+            return Vec::new();
+        };
         let Some(cam) = self.coding_agent_manager.get() else {
             return Vec::new();
         };
-        use lr_config::CodingAgentType;
-        CodingAgentType::all()
-            .iter()
-            .filter(|at| {
-                cam.is_agent_enabled(**at) && permissions.resolve_agent(at.tool_prefix()).is_enabled()
-            })
-            .map(|at| super::merger::CodingAgentInfo {
-                name: at.display_name().to_string(),
-                tool_prefix: at.tool_prefix().to_string(),
-            })
-            .collect()
+        if !cam.is_agent_enabled(at) {
+            return Vec::new();
+        }
+        vec![super::merger::CodingAgentInfo {
+            name: at.display_name().to_string(),
+        }]
     }
 
     /// Build `McpServerInstructionInfo` list from init results and catalogs.
@@ -344,7 +343,8 @@ impl McpGateway {
             lr_config::SkillsPermissions::default(),
             String::new(),
             lr_config::PermissionState::Off, // marketplace_permission
-            lr_config::CodingAgentsPermissions::default(),
+            lr_config::PermissionState::Off, // coding_agent_permission
+            None,                            // coding_agent_type
             request,
         )
         .await
@@ -362,7 +362,8 @@ impl McpGateway {
         skills_permissions: lr_config::SkillsPermissions,
         client_name: String,
         marketplace_permission: lr_config::PermissionState,
-        coding_agents_permissions: lr_config::CodingAgentsPermissions,
+        coding_agent_permission: lr_config::PermissionState,
+        coding_agent_type: Option<lr_config::CodingAgentType>,
         request: JsonRpcRequest,
     ) -> AppResult<JsonRpcResponse> {
         let method = request.method.clone();
@@ -403,7 +404,8 @@ impl McpGateway {
             let mut session_write = session.write().await;
             session_write.client_name = client_name;
             session_write.marketplace_permission = marketplace_permission;
-            session_write.coding_agents_permissions = coding_agents_permissions;
+            session_write.coding_agent_permission = coding_agent_permission;
+            session_write.coding_agent_type = coding_agent_type;
         }
 
         // Update last activity
@@ -936,11 +938,12 @@ impl McpGateway {
 
             let session_read = session.read().await;
             let skills_permissions = session_read.skills_permissions.clone();
-            let ca_permissions = session_read.coding_agents_permissions.clone();
+            let ca_permission = session_read.coding_agent_permission.clone();
+            let ca_type = session_read.coding_agent_type;
             drop(session_read);
 
             let skill_infos = self.collect_skill_info(&skills_permissions);
-            let coding_agent_infos = self.collect_coding_agent_info(&ca_permissions);
+            let coding_agent_infos = self.collect_coding_agent_info(&ca_permission, ca_type);
             let unavailable = self.build_unavailable_server_infos(&start_failures);
             let instructions = build_gateway_instructions(&InstructionsContext {
                 servers: Vec::new(),
@@ -1058,11 +1061,12 @@ impl McpGateway {
 
                 let session_read = session.read().await;
                 let skills_permissions = session_read.skills_permissions.clone();
-                let ca_permissions = session_read.coding_agents_permissions.clone();
+                let ca_permission = session_read.coding_agent_permission.clone();
+                let ca_type = session_read.coding_agent_type;
                 drop(session_read);
 
                 let skill_infos = self.collect_skill_info(&skills_permissions);
-                let coding_agent_infos = self.collect_coding_agent_info(&ca_permissions);
+                let coding_agent_infos = self.collect_coding_agent_info(&ca_permission, ca_type);
                 let unavailable = self.build_unavailable_server_infos(&failures);
                 let instructions = build_gateway_instructions(&InstructionsContext {
                     servers: Vec::new(),
@@ -1268,7 +1272,8 @@ impl McpGateway {
         // Build gateway instructions based on the full context
         let session_read = session.read().await;
         let skills_permissions = session_read.skills_permissions.clone();
-        let ca_permissions = session_read.coding_agents_permissions.clone();
+        let ca_permission = session_read.coding_agent_permission.clone();
+        let ca_type = session_read.coding_agent_type;
         let deferred_state = session_read.deferred_loading.clone();
         let active_server_ids = session_read.allowed_servers.clone();
         drop(session_read);
@@ -1281,7 +1286,7 @@ impl McpGateway {
         } else {
             Vec::new()
         };
-        let coding_agent_infos = self.collect_coding_agent_info(&ca_permissions);
+        let coding_agent_infos = self.collect_coding_agent_info(&ca_permission, ca_type);
 
         let deferred_enabled = deferred_state.as_ref().map(|d| d.enabled).unwrap_or(false);
 

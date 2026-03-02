@@ -341,7 +341,10 @@ mod tests {
         // Only last 5 should remain
         assert_eq!(session.output_buffer.len(), 5);
         let recent = session.recent_output(5);
-        assert_eq!(recent, vec!["line 16", "line 17", "line 18", "line 19", "line 20"]);
+        assert_eq!(
+            recent,
+            vec!["line 16", "line 17", "line 18", "line 19", "line 20"]
+        );
     }
 
     #[test]
@@ -412,7 +415,10 @@ mod tests {
         };
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["pendingQuestion"]["type"], "tool_approval");
-        assert_eq!(json["pendingQuestion"]["questions"][0]["question"], "Allow Edit?");
+        assert_eq!(
+            json["pendingQuestion"]["questions"][0]["question"],
+            "Allow Edit?"
+        );
         assert_eq!(json["costUsd"], 0.42);
         assert_eq!(json["turnCount"], 5);
     }

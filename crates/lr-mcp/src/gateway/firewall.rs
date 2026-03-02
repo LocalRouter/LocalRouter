@@ -49,6 +49,8 @@ pub enum FirewallApprovalAction {
     /// Deny all guardrail-flagged content for 1 hour (auto-deny without popup)
     #[serde(rename = "deny_1_hour")]
     Deny1Hour,
+    /// Disable the client entirely and deny the current request
+    DisableClient,
 }
 
 /// Response from the user for a firewall approval request
@@ -850,6 +852,7 @@ mod tests {
                 "\"allow_categories\"",
             ),
             (FirewallApprovalAction::Deny1Hour, "\"deny_1_hour\""),
+            (FirewallApprovalAction::DisableClient, "\"disable_client\""),
         ];
 
         for (action, expected_json) in &actions {

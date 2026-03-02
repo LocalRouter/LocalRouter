@@ -677,7 +677,8 @@ async fn check_model_firewall_permission(
                 | FirewallApprovalAction::DenySession
                 | FirewallApprovalAction::DenyAlways
                 | FirewallApprovalAction::BlockCategories
-                | FirewallApprovalAction::Deny1Hour => {
+                | FirewallApprovalAction::Deny1Hour
+                | FirewallApprovalAction::DisableClient => {
                     tracing::warn!(
                         "Model firewall: {} denied by user for client {}",
                         request.model,
@@ -941,7 +942,8 @@ async fn handle_guardrail_approval(
         | FirewallApprovalAction::DenySession
         | FirewallApprovalAction::DenyAlways
         | FirewallApprovalAction::BlockCategories
-        | FirewallApprovalAction::Deny1Hour => {
+        | FirewallApprovalAction::Deny1Hour
+        | FirewallApprovalAction::DisableClient => {
             tracing::warn!("Guardrail: request denied for client {}", client_id);
             Err(ApiErrorResponse::forbidden(
                 "Request blocked by safety check",

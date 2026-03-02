@@ -118,11 +118,9 @@ impl From<AppError> for ApiErrorResponse {
                 ApiErrorResponse::bad_gateway(format!("Provider error: {}", msg))
             }
             AppError::RateLimitExceeded => ApiErrorResponse::rate_limited("Rate limit exceeded"),
-            AppError::FreeTierExhausted { .. } => {
-                ApiErrorResponse::payment_required(
-                    "Free tier exhausted. All free-tier providers are at capacity.",
-                )
-            }
+            AppError::FreeTierExhausted { .. } => ApiErrorResponse::payment_required(
+                "Free tier exhausted. All free-tier providers are at capacity.",
+            ),
             AppError::FreeTierFallbackAvailable { .. } => {
                 // This should be caught by the chat handler before reaching here,
                 // but if it leaks through, treat it as exhausted

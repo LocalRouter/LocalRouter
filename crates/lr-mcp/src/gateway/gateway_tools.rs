@@ -67,7 +67,8 @@ impl McpGateway {
                 let info_loaded = session_read.skills_info_loaded.clone();
                 let async_enabled = session_read.skills_async_enabled;
                 let marketplace_permission = session_read.marketplace_permission.clone();
-                let coding_agents_perms = session_read.coding_agents_permissions.clone();
+                let coding_agent_perm = session_read.coding_agent_permission.clone();
+                let coding_agent_type = session_read.coding_agent_type;
                 drop(session_read);
 
                 self.append_skill_tools(
@@ -78,7 +79,7 @@ impl McpGateway {
                     true,
                 );
                 self.append_marketplace_tools(&mut tools, &marketplace_permission);
-                self.append_coding_agent_tools(&mut tools, &coding_agents_perms);
+                self.append_coding_agent_tools(&mut tools, &coding_agent_perm, coding_agent_type);
 
                 let tool_names: Vec<String> = tools
                     .iter()
@@ -110,7 +111,8 @@ impl McpGateway {
                 let info_loaded = session_read.skills_info_loaded.clone();
                 let async_enabled = session_read.skills_async_enabled;
                 let marketplace_permission = session_read.marketplace_permission.clone();
-                let coding_agents_perms = session_read.coding_agents_permissions.clone();
+                let coding_agent_perm = session_read.coding_agent_permission.clone();
+                let coding_agent_type = session_read.coding_agent_type;
                 drop(session_read);
 
                 // Skills always use their own deferred loading (get_info unlocks run/read)
@@ -122,7 +124,7 @@ impl McpGateway {
                     true,
                 );
                 self.append_marketplace_tools(&mut tools, &marketplace_permission);
-                self.append_coding_agent_tools(&mut tools, &coding_agents_perms);
+                self.append_coding_agent_tools(&mut tools, &coding_agent_perm, coding_agent_type);
 
                 tracing::info!("handle_tools_list CACHED: returning {} tools", tools.len(),);
 
@@ -163,7 +165,8 @@ impl McpGateway {
         let info_loaded = session_read.skills_info_loaded.clone();
         let async_enabled = session_read.skills_async_enabled;
         let marketplace_permission = session_read.marketplace_permission.clone();
-        let coding_agents_perms = session_read.coding_agents_permissions.clone();
+        let coding_agent_perm = session_read.coding_agent_permission.clone();
+        let coding_agent_type = session_read.coding_agent_type;
         drop(session_read);
 
         let mut all_tools: Vec<serde_json::Value> = tools
@@ -180,7 +183,7 @@ impl McpGateway {
             true,
         );
         self.append_marketplace_tools(&mut all_tools, &marketplace_permission);
-        self.append_coding_agent_tools(&mut all_tools, &coding_agents_perms);
+        self.append_coding_agent_tools(&mut all_tools, &coding_agent_perm, coding_agent_type);
 
         let mut result = json!({"tools": all_tools});
         if let Some(failures) = failures {
@@ -621,7 +624,8 @@ impl McpGateway {
                     }
                     FirewallApprovalAction::DenyAlways
                     | FirewallApprovalAction::BlockCategories
-                    | FirewallApprovalAction::Deny1Hour => {
+                    | FirewallApprovalAction::Deny1Hour
+                    | FirewallApprovalAction::DisableClient => {
                         tracing::info!(
                             "Firewall: tool {} denied permanently (client={})",
                             tool_name,
@@ -1016,14 +1020,16 @@ impl McpGateway {
     pub(crate) fn append_coding_agent_tools(
         &self,
         tools: &mut Vec<serde_json::Value>,
-        permissions: &lr_config::CodingAgentsPermissions,
+        permission: &lr_config::PermissionState,
+        agent_type: Option<lr_config::CodingAgentType>,
     ) {
-        if !permissions.has_any_access() {
+        if !permission.is_enabled() {
             return;
         }
         if let Some(manager) = self.coding_agent_manager.get() {
-            let agent_tools =
-                lr_coding_agents::mcp_tools::build_coding_agent_tools(manager, permissions);
+            let agent_tools = lr_coding_agents::mcp_tools::build_coding_agent_tools(
+                manager, permission, agent_type,
+            );
             for tool in agent_tools {
                 tools.push(serde_json::to_value(&tool).unwrap_or_default());
             }
@@ -1051,26 +1057,34 @@ impl McpGateway {
             }
         };
 
-        // Get client_id and permissions from session
+        // Get client_id and agent type from session
         let session_read = session.read().await;
         let client_id = session_read.client_id.clone();
-        let permissions = session_read.coding_agents_permissions.clone();
+        let permission = session_read.coding_agent_permission.clone();
+        let agent_type = session_read.coding_agent_type;
         drop(session_read);
 
-        // Check permission for the specific agent
-        if let Some(agent_type) = lr_coding_agents::mcp_tools::agent_type_from_tool(tool_name) {
-            let perm = permissions.resolve_agent(agent_type.tool_prefix());
-            if !perm.is_enabled() {
+        // Check permission
+        if !permission.is_enabled() {
+            return Ok(JsonRpcResponse::error(
+                request.id.unwrap_or(Value::Null),
+                JsonRpcError::custom(-32601, "Coding agent access denied".to_string(), None),
+            ));
+        }
+
+        let agent_type = match agent_type {
+            Some(at) => at,
+            None => {
                 return Ok(JsonRpcResponse::error(
                     request.id.unwrap_or(Value::Null),
                     JsonRpcError::custom(
                         -32601,
-                        format!("Access denied for {}", agent_type.display_name()),
+                        "No coding agent type selected for this client".to_string(),
                         None,
                     ),
                 ));
             }
-        }
+        };
 
         // Extract arguments from params
         let arguments = request
@@ -1081,10 +1095,7 @@ impl McpGateway {
             .unwrap_or(serde_json::json!({}));
 
         match lr_coding_agents::mcp_tools::handle_coding_agent_tool_call(
-            tool_name,
-            &arguments,
-            manager,
-            &client_id,
+            tool_name, &arguments, manager, &client_id, agent_type,
         )
         .await
         {

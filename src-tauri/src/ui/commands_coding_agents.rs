@@ -1,7 +1,7 @@
 //! Tauri commands for AI coding agents management.
 
 use lr_coding_agents::manager::CodingAgentManager;
-use lr_config::{CodingAgentType, CodingPermissionMode, ConfigManager, PermissionState};
+use lr_config::{CodingAgentType, ConfigManager, PermissionState};
 use serde::Serialize;
 use std::sync::Arc;
 use tauri::{Emitter, State};
@@ -13,12 +13,8 @@ use tauri::{Emitter, State};
 pub struct CodingAgentInfo {
     pub agent_type: CodingAgentType,
     pub display_name: String,
-    pub tool_prefix: String,
     pub binary_name: String,
     pub installed: bool,
-    pub working_directory: Option<String>,
-    pub model_id: Option<String>,
-    pub permission_mode: CodingPermissionMode,
 }
 
 /// Session info returned to the frontend
@@ -34,79 +30,24 @@ pub struct CodingSessionInfo {
     pub created_at: String,
 }
 
-/// List all coding agents with their detection status and configuration
+/// List all coding agents with their detection status
 #[tauri::command]
 pub async fn list_coding_agents(
-    config_manager: State<'_, ConfigManager>,
+    _config_manager: State<'_, ConfigManager>,
 ) -> Result<Vec<CodingAgentInfo>, String> {
-    let config = config_manager.get();
     let installed = CodingAgentManager::detect_installed_agents();
 
     let agents: Vec<CodingAgentInfo> = CodingAgentType::all()
         .iter()
-        .map(|agent_type| {
-            let agent_config = config
-                .coding_agents
-                .agents
-                .iter()
-                .find(|a| a.agent_type == *agent_type);
-
-            CodingAgentInfo {
-                agent_type: *agent_type,
-                display_name: agent_type.display_name().to_string(),
-                tool_prefix: agent_type.tool_prefix().to_string(),
-                binary_name: agent_type.binary_name().to_string(),
-                installed: installed.contains(agent_type),
-                working_directory: agent_config.and_then(|c| c.working_directory.clone()),
-                model_id: agent_config.and_then(|c| c.model_id.clone()),
-                permission_mode: agent_config
-                    .map(|c| c.permission_mode)
-                    .unwrap_or_default(),
-            }
+        .map(|agent_type| CodingAgentInfo {
+            agent_type: *agent_type,
+            display_name: agent_type.display_name().to_string(),
+            binary_name: agent_type.binary_name().to_string(),
+            installed: installed.contains(agent_type),
         })
         .collect();
 
     Ok(agents)
-}
-
-/// Update coding agent configuration
-#[tauri::command]
-pub async fn update_coding_agent_config(
-    agent_type: CodingAgentType,
-    working_directory: Option<String>,
-    model_id: Option<String>,
-    permission_mode: Option<CodingPermissionMode>,
-    config_manager: State<'_, ConfigManager>,
-    app: tauri::AppHandle,
-) -> Result<(), String> {
-    config_manager
-        .update(|cfg| {
-            if let Some(agent) = cfg
-                .coding_agents
-                .agents
-                .iter_mut()
-                .find(|a| a.agent_type == agent_type)
-            {
-                if let Some(wd) = working_directory {
-                    agent.working_directory = if wd.is_empty() { None } else { Some(wd) };
-                }
-                if let Some(model) = model_id {
-                    agent.model_id = if model.is_empty() { None } else { Some(model) };
-                }
-                if let Some(mode) = permission_mode {
-                    agent.permission_mode = mode;
-                }
-            }
-        })
-        .map_err(|e| e.to_string())?;
-
-    config_manager.save().await.map_err(|e| e.to_string())?;
-
-    if let Err(e) = app.emit("coding-agents-changed", ()) {
-        tracing::error!("Failed to emit coding-agents-changed event: {}", e);
-    }
-
-    Ok(())
 }
 
 /// List active coding sessions
@@ -170,47 +111,43 @@ pub async fn set_max_coding_sessions(
     Ok(())
 }
 
-/// Permission level for coding agents (global or per-agent)
-#[derive(Debug, Clone, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CodingAgentsPermissionLevel {
-    Global,
-    Agent,
-}
-
-/// Set client coding agents permission
+/// Set client coding agent permission (Allow/Ask/Off)
 #[tauri::command]
-pub async fn set_client_coding_agents_permission(
+pub async fn set_client_coding_agent_permission(
     client_id: String,
-    level: CodingAgentsPermissionLevel,
-    key: Option<String>,
-    state: PermissionState,
+    permission: PermissionState,
     config_manager: State<'_, ConfigManager>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     config_manager
         .update(|cfg| {
             if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
-                match level {
-                    CodingAgentsPermissionLevel::Global => {
-                        client.coding_agents_permissions.global = state.clone();
-                        // Clear all per-agent overrides so they inherit the new global value
-                        client.coding_agents_permissions.agents.clear();
-                    }
-                    CodingAgentsPermissionLevel::Agent => {
-                        if let Some(agent_key) = &key {
-                            // If the new state matches the global, remove the override (inherit)
-                            if state == client.coding_agents_permissions.global {
-                                client.coding_agents_permissions.agents.remove(agent_key);
-                            } else {
-                                client
-                                    .coding_agents_permissions
-                                    .agents
-                                    .insert(agent_key.clone(), state.clone());
-                            }
-                        }
-                    }
-                }
+                client.coding_agent_permission = permission.clone();
+            }
+        })
+        .map_err(|e| e.to_string())?;
+
+    config_manager.save().await.map_err(|e| e.to_string())?;
+
+    if let Err(e) = app.emit("clients-changed", ()) {
+        tracing::error!("Failed to emit clients-changed event: {}", e);
+    }
+
+    Ok(())
+}
+
+/// Set client coding agent type
+#[tauri::command]
+pub async fn set_client_coding_agent_type(
+    client_id: String,
+    agent_type: Option<CodingAgentType>,
+    config_manager: State<'_, ConfigManager>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    config_manager
+        .update(|cfg| {
+            if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
+                client.coding_agent_type = agent_type;
             }
         })
         .map_err(|e| e.to_string())?;

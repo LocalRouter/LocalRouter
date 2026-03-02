@@ -392,7 +392,8 @@ async fn handle_guardrail_approval(
         | FirewallApprovalAction::DenySession
         | FirewallApprovalAction::DenyAlways
         | FirewallApprovalAction::BlockCategories
-        | FirewallApprovalAction::Deny1Hour => Err(ApiErrorResponse::forbidden(
+        | FirewallApprovalAction::Deny1Hour
+        | FirewallApprovalAction::DisableClient => Err(ApiErrorResponse::forbidden(
             "Request blocked by safety check",
         )),
     }

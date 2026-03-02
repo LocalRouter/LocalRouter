@@ -98,14 +98,9 @@ pub async fn mcp_gateway_get_handler(
         return (
             axum::http::StatusCode::OK,
             [(header::CONTENT_TYPE, "text/plain")],
-            "LocalRouter - Unified MCP Gateway\n\
+            "LocalRouter - OpenAI-Compatible LLM Gateway & Unified MCP Gateway\n\
              \n\
-             This endpoint supports both SSE and JSON-RPC:\n\
-               GET  / (Accept: text/event-stream) - SSE notification stream\n\
-               POST / - JSON-RPC requests to unified gateway\n\
-             \n\
-             Authentication: Include 'Authorization: Bearer <your-token>' header\n\
-             Use X-MCP-Access header to control server access: 'all', 'none', or a specific server ID\n",
+             API Documentation: /openapi.json\n",
         )
             .into_response();
     }
@@ -661,7 +656,8 @@ pub async fn mcp_gateway_handler(
             client.skills_permissions.clone(),
             client.name.clone(),
             client.marketplace_permission.clone(),
-            client.coding_agents_permissions.clone(),
+            client.coding_agent_permission.clone(),
+            client.coding_agent_type,
             request,
         )
         .await

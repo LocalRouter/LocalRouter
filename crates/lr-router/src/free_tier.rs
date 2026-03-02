@@ -1656,9 +1656,7 @@ mod tests {
         // Even after exceeding the RPM limit, it still returns FreeModel.
         let manager = FreeTierManager::new(None);
         let free_tier = FreeTierKind::FreeModelsOnly {
-            free_model_patterns: vec![
-                "meta-llama/Llama-3.3-70B-Instruct-Turbo-Free".to_string(),
-            ],
+            free_model_patterns: vec!["meta-llama/Llama-3.3-70B-Instruct-Turbo-Free".to_string()],
             max_rpm: 3,
         };
 
@@ -1944,8 +1942,8 @@ mod tests {
         // When multiple limits are set, the tightest one should block
         let manager = FreeTierManager::new(None);
         let free_tier = FreeTierKind::RateLimitedFree {
-            max_rpm: 100,  // Generous RPM
-            max_rpd: 2,    // Tight daily limit
+            max_rpm: 100, // Generous RPM
+            max_rpd: 2,   // Tight daily limit
             max_tpm: 0,
             max_tpd: 0,
             max_monthly_calls: 0,
@@ -1957,7 +1955,10 @@ mod tests {
 
         // RPM is fine (2/100) but RPD is exhausted (2/2)
         let cap = manager.check_rate_limit_capacity("provider", &free_tier);
-        assert!(!cap.has_capacity, "RPD should block even though RPM has capacity");
+        assert!(
+            !cap.has_capacity,
+            "RPD should block even though RPM has capacity"
+        );
     }
 
     #[test]
@@ -1975,7 +1976,10 @@ mod tests {
         manager.record_usage("provider", &free_tier, 500, 0.0);
 
         let cap = manager.check_rate_limit_capacity("provider", &free_tier);
-        assert!(!cap.has_capacity, "Should be blocked after daily token limit");
+        assert!(
+            !cap.has_capacity,
+            "Should be blocked after daily token limit"
+        );
     }
 
     // ============================================================
@@ -2029,7 +2033,10 @@ mod tests {
         manager.update_from_headers("gemini", &headers);
 
         let cap = manager.check_rate_limit_capacity("gemini", &free_tier);
-        assert!(!cap.has_capacity, "Should block when header says 0 remaining");
+        assert!(
+            !cap.has_capacity,
+            "Should block when header says 0 remaining"
+        );
     }
 
     #[test]

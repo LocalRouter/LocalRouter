@@ -102,8 +102,11 @@ pub struct GatewaySession {
     /// Marketplace permission state for this client
     pub marketplace_permission: lr_config::PermissionState,
 
-    /// Coding agents permissions for this client
-    pub coding_agents_permissions: lr_config::CodingAgentsPermissions,
+    /// Coding agent permission state for this client
+    pub coding_agent_permission: lr_config::PermissionState,
+
+    /// Which coding agent type this client uses
+    pub coding_agent_type: Option<lr_config::CodingAgentType>,
 }
 
 impl GatewaySession {
@@ -155,7 +158,8 @@ impl GatewaySession {
             firewall_session_approvals: HashSet::new(),
             firewall_session_denials: HashSet::new(),
             marketplace_permission: lr_config::PermissionState::default(),
-            coding_agents_permissions: lr_config::CodingAgentsPermissions::default(),
+            coding_agent_permission: lr_config::PermissionState::default(),
+            coding_agent_type: None,
         }
     }
 

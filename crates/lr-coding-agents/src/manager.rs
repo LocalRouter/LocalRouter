@@ -48,11 +48,6 @@ impl CodingAgentManager {
         &self.config
     }
 
-    /// Get the config for a specific agent type
-    pub fn agent_config(&self, agent_type: CodingAgentType) -> Option<&lr_config::CodingAgentConfig> {
-        self.config.agents.iter().find(|a| a.agent_type == agent_type)
-    }
-
     /// Check if an agent type is available (binary installed on system).
     /// Agents are implicitly enabled when installed — no explicit enable flag.
     pub fn is_agent_enabled(&self, agent_type: CodingAgentType) -> bool {
@@ -93,43 +88,16 @@ impl CodingAgentManager {
             return Err(CodingAgentError::TooManySessions { max });
         }
 
-        // Resolve working directory
-        let work_dir = working_directory
-            .or_else(|| {
-                self.agent_config(agent_type)
-                    .and_then(|c| c.working_directory.as_ref())
-                    .map(PathBuf::from)
-            })
-            .or_else(|| {
-                self.config
-                    .default_working_directory
-                    .as_ref()
-                    .map(PathBuf::from)
-            })
-            .unwrap_or_else(|| PathBuf::from("."));
+        // Resolve working directory: use provided or create temp dir
+        let work_dir = working_directory.unwrap_or_else(std::env::temp_dir);
 
-        // Resolve permission mode
-        let perm_mode = permission_mode
-            .or_else(|| {
-                self.agent_config(agent_type)
-                    .map(|c| c.permission_mode)
-            })
-            .unwrap_or_default();
-
-        // Resolve model
-        let model_id = model.or_else(|| {
-            self.agent_config(agent_type)
-                .and_then(|c| c.model_id.clone())
-        });
+        let perm_mode = permission_mode.unwrap_or_default();
 
         let session_id = uuid::Uuid::new_v4().to_string();
         let config = SessionConfig {
-            model: model_id,
+            model,
             permission_mode: perm_mode,
-            env: self
-                .agent_config(agent_type)
-                .map(|c| c.env.clone())
-                .unwrap_or_default(),
+            env: Default::default(),
         };
 
         let mut session = CodingSession::new(
@@ -143,26 +111,18 @@ impl CodingAgentManager {
         );
 
         // Resolve binary path
-        let binary = self
-            .agent_config(agent_type)
-            .and_then(|c| c.binary_path.clone())
-            .unwrap_or_else(|| agent_type.binary_name().to_string());
+        let binary = agent_type.binary_name().to_string();
 
         // Spawn the agent process
-        let process = spawn_agent_process(
-            agent_type,
-            &binary,
-            prompt,
-            &work_dir,
-            &config,
-        )
-        .await?;
+        let process = spawn_agent_process(agent_type, &binary, prompt, &work_dir, &config).await?;
 
         session.process = Some(process);
 
         let session_arc = Arc::new(Mutex::new(session));
-        self.sessions
-            .insert(session_id.clone(), (client_id.to_string(), session_arc.clone()));
+        self.sessions.insert(
+            session_id.clone(),
+            (client_id.to_string(), session_arc.clone()),
+        );
 
         // Start background stdout reader
         spawn_output_reader(session_arc);
@@ -229,10 +189,7 @@ impl CodingAgentManager {
             }
             SessionStatus::Done | SessionStatus::Error | SessionStatus::Interrupted => {
                 // Process exited: auto-resume via spawn_follow_up
-                let binary = self
-                    .agent_config(session.agent_type)
-                    .and_then(|c| c.binary_path.clone())
-                    .unwrap_or_else(|| session.agent_type.binary_name().to_string());
+                let binary = session.agent_type.binary_name().to_string();
 
                 let process = spawn_agent_process(
                     session.agent_type,
@@ -253,7 +210,9 @@ impl CodingAgentManager {
                 let session_id_clone = session.id.clone();
                 drop(session);
 
-                let session_arc2 = self.sessions.get(&session_id_clone)
+                let session_arc2 = self
+                    .sessions
+                    .get(&session_id_clone)
                     .map(|r| r.value().1.clone())
                     .ok_or(CodingAgentError::SessionNotFound(session_id_clone))?;
                 spawn_output_reader(session_arc2);
@@ -283,11 +242,14 @@ impl CodingAgentManager {
         let session = session_arc.lock().await;
         let lines = output_lines.unwrap_or(50);
 
-        let pending = session.pending_question.as_ref().map(|pq| PendingQuestionInfo {
-            id: pq.id.clone(),
-            question_type: pq.question_type.clone(),
-            questions: pq.questions.clone(),
-        });
+        let pending = session
+            .pending_question
+            .as_ref()
+            .map(|pq| PendingQuestionInfo {
+                id: pq.id.clone(),
+                question_type: pq.question_type.clone(),
+                questions: pq.questions.clone(),
+            });
 
         Ok(StatusResponse {
             session_id: session_id.to_string(),
@@ -333,9 +295,7 @@ impl CodingAgentManager {
                 if answer.starts_with("allow") || answer.starts_with("approve") {
                     ApprovalResponse::Approved
                 } else {
-                    let reason = answer
-                        .split_once(':')
-                        .map(|(_, r)| r.trim().to_string());
+                    let reason = answer.split_once(':').map(|(_, r)| r.trim().to_string());
                     ApprovalResponse::Denied { reason }
                 }
             }
@@ -595,12 +555,12 @@ async fn spawn_agent_process(
 
     let cancel = tokio_util::sync::CancellationToken::new();
 
-    let group_child: command_group::AsyncGroupChild = cmd
-        .group_spawn()
-        .map_err(|e: std::io::Error| CodingAgentError::SpawnFailed {
-            agent: agent_type.display_name().to_string(),
-            reason: e.to_string(),
-        })?;
+    let group_child: command_group::AsyncGroupChild =
+        cmd.group_spawn()
+            .map_err(|e: std::io::Error| CodingAgentError::SpawnFailed {
+                agent: agent_type.display_name().to_string(),
+                reason: e.to_string(),
+            })?;
 
     Ok(AgentProcess {
         child: group_child,
@@ -728,31 +688,13 @@ impl CodingAgentError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lr_config::{CodingAgentConfig, CodingAgentsConfig};
+    use lr_config::CodingAgentsConfig;
 
     fn test_config() -> CodingAgentsConfig {
         CodingAgentsConfig {
-            agents: vec![
-                CodingAgentConfig {
-                    agent_type: CodingAgentType::ClaudeCode,
-                    working_directory: Some("/tmp/test".to_string()),
-                    model_id: Some("claude-3-opus".to_string()),
-                    permission_mode: CodingPermissionMode::Supervised,
-                    env: Default::default(),
-                    binary_path: None,
-                },
-                CodingAgentConfig {
-                    agent_type: CodingAgentType::GeminiCli,
-                    working_directory: None,
-                    model_id: None,
-                    permission_mode: CodingPermissionMode::Auto,
-                    env: Default::default(),
-                    binary_path: None,
-                },
-            ],
-            default_working_directory: Some("/tmp/default".to_string()),
             max_concurrent_sessions: 5,
             output_buffer_size: 100,
+            ..Default::default()
         }
     }
 
@@ -769,10 +711,7 @@ mod tests {
             truncate_prompt("a very long prompt that exceeds the limit", 20),
             "a very long promp..."
         );
-        assert_eq!(
-            truncate_prompt("line1\nline2\nline3", 80),
-            "line1"
-        );
+        assert_eq!(truncate_prompt("line1\nline2\nline3", 80), "line1");
     }
 
     #[test]
@@ -829,21 +768,6 @@ mod tests {
     }
 
     #[test]
-    fn test_agent_config() {
-        let config = test_config();
-        let manager = CodingAgentManager::new(config);
-
-        let cc_config = manager.agent_config(CodingAgentType::ClaudeCode);
-        assert!(cc_config.is_some());
-        let cc = cc_config.unwrap();
-        assert_eq!(cc.model_id, Some("claude-3-opus".to_string()));
-        assert_eq!(cc.working_directory, Some("/tmp/test".to_string()));
-
-        let codex_config = manager.agent_config(CodingAgentType::Codex);
-        assert!(codex_config.is_none());
-    }
-
-    #[test]
     fn test_update_config() {
         let config = test_config();
         let mut manager = CodingAgentManager::new(config);
@@ -894,7 +818,10 @@ mod tests {
         // Different client cannot access
         let result = manager.get_session("test-session", "client-B");
         assert!(result.is_err());
-        assert!(matches!(result.err().unwrap(), CodingAgentError::ClientMismatch));
+        assert!(matches!(
+            result.err().unwrap(),
+            CodingAgentError::ClientMismatch
+        ));
     }
 
     #[tokio::test]
@@ -1004,10 +931,9 @@ mod tests {
                 format!("prompt {}", i),
                 100,
             );
-            manager.sessions.insert(
-                id,
-                ("client-A".to_string(), Arc::new(Mutex::new(session))),
-            );
+            manager
+                .sessions
+                .insert(id, ("client-A".to_string(), Arc::new(Mutex::new(session))));
         }
 
         let sessions = manager.list_sessions("client-A", None, Some(3)).await;

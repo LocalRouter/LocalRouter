@@ -263,11 +263,11 @@ fn build_app(state: AppState, enable_cors: bool) -> Router {
     path = "/health",
     tag = "system",
     responses(
-        (status = 200, description = "Server is healthy")
+        (status = 200, description = "Server is healthy", body = String)
     )
 )]
-async fn health_check() -> StatusCode {
-    StatusCode::OK
+async fn health_check() -> &'static str {
+    "ok"
 }
 
 /// Serve OpenAPI specification as JSON

@@ -103,6 +103,11 @@ pub fn migrate_config(mut config: AppConfig) -> AppResult<AppConfig> {
         config = migrate_to_v15(config)?;
     }
 
+    // Migrate to v16: Single coding agent per client
+    if config.version < 16 {
+        config = migrate_to_v16(config)?;
+    }
+
     // Update version to current
     config.version = CONFIG_VERSION;
 
@@ -503,6 +508,44 @@ fn migrate_to_v14(mut config: AppConfig) -> AppResult<AppConfig> {
 fn migrate_to_v15(mut config: AppConfig) -> AppResult<AppConfig> {
     info!("Migrating to version 15: AI coding agents support");
     config.version = 15;
+    Ok(config)
+}
+
+fn migrate_to_v16(mut config: AppConfig) -> AppResult<AppConfig> {
+    use super::types::{CodingAgentType, PermissionState};
+    info!("Migrating to version 16: Single coding agent per client");
+
+    for client in &mut config.clients {
+        let perms = &client.coding_agents_permissions;
+
+        if perms.global.is_enabled() {
+            // Global was Allow/Ask → keep that state, user must select agent type
+            client.coding_agent_permission = perms.global.clone();
+            client.coding_agent_type = None;
+        } else if !perms.agents.is_empty() {
+            // Global was Off but had per-agent overrides → find first enabled agent
+            let first_enabled = CodingAgentType::all().iter().find(|at| {
+                perms
+                    .agents
+                    .get(at.tool_prefix())
+                    .map(|s| s.is_enabled())
+                    .unwrap_or(false)
+            });
+            if let Some(agent_type) = first_enabled {
+                let state = perms
+                    .agents
+                    .get(agent_type.tool_prefix())
+                    .cloned()
+                    .unwrap_or(PermissionState::Off);
+                client.coding_agent_permission = state;
+                client.coding_agent_type = Some(*agent_type);
+            }
+            // else: all overrides were Off, keep defaults (Off, None)
+        }
+        // else: everything Off → keep defaults (Off, None)
+    }
+
+    config.version = 16;
     Ok(config)
 }
 
