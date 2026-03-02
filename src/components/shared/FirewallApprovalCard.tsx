@@ -18,7 +18,7 @@ import { Shield, Coins } from "lucide-react"
 import { categoryActionLabel } from "@/components/permissions/CategoryActionButton"
 import type { SafetyVerdict, CategoryActionRequired } from "@/types/tauri-commands"
 
-export type ApprovalAction = "deny" | "deny_session" | "deny_always" | "block_categories" | "allow_once" | "allow_session" | "allow_1_minute" | "allow_1_hour" | "allow_permanent" | "allow_categories" | "deny_1_hour"
+export type ApprovalAction = "deny" | "deny_session" | "deny_always" | "block_categories" | "allow_once" | "allow_session" | "allow_1_minute" | "allow_1_hour" | "allow_permanent" | "allow_categories" | "deny_1_hour" | "disable_client"
 
 export type RequestType = "marketplace" | "skill" | "model" | "tool" | "guardrail" | "free_tier_fallback"
 
@@ -327,7 +327,7 @@ export function FirewallApprovalCard({
             onClick={() => onAction?.("deny")}
             disabled={disabled}
           >
-            Deny
+            Deny Once
           </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -353,6 +353,11 @@ export function FirewallApprovalCard({
               {isGuardrailRequest && (
                 <DropdownMenuItem onClick={() => onAction?.("block_categories")}>
                   Deny Categories Always
+                </DropdownMenuItem>
+              )}
+              {isGuardrailRequest && (
+                <DropdownMenuItem onClick={() => onAction?.("disable_client")}>
+                  Disable Client
                 </DropdownMenuItem>
               )}
               {!isGuardrailRequest && (

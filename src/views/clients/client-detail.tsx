@@ -19,7 +19,8 @@ import { ClientSkillsTab } from "./tabs/skills-tab"
 import { ClientCodingAgentsTab } from "./tabs/coding-agents-tab"
 import { ClientGuardrailsTab } from "./tabs/guardrails-tab"
 import { ClientSettingsTab } from "./tabs/settings-tab"
-import type { McpPermissions, SkillsPermissions, CodingAgentsPermissions, ModelPermissions, PermissionState } from "@/components/permissions"
+import type { McpPermissions, SkillsPermissions, ModelPermissions, PermissionState } from "@/components/permissions"
+import type { CodingAgentType } from "@/types/tauri-commands"
 import type { ClientMode } from "@/types/tauri-commands"
 
 interface Client {
@@ -31,7 +32,8 @@ interface Client {
   mcp_deferred_loading: boolean
   mcp_permissions: McpPermissions
   skills_permissions: SkillsPermissions
-  coding_agents_permissions: CodingAgentsPermissions
+  coding_agent_permission: PermissionState
+  coding_agent_type: CodingAgentType | null
   model_permissions: ModelPermissions
   marketplace_permission: PermissionState
   client_mode?: ClientMode

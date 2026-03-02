@@ -1,11 +1,8 @@
 import { useState, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
-import { toast } from "sonner"
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card"
 import { Badge } from "@/components/ui/Badge"
-import { Label } from "@/components/ui/label"
-import { Input } from "@/components/ui/Input"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { CodingAgentsIcon } from "@/components/icons/category-icons"
 import type {
@@ -19,6 +16,7 @@ interface CodingAgentsViewProps {
   onTabChange?: (view: string, subTab?: string | null) => void
 }
 
+/** @deprecated This view is no longer reachable from the sidebar. Coding agent settings are now in Settings > Coding Agents. */
 export function CodingAgentsView({ activeSubTab }: CodingAgentsViewProps) {
   const [agents, setAgents] = useState<CodingAgentInfo[]>([])
   const [sessions, setSessions] = useState<CodingSessionInfo[]>([])
@@ -63,22 +61,6 @@ export function CodingAgentsView({ activeSubTab }: CodingAgentsViewProps) {
       setSelectedAgent(activeSubTab as CodingAgentType)
     }
   }, [activeSubTab])
-
-  const handleUpdateConfig = async (
-    agentType: CodingAgentType,
-    field: string,
-    value: string | null,
-  ) => {
-    try {
-      await invoke("update_coding_agent_config", {
-        agentType,
-        [field]: value,
-      })
-    } catch (error) {
-      console.error("Failed to update config:", error)
-      toast.error("Failed to update configuration")
-    }
-  }
 
   const selected = selectedAgent ? agents.find((a) => a.agentType === selectedAgent) : null
 
@@ -134,7 +116,7 @@ export function CodingAgentsView({ activeSubTab }: CodingAgentsViewProps) {
                 </div>
                 <div className="flex items-center gap-1.5">
                   {agent.installed ? (
-                    <Badge variant="outline" className="text-[10px] px-1 py-0">
+                    <Badge variant="success" className="text-[10px] px-1 py-0">
                       installed
                     </Badge>
                   ) : (
@@ -157,46 +139,15 @@ export function CodingAgentsView({ activeSubTab }: CodingAgentsViewProps) {
               <div className="flex items-center justify-between">
                 <div>
                   <h2 className="text-xl font-bold">{selected.displayName}</h2>
-                  <p className="text-sm text-muted-foreground mt-1">
-                    Tool prefix: <code className="text-xs bg-muted px-1 py-0.5 rounded">{selected.toolPrefix}</code>
-                  </p>
                 </div>
                 <div className="flex items-center gap-3">
                   {selected.installed ? (
-                    <Badge variant="outline">Installed</Badge>
+                    <Badge variant="success">Installed</Badge>
                   ) : (
                     <Badge variant="secondary">Not Found</Badge>
                   )}
                 </div>
               </div>
-
-              {selected.installed && (
-                <>
-                  <Card>
-                    <CardHeader>
-                      <CardTitle>Configuration</CardTitle>
-                      <CardDescription>
-                        Configure how this coding agent operates when spawned via MCP tools.
-                      </CardDescription>
-                    </CardHeader>
-                    <CardContent className="space-y-4">
-                      <div className="space-y-2">
-                        <Label>Working Directory</Label>
-                        <Input
-                          placeholder="Default (client's working directory)"
-                          defaultValue={selected.workingDirectory || ""}
-                          onBlur={(e) =>
-                            handleUpdateConfig(selected.agentType, "workingDirectory", e.target.value || null)
-                          }
-                        />
-                        <p className="text-xs text-muted-foreground">
-                          Override the working directory for this agent. If omitted, the MCP client can specify one per session. When no directory is provided at all, a temporary directory is created (e.g. under /tmp on macOS).
-                        </p>
-                      </div>
-                    </CardContent>
-                  </Card>
-                </>
-              )}
 
               {!selected.installed && (
                 <Card>
@@ -243,10 +194,7 @@ export function CodingAgentsView({ activeSubTab }: CodingAgentsViewProps) {
           ) : (
             <div className="flex items-center justify-center h-full">
               <div className="text-center">
-                <p className="text-muted-foreground">Select a coding agent to configure</p>
-                <p className="text-xs text-muted-foreground mt-1">
-                  Installed agents are automatically available as MCP tools
-                </p>
+                <p className="text-muted-foreground">Select a coding agent to view details</p>
               </div>
             </div>
           )}

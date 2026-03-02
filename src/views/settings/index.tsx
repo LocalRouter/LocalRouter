@@ -8,6 +8,7 @@ import { LoggingTab } from "./logging-tab"
 import { UpdatesTab } from "./updates-tab"
 import { AppearanceTab } from "./appearance-tab"
 import { GuardrailsTab } from "./guardrails-tab"
+import { CodingAgentsSettingsTab } from "./coding-agents-tab"
 
 interface SettingsViewProps {
   activeSubTab: string | null
@@ -55,6 +56,7 @@ export function SettingsView({ activeSubTab, onTabChange }: SettingsViewProps) {
           <TabsTrigger value="appearance">Appearance</TabsTrigger>
           {/* DEPRECATED: Strategy UI hidden - 1:1 client-to-strategy relationship */}
           {/* <TabsTrigger value="routing">Strategies</TabsTrigger> */}
+          <TabsTrigger value="coding-agents">Coding Agents</TabsTrigger>
           <TabsTrigger value="guardrails">GuardRails</TabsTrigger>
           <TabsTrigger value="routellm">Strong/Weak</TabsTrigger>
           <TabsTrigger value="logs">Logs</TabsTrigger>
@@ -76,6 +78,10 @@ export function SettingsView({ activeSubTab, onTabChange }: SettingsViewProps) {
             onSelectStrategy={(id) => handleDetailChange("routing", id)}
           />
         </TabsContent> */}
+
+        <TabsContent value="coding-agents">
+          <CodingAgentsSettingsTab />
+        </TabsContent>
 
         <TabsContent value="guardrails">
           <GuardrailsTab onTabChange={onTabChange} />

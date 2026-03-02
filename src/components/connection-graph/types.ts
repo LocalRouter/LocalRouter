@@ -1,5 +1,6 @@
 import { Node, Edge } from 'reactflow'
-import type { McpPermissions, SkillsPermissions, ModelPermissions, PermissionState, CodingAgentsPermissions } from '@/components/permissions'
+import type { McpPermissions, SkillsPermissions, ModelPermissions, PermissionState } from '@/components/permissions'
+import type { CodingAgentType } from '@/types/tauri-commands'
 
 // Health status from backend
 export type ItemHealthStatus = 'healthy' | 'degraded' | 'unhealthy' | 'ready' | 'pending' | 'disabled'
@@ -80,7 +81,8 @@ export interface Client {
   last_used: string | null
   mcp_permissions: McpPermissions
   skills_permissions: SkillsPermissions
-  coding_agents_permissions: CodingAgentsPermissions
+  coding_agent_permission: PermissionState
+  coding_agent_type: CodingAgentType | null
   model_permissions: ModelPermissions
   marketplace_permission: PermissionState
 }

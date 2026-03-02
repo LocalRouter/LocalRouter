@@ -11,7 +11,7 @@ import {
   ChevronsLeft,
   ChevronsRight,
 } from "lucide-react"
-import { ProvidersIcon, McpIcon, SkillsIcon, CodingAgentsIcon } from "@/components/icons/category-icons"
+import { ProvidersIcon, McpIcon, SkillsIcon } from "@/components/icons/category-icons"
 import { Logo } from "@/components/Logo"
 import { cn } from "@/lib/utils"
 import {
@@ -43,7 +43,7 @@ interface HealthCacheState {
   aggregate_status: AggregateHealthStatus
 }
 
-export type View = 'dashboard' | 'clients' | 'resources' | 'mcp-servers' | 'skills' | 'coding-agents' | 'marketplace' | 'settings' | 'try-it-out' | 'debug'
+export type View = 'dashboard' | 'clients' | 'resources' | 'mcp-servers' | 'skills' | 'marketplace' | 'settings' | 'try-it-out' | 'debug'
 
 interface SidebarProps {
   activeView: View
@@ -65,7 +65,6 @@ const resourceNavItems: NavItem[] = [
   { id: 'resources', icon: ProvidersIcon, label: 'LLM Provider', shortcut: '⌘3' },
   { id: 'mcp-servers', icon: McpIcon, label: 'MCP', shortcut: '⌘4' },
   { id: 'skills', icon: SkillsIcon, label: 'Skill', shortcut: '⌘5' },
-  { id: 'coding-agents', icon: CodingAgentsIcon, label: 'Coding Agents', shortcut: '⌘9' },
 ]
 
 const bottomNavItems: NavItem[] = [
@@ -236,7 +235,7 @@ export function Sidebar({ activeView, onViewChange }: SidebarProps) {
             break
           case '9':
             e.preventDefault()
-            onViewChange('coding-agents')
+            onViewChange('settings')
             break
         }
       }
@@ -254,19 +253,14 @@ export function Sidebar({ activeView, onViewChange }: SidebarProps) {
       <button
         onClick={() => onViewChange(item.id)}
         className={cn(
-          "flex items-center rounded-md transition-colors",
-          expanded ? "h-8 w-full gap-2 px-2" : "h-8 w-8 justify-center",
+          "flex items-center rounded-md transition-colors h-8 w-full gap-2 px-2 whitespace-nowrap",
           isActive
             ? "bg-accent text-accent-foreground"
             : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
         )}
       >
         <Icon className="h-4 w-4 shrink-0" />
-        {expanded ? (
-          <span className="truncate text-left text-sm">{item.label}</span>
-        ) : (
-          <span className="sr-only">{item.label}</span>
-        )}
+        <span className="truncate text-left text-sm">{item.label}</span>
       </button>
     )
 
@@ -295,29 +289,22 @@ export function Sidebar({ activeView, onViewChange }: SidebarProps) {
           expanded ? "w-40" : "w-12"
         )}
       >
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
         {/* Logo - Dashboard */}
-        <div className={cn(
-          "flex h-12 items-center border-b",
-          expanded ? "px-2 gap-2" : "justify-center"
-        )}>
+        <div className="flex h-12 items-center border-b px-2">
           <Tooltip>
             <TooltipTrigger asChild>
               <button
                 onClick={() => onViewChange('dashboard')}
                 className={cn(
-                  "flex items-center rounded-md transition-colors",
-                  expanded
-                    ? "h-8 w-full gap-2 px-2"
-                    : "h-8 w-8 justify-center",
+                  "flex items-center rounded-md transition-colors h-8 w-full gap-2 px-2 whitespace-nowrap",
                   activeView === 'dashboard'
                     ? "bg-primary text-primary-foreground"
                     : "bg-primary/80 text-primary-foreground hover:bg-primary"
                 )}
               >
                 <Logo className="h-4 w-4 shrink-0" />
-                {expanded && (
-                  <span className="truncate text-sm font-semibold">LocalRouter</span>
-                )}
+                <span className="truncate text-sm font-semibold">LocalRouter</span>
               </button>
             </TooltipTrigger>
             <TooltipContent side="right" sideOffset={8}>
@@ -349,7 +336,7 @@ export function Sidebar({ activeView, onViewChange }: SidebarProps) {
         </nav>
 
         {/* Status indicator */}
-        <div className="flex items-center justify-center border-t p-2">
+        <div className="flex items-center border-t p-2">
           <Tooltip>
             <TooltipTrigger asChild>
               <button
@@ -435,6 +422,7 @@ export function Sidebar({ activeView, onViewChange }: SidebarProps) {
               </div>
             </TooltipContent>
           </Tooltip>
+        </div>
         </div>
 
         {/* Expand/collapse toggle - centered, visible on sidebar hover */}

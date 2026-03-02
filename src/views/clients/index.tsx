@@ -13,7 +13,8 @@ import {
 import { ClientDetail } from "./client-detail"
 import { ClientCreationWizard } from "@/components/wizard/ClientCreationWizard"
 import { cn } from "@/lib/utils"
-import type { McpPermissions, SkillsPermissions, CodingAgentsPermissions, ModelPermissions, PermissionState } from "@/components/permissions"
+import type { McpPermissions, SkillsPermissions, ModelPermissions, PermissionState } from "@/components/permissions"
+import type { CodingAgentType } from "@/types/tauri-commands"
 
 interface Client {
   id: string
@@ -24,7 +25,8 @@ interface Client {
   mcp_deferred_loading: boolean
   mcp_permissions: McpPermissions
   skills_permissions: SkillsPermissions
-  coding_agents_permissions: CodingAgentsPermissions
+  coding_agent_permission: PermissionState
+  coding_agent_type: CodingAgentType | null
   model_permissions: ModelPermissions
   marketplace_permission: PermissionState
   created_at: string

@@ -1,12 +1,31 @@
+import { useState, useEffect, useCallback } from "react"
+import { invoke } from "@tauri-apps/api/core"
+import { listen } from "@tauri-apps/api/event"
+import { toast } from "sonner"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
-import { CodingAgentsPermissionTree } from "@/components/permissions"
-import type { CodingAgentsPermissions } from "@/components/permissions"
+import { PermissionStateButton } from "@/components/permissions"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/Select"
+import { Badge } from "@/components/ui/Badge"
+import type { PermissionState } from "@/components/permissions"
+import type {
+  CodingAgentInfo,
+  CodingAgentType,
+  SetClientCodingAgentPermissionParams,
+  SetClientCodingAgentTypeParams,
+} from "@/types/tauri-commands"
 
 interface Client {
   id: string
   name: string
   client_id: string
-  coding_agents_permissions: CodingAgentsPermissions
+  coding_agent_permission: PermissionState
+  coding_agent_type: CodingAgentType | null
 }
 
 interface CodingAgentsTabProps {
@@ -15,22 +34,144 @@ interface CodingAgentsTabProps {
 }
 
 export function ClientCodingAgentsTab({ client, onUpdate }: CodingAgentsTabProps) {
+  const [agents, setAgents] = useState<CodingAgentInfo[]>([])
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+
+  const loadAgents = useCallback(async () => {
+    try {
+      const agentList = await invoke<CodingAgentInfo[]>("list_coding_agents")
+      setAgents(agentList)
+    } catch (error) {
+      console.error("Failed to load coding agents:", error)
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    loadAgents()
+
+    const unsubscribe = listen("coding-agents-changed", () => {
+      loadAgents()
+    })
+
+    return () => {
+      unsubscribe.then((fn) => fn())
+    }
+  }, [loadAgents])
+
+  const handlePermissionChange = async (state: PermissionState) => {
+    setSaving(true)
+    try {
+      await invoke("set_client_coding_agent_permission", {
+        clientId: client.client_id,
+        permission: state,
+      } satisfies SetClientCodingAgentPermissionParams)
+      onUpdate()
+    } catch (error) {
+      console.error("Failed to set permission:", error)
+      toast.error("Failed to update permission")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleAgentTypeChange = async (value: string) => {
+    setSaving(true)
+    try {
+      const agentType = value === "none" ? null : (value as CodingAgentType)
+      await invoke("set_client_coding_agent_type", {
+        clientId: client.client_id,
+        agentType,
+      } satisfies SetClientCodingAgentTypeParams)
+      onUpdate()
+    } catch (error) {
+      console.error("Failed to set agent type:", error)
+      toast.error("Failed to update agent type")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const installedAgents = agents.filter((a) => a.installed)
+
   return (
     <div className="space-y-6">
       <Card>
         <CardHeader>
-          <CardTitle>Coding Agents Permissions</CardTitle>
+          <CardTitle>Coding Agent Permission</CardTitle>
           <CardDescription>
-            Control which AI coding agents this client can spawn and interact with.
+            Control whether this client can spawn and interact with a coding agent via MCP tools.
             Use "Ask" to require approval before starting a session.
           </CardDescription>
         </CardHeader>
-        <CardContent>
-          <CodingAgentsPermissionTree
-            clientId={client.client_id}
-            permissions={client.coding_agents_permissions}
-            onUpdate={onUpdate}
-          />
+        <CardContent className="space-y-6">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium">Access</p>
+              <p className="text-xs text-muted-foreground">
+                Allow, require approval, or disable coding agent access
+              </p>
+            </div>
+            <PermissionStateButton
+              value={client.coding_agent_permission}
+              onChange={handlePermissionChange}
+              disabled={saving}
+            />
+          </div>
+
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium">Agent</p>
+              <p className="text-xs text-muted-foreground">
+                Select which coding agent this client uses
+              </p>
+            </div>
+            <Select
+              value={client.coding_agent_type ?? "none"}
+              onValueChange={handleAgentTypeChange}
+              disabled={saving || loading}
+            >
+              <SelectTrigger className="w-48">
+                <SelectValue placeholder="Select agent..." />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">None</SelectItem>
+                {installedAgents.map((agent) => (
+                  <SelectItem key={agent.agentType} value={agent.agentType}>
+                    {agent.displayName}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          {!loading && installedAgents.length === 0 && (
+            <p className="text-xs text-muted-foreground">
+              No coding agents installed. Install a supported coding agent to enable this feature.
+            </p>
+          )}
+
+          {client.coding_agent_type && !loading && (
+            <div className="text-xs text-muted-foreground">
+              {(() => {
+                const selected = agents.find((a) => a.agentType === client.coding_agent_type)
+                if (!selected) return null
+                return selected.installed ? (
+                  <span className="flex items-center gap-1.5">
+                    <Badge variant="success" className="text-[10px] px-1 py-0">installed</Badge>
+                    <code className="bg-muted px-1 py-0.5 rounded">{selected.binaryName}</code>
+                  </span>
+                ) : (
+                  <span className="flex items-center gap-1.5">
+                    <Badge variant="secondary" className="text-[10px] px-1 py-0">not found</Badge>
+                    Install <code className="bg-muted px-1 py-0.5 rounded">{selected.binaryName}</code> to use this agent
+                  </span>
+                )
+              })()}
+            </div>
+          )}
         </CardContent>
       </Card>
     </div>

@@ -194,7 +194,7 @@ function buildNodes(
 // Determine edge style based on permission state for a client's connection
 function getPermissionEdgeStyle(
   client: Client,
-  targetType: 'server' | 'skill' | 'codingAgent',
+  targetType: 'server' | 'skill',
   targetId: string,
   isConnected: boolean
 ): Record<string, string | number> {
@@ -202,8 +202,6 @@ function getPermissionEdgeStyle(
   let state: string
   if (targetType === 'server') {
     state = client.mcp_permissions?.servers?.[targetId] ?? client.mcp_permissions?.global ?? 'off'
-  } else if (targetType === 'codingAgent') {
-    state = client.coding_agents_permissions?.agents?.[targetId] ?? client.coding_agents_permissions?.global ?? 'off'
   } else {
     state = client.skills_permissions?.skills?.[targetId] ?? client.skills_permissions?.global ?? 'off'
   }
@@ -224,7 +222,7 @@ function getPermissionEdgeStyle(
   }
 
   // Allow — standard style
-  const defaultColor = targetType === 'server' ? '#10b981' : targetType === 'codingAgent' ? '#f97316' : '#f59e0b'
+  const defaultColor = targetType === 'server' ? '#10b981' : '#f59e0b'
   return {
     stroke: isConnected ? defaultColor : '#64748b',
     strokeWidth: isConnected ? 2 : 1,
@@ -320,26 +318,21 @@ function buildEdges(
       })
     })
 
-    // Create edges to coding agents based on coding_agents_permissions
-    // If global is not 'off', client has access to all agents
-    // Otherwise, check specific agent permissions
-    const clientCodingAgents = client.coding_agents_permissions?.global !== 'off'
-      ? Array.from(codingAgentTypes)
-      : Object.entries(client.coding_agents_permissions?.agents ?? {})
-          .filter(([type, state]) => state !== 'off' && codingAgentTypes.has(type))
-          .map(([type]) => type)
-
-    clientCodingAgents.forEach((agentType) => {
-      const firewallStyle = getPermissionEdgeStyle(client, 'codingAgent', agentType, isConnected)
+    // Create edge to coding agent if permission is not off and agent type is set
+    if (client.coding_agent_permission !== 'off' && client.coding_agent_type && codingAgentTypes.has(client.coding_agent_type)) {
+      const defaultColor = '#f97316' // orange for coding agents
+      const style = client.coding_agent_permission === 'ask'
+        ? { stroke: isConnected ? '#f59e0b' : '#64748b', strokeWidth: isConnected ? 2 : 1, strokeDasharray: '4,4' }
+        : { stroke: isConnected ? defaultColor : '#64748b', strokeWidth: isConnected ? 2 : 1 }
       edges.push({
-        id: `edge-${client.id}-coding-agent-${agentType}`,
+        id: `edge-${client.id}-coding-agent-${client.coding_agent_type}`,
         source: `client-${client.id}`,
-        target: `coding-agent-${agentType}`,
+        target: `coding-agent-${client.coding_agent_type}`,
         animated: isConnected,
-        style: firewallStyle,
+        style,
         data: { isActive: isConnected },
       })
-    })
+    }
 
     // Create edge to marketplace if client has marketplace permission enabled (both 'allow' and 'ask')
     if (client.marketplace_permission !== 'off') {
