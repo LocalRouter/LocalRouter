@@ -1623,6 +1623,10 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     }
     return null
   },
+  'copy_image_to_clipboard': () => {
+    toast.success('Screenshot copied to clipboard (demo)')
+    return null
+  },
 
   // ============================================================================
   // App Info & System

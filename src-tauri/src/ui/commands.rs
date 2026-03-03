@@ -1501,6 +1501,55 @@ pub async fn open_path(path: String, app: tauri::AppHandle) -> Result<(), String
 }
 
 // ============================================================================
+// Clipboard Commands
+// ============================================================================
+
+/// Copy a base64-encoded PNG image to the system clipboard
+#[tauri::command]
+pub async fn copy_image_to_clipboard(image_base64: String) -> Result<(), String> {
+    use arboard::Clipboard;
+    use image::ImageReader;
+    use std::io::Cursor;
+
+    let bytes = base64_decode(&image_base64)?;
+
+    let img = ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|e| format!("Failed to read image format: {}", e))?
+        .decode()
+        .map_err(|e| format!("Failed to decode image: {}", e))?;
+
+    let rgba = img.to_rgba8();
+    let (width, height) = rgba.dimensions();
+    let img_data = arboard::ImageData {
+        width: width as usize,
+        height: height as usize,
+        bytes: std::borrow::Cow::Owned(rgba.into_raw()),
+    };
+
+    let mut clipboard =
+        Clipboard::new().map_err(|e| format!("Failed to access clipboard: {}", e))?;
+    clipboard
+        .set_image(img_data)
+        .map_err(|e| format!("Failed to copy image to clipboard: {}", e))?;
+
+    Ok(())
+}
+
+/// Decode a base64 string, stripping an optional `data:...;base64,` prefix.
+fn base64_decode(input: &str) -> Result<Vec<u8>, String> {
+    use base64::Engine;
+    let raw = if let Some(pos) = input.find(";base64,") {
+        &input[pos + 8..]
+    } else {
+        input
+    };
+    base64::engine::general_purpose::STANDARD
+        .decode(raw)
+        .map_err(|e| format!("Invalid base64: {}", e))
+}
+
+// ============================================================================
 // Connection Graph Commands
 // ============================================================================
 
