@@ -30,6 +30,7 @@ import {cn} from "@/lib/utils"
 import {AllowedModelsSelection, AllowedModelsSelector, Model,} from "./AllowedModelsSelector"
 import {UnifiedModelsSelector} from "./UnifiedModelsSelector"
 import type { ModelPermissions } from "@/components/permissions"
+import { PermissionStateButton } from "@/components/permissions"
 import {DragThresholdModelSelector, ModelPricingInfo} from "./DragThresholdModelSelector"
 import type { FreeTierKind, ProviderFreeTierStatus } from "@/types/tauri-commands"
 import {ThresholdSelector} from "@/components/routellm/ThresholdSelector"
@@ -333,6 +334,17 @@ export function StrategyModelConfiguration({
         }
     }
 
+    // Handler for auto-router permission change
+    const handleAutoRouterPermissionChange = (permission: PermissionState) => {
+        if (!strategy?.auto_config) return
+        updateStrategy({
+            auto_config: {
+                ...strategy.auto_config,
+                permission,
+            },
+        })
+    }
+
     // Handler for model name change
     const handleModelNameChange = (modelName: string) => {
         if (!strategy?.auto_config) return
@@ -538,10 +550,17 @@ export function StrategyModelConfiguration({
                         <div className="pt-4">
                             <Card>
                                         <CardHeader>
-                                            <CardTitle className="text-base flex items-center gap-2">
-                                                <Bot className="h-4 w-4" />
-                                                Auto Router Configuration
-                                            </CardTitle>
+                                            <div className="flex items-center justify-between">
+                                                <CardTitle className="text-base flex items-center gap-2">
+                                                    <Bot className="h-4 w-4" />
+                                                    Auto Router Configuration
+                                                </CardTitle>
+                                                <PermissionStateButton
+                                                    value={autoConfig?.permission || 'allow'}
+                                                    onChange={handleAutoRouterPermissionChange}
+                                                    disabled={readOnly || saving}
+                                                />
+                                            </div>
                                             <CardDescription>
                                                 Configure the auto router model that clients will see
                                             </CardDescription>
