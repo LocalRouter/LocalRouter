@@ -1627,6 +1627,13 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     toast.success('Screenshot copied to clipboard (demo)')
     return null
   },
+  'copy_text_to_clipboard': (args) => {
+    if (typeof args?.text === 'string') {
+      navigator.clipboard.writeText(args.text).catch(() => {})
+    }
+    toast.success('Copied to clipboard (demo)')
+    return null
+  },
 
   // ============================================================================
   // App Info & System

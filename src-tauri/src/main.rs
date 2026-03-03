@@ -1570,6 +1570,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands_coding_agents::set_client_coding_agent_type,
             // Clipboard commands
             ui::commands::copy_image_to_clipboard,
+            ui::commands::copy_text_to_clipboard,
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {

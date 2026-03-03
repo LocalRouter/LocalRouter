@@ -1536,6 +1536,20 @@ pub async fn copy_image_to_clipboard(image_base64: String) -> Result<(), String>
     Ok(())
 }
 
+/// Copy text to the system clipboard
+#[tauri::command]
+pub async fn copy_text_to_clipboard(text: String) -> Result<(), String> {
+    use arboard::Clipboard;
+
+    let mut clipboard =
+        Clipboard::new().map_err(|e| format!("Failed to access clipboard: {}", e))?;
+    clipboard
+        .set_text(text)
+        .map_err(|e| format!("Failed to copy text to clipboard: {}", e))?;
+
+    Ok(())
+}
+
 /// Decode a base64 string, stripping an optional `data:...;base64,` prefix.
 fn base64_decode(input: &str) -> Result<Vec<u8>, String> {
     use base64::Engine;

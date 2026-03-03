@@ -1,5 +1,5 @@
 import { useState, useCallback } from "react"
-import { Bug, ExternalLink, Copy, Image, FileText } from "lucide-react"
+import { Bug, ExternalLink, Check, Camera, FileCode } from "lucide-react"
 import { toPng } from "html-to-image"
 import { invoke } from "@tauri-apps/api/core"
 import { open } from "@tauri-apps/plugin-shell"
@@ -12,6 +12,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import { Separator } from "@/components/ui/separator"
 
 const SENSITIVE_KEY_PATTERN =
   /api_key|secret|token|password|^key$|auth_header|credential|private_key/i
@@ -66,10 +67,10 @@ export function BugReportDialog() {
     try {
       await invoke("copy_image_to_clipboard", { imageBase64: screenshotDataUrl })
       setCopiedScreenshot(true)
-      toast.success("Screenshot copied to clipboard")
+      toast.success("Screenshot copied — paste it into the issue")
       setTimeout(() => setCopiedScreenshot(false), 2000)
     } catch {
-      toast.error("Failed to copy screenshot to clipboard")
+      toast.error("Failed to copy screenshot")
     }
   }, [screenshotDataUrl])
 
@@ -78,9 +79,9 @@ export function BugReportDialog() {
       const rawConfig = await invoke<unknown>("get_config")
       const sanitized = sanitizeConfig(rawConfig)
       const text = "```json\n" + JSON.stringify(sanitized, null, 2) + "\n```"
-      await navigator.clipboard.writeText(text)
+      await invoke("copy_text_to_clipboard", { text })
       setCopiedConfig(true)
-      toast.success("Configuration copied to clipboard")
+      toast.success("Configuration copied — paste it into the issue")
       setTimeout(() => setCopiedConfig(false), 2000)
     } catch {
       toast.error("Failed to copy configuration")
@@ -104,57 +105,68 @@ export function BugReportDialog() {
           <DialogHeader>
             <DialogTitle>Report a Bug</DialogTitle>
             <DialogDescription>
-              Open a GitHub issue and optionally attach a screenshot or configuration.
+              Open an issue on GitHub, then copy any helpful info to paste in.
             </DialogDescription>
           </DialogHeader>
 
-          <div className="space-y-4">
-            {/* Open GitHub Issue - primary action */}
-            <Button className="w-full" size="lg" onClick={handleOpenIssue}>
-              <ExternalLink className="mr-2 h-4 w-4" />
-              Open GitHub Issue
-            </Button>
+          {/* Primary action */}
+          <Button className="w-full" size="lg" onClick={handleOpenIssue}>
+            <ExternalLink className="mr-2 h-4 w-4" />
+            Open GitHub Issue
+          </Button>
 
-            {/* Screenshot preview + copy */}
-            {screenshotDataUrl && (
-              <div className="space-y-2">
-                <img
-                  src={screenshotDataUrl}
-                  alt="Screenshot preview"
-                  className="max-h-40 w-full rounded-md border object-contain"
-                />
+          <Separator />
+
+          {/* Copy-to-clipboard helpers */}
+          <div className="space-y-1.5">
+            <p className="text-xs font-medium text-muted-foreground">
+              Copy to clipboard and paste into the issue
+            </p>
+
+            <div className="flex gap-2">
+              {screenshotDataUrl && (
                 <Button
                   variant="outline"
-                  className="w-full"
+                  size="sm"
+                  className="flex-1"
                   onClick={handleCopyScreenshot}
                 >
                   {copiedScreenshot ? (
-                    <Copy className="mr-2 h-4 w-4 text-green-500" />
+                    <Check className="mr-1.5 h-3.5 w-3.5 text-green-500" />
                   ) : (
-                    <Image className="mr-2 h-4 w-4" />
+                    <Camera className="mr-1.5 h-3.5 w-3.5" />
                   )}
-                  {copiedScreenshot ? "Copied!" : "Copy Screenshot"}
+                  {copiedScreenshot ? "Copied!" : "Screenshot"}
                 </Button>
-              </div>
-            )}
-
-            {/* Copy config */}
-            <Button
-              variant="outline"
-              className="w-full"
-              onClick={handleCopyConfig}
-            >
-              {copiedConfig ? (
-                <Copy className="mr-2 h-4 w-4 text-green-500" />
-              ) : (
-                <FileText className="mr-2 h-4 w-4" />
               )}
-              {copiedConfig ? "Copied!" : "Copy Configuration"}
-              <span className="ml-1 text-xs text-muted-foreground">
-                (secrets removed)
-              </span>
-            </Button>
+
+              <Button
+                variant="outline"
+                size="sm"
+                className="flex-1"
+                onClick={handleCopyConfig}
+              >
+                {copiedConfig ? (
+                  <Check className="mr-1.5 h-3.5 w-3.5 text-green-500" />
+                ) : (
+                  <FileCode className="mr-1.5 h-3.5 w-3.5" />
+                )}
+                {copiedConfig ? "Copied!" : "Config"}
+                <span className="ml-1 text-[10px] text-muted-foreground">
+                  (secrets removed)
+                </span>
+              </Button>
+            </div>
           </div>
+
+          {/* Screenshot preview */}
+          {screenshotDataUrl && (
+            <img
+              src={screenshotDataUrl}
+              alt="Screenshot preview"
+              className="max-h-32 w-full rounded-md border object-contain opacity-60"
+            />
+          )}
         </DialogContent>
       </Dialog>
     </>
