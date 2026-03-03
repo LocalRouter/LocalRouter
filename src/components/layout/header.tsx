@@ -1,4 +1,4 @@
-import { Search, HelpCircle, Sun, Moon, Monitor } from "lucide-react"
+import { Search, HelpCircle, Sun, Moon, Monitor, Github } from "lucide-react"
 import { Button } from "@/components/ui/Button"
 import {
   DropdownMenu,
@@ -8,6 +8,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { useTheme } from "@/hooks/use-theme"
 import { open } from "@tauri-apps/plugin-shell"
+import { BugReportDialog } from "@/components/layout/BugReportDialog"
 
 interface HeaderProps {
   onOpenCommandPalette: () => void
@@ -80,6 +81,15 @@ export function Header({ onOpenCommandPalette }: HeaderProps) {
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
+
+        {/* Bug Report */}
+        <BugReportDialog />
+
+        {/* GitHub */}
+        <Button variant="ghost" size="icon" onClick={() => open("https://github.com/LocalRouter/LocalRouter")}>
+          <Github className="h-4 w-4" />
+          <span className="sr-only">GitHub repository</span>
+        </Button>
 
         {/* Help */}
         <Button variant="ghost" size="icon" onClick={() => open("https://localrouter.ai/docs")}>
