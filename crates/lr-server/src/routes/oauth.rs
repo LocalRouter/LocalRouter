@@ -10,8 +10,10 @@ use axum::{
     Json,
 };
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use std::time::Instant;
 use utoipa::ToSchema;
 
 use lr_clients::{ClientManager, TokenStore};
@@ -96,6 +98,7 @@ impl TokenErrorResponse {
 pub struct OAuthState {
     pub client_manager: Arc<ClientManager>,
     pub token_store: Arc<TokenStore>,
+    pub token_rate_limiter: Arc<DashMap<String, Vec<Instant>>>,
 }
 
 /// Extract client credentials from Basic Auth header
@@ -211,6 +214,36 @@ pub async fn token_endpoint(
             )
                 .into_response();
         };
+
+    // Rate limit: max 10 token requests per minute per client_id
+    const MAX_TOKEN_REQUESTS_PER_MINUTE: usize = 10;
+    {
+        let now = Instant::now();
+        let one_minute_ago = now - std::time::Duration::from_secs(60);
+
+        let mut attempts = state
+            .token_rate_limiter
+            .entry(client_id.clone())
+            .or_default();
+
+        // Remove old entries
+        attempts.retain(|t| *t > one_minute_ago);
+
+        if attempts.len() >= MAX_TOKEN_REQUESTS_PER_MINUTE {
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(TokenErrorResponse {
+                    error: "rate_limit_exceeded".to_string(),
+                    error_description: Some(
+                        "Too many token requests. Try again later.".to_string(),
+                    ),
+                }),
+            )
+                .into_response();
+        }
+
+        attempts.push(now);
+    }
 
     // Verify client credentials
     let client = match state
