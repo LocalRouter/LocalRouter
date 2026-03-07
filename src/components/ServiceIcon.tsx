@@ -78,6 +78,17 @@ const ICON_MAP: Record<string, string> = {
   brave: 'brave.svg',
   'brave-search': 'brave.svg',
 
+  // Cloud & Infrastructure
+  'aws-core': 'aws.svg',
+  'aws-docs': 'aws.svg',
+  aws: 'aws.svg',
+  gcloud: 'gcloud.svg',
+  'google-cloud': 'gcloud.svg',
+  kubernetes: 'kubernetes.svg',
+  kubectl: 'kubernetes.svg',
+  docker: 'docker.svg',
+  cloudflare: 'cloudflare.svg',
+
   // Client Templates (coding assistants, IDEs, chat UIs, automation)
   'claude-code': 'anthropic.png',
   codex: 'openai.png',
@@ -179,6 +190,17 @@ const EMOJI_MAP: Record<string, string> = {
   xcode: '🔨',
   zed: '⚡',
   custom: '⚙️',
+
+  // Cloud & Infrastructure
+  'aws-core': '☁️',
+  'aws-docs': '📖',
+  aws: '☁️',
+  gcloud: '🌤️',
+  'google-cloud': '🌤️',
+  kubernetes: '☸️',
+  kubectl: '☸️',
+  docker: '🐳',
+  cloudflare: '🔶',
 
   // Generic MCP categories
   filesystem: '📂',

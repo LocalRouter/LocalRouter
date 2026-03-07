@@ -102,9 +102,11 @@ export default function ProviderForm({
   useEffect(() => {
     if (oauthStatus !== 'pending' || !oauthProviderId) return
 
+    let consecutiveErrors = 0
     const pollInterval = setInterval(async () => {
       try {
         const result = await invoke<OAuthFlowResult>('poll_oauth_status', { providerId: oauthProviderId })
+        consecutiveErrors = 0
         if (result.type === 'success') {
           setOauthStatus('success')
           setOauthResult(null)
@@ -116,7 +118,13 @@ export default function ProviderForm({
           clearInterval(pollInterval)
         }
       } catch (err) {
+        consecutiveErrors++
         console.error('OAuth poll error:', err)
+        if (consecutiveErrors >= 3) {
+          setOauthStatus('error')
+          setOauthError(err instanceof Error ? err.message : String(err))
+          clearInterval(pollInterval)
+        }
       }
     }, 2000)
 

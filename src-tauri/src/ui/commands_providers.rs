@@ -868,6 +868,7 @@ pub async fn list_provider_models(
 ///
 /// Returns a combined list of all models available across all enabled providers.
 /// Used by the UI to populate the model selection dropdown.
+/// Fetches all providers in parallel for fast loading.
 ///
 /// # Returns
 /// * `Ok(Vec<ModelInfo>)` with the aggregated list of models
@@ -877,6 +878,95 @@ pub async fn list_all_models(
     registry: State<'_, Arc<ProviderRegistry>>,
 ) -> Result<Vec<lr_providers::ModelInfo>, String> {
     registry.list_all_models().await.map_err(|e| e.to_string())
+}
+
+/// Get cached models instantly without any network calls
+///
+/// Returns whatever models are currently in the per-provider caches,
+/// even if expired. Used for instant UI display before a fresh fetch completes.
+#[tauri::command]
+pub async fn get_cached_models(
+    registry: State<'_, Arc<ProviderRegistry>>,
+) -> Result<Vec<lr_providers::ModelInfo>, String> {
+    Ok(registry.get_all_cached_models_instant())
+}
+
+/// Payload for the models-provider-loaded event
+#[derive(Clone, serde::Serialize)]
+struct ProviderModelsPayload {
+    provider: String,
+    models: Vec<lr_providers::ModelInfo>,
+}
+
+/// Trigger an incremental model refresh in the background
+///
+/// Spawns parallel per-provider fetch tasks. As each provider completes,
+/// emits a `models-provider-loaded` event with that provider's models.
+/// When all providers are done, emits `models-changed`.
+///
+/// Returns immediately - the refresh happens in the background.
+#[tauri::command]
+pub async fn refresh_models_incremental(
+    registry: State<'_, Arc<ProviderRegistry>>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    let registry = registry.inner().clone();
+
+    if !registry.try_start_refresh() {
+        // Another refresh is already in progress
+        return Ok(());
+    }
+
+    tokio::spawn(async move {
+        let enabled_instances = registry.get_enabled_instance_names();
+
+        // Spawn a task per provider for true parallelism
+        let handles: Vec<_> = enabled_instances
+            .into_iter()
+            .map(|instance_name| {
+                let registry = registry.clone();
+                let app = app.clone();
+                tokio::spawn(async move {
+                    match registry
+                        .list_provider_models_cached(&instance_name)
+                        .await
+                    {
+                        Ok(mut models) => {
+                            for model in &mut models {
+                                model.provider = instance_name.clone();
+                            }
+                            let _ = app.emit(
+                                "models-provider-loaded",
+                                ProviderModelsPayload {
+                                    provider: instance_name,
+                                    models,
+                                },
+                            );
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "Incremental refresh failed for '{}': {}",
+                                instance_name,
+                                e
+                            );
+                        }
+                    }
+                })
+            })
+            .collect();
+
+        // Wait for all providers to complete
+        futures::future::join_all(handles).await;
+
+        // Update aggregate cache
+        let _ = registry.refresh_model_cache().await;
+        registry.finish_refresh();
+
+        // Notify frontend that all models are loaded
+        let _ = app.emit("models-changed", ());
+    });
+
+    Ok(())
 }
 
 /// Source of pricing information

@@ -160,21 +160,51 @@ impl ModelProvider for TogetherAIProvider {
     async fn health_check(&self) -> ProviderHealth {
         let start = Instant::now();
 
-        match self.list_models().await {
-            Ok(_) => {
-                let latency = start.elapsed().as_millis() as u64;
-                ProviderHealth {
-                    status: HealthStatus::Healthy,
-                    latency_ms: Some(latency),
-                    last_checked: Utc::now(),
-                    error_message: None,
+        // Together AI's /v1/models endpoint returns their entire model catalog, which takes 25s+
+        // to serialize and transfer. Instead, we query a single model via /v1/models/{id} which
+        // responds in ~0.1s. We accept both:
+        //   - 200: model exists, API is up, auth is valid
+        //   - 404: model was retired, but API is still up and auth is valid
+        // A bad or missing API key would return 401, which we correctly treat as unhealthy.
+        let result = self
+            .client
+            .get(format!(
+                "{}/models/meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo",
+                TOGETHER_API_BASE
+            ))
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .send()
+            .await;
+
+        let latency_ms = start.elapsed().as_millis() as u64;
+
+        match result {
+            Ok(response) => {
+                let status = response.status();
+                if status.is_success() || status.as_u16() == 404 {
+                    ProviderHealth {
+                        status: HealthStatus::Healthy,
+                        latency_ms: Some(latency_ms),
+                        last_checked: Utc::now(),
+                        error_message: None,
+                    }
+                } else {
+                    ProviderHealth {
+                        status: HealthStatus::Unhealthy,
+                        latency_ms: Some(latency_ms),
+                        last_checked: Utc::now(),
+                        error_message: Some(format!(
+                            "API returned status {}",
+                            status
+                        )),
+                    }
                 }
             }
             Err(e) => ProviderHealth {
                 status: HealthStatus::Unhealthy,
                 latency_ms: None,
                 last_checked: Utc::now(),
-                error_message: Some(e.to_string()),
+                error_message: Some(format!("Connection failed: {}", e)),
             },
         }
     }

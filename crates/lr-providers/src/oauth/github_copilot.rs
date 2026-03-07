@@ -183,19 +183,24 @@ impl OAuthProvider for GitHubCopilotOAuthProvider {
                 AppError::Provider(format!("Failed to poll for GitHub access token: {}", e))
             })?;
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let error_text = response.text().await.unwrap_or_default();
+        let status = response.status();
+        let response_text = response.text().await.unwrap_or_default();
+
+        if !status.is_success() {
+            error!("GitHub token request failed {}: {}", status, response_text);
             return Err(AppError::Provider(format!(
                 "GitHub token request failed {}: {}",
-                status, error_text
+                status, response_text
             )));
         }
 
-        let token_response: TokenResponse = response
-            .json()
-            .await
-            .map_err(|e| AppError::Provider(format!("Failed to parse token response: {}", e)))?;
+        debug!("GitHub token poll response: {}", response_text);
+
+        let token_response: TokenResponse = serde_json::from_str(&response_text)
+            .map_err(|e| {
+                error!("Failed to parse GitHub token response: {} - body: {}", e, response_text);
+                AppError::Provider(format!("Failed to parse token response: {}", e))
+            })?;
 
         match token_response {
             TokenResponse::Success { access_token, .. } => {
