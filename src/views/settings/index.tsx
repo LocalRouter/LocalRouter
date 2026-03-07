@@ -4,6 +4,7 @@ import { ServerTab } from "./server-tab"
 import { LoggingTab } from "./logging-tab"
 import { UpdatesTab } from "./updates-tab"
 import { AppearanceTab } from "./appearance-tab"
+import { LicensesTab } from "./licenses-tab"
 
 interface SettingsViewProps {
   activeSubTab: string | null
@@ -36,6 +37,7 @@ export function SettingsView({ activeSubTab, onTabChange }: SettingsViewProps) {
           <TabsTrigger value="appearance">Appearance</TabsTrigger>
           <TabsTrigger value="logs">Logs</TabsTrigger>
           <TabsTrigger value="updates">Updates</TabsTrigger>
+          <TabsTrigger value="licenses">Licenses</TabsTrigger>
         </TabsList>
 
         <TabsContent value="server">
@@ -52,6 +54,10 @@ export function SettingsView({ activeSubTab, onTabChange }: SettingsViewProps) {
 
         <TabsContent value="updates">
           <UpdatesTab />
+        </TabsContent>
+
+        <TabsContent value="licenses">
+          <LicensesTab />
         </TabsContent>
       </Tabs>
     </div>
