@@ -1,13 +1,14 @@
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect, useCallback, useRef } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
 import { toast } from "sonner"
-import { Terminal, Loader2 } from "lucide-react"
+import { Loader2, FlaskConical, Copy, Check, Terminal, CheckCircle2, XCircle } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Badge } from "@/components/ui/Badge"
 import { Button } from "@/components/ui/Button"
 import { Label } from "@/components/ui/label"
 import { Input } from "@/components/ui/Input"
+import { Switch } from "@/components/ui/switch"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
@@ -16,12 +17,15 @@ import {
   ResizableHandle,
 } from "@/components/ui/resizable"
 import { CodingAgentsIcon } from "@/components/icons/category-icons"
+import { McpTab } from "@/views/try-it-out/mcp-tab"
 import { cn } from "@/lib/utils"
 import type {
   CodingAgentInfo,
   CodingAgentType,
   CodingSessionInfo,
+  CodingSessionDetail,
   GetCodingAgentVersionParams,
+  GetCodingSessionDetailParams,
 } from "@/types/tauri-commands"
 
 interface CodingAgentsViewProps {
@@ -29,10 +33,34 @@ interface CodingAgentsViewProps {
   onTabChange?: (view: string, subTab?: string | null) => void
 }
 
-const PERMISSION_MODE_LABELS: Record<string, string> = {
-  auto: "Auto",
-  supervised: "Supervised",
-  plan: "Plan",
+function statusVariant(status: string): "default" | "secondary" | "destructive" | "outline" | "success" {
+  switch (status) {
+    case "active":
+      return "default"
+    case "awaiting_input":
+      return "secondary"
+    case "done":
+      return "success"
+    case "error":
+      return "destructive"
+    case "interrupted":
+      return "outline"
+    default:
+      return "outline"
+  }
+}
+
+function formatDuration(createdAt: string): string {
+  const created = new Date(createdAt)
+  const now = new Date()
+  const diffMs = now.getTime() - created.getTime()
+  const diffSec = Math.floor(diffMs / 1000)
+  if (diffSec < 60) return `${diffSec}s`
+  const diffMin = Math.floor(diffSec / 60)
+  if (diffMin < 60) return `${diffMin}m`
+  const diffHr = Math.floor(diffMin / 60)
+  const remMin = diffMin % 60
+  return `${diffHr}h ${remMin}m`
 }
 
 export function CodingAgentsView({ activeSubTab, onTabChange }: CodingAgentsViewProps) {
@@ -43,8 +71,16 @@ export function CodingAgentsView({ activeSubTab, onTabChange }: CodingAgentsView
   const [loading, setLoading] = useState(true)
   const [maxSessions, setMaxSessions] = useState<number>(0)
   const [search, setSearch] = useState("")
+  const [sessionSearch, setSessionSearch] = useState("")
   const [agentVersion, setAgentVersion] = useState<string | null>(null)
   const [versionLoading, setVersionLoading] = useState(false)
+  const lastLimitRef = useRef(5)
+
+  // Session detail state
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null)
+  const [sessionDetail, setSessionDetail] = useState<CodingSessionDetail | null>(null)
+  const [sessionDetailLoading, setSessionDetailLoading] = useState(false)
+  const [copiedId, setCopiedId] = useState(false)
 
   // Parse activeSubTab
   const parseSubTab = (subTab: string | null) => {
@@ -81,8 +117,24 @@ export function CodingAgentsView({ activeSubTab, onTabChange }: CodingAgentsView
     try {
       const max = await invoke<number>("get_max_coding_sessions")
       setMaxSessions(max)
+      if (max > 0) lastLimitRef.current = max
     } catch (error) {
       console.error("Failed to load max sessions:", error)
+    }
+  }, [])
+
+  const loadSessionDetail = useCallback(async (sessionId: string) => {
+    setSessionDetailLoading(true)
+    try {
+      const detail = await invoke<CodingSessionDetail>("get_coding_session_detail", {
+        sessionId,
+      } satisfies GetCodingSessionDetailParams as Record<string, unknown>)
+      setSessionDetail(detail)
+    } catch (error) {
+      console.error("Failed to load session detail:", error)
+      setSessionDetail(null)
+    } finally {
+      setSessionDetailLoading(false)
     }
   }, [])
 
@@ -128,6 +180,36 @@ export function CodingAgentsView({ activeSubTab, onTabChange }: CodingAgentsView
       .finally(() => setVersionLoading(false))
   }, [selectedAgent, agents])
 
+  // Load session detail when selected, and poll for live sessions
+  useEffect(() => {
+    if (!selectedSessionId) {
+      setSessionDetail(null)
+      return
+    }
+    loadSessionDetail(selectedSessionId)
+
+    // Poll every 2s for active sessions
+    const interval = setInterval(() => {
+      if (selectedSessionId) {
+        loadSessionDetail(selectedSessionId)
+      }
+    }, 2000)
+
+    return () => clearInterval(interval)
+  }, [selectedSessionId, loadSessionDetail])
+
+  // Refresh detail when sessions change (e.g. session ended)
+  useEffect(() => {
+    if (selectedSessionId) {
+      // Check if selected session still exists
+      const stillExists = sessions.some((s) => s.sessionId === selectedSessionId)
+      if (!stillExists) {
+        setSelectedSessionId(null)
+        setSessionDetail(null)
+      }
+    }
+  }, [sessions, selectedSessionId])
+
   const handleMaxSessionsChange = async (value: string) => {
     const num = parseInt(value, 10)
     if (isNaN(num) || num < 0) return
@@ -145,9 +227,19 @@ export function CodingAgentsView({ activeSubTab, onTabChange }: CodingAgentsView
       await invoke("end_coding_session", { sessionId })
       toast.success("Session ended")
       loadSessions()
+      if (selectedSessionId === sessionId) {
+        setSelectedSessionId(null)
+        setSessionDetail(null)
+      }
     } catch (error) {
       toast.error(`Failed to end session: ${error}`)
     }
+  }
+
+  const handleCopySessionId = (sessionId: string) => {
+    navigator.clipboard.writeText(sessionId)
+    setCopiedId(true)
+    setTimeout(() => setCopiedId(false), 2000)
   }
 
   const handleTabChange = (tab: string) => {
@@ -163,6 +255,13 @@ export function CodingAgentsView({ activeSubTab, onTabChange }: CodingAgentsView
     (a) =>
       a.displayName.toLowerCase().includes(search.toLowerCase()) ||
       a.binaryName.toLowerCase().includes(search.toLowerCase())
+  )
+
+  const filteredSessions = sessions.filter(
+    (s) =>
+      s.displayText.toLowerCase().includes(sessionSearch.toLowerCase()) ||
+      s.workingDirectory.toLowerCase().includes(sessionSearch.toLowerCase()) ||
+      s.sessionId.toLowerCase().includes(sessionSearch.toLowerCase())
   )
 
   if (loading) {
@@ -279,23 +378,38 @@ export function CodingAgentsView({ activeSubTab, onTabChange }: CodingAgentsView
               {selected ? (
                 <ScrollArea className="h-full">
                   <div className="p-6 space-y-6">
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <h2 className="text-xl font-bold">{selected.displayName}</h2>
-                        {selected.installed ? (
-                          <Badge variant="success">Installed</Badge>
-                        ) : (
-                          <Badge variant="secondary">Not Found</Badge>
-                        )}
+                    <div className="flex items-start justify-between">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <h2 className="text-xl font-bold">{selected.displayName}</h2>
+                          {selected.installed ? (
+                            <Badge variant="success">Installed</Badge>
+                          ) : (
+                            <Badge variant="secondary">Not Found</Badge>
+                          )}
+                        </div>
+                        <p className="text-sm text-muted-foreground mt-1">
+                          {selected.description}
+                        </p>
                       </div>
-                      <p className="text-sm text-muted-foreground mt-1">
-                        {selected.description}
-                      </p>
+                      {selected.installed && (
+                        <div className="flex items-center gap-2">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => setDetailTab("try-it-out")}
+                          >
+                            <FlaskConical className="h-4 w-4 mr-1" />
+                            Try It Out
+                          </Button>
+                        </div>
+                      )}
                     </div>
 
                     <Tabs value={detailTab} onValueChange={setDetailTab}>
                       <TabsList>
                         <TabsTrigger value="info">Info</TabsTrigger>
+                        {selected.installed && <TabsTrigger value="try-it-out">Try It Out</TabsTrigger>}
                         {agentSessions.length > 0 && (
                           <TabsTrigger value="sessions">
                             Sessions
@@ -369,61 +483,82 @@ export function CodingAgentsView({ activeSubTab, onTabChange }: CodingAgentsView
                               <CardTitle className="text-sm">Capabilities</CardTitle>
                             </CardHeader>
                             <CardContent className="space-y-3">
-                              <div className="grid grid-cols-2 gap-3 text-sm">
+                              <div className={cn("flex items-center gap-2.5", !selected.supportsModelSelection && "opacity-45")}>
+                                {selected.supportsModelSelection ? (
+                                  <CheckCircle2 className="h-4 w-4 text-green-600 dark:text-green-400 shrink-0" />
+                                ) : (
+                                  <XCircle className="h-4 w-4 text-muted-foreground shrink-0" />
+                                )}
                                 <div>
-                                  <span className="text-muted-foreground">Model Selection:</span>{" "}
-                                  <span className="font-medium">
-                                    {selected.supportsModelSelection ? "Yes" : "No"}
-                                  </span>
-                                </div>
-                                <div>
-                                  <span className="text-muted-foreground">Permission Modes:</span>{" "}
-                                  <span className="font-medium">
-                                    {selected.supportedPermissionModes
-                                      .map((m) => PERMISSION_MODE_LABELS[m] || m)
-                                      .join(", ")}
-                                  </span>
+                                  <p className="text-sm">Model Selection</p>
+                                  <p className="text-xs text-muted-foreground">
+                                    {selected.supportsModelSelection
+                                      ? "A specific model can be passed when starting a session."
+                                      : "Uses its own default model, cannot be overridden."}
+                                  </p>
                                 </div>
                               </div>
-                            </CardContent>
-                          </Card>
 
-                          {/* MCP Tools */}
-                          <Card>
-                            <CardHeader className="pb-3">
-                              <CardTitle className="text-sm">MCP Tools</CardTitle>
-                              <CardDescription>
-                                These tools are exposed to clients through the MCP gateway when this agent is assigned.
-                              </CardDescription>
-                            </CardHeader>
-                            <CardContent>
-                              <div className="space-y-1.5">
-                                {[
-                                  { suffix: "start", desc: "Start a new coding session" },
-                                  { suffix: "say", desc: "Send a message to an active session" },
-                                  { suffix: "status", desc: "Get session status and recent output" },
-                                  { suffix: "respond", desc: "Answer a pending question or approval" },
-                                  { suffix: "interrupt", desc: "Interrupt the running session" },
-                                  { suffix: "list", desc: "List all active sessions" },
-                                ].map((tool) => (
-                                  <div
-                                    key={tool.suffix}
-                                    className="flex items-center gap-3 py-1.5 px-2 rounded text-sm"
-                                  >
-                                    <Terminal className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                                    <code className="text-xs bg-muted px-1.5 py-0.5 rounded shrink-0">
-                                      {selected.mcpToolPrefix}_{tool.suffix}
-                                    </code>
-                                    <span className="text-xs text-muted-foreground">
-                                      {tool.desc}
-                                    </span>
-                                  </div>
-                                ))}
+                              <div className="border-t pt-3">
+                                <p className="text-xs text-muted-foreground mb-2">Permission Modes</p>
+                                <div className="space-y-1">
+                                  {(
+                                    [
+                                      {
+                                        key: "auto",
+                                        label: "Auto",
+                                        desc: "Tools auto-approved without prompting",
+                                      },
+                                      {
+                                        key: "supervised",
+                                        label: "Supervised",
+                                        desc: "Tools require explicit approval",
+                                      },
+                                      {
+                                        key: "plan",
+                                        label: "Plan",
+                                        desc: "Plans only, no code execution",
+                                      },
+                                    ] as const
+                                  ).map((mode) => {
+                                    const supported = selected.supportedPermissionModes.includes(mode.key)
+                                    return (
+                                      <div
+                                        key={mode.key}
+                                        className={cn(
+                                          "flex items-center gap-2.5",
+                                          !supported && "opacity-45"
+                                        )}
+                                      >
+                                        {supported ? (
+                                          <CheckCircle2 className="h-4 w-4 text-green-600 dark:text-green-400 shrink-0" />
+                                        ) : (
+                                          <XCircle className="h-4 w-4 text-muted-foreground shrink-0" />
+                                        )}
+                                        <span className="text-sm">{mode.label}</span>
+                                        <span className="text-xs text-muted-foreground">{mode.desc}</span>
+                                      </div>
+                                    )
+                                  })}
+                                </div>
                               </div>
                             </CardContent>
                           </Card>
                         </div>
                       </TabsContent>
+
+                      {selected.installed && (
+                      <TabsContent value="try-it-out">
+                        <McpTab
+                          initialMode="direct"
+                          initialDirectTarget={`coding_agent:${selected.agentType}`}
+                          hideModeSwitcher
+                          hideDirectTargetSelector
+                          innerPath={null}
+                          onPathChange={() => {}}
+                        />
+                      </TabsContent>
+                      )}
 
                       <TabsContent value="sessions">
                         <div className="space-y-2">
@@ -470,49 +605,242 @@ export function CodingAgentsView({ activeSubTab, onTabChange }: CodingAgentsView
 
         {/* Sessions Tab */}
         <TabsContent value="sessions" className="flex-1 min-h-0 mt-4">
-          <div className="space-y-4">
-            {sessions.length === 0 ? (
-              <Card>
-                <CardContent className="py-8">
-                  <div className="text-center text-muted-foreground">
-                    <p className="font-medium">No active sessions</p>
-                    <p className="text-sm mt-1">
-                      Sessions will appear here when coding agents are running.
-                    </p>
+          {sessions.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-full text-muted-foreground gap-4 border rounded-lg">
+              <Terminal className="h-12 w-12 opacity-30" />
+              <div className="text-center">
+                <p className="font-medium">No active sessions</p>
+                <p className="text-sm mt-1">
+                  Sessions will appear here when coding agents are running.
+                </p>
+              </div>
+            </div>
+          ) : (
+            <ResizablePanelGroup direction="horizontal" className="flex-1 min-h-0 rounded-lg border">
+              {/* Session List Panel */}
+              <ResizablePanel defaultSize={35} minSize={25}>
+                <div className="flex flex-col h-full">
+                  <div className="p-4 border-b">
+                    <Input
+                      placeholder="Search sessions..."
+                      value={sessionSearch}
+                      onChange={(e) => setSessionSearch(e.target.value)}
+                    />
                   </div>
-                </CardContent>
-              </Card>
-            ) : (
-              sessions.map((session) => (
-                <Card key={session.sessionId}>
-                  <CardContent className="py-4">
-                    <div className="flex items-center justify-between">
-                      <div className="space-y-1">
-                        <div className="flex items-center gap-2">
-                          <span className="text-sm font-medium">{session.displayText}</span>
-                          <Badge variant="outline">{session.status}</Badge>
-                          <Badge variant="secondary" className="text-[10px]">
-                            {agents.find((a) => a.agentType === session.agentType)?.displayName ||
-                              session.agentType}
-                          </Badge>
+                  <ScrollArea className="flex-1">
+                    <div className="p-2 space-y-1">
+                      {filteredSessions.map((session) => (
+                        <div
+                          key={session.sessionId}
+                          onClick={() => setSelectedSessionId(session.sessionId)}
+                          className={cn(
+                            "flex flex-col gap-1 p-3 rounded-md cursor-pointer",
+                            selectedSessionId === session.sessionId
+                              ? "bg-accent"
+                              : "hover:bg-muted"
+                          )}
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <p className="text-sm font-medium truncate flex-1">{session.displayText}</p>
+                            <Badge variant={statusVariant(session.status)} className="text-[10px] px-1.5 py-0 shrink-0">
+                              {session.status}
+                            </Badge>
+                          </div>
+                          <div className="flex items-center justify-between gap-2">
+                            <p className="text-xs text-muted-foreground truncate">
+                              {session.workingDirectory}
+                            </p>
+                            <span className="text-[10px] text-muted-foreground shrink-0">
+                              {formatDuration(session.createdAt)}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            <Badge variant="secondary" className="text-[10px] px-1 py-0">
+                              {agents.find((a) => a.agentType === session.agentType)?.displayName ||
+                                session.agentType}
+                            </Badge>
+                            <span className="text-[10px] text-muted-foreground font-mono truncate">
+                              {session.sessionId.slice(0, 12)}...
+                            </span>
+                          </div>
                         </div>
-                        <div className="text-xs text-muted-foreground">
-                          {session.workingDirectory}
-                        </div>
-                      </div>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => handleEndSession(session.sessionId)}
-                      >
-                        End Session
-                      </Button>
+                      ))}
                     </div>
-                  </CardContent>
-                </Card>
-              ))
-            )}
-          </div>
+                  </ScrollArea>
+                </div>
+              </ResizablePanel>
+
+              <ResizableHandle withHandle />
+
+              {/* Session Detail Panel */}
+              <ResizablePanel defaultSize={65}>
+                {selectedSessionId && sessionDetail ? (
+                  <ScrollArea className="h-full">
+                    <div className="p-6 space-y-4">
+                      {/* Header */}
+                      <div className="flex items-start justify-between">
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <h2 className="text-lg font-bold">{sessionDetail.displayText}</h2>
+                            <Badge variant={statusVariant(sessionDetail.status)}>
+                              {sessionDetail.status}
+                            </Badge>
+                          </div>
+                          <p className="text-sm text-muted-foreground mt-1">
+                            {sessionDetail.workingDirectory}
+                          </p>
+                        </div>
+                        {(sessionDetail.status === "active" || sessionDetail.status === "awaiting_input") && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => handleEndSession(sessionDetail.sessionId)}
+                          >
+                            End Session
+                          </Button>
+                        )}
+                      </div>
+
+                      {/* Session Info */}
+                      <Card>
+                        <CardHeader className="pb-3">
+                          <CardTitle className="text-sm">Session Info</CardTitle>
+                        </CardHeader>
+                        <CardContent>
+                          <div className="grid grid-cols-2 gap-3 text-sm">
+                            <div className="col-span-2">
+                              <span className="text-muted-foreground">Session ID:</span>{" "}
+                              <code className="bg-muted px-1 py-0.5 rounded text-xs">
+                                {sessionDetail.sessionId}
+                              </code>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-5 w-5 p-0 ml-1 inline-flex"
+                                onClick={() => handleCopySessionId(sessionDetail.sessionId)}
+                              >
+                                {copiedId ? (
+                                  <Check className="h-3 w-3 text-green-500" />
+                                ) : (
+                                  <Copy className="h-3 w-3" />
+                                )}
+                              </Button>
+                            </div>
+                            <div>
+                              <span className="text-muted-foreground">Agent:</span>{" "}
+                              <span className="font-medium">
+                                {agents.find((a) => a.agentType === sessionDetail.agentType)?.displayName ||
+                                  sessionDetail.agentType}
+                              </span>
+                            </div>
+                            <div>
+                              <span className="text-muted-foreground">Status:</span>{" "}
+                              <Badge variant={statusVariant(sessionDetail.status)} className="text-[10px]">
+                                {sessionDetail.status}
+                              </Badge>
+                            </div>
+                            {sessionDetail.clientId && (
+                              <div>
+                                <span className="text-muted-foreground">Client:</span>{" "}
+                                <code className="bg-muted px-1 py-0.5 rounded text-xs">
+                                  {sessionDetail.clientId}
+                                </code>
+                              </div>
+                            )}
+                            <div>
+                              <span className="text-muted-foreground">Created:</span>{" "}
+                              <span>{new Date(sessionDetail.createdAt).toLocaleString()}</span>
+                            </div>
+                            {sessionDetail.turnCount != null && (
+                              <div>
+                                <span className="text-muted-foreground">Turns:</span>{" "}
+                                <span className="font-medium">{sessionDetail.turnCount}</span>
+                              </div>
+                            )}
+                            {sessionDetail.costUsd != null && (
+                              <div>
+                                <span className="text-muted-foreground">Cost:</span>{" "}
+                                <span className="font-medium">${sessionDetail.costUsd.toFixed(4)}</span>
+                              </div>
+                            )}
+                            {sessionDetail.exitCode != null && (
+                              <div>
+                                <span className="text-muted-foreground">Exit Code:</span>{" "}
+                                <code className="bg-muted px-1 py-0.5 rounded text-xs">
+                                  {sessionDetail.exitCode}
+                                </code>
+                              </div>
+                            )}
+                          </div>
+                        </CardContent>
+                      </Card>
+
+                      {/* Result / Error */}
+                      {sessionDetail.result && (
+                        <Card>
+                          <CardHeader className="pb-3">
+                            <CardTitle className="text-sm">Result</CardTitle>
+                          </CardHeader>
+                          <CardContent>
+                            <pre className="text-xs bg-muted p-3 rounded-md whitespace-pre-wrap break-all max-h-48 overflow-y-auto">
+                              {sessionDetail.result}
+                            </pre>
+                          </CardContent>
+                        </Card>
+                      )}
+
+                      {sessionDetail.error && (
+                        <Card className="border-destructive/50">
+                          <CardHeader className="pb-3">
+                            <CardTitle className="text-sm text-destructive">Error</CardTitle>
+                          </CardHeader>
+                          <CardContent>
+                            <pre className="text-xs bg-destructive/10 text-destructive p-3 rounded-md whitespace-pre-wrap break-all max-h-48 overflow-y-auto">
+                              {sessionDetail.error}
+                            </pre>
+                          </CardContent>
+                        </Card>
+                      )}
+
+                      {/* Recent Output */}
+                      <Card>
+                        <CardHeader className="pb-3">
+                          <div className="flex items-center justify-between">
+                            <CardTitle className="text-sm">Recent Output</CardTitle>
+                            {(sessionDetail.status === "active" || sessionDetail.status === "awaiting_input") && (
+                              <Badge variant="outline" className="text-[10px]">
+                                Live
+                              </Badge>
+                            )}
+                          </div>
+                        </CardHeader>
+                        <CardContent>
+                          {sessionDetail.recentOutput.length > 0 ? (
+                            <pre className="text-xs bg-muted p-3 rounded-md whitespace-pre-wrap break-all max-h-96 overflow-y-auto font-mono leading-relaxed">
+                              {sessionDetail.recentOutput.join("\n")}
+                            </pre>
+                          ) : (
+                            <p className="text-sm text-muted-foreground">No output yet.</p>
+                          )}
+                        </CardContent>
+                      </Card>
+                    </div>
+                  </ScrollArea>
+                ) : selectedSessionId && sessionDetailLoading ? (
+                  <div className="flex items-center justify-center h-full">
+                    <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                  </div>
+                ) : (
+                  <div className="flex flex-col items-center justify-center h-full text-muted-foreground gap-4">
+                    <Terminal className="h-12 w-12 opacity-30" />
+                    <div className="text-center">
+                      <p className="font-medium">Select a session to view details</p>
+                    </div>
+                  </div>
+                )}
+              </ResizablePanel>
+            </ResizablePanelGroup>
+          )}
         </TabsContent>
 
         {/* Settings Tab */}
@@ -523,25 +851,46 @@ export function CodingAgentsView({ activeSubTab, onTabChange }: CodingAgentsView
                 <CardTitle>Concurrency</CardTitle>
                 <CardDescription>
                   Limit the total number of coding agent sessions that can run at the same time across all clients.
-                  Set to 0 for unlimited.
                 </CardDescription>
               </CardHeader>
               <CardContent>
-                <div className="space-y-2">
-                  <Label>Max Concurrent Sessions</Label>
-                  <Input
-                    type="number"
-                    min={0}
-                    max={50}
-                    value={maxSessions}
-                    onChange={(e) => handleMaxSessionsChange(e.target.value)}
-                    className="w-32"
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    {maxSessions === 0
-                      ? "Unlimited"
-                      : `${maxSessions} session${maxSessions !== 1 ? "s" : ""} max`}
-                  </p>
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <Label>Limit Concurrent Sessions</Label>
+                      <p className="text-xs text-muted-foreground">
+                        Restrict how many sessions can run simultaneously.
+                      </p>
+                    </div>
+                    <Switch
+                      checked={maxSessions > 0}
+                      onCheckedChange={(checked) => {
+                        if (checked) {
+                          handleMaxSessionsChange(String(lastLimitRef.current))
+                        } else {
+                          handleMaxSessionsChange("0")
+                        }
+                      }}
+                    />
+                  </div>
+                  {maxSessions > 0 && (
+                    <div className="space-y-2">
+                      <Label>Max Concurrent Sessions</Label>
+                      <Input
+                        type="number"
+                        min={1}
+                        max={50}
+                        value={maxSessions}
+                        onChange={(e) => {
+                          const val = e.target.value
+                          const num = parseInt(val, 10)
+                          if (!isNaN(num) && num > 0) lastLimitRef.current = num
+                          handleMaxSessionsChange(val)
+                        }}
+                        className="w-32"
+                      />
+                    </div>
+                  )}
                 </div>
               </CardContent>
             </Card>

@@ -2315,6 +2315,31 @@ export interface GetCodingAgentVersionParams {
   agentType: CodingAgentType
 }
 
+/**
+ * Detailed coding session info returned from get_coding_session_detail.
+ * Rust: crates/lr-coding-agents/src/types.rs - SessionDetail struct
+ */
+export interface CodingSessionDetail {
+  sessionId: string
+  agentType: CodingAgentType
+  clientId: string
+  workingDirectory: string
+  displayText: string
+  status: string
+  createdAt: string
+  recentOutput: string[]
+  costUsd: number | null
+  turnCount: number | null
+  result: string | null
+  error: string | null
+  exitCode: number | null
+}
+
+/** Params for get_coding_session_detail */
+export interface GetCodingSessionDetailParams {
+  sessionId: string
+}
+
 /** Params for end_coding_session */
 export interface EndCodingSessionParams {
   sessionId: string

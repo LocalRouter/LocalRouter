@@ -80,14 +80,26 @@ pub async fn list_coding_sessions(
         .into_iter()
         .map(|s| CodingSessionInfo {
             session_id: s.session_id,
-            agent_type: CodingAgentType::ClaudeCode, // TODO: store agent_type in SessionSummary
-            client_id: String::new(),
+            agent_type: s.agent_type,
+            client_id: s.client_id,
             working_directory: s.working_directory,
             display_text: s.display_text,
             status: s.status.to_string(),
             created_at: s.timestamp.to_rfc3339(),
         })
         .collect())
+}
+
+/// Get detailed info for a specific coding session
+#[tauri::command]
+pub async fn get_coding_session_detail(
+    session_id: String,
+    manager: State<'_, Arc<CodingAgentManager>>,
+) -> Result<lr_coding_agents::types::SessionDetail, String> {
+    manager
+        .get_session_detail(&session_id)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Get the version of an installed coding agent binary
@@ -107,13 +119,11 @@ pub async fn get_coding_agent_version(
         Err(_) => return Ok(None),
     };
 
-    let text = String::from_utf8_lossy(
-        if output.stdout.is_empty() {
-            &output.stderr
-        } else {
-            &output.stdout
-        },
-    );
+    let text = String::from_utf8_lossy(if output.stdout.is_empty() {
+        &output.stderr
+    } else {
+        &output.stdout
+    });
 
     // Take first non-empty line, trim whitespace
     let version = text

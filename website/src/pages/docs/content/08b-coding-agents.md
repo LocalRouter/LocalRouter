@@ -2,7 +2,7 @@
 
 LocalRouter can orchestrate AI coding agents (Claude Code, Gemini CLI, Codex, and more) as MCP tools through the Unified MCP Gateway. Any MCP client can spawn, interact with, and manage coding agent sessions — turning LocalRouter into a multi-agent orchestration hub.
 
-Each installed coding agent gets its own set of 6 MCP tools that manage the full session lifecycle: starting sessions, sending messages, checking status, responding to questions, interrupting, and listing sessions.
+Each client can be assigned one coding agent type. The selected agent is exposed through a unified set of MCP tools (`coding_agent_start`, `coding_agent_say`, etc.) that manage the full session lifecycle: starting sessions, sending messages, checking status, responding to questions, interrupting, and listing sessions.
 
 Coding agents are **implicitly enabled** when their binary is found on the system PATH. No manual configuration is required — install a supported agent and it's automatically available.
 
@@ -12,30 +12,34 @@ Sessions are strictly tied to the creating client. No cross-client session visib
 
 LocalRouter supports the following coding agents:
 
-| Agent | Binary | Tool Prefix |
+| Agent | Binary | Description |
 |-------|--------|-------------|
-| Claude Code | `claude` | `claude_code` |
-| Gemini CLI | `gemini` | `gemini_cli` |
-| Codex | `codex` | `codex` |
-| Amp | `amp` | `amp` |
-| Aider | `aider` | `aider` |
-| Opencode | `opencode` | `opencode` |
-| Cursor | `cursor` | `cursor` |
-| Qwen Code | `qwen-code` | `qwen_code` |
-| GitHub Copilot | `gh` | `copilot` |
-| Droid | `droid` | `droid` |
+| Claude Code | `claude` | Anthropic's agentic coding tool |
+| Gemini CLI | `gemini` | Google's AI coding assistant |
+| Codex | `codex` | OpenAI's autonomous coding agent |
+| Amp | `amp` | Sourcegraph's AI coding agent |
+| Aider | `aider` | AI pair programming in terminal |
+| Opencode | `opencode` | Open-source terminal AI assistant |
+| Cursor | `cursor` | Cursor's CLI agent |
+| Qwen Code | `qwen-code` | Alibaba's Qwen-based agent |
+| GitHub Copilot | `gh` | GitHub Copilot's CLI extension |
+| Droid | `droid` | Autonomous coding agent |
 
 An agent appears in the Coding Agents view as "installed" when its binary is found on the system PATH.
 
+<!-- @entry coding-agents-client-assignment -->
+
+Each client is assigned **one coding agent type** (or none). This is configured in the client's Coding Agents tab. When a client has a coding agent assigned, the unified `coding_agent_*` tools become available in that client's MCP session.
+
+The assigned agent determines which binary is spawned when `coding_agent_start` is called, and what capabilities are available (model selection, permission modes, etc.).
+
 <!-- @entry coding-agents-mcp-tools -->
 
-Each enabled agent gets 6 MCP tools exposed through the gateway. The tools follow a consistent naming pattern: `{agent_prefix}_{action}`.
-
-For example, Claude Code gets: `claude_code_start`, `claude_code_say`, `claude_code_status`, `claude_code_respond`, `claude_code_interrupt`, `claude_code_list`.
+The selected coding agent is exposed through unified MCP tools with the `coding_agent_` prefix. The same tool names are used regardless of which agent is assigned — the gateway routes to the correct agent automatically.
 
 <!-- @entry coding-agents-tool-start -->
 
-**`{agent}_start`** — Start a new coding session with an initial prompt.
+**`coding_agent_start`** — Start a new coding session with an initial prompt.
 
 Parameters:
 - `prompt` (required) — The initial task or prompt
@@ -49,7 +53,7 @@ This is the only tool that triggers a gateway permission check (Allow/Ask/Off).
 
 <!-- @entry coding-agents-tool-say -->
 
-**`{agent}_say`** — Send a message to an existing session. Automatically resumes if the session has ended.
+**`coding_agent_say`** — Send a message to an existing session. Automatically resumes if the session has ended.
 
 Parameters:
 - `sessionId` (required) — The session ID
@@ -63,7 +67,7 @@ Behavior:
 
 <!-- @entry coding-agents-tool-status -->
 
-**`{agent}_status`** — Check session status and retrieve recent output.
+**`coding_agent_status`** — Check session status and retrieve recent output.
 
 Parameters:
 - `sessionId` (required) — The session ID
@@ -75,7 +79,7 @@ The `pendingQuestion` field is key for the approval flow — it surfaces tool ap
 
 <!-- @entry coding-agents-tool-respond -->
 
-**`{agent}_respond`** — Respond to a pending question (tool approval, plan approval, or clarification question).
+**`coding_agent_respond`** — Respond to a pending question (tool approval, plan approval, or clarification question).
 
 Parameters:
 - `sessionId` (required) — The session ID
@@ -89,16 +93,16 @@ Answers can include a reason after a colon. For example:
 
 <!-- @entry coding-agents-tool-interrupt -->
 
-**`{agent}_interrupt`** — Interrupt a running session.
+**`coding_agent_interrupt`** — Interrupt a running session.
 
 Parameters:
 - `sessionId` (required) — The session ID
 
-Sends a cancellation signal to the agent process. The session can be resumed later via `{agent}_say`.
+Sends a cancellation signal to the agent process. The session can be resumed later via `coding_agent_say`.
 
 <!-- @entry coding-agents-tool-list -->
 
-**`{agent}_list`** — List all sessions for this client and agent.
+**`coding_agent_list`** — List all sessions for this client.
 
 Parameters:
 - `limit` — Max sessions to return (default: 50)
@@ -119,9 +123,9 @@ This is the preferred path as it provides real-time interaction.
 
 <!-- @entry coding-agents-polling -->
 
-For clients without elicitation support, approvals are queued as `pendingQuestion` objects. The client discovers them by polling `{agent}_status` and responds via `{agent}_respond`.
+For clients without elicitation support, approvals are queued as `pendingQuestion` objects. The client discovers them by polling `coding_agent_status` and responds via `coding_agent_respond`.
 
-Flow: Agent requests approval → Gateway queues as `pendingQuestion` → Client polls `{agent}_status` → Client sees `pendingQuestion` → Client calls `{agent}_respond` → Agent proceeds.
+Flow: Agent requests approval → Gateway queues as `pendingQuestion` → Client polls `coding_agent_status` → Client sees `pendingQuestion` → Client calls `coding_agent_respond` → Agent proceeds.
 
 The `pendingQuestion` object includes:
 - `id` — Unique question identifier
@@ -133,24 +137,21 @@ The `pendingQuestion` object includes:
 Sessions follow a state machine:
 
 - **Active** — Agent is processing. Transitions to `awaiting_input` when approval needed, `done` on completion, `error` on failure, or `interrupted` on cancel.
-- **Awaiting Input** — Agent is blocked waiting for a response. Transitions back to `active` when `{agent}_respond` is called.
-- **Done** — Agent finished successfully. Can be resumed via `{agent}_say` (auto-resume).
-- **Error** — Agent encountered an error. Can be resumed via `{agent}_say` (auto-resume).
-- **Interrupted** — Agent was interrupted. Can be resumed via `{agent}_say` (auto-resume).
+- **Awaiting Input** — Agent is blocked waiting for a response. Transitions back to `active` when `coding_agent_respond` is called.
+- **Done** — Agent finished successfully. Can be resumed via `coding_agent_say` (auto-resume).
+- **Error** — Agent encountered an error. Can be resumed via `coding_agent_say` (auto-resume).
+- **Interrupted** — Agent was interrupted. Can be resumed via `coding_agent_say` (auto-resume).
 
-Any terminal state (`done`, `error`, `interrupted`) transitions back to `active` when `{agent}_say` is called — the session auto-resumes automatically.
+Any terminal state (`done`, `error`, `interrupted`) transitions back to `active` when `coding_agent_say` is called — the session auto-resumes automatically.
 
 <!-- @entry coding-agents-permissions -->
 
-Coding agent access is controlled per-client through a hierarchical permission system:
+Coding agent access is controlled per-client:
 
-- **Global permission** — Default for all agents (`allow`, `ask`, `off`)
-- **Per-agent override** — Override for specific agents
+- **Permission state** — `allow`, `ask`, or `off` (configured in the client's Coding Agents tab)
+- **Agent type** — Which coding agent this client uses (one per client)
 
-Permission resolution: per-agent override → global default.
-
+Permission behavior:
 - **Allow** — Client can start sessions freely, no gateway prompt
-- **Ask** — Gateway prompts the user on session creation (`{agent}_start`), then free interaction
-- **Off** — Client has no access to this agent
-
-Permissions are configured in the client's Coding Agents tab.
+- **Ask** — Gateway prompts the user on session creation (`coding_agent_start`), then free interaction
+- **Off** — Client has no access to coding agents

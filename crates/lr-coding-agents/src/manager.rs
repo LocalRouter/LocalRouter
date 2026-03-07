@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::sync::Mutex;
+use tokio::sync::{broadcast, Mutex};
 use tracing::{debug, info};
 
 /// Manages all coding agent sessions
@@ -19,16 +19,30 @@ pub struct CodingAgentManager {
     config: CodingAgentsConfig,
     /// Max concurrent sessions (atomic so it can be updated without &mut self)
     max_concurrent_sessions: AtomicUsize,
+    /// Broadcast channel for session change notifications
+    change_tx: broadcast::Sender<()>,
 }
 
 impl CodingAgentManager {
     pub fn new(config: CodingAgentsConfig) -> Self {
         let max = config.max_concurrent_sessions;
+        let (change_tx, _) = broadcast::channel(16);
         Self {
             sessions: DashMap::new(),
             config,
             max_concurrent_sessions: AtomicUsize::new(max),
+            change_tx,
         }
+    }
+
+    /// Subscribe to session change notifications
+    pub fn subscribe_changes(&self) -> broadcast::Receiver<()> {
+        self.change_tx.subscribe()
+    }
+
+    /// Notify that sessions have changed
+    fn notify_changed(&self) {
+        let _ = self.change_tx.send(());
     }
 
     /// Update config (called when config changes)
@@ -125,13 +139,15 @@ impl CodingAgentManager {
         );
 
         // Start background stdout reader
-        spawn_output_reader(session_arc);
+        spawn_output_reader(session_arc, self.change_tx.clone());
 
         info!(
             agent = %agent_type,
             session_id = %session_id,
             "Started coding agent session"
         );
+
+        self.notify_changed();
 
         Ok(StartResponse {
             session_id,
@@ -215,7 +231,9 @@ impl CodingAgentManager {
                     .get(&session_id_clone)
                     .map(|r| r.value().1.clone())
                     .ok_or(CodingAgentError::SessionNotFound(session_id_clone))?;
-                spawn_output_reader(session_arc2);
+                spawn_output_reader(session_arc2, self.change_tx.clone());
+
+                self.notify_changed();
 
                 return Ok(SayResponse {
                     session_id: session_id.to_string(),
@@ -308,6 +326,8 @@ impl CodingAgentManager {
         session.status = SessionStatus::Active;
         session.last_activity = chrono::Utc::now();
 
+        self.notify_changed();
+
         Ok(RespondResponse {
             session_id: session_id.to_string(),
             status: session.status.clone(),
@@ -339,6 +359,8 @@ impl CodingAgentManager {
             session_id = %session_id,
             "Coding agent session interrupted"
         );
+
+        self.notify_changed();
 
         Ok(InterruptResponse {
             session_id: session_id.to_string(),
@@ -373,6 +395,8 @@ impl CodingAgentManager {
             }
             summaries.push(SessionSummary {
                 session_id: session.id.clone(),
+                agent_type: session.agent_type,
+                client_id: session.client_id.clone(),
                 working_directory: session.working_directory.to_string_lossy().to_string(),
                 display_text: truncate_prompt(&session.initial_prompt, 80),
                 timestamp: session.created_at,
@@ -400,6 +424,8 @@ impl CodingAgentManager {
             let session = session_arc.lock().await;
             summaries.push(SessionSummary {
                 session_id: session.id.clone(),
+                agent_type: session.agent_type,
+                client_id: session.client_id.clone(),
                 working_directory: session.working_directory.to_string_lossy().to_string(),
                 display_text: truncate_prompt(&session.initial_prompt, 80),
                 timestamp: session.created_at,
@@ -408,6 +434,35 @@ impl CodingAgentManager {
         }
         summaries.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
         summaries
+    }
+
+    /// Get detailed session info (admin — no client ownership check)
+    pub async fn get_session_detail(
+        &self,
+        session_id: &str,
+    ) -> Result<crate::types::SessionDetail, CodingAgentError> {
+        let session_arc = self
+            .sessions
+            .get(session_id)
+            .map(|entry| entry.value().1.clone())
+            .ok_or_else(|| CodingAgentError::SessionNotFound(session_id.to_string()))?;
+
+        let session = session_arc.lock().await;
+        Ok(crate::types::SessionDetail {
+            session_id: session.id.clone(),
+            agent_type: session.agent_type,
+            client_id: session.client_id.clone(),
+            working_directory: session.working_directory.to_string_lossy().to_string(),
+            display_text: truncate_prompt(&session.initial_prompt, 80),
+            status: session.status.clone(),
+            created_at: session.created_at,
+            recent_output: session.recent_output(200),
+            cost_usd: session.cost_usd,
+            turn_count: session.turn_count,
+            result: session.result.clone(),
+            error: session.error.clone(),
+            exit_code: session.exit_code,
+        })
     }
 
     /// End a session (admin)
@@ -421,6 +476,7 @@ impl CodingAgentManager {
                 let _ = process.child.start_kill();
             }
             info!(session_id = %session_id, "Coding agent session ended by admin");
+            self.notify_changed();
             Ok(())
         } else {
             Err(CodingAgentError::SessionNotFound(session_id.to_string()))
@@ -570,7 +626,7 @@ async fn spawn_agent_process(
 }
 
 /// Spawn a background task that reads stdout and appends to the session buffer
-fn spawn_output_reader(session: Arc<Mutex<CodingSession>>) {
+fn spawn_output_reader(session: Arc<Mutex<CodingSession>>, change_tx: broadcast::Sender<()>) {
     tokio::spawn(async move {
         // Take stdout from the process
         let stdout = {
@@ -638,6 +694,7 @@ fn spawn_output_reader(session: Arc<Mutex<CodingSession>>) {
         }
 
         debug!("Output reader finished for session");
+        let _ = change_tx.send(());
     });
 }
 

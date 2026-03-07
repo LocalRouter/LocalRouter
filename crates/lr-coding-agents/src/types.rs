@@ -243,6 +243,8 @@ pub struct InterruptResponse {
 #[serde(rename_all = "camelCase")]
 pub struct SessionSummary {
     pub session_id: String,
+    pub agent_type: CodingAgentType,
+    pub client_id: String,
     pub working_directory: String,
     pub display_text: String,
     pub timestamp: DateTime<Utc>,
@@ -253,6 +255,30 @@ pub struct SessionSummary {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ListResponse {
     pub sessions: Vec<SessionSummary>,
+}
+
+/// Detailed session info for admin/UI
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionDetail {
+    pub session_id: String,
+    pub agent_type: CodingAgentType,
+    pub client_id: String,
+    pub working_directory: String,
+    pub display_text: String,
+    pub status: SessionStatus,
+    pub created_at: DateTime<Utc>,
+    pub recent_output: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub turn_count: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
 }
 
 #[cfg(test)]
@@ -444,6 +470,8 @@ mod tests {
         let resp = ListResponse {
             sessions: vec![SessionSummary {
                 session_id: "s1".to_string(),
+                agent_type: CodingAgentType::ClaudeCode,
+                client_id: "c1".to_string(),
                 working_directory: "/tmp".to_string(),
                 display_text: "hello".to_string(),
                 timestamp: Utc::now(),
@@ -452,6 +480,8 @@ mod tests {
         };
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["sessions"][0]["sessionId"], "s1");
+        assert_eq!(json["sessions"][0]["agentType"], "claude_code");
+        assert_eq!(json["sessions"][0]["clientId"], "c1");
         assert_eq!(json["sessions"][0]["status"], "done");
     }
 }
