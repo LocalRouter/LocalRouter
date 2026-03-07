@@ -151,9 +151,9 @@ fn build_server_description(
 /// Build comprehensive gateway instructions based on available capabilities.
 ///
 /// Structure:
-/// 1. Header (varies by what's available: MCPs, skills, both)
-/// 2. Tool listing grouped by MCP server, then skills
-/// 3. Per-server instructions in XML tags
+/// 1. Header
+/// 2. Capability listing: virtual servers first, then regular servers, then unavailable
+/// 3. Instructions in XML tags: virtual always, regular only in non-deferred mode
 pub fn build_gateway_instructions(ctx: &InstructionsContext) -> Option<String> {
     let has_servers = !ctx.servers.is_empty();
     let has_unavailable = !ctx.unavailable_servers.is_empty();
@@ -169,22 +169,11 @@ pub fn build_gateway_instructions(ctx: &InstructionsContext) -> Option<String> {
     // --- 1. Header ---
     build_header(&mut inst, has_servers, has_virtual, ctx.deferred_loading);
 
-    // --- 2. Tool listing grouped by server ---
-    build_tool_listing(&mut inst, ctx);
+    // --- 2. Capability listing ---
+    build_capability_listing(&mut inst, ctx);
 
-    // --- 3. Per-server instructions in XML tags ---
-    if has_servers {
-        build_server_instructions_section(&mut inst, &ctx.servers);
-    }
-
-    // --- 4. Virtual server instructions ---
-    for vsi in &ctx.virtual_instructions {
-        inst.push_str(&format!("\n## {}\n\n", vsi.section_title));
-        inst.push_str(&vsi.content);
-        if !vsi.content.ends_with('\n') {
-            inst.push('\n');
-        }
-    }
+    // --- 3. Instructions in XML tags ---
+    build_all_instructions_section(&mut inst, ctx);
 
     Some(inst)
 }
@@ -209,69 +198,98 @@ fn slugify(name: &str) -> String {
     slug
 }
 
+/// Maximum number of tool names shown per server in deferred mode.
+const DEFERRED_TOOL_PREVIEW_LIMIT: usize = 20;
+
 /// Build the header line based on what's available.
-fn build_header(inst: &mut String, has_servers: bool, has_skills: bool, deferred: bool) {
-    match (has_servers, has_skills) {
-        (true, true) => {
-            if deferred {
-                inst.push_str(
-                    "Unified Gateway to MCP servers and skills. \
-                     Tools from MCP servers are loaded on demand — use the `search` \
-                     tool to discover and activate them by keyword. Skills are available directly; \
-                     call a skill's `get_info` tool to view its full instructions and unlock its \
-                     run/read tools.\n\n",
-                );
-            } else {
-                inst.push_str(
-                    "Unified Gateway to MCP servers and skills. \
-                     Tools from MCP servers are namespaced with a `servername__` \
-                     prefix. Skills are available directly; call a skill's `get_info` tool to \
-                     view its full instructions and unlock its run/read tools.\n\n",
-                );
-            }
-        }
-        (true, false) => {
-            if deferred {
-                inst.push_str(
-                    "Unified Gateway to MCP servers. \
-                     Tools are loaded on demand — use the `search` tool to discover and activate \
-                     them by keyword. Activated items remain available for the rest of the session.\n\n",
-                );
-            } else {
-                inst.push_str(
-                    "Unified Gateway to MCP servers. \
-                     Tools are namespaced with a `servername__` prefix (e.g., `filesystem__read_file`).\n\n",
-                );
-            }
-        }
-        (false, true) => {
-            inst.push_str(
-                "Unified Gateway to skills. Call a skill's `get_info` tool to \
-                 view its full instructions and unlock its run/read tools.\n\n",
-            );
-        }
-        (false, false) => {
-            // Only unavailable servers — header still needed
-            inst.push_str("Unified Gateway: No MCP servers or skills are currently available.\n\n");
-        }
+fn build_header(inst: &mut String, has_mcp_servers: bool, has_virtual: bool, deferred: bool) {
+    if !has_mcp_servers && !has_virtual {
+        // Only unavailable servers — nothing usable
+        inst.push_str(
+            "Unified MCP Gateway: no servers or tools are currently available.\n\n",
+        );
+    } else if deferred {
+        inst.push_str(
+            "Unified MCP Gateway. Tools are loaded on demand \
+             — use the `search` tool to discover and activate them by keyword. \
+             Use `server_info` to get a server's full tool list and detailed instructions.\n\n",
+        );
+    } else if has_mcp_servers {
+        inst.push_str(
+            "Unified MCP Gateway. Tools from MCP servers are namespaced \
+             with a `servername__` prefix.\n\n",
+        );
+    } else {
+        // Only virtual servers
+        inst.push_str("Unified MCP Gateway.\n\n");
     }
 }
 
-/// Build the grouped capability listing: MCP servers first, then skills, then unavailable servers.
-fn build_tool_listing(inst: &mut String, ctx: &InstructionsContext) {
-    // MCP server capabilities grouped by server
+/// Build the capability listing: virtual servers first, then regular, then unavailable.
+fn build_capability_listing(inst: &mut String, ctx: &InstructionsContext) {
+    // --- Virtual servers first ---
+    for vsi in &ctx.virtual_instructions {
+        inst.push_str(&format!("**{}**\n", vsi.section_title));
+        for name in &vsi.tool_names {
+            inst.push_str(&format!("- `{}` (tool)\n", name));
+        }
+        inst.push('\n');
+    }
+
+    // --- Regular MCP servers ---
     for server in &ctx.servers {
-        let has_anything = !server.tool_names.is_empty()
-            || !server.resource_names.is_empty()
-            || !server.prompt_names.is_empty();
+        let total_items = server.tool_names.len()
+            + server.resource_names.len()
+            + server.prompt_names.len();
 
         inst.push_str(&format!("**{}**", server.name));
-        if !has_anything {
+        if total_items == 0 {
             inst.push_str(" (no capabilities)\n");
+        } else if ctx.deferred_loading && total_items > DEFERRED_TOOL_PREVIEW_LIMIT {
+            // Show count summary in deferred mode when truncated
+            let mut parts = Vec::new();
+            if !server.tool_names.is_empty() {
+                parts.push(format!("{} tools", server.tool_names.len()));
+            }
+            if !server.resource_names.is_empty() {
+                parts.push(format!("{} resources", server.resource_names.len()));
+            }
+            if !server.prompt_names.is_empty() {
+                parts.push(format!("{} prompts", server.prompt_names.len()));
+            }
+            inst.push_str(&format!(" ({})", parts.join(", ")));
+            inst.push('\n');
+
+            // Show first N items
+            let mut shown = 0;
+            for name in &server.tool_names {
+                if shown >= DEFERRED_TOOL_PREVIEW_LIMIT {
+                    break;
+                }
+                inst.push_str(&format!("- `{}` (tool)\n", name));
+                shown += 1;
+            }
+            for name in &server.resource_names {
+                if shown >= DEFERRED_TOOL_PREVIEW_LIMIT {
+                    break;
+                }
+                inst.push_str(&format!("- `{}` (resource)\n", name));
+                shown += 1;
+            }
+            for name in &server.prompt_names {
+                if shown >= DEFERRED_TOOL_PREVIEW_LIMIT {
+                    break;
+                }
+                inst.push_str(&format!("- `{}` (prompt)\n", name));
+                shown += 1;
+            }
+            inst.push_str(
+                "- ... (use `search` to find more, or `server_info` for full list)\n",
+            );
         } else {
             inst.push('\n');
             for name in &server.tool_names {
-                inst.push_str(&format!("- `{}`\n", name));
+                inst.push_str(&format!("- `{}` (tool)\n", name));
             }
             for name in &server.resource_names {
                 inst.push_str(&format!("- `{}` (resource)\n", name));
@@ -283,7 +301,7 @@ fn build_tool_listing(inst: &mut String, ctx: &InstructionsContext) {
         inst.push('\n');
     }
 
-    // Unavailable servers
+    // --- Unavailable servers ---
     for server in &ctx.unavailable_servers {
         inst.push_str(&format!(
             "**{}** — unavailable: {}\n\n",
@@ -292,40 +310,55 @@ fn build_tool_listing(inst: &mut String, ctx: &InstructionsContext) {
     }
 }
 
-/// Build per-server instructions wrapped in XML tags.
-fn build_server_instructions_section(inst: &mut String, servers: &[McpServerInstructionInfo]) {
-    // Only emit section if at least one server has instructions or a description
-    let servers_with_content: Vec<&McpServerInstructionInfo> = servers
-        .iter()
-        .filter(|s| s.instructions.is_some() || s.description.is_some())
-        .collect();
-
-    if servers_with_content.is_empty() {
-        return;
+/// Build all instructions wrapped in XML tags.
+///
+/// Virtual server instructions are always included.
+/// Regular server instructions are only included in non-deferred mode.
+fn build_all_instructions_section(inst: &mut String, ctx: &InstructionsContext) {
+    // Virtual server instructions (always included)
+    for vsi in &ctx.virtual_instructions {
+        if vsi.content.is_empty() {
+            continue;
+        }
+        let tag = slugify(&vsi.section_title);
+        inst.push_str(&format!("\n<{}>\n", tag));
+        inst.push_str(&vsi.content);
+        if !vsi.content.ends_with('\n') {
+            inst.push('\n');
+        }
+        inst.push_str(&format!("</{}>\n", tag));
     }
 
-    for server in &servers_with_content {
-        let tag = slugify(&server.name);
-        inst.push_str(&format!("<{}>\n", tag));
-
-        if let Some(desc) = &server.description {
-            inst.push_str(desc);
-            if !desc.ends_with('\n') {
-                inst.push('\n');
+    // Regular server instructions (omitted in deferred mode)
+    if !ctx.deferred_loading {
+        for server in &ctx.servers {
+            let has_content = server.instructions.is_some() || server.description.is_some();
+            if !has_content {
+                continue;
             }
+
+            let tag = slugify(&server.name);
+            inst.push_str(&format!("\n<{}>\n", tag));
+
+            if let Some(desc) = &server.description {
+                inst.push_str(desc);
+                if !desc.ends_with('\n') {
+                    inst.push('\n');
+                }
+            }
+
+            if let Some(instructions) = &server.instructions {
+                if server.description.is_some() {
+                    inst.push('\n');
+                }
+                inst.push_str(instructions);
+                if !instructions.ends_with('\n') {
+                    inst.push('\n');
+                }
+            }
+
+            inst.push_str(&format!("</{}>\n", tag));
         }
-
-        if let Some(instructions) = &server.instructions {
-            if server.description.is_some() {
-                inst.push('\n');
-            }
-            inst.push_str(instructions);
-            if !instructions.ends_with('\n') {
-                inst.push('\n');
-            }
-        }
-
-        inst.push_str(&format!("</{}>\n", tag));
     }
 }
 
@@ -637,19 +670,19 @@ mod tests {
                 prompt_names: Vec::new(),
             }],
             unavailable_servers: Vec::new(),
-
             deferred_loading: false,
             virtual_instructions: Vec::new(),
         };
 
         let instructions = build_gateway_instructions(&ctx).unwrap();
-        // Header should mention MCP servers
-        assert!(instructions.contains("MCP servers"));
-        // Tool listing grouped by server
+        // Header
+        assert!(instructions.contains("Unified MCP Gateway"));
+        assert!(instructions.contains("servername__"));
+        // Tool listing with type annotations
         assert!(instructions.contains("**filesystem**"));
-        assert!(instructions.contains("`filesystem__read_file`"));
-        assert!(instructions.contains("`filesystem__write_file`"));
-        // Server instructions in XML tags (prefers instructions over description)
+        assert!(instructions.contains("`filesystem__read_file` (tool)"));
+        assert!(instructions.contains("`filesystem__write_file` (tool)"));
+        // Server instructions in XML tags
         assert!(instructions.contains("<filesystem>"));
         assert!(instructions.contains("Use read_file to read"));
         assert!(instructions.contains("</filesystem>"));
@@ -669,13 +702,11 @@ mod tests {
                 prompt_names: Vec::new(),
             }],
             unavailable_servers: Vec::new(),
-
             deferred_loading: false,
             virtual_instructions: Vec::new(),
         };
 
         let instructions = build_gateway_instructions(&ctx).unwrap();
-        // Falls back to description when instructions is None
         assert!(instructions.contains("<github>"));
         assert!(instructions.contains("GitHub API access"));
         assert!(instructions.contains("</github>"));
@@ -693,14 +724,12 @@ mod tests {
                 prompt_names: Vec::new(),
             }],
             unavailable_servers: Vec::new(),
-
             deferred_loading: false,
             virtual_instructions: Vec::new(),
         };
 
         let instructions = build_gateway_instructions(&ctx).unwrap();
         assert!(instructions.contains("<filesystem>"));
-        // Both description and instructions should appear
         assert!(instructions.contains("File operations server"));
         assert!(instructions.contains("Use read_file to read files."));
         assert!(instructions.contains("</filesystem>"));
@@ -716,18 +745,20 @@ mod tests {
             deferred_loading: false,
             virtual_instructions: vec![VirtualInstructions {
                 section_title: "Skills".to_string(),
-                content: "**code-review**: `skill_code_review_get_info` — Automated code review\n"
+                content: "Call a skill's `get_info` tool.\n\n- **code-review**: `skill_code_review_get_info` — Automated code review\n"
                     .to_string(),
+                tool_names: vec!["skill_code_review_get_info".to_string()],
             }],
         };
 
         let instructions = build_gateway_instructions(&ctx).unwrap();
-        // Virtual instructions section
-        assert!(instructions.contains("## Skills"));
-        assert!(instructions.contains("`skill_code_review_get_info`"));
+        // Virtual tool listing
+        assert!(instructions.contains("**Skills**"));
+        assert!(instructions.contains("`skill_code_review_get_info` (tool)"));
+        // Virtual instructions in XML tags
+        assert!(instructions.contains("<skills>"));
         assert!(instructions.contains("Automated code review"));
-        // No server XML tags
-        assert!(!instructions.contains("</"));
+        assert!(instructions.contains("</skills>"));
     }
 
     #[test]
@@ -745,7 +776,6 @@ mod tests {
                 prompt_names: Vec::new(),
             }],
             unavailable_servers: Vec::new(),
-
             deferred_loading: true,
             virtual_instructions: Vec::new(),
         };
@@ -753,11 +783,11 @@ mod tests {
         let instructions = build_gateway_instructions(&ctx).unwrap();
         assert!(instructions.contains("on demand"));
         assert!(instructions.contains("`search`"));
-        assert!(instructions.contains("`filesystem__read_file`"));
-        // Deferred mode still includes server instructions XML tags
-        assert!(instructions.contains("<filesystem>"));
-        assert!(instructions.contains("Detailed file system instructions."));
-        assert!(instructions.contains("</filesystem>"));
+        assert!(instructions.contains("`server_info`"));
+        assert!(instructions.contains("`filesystem__read_file` (tool)"));
+        // Deferred mode omits regular server instructions
+        assert!(!instructions.contains("<filesystem>"));
+        assert!(!instructions.contains("Detailed file system instructions."));
     }
 
     #[test]
@@ -777,21 +807,25 @@ mod tests {
             deferred_loading: false,
             virtual_instructions: vec![VirtualInstructions {
                 section_title: "Skills".to_string(),
-                content: "**deploy**: `skill_deploy_get_info`\n".to_string(),
+                content: "Call get_info to unlock.\n".to_string(),
+                tool_names: vec!["skill_deploy_get_info".to_string()],
             }],
         };
 
         let instructions = build_gateway_instructions(&ctx).unwrap();
-        // Header mentions both
-        assert!(instructions.contains("MCP servers"));
-        assert!(instructions.contains("skills"));
-        // Tool listing for server
-        assert!(instructions.contains("**github**"));
-        assert!(instructions.contains("`github__create_issue`"));
-        // Virtual instructions
-        assert!(instructions.contains("## Skills"));
-        assert!(instructions.contains("`skill_deploy_get_info`"));
-        // Server instructions in XML
+        // Header
+        assert!(instructions.contains("Unified MCP Gateway"));
+        // Virtual server listed FIRST
+        let skills_pos = instructions.find("**Skills**").unwrap();
+        let github_pos = instructions.find("**github**").unwrap();
+        assert!(skills_pos < github_pos, "Virtual servers should come first");
+        // Virtual tool listing
+        assert!(instructions.contains("`skill_deploy_get_info` (tool)"));
+        // Regular tool listing
+        assert!(instructions.contains("`github__create_issue` (tool)"));
+        // Virtual instructions in XML
+        assert!(instructions.contains("<skills>"));
+        // Regular instructions in XML
         assert!(instructions.contains("<github>"));
     }
 
@@ -800,7 +834,6 @@ mod tests {
         let ctx = InstructionsContext {
             servers: Vec::new(),
             unavailable_servers: Vec::new(),
-
             deferred_loading: false,
             virtual_instructions: Vec::new(),
         };
@@ -838,7 +871,6 @@ mod tests {
                 prompt_names: Vec::new(),
             }],
             unavailable_servers: Vec::new(),
-
             deferred_loading: false,
             virtual_instructions: Vec::new(),
         };
@@ -861,15 +893,12 @@ mod tests {
                 prompt_names: Vec::new(),
             }],
             unavailable_servers: Vec::new(),
-
             deferred_loading: false,
             virtual_instructions: Vec::new(),
         };
 
         let instructions = build_gateway_instructions(&ctx).unwrap();
-        // Tool listing should be present
-        assert!(instructions.contains("`barebones__tool`"));
-        // But no XML tags since no instructions or description
+        assert!(instructions.contains("`barebones__tool` (tool)"));
         assert!(!instructions.contains("<barebones>"));
     }
 
@@ -885,19 +914,207 @@ mod tests {
                 prompt_names: vec!["knowledge__summarize".to_string()],
             }],
             unavailable_servers: Vec::new(),
-
             deferred_loading: false,
             virtual_instructions: Vec::new(),
         };
 
         let instructions = build_gateway_instructions(&ctx).unwrap();
-        // Tools listed
-        assert!(instructions.contains("`knowledge__search`"));
-        // Resources listed with annotation
+        assert!(instructions.contains("`knowledge__search` (tool)"));
         assert!(instructions.contains("`knowledge__docs` (resource)"));
         assert!(instructions.contains("`knowledge__faq` (resource)"));
-        // Prompts listed with annotation
         assert!(instructions.contains("`knowledge__summarize` (prompt)"));
+    }
+
+    // --- Snapshot-style tests ---
+
+    #[test]
+    fn test_full_instructions_snapshot() {
+        use crate::gateway::virtual_server::VirtualInstructions;
+
+        let ctx = InstructionsContext {
+            servers: vec![
+                McpServerInstructionInfo {
+                    name: "filesystem".to_string(),
+                    instructions: Some(
+                        "Use read_file to read and write_file to write.".to_string(),
+                    ),
+                    description: Some("File operations server".to_string()),
+                    tool_names: vec![
+                        "filesystem__read_file".to_string(),
+                        "filesystem__write_file".to_string(),
+                    ],
+                    resource_names: Vec::new(),
+                    prompt_names: Vec::new(),
+                },
+                McpServerInstructionInfo {
+                    name: "knowledge".to_string(),
+                    instructions: None,
+                    description: None,
+                    tool_names: vec!["knowledge__search".to_string()],
+                    resource_names: vec![
+                        "knowledge__docs".to_string(),
+                        "knowledge__faq".to_string(),
+                    ],
+                    prompt_names: vec!["knowledge__summarize".to_string()],
+                },
+            ],
+            unavailable_servers: vec![UnavailableServerInfo {
+                name: "broken-server".to_string(),
+                error: "Connection refused".to_string(),
+            }],
+            deferred_loading: false,
+            virtual_instructions: vec![
+                VirtualInstructions {
+                    section_title: "Skills".to_string(),
+                    content: "Call a skill's `get_info` tool.\n\n- **code-review**: `skill_code_review_get_info` — Automated code review\n".to_string(),
+                    tool_names: vec![
+                        "skill_code_review_get_info".to_string(),
+                        "skill_deploy_get_info".to_string(),
+                    ],
+                },
+                VirtualInstructions {
+                    section_title: "Marketplace".to_string(),
+                    content: "Use marketplace tools to discover and install new MCP servers.\n".to_string(),
+                    tool_names: vec![
+                        "marketplace__search_mcp_servers".to_string(),
+                        "marketplace__install_mcp_server".to_string(),
+                    ],
+                },
+            ],
+        };
+
+        let instructions = build_gateway_instructions(&ctx).unwrap();
+
+        // Virtual servers come first
+        let skills_pos = instructions.find("**Skills**").unwrap();
+        let marketplace_pos = instructions.find("**Marketplace**").unwrap();
+        let filesystem_pos = instructions.find("**filesystem**").unwrap();
+        let broken_pos = instructions.find("**broken-server**").unwrap();
+        assert!(skills_pos < marketplace_pos);
+        assert!(marketplace_pos < filesystem_pos);
+        assert!(filesystem_pos < broken_pos);
+
+        // Tool annotations
+        assert!(instructions.contains("`skill_code_review_get_info` (tool)"));
+        assert!(instructions.contains("`marketplace__search_mcp_servers` (tool)"));
+        assert!(instructions.contains("`filesystem__read_file` (tool)"));
+        assert!(instructions.contains("`knowledge__search` (tool)"));
+        assert!(instructions.contains("`knowledge__docs` (resource)"));
+        assert!(instructions.contains("`knowledge__summarize` (prompt)"));
+
+        // XML instructions for virtual servers
+        assert!(instructions.contains("<skills>"));
+        assert!(instructions.contains("</skills>"));
+        assert!(instructions.contains("<marketplace>"));
+        assert!(instructions.contains("</marketplace>"));
+
+        // XML instructions for regular servers
+        assert!(instructions.contains("<filesystem>"));
+        assert!(instructions.contains("</filesystem>"));
+        // knowledge has no instructions/description, so no XML
+        assert!(!instructions.contains("<knowledge>"));
+
+        // Unavailable server
+        assert!(instructions.contains("**broken-server** — unavailable: Connection refused"));
+    }
+
+    #[test]
+    fn test_virtual_only_instructions_snapshot() {
+        use crate::gateway::virtual_server::VirtualInstructions;
+
+        let ctx = InstructionsContext {
+            servers: Vec::new(),
+            unavailable_servers: Vec::new(),
+            deferred_loading: false,
+            virtual_instructions: vec![VirtualInstructions {
+                section_title: "Skills".to_string(),
+                content: "Call get_info to unlock skills.\n".to_string(),
+                tool_names: vec![
+                    "skill_code_review_get_info".to_string(),
+                    "skill_deploy_get_info".to_string(),
+                ],
+            }],
+        };
+
+        let instructions = build_gateway_instructions(&ctx).unwrap();
+        assert!(instructions.contains("**Skills**"));
+        assert!(instructions.contains("`skill_code_review_get_info` (tool)"));
+        assert!(instructions.contains("`skill_deploy_get_info` (tool)"));
+        assert!(instructions.contains("<skills>"));
+        assert!(instructions.contains("Call get_info to unlock skills."));
+        assert!(instructions.contains("</skills>"));
+        // No regular server content
+        assert!(!instructions.contains("servername__"));
+    }
+
+    #[test]
+    fn test_deferred_instructions_snapshot() {
+        use crate::gateway::virtual_server::VirtualInstructions;
+
+        // Build a server with >20 tools to test truncation
+        let tool_names: Vec<String> = (1..=25)
+            .map(|i| format!("big-server__tool_{}", i))
+            .collect();
+
+        let ctx = InstructionsContext {
+            servers: vec![
+                McpServerInstructionInfo {
+                    name: "big-server".to_string(),
+                    instructions: Some("Detailed instructions for big server.".to_string()),
+                    description: None,
+                    tool_names,
+                    resource_names: Vec::new(),
+                    prompt_names: Vec::new(),
+                },
+                McpServerInstructionInfo {
+                    name: "small".to_string(),
+                    instructions: Some("Small server instructions.".to_string()),
+                    description: None,
+                    tool_names: vec!["small__tool_a".to_string(), "small__tool_b".to_string()],
+                    resource_names: Vec::new(),
+                    prompt_names: Vec::new(),
+                },
+            ],
+            unavailable_servers: Vec::new(),
+            deferred_loading: true,
+            virtual_instructions: vec![VirtualInstructions {
+                section_title: "Skills".to_string(),
+                content: "Skill instructions always shown.\n".to_string(),
+                tool_names: vec!["skill_test_get_info".to_string()],
+            }],
+        };
+
+        let instructions = build_gateway_instructions(&ctx).unwrap();
+
+        // Header mentions deferred
+        assert!(instructions.contains("on demand"));
+        assert!(instructions.contains("`search`"));
+        assert!(instructions.contains("`server_info`"));
+
+        // Virtual instructions always included
+        assert!(instructions.contains("<skills>"));
+        assert!(instructions.contains("Skill instructions always shown."));
+        assert!(instructions.contains("</skills>"));
+
+        // Regular server instructions omitted in deferred mode
+        assert!(!instructions.contains("<big-server>"));
+        assert!(!instructions.contains("Detailed instructions for big server."));
+        assert!(!instructions.contains("<small>"));
+        assert!(!instructions.contains("Small server instructions."));
+
+        // Big server truncated with count summary
+        assert!(instructions.contains("**big-server** (25 tools)"));
+        assert!(instructions.contains("`big-server__tool_1` (tool)"));
+        assert!(instructions.contains("`big-server__tool_20` (tool)"));
+        // Tool 21 should NOT appear (past limit)
+        assert!(!instructions.contains("`big-server__tool_21` (tool)"));
+        // Truncation hint
+        assert!(instructions.contains("use `search` to find more"));
+
+        // Small server NOT truncated (only 2 tools, under limit)
+        assert!(instructions.contains("**small**\n"));
+        assert!(instructions.contains("`small__tool_a` (tool)"));
+        assert!(instructions.contains("`small__tool_b` (tool)"));
     }
 
     #[test]

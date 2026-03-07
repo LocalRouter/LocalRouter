@@ -102,6 +102,31 @@ pub fn create_search_tool(resources_deferred: bool, prompts_deferred: bool) -> N
     }
 }
 
+/// Create the virtual server_info tool for deferred loading.
+///
+/// Returns full tool list and detailed instructions for a specific MCP server.
+/// Does NOT activate tools — the LLM still needs `search` to activate them.
+pub fn create_server_info_tool() -> NamespacedTool {
+    NamespacedTool {
+        name: "server_info".to_string(),
+        original_name: "server_info".to_string(),
+        server_id: "_gateway".to_string(),
+        description: Some(
+            "Get full tool list and detailed instructions for a specific MCP server.".to_string(),
+        ),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "server": {
+                    "type": "string",
+                    "description": "The server name (as shown in the tool listing)"
+                }
+            },
+            "required": ["server"]
+        }),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Searchable text extraction
 // ---------------------------------------------------------------------------
@@ -583,5 +608,24 @@ mod tests {
 
         let results = search_tools("related", &catalog, 10, SearchMode::Regex);
         assert!(results.len() >= MIN_ACTIVATIONS || results.len() == catalog.len());
+    }
+
+    #[test]
+    fn test_create_server_info_tool() {
+        let tool = create_server_info_tool();
+        assert_eq!(tool.name, "server_info");
+        assert_eq!(tool.server_id, "_gateway");
+        let desc = tool.description.unwrap();
+        assert!(desc.contains("full tool list"));
+        assert!(desc.contains("instructions"));
+        // Schema requires "server" parameter
+        let required = &tool.input_schema["required"];
+        assert!(required
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v == "server"));
+        let props = &tool.input_schema["properties"];
+        assert!(props.get("server").is_some());
     }
 }

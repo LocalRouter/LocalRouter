@@ -229,7 +229,9 @@ impl VirtualMcpServer for SkillsVirtualServer {
             return None;
         }
 
-        let mut content = String::new();
+        let mut content = String::from(
+            "Call a skill's `get_info` tool to view its full instructions and unlock its run/read tools.\n\n",
+        );
         for skill in &accessible {
             let sname = sanitize_name(&skill.metadata.name);
             content.push_str(&format!(
@@ -245,6 +247,7 @@ impl VirtualMcpServer for SkillsVirtualServer {
         Some(VirtualInstructions {
             section_title: "Skills".to_string(),
             content,
+            tool_names: Vec::new(), // populated by gateway
         })
     }
 

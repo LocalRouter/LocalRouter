@@ -100,4 +100,5 @@ pub enum VirtualToolCallResult {
 pub struct VirtualInstructions {
     pub section_title: String,
     pub content: String,
+    pub tool_names: Vec<String>,
 }

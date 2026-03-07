@@ -117,19 +117,43 @@ impl McpGateway {
     }
 
     /// Collect instructions from all registered virtual servers.
+    ///
+    /// For each virtual server, populates `tool_names` from `list_tools()`.
+    /// If `build_instructions()` returns `None` but tools exist, creates a
+    /// minimal `VirtualInstructions` with just the display name and tool names.
     async fn collect_virtual_instructions(
         &self,
         session: &Arc<RwLock<GatewaySession>>,
     ) -> Vec<super::virtual_server::VirtualInstructions> {
         let session_read = session.read().await;
-        self.virtual_servers
-            .read()
-            .iter()
-            .filter_map(|vs| {
-                let state = session_read.virtual_server_state.get(vs.id())?;
-                vs.build_instructions(state.as_ref())
-            })
-            .collect()
+        let mut result = Vec::new();
+
+        for vs in self.virtual_servers.read().iter() {
+            let state = match session_read.virtual_server_state.get(vs.id()) {
+                Some(s) => s,
+                None => continue,
+            };
+
+            let tool_names: Vec<String> = vs
+                .list_tools(state.as_ref())
+                .into_iter()
+                .map(|t| t.name)
+                .collect();
+
+            if let Some(mut instructions) = vs.build_instructions(state.as_ref()) {
+                instructions.tool_names = tool_names;
+                result.push(instructions);
+            } else if !tool_names.is_empty() {
+                // Virtual server has tools but no instructions — create minimal entry
+                result.push(super::virtual_server::VirtualInstructions {
+                    section_title: vs.display_name().to_string(),
+                    content: String::new(),
+                    tool_names,
+                });
+            }
+        }
+
+        result
     }
 
     /// Build `McpServerInstructionInfo` list from init results and catalogs.
@@ -1156,6 +1180,8 @@ impl McpGateway {
                     full_resource_catalog: resources.clone(),
                     activated_prompts: std::collections::HashSet::new(),
                     full_prompt_catalog: prompts.clone(),
+                    server_instructions: std::collections::HashMap::new(),
+                    server_tool_lists: std::collections::HashMap::new(),
                 });
 
                 tracing::info!(
@@ -1240,6 +1266,58 @@ impl McpGateway {
             &prompts_catalog,
         );
         let unavailable = self.build_unavailable_server_infos(&merged.failures);
+
+        // In deferred mode, store per-server instructions and tool lists for server_info tool
+        if deferred_enabled {
+            let mut si_map = std::collections::HashMap::new();
+            let mut tl_map = std::collections::HashMap::new();
+            for info in &server_infos {
+                let slug = super::types::slugify(&info.name);
+
+                // Build annotated tool list
+                let mut items: Vec<String> = Vec::new();
+                for name in &info.tool_names {
+                    items.push(format!("{} (tool)", name));
+                }
+                for name in &info.resource_names {
+                    items.push(format!("{} (resource)", name));
+                }
+                for name in &info.prompt_names {
+                    items.push(format!("{} (prompt)", name));
+                }
+                tl_map.insert(slug.clone(), items);
+
+                // Build XML instruction block
+                let has_content =
+                    info.instructions.is_some() || info.description.is_some();
+                if has_content {
+                    let mut block = format!("<{}>\n", slug);
+                    if let Some(desc) = &info.description {
+                        block.push_str(desc);
+                        if !desc.ends_with('\n') {
+                            block.push('\n');
+                        }
+                    }
+                    if let Some(inst) = &info.instructions {
+                        if info.description.is_some() {
+                            block.push('\n');
+                        }
+                        block.push_str(inst);
+                        if !inst.ends_with('\n') {
+                            block.push('\n');
+                        }
+                    }
+                    block.push_str(&format!("</{}>\n", slug));
+                    si_map.insert(slug, block);
+                }
+            }
+            let mut session_write = session.write().await;
+            if let Some(ref mut ds) = session_write.deferred_loading {
+                ds.server_instructions = si_map;
+                ds.server_tool_lists = tl_map;
+            }
+            drop(session_write);
+        }
 
         let instructions = build_gateway_instructions(&InstructionsContext {
             servers: server_infos,

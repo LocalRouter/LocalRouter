@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -489,6 +489,14 @@ pub struct DeferredLoadingState {
 
     /// Full prompt catalog
     pub full_prompt_catalog: Vec<NamespacedPrompt>,
+
+    /// Per-server instructions for the `server_info` tool.
+    /// Maps slugified server name to the rendered XML instruction block.
+    pub server_instructions: HashMap<String, String>,
+
+    /// Full tool names per server for the `server_info` tool.
+    /// Maps slugified server name to all tool/resource/prompt names for that server.
+    pub server_tool_lists: HashMap<String, Vec<String>>,
 }
 
 /// Server failure info for partial failure handling

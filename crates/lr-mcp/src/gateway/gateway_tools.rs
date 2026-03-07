@@ -9,6 +9,7 @@ use crate::protocol::{
 use lr_types::{AppError, AppResult};
 
 use super::deferred::create_search_tool;
+use super::deferred::create_server_info_tool;
 use super::deferred::{search_prompts, search_resources, search_tools, SearchMode};
 use super::merger::merge_tools;
 use super::router::{broadcast_request, separate_results};
@@ -50,11 +51,15 @@ impl McpGateway {
 
         if let Some(deferred) = &session_read.deferred_loading {
             if deferred.enabled {
-                // Return only search tool + activated tools + skill tools
-                let mut tools: Vec<serde_json::Value> = vec![serde_json::to_value(
-                    create_search_tool(deferred.resources_deferred, deferred.prompts_deferred),
-                )
-                .unwrap_or_default()];
+                // Return search tool + server_info tool + activated tools + virtual server tools
+                let mut tools: Vec<serde_json::Value> = vec![
+                    serde_json::to_value(create_search_tool(
+                        deferred.resources_deferred,
+                        deferred.prompts_deferred,
+                    ))
+                    .unwrap_or_default(),
+                    serde_json::to_value(create_server_info_tool()).unwrap_or_default(),
+                ];
 
                 for tool_name in &deferred.activated_tools {
                     if let Some(tool) = deferred.full_catalog.iter().find(|t| t.name == *tool_name)
@@ -233,6 +238,11 @@ impl McpGateway {
         // Check if it's the virtual search tool
         if tool_name == "search" {
             return self.handle_search_tool(session, request).await;
+        }
+
+        // Check if it's the virtual server_info tool
+        if tool_name == "server_info" {
+            return self.handle_server_info_tool(session, request).await;
         }
 
         // Check virtual servers
@@ -666,6 +676,102 @@ impl McpGateway {
                 "activated": activated_names,
                 "message": format!("Activated {} items. Use tools/list, resources/list, or prompts/list to see them.", activated_names.len()),
                 "matches": all_matches,
+            }),
+        ))
+    }
+
+    /// Handle server_info tool call (for deferred loading).
+    ///
+    /// Returns the full tool list and instructions for a specific MCP server.
+    /// Does NOT activate tools — the LLM still needs `search` to activate them.
+    pub(crate) async fn handle_server_info_tool(
+        &self,
+        session: Arc<RwLock<GatewaySession>>,
+        request: JsonRpcRequest,
+    ) -> AppResult<JsonRpcResponse> {
+        let session_read = session.read().await;
+
+        let deferred = match &session_read.deferred_loading {
+            Some(d) if d.enabled => d,
+            _ => {
+                return Ok(JsonRpcResponse::error(
+                    request.id.unwrap_or(Value::Null),
+                    JsonRpcError::invalid_params("Deferred loading not enabled"),
+                ));
+            }
+        };
+
+        let params = match request.params.as_ref() {
+            Some(p) => p,
+            None => {
+                return Ok(JsonRpcResponse::error(
+                    request.id.unwrap_or(Value::Null),
+                    JsonRpcError::invalid_params("Missing params"),
+                ));
+            }
+        };
+
+        let arguments = match params.get("arguments") {
+            Some(a) => a,
+            None => {
+                return Ok(JsonRpcResponse::error(
+                    request.id.unwrap_or(Value::Null),
+                    JsonRpcError::invalid_params("Missing arguments in params"),
+                ));
+            }
+        };
+
+        let server_name = match arguments.get("server").and_then(|s| s.as_str()) {
+            Some(s) => s,
+            None => {
+                return Ok(JsonRpcResponse::error(
+                    request.id.unwrap_or(Value::Null),
+                    JsonRpcError::invalid_params("Missing server parameter"),
+                ));
+            }
+        };
+
+        // Look up by slugified name
+        let slug = super::types::slugify(server_name);
+        let tool_list = deferred.server_tool_lists.get(&slug);
+        let instructions = deferred.server_instructions.get(&slug);
+
+        if tool_list.is_none() && instructions.is_none() {
+            return Ok(JsonRpcResponse::success(
+                request.id.unwrap_or(Value::Null),
+                json!({
+                    "content": [{
+                        "type": "text",
+                        "text": format!("Server '{}' not found. Check the server name in the tool listing.", server_name)
+                    }],
+                    "isError": true
+                }),
+            ));
+        }
+
+        let mut result_text = String::new();
+        if let Some(tools) = tool_list {
+            result_text.push_str(&format!("**{}** — {} items\n\n", server_name, tools.len()));
+            for name in tools {
+                result_text.push_str(&format!("- `{}`\n", name));
+            }
+        }
+        if let Some(inst) = instructions {
+            if !result_text.is_empty() {
+                result_text.push('\n');
+            }
+            result_text.push_str(inst);
+        }
+
+        drop(session_read);
+
+        Ok(JsonRpcResponse::success(
+            request.id.unwrap_or(Value::Null),
+            json!({
+                "content": [{
+                    "type": "text",
+                    "text": result_text
+                }]
             }),
         ))
     }

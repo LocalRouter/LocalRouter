@@ -134,9 +134,22 @@ impl VirtualMcpServer for MarketplaceVirtualServer {
         }
     }
 
-    fn build_instructions(&self, _state: &dyn VirtualSessionState) -> Option<VirtualInstructions> {
-        // Marketplace has no system prompt section today
-        None
+    fn build_instructions(&self, state: &dyn VirtualSessionState) -> Option<VirtualInstructions> {
+        let state = state
+            .as_any()
+            .downcast_ref::<MarketplaceSessionState>()
+            .expect("wrong state type for MarketplaceVirtualServer");
+
+        if !state.permission.is_enabled() || !self.service.is_enabled() {
+            return None;
+        }
+
+        Some(VirtualInstructions {
+            section_title: "Marketplace".to_string(),
+            content: "Use marketplace tools to discover and install new MCP servers and skills.\n"
+                .to_string(),
+            tool_names: Vec::new(), // populated by gateway
+        })
     }
 
     fn create_session_state(&self, client: &lr_config::Client) -> Box<dyn VirtualSessionState> {

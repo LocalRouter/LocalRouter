@@ -176,8 +176,9 @@ impl VirtualMcpServer for CodingAgentVirtualServer {
         );
 
         Some(VirtualInstructions {
-            section_title: "AI Coding Agent".to_string(),
+            section_title: "Coding Agents".to_string(),
             content,
+            tool_names: Vec::new(), // populated by gateway
         })
     }
 
