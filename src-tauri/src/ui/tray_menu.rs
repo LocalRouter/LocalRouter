@@ -122,121 +122,6 @@ pub(crate) fn build_tray_menu<R: Runtime, M: Manager<R>>(
     // 3. Copy URL (LLM and MCP)
     menu_builder = menu_builder.text("copy_url", format!("{ICON_PAD}⧉{ICON_PAD} Copy URL"));
 
-    // 4. Health issues section (only shown when there are issues)
-    if let Some(app_state) = app.try_state::<Arc<lr_server::state::AppState>>() {
-        let health_state = app_state.health_cache.get();
-        debug!(
-            "Tray menu: aggregate_status={:?}, providers={}, mcp_servers={}",
-            health_state.aggregate_status,
-            health_state.providers.len(),
-            health_state.mcp_servers.len()
-        );
-
-        // Only show issues when aggregate status is Yellow or Red
-        if matches!(
-            health_state.aggregate_status,
-            AggregateHealthStatus::Yellow | AggregateHealthStatus::Red
-        ) {
-            // Show unhealthy/degraded providers
-            for (provider_name, health) in &health_state.providers {
-                if matches!(
-                    health.status,
-                    ItemHealthStatus::Unhealthy | ItemHealthStatus::Degraded
-                ) {
-                    let label = format!(
-                        "❕ Provider '{}' {}",
-                        provider_name,
-                        match health.status {
-                            ItemHealthStatus::Unhealthy => "unhealthy",
-                            ItemHealthStatus::Degraded => "degraded",
-                            _ => "",
-                        }
-                    );
-                    menu_builder = menu_builder
-                        .text(format!("health_issue_provider_{}", provider_name), label);
-                }
-            }
-
-            // Show unhealthy/degraded MCP servers
-            for (server_id, health) in &health_state.mcp_servers {
-                if matches!(
-                    health.status,
-                    ItemHealthStatus::Unhealthy | ItemHealthStatus::Degraded
-                ) {
-                    let display_name = if health.name.is_empty() {
-                        format!("MCP {}", &server_id[..server_id.len().min(8)])
-                    } else {
-                        health.name.clone()
-                    };
-                    let label = format!(
-                        "❕ MCP '{}' {}",
-                        display_name,
-                        match health.status {
-                            ItemHealthStatus::Unhealthy => "unhealthy",
-                            ItemHealthStatus::Degraded => "degraded",
-                            _ => "",
-                        }
-                    );
-                    menu_builder =
-                        menu_builder.text(format!("health_issue_mcp_{}", server_id), label);
-                }
-            }
-        }
-    } else {
-        debug!("Tray menu: AppState not available");
-    }
-
-    // 5. Update section (shown when update is available)
-    if let Some(update_state) = app.try_state::<Arc<UpdateNotificationState>>() {
-        if update_state.is_update_available() {
-            menu_builder = menu_builder.text(
-                "update_and_restart",
-                format!("{ICON_PAD}↓{ICON_PAD} Update and restart"),
-            );
-        }
-    }
-
-    // 5b. Firewall pending approvals section (shown when approvals are pending)
-    if let Some(app_state) = app.try_state::<Arc<lr_server::state::AppState>>() {
-        let pending = app_state.mcp_gateway.firewall_manager.list_pending();
-        for approval in &pending {
-            // Truncate tool name for display
-            let tool_display = if approval.tool_name.len() > 25 {
-                format!("{}…", &approval.tool_name[..25])
-            } else {
-                approval.tool_name.clone()
-            };
-            let label = format!(
-                "❓ Approval: \"{}\" for {}",
-                tool_display, approval.client_name
-            );
-
-            // Create submenu with approval options
-            let request_id = &approval.request_id;
-            let submenu = SubmenuBuilder::new(app, label)
-                .text(
-                    format!("firewall_deny_{}", request_id),
-                    format!("{}✕ Deny", TRAY_INDENT),
-                )
-                .text(
-                    format!("firewall_allow_once_{}", request_id),
-                    format!("{}✓ Allow Once", TRAY_INDENT),
-                )
-                .text(
-                    format!("firewall_allow_session_{}", request_id),
-                    format!("{}✓ Allow Session", TRAY_INDENT),
-                )
-                .separator()
-                .text(
-                    format!("firewall_open_{}", request_id),
-                    format!("{}Open Popup…", TRAY_INDENT),
-                )
-                .build()?;
-
-            menu_builder = menu_builder.item(&submenu);
-        }
-    }
-
     // Add separator before clients
     menu_builder = menu_builder.separator();
 
@@ -529,6 +414,131 @@ pub(crate) fn build_tray_menu<R: Runtime, M: Manager<R>>(
 
     // Add "Quick Create & Copy API Key" button (creates with all models, no MCP)
     menu_builder = menu_builder.text("create_and_copy_api_key", "＋ Add && Copy Key");
+
+    // Notifications section (dynamic: health issues, updates, firewall approvals)
+    // Only shown with a separator when there are notifications to display.
+    {
+        let mut has_notifications = false;
+
+        // Health issues (only when aggregate status is Yellow or Red)
+        if let Some(app_state) = app.try_state::<Arc<lr_server::state::AppState>>() {
+            let health_state = app_state.health_cache.get();
+            debug!(
+                "Tray menu: aggregate_status={:?}, providers={}, mcp_servers={}",
+                health_state.aggregate_status,
+                health_state.providers.len(),
+                health_state.mcp_servers.len()
+            );
+
+            if matches!(
+                health_state.aggregate_status,
+                AggregateHealthStatus::Yellow | AggregateHealthStatus::Red
+            ) {
+                for (provider_name, health) in &health_state.providers {
+                    if matches!(
+                        health.status,
+                        ItemHealthStatus::Unhealthy | ItemHealthStatus::Degraded
+                    ) {
+                        if !has_notifications {
+                            menu_builder = menu_builder.separator();
+                            has_notifications = true;
+                        }
+                        let label = format!(
+                            "❕ Provider '{}' {}",
+                            provider_name,
+                            match health.status {
+                                ItemHealthStatus::Unhealthy => "unhealthy",
+                                ItemHealthStatus::Degraded => "degraded",
+                                _ => "",
+                            }
+                        );
+                        menu_builder = menu_builder
+                            .text(format!("health_issue_provider_{}", provider_name), label);
+                    }
+                }
+
+                for (server_id, health) in &health_state.mcp_servers {
+                    if matches!(
+                        health.status,
+                        ItemHealthStatus::Unhealthy | ItemHealthStatus::Degraded
+                    ) {
+                        if !has_notifications {
+                            menu_builder = menu_builder.separator();
+                            has_notifications = true;
+                        }
+                        let display_name = if health.name.is_empty() {
+                            format!("MCP {}", &server_id[..server_id.len().min(8)])
+                        } else {
+                            health.name.clone()
+                        };
+                        let label = format!(
+                            "❕ MCP '{}' {}",
+                            display_name,
+                            match health.status {
+                                ItemHealthStatus::Unhealthy => "unhealthy",
+                                ItemHealthStatus::Degraded => "degraded",
+                                _ => "",
+                            }
+                        );
+                        menu_builder =
+                            menu_builder.text(format!("health_issue_mcp_{}", server_id), label);
+                    }
+                }
+            }
+        } else {
+            debug!("Tray menu: AppState not available");
+        }
+
+        // Update available
+        if let Some(update_state) = app.try_state::<Arc<UpdateNotificationState>>() {
+            if update_state.is_update_available() {
+                if !has_notifications {
+                    menu_builder = menu_builder.separator();
+                    has_notifications = true;
+                }
+                menu_builder = menu_builder.text(
+                    "update_and_restart",
+                    format!("{ICON_PAD}↓{ICON_PAD} Update and restart"),
+                );
+            }
+        }
+
+        // Firewall pending approvals
+        if let Some(app_state) = app.try_state::<Arc<lr_server::state::AppState>>() {
+            let pending = app_state.mcp_gateway.firewall_manager.list_pending();
+            for approval in &pending {
+                if !has_notifications {
+                    menu_builder = menu_builder.separator();
+                    has_notifications = true;
+                }
+                let name_display = if approval.tool_name.len() > 25 {
+                    format!("{}…", &approval.tool_name[..25])
+                } else {
+                    approval.tool_name.clone()
+                };
+
+                let label = if approval.is_guardrail_request {
+                    format!(
+                        "❔ Guardrail: \"{}\" — {}",
+                        name_display, approval.client_name
+                    )
+                } else if approval.is_free_tier_fallback {
+                    format!("❔ Free-Tier Fallback — {}", approval.client_name)
+                } else if approval.is_model_request {
+                    format!("❔ Model: \"{}\" — {}", name_display, approval.client_name)
+                } else if approval.is_auto_router_request {
+                    format!("❔ Auto Router — {}", approval.client_name)
+                } else {
+                    format!("❔ Tool: \"{}\" — {}", name_display, approval.client_name)
+                };
+
+                menu_builder =
+                    menu_builder.text(format!("firewall_open_{}", approval.request_id), label);
+            }
+        }
+
+        let _ = has_notifications;
+    }
 
     // Add separator before quit
     menu_builder = menu_builder.separator();

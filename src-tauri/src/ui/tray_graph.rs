@@ -20,7 +20,7 @@ pub enum TrayOverlay {
     Warning(Rgba<u8>),
     /// Down-arrow in foreground color (update available)
     UpdateAvailable,
-    /// Question mark in green (firewall approval pending)
+    /// Question mark in red (firewall approval pending)
     FirewallPending,
 }
 
@@ -651,7 +651,7 @@ pub fn generate_graph(
             draw_down_arrow(&mut img, config.foreground);
         }
         TrayOverlay::FirewallPending => {
-            draw_question_mark(&mut img, StatusDotColors::green(dark_mode));
+            draw_question_mark(&mut img, StatusDotColors::red(dark_mode));
         }
     }
 
@@ -760,7 +760,7 @@ pub fn generate_static_icon_with_overlay(
             draw_down_arrow(&mut img, Rgba([255, 255, 255, 255]));
         }
         TrayOverlay::FirewallPending => {
-            draw_question_mark(&mut img, StatusDotColors::green(dark_mode));
+            draw_question_mark(&mut img, StatusDotColors::red(dark_mode));
         }
     }
 

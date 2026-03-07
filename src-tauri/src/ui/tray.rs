@@ -156,38 +156,8 @@ pub fn setup_tray<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
                     app.exit(0);
                 }
                 _ => {
-                    // Handle firewall deny: firewall_deny_<request_id>
-                    if let Some(request_id) = id.strip_prefix("firewall_deny_") {
-                        info!("Firewall deny requested from tray for {}", request_id);
-                        handle_firewall_action_from_tray(
-                            app,
-                            request_id,
-                            lr_mcp::gateway::firewall::FirewallApprovalAction::Deny,
-                        );
-                    }
-                    // Handle firewall allow once: firewall_allow_once_<request_id>
-                    else if let Some(request_id) = id.strip_prefix("firewall_allow_once_") {
-                        info!("Firewall allow once requested from tray for {}", request_id);
-                        handle_firewall_action_from_tray(
-                            app,
-                            request_id,
-                            lr_mcp::gateway::firewall::FirewallApprovalAction::AllowOnce,
-                        );
-                    }
-                    // Handle firewall allow session: firewall_allow_session_<request_id>
-                    else if let Some(request_id) = id.strip_prefix("firewall_allow_session_") {
-                        info!(
-                            "Firewall allow session requested from tray for {}",
-                            request_id
-                        );
-                        handle_firewall_action_from_tray(
-                            app,
-                            request_id,
-                            lr_mcp::gateway::firewall::FirewallApprovalAction::AllowSession,
-                        );
-                    }
-                    // Handle firewall open popup: firewall_open_<request_id>
-                    else if let Some(request_id) = id.strip_prefix("firewall_open_") {
+                    // Handle firewall approval: open popup for firewall_open_<request_id>
+                    if let Some(request_id) = id.strip_prefix("firewall_open_") {
                         info!("Firewall popup requested from tray for {}", request_id);
                         let app_clone = app.clone();
                         let request_id = request_id.to_string();
@@ -577,58 +547,6 @@ pub fn set_update_available<R: Runtime>(app: &AppHandle<R>, available: bool) -> 
     }
 
     Ok(())
-}
-
-/// Handle a firewall approval action from the tray menu
-fn handle_firewall_action_from_tray<R: Runtime>(
-    app: &AppHandle<R>,
-    request_id: &str,
-    action: lr_mcp::gateway::firewall::FirewallApprovalAction,
-) {
-    let app_clone = app.clone();
-    let request_id = request_id.to_string();
-
-    tauri::async_runtime::spawn(async move {
-        // Submit the firewall response
-        if let Some(app_state) = app_clone.try_state::<Arc<lr_server::state::AppState>>() {
-            let action_debug = format!("{:?}", action);
-            if let Err(e) =
-                app_state
-                    .mcp_gateway
-                    .firewall_manager
-                    .submit_response(&request_id, action, None)
-            {
-                error!("Failed to submit firewall response from tray: {}", e);
-                return;
-            }
-            info!(
-                "Firewall response submitted from tray for {}: {}",
-                request_id, action_debug
-            );
-        }
-
-        // Close any open popup window for this request
-        if let Some(window) =
-            app_clone.get_webview_window(&format!("firewall-approval-{}", request_id))
-        {
-            let _ = window.close();
-        }
-
-        // Rebuild tray menu to remove the pending approval item
-        if let Err(e) = rebuild_tray_menu(&app_clone) {
-            error!(
-                "Failed to rebuild tray menu after firewall action from tray: {}",
-                e
-            );
-        }
-
-        // Trigger immediate tray icon update to remove the question mark overlay
-        if let Some(tray_graph_manager) =
-            app_clone.try_state::<Arc<crate::ui::tray_graph_manager::TrayGraphManager>>()
-        {
-            tray_graph_manager.notify_activity();
-        }
-    });
 }
 
 #[cfg(test)]
