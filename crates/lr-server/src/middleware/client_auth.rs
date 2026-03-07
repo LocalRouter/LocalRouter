@@ -35,12 +35,18 @@ fn extract_bearer_token(auth_header: &str) -> Option<String> {
         return None;
     }
 
-    // Extract token and reject empty/whitespace-only tokens
     auth_header.strip_prefix("Bearer ").and_then(|s| {
         if s.trim().is_empty() {
             None // Reject empty or whitespace-only bearer tokens
+        } else if s.len() > 256 {
+            None // Reject excessively long tokens
+        } else if !s
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+        {
+            None // Reject tokens with invalid characters
         } else {
-            Some(s.to_string()) // Preserve original token (don't trim internal whitespace)
+            Some(s.to_string())
         }
     })
 }
@@ -116,17 +122,31 @@ pub async fn client_auth_middleware(mut req: Request, next: Next) -> Response {
     // Try OAuth access token first (short-lived tokens from /oauth/token)
     let client_id = if let Some(id) = state.token_store.verify_token(&token) {
         // Token is a valid OAuth access token
-        tracing::debug!("Client authenticated via OAuth access token: {}", id);
+        tracing::info!(
+            event = "auth_success",
+            client_id = %id,
+            method = "oauth_token",
+            "Client authenticated via OAuth access token"
+        );
         id
     } else {
         // Try direct client secret (long-lived credentials)
         match state.client_manager.verify_secret(&token) {
             Ok(Some(client)) => {
-                tracing::debug!("Client authenticated via client secret: {}", client.id);
+                tracing::info!(
+                    event = "auth_success",
+                    client_id = %client.id,
+                    method = "client_secret",
+                    "Client authenticated via client secret"
+                );
                 client.id
             }
             Ok(None) => {
-                tracing::warn!("Invalid bearer token provided");
+                tracing::warn!(
+                    event = "auth_failed",
+                    reason = "invalid_token",
+                    "Authentication failed: invalid bearer token"
+                );
                 return ApiErrorResponse::unauthorized("Invalid bearer token").into_response();
             }
             Err(e) => {
@@ -177,9 +197,24 @@ mod tests {
         let result = extract_bearer_token(auth);
         assert_eq!(result, None);
 
-        // Token with spaces (should include everything after "Bearer ")
-        let auth = "Bearer token with spaces";
+        // Token too long - should be rejected
+        let auth = format!("Bearer {}", "a".repeat(257));
+        let result = extract_bearer_token(&auth);
+        assert_eq!(result, None);
+
+        // Token with valid length
+        let auth = format!("Bearer {}", "a".repeat(256));
+        let result = extract_bearer_token(&auth);
+        assert!(result.is_some());
+
+        // Token with invalid characters
+        let auth = "Bearer abc!@#";
         let result = extract_bearer_token(auth);
-        assert_eq!(result, Some("token with spaces".to_string()));
+        assert_eq!(result, None);
+
+        // Token with allowed special chars
+        let auth = "Bearer lr-abc_123.test";
+        let result = extract_bearer_token(auth);
+        assert_eq!(result, Some("lr-abc_123.test".to_string()));
     }
 }
