@@ -721,10 +721,9 @@ impl AppState {
         metrics_collector: Arc<MetricsCollector>,
     ) -> Self {
         // Generate a random bearer token for internal UI testing
-        // Format: lr-internal-<uuid> to match standard API key format
         // This is regenerated on every app start and never persisted
-        let internal_test_secret = format!("lr-internal-{}", Uuid::new_v4().simple());
-        tracing::info!("Generated transient internal test bearer token for UI model testing");
+        let internal_test_secret = lr_utils::crypto::generate_api_key()
+            .unwrap_or_else(|_| format!("lr-internal-{}", Uuid::new_v4().simple()));
 
         // Get logging config (retention and enabled status)
         let logging_config = &config_manager.get().logging;
