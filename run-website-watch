@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+
+# Script to run the website in dev mode with hot reload
+
+set -euo pipefail
+
+# Colors for output
+GREEN='\033[0;32m'
+NC='\033[0m' # No Color
+
+echo -e "${GREEN}Starting website in development mode with hot reload...${NC}"
+echo -e "Press Ctrl+C to stop\n"
+
+cd "$(dirname "$0")/website"
+npm install
+exec npm run dev

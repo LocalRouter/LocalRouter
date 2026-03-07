@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+
+# Script to build the website once without hot reload
+
+set -euo pipefail
+
+# Colors for output
+GREEN='\033[0;32m'
+NC='\033[0m' # No Color
+
+echo -e "${GREEN}Building website (no hot reload)...${NC}"
+
+cd "$(dirname "$0")/website"
+npm install
+npm run build
