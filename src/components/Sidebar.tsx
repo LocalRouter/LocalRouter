@@ -59,10 +59,12 @@ export default function Sidebar({ activeTab, activeSubTab, onTabChange }: Sideba
   const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set())
 
   useEffect(() => {
-    // Initial load
+    // Initial load - use cached models for instant display
     loadProviders()
     loadClients()
-    loadModels()
+    invoke<Model[]>('get_cached_models')
+      .then(cached => { if (cached.length > 0) setModels(cached) })
+      .catch(() => {})
     loadOAuthClients()
     loadMcpServers()
     // DEPRECATED: loadStrategies()

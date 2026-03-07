@@ -77,6 +77,13 @@ export function AppShell({
       listen('providers-changed', loadProviders),
       listen('mcp-servers-changed', loadMcpServers),
       listen('models-changed', loadModels),
+      listen<{ provider: string; models: Model[] }>('models-provider-loaded', (event) => {
+        // Incrementally merge models as each provider completes
+        setModels(prev => [
+          ...prev.filter(m => m.provider !== event.payload.provider),
+          ...event.payload.models,
+        ])
+      }),
       // DEPRECATED: Strategy UI hidden - 1:1 client-to-strategy relationship
       // listen('strategies-changed', loadStrategies),
     ]
@@ -90,12 +97,18 @@ export function AppShell({
   }, [])
 
   const loadData = async () => {
+    // Show cached models instantly, then trigger background refresh
+    invoke<Model[]>('get_cached_models')
+      .then(cached => { if (cached.length > 0) setModels(cached) })
+      .catch(() => {})
+    invoke('refresh_models_incremental').catch(() => {})
+
     await Promise.all([
       loadClients(),
       loadProviders(),
       loadProviderTypes(),
       loadMcpServers(),
-      loadModels(),
+      // Models loaded incrementally above, no need for blocking loadModels()
       // DEPRECATED: loadStrategies(),
     ])
   }

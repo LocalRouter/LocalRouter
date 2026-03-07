@@ -7,11 +7,13 @@
 //! - Provides model aggregation across all providers
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 #[cfg(test)]
 use chrono::Duration;
 use chrono::{DateTime, Utc};
+use futures::future::join_all;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
@@ -227,6 +229,9 @@ pub struct ProviderRegistry {
 
     /// Cache configuration
     cache_config: Arc<RwLock<ModelCacheConfig>>,
+
+    /// Guard to prevent concurrent incremental refreshes
+    refresh_in_progress: AtomicBool,
 }
 
 /// A registered provider instance
@@ -287,6 +292,7 @@ impl ProviderRegistry {
             cached_models: RwLock::new(Vec::new()),
             model_cache: Arc::new(RwLock::new(HashMap::new())),
             cache_config: Arc::new(RwLock::new(ModelCacheConfig::default())),
+            refresh_in_progress: AtomicBool::new(false),
         }
     }
 }
@@ -781,12 +787,18 @@ impl ProviderRegistry {
             .map(|inst| inst.instance_name.clone())
             .collect();
 
-        let mut all_models = Vec::new();
+        // Fetch all providers in parallel
+        let results = join_all(
+            enabled_instances
+                .iter()
+                .map(|name| self.list_provider_models_cached(name)),
+        )
+        .await;
 
-        for instance_name in enabled_instances {
-            match self.list_provider_models_cached(&instance_name).await {
+        let mut all_models = Vec::new();
+        for (instance_name, result) in enabled_instances.iter().zip(results) {
+            match result {
                 Ok(mut models) => {
-                    // Override provider field with instance name
                     for model in &mut models {
                         model.provider = instance_name.clone();
                     }
@@ -794,7 +806,6 @@ impl ProviderRegistry {
                 }
                 Err(e) => {
                     warn!("Failed to list models from '{}': {}", instance_name, e);
-                    // Continue with other providers
                 }
             }
         }
@@ -804,6 +815,56 @@ impl ProviderRegistry {
             all_models.len()
         );
         Ok(all_models)
+    }
+
+    /// Get all cached models instantly without network calls.
+    ///
+    /// Returns whatever is in the per-provider caches (even if expired).
+    /// Used for instant UI display before a fresh fetch completes.
+    pub fn get_all_cached_models_instant(&self) -> Vec<ModelInfo> {
+        let cache = self.model_cache.read();
+        let enabled: std::collections::HashSet<String> = self
+            .instances
+            .read()
+            .values()
+            .filter(|inst| inst.enabled)
+            .map(|inst| inst.instance_name.clone())
+            .collect();
+
+        let mut all_models = Vec::new();
+        for (instance_name, cached) in cache.iter() {
+            if !enabled.contains(instance_name) {
+                continue;
+            }
+            let mut models = cached.models.clone();
+            for model in &mut models {
+                model.provider = instance_name.clone();
+            }
+            all_models.extend(models);
+        }
+        all_models
+    }
+
+    /// Get the list of enabled provider instance names
+    pub fn get_enabled_instance_names(&self) -> Vec<String> {
+        self.instances
+            .read()
+            .values()
+            .filter(|inst| inst.enabled)
+            .map(|inst| inst.instance_name.clone())
+            .collect()
+    }
+
+    /// Try to acquire the refresh lock. Returns true if acquired.
+    pub fn try_start_refresh(&self) -> bool {
+        self.refresh_in_progress
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+    }
+
+    /// Release the refresh lock.
+    pub fn finish_refresh(&self) {
+        self.refresh_in_progress.store(false, Ordering::SeqCst);
     }
 
     /// List models from a specific provider instance
