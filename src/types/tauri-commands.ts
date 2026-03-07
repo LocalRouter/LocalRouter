@@ -2284,6 +2284,11 @@ export interface CodingAgentInfo {
   displayName: string
   binaryName: string
   installed: boolean
+  binaryPath: string | null
+  description: string
+  supportsModelSelection: boolean
+  supportedPermissionModes: CodingPermissionMode[]
+  mcpToolPrefix: string
 }
 
 /**
@@ -2304,6 +2309,11 @@ export interface CodingSessionInfo {
 // Coding Agents Command Parameters
 // Rust: src-tauri/src/ui/commands_coding_agents.rs
 // =============================================================================
+
+/** Params for get_coding_agent_version */
+export interface GetCodingAgentVersionParams {
+  agentType: CodingAgentType
+}
 
 /** Params for end_coding_session */
 export interface EndCodingSessionParams {

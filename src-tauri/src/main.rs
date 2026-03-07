@@ -534,21 +534,41 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             if let Some(app_state) = server_manager.get_state() {
                 info!("Managing AppState for Tauri commands");
 
-                // Wire skill support into MCP gateway (uses OnceLock, so &self is fine)
+                // Wire skill support into MCP gateway (OnceLock for legacy compatibility)
                 app_state
                     .mcp_gateway
                     .set_skill_support(skill_manager.clone(), script_executor.clone());
                 if skills_config.async_enabled {
                     app_state.mcp_gateway.set_skills_async_enabled(true);
                 }
-                info!("Skills wired to MCP gateway");
+
+                // Register skills virtual server
+                let skills_vs = Arc::new(
+                    lr_mcp::gateway::virtual_skills::SkillsVirtualServer::new(
+                        skill_manager.clone(),
+                        script_executor.clone(),
+                        skills_config.async_enabled,
+                    ),
+                );
+                app_state.mcp_gateway.register_virtual_server(skills_vs);
+                info!("Skills virtual server registered");
 
                 // Wire marketplace service into MCP gateway if available
                 if let Some(ref service) = marketplace_service {
                     app_state
                         .mcp_gateway
                         .set_marketplace_service(service.clone());
-                    info!("Marketplace wired to MCP gateway");
+
+                    // Register marketplace virtual server
+                    let marketplace_vs = Arc::new(
+                        lr_mcp::gateway::virtual_marketplace::MarketplaceVirtualServer::new(
+                            service.clone(),
+                        ),
+                    );
+                    app_state
+                        .mcp_gateway
+                        .register_virtual_server(marketplace_vs);
+                    info!("Marketplace virtual server registered");
                 }
 
                 // Initialize coding agent manager
@@ -560,8 +580,19 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                     app_state
                         .mcp_gateway
                         .set_coding_agent_support(coding_agent_manager.clone());
+
+                    // Register coding agents virtual server
+                    let coding_agents_vs = Arc::new(
+                        lr_mcp::gateway::virtual_coding_agents::CodingAgentVirtualServer::new(
+                            coding_agent_manager.clone(),
+                        ),
+                    );
+                    app_state
+                        .mcp_gateway
+                        .register_virtual_server(coding_agents_vs);
+
                     app.manage(coding_agent_manager);
-                    info!("Coding agents wired to MCP gateway");
+                    info!("Coding agents virtual server registered");
                 }
 
                 // Initialize safety engine for guardrails
@@ -1564,6 +1595,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             // Coding agents commands
             ui::commands_coding_agents::list_coding_agents,
             ui::commands_coding_agents::list_coding_sessions,
+            ui::commands_coding_agents::get_coding_agent_version,
             ui::commands_coding_agents::end_coding_session,
             ui::commands_coding_agents::get_max_coding_sessions,
             ui::commands_coding_agents::set_max_coding_sessions,

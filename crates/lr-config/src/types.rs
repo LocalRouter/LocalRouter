@@ -1346,6 +1346,58 @@ impl CodingAgentType {
         }
     }
 
+    /// Short description of the agent
+    pub fn description(&self) -> &str {
+        match self {
+            CodingAgentType::ClaudeCode => "Anthropic's agentic coding tool. Operates directly in your terminal, understanding your codebase and executing commands.",
+            CodingAgentType::GeminiCli => "Google's AI coding assistant for the command line, powered by Gemini models.",
+            CodingAgentType::Codex => "OpenAI's autonomous coding agent that can write, run, and debug code in a sandboxed environment.",
+            CodingAgentType::Amp => "Sourcegraph's AI coding agent for multi-step code tasks with full project context.",
+            CodingAgentType::Aider => "AI pair programming in your terminal. Works with most LLMs, supports Git integration.",
+            CodingAgentType::Cursor => "Cursor's CLI agent for AI-powered code editing and generation.",
+            CodingAgentType::Opencode => "Open-source terminal AI coding assistant with multi-provider support.",
+            CodingAgentType::QwenCode => "Alibaba's coding agent powered by Qwen models.",
+            CodingAgentType::Copilot => "GitHub Copilot's CLI extension for terminal-based code assistance.",
+            CodingAgentType::Droid => "Autonomous coding agent with a focus on full-stack development.",
+        }
+    }
+
+    /// Whether the agent supports model selection via CLI
+    pub fn supports_model_selection(&self) -> bool {
+        matches!(
+            self,
+            CodingAgentType::ClaudeCode
+                | CodingAgentType::GeminiCli
+                | CodingAgentType::Codex
+                | CodingAgentType::Aider
+                | CodingAgentType::Opencode
+        )
+    }
+
+    /// Which permission modes the agent supports
+    pub fn supported_permission_modes(&self) -> Vec<CodingPermissionMode> {
+        match self {
+            CodingAgentType::ClaudeCode => vec![
+                CodingPermissionMode::Auto,
+                CodingPermissionMode::Supervised,
+                CodingPermissionMode::Plan,
+            ],
+            CodingAgentType::Codex => vec![
+                CodingPermissionMode::Auto,
+                CodingPermissionMode::Supervised,
+            ],
+            _ => vec![CodingPermissionMode::Supervised],
+        }
+    }
+
+    /// Version flag for the CLI binary (used to detect version)
+    pub fn version_flag(&self) -> &str {
+        match self {
+            CodingAgentType::Aider => "--version",
+            _ => "--version",
+        }
+    }
+
     /// All known agent types
     pub fn all() -> &'static [CodingAgentType] {
         &[

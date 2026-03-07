@@ -1,7 +1,7 @@
 //! Tauri commands for AI coding agents management.
 
 use lr_coding_agents::manager::CodingAgentManager;
-use lr_config::{CodingAgentType, ConfigManager, PermissionState};
+use lr_config::{CodingAgentType, CodingPermissionMode, ConfigManager, PermissionState};
 use serde::Serialize;
 use std::sync::Arc;
 use tauri::{Emitter, State};
@@ -15,6 +15,11 @@ pub struct CodingAgentInfo {
     pub display_name: String,
     pub binary_name: String,
     pub installed: bool,
+    pub binary_path: Option<String>,
+    pub description: String,
+    pub supports_model_selection: bool,
+    pub supported_permission_modes: Vec<CodingPermissionMode>,
+    pub mcp_tool_prefix: String,
 }
 
 /// Session info returned to the frontend
@@ -39,11 +44,26 @@ pub async fn list_coding_agents(
 
     let agents: Vec<CodingAgentInfo> = CodingAgentType::all()
         .iter()
-        .map(|agent_type| CodingAgentInfo {
-            agent_type: *agent_type,
-            display_name: agent_type.display_name().to_string(),
-            binary_name: agent_type.binary_name().to_string(),
-            installed: installed.contains(agent_type),
+        .map(|agent_type| {
+            let is_installed = installed.contains(agent_type);
+            let binary_path = if is_installed {
+                which::which(agent_type.binary_name())
+                    .ok()
+                    .map(|p| p.display().to_string())
+            } else {
+                None
+            };
+            CodingAgentInfo {
+                agent_type: *agent_type,
+                display_name: agent_type.display_name().to_string(),
+                binary_name: agent_type.binary_name().to_string(),
+                installed: is_installed,
+                binary_path,
+                description: agent_type.description().to_string(),
+                supports_model_selection: agent_type.supports_model_selection(),
+                supported_permission_modes: agent_type.supported_permission_modes(),
+                mcp_tool_prefix: agent_type.tool_prefix().to_string(),
+            }
         })
         .collect();
 
@@ -68,6 +88,40 @@ pub async fn list_coding_sessions(
             created_at: s.timestamp.to_rfc3339(),
         })
         .collect())
+}
+
+/// Get the version of an installed coding agent binary
+#[tauri::command]
+pub async fn get_coding_agent_version(
+    agent_type: CodingAgentType,
+) -> Result<Option<String>, String> {
+    let binary = agent_type.binary_name();
+    let flag = agent_type.version_flag();
+
+    let output = match tokio::process::Command::new(binary)
+        .arg(flag)
+        .output()
+        .await
+    {
+        Ok(o) => o,
+        Err(_) => return Ok(None),
+    };
+
+    let text = String::from_utf8_lossy(
+        if output.stdout.is_empty() {
+            &output.stderr
+        } else {
+            &output.stdout
+        },
+    );
+
+    // Take first non-empty line, trim whitespace
+    let version = text
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .map(|l| l.trim().to_string());
+
+    Ok(version)
 }
 
 /// End a coding session
