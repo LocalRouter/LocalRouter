@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
 import { toast } from "sonner"
-import { Loader2, FlaskConical, Copy, Check, Terminal, CheckCircle2, XCircle } from "lucide-react"
+import { Loader2, FlaskConical, Copy, Check, Terminal, CheckCircle2, XCircle, ExternalLink, Square } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Badge } from "@/components/ui/Badge"
 import { Button } from "@/components/ui/Button"
@@ -26,6 +26,7 @@ import type {
   CodingSessionDetail,
   GetCodingAgentVersionParams,
   GetCodingSessionDetailParams,
+  OpenPathParams,
 } from "@/types/tauri-commands"
 
 interface CodingAgentsViewProps {
@@ -48,6 +49,21 @@ function statusVariant(status: string): "default" | "secondary" | "destructive" 
     default:
       return "outline"
   }
+}
+
+function formatOutputLine(line: string): string {
+  const trimmed = line.trim()
+  if (
+    (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
+    (trimmed.startsWith("[") && trimmed.endsWith("]"))
+  ) {
+    try {
+      return JSON.stringify(JSON.parse(trimmed), null, 2)
+    } catch {
+      // not valid JSON, return as-is
+    }
+  }
+  return line
 }
 
 function formatDuration(createdAt: string): string {
@@ -240,6 +256,15 @@ export function CodingAgentsView({ activeSubTab, onTabChange }: CodingAgentsView
     navigator.clipboard.writeText(sessionId)
     setCopiedId(true)
     setTimeout(() => setCopiedId(false), 2000)
+  }
+
+  const handleOpenPath = async (path: string) => {
+    try {
+      await invoke("open_path", { path } satisfies OpenPathParams as Record<string, unknown>)
+    } catch (error) {
+      console.error("Failed to open path:", error)
+      toast.error("Failed to open folder")
+    }
   }
 
   const handleTabChange = (tab: string) => {
@@ -654,14 +679,30 @@ export function CodingAgentsView({ activeSubTab, onTabChange }: CodingAgentsView
                               {formatDuration(session.createdAt)}
                             </span>
                           </div>
-                          <div className="flex items-center gap-1.5">
-                            <Badge variant="secondary" className="text-[10px] px-1 py-0">
-                              {agents.find((a) => a.agentType === session.agentType)?.displayName ||
-                                session.agentType}
-                            </Badge>
-                            <span className="text-[10px] text-muted-foreground font-mono truncate">
-                              {session.sessionId.slice(0, 12)}...
-                            </span>
+                          <div className="flex items-center justify-between gap-1.5">
+                            <div className="flex items-center gap-1.5 min-w-0">
+                              <Badge variant="secondary" className="text-[10px] px-1 py-0">
+                                {agents.find((a) => a.agentType === session.agentType)?.displayName ||
+                                  session.agentType}
+                              </Badge>
+                              <span className="text-[10px] text-muted-foreground font-mono truncate">
+                                {session.sessionId.slice(0, 12)}...
+                              </span>
+                            </div>
+                            {(session.status === "active" || session.status === "awaiting_input") && (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-5 w-5 p-0 shrink-0 text-muted-foreground hover:text-destructive"
+                                title="End session"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  handleEndSession(session.sessionId)
+                                }}
+                              >
+                                <Square className="h-3 w-3" />
+                              </Button>
+                            )}
                           </div>
                         </div>
                       ))}
@@ -686,9 +727,19 @@ export function CodingAgentsView({ activeSubTab, onTabChange }: CodingAgentsView
                               {sessionDetail.status}
                             </Badge>
                           </div>
-                          <p className="text-sm text-muted-foreground mt-1">
-                            {sessionDetail.workingDirectory}
-                          </p>
+                          <div className="flex items-center gap-1.5 mt-1">
+                            <p className="text-sm text-muted-foreground">
+                              {sessionDetail.workingDirectory}
+                            </p>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-5 px-1.5 text-xs text-muted-foreground"
+                              onClick={() => handleOpenPath(sessionDetail.workingDirectory)}
+                            >
+                              <ExternalLink className="h-3 w-3" />
+                            </Button>
+                          </div>
                         </div>
                         {(sessionDetail.status === "active" || sessionDetail.status === "awaiting_input") && (
                           <Button
@@ -817,7 +868,7 @@ export function CodingAgentsView({ activeSubTab, onTabChange }: CodingAgentsView
                         <CardContent>
                           {sessionDetail.recentOutput.length > 0 ? (
                             <pre className="text-xs bg-muted p-3 rounded-md whitespace-pre-wrap break-all max-h-96 overflow-y-auto font-mono leading-relaxed">
-                              {sessionDetail.recentOutput.join("\n")}
+                              {sessionDetail.recentOutput.map(formatOutputLine).join("\n")}
                             </pre>
                           ) : (
                             <p className="text-sm text-muted-foreground">No output yet.</p>
