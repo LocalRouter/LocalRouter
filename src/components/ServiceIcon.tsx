@@ -63,6 +63,8 @@ const ICON_MAP: Record<string, string> = {
   'google-drive': 'google-drive.png',
   'google drive': 'google-drive.png',
   gdrive: 'google-drive.png',
+  'google-workspace': 'google-workspace.svg',
+  gws: 'google-workspace.svg',
   figma: 'figma.png',
   obsidian: 'obsidian.svg',
 
@@ -140,6 +142,8 @@ const EMOJI_MAP: Record<string, string> = {
   notion: '📑',
   confluence: '📄',
   'google-drive': '📁',
+  'google-workspace': '🏢',
+  gws: '🏢',
   figma: '🎨',
   obsidian: '🧠',
 

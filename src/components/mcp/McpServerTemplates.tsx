@@ -84,6 +84,20 @@ export const MCP_SERVER_TEMPLATES: McpServerTemplate[] = [
     docsUrl: 'https://github.com/makenotion/notion-mcp-server',
   },
 
+  {
+    id: 'google-workspace',
+    name: 'Google Workspace',
+    description: 'Official Google Workspace CLI exposing Drive, Gmail, Calendar, Docs, Sheets, and more as MCP tools via stdio.',
+    category: 'productivity',
+    icon: '🏢',
+    transport: 'Stdio',
+    command: 'npx',
+    args: ['-y', '@googleworkspace/cli', 'mcp'],
+    authMethod: 'none',
+    setupInstructions: 'Install via npx @googleworkspace/cli. Requires Node.js 18+ and a Google Cloud project with OAuth credentials. Run "gws auth login" first to authenticate. Use args like ["mcp", "-s", "drive,gmail,calendar"] to limit exposed services, or ["mcp", "-s", "all"] for everything. Add "--tool-mode", "compact" for fewer tools (~26 vs 200+).',
+    docsUrl: 'https://github.com/googleworkspace/cli',
+  },
+
   // === File & Data Access ===
   {
     id: 'filesystem',
