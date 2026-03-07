@@ -715,6 +715,8 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   // Models
   // ============================================================================
   'list_all_models': () => mockData.models,
+  'get_cached_models': () => mockData.models,
+  'refresh_models_incremental': () => {},
   'list_all_models_detailed': () => {
     const pricingMap: Record<string, { input: number; output: number; source: string }> = {
       'gpt-4o': { input: 2.50, output: 10.00, source: 'catalog' },
@@ -903,6 +905,12 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       { name: `${skill?.name || 'skill'}_execute`, description: 'Execute the skill' },
     ]
   },
+  'get_context_mode_info': () => ({
+    npxAvailable: true,
+    npxPath: '/usr/local/bin/npx',
+    npxVersion: '10.8.2',
+    contextModeVersion: '1.2.0',
+  }),
   'get_context_management_config': () => ({
     enabled: true,
     indexing_tools: true,

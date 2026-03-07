@@ -275,7 +275,12 @@ function App() {
           />
         )
       case 'context-management':
-        return <ContextManagementView />
+        return (
+          <ContextManagementView
+            activeSubTab={activeSubTab}
+            onTabChange={handleChildViewChange}
+          />
+        )
       case 'coding-agents':
         return (
           <CodingAgentsView
