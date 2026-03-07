@@ -198,7 +198,25 @@ impl CallbackServerManager {
                     };
 
                     // Extract and validate state
+                    const MAX_STATE_LENGTH: usize = 256;
                     let state = match params.state {
+                        Some(s) if s.len() > MAX_STATE_LENGTH => {
+                            warn!(
+                                "OAuth state parameter too large: {} bytes (max {})",
+                                s.len(),
+                                MAX_STATE_LENGTH
+                            );
+                            return (
+                                StatusCode::BAD_REQUEST,
+                                Html(
+                                    r#"<html><body style="font-family: sans-serif; text-align: center; padding: 50px;">
+                                        <h1>&#10060; Error</h1>
+                                        <p>State parameter too large</p>
+                                    </body></html>"#,
+                                ),
+                            )
+                                .into_response();
+                        }
                         Some(s) => s,
                         None => {
                             return (
