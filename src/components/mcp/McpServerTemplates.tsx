@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import ServiceIcon from '../ServiceIcon'
 
-export type McpTemplateCategory = 'version_control' | 'productivity' | 'files_data' | 'databases' | 'search_web' | 'utilities' | 'development'
+export type McpTemplateCategory = 'version_control' | 'productivity' | 'files_data' | 'databases' | 'search_web' | 'cloud_infra' | 'utilities' | 'development'
 
 export interface McpServerTemplate {
   id: string
@@ -181,6 +181,86 @@ export const MCP_SERVER_TEMPLATES: McpServerTemplate[] = [
     docsUrl: 'https://github.com/modelcontextprotocol/servers/tree/main/src/fetch',
   },
 
+  // === Cloud & Infrastructure ===
+  {
+    id: 'aws-core',
+    name: 'AWS',
+    description: 'Official AWS Labs Core MCP server with tools for AWS service operations, resource management, and CLI integration.',
+    category: 'cloud_infra',
+    icon: '☁️',
+    transport: 'Stdio',
+    command: 'uvx',
+    args: ['awslabs-core-mcp-server'],
+    authMethod: 'none',
+    setupInstructions: 'Requires Python 3.10+ and uv. Uses your existing AWS credentials (AWS_PROFILE, AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, or SSO). Set env: { "AWS_PROFILE": "your-profile" } or configure credentials via aws configure. Optionally set AWS_REGION.',
+    docsUrl: 'https://github.com/awslabs/mcp/tree/main/src/core-mcp-server',
+  },
+  {
+    id: 'aws-docs',
+    name: 'AWS Documentation',
+    description: 'AWS Labs Documentation MCP server for searching and reading official AWS documentation, best practices, and API references.',
+    category: 'cloud_infra',
+    icon: '📖',
+    transport: 'Stdio',
+    command: 'uvx',
+    args: ['awslabs-aws-documentation-mcp-server'],
+    authMethod: 'none',
+    setupInstructions: 'Requires Python 3.10+ and uv. No AWS credentials needed — this server reads public AWS documentation. Run via uvx awslabs-aws-documentation-mcp-server.',
+    docsUrl: 'https://github.com/awslabs/mcp/tree/main/src/aws-documentation-mcp-server',
+  },
+  {
+    id: 'gcloud',
+    name: 'Google Cloud',
+    description: 'Official Google Cloud MCP server for interacting with GCP APIs including Compute, Storage, IAM, and more.',
+    category: 'cloud_infra',
+    icon: '🌤️',
+    transport: 'Stdio',
+    command: 'npx',
+    args: ['-y', '@google-cloud/gcloud-mcp'],
+    authMethod: 'none',
+    setupInstructions: 'Requires Node.js 18+ and the gcloud CLI. Authenticate first with "gcloud auth application-default login". Set env: { "GCLOUD_PROJECT": "your-project-id" } to target a specific project. Uses Application Default Credentials.',
+    docsUrl: 'https://github.com/GoogleCloudPlatform/gcloud-mcp',
+  },
+  {
+    id: 'kubernetes',
+    name: 'Kubernetes',
+    description: 'MCP server for interacting with Kubernetes clusters via kubectl — manage pods, deployments, services, and more.',
+    category: 'cloud_infra',
+    icon: '☸️',
+    transport: 'Stdio',
+    command: 'npx',
+    args: ['-y', 'mcp-server-kubernetes'],
+    authMethod: 'none',
+    setupInstructions: 'Requires kubectl configured with a valid kubeconfig. Uses your current kubectl context by default. Set env: { "KUBECONFIG": "/path/to/kubeconfig" } to use a specific config file.',
+    docsUrl: 'https://github.com/Flux159/mcp-server-kubernetes',
+  },
+  {
+    id: 'docker',
+    name: 'Docker',
+    description: 'MCP server for managing Docker containers — run commands, view logs, monitor resources, and manage container lifecycle.',
+    category: 'cloud_infra',
+    icon: '🐳',
+    transport: 'Stdio',
+    command: 'npx',
+    args: ['-y', 'mcp-server-docker'],
+    authMethod: 'none',
+    setupInstructions: 'Requires Docker to be installed and running. The server uses your local Docker socket. No additional auth needed. Docker Desktop users can also use the built-in "docker mcp" gateway.',
+    docsUrl: 'https://github.com/adamdude828/mcp-server-docker',
+  },
+  {
+    id: 'cloudflare',
+    name: 'Cloudflare',
+    description: 'Official Cloudflare MCP server for managing Workers, KV, R2, D1, and other Cloudflare services.',
+    category: 'cloud_infra',
+    icon: '🔶',
+    transport: 'Stdio',
+    command: 'npx',
+    args: ['-y', '@cloudflare/mcp-server-cloudflare'],
+    authMethod: 'bearer',
+    setupInstructions: 'Generate a Cloudflare API token at https://dash.cloudflare.com/profile/api-tokens with appropriate permissions. Set env: { "CLOUDFLARE_API_TOKEN": "your-token" }. Optionally set CLOUDFLARE_ACCOUNT_ID to target a specific account.',
+    docsUrl: 'https://github.com/cloudflare/mcp-server-cloudflare',
+  },
+
   // === Utilities ===
   {
     id: 'time',
@@ -259,6 +339,7 @@ const CATEGORY_INFO: Record<McpTemplateCategory, { title: string; description: s
   files_data: { title: 'Files & Data', description: 'Local file access and note-taking systems' },
   databases: { title: 'Databases', description: 'SQL databases and data storage services' },
   search_web: { title: 'Search & Web', description: 'Web search and content retrieval' },
+  cloud_infra: { title: 'Cloud & Infrastructure', description: 'Cloud platforms, containers, and infrastructure management' },
   utilities: { title: 'Utilities', description: 'Helper tools and system utilities' },
   development: { title: 'Development & Testing', description: 'Development tools and testing servers' },
 }
@@ -270,6 +351,7 @@ const CATEGORY_ORDER: McpTemplateCategory[] = [
   'files_data',
   'databases',
   'search_web',
+  'cloud_infra',
   'utilities',
   'development',
 ]

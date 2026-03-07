@@ -379,9 +379,11 @@ export function GuardrailsTab({ initialClientId, forcedMode, hideModeSwitcher, f
                           actionMap.set(catKey, a.action)
                         }
 
+                        const modelLabel = models.find((m) => m.id === v.model_id)?.label ?? v.model_id
+
                         return (
                           <tr key={i} className="border-b last:border-0 align-top">
-                            <td className="py-1.5 pr-3 font-medium">{v.model_id}</td>
+                            <td className="py-1.5 pr-3 font-medium">{modelLabel}</td>
                             <td className="py-1.5 pr-3">
                               {v.is_safe ? (
                                 <span className="text-emerald-600">Safe</span>
@@ -427,14 +429,16 @@ export function GuardrailsTab({ initialClientId, forcedMode, hideModeSwitcher, f
                       Raw output
                     </summary>
                     <div className="mt-1 space-y-1">
-                      {testResult.verdicts.filter((v) => v.raw_output).map((v, i) => (
+                      {testResult.verdicts.filter((v) => v.raw_output).map((v, i) => {
+                        const modelLabel = models.find((m) => m.id === v.model_id)?.label ?? v.model_id
+                        return (
                         <div key={i}>
-                          <span className="font-medium">{v.model_id}:</span>
+                          <span className="font-medium">{modelLabel}:</span>
                           <pre className="text-[10px] font-mono bg-muted p-2 rounded overflow-x-auto whitespace-pre-wrap mt-0.5">
                             {v.raw_output}
                           </pre>
                         </div>
-                      ))}
+                      )})}
                     </div>
                   </details>
                 )}

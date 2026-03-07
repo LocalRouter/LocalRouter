@@ -29,7 +29,7 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable"
 import { CSS } from "@dnd-kit/utilities"
-import { GripVertical, Zap, Ban } from "lucide-react"
+import { GripVertical, Zap, Ban, Search, ChevronRight, ChevronDown } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { ModelPricingBadge } from "@/components/shared/model-pricing-badge"
 import type { FreeTierKind } from "@/types/tauri-commands"
@@ -297,6 +297,8 @@ export function DragThresholdModelSelector({
 }: DragThresholdModelSelectorProps) {
   const [activeId, setActiveId] = useState<string | null>(null)
   const [overZone, setOverZone] = useState<string | null>(null)
+  const [disabledSearch, setDisabledSearch] = useState("")
+  const [collapsedProviders, setCollapsedProviders] = useState<Set<string> | "all">("all")
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -345,7 +347,65 @@ export function DragThresholdModelSelector({
   }, [availableModels, enabledModels, enabledSet])
 
   const enabledIds = enabledItems.map((item) => item.id)
-  const disabledIds = disabledItems.map((item) => item.id)
+
+  // Group disabled items by provider for collapsible rendering
+  const disabledByProvider = useMemo(() => {
+    const groups: Record<string, typeof disabledItems> = {}
+    for (const item of disabledItems) {
+      if (!groups[item.provider]) groups[item.provider] = []
+      groups[item.provider].push(item)
+    }
+    return groups
+  }, [disabledItems])
+
+  const disabledProviders = useMemo(
+    () => Object.keys(disabledByProvider).sort(),
+    [disabledByProvider]
+  )
+
+  // Filter disabled items by search
+  const searchLower = disabledSearch.toLowerCase()
+  const filteredDisabledItems = useMemo(() => {
+    if (!searchLower) return disabledItems
+    return disabledItems.filter(
+      (item) =>
+        item.modelId.toLowerCase().includes(searchLower) ||
+        item.provider.toLowerCase().includes(searchLower)
+    )
+  }, [disabledItems, searchLower])
+
+  // Visible disabled items (filtered + not in collapsed providers)
+  const visibleDisabledItems = useMemo(() => {
+    return filteredDisabledItems.filter((item) => {
+      if (collapsedProviders === "all") return false
+      return !collapsedProviders.has(item.provider)
+    })
+  }, [filteredDisabledItems, collapsedProviders])
+
+  const disabledIds = visibleDisabledItems.map((item) => item.id)
+
+  const toggleProviderCollapse = (provider: string) => {
+    setCollapsedProviders((prev) => {
+      if (prev === "all") {
+        // All collapsed -> expand this one (collapse all others)
+        const allProviders = new Set(disabledProviders)
+        allProviders.delete(provider)
+        return allProviders
+      }
+      const next = new Set(prev)
+      if (next.has(provider)) {
+        next.delete(provider)
+      } else {
+        next.add(provider)
+      }
+      return next
+    })
+  }
+
+  const isProviderCollapsed = (provider: string) => {
+    if (collapsedProviders === "all") return true
+    return collapsedProviders.has(provider)
+  }
 
   // Find active item info
   const activeItem = activeId ? allItemsMap.get(activeId) : null
@@ -505,28 +565,75 @@ export function DragThresholdModelSelector({
             </span>
           </div>
 
-          {/* Disabled models */}
+          {/* Search input for disabled models */}
+          {disabledItems.length > 0 && (
+            <div className="flex items-center gap-2 px-3 py-2 border-b bg-background">
+              <Search className="h-3.5 w-3.5 text-muted-foreground/50 shrink-0" />
+              <input
+                type="text"
+                placeholder="Search models..."
+                value={disabledSearch}
+                onChange={(e) => setDisabledSearch(e.target.value)}
+                className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground/50"
+              />
+            </div>
+          )}
+
+          {/* Disabled models grouped by provider */}
           <SortableContext items={disabledIds} strategy={verticalListSortingStrategy}>
             <DisabledDropZone isOver={overZone === "disabled-zone"}>
               {disabledItems.length === 0 ? (
                 <div className="p-4 text-center text-sm text-muted-foreground/60">
                   All models are enabled
                 </div>
+              ) : filteredDisabledItems.length === 0 ? (
+                <div className="p-4 text-center text-sm text-muted-foreground/60">
+                  No models match &ldquo;{disabledSearch}&rdquo;
+                </div>
               ) : (
-                disabledItems.map((item, index) => (
-                  <SortableRow
-                    key={item.id}
-                    id={item.id}
-                    provider={item.provider}
-                    modelId={item.modelId}
-                    index={index}
-                    isEnabled={false}
-                    disabled={disabled}
-                    onToggle={() => handleToggle(item.provider, item.modelId)}
-                    pricing={modelPricing?.[`${item.provider}/${item.modelId}`]}
-                    freeTierKind={freeTierKinds?.[item.provider]}
-                  />
-                ))
+                disabledProviders.map((provider) => {
+                  const providerItems = (disabledByProvider[provider] || []).filter(
+                    (item) =>
+                      !searchLower ||
+                      item.modelId.toLowerCase().includes(searchLower) ||
+                      item.provider.toLowerCase().includes(searchLower)
+                  )
+                  if (providerItems.length === 0) return null
+                  const collapsed = isProviderCollapsed(provider)
+
+                  return (
+                    <div key={provider}>
+                      <button
+                        type="button"
+                        onClick={() => toggleProviderCollapse(provider)}
+                        className="flex items-center gap-2 w-full px-3 py-1.5 bg-muted/20 border-b text-left hover:bg-muted/40 transition-colors"
+                      >
+                        {collapsed ? (
+                          <ChevronRight className="h-3.5 w-3.5 text-muted-foreground/60 shrink-0" />
+                        ) : (
+                          <ChevronDown className="h-3.5 w-3.5 text-muted-foreground/60 shrink-0" />
+                        )}
+                        <span className="text-xs font-medium text-muted-foreground">{provider}</span>
+                        <span className="text-xs text-muted-foreground/60 ml-auto">{providerItems.length}</span>
+                      </button>
+                      {!collapsed &&
+                        providerItems.map((item, index) => (
+                          <SortableRow
+                            key={item.id}
+                            id={item.id}
+                            provider={item.provider}
+                            modelId={item.modelId}
+                            index={index}
+                            isEnabled={false}
+                            disabled={disabled}
+                            onToggle={() => handleToggle(item.provider, item.modelId)}
+                            pricing={modelPricing?.[`${item.provider}/${item.modelId}`]}
+                            freeTierKind={freeTierKinds?.[item.provider]}
+                          />
+                        ))}
+                    </div>
+                  )
+                })
               )}
             </DisabledDropZone>
           </SortableContext>

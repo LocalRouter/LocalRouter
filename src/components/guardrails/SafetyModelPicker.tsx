@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from "react"
 import { invoke } from "@tauri-apps/api/core"
-import { Cloud, Download, CircleAlert } from "lucide-react"
+import { listen } from "@tauri-apps/api/event"
+import { Cloud, Download, CircleAlert, Loader2 } from "lucide-react"
 import { Button } from "@/components/ui/Button"
 import { Label } from "@/components/ui/label"
 import {
@@ -48,7 +49,7 @@ interface ProviderModelEntry {
 export function SafetyModelPicker({ existingModelIds, onSelect }: SafetyModelPickerProps) {
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
   const [providers, setProviders] = useState<ProviderInstanceInfo[]>([])
-  const [providerEntries, setProviderEntries] = useState<ProviderModelEntry[]>([])
+  const [providerModels, setProviderModels] = useState<Map<string, Set<string>>>(new Map())
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
@@ -57,49 +58,65 @@ export function SafetyModelPicker({ existingModelIds, onSelect }: SafetyModelPic
       .catch(() => {})
   }, [])
 
-  // Build entries for all model family / provider combinations
+  // Build available model lists from all providers in parallel
   useEffect(() => {
     const enabledProviders = providers.filter(p => p.enabled)
 
-    const buildEntries = async () => {
-      // Fetch available model lists from all providers in parallel
-      const providerModels = new Map<string, Set<string>>()
+    const fetchModels = async () => {
+      const modelsMap = new Map<string, Set<string>>()
       await Promise.all(
         enabledProviders.map(async (provider) => {
           try {
             const models = await invoke<{ id: string }[]>("list_provider_models", {
               instanceName: provider.instance_name,
             })
-            providerModels.set(provider.instance_name, new Set(models.map(m => m.id)))
+            modelsMap.set(provider.instance_name, new Set(models.map(m => m.id)))
           } catch {
-            providerModels.set(provider.instance_name, new Set())
+            modelsMap.set(provider.instance_name, new Set())
           }
         })
       )
-
-      // Build entries for every model type × matching provider combination
-      const entries: ProviderModelEntry[] = []
-      for (const [modelType, providerMap] of Object.entries(PROVIDER_MODEL_NAMES)) {
-        for (const provider of enabledProviders) {
-          const expectedModelName = providerMap[provider.provider_type]
-          if (!expectedModelName) continue
-
-          const availableModels = providerModels.get(provider.instance_name)
-          entries.push({
-            provider,
-            modelName: expectedModelName,
-            modelType,
-            available: availableModels?.has(expectedModelName) ?? false,
-          })
-        }
-      }
-
-      setProviderEntries(entries)
+      setProviderModels(modelsMap)
       setLoading(false)
     }
 
-    buildEntries()
+    fetchModels()
+
+    // Listen for incremental model updates
+    const unsub = listen<{ provider: string; models: { id: string }[] }>(
+      "models-provider-loaded",
+      (event) => {
+        setProviderModels(prev => {
+          const next = new Map(prev)
+          next.set(event.payload.provider, new Set(event.payload.models.map(m => m.id)))
+          return next
+        })
+      }
+    )
+
+    return () => { unsub.then(fn => fn()) }
   }, [providers])
+
+  // Build entries from providers × model families × available models
+  const providerEntries = useMemo(() => {
+    const enabledProviders = providers.filter(p => p.enabled)
+    const entries: ProviderModelEntry[] = []
+    for (const [modelType, providerMap] of Object.entries(PROVIDER_MODEL_NAMES)) {
+      for (const provider of enabledProviders) {
+        const expectedModelName = providerMap[provider.provider_type]
+        if (!expectedModelName) continue
+
+        const availableModels = providerModels.get(provider.instance_name)
+        entries.push({
+          provider,
+          modelName: expectedModelName,
+          modelType,
+          available: availableModels?.has(expectedModelName) ?? false,
+        })
+      }
+    }
+    return entries
+  }, [providers, providerModels])
 
   // Build the selected entry's metadata for the action handler
   const selectedEntry = useMemo(() => {
@@ -144,10 +161,23 @@ export function SafetyModelPicker({ existingModelIds, onSelect }: SafetyModelPic
           onValueChange={setSelectedKey}
         >
           <SelectTrigger className="h-9 text-xs">
-            <SelectValue placeholder="Select a safety model..." />
+            {loading ? (
+              <span className="flex items-center gap-1.5 text-muted-foreground">
+                <Loader2 className="h-3 w-3 animate-spin" />
+                Loading models...
+              </span>
+            ) : (
+              <SelectValue placeholder="Select a safety model..." />
+            )}
           </SelectTrigger>
           <SelectContent>
-            {MODEL_FAMILY_GROUPS.map((group, groupIdx) => {
+            {loading && (
+              <div className="flex items-center justify-center gap-1.5 px-3 py-4 text-xs text-muted-foreground">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                Loading available models from providers...
+              </div>
+            )}
+            {!loading && MODEL_FAMILY_GROUPS.map((group, groupIdx) => {
               const entries = providerEntries.filter(e => e.modelType === group.modelType)
 
               return (

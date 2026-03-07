@@ -1,6 +1,6 @@
-import { useState, useEffect, useMemo, useCallback } from "react"
+import { useState, useEffect, useMemo, useCallback, useRef } from "react"
 // DEPRECATED: Route unused - Strategy mode hidden
-import { RefreshCw, Users, /* Route, */ Zap, Settings2, ChevronDown, MessageSquare, ImageIcon, Hash } from "lucide-react"
+import { RefreshCw, Users, /* Route, */ Zap, Settings2, ChevronDown, ChevronRight, MessageSquare, ImageIcon, Hash, Loader2, ChevronsUpDown, Check, Search } from "lucide-react"
 import { invoke } from "@tauri-apps/api/core"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card"
@@ -15,6 +15,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/Select"
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover"
 import {
   Collapsible,
   CollapsibleContent,
@@ -72,6 +77,194 @@ interface ModelParameters {
 // DEPRECATED: "strategy" mode hidden - 1:1 client-to-strategy relationship
 type TestMode = "client" | /* "strategy" | */ "direct" | "all"
 
+/** Searchable model selector with provider grouping and collapsible sections */
+function ModelCombobox({
+  models,
+  selectedModel,
+  onModelChange,
+  loading,
+}: {
+  models: Model[]
+  selectedModel: string
+  onModelChange: (model: string) => void
+  loading: boolean
+}) {
+  const [open, setOpen] = useState(false)
+  const [search, setSearch] = useState("")
+  const [collapsedProviders, setCollapsedProviders] = useState<Set<string> | "all">("all")
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  // Group models by provider
+  const grouped = useMemo(() => {
+    const groups: Record<string, Model[]> = {}
+    for (const model of models) {
+      const provider = model.owned_by || "unknown"
+      if (!groups[provider]) groups[provider] = []
+      groups[provider].push(model)
+    }
+    return groups
+  }, [models])
+
+  const providers = useMemo(() => Object.keys(grouped).sort(), [grouped])
+
+  // Filter by search
+  const searchLower = search.toLowerCase()
+  const filteredGrouped = useMemo(() => {
+    if (!searchLower) return grouped
+    const result: Record<string, Model[]> = {}
+    for (const [provider, providerModels] of Object.entries(grouped)) {
+      const filtered = providerModels.filter(
+        (m) =>
+          m.id.toLowerCase().includes(searchLower) ||
+          provider.toLowerCase().includes(searchLower)
+      )
+      if (filtered.length > 0) result[provider] = filtered
+    }
+    return result
+  }, [grouped, searchLower])
+
+  const filteredProviders = useMemo(
+    () => Object.keys(filteredGrouped).sort(),
+    [filteredGrouped]
+  )
+
+  const toggleProvider = (provider: string) => {
+    setCollapsedProviders((prev) => {
+      if (prev === "all") {
+        const allProviders = new Set(providers)
+        allProviders.delete(provider)
+        return allProviders
+      }
+      const next = new Set(prev)
+      if (next.has(provider)) {
+        next.delete(provider)
+      } else {
+        next.add(provider)
+      }
+      return next
+    })
+  }
+
+  const isCollapsed = (provider: string) => {
+    // When searching, expand all matching groups
+    if (searchLower) return false
+    if (collapsedProviders === "all") return true
+    return collapsedProviders.has(provider)
+  }
+
+  // Focus search input when popover opens
+  useEffect(() => {
+    if (open) {
+      setTimeout(() => inputRef.current?.focus(), 0)
+    } else {
+      setSearch("")
+    }
+  }, [open])
+
+  const hasResults = filteredProviders.length > 0
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          variant="outline"
+          role="combobox"
+          aria-expanded={open}
+          className="w-full max-w-[280px] justify-between font-normal"
+        >
+          {loading ? (
+            <span className="flex items-center gap-1.5 text-muted-foreground">
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              Loading models...
+            </span>
+          ) : selectedModel ? (
+            <span className="truncate">{selectedModel}</span>
+          ) : (
+            <span className="text-muted-foreground">Select a model</span>
+          )}
+          <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-[320px] p-0" align="start">
+        {/* Search */}
+        <div className="flex items-center gap-2 px-3 py-2 border-b">
+          <Search className="h-3.5 w-3.5 text-muted-foreground/50 shrink-0" />
+          <input
+            ref={inputRef}
+            type="text"
+            placeholder="Search models..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground/50"
+          />
+        </div>
+
+        {/* Model list */}
+        <div className="max-h-[300px] overflow-y-auto">
+          {loading && models.length === 0 && (
+            <div className="flex items-center justify-center gap-1.5 px-3 py-4 text-xs text-muted-foreground">
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              Loading models from providers...
+            </div>
+          )}
+          {!loading && !hasResults && (
+            <div className="p-4 text-center text-sm text-muted-foreground">
+              {search ? `No models match "${search}"` : "No models available"}
+            </div>
+          )}
+          {filteredProviders.map((provider) => {
+            const providerModels = filteredGrouped[provider]
+            const collapsed = isCollapsed(provider)
+
+            return (
+              <div key={provider}>
+                <button
+                  type="button"
+                  onClick={() => toggleProvider(provider)}
+                  className="flex items-center gap-2 w-full px-3 py-1.5 bg-muted/30 border-b text-left hover:bg-muted/50 transition-colors sticky top-0 z-10"
+                >
+                  {collapsed ? (
+                    <ChevronRight className="h-3.5 w-3.5 text-muted-foreground/60 shrink-0" />
+                  ) : (
+                    <ChevronDown className="h-3.5 w-3.5 text-muted-foreground/60 shrink-0" />
+                  )}
+                  <span className="text-xs font-medium text-muted-foreground">{provider}</span>
+                  <span className="text-xs text-muted-foreground/60 ml-auto">{providerModels.length}</span>
+                </button>
+                {!collapsed &&
+                  providerModels.map((model) => (
+                    <button
+                      key={`${provider}/${model.id}`}
+                      type="button"
+                      onClick={() => {
+                        onModelChange(model.id)
+                        setOpen(false)
+                      }}
+                      className={cn(
+                        "flex items-center gap-2 w-full px-3 py-1.5 text-left text-sm hover:bg-accent transition-colors",
+                        "border-b border-border/30",
+                        selectedModel === model.id && "bg-accent"
+                      )}
+                      style={{ paddingLeft: "28px" }}
+                    >
+                      <Check
+                        className={cn(
+                          "h-3.5 w-3.5 shrink-0",
+                          selectedModel === model.id ? "opacity-100" : "opacity-0"
+                        )}
+                      />
+                      <span className="font-mono text-sm truncate">{model.id}</span>
+                    </button>
+                  ))}
+              </div>
+            )
+          })}
+        </div>
+      </PopoverContent>
+    </Popover>
+  )
+}
+
 interface LlmTabProps {
   initialMode?: TestMode
   initialProvider?: string
@@ -104,7 +297,7 @@ export function LlmTab({ initialMode, initialProvider, initialClientId, hideMode
   // Shared model state
   const [models, setModels] = useState<Model[]>([])
   const [selectedModel, setSelectedModel] = useState<string>("")
-  const [loadingModels, setLoadingModels] = useState(false)
+  const [loadingModels, setLoadingModels] = useState(true)
 
   // Model parameters
   const [showParameters, setShowParameters] = useState(false)
@@ -155,6 +348,8 @@ export function LlmTab({ initialMode, initialProvider, initialClientId, hideMode
         }
       } catch (error) {
         console.error("Failed to initialize:", error)
+      } finally {
+        setLoadingModels(false)
       }
     }
     init()
@@ -470,18 +665,12 @@ export function LlmTab({ initialMode, initialProvider, initialClientId, hideMode
               <div className="space-y-1.5">
                 <Label className="text-sm">Model</Label>
                 <div className="flex items-center gap-2">
-                  <Select value={selectedModel} onValueChange={setSelectedModel}>
-                    <SelectTrigger className="w-full max-w-[280px]">
-                      <SelectValue placeholder={loadingModels ? "Loading models..." : "Select a model"} />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {models.map((model, index) => (
-                        <SelectItem key={`${model.owned_by}/${model.id}-${index}`} value={model.id}>
-                          {model.id}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  <ModelCombobox
+                    models={models}
+                    selectedModel={selectedModel}
+                    onModelChange={setSelectedModel}
+                    loading={loadingModels}
+                  />
 
                   <Button
                     variant="outline"
