@@ -173,14 +173,14 @@ pub async fn chat_completions(
                 request.max_tokens = if v.is_null() {
                     None
                 } else {
-                    v.as_u64().map(|n| n as u32)
+                    v.as_u64().and_then(|n| u32::try_from(n).ok())
                 };
             }
             if let Some(v) = edits.get("max_completion_tokens") {
                 request.max_completion_tokens = if v.is_null() {
                     None
                 } else {
-                    v.as_u64().map(|n| n as u32)
+                    v.as_u64().and_then(|n| u32::try_from(n).ok())
                 };
             }
             if let Some(v) = edits.get("top_p") {
