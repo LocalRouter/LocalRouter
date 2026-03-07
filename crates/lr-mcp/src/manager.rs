@@ -1027,7 +1027,7 @@ impl McpServerManager {
         let mut cmd = tokio::process::Command::new(command);
         cmd.args(args)
             .envs(env.iter())
-            .stdin(std::process::Stdio::null())
+            .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
 
@@ -1218,6 +1218,14 @@ impl McpServerManager {
                     }
                     Err(e) => Err(format!("Failed to wait for process: {}", e)),
                 }
+            }
+
+            // If the process is still alive after a brief delay, consider it healthy.
+            // MCP stdio servers won't produce stdout output until they receive a
+            // JSON-RPC initialize request on stdin, so staying alive without errors
+            // is sufficient for a health check.
+            _ = tokio::time::sleep(tokio::time::Duration::from_secs(3)) => {
+                Ok(())
             }
         }
     }
