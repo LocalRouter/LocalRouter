@@ -2,7 +2,7 @@
 
 #![allow(deprecated)]
 
-use super::{AppConfig, ProviderConfig};
+use super::{AppConfig, McpAuthConfig, McpServerConfig, McpTransportConfig, ProviderConfig};
 use lr_api_keys::keychain_trait::KeychainStorage;
 use lr_api_keys::CachedKeychain;
 use lr_types::{AppError, AppResult};
@@ -42,8 +42,31 @@ pub fn validate_config(config: &AppConfig) -> AppResult<()> {
     // Validate client strategy references
     validate_client_strategy_refs(config)?;
 
+    // Validate health check bounds
+    validate_health_check_config(config)?;
+
     // Validate guardrails bounds
     validate_guardrails_config(config)?;
+
+    // Validate MCP server configurations
+    validate_mcp_servers(&config.mcp_servers)?;
+
+    Ok(())
+}
+
+/// Validate health check configuration bounds
+fn validate_health_check_config(config: &AppConfig) -> AppResult<()> {
+    if config.health_check.timeout_secs < 1 || config.health_check.timeout_secs > 300 {
+        return Err(AppError::Config(
+            "Health check timeout must be between 1 and 300 seconds".to_string(),
+        ));
+    }
+
+    if config.health_check.interval_secs < 1 {
+        return Err(AppError::Config(
+            "Health check interval must be at least 1 second".to_string(),
+        ));
+    }
 
     Ok(())
 }
@@ -255,6 +278,74 @@ fn validate_client_strategy_refs(config: &AppConfig) -> AppResult<()> {
                 "Client '{}' references non-existent strategy '{}'",
                 client.name, client.strategy_id
             )));
+        }
+    }
+    Ok(())
+}
+
+/// Validate MCP server configurations
+fn validate_mcp_servers(servers: &[McpServerConfig]) -> AppResult<()> {
+    for server in servers {
+        if server.id.trim().is_empty() {
+            return Err(AppError::Config("MCP server ID cannot be empty".to_string()));
+        }
+
+        match &server.transport_config {
+            McpTransportConfig::HttpSse { url, .. }
+            | McpTransportConfig::Sse { url, .. }
+            | McpTransportConfig::WebSocket { url, .. } => {
+                // Validate URL is not empty
+                let trimmed = url.trim();
+                if trimmed.is_empty() {
+                    return Err(AppError::Config(format!(
+                        "MCP server '{}': URL cannot be empty",
+                        server.id
+                    )));
+                }
+
+                // Validate URL scheme is http or https (or ws/wss for WebSocket)
+                let allowed_schemes: &[&str] =
+                    if matches!(&server.transport_config, McpTransportConfig::WebSocket { .. }) {
+                        &["http://", "https://", "ws://", "wss://"]
+                    } else {
+                        &["http://", "https://"]
+                    };
+
+                let has_valid_scheme = allowed_schemes
+                    .iter()
+                    .any(|scheme| trimmed.to_lowercase().starts_with(scheme));
+
+                if !has_valid_scheme {
+                    return Err(AppError::Config(format!(
+                        "MCP server '{}': URL must start with {} (got '{}')",
+                        server.id,
+                        allowed_schemes.join(" or "),
+                        trimmed
+                    )));
+                }
+            }
+            McpTransportConfig::Stdio { command, .. } => {
+                if command.trim().is_empty() {
+                    return Err(AppError::Config(format!(
+                        "MCP server '{}': command cannot be empty",
+                        server.id
+                    )));
+                }
+            }
+        }
+
+        // Validate OAuth redirect_uri if present
+        if let Some(McpAuthConfig::OAuthBrowser { redirect_uri, .. }) = &server.auth_config {
+            let uri_lower = redirect_uri.to_lowercase();
+            if !uri_lower.starts_with("http://localhost")
+                && !uri_lower.starts_with("http://127.0.0.1")
+                && !uri_lower.starts_with("http://[::1]")
+            {
+                return Err(AppError::Config(format!(
+                    "MCP server '{}': OAuth redirect_uri must use localhost (http://localhost or http://127.0.0.1), got '{}'",
+                    server.id, redirect_uri
+                )));
+            }
         }
     }
     Ok(())
