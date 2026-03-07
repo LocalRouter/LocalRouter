@@ -1367,6 +1367,8 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::list_provider_models,
             ui::commands::list_all_models,
             ui::commands::list_all_models_detailed,
+            ui::commands::get_cached_models,
+            ui::commands::refresh_models_incremental,
             ui::commands::get_catalog_stats,
             ui::commands::get_catalog_metadata,
             // Server configuration commands
@@ -1560,6 +1562,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             // Skills commands
             ui::commands::list_skills,
             ui::commands::get_skill,
+            ui::commands::get_context_mode_info,
             ui::commands::get_context_management_config,
             ui::commands::update_context_management_config,
             ui::commands::list_active_sessions,

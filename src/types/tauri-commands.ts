@@ -578,6 +578,17 @@ export interface SkillsConfig {
 }
 
 /**
+ * Context-mode tool installation info.
+ * Rust: src-tauri/src/ui/commands.rs - ContextModeInfo struct
+ */
+export interface ContextModeInfo {
+  npxAvailable: boolean
+  npxPath: string | null
+  npxVersion: string | null
+  contextModeVersion: string | null
+}
+
+/**
  * Context management configuration.
  * Rust: crates/lr-config/src/types.rs - ContextManagementConfig struct
  */
@@ -1502,6 +1513,12 @@ export interface CheckSingleProviderHealthParams {
 /** Params for list_provider_models */
 export interface ListProviderModelsParams {
   instanceName: string
+}
+
+/** Event payload for models-provider-loaded */
+export interface ProviderModelsPayload {
+  provider: string
+  models: Array<{ id: string; provider: string }>
 }
 
 // =============================================================================

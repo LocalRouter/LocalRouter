@@ -1617,6 +1617,66 @@ pub async fn get_skill(
         .ok_or_else(|| format!("Skill '{}' not found", skill_name))
 }
 
+/// Get context-mode tool installation info (npx availability, version).
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextModeInfo {
+    pub npx_available: bool,
+    pub npx_path: Option<String>,
+    pub npx_version: Option<String>,
+    pub context_mode_version: Option<String>,
+}
+
+#[tauri::command]
+pub async fn get_context_mode_info() -> Result<ContextModeInfo, String> {
+    let npx_path = which::which("npx").ok();
+    let npx_available = npx_path.is_some();
+
+    let npx_version = if npx_available {
+        tokio::process::Command::new("npx")
+            .arg("--version")
+            .output()
+            .await
+            .ok()
+            .and_then(|o| {
+                if o.status.success() {
+                    String::from_utf8(o.stdout).ok().map(|s| s.trim().to_string())
+                } else {
+                    None
+                }
+            })
+    } else {
+        None
+    };
+
+    let context_mode_version = if npx_available {
+        tokio::process::Command::new("npx")
+            .args(["context-mode", "--version"])
+            .output()
+            .await
+            .ok()
+            .and_then(|o| {
+                if o.status.success() {
+                    String::from_utf8(o.stdout)
+                        .ok()
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                } else {
+                    None
+                }
+            })
+    } else {
+        None
+    };
+
+    Ok(ContextModeInfo {
+        npx_available,
+        npx_path: npx_path.map(|p| p.display().to_string()),
+        npx_version,
+        context_mode_version,
+    })
+}
+
 /// Get context management configuration
 #[tauri::command]
 pub async fn get_context_management_config(
