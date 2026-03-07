@@ -45,6 +45,7 @@ export interface McpClientConfig {
   deferredLoading?: boolean // Enable deferred loading for unified gateway
   mcpAccess?: string // MCP server access: "all", "none", or a specific server ID
   skillsAccess?: "all" | string // Skills access: "all" or specific skill name
+  codingAgentAccess?: string // Coding agent type (e.g., "claude_code") for direct mode
 }
 
 // Detailed capability info for display
@@ -180,6 +181,9 @@ export class McpClientWrapper {
         }
         if (this.config.skillsAccess) {
           headers["X-Skills-Access"] = this.config.skillsAccess
+        }
+        if (this.config.codingAgentAccess) {
+          headers["X-Coding-Agent-Access"] = this.config.codingAgentAccess
         }
         this.transport = new SSEClientTransport(new URL(endpoint), {
           requestInit: {

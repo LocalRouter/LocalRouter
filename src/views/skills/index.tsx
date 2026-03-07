@@ -72,8 +72,7 @@ interface SkillsViewProps {
 }
 
 export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
-  const topTab = activeSubTab === "try-it-out" ? "try-it-out"
-    : activeSubTab === "marketplace" ? "marketplace"
+  const topTab = activeSubTab === "marketplace" ? "marketplace"
     : activeSubTab === "settings" ? "settings"
     : "skills"
   const skillSubTab = topTab === "skills" ? activeSubTab : null
@@ -519,7 +518,6 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
           <TabsTrigger value="skills">Skills</TabsTrigger>
           <TabsTrigger value="marketplace">Marketplace</TabsTrigger>
           <TabsTrigger value="settings">Settings</TabsTrigger>
-          <TabsTrigger value="try-it-out">Try It Out</TabsTrigger>
         </TabsList>
 
         <TabsContent value="skills" className="flex-1 min-h-0 mt-4">
@@ -597,23 +595,21 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
                     )}
                   </div>
                   <div className="flex items-center gap-2">
-                    {selectedSkillInfo.enabled && (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => setDetailTab("try-it-out")}
-                      >
-                        <FlaskConical className="h-4 w-4 mr-1" />
-                        Try It Out
-                      </Button>
-                    )}
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setDetailTab("try-it-out")}
+                    >
+                      <FlaskConical className="h-4 w-4 mr-1" />
+                      Try It Out
+                    </Button>
                   </div>
                 </div>
 
                 <Tabs value={detailTab} onValueChange={setDetailTab}>
                   <TabsList>
                     <TabsTrigger value="info">Info</TabsTrigger>
-                    {selectedSkillInfo.enabled && <TabsTrigger value="try-it-out">Try It Out</TabsTrigger>}
+                    <TabsTrigger value="try-it-out">Try It Out</TabsTrigger>
                     <TabsTrigger value="settings">Settings</TabsTrigger>
                   </TabsList>
 
@@ -836,7 +832,6 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
                     </div>
                   </TabsContent>
 
-                  {selectedSkillInfo.enabled && (
                   <TabsContent value="try-it-out">
                     <McpTab
                       initialMode="direct"
@@ -848,79 +843,70 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
                       onPathChange={() => {}}
                     />
                   </TabsContent>
-                  )}
 
                   <TabsContent value="settings">
                     <div className="space-y-6">
-                      {/* Enable/Disable */}
-                      <Card>
+                      {/* Danger Zone */}
+                      <Card className="border-red-200 dark:border-red-900">
                         <CardHeader>
-                          <CardTitle>Enable Skill</CardTitle>
-                          <CardDescription>
-                            When disabled, this skill will not be available to clients
-                          </CardDescription>
+                          <CardTitle className="text-red-600 dark:text-red-400">Danger Zone</CardTitle>
+                          <CardDescription>Irreversible and destructive actions for this skill</CardDescription>
                         </CardHeader>
-                        <CardContent>
-                          <div className="flex items-center gap-3">
+                        <CardContent className="space-y-4">
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <p className="text-sm font-medium">Enable skill</p>
+                              <p className="text-sm text-muted-foreground">
+                                When disabled, this skill will not be available to clients
+                              </p>
+                            </div>
                             <Switch
                               checked={selectedSkillInfo.enabled}
                               onCheckedChange={(checked) => handleToggleEnabled(selectedSkillInfo.name, checked)}
                             />
-                            <span className="text-sm">
-                              {selectedSkillInfo.enabled ? "Enabled" : "Disabled"}
-                            </span>
                           </div>
+                          {isMarketplaceSkill && (
+                            <div className="flex items-center justify-between pt-4 border-t">
+                              <div>
+                                <p className="text-sm font-medium">Delete this skill</p>
+                                <p className="text-sm text-muted-foreground">Permanently delete "{selectedSkillInfo.name}" and all its files</p>
+                              </div>
+                              <AlertDialog>
+                                <AlertDialogTrigger asChild>
+                                  <Button variant="destructive" disabled={isDeleting}>
+                                    {isDeleting ? (
+                                      <>
+                                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                                        Deleting...
+                                      </>
+                                    ) : (
+                                      "Delete Skill"
+                                    )}
+                                  </Button>
+                                </AlertDialogTrigger>
+                                <AlertDialogContent>
+                                  <AlertDialogHeader>
+                                    <AlertDialogTitle>Delete "{selectedSkillInfo.name}"?</AlertDialogTitle>
+                                    <AlertDialogDescription>
+                                      This will permanently delete this skill and all its files.
+                                      This action cannot be undone.
+                                    </AlertDialogDescription>
+                                  </AlertDialogHeader>
+                                  <AlertDialogFooter>
+                                    <AlertDialogCancel>Cancel</AlertDialogCancel>
+                                    <AlertDialogAction
+                                      onClick={() => handleDeleteSkill(selectedSkillInfo.name, selectedSkillInfo.source_path)}
+                                      className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                                    >
+                                      Delete
+                                    </AlertDialogAction>
+                                  </AlertDialogFooter>
+                                </AlertDialogContent>
+                              </AlertDialog>
+                            </div>
+                          )}
                         </CardContent>
                       </Card>
-
-                      {/* Delete Skill (marketplace only) */}
-                      {isMarketplaceSkill && (
-                        <Card className="border-destructive/50">
-                          <CardHeader>
-                            <CardTitle className="text-destructive">Delete Skill</CardTitle>
-                            <CardDescription>
-                              Permanently remove this marketplace-installed skill
-                            </CardDescription>
-                          </CardHeader>
-                          <CardContent>
-                            <AlertDialog>
-                              <AlertDialogTrigger asChild>
-                                <Button variant="destructive" disabled={isDeleting}>
-                                  {isDeleting ? (
-                                    <>
-                                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                                      Deleting...
-                                    </>
-                                  ) : (
-                                    <>
-                                      <Trash2 className="h-4 w-4 mr-2" />
-                                      Delete Skill
-                                    </>
-                                  )}
-                                </Button>
-                              </AlertDialogTrigger>
-                              <AlertDialogContent>
-                                <AlertDialogHeader>
-                                  <AlertDialogTitle>Delete "{selectedSkillInfo.name}"?</AlertDialogTitle>
-                                  <AlertDialogDescription>
-                                    This will permanently delete this skill and all its files.
-                                    This action cannot be undone.
-                                  </AlertDialogDescription>
-                                </AlertDialogHeader>
-                                <AlertDialogFooter>
-                                  <AlertDialogCancel>Cancel</AlertDialogCancel>
-                                  <AlertDialogAction
-                                    onClick={() => handleDeleteSkill(selectedSkillInfo.name, selectedSkillInfo.source_path)}
-                                    className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                                  >
-                                    Delete
-                                  </AlertDialogAction>
-                                </AlertDialogFooter>
-                              </AlertDialogContent>
-                            </AlertDialog>
-                          </CardContent>
-                        </Card>
-                      )}
                     </div>
                   </TabsContent>
                 </Tabs>
@@ -1392,14 +1378,6 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
           </div>
         </TabsContent>
 
-        <TabsContent value="try-it-out" className="flex-1 min-h-0 mt-4">
-          <McpTab
-            innerPath={null}
-            onPathChange={() => {}}
-            initialMode="all"
-            hideModeSwitcher
-          />
-        </TabsContent>
       </Tabs>
     </div>
   )

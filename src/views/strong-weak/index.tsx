@@ -184,6 +184,33 @@ export function StrongWeakView({ activeSubTab, onTabChange }: StrongWeakViewProp
         {/* Model Tab */}
         <TabsContent value="model" className="flex-1 min-h-0 mt-4">
           <div className="space-y-4">
+            {/* Resource Requirements */}
+            <Card className="border-yellow-600/50 bg-yellow-500/5">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-sm text-yellow-900 dark:text-yellow-400">Resource Requirements</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="grid grid-cols-2 gap-4 text-sm">
+                  <div>
+                    <span className="text-muted-foreground">Cold Start:</span>{" "}
+                    <span className="font-medium">{ROUTELLM_REQUIREMENTS.COLD_START_SECS}s</span>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground">Disk Space:</span>{" "}
+                    <span className="font-medium">{ROUTELLM_REQUIREMENTS.DISK_GB} GB</span>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground">Latency:</span>{" "}
+                    <span className="font-medium">{ROUTELLM_REQUIREMENTS.PER_REQUEST_MS}ms per request</span>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground">Memory:</span>{" "}
+                    <span className="font-medium">{ROUTELLM_REQUIREMENTS.MEMORY_GB} GB (when loaded)</span>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
             {/* Status */}
             {status && (
               <Card>
@@ -228,33 +255,6 @@ export function StrongWeakView({ activeSubTab, onTabChange }: StrongWeakViewProp
                 </CardContent>
               </Card>
             )}
-
-            {/* Resource Requirements */}
-            <Card className="border-yellow-600/50 bg-yellow-500/5">
-              <CardHeader className="pb-3">
-                <CardTitle className="text-sm text-yellow-900 dark:text-yellow-400">Resource Requirements</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="grid grid-cols-2 gap-4 text-sm">
-                  <div>
-                    <span className="text-muted-foreground">Cold Start:</span>{" "}
-                    <span className="font-medium">{ROUTELLM_REQUIREMENTS.COLD_START_SECS}s</span>
-                  </div>
-                  <div>
-                    <span className="text-muted-foreground">Disk Space:</span>{" "}
-                    <span className="font-medium">{ROUTELLM_REQUIREMENTS.DISK_GB} GB</span>
-                  </div>
-                  <div>
-                    <span className="text-muted-foreground">Latency:</span>{" "}
-                    <span className="font-medium">{ROUTELLM_REQUIREMENTS.PER_REQUEST_MS}ms per request</span>
-                  </div>
-                  <div>
-                    <span className="text-muted-foreground">Memory:</span>{" "}
-                    <span className="font-medium">{ROUTELLM_REQUIREMENTS.MEMORY_GB} GB (when loaded)</span>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
           </div>
         </TabsContent>
 

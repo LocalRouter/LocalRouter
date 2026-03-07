@@ -1382,10 +1382,9 @@ impl CodingAgentType {
                 CodingPermissionMode::Supervised,
                 CodingPermissionMode::Plan,
             ],
-            CodingAgentType::Codex => vec![
-                CodingPermissionMode::Auto,
-                CodingPermissionMode::Supervised,
-            ],
+            CodingAgentType::Codex => {
+                vec![CodingPermissionMode::Auto, CodingPermissionMode::Supervised]
+            }
             _ => vec![CodingPermissionMode::Supervised],
         }
     }

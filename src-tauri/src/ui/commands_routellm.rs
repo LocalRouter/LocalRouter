@@ -118,9 +118,7 @@ pub async fn routellm_download_models(
 
 /// Delete RouteLLM model files from disk
 #[tauri::command]
-pub async fn routellm_delete_model(
-    state: State<'_, Arc<AppState>>,
-) -> Result<(), String> {
+pub async fn routellm_delete_model(state: State<'_, Arc<AppState>>) -> Result<(), String> {
     info!("Deleting RouteLLM model files via Tauri command");
 
     // Unload models first if loaded
@@ -144,8 +142,8 @@ pub async fn routellm_delete_model(
         info!("RouteLLM model files deleted successfully");
     } else {
         // Service not available, try to delete based on config dir
-        let config_dir =
-            lr_utils::paths::config_dir().map_err(|e| format!("Failed to get config dir: {}", e))?;
+        let config_dir = lr_utils::paths::config_dir()
+            .map_err(|e| format!("Failed to get config dir: {}", e))?;
         let routellm_dir = config_dir.join("routellm");
 
         if routellm_dir.exists() {

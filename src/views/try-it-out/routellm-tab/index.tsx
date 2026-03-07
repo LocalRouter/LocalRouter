@@ -37,10 +37,14 @@ export function RouteLLMTryItOutTab() {
       toast.error(`Download failed: ${event.payload.error}`)
     })
 
+    // Poll status to detect state changes (model loaded/unloaded)
+    const interval = setInterval(loadStatus, 3000)
+
     return () => {
       unlistenProgress.then((fn) => fn())
       unlistenComplete.then((fn) => fn())
       unlistenFailed.then((fn) => fn())
+      clearInterval(interval)
     }
   }, [])
 
@@ -73,7 +77,7 @@ export function RouteLLMTryItOutTab() {
       case "downloading":
         return { label: "Downloading...", variant: "default" as const }
       case "downloaded_not_running":
-        return { label: "Model not loaded", variant: "outline" as const }
+        return { label: "Model unloaded", variant: "outline" as const }
       case "initializing":
         return { label: "Loading...", variant: "default" as const }
       case "started":

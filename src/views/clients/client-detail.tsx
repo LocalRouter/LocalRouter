@@ -58,6 +58,7 @@ export function ClientDetail({
   const [activeTab, setActiveTab] = useState(initialTab || "connect")
 
   const [tryItOutSubTab, setTryItOutSubTab] = useState("llm")
+  const [mcpInnerPath, setMcpInnerPath] = useState<string | null>(null)
 
   const clientMode = client?.client_mode || "both"
   const showModelsTab = clientMode !== "mcp_only"
@@ -183,8 +184,8 @@ export function ClientDetail({
                   initialMode="client"
                   initialClientId={client.client_id}
                   hideModeSwitcher
-                  innerPath={null}
-                  onPathChange={() => {}}
+                  innerPath={mcpInnerPath}
+                  onPathChange={setMcpInnerPath}
                 />
               </TabsContent>
             </Tabs>

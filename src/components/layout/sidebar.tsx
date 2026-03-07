@@ -56,7 +56,6 @@ interface NavItem {
   icon: React.ElementType
   label: string
   shortcut?: string
-  indent?: boolean
 }
 
 interface NavHeading {
@@ -75,18 +74,18 @@ const clientNavItems: NavItem[] = [
 
 const resourceNavEntries: NavEntry[] = [
   { heading: 'LLM' },
-  { id: 'resources', icon: ProvidersIcon, label: 'Providers', shortcut: '⌘3', indent: true },
-  { id: 'guardrails', icon: Shield, label: 'GuardRails', shortcut: '⌘7', indent: true },
-  { id: 'strong-weak', icon: Cpu, label: 'Strong/Weak', shortcut: '⌘8', indent: true },
+  { id: 'resources', icon: ProvidersIcon, label: 'Providers', shortcut: '⌘3' },
+  { id: 'guardrails', icon: Shield, label: 'GuardRails', shortcut: '⌘7' },
+  { id: 'strong-weak', icon: Cpu, label: 'Strong/Weak', shortcut: '⌘8' },
   { heading: 'MCP' },
-  { id: 'mcp-servers', icon: McpIcon, label: 'Servers', shortcut: '⌘4', indent: true },
-  { id: 'skills', icon: SkillsIcon, label: 'Skill', shortcut: '⌘5', indent: true },
-  { id: 'coding-agents', icon: CodingAgentsIcon, label: 'Coding Agents', shortcut: '⌘6', indent: true },
+  { id: 'mcp-servers', icon: McpIcon, label: 'Servers', shortcut: '⌘4' },
+  { id: 'skills', icon: SkillsIcon, label: 'Skill', shortcut: '⌘5' },
+  { id: 'coding-agents', icon: CodingAgentsIcon, label: 'Coding Agents', shortcut: '⌘6' },
 ]
 
 const bottomNavItems: NavItem[] = [
-  { id: 'settings', icon: Settings, label: 'Settings' },
   ...(import.meta.env.DEV ? [{ id: 'debug' as View, icon: Bug, label: 'Debug' }] : []),
+  { id: 'settings', icon: Settings, label: 'Settings' },
 ]
 
 export function Sidebar({ activeView, onViewChange }: SidebarProps) {
@@ -278,8 +277,7 @@ export function Sidebar({ activeView, onViewChange }: SidebarProps) {
       <button
         onClick={() => onViewChange(item.id)}
         className={cn(
-          "flex items-center rounded-md transition-all duration-200 ease-in-out h-8 w-full gap-2 whitespace-nowrap",
-          item.indent && expanded ? "pl-6 pr-2" : "px-2",
+          "flex items-center rounded-md transition-colors h-8 w-full gap-2 whitespace-nowrap px-2",
           isActive
             ? "bg-accent text-accent-foreground"
             : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
@@ -327,8 +325,8 @@ export function Sidebar({ activeView, onViewChange }: SidebarProps) {
                 className={cn(
                   "flex items-center rounded-md transition-colors h-8 w-full gap-2 px-2 whitespace-nowrap",
                   activeView === 'dashboard'
-                    ? "bg-primary text-primary-foreground"
-                    : "bg-primary/80 text-primary-foreground hover:bg-primary"
+                    ? "bg-accent text-accent-foreground"
+                    : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
                 )}
               >
                 <Logo className="h-4 w-4 shrink-0" />
@@ -350,9 +348,6 @@ export function Sidebar({ activeView, onViewChange }: SidebarProps) {
         <nav className="flex flex-1 flex-col gap-1 p-2">
           {/* Client section */}
           {clientNavItems.map(renderNavItem)}
-
-          {/* Separator */}
-          <div className="my-1 h-px bg-border" />
 
           {/* Resources section */}
           {resourceNavEntries.map(renderNavEntry)}

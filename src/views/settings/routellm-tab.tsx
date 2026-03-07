@@ -49,10 +49,14 @@ export function RouteLLMTab({ onTabChange }: RouteLLMTabProps) {
       toast.error(`Download failed: ${event.payload.error}`)
     })
 
+    // Poll status to detect state changes (model loaded/unloaded)
+    const interval = setInterval(loadStatus, 3000)
+
     return () => {
       unlistenProgress.then((fn) => fn())
       unlistenComplete.then((fn) => fn())
       unlistenFailed.then((fn) => fn())
+      clearInterval(interval)
     }
   }, [])
 
@@ -101,17 +105,17 @@ export function RouteLLMTab({ onTabChange }: RouteLLMTabProps) {
   const getStatusInfo = (state: RouteLLMState) => {
     switch (state) {
       case "not_downloaded":
-        return { label: "Not Downloaded", variant: "secondary" as const, icon: "⬇️" }
+        return { label: "Not Downloaded", variant: "secondary" as const }
       case "downloading":
-        return { label: "Downloading...", variant: "default" as const, icon: "⏬️" }
+        return { label: "Downloading...", variant: "default" as const }
       case "downloaded_not_running":
-        return { label: "Model not loaded", variant: "outline" as const, icon: "⏸️" }
+        return { label: "Model unloaded", variant: "outline" as const }
       case "initializing":
-        return { label: "Loading...", variant: "default" as const, icon: "🔄" }
+        return { label: "Loading...", variant: "default" as const }
       case "started":
-        return { label: "Model loaded", variant: "success" as const, icon: "▶️" }
+        return { label: "Model loaded", variant: "success" as const }
       default:
-        return { label: "Unknown", variant: "secondary" as const, icon: "❓" }
+        return { label: "Unknown", variant: "secondary" as const }
     }
   }
 
@@ -141,14 +145,9 @@ export function RouteLLMTab({ onTabChange }: RouteLLMTabProps) {
         <CardContent>
           {status && (
             <div className="flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <span className="text-2xl">{getStatusInfo(status.state).icon}</span>
-                <div>
-                  <Badge variant={getStatusInfo(status.state).variant}>
-                    {getStatusInfo(status.state).label}
-                  </Badge>
-                </div>
-              </div>
+              <Badge variant={getStatusInfo(status.state).variant}>
+                {getStatusInfo(status.state).label}
+              </Badge>
               <div className="flex gap-2">
                 {status.state === "not_downloaded" && !isDownloading && (
                   <Button variant="outline" size="sm" onClick={handleDownload}>

@@ -140,16 +140,19 @@ interface SkillInfo {
 
 type McpTestMode = "client" | "all" | "direct"
 
-// Direct target can be an MCP server or a skill (skills connect via gateway)
-type DirectTarget = { type: "server"; id: string } | { type: "skill"; name: string }
+// Direct target can be an MCP server, a skill, or a coding agent (all connect via gateway)
+type DirectTarget = { type: "server"; id: string } | { type: "skill"; name: string } | { type: "coding_agent"; agentType: string }
 
 function encodeDirectTarget(target: DirectTarget): string {
-  return target.type === "server" ? `server:${target.id}` : `skill:${target.name}`
+  if (target.type === "server") return `server:${target.id}`
+  if (target.type === "skill") return `skill:${target.name}`
+  return `coding_agent:${target.agentType}`
 }
 
 function decodeDirectTarget(value: string): DirectTarget | null {
   if (value.startsWith("server:")) return { type: "server", id: value.slice(7) }
   if (value.startsWith("skill:")) return { type: "skill", name: value.slice(6) }
+  if (value.startsWith("coding_agent:")) return { type: "coding_agent", agentType: value.slice(13) }
   return null
 }
 
@@ -353,8 +356,8 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
     })
 
     return () => {
-      unsubServers.then((fn) => fn())
-      unsubSkills.then((fn) => fn())
+      unsubServers.then((fn) => fn()).catch(() => {})
+      unsubSkills.then((fn) => fn()).catch(() => {})
       // Cleanup: disconnect client on unmount
       doDisconnect()
     }
@@ -371,6 +374,9 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
       if (target?.type === "server" && mcpServers.some(s => s.id === target.id)) {
         setSelectedDirectTarget(initialDirectTarget)
       } else if (target?.type === "skill" && skills.some(s => s.name === target.name)) {
+        setSelectedDirectTarget(initialDirectTarget)
+      } else if (target?.type === "coding_agent") {
+        // Coding agents are virtual servers — no need to validate against a list
         setSelectedDirectTarget(initialDirectTarget)
       }
     }
@@ -516,10 +522,11 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
     const _directTarget = decodeDirectTarget(selectedDirectTarget)
     const _isDirectSkill = mode === "direct" && _directTarget?.type === "skill"
     const _isDirectServer = mode === "direct" && _directTarget?.type === "server"
+    const _isDirectCodingAgent = mode === "direct" && _directTarget?.type === "coding_agent"
 
     const mcpAccess: string | undefined =
       mode === "client" ? undefined :
-      _isDirectSkill ? "none" :
+      (_isDirectSkill || _isDirectCodingAgent) ? "none" :
       _isDirectServer ? _directTarget!.id :
       "all"
 
@@ -527,6 +534,11 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
       mode === "client" ? undefined :
       _isDirectSkill ? _directTarget!.name :
       mode === "all" ? "all" : undefined
+
+    const codingAgentAccess: string | undefined =
+      mode === "client" ? undefined :
+      _isDirectCodingAgent ? (_directTarget as { type: "coding_agent"; agentType: string }).agentType :
+      undefined
 
     // Deferred loading:
     // - "all" mode: use the toggle state
@@ -544,6 +556,7 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
       deferredLoading: effectiveDeferredLoading,
       mcpAccess,
       skillsAccess,
+      codingAgentAccess,
     }
   }, [canConnect, serverPort, mode, clientApiKey, internalTestToken, selectedDirectTarget, deferredLoading])
 

@@ -1,6 +1,6 @@
 import * as React from "react"
 import { useState, useRef, useEffect, useCallback } from "react"
-import { Send, Bot, User, Square, ImagePlus, X } from "lucide-react"
+import { Send, Bot, User, Square, ImagePlus, X, AlertCircle } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card"
 import { Button } from "@/components/ui/Button"
 import { Input } from "@/components/ui/Input"
@@ -29,6 +29,7 @@ interface Message {
   images?: ImageAttachment[]
   timestamp: Date
   metadata?: MessageMetadata
+  isError?: boolean
 }
 
 interface ModelParameters {
@@ -266,7 +267,8 @@ export function ChatPanel({
             m.id === assistantId
               ? {
                   ...m,
-                  content: `Error: ${error instanceof Error ? error.message : "Failed to get response"}`,
+                  content: error instanceof Error ? error.message : "Failed to get response",
+                  isError: true,
                 }
               : m
           )
@@ -325,8 +327,14 @@ export function ChatPanel({
                     )}
                   >
                     {message.role === "assistant" && (
-                      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-muted">
-                        <Bot className="h-4 w-4" />
+                      <div className={cn(
+                        "flex h-8 w-8 shrink-0 items-center justify-center rounded-full",
+                        message.isError ? "bg-destructive/10" : "bg-muted"
+                      )}>
+                        {message.isError
+                          ? <AlertCircle className="h-4 w-4 text-destructive" />
+                          : <Bot className="h-4 w-4" />
+                        }
                       </div>
                     )}
                     <div
@@ -334,7 +342,9 @@ export function ChatPanel({
                         "rounded-lg px-4 py-2 max-w-[80%]",
                         message.role === "user"
                           ? "bg-primary text-primary-foreground"
-                          : "bg-muted"
+                          : message.isError
+                            ? "bg-destructive/10 border border-destructive/20 text-destructive"
+                            : "bg-muted"
                       )}
                     >
                       {/* Show attached images */}
