@@ -11,6 +11,5 @@ description = "Utility functions for LocalRouter"
 lr-types = { workspace = true }
 anyhow = { workspace = true }
 base64 = { workspace = true }
-bcrypt = { workspace = true }
 ring = { workspace = true }
 dirs = { workspace = true }
