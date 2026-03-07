@@ -12,8 +12,9 @@ use lr_types::{AppError, AppResult};
 use super::elicitation::ElicitationManager;
 use super::firewall::FirewallManager;
 use super::merger::{
-    build_gateway_instructions, merge_initialize_results, InstructionsContext,
-    McpServerInstructionInfo, UnavailableServerInfo,
+    build_full_server_content, build_gateway_instructions, compute_catalog_compression_plan,
+    merge_initialize_results, InstructionsContext, McpServerInstructionInfo,
+    UnavailableServerInfo,
 };
 use super::router::{broadcast_request, separate_results, should_broadcast};
 use super::session::GatewaySession;
@@ -885,6 +886,9 @@ impl McpGateway {
                 servers: Vec::new(),
                 unavailable_servers: unavailable,
                 deferred_loading: false,
+                context_management_enabled: false,
+                indexing_tools_enabled: false,
+                catalog_compression: None,
                 virtual_instructions,
             });
 
@@ -996,6 +1000,9 @@ impl McpGateway {
                     servers: Vec::new(),
                     unavailable_servers: unavailable,
                     deferred_loading: false,
+                    context_management_enabled: false,
+                    indexing_tools_enabled: false,
+                    catalog_compression: None,
                     virtual_instructions,
                 });
 
@@ -1207,6 +1214,27 @@ impl McpGateway {
 
         let deferred_enabled = deferred_state.as_ref().map(|d| d.enabled).unwrap_or(false);
 
+        // Check if context management is enabled for this session
+        let (cm_enabled, cm_indexing_tools, cm_catalog_threshold) = {
+            let session_read = session.read().await;
+            if let Some(state) = session_read.virtual_server_state.get("_context_mode") {
+                if let Some(cm_state) = state
+                    .as_any()
+                    .downcast_ref::<super::context_mode::ContextModeSessionState>()
+                {
+                    (
+                        cm_state.enabled,
+                        cm_state.indexing_tools_enabled,
+                        cm_state.catalog_threshold_bytes,
+                    )
+                } else {
+                    (false, false, 0)
+                }
+            } else {
+                (false, false, 0)
+            }
+        };
+
         // Get the full catalogs for building instructions.
         // In deferred mode, we already have them; in normal mode, fetch now.
         let (tools_catalog, resources_catalog, prompts_catalog) =
@@ -1319,12 +1347,205 @@ impl McpGateway {
             drop(session_write);
         }
 
-        let instructions = build_gateway_instructions(&InstructionsContext {
+        // Context management: index catalog into FTS5 and store activation state
+        if cm_enabled {
+            // Index catalog content into context-mode
+            {
+                let session_read = session.read().await;
+                if let Some(state) = session_read.virtual_server_state.get("_context_mode") {
+                    if let Some(cm_state) = state
+                        .as_any()
+                        .downcast_ref::<super::context_mode::ContextModeSessionState>()
+                    {
+                        // Index server-level content
+                        for info in &server_infos {
+                            let content = build_full_server_content(info);
+                            let slug = super::types::slugify(&info.name);
+                            if let Err(e) = cm_state
+                                .call_tool(
+                                    "ctx_index",
+                                    json!({
+                                        "source": format!("catalog:{}", slug),
+                                        "content": content,
+                                    }),
+                                )
+                                .await
+                            {
+                                tracing::warn!(
+                                    "Failed to index catalog for server {}: {}",
+                                    slug,
+                                    e
+                                );
+                            }
+                        }
+
+                        // Index individual tools
+                        for tool in &tools_catalog {
+                            let content = format!(
+                                "{}: {}\nInput: {}",
+                                tool.name,
+                                tool.description.as_deref().unwrap_or(""),
+                                serde_json::to_string(&tool.input_schema).unwrap_or_default()
+                            );
+                            if let Err(e) = cm_state
+                                .call_tool(
+                                    "ctx_index",
+                                    json!({
+                                        "source": format!("catalog:{}", tool.name),
+                                        "content": content,
+                                    }),
+                                )
+                                .await
+                            {
+                                tracing::warn!("Failed to index tool {}: {}", tool.name, e);
+                            }
+                        }
+
+                        // Index individual resources
+                        for resource in &resources_catalog {
+                            let content = format!(
+                                "{} ({}): {}",
+                                resource.name,
+                                resource.uri,
+                                resource.description.as_deref().unwrap_or("")
+                            );
+                            if let Err(e) = cm_state
+                                .call_tool(
+                                    "ctx_index",
+                                    json!({
+                                        "source": format!("catalog:{}", resource.name),
+                                        "content": content,
+                                    }),
+                                )
+                                .await
+                            {
+                                tracing::warn!(
+                                    "Failed to index resource {}: {}",
+                                    resource.name,
+                                    e
+                                );
+                            }
+                        }
+
+                        // Index individual prompts
+                        for prompt in &prompts_catalog {
+                            let content = format!(
+                                "{}: {}",
+                                prompt.name,
+                                prompt.description.as_deref().unwrap_or("")
+                            );
+                            if let Err(e) = cm_state
+                                .call_tool(
+                                    "ctx_index",
+                                    json!({
+                                        "source": format!("catalog:{}", prompt.name),
+                                        "content": content,
+                                    }),
+                                )
+                                .await
+                            {
+                                tracing::warn!("Failed to index prompt {}: {}", prompt.name, e);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Store catalog state for activation tracking
+            {
+                let mut session_write = session.write().await;
+                if let Some(state) =
+                    session_write.virtual_server_state.get_mut("_context_mode")
+                {
+                    if let Some(cm_state) = state
+                        .as_any_mut()
+                        .downcast_mut::<super::context_mode::ContextModeSessionState>()
+                    {
+                        // Build catalog_sources map
+                        for info in &server_infos {
+                            let slug = super::types::slugify(&info.name);
+                            cm_state.catalog_sources.insert(
+                                format!("catalog:{}", slug),
+                                super::context_mode::CatalogItemType::ServerWelcome,
+                            );
+                            for name in &info.tool_names {
+                                cm_state.catalog_sources.insert(
+                                    format!("catalog:{}", name),
+                                    super::context_mode::CatalogItemType::Tool,
+                                );
+                            }
+                            for name in &info.resource_names {
+                                cm_state.catalog_sources.insert(
+                                    format!("catalog:{}", name),
+                                    super::context_mode::CatalogItemType::Resource,
+                                );
+                            }
+                            for name in &info.prompt_names {
+                                cm_state.catalog_sources.insert(
+                                    format!("catalog:{}", name),
+                                    super::context_mode::CatalogItemType::Prompt,
+                                );
+                            }
+                        }
+
+                        // Store full catalogs for search-based activation
+                        cm_state.full_tool_catalog = tools_catalog.clone();
+                        cm_state.full_resource_catalog = resources_catalog.clone();
+                        cm_state.full_prompt_catalog = prompts_catalog.clone();
+                    }
+                }
+            }
+
+            tracing::info!(
+                "Context management catalog indexed for client {}: {} servers, {} tools, {} resources, {} prompts",
+                client_id_for_log,
+                server_infos.len(),
+                tools_catalog.len(),
+                resources_catalog.len(),
+                prompts_catalog.len(),
+            );
+        }
+
+        // Build instructions context
+        let is_internal_test = client_id_for_log == "internal-test";
+        let mut instructions_ctx = InstructionsContext {
             servers: server_infos,
             unavailable_servers: unavailable,
             deferred_loading: deferred_enabled,
+            context_management_enabled: cm_enabled,
+            indexing_tools_enabled: cm_indexing_tools,
+            catalog_compression: None,
             virtual_instructions,
-        });
+        };
+
+        // Context management: compute compression plan
+        if cm_enabled {
+            let supports_tools_changed = is_internal_test
+                || client_capabilities
+                    .as_ref()
+                    .map(|caps| caps.supports_tools_list_changed())
+                    .unwrap_or(false);
+            let supports_resources_changed = is_internal_test
+                || client_capabilities
+                    .as_ref()
+                    .map(|caps| caps.supports_resources_list_changed())
+                    .unwrap_or(false);
+            let supports_prompts_changed = is_internal_test
+                || client_capabilities
+                    .as_ref()
+                    .map(|caps| caps.supports_prompts_list_changed())
+                    .unwrap_or(false);
+
+            instructions_ctx.catalog_compression = Some(compute_catalog_compression_plan(
+                &instructions_ctx,
+                cm_catalog_threshold,
+                supports_tools_changed,
+                supports_resources_changed,
+                supports_prompts_changed,
+            ));
+        }
+
+        let instructions = build_gateway_instructions(&instructions_ctx);
 
         // Store instructions in merged capabilities
         if instructions.is_some() {

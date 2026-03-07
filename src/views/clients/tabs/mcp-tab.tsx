@@ -12,6 +12,7 @@ interface Client {
   name: string
   client_id: string
   mcp_deferred_loading: boolean
+  context_management_enabled: boolean | null
   mcp_permissions: McpPermissions
   marketplace_permission: PermissionState
 }
@@ -24,14 +25,16 @@ interface McpTabProps {
 export function ClientMcpTab({ client, onUpdate }: McpTabProps) {
   const [saving, setSaving] = useState(false)
   const [deferredLoading, setDeferredLoading] = useState(client.mcp_deferred_loading)
+  const [contextManagement, setContextManagement] = useState<boolean | null>(client.context_management_enabled)
   const [marketplacePermission, setMarketplacePermission] = useState<PermissionState>(
     client.marketplace_permission
   )
 
   useEffect(() => {
     setDeferredLoading(client.mcp_deferred_loading)
+    setContextManagement(client.context_management_enabled)
     setMarketplacePermission(client.marketplace_permission)
-  }, [client.mcp_deferred_loading, client.marketplace_permission])
+  }, [client.mcp_deferred_loading, client.context_management_enabled, client.marketplace_permission])
 
   const handleToggleDeferredLoading = async () => {
     try {
@@ -45,6 +48,25 @@ export function ClientMcpTab({ client, onUpdate }: McpTabProps) {
       onUpdate()
     } catch (error) {
       console.error("Failed to update deferred loading:", error)
+      toast.error("Failed to update settings")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleContextManagementChange = async (value: boolean | null) => {
+    try {
+      setSaving(true)
+      await invoke("toggle_client_context_management", {
+        clientId: client.client_id,
+        enabled: value,
+      })
+      setContextManagement(value)
+      const label = value === null ? "inheriting global" : value ? "enabled" : "disabled"
+      toast.success("Context management " + label)
+      onUpdate()
+    } catch (error) {
+      console.error("Failed to update context management:", error)
       toast.error("Failed to update settings")
     } finally {
       setSaving(false)
@@ -135,6 +157,64 @@ export function ClientMcpTab({ client, onUpdate }: McpTabProps) {
               </p>
             </div>
           )}
+        </CardContent>
+      </Card>
+
+      {/* Context Management */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <CardTitle className="text-base">Context Management</CardTitle>
+              <span className="text-xs px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-900 dark:text-purple-300 font-medium">
+                EXPERIMENTAL
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <select
+                className="text-xs border rounded px-2 py-1 bg-background"
+                value={contextManagement === null ? "inherit" : contextManagement ? "on" : "off"}
+                onChange={(e) => {
+                  const v = e.target.value
+                  handleContextManagementChange(v === "inherit" ? null : v === "on")
+                }}
+                disabled={saving}
+              >
+                <option value="inherit">Inherit global</option>
+                <option value="on">Enabled</option>
+                <option value="off">Disabled</option>
+              </select>
+            </div>
+          </div>
+          <CardDescription>
+            Compress MCP catalogs and tool responses using FTS5 search indexing
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="p-4 rounded-lg bg-blue-500/10 border border-blue-600/50">
+            <div className="flex items-start gap-3">
+              <Info className="h-5 w-5 text-blue-600 dark:text-blue-400 mt-0.5 shrink-0" />
+              <div className="space-y-2">
+                <p className="text-sm font-medium text-blue-900 dark:text-blue-300">
+                  How it works
+                </p>
+                <p className="text-sm text-blue-900 dark:text-blue-400">
+                  Context management indexes all MCP server catalogs into a full-text search database.
+                  When catalogs exceed the configured threshold, tool descriptions are compressed
+                  and a search tool lets the LLM discover capabilities on demand. Large tool
+                  responses are also indexed and replaced with a preview.
+                </p>
+                <p className="text-sm text-blue-900 dark:text-blue-400">
+                  Global settings can be configured in the{" "}
+                  <strong>MCP &gt; Context</strong> tab.
+                  Requires client support for{" "}
+                  <code className="px-1 py-0.5 rounded bg-blue-500/20 text-xs">
+                    tools/listChanged
+                  </code>.
+                </p>
+              </div>
+            </div>
+          </div>
         </CardContent>
       </Card>
 

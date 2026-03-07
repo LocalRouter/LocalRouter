@@ -35,6 +35,8 @@ pub struct ClientInfo {
     pub enabled: bool,
     pub strategy_id: String,
     pub mcp_deferred_loading: bool,
+    /// Per-client context management override (None = inherit global, Some(false) = disabled)
+    pub context_management_enabled: Option<bool>,
     pub created_at: String,
     pub last_used: Option<String>,
     /// Unified MCP permissions (hierarchical Allow/Ask/Off)
@@ -75,6 +77,7 @@ pub async fn list_clients(
             enabled: c.enabled,
             strategy_id: c.strategy_id.clone(),
             mcp_deferred_loading: c.mcp_deferred_loading,
+            context_management_enabled: c.context_management_enabled,
             created_at: c.created_at.to_rfc3339(),
             last_used: c.last_used.map(|t| t.to_rfc3339()),
             mcp_permissions: c.mcp_permissions.clone(),
@@ -140,6 +143,7 @@ pub async fn create_client(
         enabled: client.enabled,
         strategy_id: client.strategy_id.clone(),
         mcp_deferred_loading: client.mcp_deferred_loading,
+        context_management_enabled: client.context_management_enabled,
         created_at: client.created_at.to_rfc3339(),
         last_used: client.last_used.map(|t| t.to_rfc3339()),
         mcp_permissions: client.mcp_permissions.clone(),
@@ -396,6 +400,48 @@ pub async fn toggle_client_deferred_loading(
     config_manager.save().await.map_err(|e| e.to_string())?;
 
     // Emit clients-changed event for UI updates
+    if let Err(e) = app.emit("clients-changed", ()) {
+        tracing::error!("Failed to emit clients-changed event: {}", e);
+    }
+
+    Ok(())
+}
+
+/// Toggle context management for a specific client.
+///
+/// # Arguments
+/// * `client_id` - Client ID
+/// * `enabled` - None = inherit global setting, Some(false) = disabled for this client
+#[tauri::command]
+pub async fn toggle_client_context_management(
+    client_id: String,
+    enabled: Option<bool>,
+    client_manager: State<'_, Arc<lr_clients::ClientManager>>,
+    config_manager: State<'_, ConfigManager>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    tracing::info!(
+        "Setting client {} context management: {:?}",
+        client_id,
+        enabled
+    );
+
+    // Update in client manager (in-memory)
+    client_manager
+        .set_context_management_enabled(&client_id, enabled)
+        .map_err(|e| e.to_string())?;
+
+    // Update in config (for persistence)
+    config_manager
+        .update(|cfg| {
+            if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
+                client.context_management_enabled = enabled;
+            }
+        })
+        .map_err(|e| e.to_string())?;
+
+    config_manager.save().await.map_err(|e| e.to_string())?;
+
     if let Err(e) = app.emit("clients-changed", ()) {
         tracing::error!("Failed to emit clients-changed event: {}", e);
     }

@@ -386,6 +386,24 @@ impl ClientManager {
         Ok(())
     }
 
+    /// Set context management enabled for a client (None = inherit global, Some(false) = disabled)
+    pub fn set_context_management_enabled(
+        &self,
+        client_id: &str,
+        enabled: Option<bool>,
+    ) -> AppResult<()> {
+        let mut clients = self.clients.write();
+
+        let client = clients
+            .iter_mut()
+            .find(|c| c.id == client_id)
+            .ok_or_else(|| AppError::Config(format!("Client not found: {}", client_id)))?;
+
+        client.context_management_enabled = enabled;
+
+        Ok(())
+    }
+
     /// Enable a client
     pub fn enable_client(&self, client_id: &str) -> AppResult<()> {
         let mut clients = self.clients.write();

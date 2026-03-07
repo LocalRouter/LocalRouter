@@ -4,6 +4,7 @@
 //! into a single interface with namespace-based routing and deferred loading.
 
 pub mod access_control;
+pub mod context_mode;
 pub mod deferred;
 pub mod elicitation;
 pub mod firewall;

@@ -58,6 +58,11 @@ static SHELL_ENV: Lazy<HashMap<String, String>> = Lazy::new(|| {
     env
 });
 
+/// Get a clone of the cached shell environment (PATH resolution for subprocess spawning).
+pub fn shell_env() -> HashMap<String, String> {
+    SHELL_ENV.clone()
+}
+
 /// Get PATH from the user's login shell on macOS.
 ///
 /// This runs the user's default shell in login/interactive mode to source

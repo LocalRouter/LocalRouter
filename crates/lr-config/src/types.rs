@@ -418,6 +418,10 @@ pub struct AppConfig {
     /// AI coding agents configuration
     #[serde(default)]
     pub coding_agents: CodingAgentsConfig,
+
+    /// Context management configuration (context-mode integration)
+    #[serde(default)]
+    pub context_management: ContextManagementConfig,
 }
 
 /// Pricing override for a specific model
@@ -1253,6 +1257,49 @@ fn default_output_buffer_size() -> usize {
     1000
 }
 
+/// Context management configuration (context-mode integration).
+///
+/// When enabled, spawns a per-client context-mode STDIO process that provides
+/// FTS5 search, content indexing, and progressive catalog compression to reduce
+/// context window consumption.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ContextManagementConfig {
+    /// Master toggle — enables context management for all clients (unless overridden)
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Expose indexing tools (ctx_execute, ctx_execute_file, ctx_batch_execute, ctx_index, ctx_fetch_and_index)
+    #[serde(default = "default_true")]
+    pub indexing_tools: bool,
+
+    /// Progressive catalog compression kicks in above this byte threshold
+    #[serde(default = "default_catalog_threshold_bytes")]
+    pub catalog_threshold_bytes: usize,
+
+    /// Compress individual tool/resource/prompt responses above this byte threshold
+    #[serde(default = "default_response_threshold_bytes")]
+    pub response_threshold_bytes: usize,
+}
+
+impl Default for ContextManagementConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            indexing_tools: true,
+            catalog_threshold_bytes: default_catalog_threshold_bytes(),
+            response_threshold_bytes: default_response_threshold_bytes(),
+        }
+    }
+}
+
+fn default_catalog_threshold_bytes() -> usize {
+    8192
+}
+
+fn default_response_threshold_bytes() -> usize {
+    4096
+}
+
 /// Configuration for a single coding agent.
 /// An agent is implicitly enabled if its binary is installed on the system.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1786,11 +1833,15 @@ pub struct Client {
     )]
     pub mcp_server_access: McpServerAccess,
 
-    /// Enable deferred loading for MCP tools (default: false)
-    /// When enabled, only a search tool is initially visible. Tools are activated on-demand
-    /// through search queries, dramatically reducing token consumption for large catalogs.
-    #[serde(default)]
+    /// Migration shim: old deferred loading flag (deserialize only)
+    /// Use context_management_enabled instead
+    #[serde(default, skip_serializing)]
     pub mcp_deferred_loading: bool,
+
+    /// Enable context management for this client.
+    /// None = inherit global setting, Some(false) = disabled regardless of global.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_management_enabled: Option<bool>,
 
     /// Migration shim: old skills access (deserialize only)
     /// Use skills_permissions instead
@@ -2569,6 +2620,7 @@ impl Default for AppConfig {
             marketplace: MarketplaceConfig::default(),
             guardrails: GuardrailsConfig::default(),
             coding_agents: CodingAgentsConfig::default(),
+            context_management: ContextManagementConfig::default(),
         }
     }
 }
@@ -2735,6 +2787,7 @@ impl Client {
             allowed_llm_providers: Vec::new(),
             mcp_server_access: McpServerAccess::None,
             mcp_deferred_loading: false,
+            context_management_enabled: None,
             skills_access: SkillsAccess::None,
             created_at: Utc::now(),
             last_used: None,
@@ -2759,6 +2812,22 @@ impl Client {
             coding_agent_permission: PermissionState::default(),
             coding_agent_type: None,
         }
+    }
+
+    /// Resolve whether context management is enabled for this client.
+    /// Checks per-client override first, then falls back to global config.
+    /// Also migrates old `mcp_deferred_loading: true` → context management enabled.
+    pub fn is_context_management_enabled(&self, global: &ContextManagementConfig) -> bool {
+        // Per-client override takes precedence
+        if let Some(enabled) = self.context_management_enabled {
+            return enabled;
+        }
+        // Migration: old deferred loading flag
+        if self.mcp_deferred_loading {
+            return true;
+        }
+        // Fall back to global setting
+        global.enabled
     }
 
     /// Update last used timestamp

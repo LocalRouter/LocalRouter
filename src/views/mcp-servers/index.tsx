@@ -18,6 +18,7 @@ import { McpIcon } from "@/components/icons/category-icons"
 import { SamplePopupButton } from "@/components/shared/SamplePopupButton"
 import { McpServersPanel, McpHealthStatus, McpHealthCheckEvent } from "../resources/mcp-servers-panel"
 import { MarketplaceSearchPanel, type McpServerListing } from "@/components/add-resource"
+import { ContextManagementTab } from "./context-management-tab"
 
 interface MarketplaceConfig {
   mcp_enabled: boolean
@@ -44,6 +45,7 @@ export function McpServersView({ activeSubTab, onTabChange }: McpServersViewProp
   const parseSubTab = (subTab: string | null) => {
     if (!subTab) return { topTab: "servers", selectedId: null, addTemplateId: null }
     if (subTab === "marketplace") return { topTab: "marketplace", selectedId: null, addTemplateId: null }
+    if (subTab === "context") return { topTab: "context", selectedId: null, addTemplateId: null }
     if (subTab === "settings") return { topTab: "settings", selectedId: null, addTemplateId: null }
     if (subTab.startsWith("add/")) {
       return { topTab: "servers", selectedId: null, addTemplateId: subTab.slice(4) }
@@ -259,6 +261,7 @@ export function McpServersView({ activeSubTab, onTabChange }: McpServersViewProp
         <TabsList className="flex-shrink-0 w-fit">
           <TabsTrigger value="servers">Servers</TabsTrigger>
           <TabsTrigger value="marketplace">Marketplace</TabsTrigger>
+          <TabsTrigger value="context">Context</TabsTrigger>
           <TabsTrigger value="settings">Settings</TabsTrigger>
         </TabsList>
 
@@ -285,6 +288,10 @@ export function McpServersView({ activeSubTab, onTabChange }: McpServersViewProp
             onSelectMcp={handleSelectMcp}
             maxHeight="100%"
           />
+        </TabsContent>
+
+        <TabsContent value="context" className="flex-1 min-h-0 mt-4 overflow-y-auto">
+          <ContextManagementTab />
         </TabsContent>
 
         <TabsContent value="settings" className="flex-1 min-h-0 mt-4 overflow-y-auto">

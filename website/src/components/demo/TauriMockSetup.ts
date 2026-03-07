@@ -146,6 +146,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       enabled: true,
       strategy_id: 'strategy-default',
       mcp_deferred_loading: false,
+      context_management_enabled: null,
       created_at: new Date().toISOString(),
       last_used: null,
       mcp_permissions: { global: 'ask' as const, servers: {}, tools: {}, resources: {}, prompts: {} },
@@ -187,6 +188,14 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.id)
     if (client) {
       client.mcp_deferred_loading = args?.enabled !== undefined ? args.enabled : !client.mcp_deferred_loading
+      setTimeout(() => emit('clients-changed', {}), 10)
+    }
+    return null
+  },
+  'toggle_client_context_management': (args) => {
+    const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.id)
+    if (client) {
+      client.context_management_enabled = args?.enabled ?? null
       setTimeout(() => emit('clients-changed', {}), 10)
     }
     return null
@@ -893,6 +902,16 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     return toolsBySkill[skill?.name || ''] || [
       { name: `${skill?.name || 'skill'}_execute`, description: 'Execute the skill' },
     ]
+  },
+  'get_context_management_config': () => ({
+    enabled: true,
+    indexing_tools: true,
+    catalog_threshold_bytes: 50000,
+    response_threshold_bytes: 10000,
+  }),
+  'update_context_management_config': (args) => {
+    toast.success('Context management config updated (demo)')
+    return null
   },
   'get_skills_config': () => ({
     paths: ["~/.localrouter/skills"],

@@ -96,6 +96,8 @@ export interface ClientInfo {
   enabled: boolean
   strategy_id: string
   mcp_deferred_loading: boolean
+  /** Per-client context management override (null = inherit global, false = disabled) */
+  context_management_enabled: boolean | null
   created_at: string
   last_used: string | null
   mcp_permissions: McpPermissions
@@ -573,6 +575,31 @@ export interface SkillsConfig {
   paths: string[]
   disabled_skills: string[]
   async_enabled: boolean
+}
+
+/**
+ * Context management configuration.
+ * Rust: crates/lr-config/src/types.rs - ContextManagementConfig struct
+ */
+export interface ContextManagementConfig {
+  enabled: boolean
+  indexing_tools: boolean
+  catalog_threshold_bytes: number
+  response_threshold_bytes: number
+}
+
+/** Params for update_context_management_config */
+export interface UpdateContextManagementConfigParams {
+  enabled?: boolean
+  indexingTools?: boolean
+  catalogThresholdBytes?: number
+  responseThresholdBytes?: number
+}
+
+/** Params for toggle_client_context_management */
+export interface ToggleClientContextManagementParams {
+  clientId: string
+  enabled: boolean | null
 }
 
 // =============================================================================

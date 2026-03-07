@@ -499,6 +499,64 @@ pub struct DeferredLoadingState {
     pub server_tool_lists: HashMap<String, Vec<String>>,
 }
 
+/// Catalog compression plan — describes how to progressively compress the welcome text.
+///
+/// Computed during session init when context management is enabled.
+/// Implements a 3-phase progressive compression algorithm:
+/// 1. Compress individual descriptions (largest first) → one-liner + search hint
+/// 2. Defer tools/resources/prompts entirely (hide from list, activate via ctx_search)
+/// 3. Truncate remaining server listings to counts only
+#[derive(Debug, Clone, Default)]
+pub struct CatalogCompressionPlan {
+    /// Items whose descriptions are compressed (indexed in FTS5, replaced with one-liner).
+    pub compressed_descriptions: Vec<CompressedItem>,
+    /// Items deferred entirely (hidden from tools/list, activated via ctx_search).
+    pub deferred_items: Vec<DeferredItem>,
+    /// Servers whose item lists are truncated to counts only.
+    pub truncated_servers: Vec<String>,
+}
+
+/// An item whose description was compressed (Phase 1 of catalog compression).
+#[derive(Debug, Clone)]
+pub struct CompressedItem {
+    /// Source label for FTS5 indexing (e.g., "catalog:filesystem__read_file").
+    pub source_label: String,
+    /// The full content that was indexed.
+    pub full_content: String,
+    /// The type of item (tool, resource, prompt, or server welcome).
+    pub item_type: CompressedItemType,
+    /// The namespaced name (e.g., "filesystem__read_file") or server slug.
+    pub namespaced_name: String,
+    /// Estimated byte size of the full description.
+    pub byte_size: usize,
+}
+
+/// Type of compressed catalog item.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CompressedItemType {
+    Tool,
+    Resource,
+    Prompt,
+    ServerWelcome,
+}
+
+/// An item deferred entirely (Phase 2 of catalog compression).
+#[derive(Debug, Clone)]
+pub struct DeferredItem {
+    /// Server that owns this item.
+    pub server_slug: String,
+    /// Type of deferred content.
+    pub item_type: DeferredItemType,
+}
+
+/// Type of deferred catalog item.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeferredItemType {
+    Tools,
+    Resources,
+    Prompts,
+}
+
 /// Server failure info for partial failure handling
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerFailure {

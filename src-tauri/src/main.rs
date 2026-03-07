@@ -545,6 +545,19 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                 app_state.mcp_gateway.register_virtual_server(skills_vs);
                 info!("Skills virtual server registered");
 
+                // Register context-mode virtual server
+                let context_management_config =
+                    config_manager.get().context_management.clone();
+                let context_mode_vs = Arc::new(
+                    lr_mcp::gateway::context_mode::ContextModeVirtualServer::new(
+                        context_management_config,
+                    ),
+                );
+                app_state
+                    .mcp_gateway
+                    .register_virtual_server(context_mode_vs);
+                info!("Context-mode virtual server registered");
+
                 // Register marketplace virtual server if available
                 if let Some(ref service) = marketplace_service {
                     let marketplace_vs = Arc::new(
@@ -1447,6 +1460,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::toggle_client_enabled,
             ui::commands::rotate_client_secret,
             ui::commands::toggle_client_deferred_loading,
+            ui::commands::toggle_client_context_management,
             ui::commands::get_client_value,
             // Strategy management commands
             ui::commands::list_strategies,
@@ -1548,6 +1562,8 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             // Skills commands
             ui::commands::list_skills,
             ui::commands::get_skill,
+            ui::commands::get_context_management_config,
+            ui::commands::update_context_management_config,
             ui::commands::get_skills_config,
             ui::commands::add_skill_source,
             ui::commands::remove_skill_source,

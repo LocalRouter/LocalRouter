@@ -33,8 +33,14 @@ pub struct InstructionsContext {
     pub servers: Vec<McpServerInstructionInfo>,
     /// Unavailable MCP servers
     pub unavailable_servers: Vec<UnavailableServerInfo>,
-    /// Whether deferred loading is enabled
+    /// Whether deferred loading is enabled (legacy)
     pub deferred_loading: bool,
+    /// Whether context management is enabled (replaces deferred_loading)
+    pub context_management_enabled: bool,
+    /// Whether indexing tools (ctx_execute, etc.) are exposed
+    pub indexing_tools_enabled: bool,
+    /// Catalog compression plan (computed when context management is enabled)
+    pub catalog_compression: Option<CatalogCompressionPlan>,
     /// Instructions from virtual servers
     pub virtual_instructions: Vec<super::virtual_server::VirtualInstructions>,
 }
@@ -162,6 +168,11 @@ pub fn build_gateway_instructions(ctx: &InstructionsContext) -> Option<String> {
     // Nothing to describe
     if !has_servers && !has_unavailable && !has_virtual {
         return None;
+    }
+
+    // Context management path — uses compression plan
+    if ctx.context_management_enabled {
+        return build_context_managed_instructions(ctx);
     }
 
     let mut inst = String::new();
@@ -360,6 +371,512 @@ fn build_all_instructions_section(inst: &mut String, ctx: &InstructionsContext) 
             inst.push_str(&format!("</{}>\n", tag));
         }
     }
+}
+
+// ─── Context Management: Compression + Welcome Text ────────────────────────
+
+/// Build welcome text when context management is enabled.
+/// Applies the catalog compression plan to produce compressed output.
+fn build_context_managed_instructions(ctx: &InstructionsContext) -> Option<String> {
+    let mut inst = String::new();
+
+    // Header
+    let server_count = ctx.servers.len();
+    if server_count == 0 && ctx.virtual_instructions.is_empty() {
+        inst.push_str(
+            "Unified MCP Gateway — Context-Managed: no servers or tools are currently available.\n\n",
+        );
+    } else {
+        inst.push_str(&format!(
+            "Unified MCP Gateway — Context-Managed\n\n{} server{} connected. \
+             Use ctx_search to discover MCP capabilities, retrieve compressed content, \
+             and search server docs.\n\n",
+            server_count,
+            if server_count == 1 { "" } else { "s" }
+        ));
+    }
+
+    let plan = ctx.catalog_compression.as_ref();
+    let compressed_names: std::collections::HashSet<&str> = plan
+        .map(|p| {
+            p.compressed_descriptions
+                .iter()
+                .map(|c| c.namespaced_name.as_str())
+                .collect()
+        })
+        .unwrap_or_default();
+    let deferred_servers: std::collections::HashSet<&str> = plan
+        .map(|p| {
+            p.deferred_items
+                .iter()
+                .map(|d| d.server_slug.as_str())
+                .collect()
+        })
+        .unwrap_or_default();
+    let truncated_servers: std::collections::HashSet<&str> = plan
+        .map(|p| p.truncated_servers.iter().map(|s| s.as_str()).collect())
+        .unwrap_or_default();
+
+    // Virtual server tools first (never compressed)
+    for vsi in &ctx.virtual_instructions {
+        inst.push_str(&format!("**{}**\n", vsi.section_title));
+        for name in &vsi.tool_names {
+            inst.push_str(&format!("- `{}` (tool)\n", name));
+        }
+        inst.push('\n');
+    }
+
+    // Regular MCP servers
+    for server in &ctx.servers {
+        let server_slug = slugify(&server.name);
+
+        // Check if this server is fully truncated to counts
+        if truncated_servers.contains(server_slug.as_str()) {
+            let mut parts = Vec::new();
+            if !server.tool_names.is_empty() {
+                parts.push(format!("{} tools", server.tool_names.len()));
+            }
+            if !server.resource_names.is_empty() {
+                parts.push(format!("{} resources", server.resource_names.len()));
+            }
+            if !server.prompt_names.is_empty() {
+                parts.push(format!("{} prompts", server.prompt_names.len()));
+            }
+            inst.push_str(&format!(
+                "- {}: {} — ctx_search(source=\"catalog:{}\") to explore\n",
+                server.name,
+                parts.join(", "),
+                server_slug
+            ));
+            continue;
+        }
+
+        inst.push_str(&format!("**{}**\n", server.name));
+
+        // List tools (compressed or full)
+        for name in &server.tool_names {
+            if compressed_names.contains(name.as_str()) {
+                inst.push_str(&format!(
+                    "- {} — [compressed] ctx_search(queries=[\"{}\"], source=\"catalog:{}\")\n",
+                    name,
+                    name.rsplit("__").next().unwrap_or(name),
+                    name
+                ));
+            } else {
+                inst.push_str(&format!("- `{}` (tool)\n", name));
+            }
+        }
+
+        // List resources (compressed or full)
+        for name in &server.resource_names {
+            if compressed_names.contains(name.as_str()) {
+                inst.push_str(&format!(
+                    "- {} — [compressed] ctx_search(queries=[\"{}\"], source=\"catalog:{}\")\n",
+                    name,
+                    name.rsplit("__").next().unwrap_or(name),
+                    name
+                ));
+            } else {
+                inst.push_str(&format!("- `{}` (resource)\n", name));
+            }
+        }
+
+        // List prompts (compressed or full)
+        for name in &server.prompt_names {
+            if compressed_names.contains(name.as_str()) {
+                inst.push_str(&format!(
+                    "- {} — [compressed] ctx_search(queries=[\"{}\"], source=\"catalog:{}\")\n",
+                    name,
+                    name.rsplit("__").next().unwrap_or(name),
+                    name
+                ));
+            } else {
+                inst.push_str(&format!("- `{}` (prompt)\n", name));
+            }
+        }
+
+        inst.push('\n');
+    }
+
+    // Unavailable servers
+    for server in &ctx.unavailable_servers {
+        inst.push_str(&format!(
+            "**{}** — unavailable: {}\n\n",
+            server.name, server.error
+        ));
+    }
+
+    // Virtual server instructions (always inline, never compressed)
+    for vsi in &ctx.virtual_instructions {
+        if vsi.content.is_empty() {
+            continue;
+        }
+        let tag = slugify(&vsi.section_title);
+        inst.push_str(&format!("\n<{}>\n", tag));
+        inst.push_str(&vsi.content);
+        if !vsi.content.ends_with('\n') {
+            inst.push('\n');
+        }
+        inst.push_str(&format!("</{}>\n", tag));
+    }
+
+    // Server instructions: inline unless compressed
+    for server in &ctx.servers {
+        let server_slug = slugify(&server.name);
+
+        // Skip if server is truncated or its welcome text is compressed
+        if truncated_servers.contains(server_slug.as_str()) {
+            continue;
+        }
+        if compressed_names.contains(server_slug.as_str()) {
+            inst.push_str(&format!(
+                "\n- {} instructions — [compressed] ctx_search(queries=[\"{}\"], source=\"catalog:{}\")\n",
+                server.name, server_slug, server_slug
+            ));
+            continue;
+        }
+
+        // Include inline (same as non-deferred mode)
+        let has_content = server.instructions.is_some() || server.description.is_some();
+        if !has_content {
+            continue;
+        }
+
+        let tag = &server_slug;
+        inst.push_str(&format!("\n<{}>\n", tag));
+        if let Some(desc) = &server.description {
+            inst.push_str(desc);
+            if !desc.ends_with('\n') {
+                inst.push('\n');
+            }
+        }
+        if let Some(instructions) = &server.instructions {
+            if server.description.is_some() {
+                inst.push('\n');
+            }
+            inst.push_str(instructions);
+            if !instructions.ends_with('\n') {
+                inst.push('\n');
+            }
+        }
+        inst.push_str(&format!("</{}>\n", tag));
+    }
+
+    Some(inst)
+}
+
+/// Build the full content for a server — used for FTS5 indexing of compressed content.
+/// Combines the tool listing + description + instructions into a single string.
+pub fn build_full_server_content(server: &McpServerInstructionInfo) -> String {
+    let mut content = String::new();
+
+    // Server name and capabilities
+    content.push_str(&format!("Server: {}\n", server.name));
+
+    if let Some(desc) = &server.description {
+        content.push_str(desc);
+        content.push('\n');
+    }
+
+    if let Some(instructions) = &server.instructions {
+        content.push_str(instructions);
+        content.push('\n');
+    }
+
+    // Tool listing
+    if !server.tool_names.is_empty() {
+        content.push_str("\nTools:\n");
+        for name in &server.tool_names {
+            content.push_str(&format!("- {}\n", name));
+        }
+    }
+
+    if !server.resource_names.is_empty() {
+        content.push_str("\nResources:\n");
+        for name in &server.resource_names {
+            content.push_str(&format!("- {}\n", name));
+        }
+    }
+
+    if !server.prompt_names.is_empty() {
+        content.push_str("\nPrompts:\n");
+        for name in &server.prompt_names {
+            content.push_str(&format!("- {}\n", name));
+        }
+    }
+
+    content
+}
+
+/// Compute a catalog compression plan using the progressive algorithm.
+///
+/// Phases:
+/// 1. Compress individual descriptions (largest first) — index + replace with one-liner
+/// 2. Defer items entirely (hide from tools/list) — only if client supports *_changed
+/// 3. Truncate server listings to counts only
+pub fn compute_catalog_compression_plan(
+    ctx: &InstructionsContext,
+    threshold: usize,
+    supports_tools_list_changed: bool,
+    supports_resources_list_changed: bool,
+    supports_prompts_list_changed: bool,
+) -> CatalogCompressionPlan {
+    let mut plan = CatalogCompressionPlan::default();
+
+    // Build the full uncompressed catalog to measure size
+    let full_size = estimate_catalog_size(ctx);
+
+    if full_size <= threshold {
+        // No compression needed
+        return plan;
+    }
+
+    let bytes_to_save = full_size - threshold;
+
+    // Phase 1: Collect all compressible items with their sizes, sorted descending
+    let mut compressible_items: Vec<CompressibleCandidate> = Vec::new();
+
+    for server in &ctx.servers {
+        let server_slug = slugify(&server.name);
+
+        // Server welcome/instructions text
+        let welcome_size = server
+            .description
+            .as_ref()
+            .map(|d| d.len())
+            .unwrap_or(0)
+            + server
+                .instructions
+                .as_ref()
+                .map(|i| i.len())
+                .unwrap_or(0);
+        if welcome_size > 0 {
+            compressible_items.push(CompressibleCandidate {
+                namespaced_name: server_slug.clone(),
+                source_label: format!("catalog:{}", server_slug),
+                full_content: build_full_server_content(server),
+                item_type: CompressedItemType::ServerWelcome,
+                byte_size: welcome_size,
+                server_slug: server_slug.clone(),
+            });
+        }
+
+        // Individual tool descriptions (estimated ~80 bytes per tool line in listing)
+        for name in &server.tool_names {
+            let line_size = name.len() + 15; // "- `name` (tool)\n"
+            compressible_items.push(CompressibleCandidate {
+                namespaced_name: name.clone(),
+                source_label: format!("catalog:{}", name),
+                full_content: name.clone(), // Will be populated with full description at index time
+                item_type: CompressedItemType::Tool,
+                byte_size: line_size,
+                server_slug: server_slug.clone(),
+            });
+        }
+
+        for name in &server.resource_names {
+            let line_size = name.len() + 19; // "- `name` (resource)\n"
+            compressible_items.push(CompressibleCandidate {
+                namespaced_name: name.clone(),
+                source_label: format!("catalog:{}", name),
+                full_content: name.clone(),
+                item_type: CompressedItemType::Resource,
+                byte_size: line_size,
+                server_slug: server_slug.clone(),
+            });
+        }
+
+        for name in &server.prompt_names {
+            let line_size = name.len() + 17; // "- `name` (prompt)\n"
+            compressible_items.push(CompressibleCandidate {
+                namespaced_name: name.clone(),
+                source_label: format!("catalog:{}", name),
+                full_content: name.clone(),
+                item_type: CompressedItemType::Prompt,
+                byte_size: line_size,
+                server_slug: server_slug.clone(),
+            });
+        }
+    }
+
+    // Sort by size descending — compress largest items first
+    compressible_items.sort_by(|a, b| b.byte_size.cmp(&a.byte_size));
+
+    // Batch-compress items until we've saved enough bytes
+    let mut saved = 0usize;
+    for candidate in &compressible_items {
+        if saved >= bytes_to_save {
+            break;
+        }
+        // Compressed one-liner is ~80 bytes (name + search hint)
+        let one_liner_size = candidate.namespaced_name.len() + 80;
+        let savings = candidate.byte_size.saturating_sub(one_liner_size);
+        if savings == 0 {
+            continue;
+        }
+        plan.compressed_descriptions.push(CompressedItem {
+            source_label: candidate.source_label.clone(),
+            full_content: candidate.full_content.clone(),
+            item_type: candidate.item_type.clone(),
+            namespaced_name: candidate.namespaced_name.clone(),
+            byte_size: candidate.byte_size,
+        });
+        saved += savings;
+    }
+
+    if saved >= bytes_to_save {
+        return plan;
+    }
+
+    // Phase 2: Defer items entirely (hide from listing)
+    // Group remaining items by server, defer the server with the most items
+    let mut server_item_counts: std::collections::HashMap<&str, usize> =
+        std::collections::HashMap::new();
+    for server in &ctx.servers {
+        let slug = slugify(&server.name);
+        let count = server.tool_names.len() + server.resource_names.len() + server.prompt_names.len();
+        server_item_counts.insert(Box::leak(slug.into_boxed_str()), count);
+    }
+
+    // Sort servers by item count descending
+    let mut server_slugs: Vec<String> = ctx.servers.iter().map(|s| slugify(&s.name)).collect();
+    server_slugs.sort_by(|a, b| {
+        let count_a = ctx
+            .servers
+            .iter()
+            .find(|s| slugify(&s.name) == *a)
+            .map(|s| s.tool_names.len() + s.resource_names.len() + s.prompt_names.len())
+            .unwrap_or(0);
+        let count_b = ctx
+            .servers
+            .iter()
+            .find(|s| slugify(&s.name) == *b)
+            .map(|s| s.tool_names.len() + s.resource_names.len() + s.prompt_names.len())
+            .unwrap_or(0);
+        count_b.cmp(&count_a)
+    });
+
+    for server_slug in &server_slugs {
+        if saved >= bytes_to_save {
+            break;
+        }
+
+        if supports_tools_list_changed {
+            plan.deferred_items.push(DeferredItem {
+                server_slug: server_slug.clone(),
+                item_type: DeferredItemType::Tools,
+            });
+        }
+        if supports_resources_list_changed {
+            plan.deferred_items.push(DeferredItem {
+                server_slug: server_slug.clone(),
+                item_type: DeferredItemType::Resources,
+            });
+        }
+        if supports_prompts_list_changed {
+            plan.deferred_items.push(DeferredItem {
+                server_slug: server_slug.clone(),
+                item_type: DeferredItemType::Prompts,
+            });
+        }
+
+        // Estimate savings from deferring this server's items
+        if let Some(server) = ctx.servers.iter().find(|s| slugify(&s.name) == *server_slug) {
+            let items_bytes: usize = server
+                .tool_names
+                .iter()
+                .chain(server.resource_names.iter())
+                .chain(server.prompt_names.iter())
+                .map(|n| n.len() + 20) // per-item line size
+                .sum();
+            saved += items_bytes;
+        }
+    }
+
+    if saved >= bytes_to_save {
+        return plan;
+    }
+
+    // Phase 3: Truncate remaining server listings to counts only
+    for server_slug in &server_slugs {
+        if saved >= bytes_to_save {
+            break;
+        }
+        // Only truncate if not already fully deferred
+        let already_deferred = plan
+            .deferred_items
+            .iter()
+            .any(|d| d.server_slug == *server_slug);
+        if already_deferred {
+            continue;
+        }
+
+        plan.truncated_servers.push(server_slug.clone());
+
+        // Estimate savings
+        if let Some(server) = ctx.servers.iter().find(|s| slugify(&s.name) == *server_slug) {
+            let items_bytes: usize = server
+                .tool_names
+                .iter()
+                .chain(server.resource_names.iter())
+                .chain(server.prompt_names.iter())
+                .map(|n| n.len() + 20)
+                .sum();
+            // Truncated line is ~80 bytes
+            saved += items_bytes.saturating_sub(80);
+        }
+    }
+
+    plan
+}
+
+/// Estimate the total byte size of the catalog (welcome text).
+fn estimate_catalog_size(ctx: &InstructionsContext) -> usize {
+    let mut size = 100; // header overhead
+
+    for server in &ctx.servers {
+        size += server.name.len() + 10; // server header
+        for name in &server.tool_names {
+            size += name.len() + 15;
+        }
+        for name in &server.resource_names {
+            size += name.len() + 19;
+        }
+        for name in &server.prompt_names {
+            size += name.len() + 17;
+        }
+        // Server instructions
+        if let Some(desc) = &server.description {
+            size += desc.len() + 20; // XML tags
+        }
+        if let Some(inst) = &server.instructions {
+            size += inst.len() + 20;
+        }
+    }
+
+    for server in &ctx.unavailable_servers {
+        size += server.name.len() + server.error.len() + 30;
+    }
+
+    for vsi in &ctx.virtual_instructions {
+        size += vsi.section_title.len() + vsi.content.len() + 20;
+        for name in &vsi.tool_names {
+            size += name.len() + 15;
+        }
+    }
+
+    size
+}
+
+/// Internal candidate for compression planning.
+struct CompressibleCandidate {
+    namespaced_name: String,
+    source_label: String,
+    full_content: String,
+    item_type: CompressedItemType,
+    byte_size: usize,
+    #[allow(dead_code)]
+    server_slug: String,
 }
 
 /// Merge tools from multiple servers with namespacing
@@ -671,6 +1188,9 @@ mod tests {
             }],
             unavailable_servers: Vec::new(),
             deferred_loading: false,
+            context_management_enabled: false,
+            indexing_tools_enabled: false,
+            catalog_compression: None,
             virtual_instructions: Vec::new(),
         };
 
@@ -703,6 +1223,9 @@ mod tests {
             }],
             unavailable_servers: Vec::new(),
             deferred_loading: false,
+            context_management_enabled: false,
+            indexing_tools_enabled: false,
+            catalog_compression: None,
             virtual_instructions: Vec::new(),
         };
 
@@ -725,6 +1248,9 @@ mod tests {
             }],
             unavailable_servers: Vec::new(),
             deferred_loading: false,
+            context_management_enabled: false,
+            indexing_tools_enabled: false,
+            catalog_compression: None,
             virtual_instructions: Vec::new(),
         };
 
@@ -743,6 +1269,9 @@ mod tests {
             servers: Vec::new(),
             unavailable_servers: Vec::new(),
             deferred_loading: false,
+            context_management_enabled: false,
+            indexing_tools_enabled: false,
+            catalog_compression: None,
             virtual_instructions: vec![VirtualInstructions {
                 section_title: "Skills".to_string(),
                 content: "Call a skill's `get_info` tool.\n\n- **code-review**: `skill_code_review_get_info` — Automated code review\n"
@@ -777,6 +1306,9 @@ mod tests {
             }],
             unavailable_servers: Vec::new(),
             deferred_loading: true,
+            context_management_enabled: false,
+            indexing_tools_enabled: false,
+            catalog_compression: None,
             virtual_instructions: Vec::new(),
         };
 
@@ -805,6 +1337,9 @@ mod tests {
             }],
             unavailable_servers: Vec::new(),
             deferred_loading: false,
+            context_management_enabled: false,
+            indexing_tools_enabled: false,
+            catalog_compression: None,
             virtual_instructions: vec![VirtualInstructions {
                 section_title: "Skills".to_string(),
                 content: "Call get_info to unlock.\n".to_string(),
@@ -835,6 +1370,9 @@ mod tests {
             servers: Vec::new(),
             unavailable_servers: Vec::new(),
             deferred_loading: false,
+            context_management_enabled: false,
+            indexing_tools_enabled: false,
+            catalog_compression: None,
             virtual_instructions: Vec::new(),
         };
 
@@ -850,6 +1388,9 @@ mod tests {
                 error: "Connection refused".to_string(),
             }],
             deferred_loading: false,
+            context_management_enabled: false,
+            indexing_tools_enabled: false,
+            catalog_compression: None,
             virtual_instructions: Vec::new(),
         };
 
@@ -872,6 +1413,9 @@ mod tests {
             }],
             unavailable_servers: Vec::new(),
             deferred_loading: false,
+            context_management_enabled: false,
+            indexing_tools_enabled: false,
+            catalog_compression: None,
             virtual_instructions: Vec::new(),
         };
 
@@ -894,6 +1438,9 @@ mod tests {
             }],
             unavailable_servers: Vec::new(),
             deferred_loading: false,
+            context_management_enabled: false,
+            indexing_tools_enabled: false,
+            catalog_compression: None,
             virtual_instructions: Vec::new(),
         };
 
@@ -915,6 +1462,9 @@ mod tests {
             }],
             unavailable_servers: Vec::new(),
             deferred_loading: false,
+            context_management_enabled: false,
+            indexing_tools_enabled: false,
+            catalog_compression: None,
             virtual_instructions: Vec::new(),
         };
 
@@ -963,6 +1513,9 @@ mod tests {
                 error: "Connection refused".to_string(),
             }],
             deferred_loading: false,
+            context_management_enabled: false,
+            indexing_tools_enabled: false,
+            catalog_compression: None,
             virtual_instructions: vec![
                 VirtualInstructions {
                     section_title: "Skills".to_string(),
@@ -1026,6 +1579,9 @@ mod tests {
             servers: Vec::new(),
             unavailable_servers: Vec::new(),
             deferred_loading: false,
+            context_management_enabled: false,
+            indexing_tools_enabled: false,
+            catalog_compression: None,
             virtual_instructions: vec![VirtualInstructions {
                 section_title: "Skills".to_string(),
                 content: "Call get_info to unlock skills.\n".to_string(),
@@ -1077,6 +1633,9 @@ mod tests {
             ],
             unavailable_servers: Vec::new(),
             deferred_loading: true,
+            context_management_enabled: false,
+            indexing_tools_enabled: false,
+            catalog_compression: None,
             virtual_instructions: vec![VirtualInstructions {
                 section_title: "Skills".to_string(),
                 content: "Skill instructions always shown.\n".to_string(),

@@ -882,10 +882,14 @@ async fn test_gateway_deferred_loading_search_tool() {
     let result = extract_result(&response);
     let tools = result["tools"].as_array().unwrap();
 
-    // With deferred loading, should only see search tool initially
-    assert_eq!(tools.len(), 1);
-    assert_eq!(tools[0]["name"], "search");
-    assert!(tools[0]["description"].as_str().unwrap().contains("Search"));
+    // With deferred loading, should see search + server_info tools initially
+    assert_eq!(tools.len(), 2);
+    let tool_names: Vec<&str> = tools
+        .iter()
+        .filter_map(|t| t["name"].as_str())
+        .collect();
+    assert!(tool_names.contains(&"search"));
+    assert!(tool_names.contains(&"server_info"));
 }
 
 #[tokio::test]
@@ -2641,13 +2645,14 @@ async fn test_deferred_loading_enabled_with_client_capability() {
     let result = extract_result(&tools_response);
     let tools = result["tools"].as_array().unwrap();
 
-    // With deferred loading enabled, should see only the search tool initially
-    assert_eq!(tools.len(), 1);
-    assert_eq!(tools[0]["name"], "search");
-    assert!(tools[0]["description"]
-        .as_str()
-        .unwrap()
-        .contains("Search for tools"));
+    // With deferred loading enabled, should see search + server_info tools initially
+    assert_eq!(tools.len(), 2);
+    let tool_names: Vec<&str> = tools
+        .iter()
+        .filter_map(|t| t["name"].as_str())
+        .collect();
+    assert!(tool_names.contains(&"search"));
+    assert!(tool_names.contains(&"server_info"));
 }
 
 #[tokio::test]

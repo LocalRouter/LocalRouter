@@ -290,6 +290,7 @@ impl ConfigManager {
             allowed_llm_providers: Vec::new(),
             mcp_server_access: McpServerAccess::None,
             mcp_deferred_loading: false,
+            context_management_enabled: None,
             skills_access: SkillsAccess::None,
             created_at: Utc::now(),
             last_used: None,

@@ -28,6 +28,7 @@ fn create_test_client(id: &str, name: &str, enabled: bool, strategy_id: &str) ->
         allowed_llm_providers: vec![],
         mcp_server_access: McpServerAccess::None,
         mcp_deferred_loading: false,
+        context_management_enabled: None,
         skills_access: SkillsAccess::default(),
         created_at: Utc::now(),
         last_used: None,

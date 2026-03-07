@@ -736,6 +736,8 @@ async fn test_skill_tools_present_with_deferred_loading() {
             full_resource_catalog: vec![],
             activated_prompts: HashSet::new(),
             full_prompt_catalog: vec![],
+            server_instructions: std::collections::HashMap::new(),
+            server_tool_lists: std::collections::HashMap::new(),
         });
     }
 

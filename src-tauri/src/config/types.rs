@@ -828,11 +828,14 @@ pub struct Client {
     )]
     pub mcp_server_access: McpServerAccess,
 
-    /// Enable deferred loading for MCP tools (default: false)
-    /// When enabled, only a search tool is initially visible. Tools are activated on-demand
-    /// through search queries, dramatically reducing token consumption for large catalogs.
-    #[serde(default)]
+    /// Migration shim: old deferred loading flag (deserialize only)
+    #[serde(default, skip_serializing)]
     pub mcp_deferred_loading: bool,
+
+    /// Enable context management for this client.
+    /// None = inherit global setting, Some(false) = disabled regardless of global.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_management_enabled: Option<bool>,
 
     /// Skills access control
     /// - None: No skills access (default)
@@ -1551,6 +1554,7 @@ impl Client {
             allowed_llm_providers: Vec::new(),
             mcp_server_access: McpServerAccess::None,
             mcp_deferred_loading: false,
+            context_management_enabled: None,
             skills_access: SkillsAccess::None,
             created_at: Utc::now(),
             last_used: None,

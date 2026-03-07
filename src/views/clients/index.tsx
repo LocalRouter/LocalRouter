@@ -25,6 +25,7 @@ interface Client {
   enabled: boolean
   strategy_id: string
   mcp_deferred_loading: boolean
+  context_management_enabled: boolean | null
   mcp_permissions: McpPermissions
   skills_permissions: SkillsPermissions
   coding_agent_permission: PermissionState

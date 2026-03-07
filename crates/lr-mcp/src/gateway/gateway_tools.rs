@@ -336,7 +336,14 @@ impl McpGateway {
             }
         }
 
-        result
+        // Context management: compress large responses
+        if let Ok(response) = result {
+            let compressed =
+                self.maybe_compress_response(&session, &tool_name, response).await;
+            Ok(compressed)
+        } else {
+            result
+        }
     }
 
     /// Check access control for an MCP tool call.
@@ -946,4 +953,152 @@ impl McpGateway {
             )),
         }
     }
+
+    /// Compress a tool call response if context management is enabled and it exceeds the threshold.
+    ///
+    /// Indexes the full response into context-mode FTS5 and replaces it with a truncated
+    /// preview + search hint. Responses from ctx_* tools are never compressed.
+    async fn maybe_compress_response(
+        &self,
+        session: &Arc<RwLock<GatewaySession>>,
+        tool_name: &str,
+        response: JsonRpcResponse,
+    ) -> JsonRpcResponse {
+        // Never compress error responses
+        if response.error.is_some() {
+            return response;
+        }
+
+        let result = match &response.result {
+            Some(r) => r,
+            None => return response,
+        };
+
+        // Extract text content and measure size
+        let full_text = extract_text_from_result(result);
+        if full_text.is_empty() {
+            return response;
+        }
+
+        // Check context management state
+        let (cm_enabled, threshold, run_id) = {
+            let mut session_write = session.write().await;
+            if let Some(state) = session_write.virtual_server_state.get_mut("_context_mode") {
+                if let Some(cm_state) = state
+                    .as_any_mut()
+                    .downcast_mut::<super::context_mode::ContextModeSessionState>()
+                {
+                    if !cm_state.enabled || full_text.len() <= cm_state.response_threshold_bytes {
+                        return response;
+                    }
+                    let run_id = cm_state.next_run_id(tool_name);
+                    (true, cm_state.response_threshold_bytes, run_id)
+                } else {
+                    return response;
+                }
+            } else {
+                return response;
+            }
+        };
+
+        if !cm_enabled {
+            return response;
+        }
+
+        let source = format!("{}:{}", tool_name, run_id);
+        let byte_size = full_text.len();
+
+        // Index full content into context-mode
+        let index_result = {
+            let session_read = session.read().await;
+            if let Some(state) = session_read.virtual_server_state.get("_context_mode") {
+                if let Some(cm_state) = state
+                    .as_any()
+                    .downcast_ref::<super::context_mode::ContextModeSessionState>()
+                {
+                    cm_state
+                        .call_tool(
+                            "ctx_index",
+                            json!({
+                                "source": &source,
+                                "content": &full_text,
+                            }),
+                        )
+                        .await
+                } else {
+                    Err("CM state not found".to_string())
+                }
+            } else {
+                Err("CM state not found".to_string())
+            }
+        };
+
+        if let Err(e) = index_result {
+            tracing::warn!(
+                "Failed to index response for {} ({}): {}",
+                tool_name,
+                source,
+                e
+            );
+            return response;
+        }
+
+        // Build compressed response with preview
+        let preview_bytes = (threshold / 8).max(200).min(500);
+        let preview = truncate_to_char_boundary(&full_text, preview_bytes);
+        let compressed_text = format!(
+            "[Response compressed — {} bytes indexed as {}]\n\n{}\n\nFull output indexed. \
+             Use ctx_search(queries=[\"your search terms\"], source=\"{}\") to retrieve specific sections.",
+            byte_size, source, preview, source
+        );
+
+        // Build new response with compressed content
+        let mut new_result = result.clone();
+        if let Some(content) = new_result.get_mut("content").and_then(|c| c.as_array_mut()) {
+            content.clear();
+            content.push(json!({
+                "type": "text",
+                "text": compressed_text,
+            }));
+        }
+
+        tracing::info!(
+            "Compressed response for {} ({} bytes → {} bytes, source={})",
+            tool_name,
+            byte_size,
+            compressed_text.len(),
+            source
+        );
+
+        JsonRpcResponse {
+            result: Some(new_result),
+            ..response
+        }
+    }
+}
+
+/// Extract all text content from an MCP result value.
+fn extract_text_from_result(result: &Value) -> String {
+    result
+        .get("content")
+        .and_then(|c| c.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|item| item.get("text").and_then(|t| t.as_str()))
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default()
+}
+
+/// Truncate a string to at most `max_bytes` at a char boundary.
+fn truncate_to_char_boundary(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
 }

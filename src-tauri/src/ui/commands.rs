@@ -1617,6 +1617,44 @@ pub async fn get_skill(
         .ok_or_else(|| format!("Skill '{}' not found", skill_name))
 }
 
+/// Get context management configuration
+#[tauri::command]
+pub async fn get_context_management_config(
+    config_manager: State<'_, ConfigManager>,
+) -> Result<lr_config::ContextManagementConfig, String> {
+    Ok(config_manager.get().context_management.clone())
+}
+
+/// Update context management configuration
+#[tauri::command]
+pub async fn update_context_management_config(
+    enabled: Option<bool>,
+    indexing_tools: Option<bool>,
+    catalog_threshold_bytes: Option<usize>,
+    response_threshold_bytes: Option<usize>,
+    config_manager: State<'_, ConfigManager>,
+) -> Result<(), String> {
+    config_manager
+        .update(|cfg| {
+            if let Some(v) = enabled {
+                cfg.context_management.enabled = v;
+            }
+            if let Some(v) = indexing_tools {
+                cfg.context_management.indexing_tools = v;
+            }
+            if let Some(v) = catalog_threshold_bytes {
+                cfg.context_management.catalog_threshold_bytes = v;
+            }
+            if let Some(v) = response_threshold_bytes {
+                cfg.context_management.response_threshold_bytes = v;
+            }
+        })
+        .map_err(|e| e.to_string())?;
+
+    config_manager.save().await.map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Get skills configuration
 #[tauri::command]
 pub async fn get_skills_config(
