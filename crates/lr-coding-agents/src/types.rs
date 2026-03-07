@@ -6,6 +6,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::path::PathBuf;
 
+/// Hard cap for output buffer size to prevent excessive memory usage
+const MAX_OUTPUT_BUFFER_SIZE: usize = 10_000;
+
 /// Unique session identifier
 pub type SessionId = String;
 
@@ -62,6 +65,7 @@ impl CodingSession {
         output_buffer_max: usize,
     ) -> Self {
         let now = Utc::now();
+        let output_buffer_max = output_buffer_max.min(MAX_OUTPUT_BUFFER_SIZE);
         Self {
             id,
             agent_type,
