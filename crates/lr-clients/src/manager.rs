@@ -175,13 +175,19 @@ impl ClientManager {
         })?;
 
         match stored_secret {
-            Some(secret) if secret == client_secret => {
-                // Mark client as used
-                drop(clients);
-                let mut clients = self.clients.write();
-                if let Some(client) = clients.iter_mut().find(|c| c.id == client_id) {
-                    client.mark_used();
-                    Ok(Some(client.clone()))
+            Some(secret) => {
+                use subtle::ConstantTimeEq;
+                let is_match: bool = secret.as_bytes().ct_eq(client_secret.as_bytes()).into();
+                if is_match {
+                    // Mark client as used
+                    drop(clients);
+                    let mut clients = self.clients.write();
+                    if let Some(client) = clients.iter_mut().find(|c| c.id == client_id) {
+                        client.mark_used();
+                        Ok(Some(client.clone()))
+                    } else {
+                        Ok(None)
+                    }
                 } else {
                     Ok(None)
                 }
@@ -208,7 +214,7 @@ impl ClientManager {
         let result = self.keychain.get(CLIENT_SERVICE, id)?;
 
         if result.is_none() {
-            tracing::warn!("Client secret not found in keychain: {}", id);
+            tracing::warn!("Client secret not found in keychain");
         }
 
         Ok(result)
@@ -220,11 +226,11 @@ impl ClientManager {
     /// # Arguments
     /// * `secret` - The client secret to verify
     pub fn verify_secret(&self, secret: &str) -> AppResult<Option<Client>> {
-        let clients = self.clients.read();
+        use subtle::ConstantTimeEq;
 
-        // Try to find a client with matching secret
-        // We need to check all clients since we only have the secret, not the client_id
+        let clients = self.clients.read();
         let mut found_client_id: Option<String> = None;
+
         for client in clients.iter() {
             if !client.enabled {
                 continue;
@@ -238,17 +244,16 @@ impl ClientManager {
             })?;
 
             if let Some(s) = stored_secret {
-                if s == secret {
+                let is_match: bool = s.as_bytes().ct_eq(secret.as_bytes()).into();
+                if is_match && found_client_id.is_none() {
                     found_client_id = Some(client.id.clone());
-                    break;
                 }
+                // Don't break - always iterate all clients for constant-time behavior
             }
         }
 
-        // Drop read lock before acquiring write lock
         drop(clients);
 
-        // If we found a matching client, mark it as used
         if let Some(client_id) = found_client_id {
             let mut clients = self.clients.write();
             if let Some(client) = clients.iter_mut().find(|c| c.id == client_id) {

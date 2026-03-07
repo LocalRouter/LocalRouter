@@ -20,3 +20,4 @@ tracing = { workspace = true }
 parking_lot = { workspace = true }
 dashmap = { workspace = true }
 anyhow = { workspace = true }
+subtle = { workspace = true }
