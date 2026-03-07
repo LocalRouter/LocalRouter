@@ -293,7 +293,7 @@ async fn resolve_client_secret(
             "env".to_string()
         });
 
-        info!("Using client secret from environment variable");
+        warn!("Using client secret from LOCALROUTER_CLIENT_SECRET environment variable - this is less secure than keychain storage");
         return Ok((id, secret));
     }
 

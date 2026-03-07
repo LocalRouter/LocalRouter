@@ -466,11 +466,7 @@ impl McpServerManager {
                         headers.insert("Authorization".to_string(), format!("Bearer {}", token));
                         tracing::debug!("Applied bearer token auth for SSE server: {}", server_id);
                     } else {
-                        tracing::warn!(
-                            "Bearer token not found in keychain for server: {} (tried account: {})",
-                            server_id,
-                            account_name
-                        );
+                        tracing::warn!("Bearer token not found in keychain for MCP server");
                     }
                 }
                 lr_config::McpAuthConfig::CustomHeaders {
@@ -500,11 +496,7 @@ impl McpServerManager {
                     {
                         Ok(Some(secret)) => secret,
                         Ok(None) => {
-                            tracing::warn!(
-                                "OAuth client secret not found in keychain for server: {} (account: {})",
-                                server_id,
-                                client_secret_ref
-                            );
+                            tracing::warn!("OAuth client secret not found in keychain for MCP server");
                             return Err(AppError::Mcp(format!(
                                 "OAuth client secret not found for server: {}",
                                 server_id
@@ -589,10 +581,7 @@ impl McpServerManager {
                             );
                         }
                         Ok(None) => {
-                            tracing::warn!(
-                                "OAuth browser token not found in keychain for server: {}. User must authenticate via browser first.",
-                                server_id
-                            );
+                            tracing::warn!("OAuth browser token not found in keychain for MCP server. User must authenticate via browser first.");
                             return Err(AppError::Mcp(format!(
                                 "OAuth browser authentication required for server: {}. Please complete browser authentication first.",
                                 server_id
@@ -659,11 +648,7 @@ impl McpServerManager {
                             server_id
                         );
                     } else {
-                        tracing::warn!(
-                            "Bearer token not found in keychain for server: {} (tried account: {})",
-                            server_id,
-                            account_name
-                        );
+                        tracing::warn!("Bearer token not found in keychain for MCP server");
                     }
                 }
                 lr_config::McpAuthConfig::CustomHeaders {
@@ -694,11 +679,7 @@ impl McpServerManager {
                     {
                         Ok(Some(secret)) => secret,
                         Ok(None) => {
-                            tracing::warn!(
-                                "OAuth client secret not found in keychain for server: {} (account: {})",
-                                server_id,
-                                client_secret_ref
-                            );
+                            tracing::warn!("OAuth client secret not found in keychain for MCP server");
                             return Err(AppError::Mcp(format!(
                                 "OAuth client secret not found for server: {}",
                                 server_id
