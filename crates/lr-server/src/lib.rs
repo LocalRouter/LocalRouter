@@ -25,6 +25,7 @@ use axum::{
 };
 use tokio::net::TcpListener;
 use tower_http::cors::{Any, CorsLayer};
+use tower_http::limit::RequestBodyLimitLayer;
 use tracing::{error, info};
 
 use lr_mcp::McpServerManager;
@@ -142,6 +143,19 @@ pub async fn start_server(
         }
     });
 
+    // Spawn token cleanup task (runs every 5 minutes)
+    let token_store_for_cleanup = state.token_store.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(300)); // 5 minutes
+        loop {
+            interval.tick().await;
+            let removed = token_store_for_cleanup.cleanup_expired();
+            if removed > 0 {
+                info!("Cleaned up {} expired OAuth tokens", removed);
+            }
+        }
+    });
+
     // Start server (this runs forever)
     let handle = tokio::spawn(async move {
         if let Err(e) = axum::serve(listener, app).await {
@@ -182,6 +196,7 @@ fn build_app(state: AppState, enable_cors: bool) -> Router {
     let oauth_state = routes::oauth::OAuthState {
         client_manager: state.client_manager.clone(),
         token_store: state.token_store.clone(),
+        token_rate_limiter: Arc::new(dashmap::DashMap::new()),
     };
 
     let oauth_routes = Router::new()
@@ -233,6 +248,13 @@ fn build_app(state: AppState, enable_cors: bool) -> Router {
 
     // Add logging middleware
     router = router.layer(axum::middleware::from_fn(logging_middleware));
+    router = router.layer(axum::middleware::from_fn(security_headers_middleware));
+
+    // Add DNS rebinding protection
+    router = router.layer(axum::middleware::from_fn(host_validation_middleware));
+
+    // Add request body size limit (16MB)
+    router = router.layer(RequestBodyLimitLayer::new(16 * 1024 * 1024));
 
     // Add CORS if enabled
     if enable_cors {
@@ -326,6 +348,53 @@ async fn serve_openapi_yaml() -> impl IntoResponse {
         )
             .into_response(),
     }
+}
+
+/// DNS rebinding protection middleware
+///
+/// Validates the Host header against expected localhost values to prevent
+/// DNS rebinding attacks where an attacker's domain resolves to 127.0.0.1.
+async fn host_validation_middleware(req: Request, next: Next) -> Response {
+    use middleware::error::ApiErrorResponse;
+
+    if let Some(host) = req
+        .headers()
+        .get(header::HOST)
+        .and_then(|h| h.to_str().ok())
+    {
+        let host_without_port = host.split(':').next().unwrap_or(host);
+        match host_without_port {
+            "localhost" | "127.0.0.1" | "[::1]" => {} // OK
+            _ => {
+                return ApiErrorResponse::forbidden("Invalid Host header").into_response();
+            }
+        }
+    }
+    // If no Host header, allow (some clients don't send it)
+    next.run(req).await
+}
+
+/// Security headers middleware
+async fn security_headers_middleware(req: Request, next: Next) -> Response {
+    let mut response = next.run(req).await;
+    let headers = response.headers_mut();
+    headers.insert(
+        axum::http::header::HeaderName::from_static("x-content-type-options"),
+        axum::http::header::HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        axum::http::header::HeaderName::from_static("x-frame-options"),
+        axum::http::header::HeaderValue::from_static("DENY"),
+    );
+    headers.insert(
+        axum::http::header::HeaderName::from_static("referrer-policy"),
+        axum::http::header::HeaderValue::from_static("strict-origin-when-cross-origin"),
+    );
+    headers.insert(
+        axum::http::header::HeaderName::from_static("cache-control"),
+        axum::http::header::HeaderValue::from_static("no-store"),
+    );
+    response
 }
 
 /// Logging middleware to log all requests
