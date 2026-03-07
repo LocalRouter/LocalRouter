@@ -166,9 +166,12 @@ interface McpTabProps {
   initialMode?: McpTestMode
   initialDirectTarget?: string
   initialClientId?: string
+  hideModeSwitcher?: boolean
+  hideDirectTargetSelector?: boolean
+  showDeferredInDirect?: boolean
 }
 
-export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarget, initialClientId }: McpTabProps) {
+export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarget, initialClientId, hideModeSwitcher, hideDirectTargetSelector, showDeferredInDirect }: McpTabProps) {
   const [mcpServers, setMcpServers] = useState<McpServer[]>([])
   const [skills, setSkills] = useState<SkillInfo[]>([])
   const [mode, setMode] = useState<McpTestMode>("client")
@@ -528,9 +531,10 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
     // Deferred loading:
     // - "all" mode: use the toggle state
     // - "client" mode: use the toggle state (initialized from client settings)
-    // - "direct" mode: always off (undefined)
+    // - "direct" mode: off unless showDeferredInDirect is enabled
     const effectiveDeferredLoading: boolean | undefined =
       (mode === "all" || mode === "client") ? (deferredLoading || undefined) :
+      (mode === "direct" && showDeferredInDirect) ? (deferredLoading || undefined) :
       undefined
 
     return {
@@ -628,6 +632,7 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
         <CardContent className="flex flex-col gap-4">
           {/* Two-column layout: radio buttons left, options right */}
           <div className="flex gap-6">
+            {!hideModeSwitcher && (
             <div className="flex flex-col gap-2 flex-shrink-0">
             <Label className="text-sm font-medium">Mode</Label>
             <RadioGroup
@@ -658,10 +663,11 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
               </div>
             </RadioGroup>
             </div>
+            )}
 
             {/* Right side: mode-specific options */}
             <div className="flex flex-col gap-3 flex-1 min-w-0">
-              {mode === "client" && (
+              {mode === "client" && !hideModeSwitcher && (
                 <div className="space-y-1.5">
                   <Label className="text-sm">Client</Label>
                   <Select value={selectedClientId} onValueChange={setSelectedClientId}>
@@ -679,7 +685,7 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
                 </div>
               )}
 
-              {mode === "direct" && (
+              {mode === "direct" && !hideDirectTargetSelector && (
                 <div className="space-y-1.5">
                   <Label className="text-sm">MCP Server / Skill</Label>
                   <Select value={selectedDirectTarget} onValueChange={setSelectedDirectTarget}>
@@ -712,8 +718,8 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
                 </div>
               )}
 
-              {/* Deferred loading toggle - for "client" and "all" modes */}
-              {(mode === "client" || mode === "all") && (
+              {/* Deferred loading toggle - for "client", "all", and optionally "direct" modes */}
+              {(mode === "client" || mode === "all" || (mode === "direct" && showDeferredInDirect)) && (
                 <div className="flex items-center gap-2">
                   <Checkbox
                     id="deferred-loading"

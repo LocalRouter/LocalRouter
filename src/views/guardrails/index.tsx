@@ -5,12 +5,12 @@ import { toast } from "sonner"
 import { Shield } from "lucide-react"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Switch } from "@/components/ui/switch"
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/Badge"
-import { SafetyModelList } from "@/components/guardrails/SafetyModelList"
-import { SafetyModelPicker, type PickerSelection } from "@/components/guardrails/SafetyModelPicker"
+import { type PickerSelection } from "@/components/guardrails/SafetyModelPicker"
 import { GuardrailsTab as GuardrailsTryItOut } from "@/views/try-it-out/guardrails-tab"
+import { GuardrailsPanel } from "./guardrails-panel"
 import type {
   GuardrailsConfig,
   SafetyModelConfig,
@@ -18,7 +18,6 @@ import type {
   AddSafetyModelParams,
   RemoveSafetyModelParams,
   PullProviderModelParams,
-  ProviderModelPullProgress,
 } from "@/types/tauri-commands"
 
 interface GuardrailsViewProps {
@@ -48,7 +47,6 @@ export function GuardrailsView({ activeSubTab, onTabChange }: GuardrailsViewProp
     parallel_guardrails: true,
   })
   const [isLoading, setIsLoading] = useState(true)
-  const [pullProgress, setPullProgress] = useState<Record<string, ProviderModelPullProgress>>({})
   const [loadErrors, setLoadErrors] = useState<Record<string, string>>({})
 
   const { tab, initClientId } = parseInitPath(activeSubTab)
@@ -69,29 +67,9 @@ export function GuardrailsView({ activeSubTab, onTabChange }: GuardrailsViewProp
     loadConfig()
   }, [loadConfig])
 
-  // Listen for pull progress and load error events
+  // Listen for load error events
   useEffect(() => {
     const unlisteners: (() => void)[] = []
-
-    listen<ProviderModelPullProgress & { provider_id: string; model_name: string }>("provider-model-pull-progress", (event) => {
-      const { provider_id, model_name, status, total, completed } = event.payload
-      const key = `${provider_id}:${model_name}`
-      setPullProgress(prev => ({ ...prev, [key]: { status, total, completed } }))
-    }).then(unlisten => unlisteners.push(unlisten))
-
-    listen<{ provider_id: string; model_name: string }>("provider-model-pull-complete", (event) => {
-      const { provider_id, model_name } = event.payload
-      const key = `${provider_id}:${model_name}`
-      setPullProgress(prev => { const next = { ...prev }; delete next[key]; return next })
-      toast.success(`Model "${model_name}" pulled successfully from ${provider_id}`)
-    }).then(unlisten => unlisteners.push(unlisten))
-
-    listen<{ provider_id: string; model_name: string; error: string }>("provider-model-pull-failed", (event) => {
-      const { provider_id, model_name, error } = event.payload
-      const key = `${provider_id}:${model_name}`
-      setPullProgress(prev => { const next = { ...prev }; delete next[key]; return next })
-      toast.error(`Failed to pull "${model_name}" from ${provider_id}: ${error}`)
-    }).then(unlisten => unlisteners.push(unlisten))
 
     listen<{ model_id: string; error: string }>("safety-model-load-failed", (event) => {
       const { model_id, error } = event.payload
@@ -220,33 +198,17 @@ export function GuardrailsView({ activeSubTab, onTabChange }: GuardrailsViewProp
         </TabsList>
 
         <TabsContent value="models" className="flex-1 min-h-0 mt-4">
-          <div className="space-y-4">
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base">Safety Models</CardTitle>
-                <CardDescription>
-                  Add a safety model from a configured provider (Ollama, LM Studio, or any OpenAI-compatible API).
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <SafetyModelPicker
-                  existingModelIds={config.safety_models.map(m => m.id)}
-                  onSelect={handlePickerSelect}
-                />
-
-                <SafetyModelList
-                  models={config.safety_models}
-                  pullProgress={pullProgress}
-                  loadErrors={loadErrors}
-                  onRemove={handleRemoveModel}
-                />
-              </CardContent>
-            </Card>
-          </div>
+          <GuardrailsPanel
+            models={config.safety_models}
+            loadErrors={loadErrors}
+            existingModelIds={config.safety_models.map(m => m.id)}
+            onPickerSelect={handlePickerSelect}
+            onRemoveModel={handleRemoveModel}
+          />
         </TabsContent>
 
         <TabsContent value="try-it-out" className="flex-1 min-h-0 mt-4">
-          <GuardrailsTryItOut initialClientId={initClientId} />
+          <GuardrailsTryItOut forcedMode="all_models" hideModeSwitcher initialClientId={initClientId} />
         </TabsContent>
 
         <TabsContent value="settings" className="flex-1 min-h-0 mt-4">

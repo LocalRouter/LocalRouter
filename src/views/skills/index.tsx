@@ -601,7 +601,7 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
                       <Button
                         variant="outline"
                         size="sm"
-                        onClick={() => onTabChange("skills", "try-it-out")}
+                        onClick={() => setDetailTab("try-it-out")}
                       >
                         <FlaskConical className="h-4 w-4 mr-1" />
                         Try It Out
@@ -613,6 +613,7 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
                 <Tabs value={detailTab} onValueChange={setDetailTab}>
                   <TabsList>
                     <TabsTrigger value="info">Info</TabsTrigger>
+                    {selectedSkillInfo.enabled && <TabsTrigger value="try-it-out">Try It Out</TabsTrigger>}
                     <TabsTrigger value="settings">Settings</TabsTrigger>
                   </TabsList>
 
@@ -834,6 +835,20 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
                       </div>
                     </div>
                   </TabsContent>
+
+                  {selectedSkillInfo.enabled && (
+                  <TabsContent value="try-it-out">
+                    <McpTab
+                      initialMode="direct"
+                      initialDirectTarget={`skill:${selectedSkillInfo.name}`}
+                      hideModeSwitcher
+                      hideDirectTargetSelector
+                      showDeferredInDirect
+                      innerPath={null}
+                      onPathChange={() => {}}
+                    />
+                  </TabsContent>
+                  )}
 
                   <TabsContent value="settings">
                     <div className="space-y-6">
@@ -1381,7 +1396,8 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
           <McpTab
             innerPath={null}
             onPathChange={() => {}}
-            initialMode="direct"
+            initialMode="all"
+            hideModeSwitcher
           />
         </TabsContent>
       </Tabs>

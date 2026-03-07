@@ -43,18 +43,18 @@ export function McpServersView({ activeSubTab, onTabChange }: McpServersViewProp
   // Parse subTab to determine top-level tab and server selection
   // Format: "try-it-out" or "try-it-out/init/..." or "marketplace" or "settings" or "server-id" or "add/template-id"
   const parseSubTab = (subTab: string | null) => {
-    if (!subTab) return { topTab: "servers", selectedId: null, addTemplateId: null, tryItOutInit: null as string | null }
-    if (subTab === "try-it-out") return { topTab: "try-it-out", selectedId: null, addTemplateId: null, tryItOutInit: null as string | null }
-    if (subTab.startsWith("try-it-out/")) return { topTab: "try-it-out", selectedId: null, addTemplateId: null, tryItOutInit: subTab.slice(11) }
-    if (subTab === "marketplace") return { topTab: "marketplace", selectedId: null, addTemplateId: null, tryItOutInit: null as string | null }
-    if (subTab === "settings") return { topTab: "settings", selectedId: null, addTemplateId: null, tryItOutInit: null as string | null }
+    if (!subTab) return { topTab: "servers", selectedId: null, addTemplateId: null }
+    if (subTab === "try-it-out") return { topTab: "try-it-out", selectedId: null, addTemplateId: null }
+    if (subTab.startsWith("try-it-out/")) return { topTab: "try-it-out", selectedId: null, addTemplateId: null }
+    if (subTab === "marketplace") return { topTab: "marketplace", selectedId: null, addTemplateId: null }
+    if (subTab === "settings") return { topTab: "settings", selectedId: null, addTemplateId: null }
     if (subTab.startsWith("add/")) {
-      return { topTab: "servers", selectedId: null, addTemplateId: subTab.slice(4), tryItOutInit: null as string | null }
+      return { topTab: "servers", selectedId: null, addTemplateId: subTab.slice(4) }
     }
-    return { topTab: "servers", selectedId: subTab, addTemplateId: null, tryItOutInit: null as string | null }
+    return { topTab: "servers", selectedId: subTab, addTemplateId: null }
   }
 
-  const { topTab, selectedId, addTemplateId, tryItOutInit } = parseSubTab(activeSubTab)
+  const { topTab, selectedId, addTemplateId } = parseSubTab(activeSubTab)
 
   // Lifted health status state - persists across interactions
   const [healthStatus, setHealthStatus] = useState<Record<string, McpHealthStatus>>({})
@@ -242,18 +242,7 @@ export function McpServersView({ activeSubTab, onTabChange }: McpServersViewProp
     return new Date(date).toLocaleString()
   }
 
-  // Parse init path for try-it-out
-  const parseTryItOutInit = () => {
-    if (!tryItOutInit || !tryItOutInit.startsWith("init/")) return {}
-    const parts = tryItOutInit.slice(5).split("/")
-    const mode = parts[0] as "client" | "all" | "direct" | undefined
-    const target = parts.slice(1).join("/") || undefined
-    if (mode === "client" && target) return { initialMode: mode, initialClientId: target }
-    if (mode === "direct" && target) return { initialMode: mode, initialDirectTarget: target }
-    return {}
-  }
-
-  const tryItOutInitProps = parseTryItOutInit()
+  // tryItOutInit parsing no longer needed — global Try It Out is always "all" mode
 
   return (
     <div className="flex flex-col h-full min-h-0">
@@ -407,7 +396,8 @@ export function McpServersView({ activeSubTab, onTabChange }: McpServersViewProp
           <McpTab
             innerPath={null}
             onPathChange={() => {}}
-            {...tryItOutInitProps}
+            initialMode="all"
+            hideModeSwitcher
           />
         </TabsContent>
       </Tabs>

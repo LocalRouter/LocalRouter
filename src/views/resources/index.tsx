@@ -98,34 +98,24 @@ export function ResourcesView({ activeSubTab, onTabChange }: LlmProvidersViewPro
   // Or: "providers/instance-name" or "models/provider/model-id"
   // Or: "providers/add/provider-type" for opening add dialog
   const parseSubTab = (subTab: string | null) => {
-    if (!subTab) return { resourceType: "providers", itemId: null, addType: null, tryItOutInit: null as string | null }
-    if (subTab === "try-it-out") return { resourceType: "try-it-out", itemId: null, addType: null, tryItOutInit: null as string | null }
-    if (subTab.startsWith("try-it-out/")) return { resourceType: "try-it-out", itemId: null, addType: null, tryItOutInit: subTab.slice(11) }
+    if (!subTab) return { resourceType: "providers", itemId: null, addType: null }
+    if (subTab === "try-it-out") return { resourceType: "try-it-out", itemId: null, addType: null }
+    if (subTab.startsWith("try-it-out/")) return { resourceType: "try-it-out", itemId: null, addType: null }
     const parts = subTab.split("/")
     const resourceType = parts[0] || "providers"
 
     // Check for add pattern: "providers/add/OpenAI"
     if (parts[1] === "add" && parts[2]) {
-      return { resourceType, itemId: null, addType: parts[2], tryItOutInit: null as string | null }
+      return { resourceType, itemId: null, addType: parts[2] }
     }
 
     const itemId = parts.slice(1).join("/") || null
-    return { resourceType, itemId, addType: null, tryItOutInit: null as string | null }
+    return { resourceType, itemId, addType: null }
   }
 
-  const { resourceType, itemId, addType, tryItOutInit } = parseSubTab(activeSubTab)
+  const { resourceType, itemId, addType } = parseSubTab(activeSubTab)
 
-  // Parse init path for try-it-out (direct mode only)
-  const parseTryItOutInit = () => {
-    if (!tryItOutInit || !tryItOutInit.startsWith("init/")) return {}
-    const parts = tryItOutInit.slice(5).split("/")
-    const mode = parts[0]
-    const target = parts.slice(1).join("/") || undefined
-    if (mode === "direct" && target) return { initialProvider: target }
-    return {}
-  }
-
-  const tryItOutInitProps = parseTryItOutInit()
+  // tryItOutInit parsing no longer needed — global Try It Out is always "all" mode
 
   const handleResourceChange = (type: string) => {
     onTabChange("resources", type)
@@ -184,7 +174,7 @@ export function ResourcesView({ activeSubTab, onTabChange }: LlmProvidersViewPro
         </TabsContent>
 
         <TabsContent value="try-it-out" className="flex-1 min-h-0 mt-4">
-          <LlmTab initialMode="direct" hideModeSwitcher {...tryItOutInitProps} />
+          <LlmTab initialMode="all" hideModeSwitcher />
         </TabsContent>
 
       </Tabs>

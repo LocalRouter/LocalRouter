@@ -48,6 +48,7 @@ import {
 } from "@/components/ui/alert-dialog"
 import ProviderForm, { ProviderType } from "@/components/ProviderForm"
 import ProviderIcon from "@/components/ProviderIcon"
+import { LlmTab } from "@/views/try-it-out/llm-tab"
 import { cn } from "@/lib/utils"
 import type { FreeTierKind, ProviderFreeTierStatus } from "@/types/tauri-commands"
 import { ModelPricingBadge } from "@/components/shared/model-pricing-badge"
@@ -601,11 +602,11 @@ export function ProvidersPanel({
                     </p>
                   </div>
                   <div className="flex items-center gap-2">
-                    {onViewChange && selectedProvider.enabled && (
+                    {selectedProvider.enabled && (
                       <Button
                         variant="outline"
                         size="sm"
-                        onClick={() => onViewChange("resources", "try-it-out")}
+                        onClick={() => setDetailTab("try-it-out")}
                       >
                         <FlaskConical className="h-4 w-4 mr-1" />
                         Try It Out
@@ -617,10 +618,22 @@ export function ProvidersPanel({
                 <Tabs value={detailTab} onValueChange={setDetailTab}>
                   <TabsList>
                     <TabsTrigger value="info">Info</TabsTrigger>
+                    {selectedProvider.enabled && <TabsTrigger value="try-it-out">Try It Out</TabsTrigger>}
                     <TabsTrigger value="models" onClick={() => { loadDetailedModels(selectedProvider.instance_name); loadFreeTierStatus(selectedProvider.instance_name) }}>Models</TabsTrigger>
                     <TabsTrigger value="free-tier" onClick={() => loadFreeTierStatus(selectedProvider.instance_name)}>Free Tier</TabsTrigger>
                     <TabsTrigger value="settings">Settings</TabsTrigger>
                   </TabsList>
+
+                  {selectedProvider.enabled && (
+                  <TabsContent value="try-it-out">
+                    <LlmTab
+                      initialMode="direct"
+                      initialProvider={selectedProvider.instance_name}
+                      hideModeSwitcher
+                      hideProviderSelector
+                    />
+                  </TabsContent>
+                  )}
 
                   <TabsContent value="info">
                     <div className="space-y-6">

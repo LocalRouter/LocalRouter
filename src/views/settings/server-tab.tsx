@@ -29,7 +29,11 @@ interface NetworkInterface {
   is_loopback: boolean
 }
 
-export function ServerTab() {
+interface ServerTabProps {
+  hideResourceLimits?: boolean
+}
+
+export function ServerTab({ hideResourceLimits }: ServerTabProps = {}) {
   const [config, setConfig] = useState<ServerConfig>({
     host: "127.0.0.1",
     port: 3625,
@@ -319,6 +323,7 @@ export function ServerTab() {
       </Card>
 
       {/* Resource Limits */}
+      {!hideResourceLimits && (
       <Card>
         <CardHeader className="pb-3">
           <CardTitle className="text-sm">Resource Limits</CardTitle>
@@ -359,6 +364,7 @@ export function ServerTab() {
           )}
         </CardContent>
       </Card>
+      )}
 
     </div>
   )

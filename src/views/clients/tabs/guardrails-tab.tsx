@@ -161,7 +161,7 @@ export function ClientGuardrailsTab({ client, onUpdate, onViewChange }: ClientGu
             {onViewChange && (
               <button
                 className="text-blue-500 hover:underline ml-1"
-                onClick={() => onViewChange("guardrails", `try-it-out/init/client/${client.client_id}`)}
+                onClick={() => onViewChange("guardrails", "try-it-out")}
               >
                 Test in Try It Out
               </button>

@@ -66,6 +66,8 @@ interface ThresholdSelectorProps {
   showTryItOut?: boolean;
   /** Show compact version without description text */
   compact?: boolean;
+  /** Disable all interactive elements */
+  disabled?: boolean;
 }
 
 export const ThresholdSelector: React.FC<ThresholdSelectorProps> = ({
@@ -74,6 +76,7 @@ export const ThresholdSelector: React.FC<ThresholdSelectorProps> = ({
   onEstimateUpdate,
   showTryItOut = false,
   compact = false,
+  disabled = false,
 }) => {
   const profile = getProfile(value);
 
@@ -119,7 +122,7 @@ export const ThresholdSelector: React.FC<ThresholdSelectorProps> = ({
     <div className="space-y-4">
       {/* Header with label */}
       <div className="flex items-center justify-between">
-        <Label className="text-sm font-medium">Weak Model Usage</Label>
+        <Label className="text-sm font-medium">Model selection threshold</Label>
         <div className="flex items-center gap-2">
           <span className="font-mono text-xs text-muted-foreground">{value.toFixed(2)}</span>
           <Badge variant="outline" className="text-xs">
@@ -136,10 +139,11 @@ export const ThresholdSelector: React.FC<ThresholdSelectorProps> = ({
           step={0.01}
           value={[value]}
           onValueChange={([v]) => onChange(v)}
+          disabled={disabled}
         />
         {!compact && (
           <div className="flex justify-between text-xs text-muted-foreground">
-            <span>Use weak model less</span>
+            <span>Use strong model more</span>
             <span>Use weak model more</span>
           </div>
         )}
@@ -157,6 +161,7 @@ export const ThresholdSelector: React.FC<ThresholdSelectorProps> = ({
               size="sm"
               className="flex-1"
               onClick={() => onChange(preset.value)}
+              disabled={disabled}
             >
               {preset.name}
             </Button>
@@ -174,7 +179,7 @@ export const ThresholdSelector: React.FC<ThresholdSelectorProps> = ({
             <Button
               variant="outline"
               size="sm"
-              disabled={isTesting}
+              disabled={isTesting || disabled}
               className="h-7 text-xs"
               onClick={() => runTest("Hello, how are you today?")}
             >
@@ -183,7 +188,7 @@ export const ThresholdSelector: React.FC<ThresholdSelectorProps> = ({
             <Button
               variant="outline"
               size="sm"
-              disabled={isTesting}
+              disabled={isTesting || disabled}
               className="h-7 text-xs"
               onClick={() => runTest("What color is the sky?")}
             >
@@ -192,7 +197,7 @@ export const ThresholdSelector: React.FC<ThresholdSelectorProps> = ({
             <Button
               variant="outline"
               size="sm"
-              disabled={isTesting}
+              disabled={isTesting || disabled}
               className="h-7 text-xs"
               onClick={() => runTest("What is the capital of France?")}
             >
@@ -201,7 +206,7 @@ export const ThresholdSelector: React.FC<ThresholdSelectorProps> = ({
             <Button
               variant="outline"
               size="sm"
-              disabled={isTesting}
+              disabled={isTesting || disabled}
               className="h-7 text-xs"
               onClick={() => runTest("Write a Python function that implements a binary search tree with insert, delete, and search operations, including proper balancing.")}
             >
@@ -210,7 +215,7 @@ export const ThresholdSelector: React.FC<ThresholdSelectorProps> = ({
             <Button
               variant="outline"
               size="sm"
-              disabled={isTesting}
+              disabled={isTesting || disabled}
               className="h-7 text-xs"
               onClick={() => runTest("Find the degree for the given field extension Q(sqrt(2), sqrt(3), sqrt(18)) over Q.")}
             >
@@ -219,7 +224,7 @@ export const ThresholdSelector: React.FC<ThresholdSelectorProps> = ({
             <Button
               variant="outline"
               size="sm"
-              disabled={isTesting}
+              disabled={isTesting || disabled}
               className="h-7 text-xs"
               onClick={() => runTest("Write a proof by induction that the sum of the first n positive integers equals n(n+1)/2.")}
             >
@@ -233,9 +238,10 @@ export const ThresholdSelector: React.FC<ThresholdSelectorProps> = ({
               value={testPrompt}
               onChange={(e) => setTestPrompt(e.target.value)}
               placeholder="Type a prompt and press Enter..."
-              onKeyDown={(e) => e.key === "Enter" && !isTesting && handleTest()}
+              onKeyDown={(e) => e.key === "Enter" && !isTesting && !disabled && handleTest()}
+              disabled={disabled}
             />
-            <Button onClick={handleTest} disabled={isTesting || !testPrompt.trim()}>
+            <Button onClick={handleTest} disabled={isTesting || !testPrompt.trim() || disabled}>
               {isTesting ? (
                 <>
                   <Loader2 className="h-4 w-4 mr-2 animate-spin" />

@@ -38,6 +38,7 @@ import { McpServerTemplates, McpServerTemplate, MCP_SERVER_TEMPLATES } from "@/c
 import { McpOAuthModal } from "@/components/mcp/McpOAuthModal"
 import { MarketplaceSearchPanel, McpServerListing } from "@/components/add-resource"
 import ServiceIcon from "@/components/ServiceIcon"
+import { McpTab } from "@/views/try-it-out/mcp-tab"
 import { cn } from "@/lib/utils"
 
 interface McpAuthConfig {
@@ -87,7 +88,6 @@ export function McpServersPanel({
   onHealthInit,
   onRefreshHealth,
   initialAddTemplateId,
-  onViewChange,
 }: McpServersPanelProps) {
   const [servers, setServers] = useState<McpServer[]>([])
   const [loading, setLoading] = useState(true)
@@ -647,11 +647,11 @@ export function McpServersPanel({
                   </p>
                 </div>
                 <div className="flex items-center gap-2">
-                  {onViewChange && selectedServer.enabled && (
+                  {selectedServer.enabled && (
                     <Button
                       variant="outline"
                       size="sm"
-                      onClick={() => onViewChange("mcp-servers", "try-it-out")}
+                      onClick={() => setDetailTab("try-it-out")}
                     >
                       <FlaskConical className="h-4 w-4 mr-1" />
                       Try It Out
@@ -663,8 +663,23 @@ export function McpServersPanel({
               <Tabs value={detailTab} onValueChange={setDetailTab}>
                 <TabsList>
                   <TabsTrigger value="info">Info</TabsTrigger>
+                  {selectedServer.enabled && <TabsTrigger value="try-it-out">Try It Out</TabsTrigger>}
                   <TabsTrigger value="settings">Settings</TabsTrigger>
                 </TabsList>
+
+                {selectedServer.enabled && (
+                <TabsContent value="try-it-out">
+                  <McpTab
+                    initialMode="direct"
+                    initialDirectTarget={`server:${selectedServer.id}`}
+                    hideModeSwitcher
+                    hideDirectTargetSelector
+                    showDeferredInDirect
+                    innerPath={null}
+                    onPathChange={() => {}}
+                  />
+                </TabsContent>
+                )}
 
                 <TabsContent value="info">
                   <div className="space-y-6">

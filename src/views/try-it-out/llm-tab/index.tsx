@@ -70,15 +70,17 @@ interface ModelParameters {
 }
 
 // DEPRECATED: "strategy" mode hidden - 1:1 client-to-strategy relationship
-type TestMode = "client" | /* "strategy" | */ "direct"
+type TestMode = "client" | /* "strategy" | */ "direct" | "all"
 
 interface LlmTabProps {
   initialMode?: TestMode
   initialProvider?: string
   initialClientId?: string
+  hideModeSwitcher?: boolean
+  hideProviderSelector?: boolean
 }
 
-export function LlmTab({ initialMode, initialProvider, initialClientId }: LlmTabProps) {
+export function LlmTab({ initialMode, initialProvider, initialClientId, hideModeSwitcher, hideProviderSelector }: LlmTabProps) {
   const [activeSubtab, setActiveSubtab] = useState("chat")
   const [mode, setMode] = useState<TestMode>("client")
   const [serverPort, setServerPort] = useState<number | null>(null)
@@ -213,10 +215,10 @@ export function LlmTab({ initialMode, initialProvider, initialClientId }: LlmTab
   //   createStrategyClient()
   // }, [mode, selectedStrategy])
 
-  // Fetch internal test token for direct mode
+  // Fetch internal test token for direct and all modes
   useEffect(() => {
     const fetchInternalToken = async () => {
-      if (mode === "direct") {
+      if (mode === "direct" || mode === "all") {
         try {
           const token = await invoke<string>("get_internal_test_token")
           setInternalTestToken(token)
@@ -238,6 +240,7 @@ export function LlmTab({ initialMode, initialProvider, initialClientId }: LlmTab
       // case "strategy":
       //   return strategyToken
       case "direct":
+      case "all":
         return internalTestToken
       default:
         return null
@@ -290,6 +293,14 @@ export function LlmTab({ initialMode, initialProvider, initialClientId }: LlmTab
         if (!prev || !filtered.some(m => m.id === prev)) return filtered[0].id
         return prev
       })
+    } else if (mode === "all" && serverPort) {
+      // For "all" mode, show all provider models in a single combined dropdown
+      setModels(providerModels.map(m => ({ id: m.id, object: "model", owned_by: m.provider })))
+      setSelectedModel(prev => {
+        if (providerModels.length === 0) return ""
+        if (!prev || !providerModels.some(m => m.id === prev)) return providerModels[0].id
+        return prev
+      })
     } else if (openaiClient) {
       fetchModels()
     }
@@ -305,6 +316,8 @@ export function LlmTab({ initialMode, initialProvider, initialClientId }: LlmTab
       //   return "Test requests with a specific strategy applied"
       case "direct":
         return "Send requests directly to a provider, bypassing routing"
+      case "all":
+        return "Test requests against all available models from all providers"
     }
   }
 
@@ -315,10 +328,14 @@ export function LlmTab({ initialMode, initialProvider, initialClientId }: LlmTab
   }
 
   // Get the effective model string for API calls
-  // In direct mode, internal test token requires provider/model format
+  // In direct/all mode, internal test token requires provider/model format
   const getEffectiveModel = () => {
     if (mode === "direct" && selectedProvider && selectedModel) {
       return `${selectedProvider}/${selectedModel}`
+    }
+    if (mode === "all" && selectedModel) {
+      const modelInfo = providerModels.find(m => m.id === selectedModel)
+      if (modelInfo) return `${modelInfo.provider}/${selectedModel}`
     }
     return selectedModel
   }
@@ -352,6 +369,7 @@ export function LlmTab({ initialMode, initialProvider, initialClientId }: LlmTab
         <CardContent className="flex flex-col gap-4">
           {/* Two-column layout: radio buttons left, options right */}
           <div className="flex gap-6">
+            {!hideModeSwitcher && (
             <div className="flex flex-col gap-2 flex-shrink-0">
             <Label className="text-sm font-medium">Mode</Label>
             <RadioGroup
@@ -386,10 +404,11 @@ export function LlmTab({ initialMode, initialProvider, initialClientId }: LlmTab
               </div>
             </RadioGroup>
             </div>
+            )}
 
             {/* Right side: mode-specific options, model selector */}
             <div className="flex flex-col gap-3 flex-1 min-w-0">
-              {mode === "client" && (
+              {mode === "client" && !hideModeSwitcher && (
                 <div className="space-y-1.5">
                   <Label className="text-sm">Client</Label>
                   <Select value={selectedClientId} onValueChange={setSelectedClientId}>
@@ -426,7 +445,7 @@ export function LlmTab({ initialMode, initialProvider, initialClientId }: LlmTab
                 </div>
               )} */}
 
-              {mode === "direct" && (
+              {mode === "direct" && !hideProviderSelector && (
                 <div className="space-y-1.5">
                   <Label className="text-sm">Provider</Label>
                   <Select value={selectedProvider} onValueChange={(v) => {

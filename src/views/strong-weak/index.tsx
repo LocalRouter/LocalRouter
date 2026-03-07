@@ -32,7 +32,7 @@ export function StrongWeakView({ activeSubTab, onTabChange }: StrongWeakViewProp
   const [downloadProgress, setDownloadProgress] = useState(0)
   const [testThreshold, setTestThreshold] = useState(0.3)
 
-  const tab = activeSubTab || "try-it-out"
+  const tab = activeSubTab || "model"
 
   useEffect(() => {
     loadStatus()
@@ -54,10 +54,14 @@ export function StrongWeakView({ activeSubTab, onTabChange }: StrongWeakViewProp
       toast.error(`Download failed: ${event.payload.error}`)
     })
 
+    // Poll status to detect state changes (model loaded/unloaded)
+    const interval = setInterval(loadStatus, 3000)
+
     return () => {
       unlistenProgress.then((fn) => fn())
       unlistenComplete.then((fn) => fn())
       unlistenFailed.then((fn) => fn())
+      clearInterval(interval)
     }
   }, [])
 
@@ -106,17 +110,17 @@ export function StrongWeakView({ activeSubTab, onTabChange }: StrongWeakViewProp
   const getStatusInfo = (state: RouteLLMState) => {
     switch (state) {
       case "not_downloaded":
-        return { label: "Not Downloaded", variant: "secondary" as const, icon: "⬇️" }
+        return { label: "Not Downloaded", variant: "secondary" as const }
       case "downloading":
-        return { label: "Downloading...", variant: "default" as const, icon: "⏬️" }
+        return { label: "Downloading...", variant: "default" as const }
       case "downloaded_not_running":
-        return { label: "Model not loaded", variant: "outline" as const, icon: "⏸️" }
+        return { label: "Model unloaded", variant: "outline" as const }
       case "initializing":
-        return { label: "Loading...", variant: "default" as const, icon: "🔄" }
+        return { label: "Loading...", variant: "default" as const }
       case "started":
-        return { label: "Model loaded", variant: "success" as const, icon: "▶️" }
+        return { label: "Model loaded", variant: "success" as const }
       default:
-        return { label: "Unknown", variant: "secondary" as const, icon: "❓" }
+        return { label: "Unknown", variant: "secondary" as const }
     }
   }
 
@@ -138,194 +142,160 @@ export function StrongWeakView({ activeSubTab, onTabChange }: StrongWeakViewProp
           <Badge variant="outline" className="bg-purple-500/10 text-purple-900 dark:text-purple-400">EXPERIMENTAL</Badge>
         </div>
         <p className="text-sm text-muted-foreground">
-          Intelligent routing that analyzes complexity to select the most cost-effective model
+          Intelligent routing that analyzes complexity to select the most cost-effective model — typically saving 30-60% on costs while retaining 85-95% quality, with only {ROUTELLM_REQUIREMENTS.PER_REQUEST_MS}ms of selection overhead
         </p>
       </div>
 
-      {/* Status / Download Section */}
-      <div className="flex-shrink-0 space-y-4 pb-4">
-        <Card>
-          <CardHeader className="pb-3">
-            <div className="flex items-center justify-between">
-              <CardDescription>
-                Analyzes each request's complexity to route simple queries to faster, cheaper models and complex ones to stronger models
-              </CardDescription>
-            </div>
-          </CardHeader>
-          <CardContent>
+      <Tabs
+        value={tab}
+        onValueChange={handleTabChange}
+        className="flex flex-col flex-1 min-h-0"
+      >
+        <TabsList className="flex-shrink-0 w-fit">
+          <TabsTrigger value="model">Model</TabsTrigger>
+          <TabsTrigger value="try-it-out">Try It Out</TabsTrigger>
+          <TabsTrigger value="settings">Settings</TabsTrigger>
+        </TabsList>
+
+        {/* Model Tab */}
+        <TabsContent value="model" className="flex-1 min-h-0 mt-4">
+          <div className="space-y-4">
+            {/* Status */}
             {status && (
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <span className="text-2xl">{getStatusInfo(status.state).icon}</span>
-                  <Badge variant={getStatusInfo(status.state).variant}>
-                    {getStatusInfo(status.state).label}
-                  </Badge>
-                </div>
-                <div className="flex gap-2">
-                  {status.state === "not_downloaded" && !isDownloading && (
-                    <Button variant="outline" size="sm" onClick={handleDownload}>
-                      <Download className="h-3 w-3 mr-1" />
-                      Download
-                    </Button>
-                  )}
-                  <Button variant="ghost" size="sm" onClick={openFolder}>
-                    <FolderOpen className="h-3 w-3 mr-1" />
-                    Open Folder
-                  </Button>
-                </div>
-              </div>
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardDescription>
+                    Analyzes each request's complexity to route simple queries to faster, cheaper models and complex ones to stronger models
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <div className="flex items-center justify-between">
+                    <Badge variant={getStatusInfo(status.state).variant}>
+                      {getStatusInfo(status.state).label}
+                    </Badge>
+                    <div className="flex gap-2">
+                      {status.state === "not_downloaded" && !isDownloading && (
+                        <Button variant="outline" size="sm" onClick={handleDownload}>
+                          <Download className="h-3 w-3 mr-1" />
+                          Download
+                        </Button>
+                      )}
+                      <Button variant="ghost" size="sm" onClick={openFolder}>
+                        <FolderOpen className="h-3 w-3 mr-1" />
+                        Open Folder
+                      </Button>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
             )}
-          </CardContent>
-        </Card>
 
-        {/* Download Section */}
-        {status?.state === "not_downloaded" && (
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="text-sm">Download Models</CardTitle>
-              <CardDescription>
-                Strong/Weak uses machine learning to analyze prompts and select the most
-                cost-effective model while maintaining quality.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="grid grid-cols-3 gap-3 text-center">
-                <div className="p-3 bg-green-500/10 rounded-lg">
-                  <p className="text-lg font-bold text-green-800 dark:text-green-400">30-60%</p>
-                  <p className="text-xs text-muted-foreground">Cost Savings</p>
-                </div>
-                <div className="p-3 bg-blue-500/10 rounded-lg">
-                  <p className="text-lg font-bold text-blue-800 dark:text-blue-400">85-95%</p>
-                  <p className="text-xs text-muted-foreground">Quality Retained</p>
-                </div>
-                <div className="p-3 bg-purple-500/10 rounded-lg">
-                  <p className="text-lg font-bold text-purple-800 dark:text-purple-400">{ROUTELLM_REQUIREMENTS.PER_REQUEST_MS}ms</p>
-                  <p className="text-xs text-muted-foreground">Selection Time</p>
-                </div>
-              </div>
+            {/* Download Progress */}
+            {isDownloading && (
+              <Card>
+                <CardContent className="pt-6">
+                  <div className="space-y-2">
+                    <div className="flex justify-between text-sm">
+                      <span>Downloading Strong/Weak Models...</span>
+                      <span>{downloadProgress.toFixed(0)}%</span>
+                    </div>
+                    <Progress value={downloadProgress} />
+                  </div>
+                </CardContent>
+              </Card>
+            )}
 
-              <div className="p-3 bg-yellow-500/10 border border-yellow-600/50 rounded-lg">
-                <p className="text-xs text-yellow-900 dark:text-yellow-400">
-                  <strong>Download Required:</strong>{" "}
-                  <code className="bg-yellow-500/20 px-1 rounded">{status.model_name}</code>{" "}
-                  ({ROUTELLM_REQUIREMENTS.DISK_GB} GB) will be downloaded to{" "}
-                  <code className="bg-yellow-500/20 px-1 rounded">{status.model_dir}</code>
+            {/* Resource Requirements */}
+            <Card className="border-yellow-600/50 bg-yellow-500/5">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-sm text-yellow-900 dark:text-yellow-400">Resource Requirements</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="grid grid-cols-2 gap-4 text-sm">
+                  <div>
+                    <span className="text-muted-foreground">Cold Start:</span>{" "}
+                    <span className="font-medium">{ROUTELLM_REQUIREMENTS.COLD_START_SECS}s</span>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground">Disk Space:</span>{" "}
+                    <span className="font-medium">{ROUTELLM_REQUIREMENTS.DISK_GB} GB</span>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground">Latency:</span>{" "}
+                    <span className="font-medium">{ROUTELLM_REQUIREMENTS.PER_REQUEST_MS}ms per request</span>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground">Memory:</span>{" "}
+                    <span className="font-medium">{ROUTELLM_REQUIREMENTS.MEMORY_GB} GB (when loaded)</span>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        </TabsContent>
+
+        {/* Try It Out Tab */}
+        <TabsContent value="try-it-out" className="flex-1 min-h-0 mt-4">
+          {!isReady ? (
+            <Card>
+              <CardContent className="pt-6">
+                <p className="text-sm text-muted-foreground text-center py-4">
+                  Download the model first to use Try It Out
                 </p>
-              </div>
-
-              <Button onClick={handleDownload} disabled={isDownloading}>
-                <Download className="h-4 w-4 mr-2" />
-                {isDownloading ? `Downloading... ${downloadProgress.toFixed(0)}%` : "Download Models"}
-              </Button>
-            </CardContent>
-          </Card>
-        )}
-
-        {/* Download Progress */}
-        {isDownloading && (
-          <Card>
-            <CardContent className="pt-6">
-              <div className="space-y-2">
-                <div className="flex justify-between text-sm">
-                  <span>Downloading Strong/Weak Models...</span>
-                  <span>{downloadProgress.toFixed(0)}%</span>
-                </div>
-                <Progress value={downloadProgress} />
-              </div>
-            </CardContent>
-          </Card>
-        )}
-      </div>
-
-      {/* Tabs - Only when downloaded */}
-      {isReady && (
-        <Tabs
-          value={tab}
-          onValueChange={handleTabChange}
-          className="flex flex-col flex-1 min-h-0"
-        >
-          <TabsList className="flex-shrink-0 w-fit">
-            <TabsTrigger value="try-it-out">Try It Out</TabsTrigger>
-            <TabsTrigger value="settings">Settings</TabsTrigger>
-          </TabsList>
-
-          <TabsContent value="try-it-out" className="flex-1 min-h-0 mt-4">
+              </CardContent>
+            </Card>
+          ) : (
             <Card>
               <CardContent className="pt-6">
                 <ThresholdSelector
                   value={testThreshold}
                   onChange={setTestThreshold}
                   showTryItOut
+                  disabled={!isReady}
                 />
               </CardContent>
             </Card>
-          </TabsContent>
+          )}
+        </TabsContent>
 
-          <TabsContent value="settings" className="flex-1 min-h-0 mt-4">
-            <div className="space-y-4">
-              {/* Resource Info */}
-              <Card className="border-yellow-600/50 bg-yellow-500/5">
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-sm text-yellow-900 dark:text-yellow-400">Resource Requirements</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="grid grid-cols-2 gap-4 text-sm">
-                    <div>
-                      <span className="text-muted-foreground">Cold Start:</span>{" "}
-                      <span className="font-medium">{ROUTELLM_REQUIREMENTS.COLD_START_SECS}s</span>
-                    </div>
-                    <div>
-                      <span className="text-muted-foreground">Disk Space:</span>{" "}
-                      <span className="font-medium">{ROUTELLM_REQUIREMENTS.DISK_GB} GB</span>
-                    </div>
-                    <div>
-                      <span className="text-muted-foreground">Latency:</span>{" "}
-                      <span className="font-medium">{ROUTELLM_REQUIREMENTS.PER_REQUEST_MS}ms per request</span>
-                    </div>
-                    <div>
-                      <span className="text-muted-foreground">Memory:</span>{" "}
-                      <span className="font-medium">{ROUTELLM_REQUIREMENTS.MEMORY_GB} GB (when loaded)</span>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
+        {/* Settings Tab */}
+        <TabsContent value="settings" className="flex-1 min-h-0 mt-4">
+          <div className="space-y-4">
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-sm">Memory Management</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="space-y-2">
+                  <Label>Auto-Unload After Idle</Label>
+                  <Select
+                    value={idleTimeout.toString()}
+                    onValueChange={(value) => setIdleTimeout(parseInt(value))}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="300">5 minutes</SelectItem>
+                      <SelectItem value="600">10 minutes (recommended)</SelectItem>
+                      <SelectItem value="1800">30 minutes</SelectItem>
+                      <SelectItem value="3600">1 hour</SelectItem>
+                      <SelectItem value="0">Never</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    Automatically unload models after inactivity to save RAM ({ROUTELLM_REQUIREMENTS.MEMORY_GB} GB)
+                  </p>
+                </div>
 
-              <Card>
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-sm">Memory Management</CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <div className="space-y-2">
-                    <Label>Auto-Unload After Idle</Label>
-                    <Select
-                      value={idleTimeout.toString()}
-                      onValueChange={(value) => setIdleTimeout(parseInt(value))}
-                    >
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="300">5 minutes</SelectItem>
-                        <SelectItem value="600">10 minutes (recommended)</SelectItem>
-                        <SelectItem value="1800">30 minutes</SelectItem>
-                        <SelectItem value="3600">1 hour</SelectItem>
-                        <SelectItem value="0">Never</SelectItem>
-                      </SelectContent>
-                    </Select>
-                    <p className="text-xs text-muted-foreground">
-                      Automatically unload models after inactivity to save RAM ({ROUTELLM_REQUIREMENTS.MEMORY_GB} GB)
-                    </p>
-                  </div>
-
-                  <Button size="sm" onClick={updateSettings}>
-                    Save Settings
-                  </Button>
-                </CardContent>
-              </Card>
-            </div>
-          </TabsContent>
-        </Tabs>
-      )}
+                <Button size="sm" onClick={updateSettings}>
+                  Save Settings
+                </Button>
+              </CardContent>
+            </Card>
+          </div>
+        </TabsContent>
+      </Tabs>
     </div>
   )
 }
