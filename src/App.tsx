@@ -14,6 +14,7 @@ import { SettingsView } from './views/settings'
 import { GuardrailsView } from './views/guardrails'
 import { StrongWeakView } from './views/strong-weak'
 import { CodingAgentsView } from './views/coding-agents'
+import { ContextManagementView } from './views/context-management'
 import { ClientCreationWizard } from './components/wizard/ClientCreationWizard'
 
 const DebugView = import.meta.env.DEV
@@ -273,6 +274,8 @@ function App() {
             onTabChange={handleChildViewChange}
           />
         )
+      case 'context-management':
+        return <ContextManagementView />
       case 'coding-agents':
         return (
           <CodingAgentsView

@@ -10,6 +10,7 @@ import {
   ChevronsRight,
   Shield,
   Cpu,
+  BookText,
 } from "lucide-react"
 import { ProvidersIcon, McpIcon, SkillsIcon, CodingAgentsIcon } from "@/components/icons/category-icons"
 import { Logo } from "@/components/Logo"
@@ -43,7 +44,7 @@ interface HealthCacheState {
   aggregate_status: AggregateHealthStatus
 }
 
-export type View = 'dashboard' | 'clients' | 'resources' | 'mcp-servers' | 'skills'
+export type View = 'dashboard' | 'clients' | 'resources' | 'mcp-servers' | 'context-management' | 'skills'
   | 'coding-agents' | 'guardrails' | 'strong-weak' | 'settings' | 'debug'
 
 interface SidebarProps {
@@ -81,6 +82,7 @@ const resourceNavEntries: NavEntry[] = [
   { id: 'mcp-servers', icon: McpIcon, label: 'Servers', shortcut: '⌘4' },
   { id: 'skills', icon: SkillsIcon, label: 'Skill', shortcut: '⌘5' },
   { id: 'coding-agents', icon: CodingAgentsIcon, label: 'Coding Agents', shortcut: '⌘6' },
+  { id: 'context-management', icon: BookText, label: 'Context' },
 ]
 
 const bottomNavItems: NavItem[] = [
