@@ -585,7 +585,7 @@ fn append_text_to_mcp_result(result: &mut Value, text: &str) {
 }
 
 /// Build a fallback ctx_search tool definition for use before the transport is initialized.
-fn build_fallback_ctx_search_tool(indexing_tools_enabled: bool) -> McpTool {
+pub fn build_fallback_ctx_search_tool(indexing_tools_enabled: bool) -> McpTool {
     let mut description = "Search indexed content. Pass ALL search questions as queries array in ONE call.\n\nTIPS: 2-4 specific terms per query. Use 'source' to scope results.".to_string();
     description.push_str(CTX_SEARCH_SOURCE_GUIDE);
     if indexing_tools_enabled {
@@ -616,5 +616,377 @@ fn build_fallback_ctx_search_tool(indexing_tools_enabled: bool) -> McpTool {
                 }
             }
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_mcp_tool(name: &str, desc: &str) -> McpTool {
+        McpTool {
+            name: name.to_string(),
+            description: Some(desc.to_string()),
+            input_schema: json!({"type": "object"}),
+        }
+    }
+
+    // ── build_context_mode_tools tests ──────────────────────────────
+
+    #[test]
+    fn test_filters_stats_doctor_upgrade() {
+        let tools = vec![
+            make_mcp_tool("ctx_search", "Search"),
+            make_mcp_tool("ctx_execute", "Execute"),
+            make_mcp_tool("ctx_stats", "Stats"),
+            make_mcp_tool("ctx_doctor", "Doctor"),
+            make_mcp_tool("ctx_upgrade", "Upgrade"),
+        ];
+
+        let result = build_context_mode_tools(&tools, true);
+        let names: Vec<&str> = result.iter().map(|t| t.name.as_str()).collect();
+        assert!(names.contains(&"ctx_search"));
+        assert!(names.contains(&"ctx_execute"));
+        assert!(!names.contains(&"ctx_stats"));
+        assert!(!names.contains(&"ctx_doctor"));
+        assert!(!names.contains(&"ctx_upgrade"));
+    }
+
+    #[test]
+    fn test_filters_indexing_tools_when_disabled() {
+        let tools = vec![
+            make_mcp_tool("ctx_search", "Search"),
+            make_mcp_tool("ctx_execute", "Execute"),
+            make_mcp_tool("ctx_execute_file", "Execute file"),
+            make_mcp_tool("ctx_batch_execute", "Batch"),
+            make_mcp_tool("ctx_index", "Index"),
+            make_mcp_tool("ctx_fetch_and_index", "Fetch"),
+        ];
+
+        let result = build_context_mode_tools(&tools, false);
+        let names: Vec<&str> = result.iter().map(|t| t.name.as_str()).collect();
+        assert!(names.contains(&"ctx_search"));
+        assert!(!names.contains(&"ctx_execute"));
+        assert!(!names.contains(&"ctx_execute_file"));
+        assert!(!names.contains(&"ctx_batch_execute"));
+        assert!(!names.contains(&"ctx_index"));
+        assert!(!names.contains(&"ctx_fetch_and_index"));
+    }
+
+    #[test]
+    fn test_shows_indexing_tools_when_enabled() {
+        let tools = vec![
+            make_mcp_tool("ctx_search", "Search"),
+            make_mcp_tool("ctx_execute", "Execute"),
+            make_mcp_tool("ctx_execute_file", "Execute file"),
+            make_mcp_tool("ctx_batch_execute", "Batch"),
+            make_mcp_tool("ctx_index", "Index"),
+            make_mcp_tool("ctx_fetch_and_index", "Fetch"),
+        ];
+
+        let result = build_context_mode_tools(&tools, true);
+        assert_eq!(result.len(), 6);
+    }
+
+    #[test]
+    fn test_injects_source_guide_into_ctx_search() {
+        let tools = vec![McpTool {
+            name: "ctx_search".to_string(),
+            description: Some("Base description".to_string()),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "source": {
+                        "type": "string",
+                        "description": "Source filter"
+                    }
+                }
+            }),
+        }];
+
+        let result = build_context_mode_tools(&tools, false);
+        let search = &result[0];
+        let desc = search.description.as_ref().unwrap();
+        assert!(desc.contains("MCP Gateway source labels"));
+        assert!(desc.contains("catalog:"));
+        // Should NOT have indexing guide when disabled
+        assert!(!desc.contains("ctx_execute"));
+
+        // With indexing enabled
+        let result = build_context_mode_tools(&tools, true);
+        let search = &result[0];
+        let desc = search.description.as_ref().unwrap();
+        assert!(desc.contains("ctx_execute"));
+    }
+
+    #[test]
+    fn test_injects_source_param_description() {
+        let tools = vec![McpTool {
+            name: "ctx_search".to_string(),
+            description: Some("Search".to_string()),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "source": {
+                        "type": "string",
+                        "description": "Filter to source"
+                    }
+                }
+            }),
+        }];
+
+        let result = build_context_mode_tools(&tools, false);
+        let source_desc = result[0].input_schema["properties"]["source"]["description"]
+            .as_str()
+            .unwrap();
+        assert!(source_desc.contains("MCP examples:"));
+    }
+
+    // ── extract_catalog_activations tests ───────────────────────────
+
+    fn make_catalog_sources() -> HashMap<String, CatalogItemType> {
+        let mut sources = HashMap::new();
+        sources.insert(
+            "catalog:filesystem__read_file".to_string(),
+            CatalogItemType::Tool,
+        );
+        sources.insert(
+            "catalog:filesystem__write_file".to_string(),
+            CatalogItemType::Tool,
+        );
+        sources.insert(
+            "catalog:db__users".to_string(),
+            CatalogItemType::Resource,
+        );
+        sources.insert(
+            "catalog:db__query".to_string(),
+            CatalogItemType::Prompt,
+        );
+        sources.insert(
+            "catalog:filesystem".to_string(),
+            CatalogItemType::ServerWelcome,
+        );
+        sources
+    }
+
+    #[test]
+    fn test_activates_tools_from_search_results() {
+        let sources = make_catalog_sources();
+        let result = json!({
+            "content": [{
+                "type": "text",
+                "text": "Results:\n--- [catalog:filesystem__read_file] ---\nRead file content\n--- [catalog:filesystem__write_file] ---\nWrite file content"
+            }]
+        });
+
+        let activated = extract_catalog_activations(
+            &result,
+            &sources,
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+
+        assert_eq!(activated.len(), 2);
+        assert!(activated.contains(&"filesystem__read_file".to_string()));
+        assert!(activated.contains(&"filesystem__write_file".to_string()));
+    }
+
+    #[test]
+    fn test_skips_already_activated_tools() {
+        let sources = make_catalog_sources();
+        let result = json!({
+            "content": [{
+                "type": "text",
+                "text": "--- [catalog:filesystem__read_file] ---\nContent"
+            }]
+        });
+
+        let mut activated_tools = HashSet::new();
+        activated_tools.insert("filesystem__read_file".to_string());
+
+        let activated = extract_catalog_activations(
+            &result,
+            &sources,
+            &activated_tools,
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+
+        assert!(activated.is_empty());
+    }
+
+    #[test]
+    fn test_activates_resources_and_prompts() {
+        let sources = make_catalog_sources();
+        let result = json!({
+            "content": [{
+                "type": "text",
+                "text": "--- [catalog:db__users] ---\nUser table\n--- [catalog:db__query] ---\nQuery prompt"
+            }]
+        });
+
+        let activated = extract_catalog_activations(
+            &result,
+            &sources,
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+
+        assert_eq!(activated.len(), 2);
+        assert!(activated.contains(&"db__users".to_string()));
+        assert!(activated.contains(&"db__query".to_string()));
+    }
+
+    #[test]
+    fn test_server_welcome_not_activated() {
+        let sources = make_catalog_sources();
+        let result = json!({
+            "content": [{
+                "type": "text",
+                "text": "--- [catalog:filesystem] ---\nServer docs"
+            }]
+        });
+
+        let activated = extract_catalog_activations(
+            &result,
+            &sources,
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+
+        // ServerWelcome items should not be activated (always_active = true in logic)
+        assert!(activated.is_empty());
+    }
+
+    #[test]
+    fn test_ignores_non_catalog_labels() {
+        let sources = make_catalog_sources();
+        let result = json!({
+            "content": [{
+                "type": "text",
+                "text": "--- [execute:abc123] ---\nSome output\n--- [unknown_label] ---\nOther"
+            }]
+        });
+
+        let activated = extract_catalog_activations(
+            &result,
+            &sources,
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+
+        assert!(activated.is_empty());
+    }
+
+    #[test]
+    fn test_handles_empty_result() {
+        let sources = make_catalog_sources();
+        let result = json!({"content": []});
+
+        let activated = extract_catalog_activations(
+            &result,
+            &sources,
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+
+        assert!(activated.is_empty());
+    }
+
+    #[test]
+    fn test_handles_missing_content() {
+        let sources = make_catalog_sources();
+        let result = json!({});
+
+        let activated = extract_catalog_activations(
+            &result,
+            &sources,
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+
+        assert!(activated.is_empty());
+    }
+
+    // ── append_text_to_mcp_result tests ─────────────────────────────
+
+    #[test]
+    fn test_appends_text_to_result() {
+        let mut result = json!({
+            "content": [{"type": "text", "text": "original"}]
+        });
+        append_text_to_mcp_result(&mut result, "\nappended");
+
+        let content = result["content"].as_array().unwrap();
+        assert_eq!(content.len(), 2);
+        assert_eq!(content[1]["text"].as_str().unwrap(), "\nappended");
+    }
+
+    #[test]
+    fn test_append_no_content_is_noop() {
+        let mut result = json!({"other": "field"});
+        append_text_to_mcp_result(&mut result, "text");
+        // Should not crash, result unchanged
+        assert!(result.get("content").is_none());
+    }
+
+    // ── build_fallback_ctx_search_tool tests ────────────────────────
+
+    #[test]
+    fn test_fallback_tool_structure() {
+        let tool = build_fallback_ctx_search_tool(false);
+        assert_eq!(tool.name, "ctx_search");
+        assert!(tool.description.as_ref().unwrap().contains("Search indexed content"));
+        assert!(tool.input_schema["properties"]["queries"].is_object());
+        assert!(tool.input_schema["properties"]["source"].is_object());
+        assert!(tool.input_schema["properties"]["limit"].is_object());
+    }
+
+    #[test]
+    fn test_fallback_tool_with_indexing() {
+        let tool = build_fallback_ctx_search_tool(true);
+        let desc = tool.description.as_ref().unwrap();
+        assert!(desc.contains("ctx_execute"));
+        assert!(desc.contains("batch:"));
+    }
+
+    #[test]
+    fn test_fallback_tool_without_indexing() {
+        let tool = build_fallback_ctx_search_tool(false);
+        let desc = tool.description.as_ref().unwrap();
+        assert!(!desc.contains("ctx_execute"));
+    }
+
+    // ── ContextModeSessionState tests ───────────────────────────────
+
+    #[test]
+    fn test_next_run_id_increments() {
+        let mut state = ContextModeSessionState {
+            enabled: true,
+            indexing_tools_enabled: false,
+            transport: Mutex::new(None),
+            cached_tools: Mutex::new(None),
+            catalog_sources: HashMap::new(),
+            run_counters: HashMap::new(),
+            full_tool_catalog: Vec::new(),
+            activated_tools: HashSet::new(),
+            full_resource_catalog: Vec::new(),
+            activated_resources: HashSet::new(),
+            full_prompt_catalog: Vec::new(),
+            activated_prompts: HashSet::new(),
+            catalog_threshold_bytes: 8192,
+            response_threshold_bytes: 4096,
+        };
+
+        assert_eq!(state.next_run_id("fs__read_file"), 1);
+        assert_eq!(state.next_run_id("fs__read_file"), 2);
+        assert_eq!(state.next_run_id("fs__write_file"), 1);
+        assert_eq!(state.next_run_id("fs__read_file"), 3);
     }
 }

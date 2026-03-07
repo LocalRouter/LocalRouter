@@ -4,6 +4,7 @@ use super::types::*;
 use crate::protocol::{McpPrompt, McpResource, McpTool};
 
 /// An MCP server's info for instruction building (using human-readable names, not UUIDs)
+#[derive(Clone)]
 pub struct McpServerInstructionInfo {
     /// Human-readable name (e.g., "My Filesystem" as configured by the user)
     pub name: String,
@@ -780,15 +781,18 @@ pub fn compute_catalog_compression_plan(
             });
         }
 
-        // Estimate savings from deferring this server's items
+        // Estimate savings from deferring this server's items (only count actually deferred types)
         if let Some(server) = ctx.servers.iter().find(|s| slugify(&s.name) == *server_slug) {
-            let items_bytes: usize = server
-                .tool_names
-                .iter()
-                .chain(server.resource_names.iter())
-                .chain(server.prompt_names.iter())
-                .map(|n| n.len() + 20) // per-item line size
-                .sum();
+            let mut items_bytes = 0usize;
+            if supports_tools_list_changed {
+                items_bytes += server.tool_names.iter().map(|n| n.len() + 20).sum::<usize>();
+            }
+            if supports_resources_list_changed {
+                items_bytes += server.resource_names.iter().map(|n| n.len() + 20).sum::<usize>();
+            }
+            if supports_prompts_list_changed {
+                items_bytes += server.prompt_names.iter().map(|n| n.len() + 20).sum::<usize>();
+            }
             saved += items_bytes;
         }
     }
@@ -1738,5 +1742,610 @@ mod tests {
         // But server_id still contains UUID for routing
         assert_eq!(merged[0].server_id, "uuid-123-abc");
         assert_eq!(merged[1].server_id, "uuid-456-def");
+    }
+
+    // ── Context Management: estimate_catalog_size ───────────────────
+
+    #[test]
+    fn test_estimate_catalog_size_empty() {
+        let ctx = InstructionsContext {
+            servers: vec![],
+            unavailable_servers: vec![],
+            deferred_loading: false,
+            context_management_enabled: true,
+            indexing_tools_enabled: false,
+            catalog_compression: None,
+            virtual_instructions: vec![],
+        };
+        // Only header overhead (100)
+        assert_eq!(estimate_catalog_size(&ctx), 100);
+    }
+
+    #[test]
+    fn test_estimate_catalog_size_with_servers() {
+        let ctx = InstructionsContext {
+            servers: vec![McpServerInstructionInfo {
+                name: "filesystem".to_string(),
+                description: Some("A file server".to_string()),
+                instructions: None,
+                tool_names: vec!["fs__read".to_string(), "fs__write".to_string()],
+                resource_names: vec!["fs__config".to_string()],
+                prompt_names: vec![],
+            }],
+            unavailable_servers: vec![],
+            deferred_loading: false,
+            context_management_enabled: true,
+            indexing_tools_enabled: false,
+            catalog_compression: None,
+            virtual_instructions: vec![],
+        };
+        let size = estimate_catalog_size(&ctx);
+        // 100 + server header + tool lines + resource line + description + XML tags
+        assert!(size > 100);
+    }
+
+    // ── Context Management: compute_catalog_compression_plan ────────
+
+    fn make_large_server(name: &str, num_tools: usize) -> McpServerInstructionInfo {
+        McpServerInstructionInfo {
+            name: name.to_string(),
+            description: Some("A".repeat(500)),
+            instructions: Some("B".repeat(500)),
+            tool_names: (0..num_tools)
+                .map(|i| format!("{}__tool_{}", name, i))
+                .collect(),
+            resource_names: vec![format!("{}__config", name)],
+            prompt_names: vec![format!("{}__ask", name)],
+        }
+    }
+
+    #[test]
+    fn test_no_compression_under_threshold() {
+        let ctx = InstructionsContext {
+            servers: vec![McpServerInstructionInfo {
+                name: "tiny".to_string(),
+                description: None,
+                instructions: None,
+                tool_names: vec!["tiny__a".to_string()],
+                resource_names: vec![],
+                prompt_names: vec![],
+            }],
+            unavailable_servers: vec![],
+            deferred_loading: false,
+            context_management_enabled: true,
+            indexing_tools_enabled: false,
+            catalog_compression: None,
+            virtual_instructions: vec![],
+        };
+
+        let plan = compute_catalog_compression_plan(&ctx, 100_000, true, true, true);
+        assert!(plan.compressed_descriptions.is_empty());
+        assert!(plan.deferred_items.is_empty());
+        assert!(plan.truncated_servers.is_empty());
+    }
+
+    #[test]
+    fn test_phase1_compresses_largest_first() {
+        let ctx = InstructionsContext {
+            servers: vec![make_large_server("big", 5)],
+            unavailable_servers: vec![],
+            deferred_loading: false,
+            context_management_enabled: true,
+            indexing_tools_enabled: false,
+            catalog_compression: None,
+            virtual_instructions: vec![],
+        };
+
+        // Set threshold low enough to trigger phase 1 but not phase 2
+        let full_size = estimate_catalog_size(&ctx);
+        // Remove ~200 bytes (threshold = full_size - 200) to trigger mild compression
+        let threshold = full_size - 200;
+
+        let plan = compute_catalog_compression_plan(&ctx, threshold, true, true, true);
+
+        // Should compress descriptions but not defer
+        assert!(
+            !plan.compressed_descriptions.is_empty(),
+            "Phase 1 should compress some descriptions"
+        );
+        // The largest item (server welcome at ~1000 bytes) should be compressed first
+        assert_eq!(
+            plan.compressed_descriptions[0].item_type,
+            CompressedItemType::ServerWelcome,
+            "Server welcome (largest) should be compressed first"
+        );
+        assert!(plan.deferred_items.is_empty(), "Phase 2 should not trigger");
+        assert!(
+            plan.truncated_servers.is_empty(),
+            "Phase 3 should not trigger"
+        );
+    }
+
+    #[test]
+    fn test_phase2_defers_items() {
+        let ctx = InstructionsContext {
+            servers: vec![make_large_server("big", 20), make_large_server("small", 3)],
+            unavailable_servers: vec![],
+            deferred_loading: false,
+            context_management_enabled: true,
+            indexing_tools_enabled: false,
+            catalog_compression: None,
+            virtual_instructions: vec![],
+        };
+
+        // Set threshold very low to force phase 2
+        let plan = compute_catalog_compression_plan(&ctx, 100, true, true, true);
+
+        // Phase 2 should defer items
+        assert!(
+            !plan.deferred_items.is_empty(),
+            "Phase 2 should defer items when threshold is very low"
+        );
+        // The server with more items should be deferred first
+        let deferred_server_slugs: Vec<&str> = plan
+            .deferred_items
+            .iter()
+            .map(|d| d.server_slug.as_str())
+            .collect();
+        assert!(
+            deferred_server_slugs.contains(&"big"),
+            "Largest server should be deferred first"
+        );
+    }
+
+    #[test]
+    fn test_phase2_respects_capabilities() {
+        let ctx = InstructionsContext {
+            servers: vec![make_large_server("server", 20)],
+            unavailable_servers: vec![],
+            deferred_loading: false,
+            context_management_enabled: true,
+            indexing_tools_enabled: false,
+            catalog_compression: None,
+            virtual_instructions: vec![],
+        };
+
+        // Only supports tools list_changed — not resources or prompts
+        let plan = compute_catalog_compression_plan(&ctx, 100, true, false, false);
+
+        let deferred_types: Vec<&DeferredItemType> =
+            plan.deferred_items.iter().map(|d| &d.item_type).collect();
+
+        // Should have tools deferred
+        assert!(deferred_types.contains(&&DeferredItemType::Tools));
+        // Should NOT have resources or prompts deferred (client doesn't support list_changed)
+        assert!(!deferred_types.contains(&&DeferredItemType::Resources));
+        assert!(!deferred_types.contains(&&DeferredItemType::Prompts));
+    }
+
+    #[test]
+    fn test_phase3_truncates_servers() {
+        // Create a context so large that phases 1+2 aren't enough
+        let ctx = InstructionsContext {
+            servers: vec![
+                make_large_server("s1", 50),
+                make_large_server("s2", 50),
+                make_large_server("s3", 50),
+            ],
+            unavailable_servers: vec![],
+            deferred_loading: false,
+            context_management_enabled: true,
+            indexing_tools_enabled: false,
+            catalog_compression: None,
+            virtual_instructions: vec![],
+        };
+
+        // Threshold of 10 is impossibly low — should trigger all 3 phases
+        let plan = compute_catalog_compression_plan(&ctx, 10, false, false, false);
+
+        // Phase 3 can only be tested when phase 2 doesn't fully defer all servers
+        // With no list_changed support, phase 2 does nothing, so phase 3 kicks in
+        assert!(
+            !plan.truncated_servers.is_empty(),
+            "Phase 3 should truncate servers. Plan: {:?}",
+            plan
+        );
+    }
+
+    // ── Context Management: build_context_managed_instructions ──────
+
+    #[test]
+    fn test_cm_instructions_no_compression() {
+        let ctx = InstructionsContext {
+            servers: vec![McpServerInstructionInfo {
+                name: "filesystem".to_string(),
+                description: Some("File system server".to_string()),
+                instructions: None,
+                tool_names: vec!["filesystem__read_file".to_string()],
+                resource_names: vec!["filesystem__config".to_string()],
+                prompt_names: vec![],
+            }],
+            unavailable_servers: vec![],
+            deferred_loading: false,
+            context_management_enabled: true,
+            indexing_tools_enabled: false,
+            catalog_compression: Some(CatalogCompressionPlan::default()),
+            virtual_instructions: vec![],
+        };
+
+        let inst = build_context_managed_instructions(&ctx).unwrap();
+        assert!(inst.contains("Context-Managed"));
+        assert!(inst.contains("1 server connected"));
+        assert!(inst.contains("`filesystem__read_file` (tool)"));
+        assert!(inst.contains("`filesystem__config` (resource)"));
+        // Server instructions should be inline
+        assert!(inst.contains("<filesystem>"));
+        assert!(inst.contains("File system server"));
+    }
+
+    #[test]
+    fn test_cm_instructions_with_compressed_items() {
+        let plan = CatalogCompressionPlan {
+            compressed_descriptions: vec![CompressedItem {
+                source_label: "catalog:filesystem__read_file".to_string(),
+                full_content: "Read a file from disk".to_string(),
+                item_type: CompressedItemType::Tool,
+                namespaced_name: "filesystem__read_file".to_string(),
+                byte_size: 100,
+            }],
+            deferred_items: vec![],
+            truncated_servers: vec![],
+        };
+
+        let ctx = InstructionsContext {
+            servers: vec![McpServerInstructionInfo {
+                name: "filesystem".to_string(),
+                description: None,
+                instructions: None,
+                tool_names: vec![
+                    "filesystem__read_file".to_string(),
+                    "filesystem__write_file".to_string(),
+                ],
+                resource_names: vec![],
+                prompt_names: vec![],
+            }],
+            unavailable_servers: vec![],
+            deferred_loading: false,
+            context_management_enabled: true,
+            indexing_tools_enabled: false,
+            catalog_compression: Some(plan),
+            virtual_instructions: vec![],
+        };
+
+        let inst = build_context_managed_instructions(&ctx).unwrap();
+        // Compressed tool should show [compressed] marker
+        assert!(
+            inst.contains("[compressed]"),
+            "Compressed tool should show [compressed] marker. Got:\n{}",
+            inst
+        );
+        assert!(inst.contains("ctx_search"));
+        // Non-compressed tool should show backtick notation
+        assert!(inst.contains("`filesystem__write_file` (tool)"));
+    }
+
+    #[test]
+    fn test_cm_instructions_with_truncated_server() {
+        let plan = CatalogCompressionPlan {
+            compressed_descriptions: vec![],
+            deferred_items: vec![],
+            truncated_servers: vec!["big-server".to_string()],
+        };
+
+        let ctx = InstructionsContext {
+            servers: vec![McpServerInstructionInfo {
+                name: "Big Server".to_string(),
+                description: Some("Lots of tools".to_string()),
+                instructions: None,
+                tool_names: (0..10)
+                    .map(|i| format!("big-server__tool_{}", i))
+                    .collect(),
+                resource_names: vec!["big-server__data".to_string()],
+                prompt_names: vec![],
+            }],
+            unavailable_servers: vec![],
+            deferred_loading: false,
+            context_management_enabled: true,
+            indexing_tools_enabled: false,
+            catalog_compression: Some(plan),
+            virtual_instructions: vec![],
+        };
+
+        let inst = build_context_managed_instructions(&ctx).unwrap();
+        // Truncated server shows counts + search hint
+        assert!(
+            inst.contains("10 tools"),
+            "Truncated server should show tool count. Got:\n{}",
+            inst
+        );
+        assert!(inst.contains("1 resources"));
+        assert!(inst.contains("ctx_search"));
+        // Individual tools should NOT be listed
+        assert!(!inst.contains("big-server__tool_0"));
+        // Server instructions should NOT be shown
+        assert!(!inst.contains("Lots of tools"));
+    }
+
+    #[test]
+    fn test_cm_instructions_compressed_server_welcome() {
+        let plan = CatalogCompressionPlan {
+            compressed_descriptions: vec![CompressedItem {
+                source_label: "catalog:filesystem".to_string(),
+                full_content: "Full server docs...".to_string(),
+                item_type: CompressedItemType::ServerWelcome,
+                namespaced_name: "filesystem".to_string(),
+                byte_size: 500,
+            }],
+            deferred_items: vec![],
+            truncated_servers: vec![],
+        };
+
+        let ctx = InstructionsContext {
+            servers: vec![McpServerInstructionInfo {
+                name: "filesystem".to_string(),
+                description: Some("Detailed docs about filesystem server".to_string()),
+                instructions: Some("Use read_file to read files".to_string()),
+                tool_names: vec!["filesystem__read_file".to_string()],
+                resource_names: vec![],
+                prompt_names: vec![],
+            }],
+            unavailable_servers: vec![],
+            deferred_loading: false,
+            context_management_enabled: true,
+            indexing_tools_enabled: false,
+            catalog_compression: Some(plan),
+            virtual_instructions: vec![],
+        };
+
+        let inst = build_context_managed_instructions(&ctx).unwrap();
+        // Server instructions should be [compressed], not inline
+        assert!(
+            inst.contains("instructions — [compressed]"),
+            "Server welcome should be compressed. Got:\n{}",
+            inst
+        );
+        assert!(!inst.contains("<filesystem>"));
+        assert!(!inst.contains("Detailed docs about filesystem server"));
+    }
+
+    #[test]
+    fn test_cm_instructions_virtual_servers_never_compressed() {
+        let plan = CatalogCompressionPlan {
+            compressed_descriptions: vec![],
+            deferred_items: vec![],
+            truncated_servers: vec![],
+        };
+
+        let ctx = InstructionsContext {
+            servers: vec![],
+            unavailable_servers: vec![],
+            deferred_loading: false,
+            context_management_enabled: true,
+            indexing_tools_enabled: true,
+            catalog_compression: Some(plan),
+            virtual_instructions: vec![crate::gateway::virtual_server::VirtualInstructions {
+                section_title: "Context Management".to_string(),
+                content: "Use ctx_search to find things".to_string(),
+                tool_names: vec!["ctx_search".to_string(), "ctx_execute".to_string()],
+            }],
+        };
+
+        let inst = build_context_managed_instructions(&ctx).unwrap();
+        assert!(inst.contains("`ctx_search` (tool)"));
+        assert!(inst.contains("`ctx_execute` (tool)"));
+        // Virtual instructions always inline
+        assert!(inst.contains("<context-management>"));
+        assert!(inst.contains("Use ctx_search to find things"));
+    }
+
+    #[test]
+    fn test_cm_instructions_unavailable_servers() {
+        let ctx = InstructionsContext {
+            servers: vec![],
+            unavailable_servers: vec![UnavailableServerInfo {
+                name: "broken-server".to_string(),
+                error: "Connection refused".to_string(),
+            }],
+            deferred_loading: false,
+            context_management_enabled: true,
+            indexing_tools_enabled: false,
+            catalog_compression: Some(CatalogCompressionPlan::default()),
+            virtual_instructions: vec![],
+        };
+
+        let inst = build_context_managed_instructions(&ctx).unwrap();
+        assert!(inst.contains("broken-server"));
+        assert!(inst.contains("unavailable"));
+        assert!(inst.contains("Connection refused"));
+    }
+
+    // ── End-to-end: compression plan → instructions ─────────────────
+
+    #[test]
+    fn test_e2e_compression_plan_applied_to_instructions() {
+        // Create a context with large servers that will trigger compression
+        let ctx = InstructionsContext {
+            servers: vec![
+                McpServerInstructionInfo {
+                    name: "filesystem".to_string(),
+                    description: Some("X".repeat(2000)),
+                    instructions: Some("Y".repeat(2000)),
+                    tool_names: (0..30)
+                        .map(|i| format!("filesystem__tool_{}", i))
+                        .collect(),
+                    resource_names: (0..5)
+                        .map(|i| format!("filesystem__res_{}", i))
+                        .collect(),
+                    prompt_names: vec!["filesystem__ask".to_string()],
+                },
+                McpServerInstructionInfo {
+                    name: "github".to_string(),
+                    description: Some("Z".repeat(1000)),
+                    instructions: None,
+                    tool_names: vec![
+                        "github__create_issue".to_string(),
+                        "github__list_prs".to_string(),
+                    ],
+                    resource_names: vec![],
+                    prompt_names: vec![],
+                },
+            ],
+            unavailable_servers: vec![],
+            deferred_loading: false,
+            context_management_enabled: true,
+            indexing_tools_enabled: false,
+            catalog_compression: None,
+            virtual_instructions: vec![],
+        };
+
+        // Step 1: Compute compression with a moderate threshold
+        let full_size = estimate_catalog_size(&ctx);
+        assert!(
+            full_size > 5000,
+            "Full catalog should be large. Got: {}",
+            full_size
+        );
+
+        // Set threshold to ~40% of full size to trigger compression
+        let threshold = full_size * 2 / 5;
+        let plan = compute_catalog_compression_plan(&ctx, threshold, true, true, true);
+
+        assert!(
+            !plan.compressed_descriptions.is_empty(),
+            "Should have compressed items"
+        );
+
+        // Step 2: Apply plan to build instructions
+        let mut ctx_with_plan = InstructionsContext {
+            servers: ctx.servers.clone(),
+            unavailable_servers: vec![],
+            deferred_loading: false,
+            context_management_enabled: true,
+            indexing_tools_enabled: false,
+            catalog_compression: Some(plan.clone()),
+            virtual_instructions: vec![],
+        };
+        ctx_with_plan.catalog_compression = Some(plan.clone());
+
+        let inst = build_gateway_instructions(&ctx_with_plan).unwrap();
+
+        // Verify: CM header
+        assert!(
+            inst.contains("Context-Managed"),
+            "Should use CM instructions path"
+        );
+
+        // Verify: compressed items marked in output
+        let has_compressed = inst.contains("[compressed]");
+        assert!(has_compressed, "Output should contain [compressed] markers");
+
+        // Verify: ctx_search mentioned for discovering content
+        assert!(
+            inst.contains("ctx_search"),
+            "Should reference ctx_search for discovery"
+        );
+
+        // Verify: the output is smaller than uncompressed version
+        let uncompressed_ctx = InstructionsContext {
+            servers: ctx.servers.clone(),
+            unavailable_servers: vec![],
+            deferred_loading: false,
+            context_management_enabled: false,
+            indexing_tools_enabled: false,
+            catalog_compression: None,
+            virtual_instructions: vec![],
+        };
+        let uncompressed = build_gateway_instructions(&uncompressed_ctx).unwrap();
+        assert!(
+            inst.len() < uncompressed.len(),
+            "Compressed instructions ({} bytes) should be smaller than uncompressed ({} bytes)",
+            inst.len(),
+            uncompressed.len()
+        );
+    }
+
+    #[test]
+    fn test_e2e_no_compression_when_small_catalog() {
+        let ctx = InstructionsContext {
+            servers: vec![McpServerInstructionInfo {
+                name: "tiny".to_string(),
+                description: None,
+                instructions: None,
+                tool_names: vec!["tiny__do_thing".to_string()],
+                resource_names: vec![],
+                prompt_names: vec![],
+            }],
+            unavailable_servers: vec![],
+            deferred_loading: false,
+            context_management_enabled: true,
+            indexing_tools_enabled: false,
+            catalog_compression: None,
+            virtual_instructions: vec![],
+        };
+
+        let plan = compute_catalog_compression_plan(&ctx, 100_000, true, true, true);
+        assert!(plan.compressed_descriptions.is_empty());
+        assert!(plan.deferred_items.is_empty());
+        assert!(plan.truncated_servers.is_empty());
+
+        let ctx_with_plan = InstructionsContext {
+            catalog_compression: Some(plan),
+            ..ctx
+        };
+
+        let inst = build_gateway_instructions(&ctx_with_plan).unwrap();
+        assert!(inst.contains("`tiny__do_thing` (tool)"));
+        assert!(!inst.contains("[compressed]"));
+    }
+
+    #[test]
+    fn test_e2e_mixed_compression_some_servers_compressed_some_not() {
+        let ctx = InstructionsContext {
+            servers: vec![
+                McpServerInstructionInfo {
+                    name: "big".to_string(),
+                    description: Some("D".repeat(3000)),
+                    instructions: Some("I".repeat(3000)),
+                    tool_names: (0..20)
+                        .map(|i| format!("big__tool_{}", i))
+                        .collect(),
+                    resource_names: vec![],
+                    prompt_names: vec![],
+                },
+                McpServerInstructionInfo {
+                    name: "small".to_string(),
+                    description: None,
+                    instructions: None,
+                    tool_names: vec!["small__a".to_string()],
+                    resource_names: vec![],
+                    prompt_names: vec![],
+                },
+            ],
+            unavailable_servers: vec![],
+            deferred_loading: false,
+            context_management_enabled: true,
+            indexing_tools_enabled: false,
+            catalog_compression: None,
+            virtual_instructions: vec![],
+        };
+
+        let full_size = estimate_catalog_size(&ctx);
+        // Threshold that compresses "big" but not "small"
+        let threshold = full_size - 2000;
+        let plan = compute_catalog_compression_plan(&ctx, threshold, true, true, true);
+
+        let ctx_with_plan = InstructionsContext {
+            catalog_compression: Some(plan),
+            ..ctx
+        };
+
+        let inst = build_gateway_instructions(&ctx_with_plan).unwrap();
+
+        // Small server should be uncompressed
+        assert!(
+            inst.contains("`small__a` (tool)"),
+            "Small server tool should be uncompressed. Got:\n{}",
+            inst
+        );
     }
 }
